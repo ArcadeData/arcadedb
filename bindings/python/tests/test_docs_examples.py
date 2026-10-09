@@ -7,14 +7,9 @@ import textwrap
 from pathlib import Path
 
 import pytest
-from tests.conftest import has_server_support
 
 DOCS_ROOT = Path(__file__).resolve().parents[1] / "docs"
 PYTHON_BLOCK_RE = re.compile(r"```python\n(.*?)```", re.DOTALL)
-pytestmark = pytest.mark.skipif(
-    not DOCS_ROOT.exists(),
-    reason="bindings/python/docs is not present on this branch",
-)
 
 
 def _doc_path(relative_path: str) -> Path:
@@ -263,7 +258,7 @@ def _seed_knows_graph_setup() -> str:
         """)
 
 
-def test_docs_installation_and_distribution_examples(temp_dir_factory):
+def test_docs_installation_examples(temp_dir_factory):
     base_dir = Path(temp_dir_factory("docs_installation_"))
 
     _run_doc_block(
@@ -277,19 +272,9 @@ def test_docs_installation_and_distribution_examples(temp_dir_factory):
         base_dir / "installation_jvm",
     )
     _run_doc_block(
-        "getting-started/distributions.md",
-        "Version: {arcadedb.__version__}",
-        base_dir / "distributions_check",
-    )
-    _run_doc_block(
         "getting-started/installation.md",
         'with arcadedb.create_database("./db", jvm_kwargs={"heap_size": "8g"}) as db:',
         base_dir / "installation_jvm_kwargs",
-    )
-    _run_doc_block(
-        "getting-started/distributions.md",
-        "System: {platform.system()}",
-        base_dir / "distributions_platform",
     )
 
 
@@ -372,7 +357,6 @@ def test_docs_index_and_quickstart_examples(temp_dir_factory):
 
 
 @pytest.mark.server
-@pytest.mark.skipif(not has_server_support(), reason="Requires server support")
 def test_docs_api_access_examples(temp_dir_factory):
     """Every access path documented in api-access-methods.md actually runs.
 

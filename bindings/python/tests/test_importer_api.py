@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import arcadedb_embedded as arcadedb
@@ -205,3 +206,37 @@ def test_import_documents_rejects_unknown_on_row_error(temp_db_path, tmp_path):
 
         # Case-insensitive, matching the engine's equalsIgnoreCase.
         db.import_documents(csv_path, document_type="Person", on_row_error="SKIP")
+
+
+@pytest.mark.parametrize(
+    "directory_name",
+    [
+        "with space",
+        "hash#1",
+        "50%off",
+        "semi;colon",
+        "plus+and&amp",
+        "caf\u00e9",
+    ]
+    # Windows cannot create a file name with a question mark, so it is not generated there
+    + ([] if os.name == "nt" else ["what?"]),
+)
+def test_import_documents_path_with_special_characters(
+    temp_db_path, tmp_path, directory_name
+):
+    """Path.as_uri() percent-encodes a space, `#`, `%`, and non-ASCII characters, and the engine opens
+    what follows `file://` as a plain path without decoding it, so such a directory name failed.
+    """
+    directory = tmp_path / directory_name
+    directory.mkdir()
+    csv_path = directory / "people.csv"
+    _write_people_csv(csv_path)
+    posix = csv_path.resolve().as_posix()  # a Windows drive path has no leading slash
+    expected_url = f"file://{posix}" if posix.startswith("/") else f"file:///{posix}"
+
+    with arcadedb.create_database(temp_db_path) as db:
+        result = db.import_documents(csv_path, document_type="Person")
+
+        assert result.result == "OK"
+        assert result.source_url == expected_url
+        assert db.query("sql", "SELECT count(*) AS c FROM Person").one().get("c") == 3

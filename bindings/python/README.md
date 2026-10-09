@@ -2,7 +2,7 @@
 
 Native Python bindings for ArcadeDB - the multi-model database that supports Graph, Document, Key/Value, Search Engine, Time Series, and Vector models.
 
-**Status**: ✅ Production Ready | **Tests**: 397 Passed | **Platforms**: 4 Supported
+**Status**: ✅ Production Ready | **Platforms**: 4 Supported
 
 ---
 
@@ -22,7 +22,7 @@ uv add arcadedb-embedded   # or: pip install arcadedb-embedded
 
 **Requirements:**
 
-- **Python 3.10–3.14** (packaged/tested on CPython 3.12) - No Java installation required!
+- **Python 3.10 to 3.14** (CI runs all five on every supported platform). No Java installation required!
 - **Supported Platforms**: Prebuilt wheels for **4 platforms**
   - Linux: x86_64, ARM64
   - macOS: Apple Silicon (ARM64)
@@ -42,7 +42,7 @@ with arcadedb.create_database("./mydb") as db:
 
     # Insert data (requires transaction)
     with db.transaction():
-        db.command("sql", "INSERT INTO Person SET name = 'Alice', age = 30")
+        db.command("sql", "INSERT INTO Person SET name = ?, age = ?", "Alice", 30)
 
     # Query data
     result = db.query("sql", "SELECT FROM Person WHERE age > 25")
@@ -56,13 +56,13 @@ with arcadedb.create_database("./mydb") as db:
 
 ## ✨ Features
 
-- ☕ **No Java Installation Required**: Bundled JRE (~63MB uncompressed)
+- ☕ **No Java Installation Required**: Bundled JRE (~63 MiB uncompressed)
 - 🌍 **4 Platforms Supported**: Linux (x86_64, ARM64), macOS (ARM64), Windows (x86_64)
 - 🚀 **Embedded Mode**: Direct database access in Python process (no network)
-- 🌐 **Server Mode**: Optional in-process HTTP server with the Studio web UI — costs ~8MB of wheel and nothing at runtime until you call `create_server()`
-- 📦 **Self-contained**: All dependencies bundled (~67MB current Linux wheel)
+- 🌐 **Server Mode**: Optional in-process HTTP server with the Studio web UI: it costs ~8MB of wheel and nothing at runtime until you call `create_server()`
+- 📦 **Self-contained**: All dependencies bundled (~69 MiB current Linux wheel)
 - 🔄 **Multi-model**: Graph, Document, Key/Value, Vector, Time Series
-- 🔍 **Multiple query languages**: SQL, OpenCypher
+- 🔍 **Multiple query languages**: SQL and OpenCypher
 - ⚡ **High performance**: Direct JVM integration via JPype
 - 🔒 **ACID transactions**: Full transaction support
 - 🎯 **Vector storage**: Store and query vector embeddings with HNSW (JVector) indexing
@@ -74,21 +74,19 @@ with arcadedb.create_database("./mydb") as db:
 
 The `arcadedb-embedded` package is platform-specific and self-contained:
 
-**Package Contents (current Linux x86_64 dev build; varies by platform and version):**
+**Package Contents (the 26.10.1 Linux x86_64 wheel; varies by platform and version):**
 
-- **Wheel size (compressed)**: ~67MB
-- **ArcadeDB JARs (uncompressed)**: ~31MB across 63 JARs
-- **Bundled JRE (uncompressed)**: ~63MB (platform-specific Java 25 runtime via jlink)
-- **Installed package size**: ~94MB
+- **Wheel size (compressed)**: ~69 MiB
+- **ArcadeDB JARs (uncompressed)**: ~34 MiB across 64 JARs
+- **Bundled JRE (uncompressed)**: ~63 MiB (platform-specific Java 25 runtime via jlink)
+- **Installed package size**: ~97 MiB
 
 The compressed wheel size is measured from `dist/*.whl`, and the installed package size
 is measured from the extracted `site-packages/arcadedb_embedded/` directory.
 
-Of that, the optional **server stack is 12 JARs, 7.65MB uncompressed**, and it adds
-~8MB to the wheel (the extra ~0.8MB beyond the JARs is JRE modules that only the
-server needs). [Server Mode](https://docs.humem.ai/arcadedb/latest/guide/server/)
-breaks the cost down and explains what you pay at runtime (nothing, until you start
-a server).
+Of that, the optional **server stack is 12 JARs, 8.58MB uncompressed**. [Server
+Mode](https://docs.humem.ai/arcadedb/latest/guide/server/) breaks the cost down and
+explains what you pay at runtime (nothing, until you start a server).
 
 **Note**: Some JARs are excluded to optimize package size (e.g., gRPC wire protocol). See [`scripts/jar_exclusions.txt`](https://github.com/humemai/arcadedb-embedded-python/blob/main/bindings/python/scripts/jar_exclusions.txt) for details.
 
@@ -98,10 +96,8 @@ Import: `import arcadedb_embedded as arcadedb`
 
 ## 🧪 Testing
 
-**Status**: 397 passed
-
-Tests run against the built wheel via the uv project at the repo root — no
-virtualenv activation needed, and `uv run` works from anywhere in the repo:
+Tests run against the built wheel via the uv project at the repo root. No
+virtualenv activation is needed, and `uv run` works from anywhere in the repo:
 
 ```bash
 # Run all tests
@@ -150,7 +146,7 @@ arcadedb_embedded/
 ├── async_executor.py    # Asynchronous command/query + record execution
 ├── core.py              # Database and DatabaseFactory
 ├── exceptions.py        # ArcadeDBError exception
-├── exporter.py          # Data export (JSONL, GraphML, GraphSON, CSV)
+├── exporter.py          # Data export (JSONL, CSV)
 ├── graph.py             # Graph wrappers
 ├── graph_batch.py       # GraphBatch high-throughput graph ingest wrapper
 ├── importer.py          # Data import (CSV, XML, ArcadeDB JSONL)

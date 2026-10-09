@@ -5,7 +5,9 @@ Handles automatic conversion of Java objects to native Python types for better
 developer experience and integration with Python ecosystem (pandas, numpy, etc.).
 """
 
-from datetime import date, datetime, time, timezone
+import json
+import math
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from typing import Any, NamedTuple
 
@@ -44,6 +46,7 @@ class _JavaCollectionTypes(NamedTuple):
 
 class _PythonToJavaTypes(NamedTuple):
     array_list: Any
+    arrays: Any
     big_decimal: Any
     hash_map: Any
     hash_set: Any
@@ -53,6 +56,9 @@ class _PythonToJavaTypes(NamedTuple):
 
 _UNSET = object()
 
+# Element types convert_python_to_java hands to the JVM as one Object[].
+_BULK_SCALAR_TYPES = frozenset((int, float, str, bool, type(None)))
+
 _TYPE_CACHE = {
     "java_core": None,
     "java_collections": None,
@@ -61,20 +67,42 @@ _TYPE_CACHE = {
 }
 
 
+def _jclasses(*names):
+    """Resolve Java classes by fully qualified name, straight from the JVM.
+
+    NOT through JPype's ``java`` import hook. That hook resolves the top-level
+    name ``java`` through ``sys.path`` like any other Python import, so a
+    directory called ``java/`` anywhere on the path shadows it: a mixed
+    Java/Python project's own source folder, or ``bindings/python/src/java``
+    when running from a checkout of this repository. ``from java.lang import
+    String`` then raised ImportError, the type lookups below returned None,
+    every typed branch in ``_convert_and_register`` was skipped, and a Java
+    String fell through to the generic sequence fallback -- which iterated it.
+    ``to_list()`` returned ``[{'name': ['A', 'd', 'a']}]``, with no error.
+
+    ``jpype.JClass`` asks the JVM for the class by name and has no path to be
+    shadowed by. Returns None only when the JVM is not running, which is the
+    one case the old ImportError branch was meant for.
+    """
+    if not jpype.isJVMStarted():
+        return None
+    return tuple(jpype.JClass(name) for name in names)
+
+
 def _get_java_time_types():
     if _TYPE_CACHE["java_time"] is not None:
         return _TYPE_CACHE["java_time"]
 
-    try:
-        from java.time import (
-            Instant,
-            LocalDate,
-            LocalDateTime,
-            OffsetDateTime,
-            ZonedDateTime,
-        )
-    except ImportError:
+    got = _jclasses(
+        "java.time.Instant",
+        "java.time.LocalDate",
+        "java.time.LocalDateTime",
+        "java.time.OffsetDateTime",
+        "java.time.ZonedDateTime",
+    )
+    if got is None:
         return None
+    Instant, LocalDate, LocalDateTime, OffsetDateTime, ZonedDateTime = got
 
     _TYPE_CACHE["java_time"] = _JavaTimeTypes(
         instant=Instant,
@@ -93,26 +121,44 @@ def _get_java_core_types():
     ):
         return _TYPE_CACHE["java_core"], _TYPE_CACHE["java_collections"]
 
-    try:
-        from java.lang import (
-            Boolean,
-            Byte,
-            Character,
-            Double,
-            Float,
-            Integer,
-            Long,
-            Short,
-            String,
-        )
-        from java.math import BigDecimal, BigInteger
-        from java.util import Collection as JavaCollection
-        from java.util import Date as JavaDate
-        from java.util import List as JavaList
-        from java.util import Map as JavaMap
-        from java.util import Set as JavaSet
-    except ImportError:
+    got = _jclasses(
+        "java.lang.Boolean",
+        "java.lang.Byte",
+        "java.lang.Character",
+        "java.lang.Double",
+        "java.lang.Float",
+        "java.lang.Integer",
+        "java.lang.Long",
+        "java.lang.Short",
+        "java.lang.String",
+        "java.math.BigDecimal",
+        "java.math.BigInteger",
+        "java.util.Collection",
+        "java.util.Date",
+        "java.util.List",
+        "java.util.Map",
+        "java.util.Set",
+    )
+    if got is None:
         return None, None
+    (
+        Boolean,
+        Byte,
+        Character,
+        Double,
+        Float,
+        Integer,
+        Long,
+        Short,
+        String,
+        BigDecimal,
+        BigInteger,
+        JavaCollection,
+        JavaDate,
+        JavaList,
+        JavaMap,
+        JavaSet,
+    ) = got
 
     _TYPE_CACHE["java_core"] = _JavaCoreTypes(
         boolean=Boolean,
@@ -141,17 +187,22 @@ def _get_java_python_types():
     if _TYPE_CACHE["python_to_java"] is not None:
         return _TYPE_CACHE["python_to_java"]
 
-    try:
-        from java.math import BigDecimal
-        from java.time import LocalDate
-        from java.util import ArrayList
-        from java.util import Date as JavaDate
-        from java.util import HashMap, HashSet
-    except ImportError:
+    got = _jclasses(
+        "java.math.BigDecimal",
+        "java.time.LocalDate",
+        "java.util.ArrayList",
+        "java.util.Arrays",
+        "java.util.Date",
+        "java.util.HashMap",
+        "java.util.HashSet",
+    )
+    if got is None:
         return None
+    BigDecimal, LocalDate, ArrayList, Arrays, JavaDate, HashMap, HashSet = got
 
     _TYPE_CACHE["python_to_java"] = _PythonToJavaTypes(
         array_list=ArrayList,
+        arrays=Arrays,
         big_decimal=BigDecimal,
         hash_map=HashMap,
         hash_set=HashSet,
@@ -252,19 +303,25 @@ def _conv_local_datetime(value):
     )
 
 
-def _conv_instant(value):
-    return datetime.fromtimestamp(
-        value.getEpochSecond() + value.getNano() / 1_000_000_000.0,
-        tz=timezone.utc,
+_EPOCH_UTC = datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+
+def _utc_from_instant(instant):
+    # Integer arithmetic: a float of epoch seconds has 15 to 16 significant
+    # digits, so the microseconds were lost after the year 2262 and the last
+    # instant of year 9999 rounded up into year 10000 and raised.
+    return _EPOCH_UTC + timedelta(
+        seconds=int(instant.getEpochSecond()),
+        microseconds=int(instant.getNano()) // 1000,
     )
+
+
+def _conv_instant(value):
+    return _utc_from_instant(value)
 
 
 def _conv_zoned_datetime(value):
-    instant = value.toInstant()
-    return datetime.fromtimestamp(
-        instant.getEpochSecond() + instant.getNano() / 1_000_000_000.0,
-        tz=timezone.utc,
-    )
+    return _utc_from_instant(value.toInstant())
 
 
 # OffsetDateTime is a storable DATETIME since engine 26.7.2 (#4922); same
@@ -392,6 +449,13 @@ def _convert_and_register(value):
     return value
 
 
+def _is_numpy_bool(value: Any) -> bool:
+    """numpy.bool_ (named `bool` in numpy 2), without importing numpy. It is not
+    a subclass of `bool`, so JPype would read it as a number."""
+    kind = type(value)
+    return kind.__module__ == "numpy" and kind.__name__ in ("bool", "bool_")
+
+
 def convert_python_to_java(value: Any) -> Any:
     """
     Convert Python objects to Java types when needed.
@@ -408,6 +472,10 @@ def convert_python_to_java(value: Any) -> Any:
     """
     if value is None:
         return None
+
+    if _is_numpy_bool(value):
+        # Not a bool subclass: JPype would store it as the Double 1.0 or 0.0.
+        return bool(value)
 
     java_python_types = _get_java_python_types()
 
@@ -435,6 +503,17 @@ def convert_python_to_java(value: Any) -> Any:
     if isinstance(value, (list, tuple)):
         if java_python_types is None:
             return value
+        # A LIST OF PLAIN SCALARS CROSSES AS ONE ARRAY (2026-09-27). Adding
+        # element by element is one JVM call per element: 126 us for 39 ids
+        # and 1.9 ms for 1,000 on the laptop, against 28 us and 0.48 ms as an
+        # Object[]. JPype boxes each element exactly as add() would (int ->
+        # Long, float -> Double, str, bool -> Boolean, None -> null) and
+        # raises the same OverflowError past 64 bits; anything else (nested
+        # collections, dates, Decimal, numpy scalars) takes the loop below.
+        if all(type(item) in _BULK_SCALAR_TYPES for item in value):
+            return java_python_types.array_list(
+                java_python_types.arrays.asList(jpype.JArray(jpype.JObject)(value))
+            )
         java_list = java_python_types.array_list()
         for item in value:
             java_list.add(convert_python_to_java(item))
@@ -443,8 +522,23 @@ def convert_python_to_java(value: Any) -> Any:
     if isinstance(value, datetime):
         if java_python_types is None:
             return value
-        timestamp_ms = int(value.timestamp() * 1000)
-        return java_python_types.java_date(timestamp_ms)
+        # The engine stores DATETIME as a UTC wall clock, whatever the host's
+        # or the database's time zone. A naive value is taken as that wall
+        # clock as it stands, so it reads back unchanged on every host; an
+        # aware one is converted to UTC first, so its instant is kept. The
+        # java.util.Date this used to build read a naive value as local time
+        # and kept milliseconds, so DATETIME_MICROS and DATETIME_NANOS lost
+        # the rest and a lookup by the same value never matched (#58).
+        utc = value.astimezone(timezone.utc) if value.utcoffset() is not None else value
+        return _get_java_time_types().local_datetime.of(
+            utc.year,
+            utc.month,
+            utc.day,
+            utc.hour,
+            utc.minute,
+            utc.second,
+            utc.microsecond * 1000,
+        )
 
     if isinstance(value, date):
         if java_python_types is not None:
@@ -452,5 +546,135 @@ def convert_python_to_java(value: Any) -> Any:
         dt = datetime.combine(value, time.min)
         return convert_python_to_java(dt)
 
+    if isinstance(value, (bytes, bytearray)):
+        # Left to JPype, bytes reach an Object parameter as a Java String:
+        # b"Hello" was stored as "Hello" and non-UTF-8 bytes as "", silently.
+        # A byte[] keeps every byte; it reads back as a list of signed ints.
+        if java_python_types is None:
+            return value
+        return jpype.JArray(jpype.JByte)(bytes(value))
+
     # Return as-is for other types (JPype will handle them)
     return value
+
+
+# ---------------------------------------------------------------------------
+# The bulk JSON paths (insert_many, GraphBatch.create_vertices, new_edges)
+#
+# They send their rows to the JVM as one JSON string, and the engine reads it
+# with its own JSON parser. That parser changes some values the per-value
+# entry points (Document.set, create_vertex, new_edge) store exactly or
+# refuse: an integer beyond 64 bits keeps only its low 64 bits, NaN and the
+# infinities become strings, a non-str dict key becomes its text, and a lone
+# surrogate becomes "?". A value the JSON text cannot carry unchanged keeps the
+# call off the bulk path: the per-value path stores it exactly or raises.
+
+_INT64_MIN = -(2**63)
+_INT64_MAX = 2**63 - 1
+
+
+def _str_survives_json(value: str) -> bool:
+    """False for a string UTF-8 cannot encode (a lone surrogate)."""
+    if value.isascii():
+        return True
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
+def json_bulk_scalar_ok(value: Any) -> bool:
+    """Whether a scalar reaches the engine through a JSON bulk path unchanged.
+
+    True for None, bool, an int that fits 64 bits, a finite float, and a str
+    UTF-8 can encode. Everything else, other types included, is False: the
+    caller falls back to the per-value path. The exact types are tested first
+    because every value of a large load passes through here.
+    """
+    kind = type(value)
+    if kind is str:
+        return value.isascii() or _str_survives_json(value)
+    if kind is int:
+        return _INT64_MIN <= value <= _INT64_MAX
+    if kind is float:
+        return math.isfinite(value)
+    if kind is bool or value is None:
+        return True
+    if isinstance(value, bool):
+        return True
+    if isinstance(value, int):
+        return _INT64_MIN <= value <= _INT64_MAX
+    if isinstance(value, float):
+        return math.isfinite(value)
+    if isinstance(value, str):
+        return _str_survives_json(value)
+    return False
+
+
+def _json_bulk_check(value: Any) -> None:
+    """Raise ValueError for a value JSON would change on the way to the engine.
+
+    Walks nested lists and dicts. A type json.dumps cannot encode at all is
+    left to it (TypeError), which is what insert_many's fallback already handles.
+    """
+    if value is None or isinstance(value, bool):
+        return
+    if isinstance(value, int):
+        if not _INT64_MIN <= value <= _INT64_MAX:
+            raise ValueError(
+                f"an integer beyond 64 bits cannot go through the JSON bulk path: {value}"
+            )
+    elif isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("NaN and Infinity cannot go through the JSON bulk path")
+    elif isinstance(value, str):
+        if not _str_survives_json(value):
+            raise ValueError(
+                "a string with a lone surrogate cannot go through the JSON bulk path"
+            )
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise ValueError(
+                    "a non-str dict key cannot go through the JSON bulk path"
+                )
+            _json_bulk_check(item)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            _json_bulk_check(item)
+
+
+def json_bulk_dumps(rows: Any) -> str:
+    """json.dumps for the bulk paths: raises ValueError (or TypeError) when
+    any value in `rows` would change on the way to the engine.
+
+    `rows` is a list of dicts (one per record). The common value types are
+    checked in this loop without a call per value, because every value of a
+    large load passes through it; floats need no check here, since
+    `allow_nan=False` makes json.dumps itself refuse NaN and the infinities.
+    """
+    int_min, int_max = _INT64_MIN, _INT64_MAX
+    for row in rows:
+        for key in row:
+            if type(key) is not str:
+                raise ValueError("a non-str key cannot go through the JSON bulk path")
+        for value in row.values():
+            kind = type(value)
+            if kind is str:
+                if not value.isascii() and not _str_survives_json(value):
+                    raise ValueError(
+                        "a string with a lone surrogate cannot go through the JSON bulk path"
+                    )
+            elif kind is int:
+                if not int_min <= value <= int_max:
+                    raise ValueError(
+                        f"an integer beyond 64 bits cannot go through the JSON bulk path: {value}"
+                    )
+            elif kind is float or kind is bool or value is None:
+                continue
+            else:
+                _json_bulk_check(
+                    value
+                )  # nested lists and dicts, and subclasses of the types above
+    return json.dumps(rows, allow_nan=False)

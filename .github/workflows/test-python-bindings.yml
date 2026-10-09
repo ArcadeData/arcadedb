@@ -25,9 +25,20 @@ on:
         description: "Override package version (PEP 440) for build.sh"
         required: false
         type: string
+      engine-from-source:
+        description: "Build the engine jars from this commit's source (the package module) instead of downloading upstream's snapshot image"
+        required: false
+        type: boolean
+        default: false
 
   # Allow manual trigger
   workflow_dispatch:
+    inputs:
+      engine-from-source:
+        description: "Build the engine jars from this commit's source (the package module) instead of downloading upstream's snapshot image"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -146,7 +157,42 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
+      # ENGINE FROM SOURCE (workflow_dispatch or workflow_call with engine-from-source):
+      # test a branch (an upstream sync, for example) against the engine source on
+      # that branch, not upstream's moving snapshot image, which can be newer or older
+      # than the merge being tested. Push and pull_request runs never take this path.
+      - name: Set up JDK 21 (engine from source)
+        if: inputs.engine-from-source == true
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+
+      - name: Build the engine jars from source
+        if: inputs.engine-from-source == true
+        shell: bash
+        run: |
+          ./mvnw -B -q -DskipTests -pl package -am package
+          # The FULL distribution. The base, headless, and minimal variants are
+          # written beside it as arcadedb-<version>-<variant>.dir, and "-" sorts
+          # before ".", so `ls | head -1` picked base, which has no plugins (no
+          # Gremlin, Bolt, wire protocols, GraphQL, metrics, or tracing).
+          LIB=$(ls -d package/target/arcadedb-*.dir/arcadedb-*/lib | grep -vE -- '-(base|headless|minimal)\.dir/' || true)
+          if [ "$(printf '%s\n' "$LIB" | grep -c .)" != 1 ] || [ ! -d "$LIB" ]; then
+            echo "::error::expected one full-distribution lib under package/target, got: $LIB"; exit 1
+          fi
+          if ! ls "$LIB"/arcadedb-gremlin-*.jar > /dev/null 2>&1; then
+            echo "::error::$LIB has no Gremlin plugin jar, so it is not the full distribution"; exit 1
+          fi
+          mkdir -p bindings/python/src/arcadedb_embedded/jars
+          cp "$LIB"/*.jar bindings/python/src/arcadedb_embedded/jars/
+          ENGINE=$(ls bindings/python/src/arcadedb_embedded/jars/arcadedb-engine-*.jar | head -1)
+          echo "Built from $(git rev-parse HEAD): $(ls -1 bindings/python/src/arcadedb_embedded/jars/*.jar | wc -l) JARs"
+          unzip -p "$ENGINE" META-INF/MANIFEST.MF | tr -d '\r' | grep -i -E "build|version" || true
+
       - name: Download JARs from ArcadeDB Docker image
+        if: inputs.engine-from-source != true
         shell: bash
         run: |
           cd bindings/python
@@ -171,41 +217,9 @@ jobs:
           JAR_COUNT=$(ls -1 src/arcadedb_embedded/jars/*.jar 2>/dev/null | wc -l)
           echo "✅ Downloaded $JAR_COUNT JAR files"
 
-      - name: Remove excluded JARs
-        shell: bash
-        run: |
-          cd bindings/python
-
-          JARS_DIR="src/arcadedb_embedded/jars"
-          EXCLUSIONS_FILE="jar_exclusions.txt"
-
-          if [[ -f "$EXCLUSIONS_FILE" ]]; then
-            echo "🗑️  Removing excluded JARs from jar_exclusions.txt..."
-            EXCLUSION_COUNT=0
-
-            while IFS= read -r pattern || [[ -n "$pattern" ]]; do
-              # Skip empty lines and comments
-              if [[ -n "$pattern" ]] && [[ ! "$pattern" =~ ^# ]]; then
-                echo "   Processing pattern: $pattern"
-
-                # Remove matching JARs
-                for jar in "$JARS_DIR"/$pattern; do
-                  if [[ -f "$jar" ]]; then
-                    rm -f "$jar"
-                    echo "   - Removed: $(basename "$jar")"
-                    EXCLUSION_COUNT=$((EXCLUSION_COUNT + 1))
-                  fi
-                done
-              fi
-            done < "$EXCLUSIONS_FILE"
-
-            JAR_COUNT_AFTER=$(ls -1 "$JARS_DIR"/*.jar 2>/dev/null | wc -l)
-            echo "✅ Removed $EXCLUSION_COUNT JAR(s), $JAR_COUNT_AFTER remaining"
-          else
-            echo "⚠️  No jar_exclusions.txt found, skipping exclusions"
-          fi
-
-      - name: Upload filtered JARs as artifact
+      # Unfiltered on purpose: build-native.sh applies scripts/jar_exclusions.txt
+      # to whatever lands in the jars directory, so the list lives in one place.
+      - name: Upload JARs as artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: arcadedb-jars
@@ -269,9 +283,10 @@ jobs:
           uv --version
 
       - name: Download ArcadeDB JARs artifact
-        # Skip for Linux: Docker build downloads JARs from ArcadeDB image directly
-        # Only needed for native builds (macOS/Windows)
-        if: matrix.platform != 'linux/amd64' && matrix.platform != 'linux/arm64'
+        # Native builds (macOS/Windows) always take the jars from this artifact. The
+        # Linux Docker build pulls the image's jars itself, except with
+        # engine-from-source, where the artifact holds the jars built from this commit.
+        if: (matrix.platform != 'linux/amd64' && matrix.platform != 'linux/arm64') || inputs.engine-from-source == true
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: arcadedb-jars
@@ -311,10 +326,20 @@ jobs:
 
       - name: Build and test arcadedb-embedded (${{ matrix.platform }})
         shell: bash
+        env:
+          ENGINE_FROM_SOURCE: ${{ inputs.engine-from-source }}
         run: |
           cd bindings/python
           echo "🔨 Building arcadedb-embedded for ${{ matrix.platform }} with Python ${{ matrix.python-version }}..."
-          ./scripts/build.sh ${{ matrix.platform }} ${{ matrix.python-version }}
+          # ENGINE FROM SOURCE: hand the jars built from this commit to build.sh on
+          # every platform. Without JAR_LIB_DIR the Linux (Docker) build pulls the
+          # snapshot image's jars itself, so the option silently did nothing there
+          # while the native builds used the artifact (2026-10-04, run 37193748490).
+          if [ "${ENGINE_FROM_SOURCE}" = "true" ]; then
+            ./scripts/build.sh ${{ matrix.platform }} ${{ matrix.python-version }} src/arcadedb_embedded/jars
+          else
+            ./scripts/build.sh ${{ matrix.platform }} ${{ matrix.python-version }}
+          fi
 
       - name: Extract wheel for additional testing
         shell: bash
@@ -340,18 +365,34 @@ jobs:
           # to_dataframe() tests skipped themselves in this job while it
           # reported green. The guard step below now fails the build if any
           # test skips for a missing import, so the next drift is loud.
-          uv pip install --system test-install/*.whl pytest pytest-cov requests numpy "psycopg[binary]" redis neo4j pyarrow pandas
+          uv pip install --system test-install/*.whl pytest pytest-cov requests numpy "psycopg[binary]" redis neo4j pyarrow pandas "adbc-driver-postgresql>=1.12"
 
       - name: Run pytest on host
         id: pytest
+        # A HUNG TEST ENDS THE STEP, NOT THE DAY. On 2026-09-25 the windows/3.13
+        # job sat in test_lsm_vector_quantization_int8_comprehensive for 86 minutes
+        # (re-run: passed in 7), and with no limit it would have held the run for
+        # GitHub's 6-hour default. The step takes 108-319 s on every platform.
+        timeout-minutes: 30
         shell: bash
         run: |
           cd bindings/python
           echo "🧪 Testing arcadedb-embedded (with bundled JRE)..."
 
           # Run pytest with JUnit XML output for structured results
+          # WINDOWS RUNS WITH --capture=sys (humemai/arcadedb-embedded-python#10). pytest's default fd capture swaps
+          # fds 1 and 2 with dup2 around every test; on Windows that closes the OS handle
+          # the JVM cached for System.out/err at start-up, a later pipe or socket can be
+          # handed the same handle value, and the next Java log line then blocks forever
+          # in WriteFile once that pipe is full. The Java dump caught it on 2026-09-29:
+          # main thread in FileOutputStream.writeBytes under LSMVectorIndex.build's
+          # progress log. sys capture never touches the fds, so the JVM keeps writing to
+          # the runner's own pipes (its log lines appear in this job's log). No test uses
+          # capfd.
+          CAPTURE=""
+          if [ "$RUNNER_OS" = "Windows" ]; then CAPTURE="--capture=sys"; fi
           set +e  # Don't exit on test failures
-          pytest tests/ -v --tb=short --color=yes --junitxml=test-results.xml
+          pytest tests/ -v --tb=short --color=yes --junitxml=test-results.xml $CAPTURE
           PYTEST_EXIT_CODE=$?
           set -e
 
@@ -362,21 +403,29 @@ jobs:
             FAILED=$(grep -oE 'failures="[0-9]+"' test-results.xml | grep -oE '[0-9]+' | head -1)
             SKIPPED=$(grep -oE 'skipped="[0-9]+"' test-results.xml | grep -oE '[0-9]+' | head -1)
             ERRORS=$(grep -oE 'errors="[0-9]+"' test-results.xml | grep -oE '[0-9]+' | head -1)
+            # JUnit counts an expected failure (a strict xfail: an open upstream bug the suite tracks)
+            # as skipped, so a run with 14 of them read "14 skipped". Count them apart from real skips.
+            # grep exits 1 when nothing matches, and this shell runs with pipefail and -e: a suite with no expected failures
+            # (every upstream bug fixed, no strict xfail left) used to abort the step here, silently, after all tests passed.
+            XFAILED=$({ grep -oE '<skipped[^>]*type="pytest.xfail"' test-results.xml || true; } | wc -l | tr -d ' ')
 
             # Default to 0 if not found
             TOTAL=${TOTAL:-0}
             FAILED=${FAILED:-0}
             SKIPPED=${SKIPPED:-0}
             ERRORS=${ERRORS:-0}
+            XFAILED=${XFAILED:-0}
 
-            # Calculate passed tests
+            # Calculate passed tests (JUnit's skipped total includes the expected failures)
             PASSED=$((TOTAL - FAILED - SKIPPED - ERRORS))
+            SKIPPED=$((SKIPPED - XFAILED))
 
             echo "passed=$PASSED" >> $GITHUB_OUTPUT
             echo "skipped=$SKIPPED" >> $GITHUB_OUTPUT
+            echo "xfailed=$XFAILED" >> $GITHUB_OUTPUT
             echo "failed=$FAILED" >> $GITHUB_OUTPUT
 
-            echo "✅ Test results: $PASSED passed, $SKIPPED skipped, $FAILED failed"
+            echo "✅ Test results: $PASSED passed, $XFAILED expected failures (xfail), $SKIPPED skipped, $FAILED failed"
 
             # A test that skips because a dependency is missing is not a
             # passing test, and it does not look like a failure either: the
@@ -401,6 +450,12 @@ jobs:
               echo "   or delete the test if the integration is no longer supported."
               exit 1
             fi
+
+            # Any other skip must be one somebody accepted (scripts/check_test_skips.py
+            # names each, with the platform it applies to and why). A skip because the
+            # runtime "lacks" a feature the wheel always ships is how a wrong empty answer
+            # once passed as a skip; the import grep above is the special case.
+            python scripts/check_test_skips.py test-results.xml --platform "${{ matrix.platform }}" || exit 1
 
             # Force failure if there are failures or errors
             if [ "$FAILED" -gt 0 ] || [ "$ERRORS" -gt 0 ]; then
@@ -443,6 +498,7 @@ jobs:
               # Show test results
               f.write("| ✅ Passed | ${{ steps.pytest.outputs.passed || 'N/A' }} |\n")
               f.write("| ⏭️ Skipped | ${{ steps.pytest.outputs.skipped || 'N/A' }} |\n")
+              f.write("| 🔖 Expected failures (xfail) | ${{ steps.pytest.outputs.xfailed || 'N/A' }} |\n")
               f.write("| ❌ Failed | ${{ steps.pytest.outputs.failed || 'N/A' }} |\n")
               f.write("\n")
 

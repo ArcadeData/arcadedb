@@ -1,6 +1,6 @@
 """
 Tests for ArcadeDB database export functionality.
-Tests JSONL, GraphML, GraphSON, and CSV export capabilities.
+Tests JSONL and CSV export, and the error GraphML and GraphSON raise (the wheel has no gremlin).
 """
 
 import csv
@@ -10,7 +10,6 @@ from pathlib import Path
 
 import arcadedb_embedded as arcadedb
 import pytest
-from tests.conftest import has_graph_export_support
 
 
 @pytest.fixture
@@ -295,65 +294,18 @@ class TestDatabaseExport:
             or "format" in str(exc_info.value).lower()
         )
 
-    @pytest.mark.graph_export
-    @pytest.mark.skipif(
-        not has_graph_export_support(), reason="Requires GraphML/GraphSON support"
-    )
-    def test_export_graphml(self, sample_db, temp_db_path):
-        """Test GraphML export (requires GraphML/GraphSON support)."""
-        export_path = "test_export.graphml.tgz"
-
-        try:
-            stats = sample_db.export_database(
-                export_path, format="graphml", overwrite=True
-            )
-
-            # Check statistics - GraphML may only export graph elements
-            assert "elapsedInSecs" in stats
-            # GraphML format exists and file was created
-
-            # Check file exists
-            export_file = Path("exports") / export_path
-            assert export_file.exists()
-
-            # Clean up
-            export_file.unlink()
-
-        except arcadedb.ArcadeDBError as e:
-            if "requires additional modules" in str(e):
-                pytest.skip("GraphML export requires GraphML/GraphSON support")
-            else:
-                raise
-
-    @pytest.mark.graph_export
-    @pytest.mark.skipif(
-        not has_graph_export_support(), reason="Requires GraphML/GraphSON support"
-    )
-    def test_export_graphson(self, sample_db, temp_db_path):
-        """Test GraphSON export (requires GraphML/GraphSON support)."""
-        export_path = "test_export.graphson.tgz"
-
-        try:
-            stats = sample_db.export_database(
-                export_path, format="graphson", overwrite=True
-            )
-
-            # Check statistics - GraphSON may only export graph elements
-            assert "elapsedInSecs" in stats
-            # GraphSON format exists and file was created
-
-            # Check file exists
-            export_file = Path("exports") / export_path
-            assert export_file.exists()
-
-            # Clean up
-            export_file.unlink()
-
-        except arcadedb.ArcadeDBError as e:
-            if "requires additional modules" in str(e):
-                pytest.skip("GraphSON export requires GraphML/GraphSON support")
-            else:
-                raise
+    @pytest.mark.parametrize("fmt", ["graphml", "graphson"])
+    def test_graph_formats_without_gremlin_raise_and_name_jsonl(
+        self, sample_db, temp_db_path, fmt
+    ):
+        """The wheel excludes arcadedb-gremlin, which provides both exporters:
+        the error must say so and name the format that works, not fall through
+        to a generic "export failed"."""
+        with pytest.raises(arcadedb.ArcadeDBError) as err:
+            sample_db.export_database(f"no_gremlin.{fmt}.tgz", format=fmt)
+        msg = str(err.value)
+        assert "requires additional modules" in msg
+        assert "jsonl" in msg
 
     def test_export_verbose_levels(self, sample_db, temp_db_path):
         """Test different verbosity levels."""
@@ -631,7 +583,7 @@ class TestAllDataTypes:
         db = arcadedb.create_database(temp_db_path)
 
         try:
-            # Create comprehensive type with all data types (auto-transactional)
+            # Create comprehensive type with all data types (applies immediately)
             db.command("sql", "CREATE DOCUMENT TYPE DataTypeTest")
 
             # Basic types
@@ -881,8 +833,10 @@ class TestAllDataTypes:
             try:
                 if db:
                     db.close()
-            except Exception:
-                pass  # nosec B110
+            except Exception as exc:  # noqa: BLE001
+                import warnings
+
+                warnings.warn(f"exporter test: close failed: {exc!r}", stacklevel=1)
 
 
 if __name__ == "__main__":

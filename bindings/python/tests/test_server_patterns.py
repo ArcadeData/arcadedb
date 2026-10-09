@@ -10,14 +10,32 @@ Key insight: Server supports BOTH Java API (embedded) and HTTP API (remote)
 simultaneously.
 """
 
+import base64
+import json
 import os
 import shutil
 import threading
 import time
+import urllib.request
 
 import arcadedb_embedded as arcadedb
 import pytest
 from tests.conftest import TEST_PASSWORD
+
+
+def _http_query(server, db_name, sql):
+    """Run a SQL query over the server's HTTP API; return the result rows."""
+    token = base64.b64encode(f"root:{TEST_PASSWORD}".encode()).decode()
+    request = urllib.request.Request(  # nosec B310 - fixed http://localhost URL
+        f"http://localhost:{server.get_http_port()}/api/v1/query/{db_name}",
+        data=json.dumps({"language": "sql", "command": sql}).encode(),
+        headers={
+            "Authorization": f"Basic {token}",
+            "Content-Type": "application/json",
+        },
+    )
+    with urllib.request.urlopen(request, timeout=30) as response:  # nosec B310
+        return json.loads(response.read())["result"]
 
 
 @pytest.fixture
@@ -44,18 +62,17 @@ def cleanup_test_dirs():
         try:
             if server.is_started():
                 server.stop()
-        except Exception:
-            pass  # nosec B110
+        except Exception as exc:  # noqa: BLE001
+            import warnings
+
+            warnings.warn(f"server cleanup: stop failed: {exc!r}", stacklevel=1)
 
     # Give servers time to release locks
     time.sleep(0.5)
 
     for path in dirs:
         if os.path.exists(path):
-            try:
-                shutil.rmtree(path, ignore_errors=True)
-            except Exception:
-                pass  # nosec B110
+            shutil.rmtree(path, ignore_errors=True)
 
 
 def test_server_pattern_recommended(cleanup_test_dirs):
@@ -80,6 +97,8 @@ def test_server_pattern_recommended(cleanup_test_dirs):
     server = arcadedb.create_server(root_path=root_path, root_password=TEST_PASSWORD)
     register_server(server)
     server.start()
+    assert server.is_started()
+    assert server.get_studio_url() == f"http://localhost:{server.get_http_port()}/"
     print(f"   ✅ Server started on port {server.get_http_port()}")
     print(f"   📊 Studio URL: {server.get_studio_url()}")
 
@@ -101,10 +120,13 @@ def test_server_pattern_recommended(cleanup_test_dirs):
     record = list(result)[0]
     name = record.get("name")
     price = record.get("price")
+    assert (name, price) == ("Laptop", 999)
     print(f"   ✅ Found: {name} costs ${price}")
 
-    # Step 4: HTTP access would work here too
-    print("\n4. HTTP API is now available...")
+    # Step 4: the same data over HTTP, while the embedded handle stays open
+    print("\n4. Querying the same database over HTTP...")
+    rows = _http_query(server, "mydb", "SELECT name FROM Product ORDER BY name")
+    assert [row["name"] for row in rows] == ["Laptop", "Mouse"]
     print(
         f"   💡 Other processes can connect to: http://localhost:{server.get_http_port()}"
     )
@@ -141,7 +163,7 @@ def test_server_thread_safety(cleanup_test_dirs):
 
     with db.transaction():
         for i in range(20):
-            db.command("sql", f"INSERT INTO `Item` SET id = {i}, value = {i * 10}")
+            db.command("sql", "INSERT INTO `Item` SET id = ?, value = ?", i, i * 10)
 
     print("   ✅ Created 20 items")
 
@@ -155,13 +177,14 @@ def test_server_thread_safety(cleanup_test_dirs):
         try:
             # Query a range of items
             start = thread_id * 4
-            end = start + 4
             result = db.query(
                 "sql",
-                f"SELECT FROM `Item` WHERE id >= {start} AND id < {end}",  # nosec B608
+                "SELECT id FROM `Item` WHERE id >= ? AND id < ?",
+                start,
+                start + 4,
             )
-            count = len(list(result))
-            results.append(f"   Thread {thread_id}: Found {count} items")
+            ids = sorted(row.get("id") for row in result)
+            results.append((thread_id, ids))
         except Exception as e:
             errors.append(f"   Thread {thread_id}: Error - {e}")
 
@@ -174,13 +197,16 @@ def test_server_thread_safety(cleanup_test_dirs):
     for thread in threads:
         thread.join()
 
-    for result_msg in results:
-        print(result_msg)
+    for thread_id, ids in sorted(results):
+        print(f"   Thread {thread_id}: Found {len(ids)} items")
 
     if errors:
         for error_msg in errors:
             print(error_msg)
         pytest.fail("Concurrent thread access failed")
+
+    # Each thread sees exactly its own four items.
+    assert sorted(results) == [(t, list(range(t * 4, t * 4 + 4))) for t in range(5)]
 
     print("   ✅ All threads accessed database successfully!")
 
@@ -216,11 +242,13 @@ def test_server_context_manager(cleanup_test_dirs):
 
         result = db.query("sql", "SELECT count(*) as count FROM Note")
         count = list(result)[0].get("count")
+        assert count == 1
         print(f"   ✅ Created {count} notes")
 
         db.close()
 
     # Server automatically stopped when exiting context
+    assert not server.is_started()
     print("   ✅ Server stopped (automatic)")
     print("\n✅ Context Manager Test Complete!\n")
 
@@ -257,6 +285,7 @@ def test_pattern1_embedded_first_requires_close(cleanup_test_dirs):
 
     result = db.query("sql", "SELECT count(*) as count FROM Person")
     count = list(result)[0].get("count")
+    assert count == 2
     print(f"   ✅ Created database with {count} records")
 
     # Step 2: MUST close database to release file lock
@@ -290,6 +319,7 @@ def test_pattern1_embedded_first_requires_close(cleanup_test_dirs):
     record = list(result)[0]
     name = record.get("name")
     age = record.get("age")
+    assert (name, age) == ("Alice", 30)
     print(f"   ✅ Retrieved via server: {name}, age {age}")
 
     # Step 6: Add more data through server
@@ -299,10 +329,13 @@ def test_pattern1_embedded_first_requires_close(cleanup_test_dirs):
 
     result = db.query("sql", "SELECT count(*) as count FROM Person")
     count = list(result)[0].get("count")
+    assert count == 3
     print(f"   ✅ Total records now: {count}")
 
     # Step 7: Both embedded and HTTP access now available
     print("\n7. Dual access now available...")
+    rows = _http_query(server, db_name, "SELECT count(*) AS count FROM Person")
+    assert rows[0]["count"] == 3
     print(f"   💡 Embedded access: db.query() works")
     print(f"   💡 HTTP access: http://localhost:{server.get_http_port()} works")
     print("   💡 Note: Server-managed databases are closed by server.stop()")
@@ -498,11 +531,8 @@ def test_http_api_access_pattern(cleanup_test_dirs):
     print("=" * 70)
 
     # Import requests here to avoid dependency for non-HTTP tests
-    try:
-        import requests
-        from requests.auth import HTTPBasicAuth
-    except ImportError:
-        pytest.skip("requests library not available for HTTP API testing")
+    requests = pytest.importorskip("requests")
+    from requests.auth import HTTPBasicAuth
 
     root_path = create_temp_dir("http_api_")
 
@@ -517,16 +547,20 @@ def test_http_api_access_pattern(cleanup_test_dirs):
 
     # Use session for connection pooling (more realistic)
     session = requests.Session()
-    session.auth = HTTPBasicAuth("root", "test12345")
+    session.auth = HTTPBasicAuth("root", TEST_PASSWORD)
 
     print(f"   ✅ Server started on port {server.get_http_port()}")
     print(f"   📡 HTTP API base URL: {base_url}")
 
-    # Step 2: Create database via Java API
-    # (HTTP API doesn't have database creation endpoint)
-    print("\n2. Creating database via Java API (both APIs need this)...")
-    server.create_database("httpdb")  # Use Java API for database creation
-    print("   ✅ Database created via Java API")
+    # Step 2: Create the database over HTTP too (the server command endpoint)
+    print("\n2. Creating database via HTTP...")
+    response = session.post(
+        f"{base_url}/api/v1/server",
+        json={"command": "create database httpdb"},
+        timeout=30,
+    )
+    assert response.status_code == 200, f"Database creation failed: {response.text}"
+    print("   ✅ Database created via HTTP request")
 
     # Step 3: Create schema via HTTP API
     print("\n3. Creating schema via HTTP API...")
@@ -684,8 +718,9 @@ def test_http_api_access_pattern(cleanup_test_dirs):
     # Create same test type (already exists, but included for fair comparison)
     try:
         db.command("sql", "CREATE DOCUMENT TYPE BenchItem")
-    except Exception:
-        pass  # nosec B110
+    except Exception as exc:  # noqa: BLE001
+        if "already exists" not in str(exc).lower():
+            raise
 
     # Same mixed operations
     for i in range(num_operations):

@@ -194,7 +194,7 @@ def http_json_request(
 
 
 def wait_for_server(base_url: str, headers: dict[str, str], timeout_sec: float) -> dict:
-    """Poll /api/v1/server until it answers.
+    """Poll /api/v1/server?mode=basic until it answers.
 
     The first HTTP request after start_up is much slower than the rest: measured
     on one developer machine it took 5.6s, the second 0.7s, and every one after
@@ -202,12 +202,16 @@ def wait_for_server(base_url: str, headers: dict[str, str], timeout_sec: float) 
     root password is verified with a deliberately expensive KDF, and both happen
     on request one. So the per-attempt timeout here is generous on purpose; a
     tight one just converts warmup into a failure.
+
+    ``mode=basic`` returns the version, server name, and languages this example
+    prints without the full form's metrics section; on 26.9.1 and earlier that
+    section made the first full call take about 20 s (ArcadeData/arcadedb#8909).
     """
     start = time.perf_counter()
     while True:
         try:
             return http_json_request(
-                f"{base_url}/api/v1/server",
+                f"{base_url}/api/v1/server?mode=basic",
                 headers=headers,
                 timeout=30.0,
             )
@@ -405,6 +409,50 @@ def main() -> int:
         require(len(aggregate_rows) == 2, "Expected two category aggregates")
         print_rows("HTTP aggregate query:", aggregate_rows)
 
+        # Where the client/server cost lives. The same projection, answered by
+        # the embedded handle (materialised to a list of dicts, the shape an
+        # HTTP client receives) and by the HTTP endpoint of the server in THIS
+        # process. The gap between them is the wire format alone: same JVM,
+        # same heap, same page cache. The project page adds a third arm, a
+        # separate container, to price the process boundary on top.
+        print()
+        print("Where the client/server cost lives (same process, two paths):")
+        db.command("sql", "CREATE DOCUMENT TYPE DecompRow")
+        db.command("sql", "CREATE PROPERTY DecompRow.id LONG")
+        db.command("sql", "CREATE PROPERTY DecompRow.amount DOUBLE")
+        db.command("sql", "CREATE PROPERTY DecompRow.region STRING")
+        db.insert_many(
+            "DecompRow",
+            [
+                {"id": i, "amount": (i * 37 % 100000) / 100.0, "region": f"r{i % 8}"}
+                for i in range(20_000)
+            ],
+            commit_every=5_000,
+        )
+        import statistics as _st
+        import time as _time
+
+        for n in (10, 1000, 10000):
+            sql = f"SELECT id, amount, region FROM DecompRow LIMIT {n}"
+            emb, http = [], []
+            for _ in range(5):
+                t0 = _time.perf_counter()
+                rows_emb = db.query("sql", sql).to_list()
+                emb.append((_time.perf_counter() - t0) * 1000)
+                t0 = _time.perf_counter()
+                rows_http = http_json_request(
+                    f"{base_url}/api/v1/query/{args.db_name}",
+                    method="POST",
+                    payload={"language": "sql", "command": sql, "limit": -1},
+                    headers=bearer_headers,
+                    timeout=120.0,
+                ).get("result", [])
+                http.append((_time.perf_counter() - t0) * 1000)
+            require(len(rows_emb) == len(rows_http) == n, f"row count mismatch at {n}")
+            print(
+                f"  {n:>6} rows  embedded {_st.median(emb):8.2f} ms   in-process HTTP {_st.median(http):8.2f} ms"
+                f"   wire format costs {_st.median(http) - _st.median(emb):+.2f} ms"
+            )
         if args.wait_for_enter:
             print(
                 "Server is still running. Open Studio in your browser now if you "

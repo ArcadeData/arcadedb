@@ -3,6 +3,7 @@ Tests for enhanced ResultSet and Result functionality.
 """
 
 import arcadedb_embedded as arcadedb
+import pytest
 
 
 def test_resultset_to_list(temp_db_path):
@@ -36,11 +37,7 @@ def test_resultset_to_list(temp_db_path):
 
 def test_resultset_to_dataframe(temp_db_path):
     """Test ResultSet.to_dataframe() method."""
-    try:
-        import pandas as pd
-    except ImportError:
-        # Skip test if pandas not installed
-        return
+    pd = pytest.importorskip("pandas")
 
     with arcadedb.create_database(temp_db_path) as db:
         db.command("sql", "CREATE DOCUMENT TYPE Product")
@@ -122,7 +119,7 @@ def test_resultset_count(temp_db_path):
 
         with db.transaction():
             for i in range(50):
-                db.command("sql", f"INSERT INTO Counter SET num = {i}")
+                db.command("sql", "INSERT INTO Counter SET num = ?", i)
 
         result = db.query("sql", "SELECT FROM Counter")
 
@@ -200,7 +197,7 @@ def test_resultset_iteration_patterns(temp_db_path):
 
         with db.transaction():
             for i in range(10):
-                db.command("sql", f"INSERT INTO IterTest SET num = {i}")
+                db.command("sql", "INSERT INTO IterTest SET num = ?", i)
 
         # Test traditional iteration
         result = db.query("sql", "SELECT FROM IterTest ORDER BY num")
@@ -383,3 +380,372 @@ def test_result_to_json_with_arrays(temp_db_path):
 
         assert '"tags"' in json_str
         assert '["a","b","c"]' in json_str or '["a", "b", "c"]' in json_str
+
+
+def test_to_dict_one_crossing_matches_the_per_property_path(temp_db_path):
+    """Result.to_dict() reads a row in one bridge call (RowAccess); it must give
+    exactly what reading each property on its own gives, for every value type."""
+    from datetime import date, datetime
+    from decimal import Decimal
+
+    import arcadedb_embedded as arcadedb
+    from arcadedb_embedded.results import _bridge_class
+    from arcadedb_embedded.type_conversion import convert_java_to_python
+
+    # Run alone, this is before the JVM starts: the answer must not be cached.
+    _bridge_class("RowAccess")
+    with arcadedb.create_database(temp_db_path) as db:
+        assert (
+            _bridge_class("RowAccess") is not None
+        ), "the bridge jar must carry RowAccess"
+        db.command("sql", "CREATE DOCUMENT TYPE Mixed")
+        db.command("sql", "CREATE PROPERTY Mixed.stamp DATETIME")
+        db.command("sql", "CREATE PROPERTY Mixed.on_day DATE")
+        db.command("sql", "CREATE PROPERTY Mixed.price DECIMAL")
+        with db.transaction():
+            doc = db.new_document("Mixed")
+            doc.set("i", 42).set("big", 2**40).set("f", 3.25).set("s", "text")
+            doc.set("b", True).set("nothing", None).set("tags", ["a", "b"])
+            doc.set("nested", {"k": 1, "inner": {"x": [1, 2]}})
+            doc.set("stamp", datetime(2026, 9, 27, 12, 30, 5))
+            doc.set("on_day", date(2026, 9, 27)).set("price", Decimal("12.50"))
+            doc.set("blob", b"\xff\x00")
+            doc.save()
+
+        for query in (
+            "SELECT FROM Mixed",
+            "SELECT i, s, nested, price FROM Mixed",
+            "SELECT count(*) AS n, max(f) AS top FROM Mixed",
+        ):
+            row = db.query("sql", query).first()
+            per_property = {
+                name: convert_java_to_python(row._java_result.getProperty(name))
+                for name in (str(n) for n in row._java_result.getPropertyNames())
+            }
+            one_crossing = row.to_dict()
+            assert one_crossing == per_property, query
+            assert list(one_crossing) == list(per_property), query  # same key order
+
+        # to_list() fetches rows in batches (TypedRows.nextRows): same dicts,
+        # same order, as reading each row and property on its own, including
+        # after rows were already taken from the same result set.
+        with db.transaction():
+            for i in range(1200):
+                db.command("sql", "INSERT INTO Mixed SET i = ?, s = ?", i, f"s{i}")
+        expected = []
+        rs = db.query("sql", "SELECT i, s, price FROM Mixed ORDER BY i")
+        for r in rs:
+            expected.append(
+                {
+                    str(n): convert_java_to_python(r._java_result.getProperty(str(n)))
+                    for n in r._java_result.getPropertyNames()
+                }
+            )
+        assert (
+            db.query("sql", "SELECT i, s, price FROM Mixed ORDER BY i").to_list()
+            == expected
+        )
+        rs = db.query("sql", "SELECT i, s, price FROM Mixed ORDER BY i")
+        assert next(iter(rs)) is not None  # one row taken, the set left open
+        assert rs.to_list() == expected[1:]
+
+
+class TestResultSetReleasesTheEngineCursor:
+    """An exhausted, or no longer read, result set closes its Java result set.
+
+    Since the engine's parallel scan (ArcadeData/arcadedb#8524, 26.10.1) a
+    query whose LIMIT is satisfied keeps its scan's producer threads parked
+    until the result set is closed or ten minutes pass, and a few such result
+    sets stall the next query that needs the producer pool
+    (ArcadeData/arcadedb#8594). Example 05 hung that way on its fifth
+    `@rid > <last> LIMIT 5000` page: every page was read to its end, and none
+    was ever closed.
+    """
+
+    PAGE = 5_000
+    DOCS = 300_000
+
+    def _load(self, db):
+        db.command("sql", "CREATE DOCUMENT TYPE Paged")  # the default single bucket
+        db.insert_many(
+            "Paged",
+            [{"k": i, "pad": "x" * 40} for i in range(self.DOCS)],
+            commit_every=10_000,
+        )
+
+    def _walk(self, db, read_page):
+        """Every page of the type, in RID order, read with read_page."""
+        last, pages, rows = "#-1:-1", 0, 0
+        while True:
+            q = f"SELECT @rid AS rid, k FROM Paged WHERE @rid > {last} LIMIT {self.PAGE}"  # nosec B608 - test-owned
+            page = read_page(db.query("sql", q))
+            pages += 1
+            rows += len(page)
+            if len(page) < self.PAGE:
+                return pages, rows
+            last = str(page[-1]["rid"])
+
+    def _walk_within(self, db, read_page, seconds=60):
+        import threading
+
+        done = {}
+
+        def run():
+            done["out"] = self._walk(db, read_page)
+
+        t = threading.Thread(target=run, daemon=True)
+        t.start()
+        t.join(seconds)
+        assert not t.is_alive(), (
+            f"RID-paged reads stalled for {seconds} s: result sets read to their "
+            "end were not closed (ArcadeData/arcadedb#8594)"
+        )
+        return done["out"]
+
+    def test_paging_by_iteration_does_not_stall(self, temp_db):
+        self._load(temp_db)
+        pages, rows = self._walk_within(
+            temp_db, lambda rs: [{"rid": r.get("rid"), "k": r.get("k")} for r in rs]
+        )
+        assert rows == self.DOCS and pages == self.DOCS // self.PAGE + 1
+
+    def test_paging_by_to_list_does_not_stall(self, temp_db):
+        self._load(temp_db)
+        pages, rows = self._walk_within(temp_db, lambda rs: rs.to_list())
+        assert rows == self.DOCS and pages == self.DOCS // self.PAGE + 1
+
+    def test_exhaustion_first_and_one_close_the_java_result_set(self, temp_db):
+        temp_db.command("sql", "CREATE DOCUMENT TYPE Few")
+        with temp_db.transaction():
+            for i in range(3):
+                temp_db.command("sql", "INSERT INTO Few SET k = ?", i)
+
+        rs = temp_db.query("sql", "SELECT FROM Few")
+        assert len(list(rs)) == 3
+        assert rs._closed
+
+        rs = temp_db.query("sql", "SELECT FROM Few")
+        assert len(rs.to_list()) == 3 and rs._closed
+
+        rs = temp_db.query("sql", "SELECT FROM Few ORDER BY k")
+        assert rs.first().get("k") == 0 and rs._closed
+
+        rs = temp_db.query("sql", "SELECT FROM Few WHERE k = 1")
+        assert rs.one().get("k") == 1 and rs._closed
+
+    def test_a_set_closed_before_its_end_raises_when_read_again(self, temp_db):
+        # first() closes the set with rows unread. Reading it again used to
+        # return whatever the closed Java result set still handed out, which
+        # changed between engine builds (the rest of the rows, then nothing);
+        # now it says the rows are gone. A set read to its end stays empty.
+        temp_db.command("sql", "CREATE DOCUMENT TYPE Some")
+        with temp_db.transaction():
+            for i in range(5):
+                temp_db.command("sql", "INSERT INTO Some SET k = ?", i)
+        q = "SELECT k FROM Some ORDER BY k"
+
+        for read in (
+            list,
+            lambda r: r.to_list(),
+            lambda r: r.first(),
+            lambda r: r.count(),
+            lambda r: list(r.iter_json_batches()),
+            lambda r: r.to_columns(),
+        ):
+            rs = temp_db.query("sql", q)
+            assert rs.first().get("k") == 0
+            with pytest.raises(arcadedb.ArcadeDBError, match="closed before"):
+                read(rs)
+
+        rs = temp_db.query("sql", q)
+        with rs:
+            next(iter(rs))
+        with pytest.raises(arcadedb.ArcadeDBError, match="closed before"):
+            rs.to_list()
+
+        rs = temp_db.query("sql", q)
+        assert len(rs.to_list()) == 5
+        assert list(rs) == [] and rs.to_list() == [] and rs.first() is None
+        assert list(rs.iter_json_batches()) == []
+
+
+class _CountingBridge:
+    """Stands in for a bridge class in results._BRIDGE_CLASSES: counts each call and delegates."""
+
+    def __init__(self, real, name):
+        self._real, self._name, self.calls = real, name, 0
+
+    def __getattr__(self, attr):
+        target = getattr(self._real, attr)
+        if attr != self._name:
+            return target
+
+        def counted(*args):
+            self.calls += 1
+            return target(*args)
+
+        return counted
+
+
+@pytest.fixture
+def counting_bridge(monkeypatch):
+    """Count the calls the Python layer makes into TypedRows.nextRows and RowBatcher.nextJsonBatch."""
+    from arcadedb_embedded import results
+
+    typed_rows = results._bridge_class("TypedRows")
+    row_batcher = results._bridge_class("RowBatcher")
+    assert typed_rows is not None and row_batcher is not None
+    counters = {
+        "nextRows": _CountingBridge(typed_rows, "nextRows"),
+        "nextJsonBatch": _CountingBridge(row_batcher, "nextJsonBatch"),
+    }
+    monkeypatch.setitem(results._BRIDGE_CLASSES, "TypedRows", counters["nextRows"])
+    monkeypatch.setitem(
+        results._BRIDGE_CLASSES, "RowBatcher", counters["nextJsonBatch"]
+    )
+    return counters
+
+
+class TestSmallResultsCostOneBridgeCall:
+    """A result that fits one batch is read with ONE call into the bridge, and the bridge closes it.
+
+    A JPype call is 3 to 4 microseconds, a fifth of a one-row read. to_list() asked
+    TypedRows.nextRows a second time just to see an empty batch (the fix that #144 made for
+    to_json_list()), and every drained result set cost one more crossing for close().
+    nextRows and nextJsonBatch return fewer rows than asked for only when the result set is
+    drained, and close it themselves.
+    """
+
+    @pytest.fixture
+    def three(self, temp_db):
+        temp_db.command("sql", "CREATE DOCUMENT TYPE Few")
+        with temp_db.transaction():
+            for i in range(3):
+                temp_db.command("sql", "INSERT INTO Few SET k = ?", i)
+        return temp_db
+
+    def test_to_list_makes_one_call_for_a_short_result(self, three, counting_bridge):
+        rs = three.query("sql", "SELECT k FROM Few ORDER BY k")
+        assert rs.to_list() == [{"k": 0}, {"k": 1}, {"k": 2}]
+        assert counting_bridge["nextRows"].calls == 1
+        assert rs._closed and rs._exhausted
+
+    def test_to_list_of_an_empty_result_makes_one_call(self, three, counting_bridge):
+        rs = three.query("sql", "SELECT k FROM Few WHERE k = 99")
+        assert rs.to_list() == []
+        assert counting_bridge["nextRows"].calls == 1
+        assert rs._closed and rs._exhausted
+
+    def test_to_json_list_makes_one_call_for_a_short_result(
+        self, three, counting_bridge
+    ):
+        rs = three.query("sql", "SELECT k FROM Few ORDER BY k")
+        assert rs.to_json_list() == [{"k": 0}, {"k": 1}, {"k": 2}]
+        assert counting_bridge["nextJsonBatch"].calls == 1
+        assert rs._closed and rs._exhausted
+
+    def test_a_full_batch_still_ends_on_the_next_call(self, temp_db, counting_bridge):
+        """Exactly one batch of rows (the to_list batch): the first batch is full, so one more call finds it drained."""
+        from arcadedb_embedded import results
+
+        batch = results._TYPED_BATCH_ROWS
+        temp_db.command("sql", "CREATE DOCUMENT TYPE Exact")
+        with temp_db.transaction():
+            for i in range(batch):
+                temp_db.command("sql", "INSERT INTO Exact SET k = ?", i)
+        rs = temp_db.query("sql", "SELECT k FROM Exact ORDER BY k")
+        rows = rs.to_list()
+        assert [r["k"] for r in rows] == list(range(batch))
+        assert counting_bridge["nextRows"].calls == 2
+        assert rs._closed and rs._exhausted
+        assert rs.to_list() == []  # a result set read to its end reads as empty
+
+    def test_a_drained_set_reads_as_empty_and_is_not_an_error(
+        self, three, counting_bridge
+    ):
+        rs = three.query("sql", "SELECT k FROM Few")
+        assert len(rs.to_list()) == 3
+        assert rs.to_list() == [] and list(rs) == [] and rs.first() is None
+        assert list(rs.iter_json_batches()) == []
+        rs.close()  # idempotent
+
+    def test_python_does_not_cross_the_bridge_to_close_a_drained_set(
+        self, three, counting_bridge, monkeypatch
+    ):
+        from arcadedb_embedded import results
+
+        closes = []
+        real_close = results.ResultSet.close
+        monkeypatch.setattr(
+            results.ResultSet,
+            "close",
+            lambda self: (closes.append(1), real_close(self))[1],
+        )
+        for read in ("to_list", "to_json_list"):
+            rs = three.query("sql", "SELECT k FROM Few")
+            assert len(getattr(rs, read)()) == 3
+            assert rs._closed and rs._exhausted
+        assert closes == []
+
+    @pytest.mark.parametrize("batcher", ["nextRows", "nextJsonBatch"])
+    def test_the_bridge_closes_what_it_drains_and_only_that(self, three, batcher):
+        """Straight at the Java side: nextRows and nextJsonBatch close a result set when it
+        has fewer rows than asked for, and leave one alone that still has rows."""
+        import jpype
+        from arcadedb_embedded import results
+
+        interface = jpype.JClass("com.arcadedb.query.sql.executor.ResultSet")
+
+        class Spy:
+            def __init__(self, real):
+                self.real, self.closed = real, 0
+
+            def hasNext(self):
+                return self.real.hasNext()
+
+            def next(self):
+                return self.real.next()
+
+            def close(self):
+                self.closed += 1
+                self.real.close()
+
+        keep = []  # the Python wrapper closes its Java result set when it is freed
+
+        def spied(query):
+            wrapper = three.query("sql", query)
+            keep.append(wrapper)
+            spy = Spy(wrapper._java_result_set)
+            return spy, jpype.JObject(jpype.JProxy(interface, inst=spy), interface)
+
+        bridge = results._bridge_class(
+            "RowAccess" if batcher == "nextRows" else "RowBatcher"
+        )
+        call = getattr(bridge, batcher)
+
+        spy, proxy = spied("SELECT k FROM Few ORDER BY k")
+        assert len(call(proxy, 2)) > 0  # a full batch of two rows: left open
+        assert spy.closed == 0
+        call(proxy, 2)  # one row left: a short batch, drained, closed
+        assert spy.closed == 1
+        spy, proxy = spied("SELECT k FROM Few WHERE k = 99")
+        call(proxy, 10)  # nothing at all
+        assert spy.closed == 1
+
+    def test_the_bridge_releases_the_engine_cursor(self, temp_db):
+        """The Java result set is closed by the bridge when it drains it: a LIMIT that stops a
+        parallel scan early leaves producer threads parked until close (arcadedb #8594), so
+        reading page after page by to_list() and to_json_list() without anyone else calling
+        close() must not stall."""
+        temp_db.command("sql", "CREATE DOCUMENT TYPE Paged2")
+        temp_db.insert_many(
+            "Paged2",
+            [{"k": i, "pad": "x" * 40} for i in range(60_000)],
+            commit_every=10_000,
+        )
+        last = "#-1:-1"
+        for read in ("to_list", "to_json_list") * 6:
+            q = f"SELECT @rid AS rid, k FROM Paged2 WHERE @rid > {last} LIMIT 5000"  # nosec B608 - test-owned
+            page = getattr(temp_db.query("sql", q), read)()
+            assert len(page) == 5000
+            last = str(page[-1]["rid"])

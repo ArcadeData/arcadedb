@@ -4,7 +4,7 @@ Example 05: Graph Creation Benchmark - Clean Architecture
 
 This benchmark compares graph creation strategies with multiple options:
 - Method: Java API vs SQL
-- Async: Async executor (parallel) vs Synchronous (sequential)
+- Batch: GraphBatch (buffered) vs Synchronous transactions (sequential)
 - Indexes: With indexes vs Without indexes
 
 Architecture:
@@ -13,29 +13,34 @@ Architecture:
 - Shared vertex creation logic
 - Shared edge creation logic
 - Method-specific executors (Java API vs SQL)
-- Async executor support:
-    * Java mode: Uses async SQL command submission for parallel inserts.
+- Bulk vertex creation:
+    * Java mode: GraphBatch, one boundary crossing per batch.
     * SQL mode: Synchronous transactions for bulk vertex creation.
 - Index-aware implementations
 
-Async Executor:
-===============
-The async executor enables parallel processing with configurable worker threads:
+Bulk vertex path:
+=================
+**Java mode + batch (default for `--method java`):**
+- Uses GraphBatch: rows cross the boundary once per batch and every row lands
+- Command: `--method java`
+- `--parallel` selects GraphBatch's parallel flush rather than an async
+  executor parallel level
 
-**Java mode + Async:**
-- Uses AsyncExecutor with SQL command submission
-- Parallel vertex and edge creation
-- Command: `--method java` (async enabled by default)
+**Java mode + `--no-async`:**
+- Synchronous transactions, one INSERT per row
+- Slower, same resulting graph
 
 **SQL Mode (ALWAYS SYNCHRONOUS FOR VERTICES):**
 - Direct SQL commands via transactions
-- Avoids ConcurrentModificationException (multiple threads → same pages)
 - Sequential processing (one operation at a time)
 - Command: `--method sql`
 - The `--no-async` flag has no effect on SQL (always synchronous)
 
-Note: Async executor with SQL INSERT causes concurrent modification errors
-during bulk vertex creation, so SQL mode always uses synchronous transactions.
+Note: vertex creation here used to submit one INSERT per row through
+`async_executor().command(...)`. That path silently dropped records above
+parallel level 1 before 26.10.1 (ArcadeData/arcadedb#7615, fixed in #7625), so
+it is gone from this example.
+GraphBatch drives the same executor for its edge flush and is measured exact.
 
 Proper Database-Level Streaming:
 =================================
@@ -45,8 +50,9 @@ ALL queries use LIMIT-based pagination to avoid loading entire result sets:
 - Ratings: Paginated with @rid > {last_rid} LIMIT {batch_size}
 - Tags: Paginated with @rid > {last_rid} LIMIT {batch_size}
 
-Exception: User vertices use `SELECT COUNT(*) as count FROM (SELECT DISTINCT FROM ...)`
-(difficult to paginate efficiently)
+Exception: User vertices group the ratings by user, `SELECT userId FROM Rating GROUP BY userId`
+(difficult to paginate efficiently; GROUP BY rather than SELECT DISTINCT, because the
+ORDER BY keeps a DISTINCT off the parallel path, ArcadeData/arcadedb#8799)
 
 Dataset Sources:
 ----------------
@@ -66,25 +72,62 @@ Imports pre-exported JSONL file and reads from imported database:
 - Measures import time separately
 - Example: --import-jsonl ./exports/movielens_small_db.jsonl.tgz
 
+Rows the graph deliberately does not carry:
+===========================================
+download_data.py injects NULLs into the MovieLens CSVs on purpose (seeded, so
+the same rows every time): 3% of ratings.csv rows get an empty timestamp, 1%
+get an empty rating, 5% of tags.csv rows get an empty tag and 2% an empty
+timestamp. Example 04 imports all of them, empty cell -> SQL NULL, because
+NULL handling is what that example is about.
+
+This example builds edges whose timestamp is a declared LONG, so it selects
+only source rows that have one:
+- RATED:  WHERE timestamp IS NOT NULL       -> 97,823 of 100,836 Rating docs
+- TAGGED: WHERE timestamp IS NOT NULL AND tag IS NOT NULL -> 3,436 of 3,683
+
+The 3,013 skipped ratings and 247 skipped tags are the injected NULLs, not
+lost rows: count_data() applies the same filters, so the progress meter counts
+what it intends to create and reaches 100%. A NULL *rating* is not filtered --
+those 981 rows do become edges, with RATED.rating left NULL, which is why
+Query 8 sums to 96,842 and not to 97,823.
+
 Expected Results (movielens-small dataset):
 ==================================
 ✓ Vertices: 610 Users + 9,742 Movies = 10,352 total
-✓ Edges: 98,734 RATED + 3,494 TAGGED = 102,228 total
+✓ Edges: 97,823 RATED + 3,436 TAGGED = 101,259 total
 
 Performance (movielens-small dataset):
-- Java API w/ indexes + async: ~5-10K vertices/sec, ~2-3K edges/sec (FASTEST)
+- Java API w/ indexes + GraphBatch: ~5-10K vertices/sec, ~2-3K edges/sec
 - SQL w/ indexes (sync): Slower than Java API (sequential processing)
 - Without indexes: MUCH slower (no optimization)
 
+Why `--method java` no longer uses the async executor:
+======================================================
+Until 2026-09-15 the Java+async path submitted one INSERT per vertex through
+`async_executor().command(...)`. Measured on 26.9.1, that lost most of the
+writes: 610 Users submitted, 458 stored; 9,742 Movies submitted, 2,436 stored,
+with nothing raised, nothing logged at SEVERE, and wait_completion() returning
+normally. The edge phase then read a graph missing three quarters of its
+Movies and created 18,372 of 97,823 RATED edges. Filed as
+ArcadeData/arcadedb#7615.
+
+The Java API was never at fault -- the async executor's SQL command path is.
+The path now builds vertices through GraphBatch, which dispatches its edge
+flush through that same executor and is measured exact. `--method java`,
+`--method java --no-async`, and `--method sql` all produce the same graph:
+610 / 9,742 / 97,823 / 3,436. EdgeCreator never touched the async executor in
+either method (it stores use_async and parallel_level and reads neither). CI
+runs --method sql.
+
 Usage:
 ======
-# Recommended (fastest):
-python 05_csv_import_graph.py --dataset movielens-small --method java
-
-# Compare SQL (synchronous):
+# Recommended:
 python 05_csv_import_graph.py --dataset movielens-small --method sql
 
-# Compare Java API without async (synchronous):
+# Java API with GraphBatch vertices - same graph as --method sql:
+python 05_csv_import_graph.py --dataset movielens-small --method java
+
+# Java API without async (synchronous) - correct, same graph as --method sql:
 python 05_csv_import_graph.py --dataset movielens-small --method java --no-async
 
 # Export graph database for reproducibility:
@@ -124,17 +167,11 @@ from typing import Any
 import arcadedb_embedded as arcadedb
 import numpy as np
 
-
-def escape_sql_string(value: str) -> str:
-    """Properly escape a string for SQL queries.
-
-    Must escape backslashes first, then single quotes.
-    Otherwise a value like '\' becomes '\'' which escapes the quote.
-    """
-    if value is None:
-        return ""
-    # First escape backslashes, then escape single quotes
-    return value.replace("\\", "\\\\").replace("'", "\\'")
+# Edge statements with every value bound as a ? parameter: the two endpoint
+# RIDs, then the edge properties. One statement text for every edge also lets
+# ArcadeDB's statement cache reuse the parse instead of parsing each row anew.
+RATED_EDGE_SQL = "CREATE EDGE RATED FROM ? TO ? SET rating = ?, timestamp = ?"
+TAGGED_EDGE_SQL = "CREATE EDGE TAGGED FROM ? TO ? SET tag = ?, timestamp = ?"
 
 
 @dataclass
@@ -230,7 +267,7 @@ class DataLoader:
                     "sql",
                     """
                     SELECT COUNT(*) as count FROM (
-                        SELECT DISTINCT userId FROM Rating
+                        SELECT userId FROM Rating GROUP BY userId
                     )
                     """,
                 )
@@ -300,9 +337,12 @@ class VertexCreator:
     def _create_users(self, total_users: int) -> tuple[int, BenchmarkStats]:
         """Create User vertices.
 
-        Note: Uses a DISTINCT subquery. The direct DISTINCT/ORDER BY form can
-        resolve against the wrong database context when the target graph DB is
-        open at the same time as the source document DB.
+        Note: reads the user ids with GROUP BY, which runs in the parallel scan
+        workers; a SELECT DISTINCT with this ORDER BY would not (ArcadeData/arcadedb#8799).
+        An earlier direct DISTINCT/ORDER BY form
+        resolved against the wrong database while the target graph DB was open
+        beside the source document DB; the GROUP BY form was checked with both
+        open, in all three creation modes, on 2026-10-01.
         """
         print(f"Creating {total_users:,} User vertices...")
         stats = BenchmarkStats()
@@ -311,28 +351,30 @@ class VertexCreator:
         batch_count = 0
 
         if self.use_async and self.use_java_api:
-            # Async SQL insert path
-            async_exec = self.db.async_executor()
-            async_exec.set_parallel_level(self.parallel_level)
-            async_exec.set_commit_every(self.batch_size)
-
+            # GraphBatch path. This used to submit one INSERT per user through
+            # async_executor().command(); see the "Bulk vertex path" note in the
+            # module docstring for why it does not any more.
             with arcadedb.open_database(
                 str(self.data_loader.source_db_path)
             ) as source_db:
-                query = (
-                    "SELECT userId FROM (SELECT DISTINCT userId FROM Rating) "
-                    "ORDER BY userId"
-                )
-                for record in source_db.query("sql", query):
-                    user_id = record.get("userId")
-                    async_exec.command(
-                        "sql",
-                        "INSERT INTO User SET userId = :userId",
-                        userId=user_id,
-                    )
-                    user_count += 1
+                query = "SELECT userId FROM Rating GROUP BY userId ORDER BY userId"
+                pending: list[dict[str, Any]] = []
+                # WAL off (use_wal=False, GraphBatch's default): this example rebuilds its database from
+                # the source files, so a crash mid-import costs a re-run. An import that must survive a
+                # crash passes use_wal=True (ArcadeDB's recommendation, ArcadeData/arcadedb#8287).
+                with self.db.graph_batch(
+                    parallel_flush=self.parallel_level > 1
+                ) as batch:
 
-                    if user_count % self.batch_size == 0:
+                    def flush_users(rows):
+                        nonlocal user_count, batch_count
+                        created = batch.create_vertices("User", rows)
+                        if len(created) != len(rows):
+                            raise RuntimeError(
+                                f"GraphBatch returned {len(created)} RIDs for "
+                                f"{len(rows)} User rows"
+                            )
+                        user_count += len(created)
                         batch_count += 1
                         self._report_progress(
                             "User",
@@ -342,17 +384,20 @@ class VertexCreator:
                             start_time,
                         )
 
-            async_exec.wait_completion()
-            async_exec.close()
+                    for record in source_db.query("sql", query):
+                        pending.append({"userId": record.get("userId")})
+                        if len(pending) >= self.batch_size:
+                            flush_users(pending)
+                            pending = []
+
+                    if pending:
+                        flush_users(pending)
         elif self.use_java_api:
             # Java API without async (synchronous transactions)
             with arcadedb.open_database(
                 str(self.data_loader.source_db_path)
             ) as source_db:
-                query = (
-                    "SELECT userId FROM (SELECT DISTINCT userId FROM Rating) "
-                    "ORDER BY userId"
-                )
+                query = "SELECT userId FROM Rating GROUP BY userId ORDER BY userId"
                 batch_user_ids = []
 
                 for record in source_db.query("sql", query):
@@ -388,10 +433,7 @@ class VertexCreator:
             with arcadedb.open_database(
                 str(self.data_loader.source_db_path)
             ) as source_db:
-                query = (
-                    "SELECT userId FROM (SELECT DISTINCT userId FROM Rating) "
-                    "ORDER BY userId"
-                )
+                query = "SELECT userId FROM Rating GROUP BY userId ORDER BY userId"
                 batch_user_ids = []
 
                 for record in source_db.query("sql", query):
@@ -401,8 +443,9 @@ class VertexCreator:
                     if len(batch_user_ids) >= self.batch_size:
                         with self.db.transaction():
                             for uid in batch_user_ids:
-                                sql = f"INSERT INTO User SET userId = {uid}"
-                                self.db.command("sql", sql)
+                                self.db.command(
+                                    "sql", "INSERT INTO User SET userId = ?", uid
+                                )
                         user_count += len(batch_user_ids)
                         batch_count += 1
                         batch_user_ids = []
@@ -414,8 +457,9 @@ class VertexCreator:
                 if batch_user_ids:
                     with self.db.transaction():
                         for uid in batch_user_ids:
-                            sql = f"INSERT INTO User SET userId = {uid}"
-                            self.db.command("sql", sql)
+                            self.db.command(
+                                "sql", "INSERT INTO User SET userId = ?", uid
+                            )
                     user_count += len(batch_user_ids)
                     batch_count += 1
 
@@ -437,78 +481,74 @@ class VertexCreator:
         batch_count = 0
 
         if self.use_async and self.use_java_api:
-            # Async SQL insert path
-            async_exec = self.db.async_executor()
-            async_exec.set_parallel_level(self.parallel_level)
-            async_exec.set_commit_every(self.batch_size)
-
+            # GraphBatch path, for the same reason as _create_users above.
             with arcadedb.open_database(
                 str(self.data_loader.source_db_path)
             ) as source_db:
                 last_rid = "#-1:-1"
-                while True:
-                    query_start = time.time()
-                    query = f"""
-                        SELECT *, @rid as rid FROM Movie
-                        WHERE @rid > {last_rid}
-                        LIMIT {self.batch_size}
-                    """
-                    chunk = list(source_db.query("sql", query))
-                    query_time = time.time() - query_start
-                    stats.add_query_time(query_time)
-                    if not chunk:
-                        break
+                # WAL off (use_wal=False, GraphBatch's default): this example rebuilds its database from
+                # the source files, so a crash mid-import costs a re-run. An import that must survive a
+                # crash passes use_wal=True (ArcadeDB's recommendation, ArcadeData/arcadedb#8287).
+                with self.db.graph_batch(
+                    parallel_flush=self.parallel_level > 1
+                ) as batch:
+                    while True:
+                        query_start = time.time()
+                        query = f"""
+                            SELECT *, @rid as rid FROM Movie
+                            WHERE @rid > {last_rid}
+                            LIMIT {self.batch_size}
+                        """
+                        chunk = list(source_db.query("sql", query))
+                        query_time = time.time() - query_start
+                        stats.add_query_time(query_time)
+                        if not chunk:
+                            break
 
-                    for record in chunk:
-                        movie_id = record.get("movieId")
-                        title = (
-                            record.get("title") if record.has_property("title") else ""
+                        rows = []
+                        for record in chunk:
+                            movie_id = record.get("movieId")
+                            title = (
+                                record.get("title")
+                                if record.has_property("title")
+                                else ""
+                            )
+                            genres = (
+                                record.get("genres")
+                                if record.has_property("genres")
+                                else ""
+                            )
+
+                            props = {
+                                "movieId": movie_id,
+                                "title": title or "",
+                                "genres": genres or "",
+                            }
+                            link_data = links_data.get(movie_id)
+                            if link_data:
+                                if link_data["imdbId"] is not None:
+                                    props["imdbId"] = link_data["imdbId"]
+                                if link_data["tmdbId"] is not None:
+                                    props["tmdbId"] = link_data["tmdbId"]
+                            rows.append(props)
+
+                        created = batch.create_vertices("Movie", rows)
+                        if len(created) != len(rows):
+                            raise RuntimeError(
+                                f"GraphBatch returned {len(created)} RIDs for "
+                                f"{len(rows)} Movie rows"
+                            )
+                        movie_count += len(created)
+                        batch_count += 1
+                        last_rid = chunk[-1].get("rid")
+                        self._report_progress(
+                            "Movie",
+                            batch_count,
+                            movie_count,
+                            total_movies,
+                            start_time,
+                            query_time,
                         )
-                        genres = (
-                            record.get("genres")
-                            if record.has_property("genres")
-                            else ""
-                        )
-
-                        params = {
-                            "movieId": movie_id,
-                            "title": title or "",
-                            "genres": genres or "",
-                        }
-                        link_data = links_data.get(movie_id)
-                        if link_data:
-                            if link_data["imdbId"] is not None:
-                                params["imdbId"] = link_data["imdbId"]
-                            if link_data["tmdbId"] is not None:
-                                params["tmdbId"] = link_data["tmdbId"]
-
-                        async_exec.command(
-                            "sql",
-                            (
-                                "INSERT INTO Movie SET movieId = :movieId, title = :title, "
-                                "genres = :genres, imdbId = :imdbId, tmdbId = :tmdbId"
-                            ),
-                            movieId=params.get("movieId"),
-                            title=params.get("title", ""),
-                            genres=params.get("genres", ""),
-                            imdbId=params.get("imdbId"),
-                            tmdbId=params.get("tmdbId"),
-                        )
-                        movie_count += 1
-
-                    batch_count += 1
-                    last_rid = chunk[-1].get("rid")
-                    self._report_progress(
-                        "Movie",
-                        batch_count,
-                        movie_count,
-                        total_movies,
-                        start_time,
-                        query_time,
-                    )
-
-            async_exec.wait_completion()
-            async_exec.close()
         elif self.use_java_api:
             # Java API without async (synchronous transactions)
             with arcadedb.open_database(
@@ -607,28 +647,25 @@ class VertexCreator:
                                 else ""
                             )
 
-                            # Escape SQL strings
-                            title = escape_sql_string(title or "")
-                            genres = escape_sql_string(genres or "")
-
+                            # Values are bound as ? parameters, never pasted
+                            # into the SQL text, so titles need no escaping
                             sql = (
-                                f"INSERT INTO Movie SET "
-                                f"movieId = {movie_id}, "
-                                f"title = '{title}', "
-                                f"genres = '{genres}'"
+                                "INSERT INTO Movie SET "
+                                "movieId = ?, title = ?, genres = ?"
                             )
+                            values = [movie_id, title or "", genres or ""]
 
                             # Merge Link data
                             link_data = links_data.get(movie_id)
                             if link_data:
                                 if link_data["imdbId"] is not None:
-                                    imdb_id = str(link_data["imdbId"])
-                                    imdb_id = escape_sql_string(imdb_id)
-                                    sql += f", imdbId = '{imdb_id}'"
+                                    sql += ", imdbId = ?"
+                                    values.append(str(link_data["imdbId"]))
                                 if link_data["tmdbId"] is not None:
-                                    sql += f", tmdbId = {link_data['tmdbId']}"
+                                    sql += ", tmdbId = ?"
+                                    values.append(link_data["tmdbId"])
 
-                            self.db.command("sql", sql)
+                            self.db.command("sql", sql, *values)
 
                     movie_count += len(chunk)
                     batch_count += 1
@@ -757,24 +794,28 @@ class EdgeCreator:
                             if user_vertex and movie_vertex:
                                 user_rid = str(user_vertex.get_identity())
                                 movie_rid = str(movie_vertex.get_identity())
-                                sql = (
-                                    f"CREATE EDGE RATED "
-                                    f"FROM {user_rid} TO {movie_rid} "
-                                    f"SET rating = {rating}, timestamp = {timestamp}"
+                                self.db.command(
+                                    "sql",
+                                    RATED_EDGE_SQL,
+                                    user_rid,
+                                    movie_rid,
+                                    rating,
+                                    timestamp,
                                 )
-                                self.db.command("sql", sql)
                                 edge_count += 1
                         else:
                             # SQL CREATE EDGE
                             user_rid = user_cache.get(user_id)
                             movie_rid = movie_cache.get(movie_id)
                             if user_rid and movie_rid:
-                                sql = (
-                                    f"CREATE EDGE RATED "
-                                    f"FROM {user_rid} TO {movie_rid} "
-                                    f"SET rating = {rating}, timestamp = {timestamp}"
+                                self.db.command(
+                                    "sql",
+                                    RATED_EDGE_SQL,
+                                    user_rid,
+                                    movie_rid,
+                                    rating,
+                                    timestamp,
                                 )
-                                self.db.command("sql", sql)
                                 edge_count += 1
 
                 batch_count += 1
@@ -849,28 +890,28 @@ class EdgeCreator:
                             if user_vertex and movie_vertex:
                                 user_rid = str(user_vertex.get_identity())
                                 movie_rid = str(movie_vertex.get_identity())
-                                tag_escaped = escape_sql_string(tag)
-                                sql = (
-                                    f"CREATE EDGE TAGGED "
-                                    f"FROM {user_rid} TO {movie_rid} "
-                                    f"SET tag = '{tag_escaped}', "
-                                    f"timestamp = {timestamp}"
+                                self.db.command(
+                                    "sql",
+                                    TAGGED_EDGE_SQL,
+                                    user_rid,
+                                    movie_rid,
+                                    tag,
+                                    timestamp,
                                 )
-                                self.db.command("sql", sql)
                                 edge_count += 1
                         else:
                             # SQL CREATE EDGE
                             user_rid = user_cache.get(user_id)
                             movie_rid = movie_cache.get(movie_id)
                             if user_rid and movie_rid:
-                                tag_escaped = escape_sql_string(tag)
-                                sql = (
-                                    f"CREATE EDGE TAGGED "
-                                    f"FROM {user_rid} TO {movie_rid} "
-                                    f"SET tag = '{tag_escaped}', "
-                                    f"timestamp = {timestamp}"
+                                self.db.command(
+                                    "sql",
+                                    TAGGED_EDGE_SQL,
+                                    user_rid,
+                                    movie_rid,
+                                    tag,
+                                    timestamp,
                                 )
-                                self.db.command("sql", sql)
                                 edge_count += 1
 
                 batch_count += 1
@@ -913,41 +954,34 @@ class EdgeCreator:
 
         if self.use_java_api:
             # Fetch Java vertex objects
+            # The ids travel as one list parameter, so every chunk runs the
+            # same query text and ArcadeDB reuses its plan (it still reads the
+            # userId index for `IN :ids`).
             if user_ids:
-                user_ids_str = ",".join(str(uid) for uid in user_ids)
-                query = f"SELECT FROM User WHERE userId IN [{user_ids_str}]"
-                for result in self.db.query("sql", query):
+                query = "SELECT FROM User WHERE userId IN :ids"
+                for result in self.db.query("sql", query, {"ids": user_ids}):
                     uid = result.get("userId")
                     vertex = result.get_vertex()
                     user_cache[uid] = vertex
 
             if movie_ids:
-                movie_ids_str = ",".join(str(mid) for mid in movie_ids)
-                query = f"SELECT FROM Movie WHERE movieId IN [{movie_ids_str}]"
-                for result in self.db.query("sql", query):
+                query = "SELECT FROM Movie WHERE movieId IN :ids"
+                for result in self.db.query("sql", query, {"ids": movie_ids}):
                     mid = result.get("movieId")
                     vertex = result.get_vertex()
                     movie_cache[mid] = vertex
         else:
             # Fetch RIDs for SQL CREATE EDGE
             if user_ids:
-                user_ids_str = ",".join(str(uid) for uid in user_ids)
-                query = (
-                    f"SELECT @rid as rid, userId FROM User "
-                    f"WHERE userId IN [{user_ids_str}]"
-                )
-                for result in self.db.query("sql", query):
+                query = "SELECT @rid as rid, userId FROM User WHERE userId IN :ids"
+                for result in self.db.query("sql", query, {"ids": user_ids}):
                     uid = result.get("userId")
                     rid = result.get("rid").toString()
                     user_cache[uid] = rid
 
             if movie_ids:
-                movie_ids_str = ",".join(str(mid) for mid in movie_ids)
-                query = (
-                    f"SELECT @rid as rid, movieId FROM Movie "
-                    f"WHERE movieId IN [{movie_ids_str}]"
-                )
-                for result in self.db.query("sql", query):
+                query = "SELECT @rid as rid, movieId FROM Movie WHERE movieId IN :ids"
+                for result in self.db.query("sql", query, {"ids": movie_ids}):
                     mid = result.get("movieId")
                     rid = result.get("rid").toString()
                     movie_cache[mid] = rid
@@ -1058,6 +1092,12 @@ EXPECTED_RESULTS = {
             {
                 "name": "Query 4: Top 10 most rated movies (SQL - Aggregations)",
                 "count": 10,
+                # Verified against data/movielens-small/ratings.csv: movie 356
+                # has 329 rows, 315 of them with a non-NULL timestamp.
+                # The previous baseline here, "" with 508, was recorded when
+                # this query still grouped by title alone: the 40 movies whose
+                # title the NULL injection blanked collapsed into one ""
+                # bucket of 508 ratings, which outranked Forrest Gump.
                 "sample": {"top_movie": "Forrest Gump (1994)", "top_movie_count": 315},
             },
             {
@@ -1083,7 +1123,12 @@ EXPECTED_RESULTS = {
             },
             {
                 "name": "Query 10: Users who rated same movies as User #1 (OpenCypher - Pattern)",
-                "count": 188,
+                # 602, not 188: the query returns one row per other user who
+                # shares a movie with User #1, and ratings.csv has 602 such
+                # users. 188 is the top_shared value below, copied into the
+                # count field by mistake -- and it survived because nothing
+                # compared this count. The check below now does.
+                "count": 602,
                 "sample": {"top_user_id": 414, "top_shared": 188},
             },
         ],
@@ -1118,10 +1163,16 @@ EXPECTED_RESULTS = {
             {
                 "name": "Query 4: Top 10 most rated movies (SQL - Aggregations)",
                 "count": 10,
-                "sample": {
-                    "top_movie": "",
-                    "top_movie_count": 128016,
-                },
+                # No sample baseline: the "" / 128016 recorded here was the
+                # same artefact as the small dataset's "" / 508 -- the bucket
+                # of movies whose title the NULL injection blanked, from back
+                # when this query grouped by title alone. It was never the top
+                # movie. The real values for movielens-large have never been
+                # checked against ratings.csv, and a guess is worse than no
+                # baseline, so the check is skipped (absent key = skip) until
+                # someone re-records it from a verified large run; the JSON
+                # this example prints at the end is the paste-ready form.
+                "sample": {},
             },
             {
                 "name": "Query 5: Top 10 most tagged movies (SQL - Aggregations)",
@@ -2117,6 +2168,18 @@ def run_and_validate_queries(db: Any, size: str, check_baseline: bool = True):
         exp_top_id = expected_sample.get("top_user_id")
         exp_top_shared = expected_sample.get("top_shared")
 
+        # Every other query compares its row count; this one did not, which is
+        # how a wrong baseline count sat here unnoticed. Compare it.
+        expected_count = expected_queries[9].get("count")
+        if expected_count is not None and len(collab_opencypher) != expected_count:
+            print(
+                f"  ❌ Count mismatch: expected {expected_count}, "
+                f"got {len(collab_opencypher)}"
+            )
+            all_passed = False
+        elif expected_count is not None:
+            print(f"  ✓ Count matches baseline: {len(collab_opencypher)}")
+
         if exp_top_id is not None and collab_opencypher:
             actual_top_id = collab_opencypher[0].get("other_user")
             if actual_top_id != exp_top_id:
@@ -2180,7 +2243,7 @@ def main():
         "--parallel",
         type=int,
         default=4,
-        help="Parallel level for async executor (1-16, default: 4)",
+        help="Above 1, enable GraphBatch parallel flush (default: 4)",
     )
     parser.add_argument(
         "--method",
@@ -2191,7 +2254,7 @@ def main():
     parser.add_argument(
         "--no-async",
         action="store_true",
-        help="Disable async executor (use synchronous transactions - slower)",
+        help="Disable GraphBatch (use synchronous transactions - slower)",
     )
     parser.add_argument(
         "--no-index",
@@ -2248,7 +2311,7 @@ def main():
     print(f"Batch size: {args.batch_size:,}")
     print(f"Parallel level: {args.parallel}")
     print(f"Method: {args.method} API")
-    print(f"Async: {'disabled' if args.no_async else 'enabled'}")
+    print(f"GraphBatch: {'disabled' if args.no_async else 'enabled'}")
     print(f"Indexes: {'disabled' if args.no_index else 'enabled'}")
     print(f"Database: {db_name}")
 

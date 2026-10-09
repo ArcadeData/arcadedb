@@ -94,7 +94,7 @@ with arcadedb.create_database(db_path) as db:
 
     # While ArcadeDB is schema-flexible, defining types is recommended
     # It provides better performance, validation, and indexing
-    # Schema operations are auto-transactional (no wrapper needed)
+    # Schema statements apply immediately (no transaction needed)
     db.command("sql", "CREATE DOCUMENT TYPE Task")
 
     # Define properties with various ArcadeDB data types
@@ -131,7 +131,7 @@ with arcadedb.create_database(db_path) as db:
         # Insert task with full data types
         db.command(
             "sql",
-            f"""
+            """
             INSERT INTO Task SET
                 title = 'Buy groceries',
                 priority = 'high',
@@ -142,14 +142,15 @@ with arcadedb.create_database(db_path) as db:
                 estimated_hours = 2.5,
                 priority_score = 90,
                 cost = 150.00,
-                task_id = '{str(uuid.uuid4())}'
+                task_id = ?
             """,
+            str(uuid.uuid4()),
         )
 
         # Insert task with some NULL values (optional fields)
         db.command(
             "sql",
-            f"""
+            """
             INSERT INTO Task SET
                 title = 'Write documentation',
                 priority = 'medium',
@@ -160,14 +161,15 @@ with arcadedb.create_database(db_path) as db:
                 estimated_hours = 8.0,
                 priority_score = 70,
                 cost = null,
-                task_id = '{str(uuid.uuid4())}'
+                task_id = ?
             """,
+            str(uuid.uuid4()),
         )
 
         # Insert completed task with all fields
         db.command(
             "sql",
-            f"""
+            """
             INSERT INTO Task SET
                 title = 'Call dentist',
                 priority = 'low',
@@ -178,14 +180,15 @@ with arcadedb.create_database(db_path) as db:
                 estimated_hours = 0.5,
                 priority_score = 30,
                 cost = 0.00,
-                task_id = '{str(uuid.uuid4())}'
+                task_id = ?
             """,
+            str(uuid.uuid4()),
         )
 
         # Insert task with many NULL fields (minimal required data)
         db.command(
             "sql",
-            f"""
+            """
             INSERT INTO Task SET
                 title = 'Research ArcadeDB features',
                 priority = 'medium',
@@ -196,13 +199,15 @@ with arcadedb.create_database(db_path) as db:
                 estimated_hours = null,
                 priority_score = 60,
                 cost = null,
-                task_id = '{str(uuid.uuid4())}'
+                task_id = ?
             """,
+            str(uuid.uuid4()),
         )
 
         # Note: Arrays (lists) work naturally - no need for JSON serialization!
         # NULL values represent optional/missing data
-        # uuid() generates unique identifiers automatically
+        # task_id comes from Python's uuid4() and is bound as a ? parameter
+        # rather than pasted into the SQL text
         # Documents can contain: strings, numbers, booleans, arrays, nested objects, NULLs
 
     print("   ✅ Inserted 4 tasks (with various data types and NULL values)")

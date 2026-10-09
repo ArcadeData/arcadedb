@@ -1,28 +1,42 @@
 """
 Async API wrapper for ArcadeDB's DatabaseAsyncExecutor.
 
-This module provides a Pythonic interface to ArcadeDB's powerful async
-execution capabilities, enabling parallel processing, automatic batching,
-and optimized WAL operations.
+This module provides a Pythonic interface to ArcadeDB's async execution
+capabilities: parallel processing, automatic transaction batching, and
+optimized WAL settings.
 
-Key Benefits:
-- 3-5x faster bulk inserts via parallel execution
-- Automatic transaction batching (commitEvery parameter)
-- Constant memory usage (vs. growing with transaction size)
-- 50,000-200,000 records/sec throughput (vs. 15,000-30,000 sequential)
+Known defect -- do not use :meth:`AsyncExecutor.command` for bulk writes
+=======================================================================
+At a parallel level above 1, SQL commands submitted through this executor
+were silently discarded before 26.10.1: ArcadeData/arcadedb#7615, fixed in
+#7625 (a failed periodic commit is now retried and otherwise reported
+through the command's error callback). Observed on
+arcadedb-engine 26.9.1 and 26.6.1, measured 2026-09-15. How much was lost
+varied by run and by workload shape: 9,742 single-record ``INSERT``
+commands at parallel level 4 stored 2,436, 5,742, and 7,742 rows across
+runs. No error reached the per-command callback, nothing was logged, and
+``wait_completion()`` returned normally. Only the executor-wide
+:meth:`AsyncExecutor.on_error` handler saw anything, one
+``ConcurrentModificationException`` per rolled-back batch.
+
+Use instead:
+
+- ``Database.graph_batch(...)`` for bulk graph loading.
+- ``Database.insert_many(...)`` or a plain batched transaction for
+  documents.
+
+Measured unaffected, so these stay usable as they are: ``create_record``,
+``append_samples``, ``insert_many(parallel=True)`` (which routes through
+``createRecord``, not through SQL), and the edge flush inside
+``graph_batch``. ``command`` at parallel level 1 is also exact.
 
 Example:
-    >>> async_exec = db.async_executor()
-    >>> async_exec.set_parallel_level(8).set_commit_every(5000)
-    >>> for i in range(100000):
-    ...     async_exec.command(
-    ...         "sql",
-    ...         "INSERT INTO User SET id = :id",
-    ...         id=i,
-    ...     )
-    >>> async_exec.wait_completion()
+    >>> # documents: one FFI crossing per batch, every row lands
+    >>> db.insert_many("User", [{"id": i} for i in range(100000)])
+    100000
 """
 
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Callable, Optional, Sequence, Union
 
 import jpype
@@ -79,21 +93,16 @@ class AsyncExecutor:
         The underlying Java executor is thread-safe. Python callbacks
         are executed in Java worker threads, so they must be thread-safe.
 
+    Bulk writes:
+        Do not drive bulk ingest through :meth:`command`. Above parallel
+        level 1 it silently dropped records before 26.10.1
+        (ArcadeData/arcadedb#7615, fixed in #7625; see the module docstring
+        for the measurement and the safe paths).
+
     Example:
-        >>> # Configure executor
+        >>> # a one-off async command, not a bulk load
         >>> async_exec = db.async_executor()
-        >>> async_exec.set_parallel_level(4)  # 4 worker threads
-        >>> async_exec.set_commit_every(1000)  # Auto-commit every 1K ops
-        >>>
-        >>> # Execute SQL asynchronously
-        >>> for i in range(10000):
-        ...     async_exec.command(
-        ...         "sql",
-        ...         "INSERT INTO User SET id = :id",
-        ...         id=i,
-        ...     )
-        >>>
-        >>> # Wait for completion
+        >>> async_exec.command("sql", "DELETE FROM User WHERE id = ?", args=[7])
         >>> async_exec.wait_completion()
     """
 
@@ -124,21 +133,27 @@ class AsyncExecutor:
         """
         Set number of parallel worker threads.
 
+        Each worker owns a share of a type's buckets, so a type loaded in
+        parallel wants as many buckets as there are workers, or a multiple
+        (ArcadeData/arcadedb#8478).
+
         Args:
-            level: Number of threads (1-16). Higher = more parallelism
-                   but more memory/CPU usage. Default is CPU cores.
+            level: Number of threads, at least 1. The engine's default
+                   (``arcadedb.asyncWorkerThreads``) is the number of cores
+                   minus 1, and half the cores minus 1 under the
+                   ``high-performance`` profile.
 
         Returns:
             self for method chaining
 
         Raises:
-            ValueError: If level < 1 or level > 16
+            ValueError: If level < 1
 
         Example:
             >>> async_exec.set_parallel_level(8)  # Use 8 worker threads
         """
-        if level < 1 or level > 16:
-            raise ValueError("parallel_level must be between 1 and 16")
+        if level < 1:
+            raise ValueError("parallel_level must be at least 1")
         self._java_async.setParallelLevel(level)
         return self
 
@@ -190,6 +205,13 @@ class AsyncExecutor:
     def set_transaction_sync(self, sync_mode: str) -> "AsyncExecutor":
         """
         Set WAL flush strategy for durability vs. performance trade-off.
+
+        The async writers stamp this setting on every transaction they open,
+        whatever ``arcadedb.txWalFlush`` says for the database, and it
+        defaults to "no". A bulk load through the executor (including
+        ``insert_many(..., parallel=True)``) that must be as durable as the
+        rest of your writes sets it explicitly, e.g. "yes_full" to match
+        ``txWalFlush=2`` (ArcadeData/arcadedb#8478).
 
         Args:
             sync_mode: One of:
@@ -263,7 +285,8 @@ class AsyncExecutor:
         until queue drains. Prevents unbounded memory growth.
 
         Args:
-            percentage: Threshold (0-100). Default is 50%.
+            percentage: Threshold (0-100). The engine's default
+                       (``arcadedb.asyncBackPressure``) is 0, no back-pressure.
                        Higher = more buffering, more memory.
                        Lower = less buffering, more blocking.
 
@@ -283,7 +306,12 @@ class AsyncExecutor:
 
     # Graph and time-series operations
 
-    def create_record(self, document, callback: Optional[Callable] = None):
+    def create_record(
+        self,
+        document,
+        callback: Optional[Callable] = None,
+        error_callback: Optional[Callable[[Exception], None]] = None,
+    ):
         """Queue a document for asynchronous creation.
 
         The engine's parallel bucket writers persist it off the calling
@@ -296,12 +324,25 @@ class AsyncExecutor:
         Args:
             document: A ``Document`` (or ``Vertex``/``Edge``) created by
                 ``Database.new_document``/``new_vertex`` (not yet saved).
-            callback: Optional callable invoked with the created record.
+            callback: Optional callable invoked with the record once the writer
+                has created it in its transaction, before that batch commits: a
+                record the commit then rejects has been through ``callback`` too.
+            error_callback: Optional callable invoked with the exception when the
+                writers reject this record (a duplicate key under a UNIQUE index, or
+                its batch abandoned at a failed commit). Without it, the failure
+                reaches only the executor-wide :meth:`on_error` handler, if any.
         """
         java_cb = (
             self._create_new_record_callback(callback) if callback is not None else None
         )
-        self._java_async.createRecord(document._java_document, java_cb)
+        if error_callback is None:
+            self._java_async.createRecord(document._java_document, java_cb)
+        else:
+            self._java_async.createRecord(
+                document._java_document,
+                java_cb,
+                self._create_error_callback(error_callback),
+            )
 
     def _create_new_record_callback(self, python_callback):
         from .graph import Document
@@ -428,7 +469,9 @@ class AsyncExecutor:
 
         numpy fast path: an ndarray for timestamps or a numeric field column
         crosses the FFI as one buffer copy (int/uint kinds via boxLongs,
-        float kinds via boxDoubles); other sequences convert per element.
+        float kinds via boxDoubles); other sequences convert per element. A
+        numpy bool array is a 0/1 numeric column; a Python list of bools is
+        not (the engine refuses a Boolean for a numeric field).
         Call wait_completion() before relying on visibility.
 
         primitive=True routes through the engine's TimeSeriesBatch instead,
@@ -457,7 +500,7 @@ class AsyncExecutor:
             if (
                 _np is not None
                 and isinstance(values, _np.ndarray)
-                and values.dtype.kind in "fiu"
+                and values.dtype.kind in "fiub"
             ):
                 if boxer is None:
                     boxer = jpype.JClass("com.arcadedb.python.DocumentBatcher")
@@ -511,6 +554,15 @@ class AsyncExecutor:
         else:
             timestamps_java = JLongArray([int(value) for value in timestamps])
 
+        # A column shorter than the timestamps was padded by the engine with
+        # defaults and one longer was cut, with no error.
+        for index, values in enumerate(column_values):
+            if len(values) != len(timestamps_java):
+                raise ValueError(
+                    f"column {index} has {len(values)} values for "
+                    f"{len(timestamps_java)} timestamps"
+                )
+
         batch = batcher.newBatch(self._owner._java_db, type_name, timestamps_java)
 
         for index, values in enumerate(column_values):
@@ -529,8 +581,12 @@ class AsyncExecutor:
             elif (
                 _np is not None
                 and isinstance(values, _np.ndarray)
-                and values.dtype.kind in "iu"
+                and values.dtype.kind in "iub"
             ):
+                # "b": a numpy bool array is a 0/1 numeric column here. It used
+                # to reach a numeric field as 1.0 and 0.0 only because JPype
+                # read each numpy bool as a number; this keeps that outcome now
+                # that a numpy bool converts to a boolean everywhere else.
                 batcher.setLongColumn(
                     batch,
                     index,
@@ -538,17 +594,17 @@ class AsyncExecutor:
                         _np.ascontiguousarray(values, dtype=_np.int64)
                     ),
                 )
-            elif values and all(isinstance(v, str) for v in values):
+            elif len(values) > 0 and all(isinstance(v, str) for v in values):
                 batcher.setStringColumn(
                     batch, index, jpype.JArray(jpype.JString)(list(values))
                 )
-            elif values and all(isinstance(v, float) for v in values):
+            elif len(values) > 0 and all(isinstance(v, float) for v in values):
                 batcher.setDoubleColumn(
                     batch,
                     index,
                     jpype.JArray(jpype.JDouble)([float(v) for v in values]),
                 )
-            elif values and all(
+            elif len(values) > 0 and all(
                 isinstance(v, int) and not isinstance(v, bool) for v in values
             ):
                 batcher.setLongColumn(
@@ -611,7 +667,7 @@ class AsyncExecutor:
                 language,
                 query_text,
                 java_callback,
-                *[convert_python_to_java(arg) for arg in positional_args],
+                self._positional_parameters(positional_args),
             )
         else:
             self._java_async.query(language, query_text, java_callback)
@@ -633,6 +689,17 @@ class AsyncExecutor:
             command_text: Command string
             callback: Optional result callback
             **params: Command parameters
+
+        Not a bulk-write path:
+            Before 26.10.1, above parallel level 1 the engine silently
+            discarded a share of the commands submitted here
+            (ArcadeData/arcadedb#7615, fixed in #7625; the module docstring
+            carries the measurement). Nothing was raised, nothing was logged,
+            and ``wait_completion()`` returned normally, so a short load
+            looked like a fast one. For bulk ingest use
+            ``Database.graph_batch(...)`` for graphs and
+            ``Database.insert_many(...)`` or a batched transaction for
+            documents.
 
         Performance note:
             Submitting commands without callbacks runs at Java-native speed
@@ -671,7 +738,7 @@ class AsyncExecutor:
                 language,
                 command_text,
                 java_callback,
-                *[convert_python_to_java(arg) for arg in positional_args],
+                self._positional_parameters(positional_args),
             )
         else:
             self._java_async.command(language, command_text, java_callback)
@@ -851,10 +918,22 @@ class AsyncExecutor:
 
     def on_error(self, callback: Callable[[Exception], None]) -> "AsyncExecutor":
         """
-        Set global error callback for all operations.
+        Set the executor-wide error callback.
 
-        This callback is called for every failed operation if no
-        per-operation error callback was provided.
+        It receives the failure of a record operation (``create_record``, for
+        example), including one that also has a per-record callback, and a
+        batch-level failure such as a failed batch commit. It does not receive
+        a ``command()`` or ``query()`` statement's own failure: that goes only
+        to the statement's ``error_callback``, and is not raised anywhere when
+        there is none.
+
+        Before 26.10.1 it was also the only place the ArcadeData/arcadedb#7615
+        record loss became visible: when the executor rolled back a batch, the
+        per-command callbacks reported nothing, but this handler received one
+        ``ConcurrentModificationException`` per rolled-back batch (fixed in
+        #7625: a failed periodic commit is now retried and otherwise reported
+        through the command's error callback). Attach it before any load you
+        cannot afford to lose silently.
 
         Args:
             callback: Error callback, receives exception
@@ -996,12 +1075,28 @@ class AsyncExecutor:
         java_document = getattr(record, "_java_document", None)
         return java_document if java_document is not None else record
 
+    def _positional_parameters(self, values):
+        """The one typed Java argument that carries ``args`` (#172).
+
+        An ``Object[]`` with one element per ``?``. Splatted, a lone ``None``
+        reached the engine as a null in place of the whole parameter array, so
+        nothing was bound. A lone mapping stays the named map it was before,
+        as in ``Database.query()``.
+        """
+        if len(values) == 1 and isinstance(values[0], Mapping):
+            return self._to_java_map(values[0])
+        return jpype.JArray(jpype.JObject)(
+            [convert_python_to_java(value) for value in values]
+        )
+
     def _to_java_map(self, params):
         HashMap = jpype.JClass("java.util.HashMap")
         java_params = HashMap()
         for key, value in params.items():
             java_params.put(key, convert_python_to_java(value))
-        return java_params
+        # Typed as the interface, so the Map overload is an exact match rather
+        # than one JPype picks over Object... (#172).
+        return jpype.JObject(java_params, jpype.JClass("java.util.Map"))
 
     def _to_java_varargs(self, properties):
         varargs = []

@@ -8,12 +8,12 @@ Compares traditional graph queries with vector similarity search.
 PERFORMANCE OPTIMIZATION
 -------------------------
 Graph-Based Collaborative Filtering Performance:
-• Full mode: Comprehensive but slow (24-39s per query on large dataset)
+• Full mode: Comprehensive but slow on the large dataset
   - Analyzes all users who rated the query movie highly
   - Processes 100K+ intermediate results from graph traversal fanout
   - Best for offline batch recommendations
 
-• Fast mode: Sampled with 150-300x speedup (0.1-0.2s per query)
+• Fast mode: Sampled, much faster
   - Limits intermediate results to 25K (approximately 50 users' worth)
   - Uses nested SELECT with LIMIT before GROUP BY aggregation
   - Still produces high-quality recommendations
@@ -21,41 +21,6 @@ Graph-Based Collaborative Filtering Performance:
 
 For the large dataset (20M ratings), use:
     --heap-size 8g
-
-KNOWN ISSUES: ArcadeDB Bugs and Limitations
---------------------------------------------
-
-1. **NOTUNIQUE Index Breaks String Equality (ArcadeDB Bug)**:
-   Creating a NOTUNIQUE index on a string property AFTER loading a large
-   dataset (86K+ records) causes the = operator to return 0 results for
-   exact string matches, while LIKE continues to work correctly.
-
-   Example:
-   - Before index: WHERE title = 'Toy Story (1995)' → 1 result ✓
-   - After index:  WHERE title = 'Toy Story (1995)' → 0 results ✗
-   - After index:  WHERE title LIKE 'Toy Story (1995)' → 1 result ✓
-
-   WORKAROUND: This script does NOT create a NOTUNIQUE index on Movie.title.
-   We use the = operator for exact title matching (works without index) and
-   rely on the Movie[movieId] UNIQUE index for fast MATCH traversals.
-
-2. **FULL_TEXT Index Wrong Semantics**:
-   FULL_TEXT index changes the = operator to perform tokenized word search
-   instead of exact matching, returning semantically incorrect results.
-
-   Example with FULL_TEXT index:
-   - WHERE title = 'Toy Story (1995)' → 1,686 results (any movie with
-     "Toy", "Story", or "1995" in title) ✗
-
-   CONCLUSION: FULL_TEXT is NOT suitable for exact title matching.
-
-3. **JSONL Export/Import Broken for Vectors**: Float arrays are NOT properly
-   preserved during JSONL export/import:
-   - Embeddings exported as Java toString() strings: "[F@113ee1ce"
-   - Original vector data (384 floats) is completely lost
-
-   IMPACT: Cannot backup/restore vector databases using JSONL format.
-   After import, embeddings must be regenerated and indexes rebuilt.
 
 Features:
 - Real embeddings using sentence-transformers (two models for comparison)
@@ -179,7 +144,7 @@ def generate_embeddings(
     if limit:
         query += f" LIMIT {limit}"
 
-    movies = list(db.query("sql", query))
+    movies = db.query("sql", query).to_list()
     total = len(movies)
     print(f"Processing {total} movies...")
 
@@ -608,7 +573,7 @@ def main():
             )
             print(f"   ⏱️  {graph_full_time:.3f}s")
 
-            # Method 2: Graph-based Fast (sampled, 150-300x faster)
+            # Method 2: Graph-based Fast (sampled, much faster)
             print("\n2. Graph-Based Fast (collaborative filtering - sampled):")
             graph_fast_time = graph_based_recommendations(
                 db, movie_title, limit=5, mode="fast"
@@ -634,12 +599,12 @@ def main():
     print("=" * 80)
     print("• Graph-based Full: Comprehensive collaborative filtering")
     print("  - Analyzes all users who rated the query movie")
-    print("  - Most thorough but slow (24-39s per query)")
+    print("  - Most thorough but slow")
     print("  - Best for offline batch recommendations")
     print()
     print("• Graph-based Fast: Sampled collaborative filtering")
     print("  - Limits to ~50 users worth of data (25K intermediate results)")
-    print("  - 150-300x faster (0.1-0.2s per query)")
+    print("  - Much faster (sampled)")
     print("  - Still produces high-quality recommendations")
     print("  - Best for real-time recommendations")
     print()

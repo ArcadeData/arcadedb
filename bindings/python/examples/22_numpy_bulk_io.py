@@ -56,12 +56,19 @@ def bulk_documents(db, n_rows: int) -> None:
         f"({inserted / dt:,.0f} rows/s)"
     )
 
-    db.command("sql", "CREATE DOCUMENT TYPE BulkOrderP")
+    # The parallel mode hands the rows to the async executor's writers. On a
+    # laptop (4 performance cores, engine b22b5e9954, 6 runs per arm) it was
+    # 1.11x to 1.14x faster than synchronous batches at 1, 3, 4, and 8 buckets
+    # alike. The maintainers' rule (ArcadeData/arcadedb#8478): as many buckets
+    # as the executor has writers (default cores - 1), or a multiple of that,
+    # set when the type is created. A rejected record raises after the load.
+    buckets = max(2, db.async_executor().get_parallel_level())
+    db.command("sql", f"CREATE DOCUMENT TYPE BulkOrderP BUCKETS {buckets}")
     t0 = time.perf_counter()
     inserted = db.insert_many("BulkOrderP", rows, parallel=True)
     dt = time.perf_counter() - t0
     print(
-        f"async parallel writers: {inserted:,} rows in {dt:.2f}s "
+        f"async parallel writers ({buckets} buckets): {inserted:,} rows in {dt:.2f}s "
         f"({inserted / dt:,.0f} rows/s)"
     )
 
@@ -71,7 +78,9 @@ def timeseries_from_numpy(db, n_points: int) -> None:
     db.command(
         "sql",
         "CREATE TIMESERIES TYPE Sensor TIMESTAMP ts "
-        "TAGS (host STRING) FIELDS (cpu DOUBLE, mem DOUBLE) SHARDS 4",
+        # SHARDS stays at its default (cores minus one), as upstream advises
+        # (ArcadeData/arcadedb#9166).
+        "TAGS (host STRING) FIELDS (cpu DOUBLE, mem DOUBLE)",
     )
     base_ms = 1_767_225_600_000  # 2026-01-01T00:00:00Z
     ts = base_ms + np.arange(n_points, dtype=np.int64) * 1_000

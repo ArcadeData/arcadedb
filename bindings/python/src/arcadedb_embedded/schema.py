@@ -7,7 +7,8 @@ instead of requiring SQL strings.
 Example:
     >>> db.schema.create_vertex_type("User")
     >>> db.schema.create_property("User", "email", "STRING")
-    >>> db.schema.create_index("User", ["email"], unique=True)
+    >>> # An id read only by equality: a hash index (see create_index)
+    >>> db.schema.create_index("User", ["email"], unique=True, index_type="HASH")
 """
 
 from enum import Enum
@@ -301,7 +302,7 @@ class Schema:
         type_name: str,
         property_name: str,
         property_type: Union[str, PropertyType],
-        of_type: Optional[str] = None,
+        of_type: Optional[Union[str, PropertyType]] = None,
     ) -> Any:
         """Create a property on a type.
 
@@ -371,7 +372,7 @@ class Schema:
         type_name: str,
         property_name: str,
         property_type: Union[str, PropertyType],
-        of_type: Optional[str] = None,
+        of_type: Optional[Union[str, PropertyType]] = None,
     ) -> Any:
         """Get existing property or create if it doesn't exist.
 
@@ -392,6 +393,9 @@ class Schema:
         # Convert enum to string
         if isinstance(property_type, PropertyType):
             property_type = property_type.value
+
+        if isinstance(of_type, PropertyType):
+            of_type = of_type.value
 
         try:
             doc_type = self._java_schema.getType(type_name)
@@ -466,8 +470,14 @@ class Schema:
             The type, or None if it doesn't exist or index creation fails
 
         Example:
-            >>> # Simple index
-            >>> db.schema.create_index("User", ["email"], unique=True)
+            >>> # Unique id read only by equality and not loaded in key order: a
+            >>> # hash index (26.10.1 and later: faster lookups; the insert is faster
+            >>> # for shuffled ids, 9% to 16% slower for ascending ids)
+            >>> db.schema.create_index("User", ["email"], unique=True,
+            ...                     index_type=IndexType.HASH)
+            >>>
+            >>> # Key you also range over or sort by: the default LSM_TREE
+            >>> db.schema.create_index("Event", ["createdAt"])
             >>>
             >>> # Composite index
             >>> db.schema.create_index("Order", ["customerId", "orderDate"])
@@ -532,7 +542,8 @@ class Schema:
             Java Index object
 
         Example:
-            >>> idx = db.schema.get_or_create_index("User", ["email"], unique=True)
+            >>> idx = db.schema.get_or_create_index("User", ["email"], unique=True,
+            ...                                     index_type="HASH")
         """
 
         self._db._check_not_closed()

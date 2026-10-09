@@ -26,13 +26,27 @@ For:
 Measured ingest times:
 - Transactional (`single-threaded`, `1 thread`): 575.078s
 - Async SQL (`single-threaded`, `--async-parallel 1`): 701.080s
-- GraphBatch (`single-threaded`, `--parallel 1`): 507.983s
-- GraphBatch (`4 threads`, `--parallel 4`): 359.672s
+- GraphBatch (`single-threaded`, `--parallel 1`): 507.983s (one-way edges, see below)
+- GraphBatch (`4 threads`, `--parallel 4`): 359.672s (one-way edges, see below)
+
+The two GraphBatch times were measured with `bidirectional=False`, which stores each
+edge on its source vertex only, while the other three arms store both directions, so
+they understate a like-for-like load. The script now loads two-way edges
+(ArcadeData/arcadedb#8625).
 - IMPORT DATABASE (`single-threaded`, `--parallel 1`): 453.481s
 - IMPORT DATABASE (`4 threads`, `--parallel 4`): 275.325s
 
 Logical parity:
 - All four methods produced the same final graph output
+
+Recommended path:
+GraphBatch is the recommended bulk graph ingest path here. The async SQL arm is kept
+for comparison only and is pinned to one worker: above parallel level 1 the async
+executor silently discarded a share of the commands submitted to it before 26.10.1
+(ArcadeData/arcadedb#7615, fixed in #7625), so `--async-parallel` accepts only 1. That
+arm now counts
+what landed against what it submitted and fails rather than reporting a time for work
+it did not do.
 
 Known limitation:
 Current `IMPORT DATABASE` behavior can vary by import path and data shape. In some
@@ -147,7 +161,7 @@ def build_rid_lookup_for_vertex_type(db, vertex_type: str) -> Dict[int, str]:
     rows = db.query(
         "sql",
         f"SELECT Id, @rid as rid FROM {safe_vertex_type}",  # nosec B608 - validated identifier
-    ).to_json_list()
+    ).to_list()
     rid_lookup: Dict[int, str] = {}
     for row in rows:
         row_id = row.get("Id")
@@ -502,6 +516,23 @@ def run_async_sql_graph_load(
     vertex_type: str,
     edge_type: str,
 ) -> dict:
+    """Comparison arm: async SQL INSERT/CREATE EDGE through the async executor.
+
+    This arm exists to measure the async executor, so it keeps using it. It is
+    pinned to one worker: above parallel level 1 the executor silently discarded
+    a share of the commands submitted to it before 26.10.1
+    (ArcadeData/arcadedb#7615, fixed in #7625), and a
+    benchmark that reports the time for work it did not do is worse than no
+    number. GraphBatch is the recommended bulk graph path and has its own arm
+    below. The submitted-versus-stored checks are what make the pin
+    falsifiable rather than a comment.
+    """
+    if async_parallel != 1:
+        raise ValueError(
+            "run_async_sql_graph_load only runs at --async-parallel 1; "
+            "see ArcadeData/arcadedb#7615"
+        )
+
     recreate_dir(db_path)
 
     db = arcadedb.create_database(
@@ -511,7 +542,7 @@ def run_async_sql_graph_load(
 
     db.set_read_your_writes(False)
     async_exec = db.async_executor()
-    async_exec.set_parallel_level(max(1, async_parallel))
+    async_exec.set_parallel_level(1)
     async_exec.set_commit_every(batch_size)
     async_exec.set_transaction_use_wal(False)
 
@@ -602,6 +633,12 @@ def run_async_sql_graph_load(
             .get("c")
             or 0
         )
+        if int(vertex_loaded) != vertex_count or int(edge_loaded) != edge_count:
+            raise RuntimeError(
+                f"Async SQL ingest stored {int(vertex_loaded)} of {vertex_count} "
+                f"vertices and {int(edge_loaded)} of {edge_count} edges; "
+                "see ArcadeData/arcadedb#7615"
+            )
 
         elapsed = time.perf_counter() - start
     finally:
@@ -649,9 +686,14 @@ def run_graph_batch_graph_load(
 
         rid_lookup: Dict[int, str] = {}
 
+        # WAL off (use_wal=False, GraphBatch's default): this example rebuilds its database from
+        # the source files, so a crash mid-import costs a re-run. An import that must survive a
+        # crash passes use_wal=True (ArcadeDB's recommendation, ArcadeData/arcadedb#8287).
         with db.graph_batch(
             batch_size=batch_size,
             expected_edge_count=edge_count,
+            # Two-way edges, as the schema declares them and as the other three
+            # arms store them (ArcadeData/arcadedb#8625).
             bidirectional=True,
             commit_every=batch_size,
             use_wal=False,
@@ -948,7 +990,7 @@ def main() -> None:
         "--async-parallel",
         type=int,
         default=1,
-        help="Parallel workers for async SQL path (default 1 for stability)",
+        help="Async SQL workers; only 1 is accepted (ArcadeData/arcadedb#7615)",
     )
     parser.add_argument(
         "--parallel",

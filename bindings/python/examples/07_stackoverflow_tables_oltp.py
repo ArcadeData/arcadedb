@@ -644,20 +644,21 @@ def insert_batch_arcadedb(db, table: Dict[str, Any], rows: List[Dict[str, Any]])
             db.command("sql", sql, args)
 
 
-def configure_arcadedb_async_loader(db, batch_size: int, parallelism: int = 1):
+def configure_arcadedb_bulk_loader(db):
+    """Put the database into bulk-load mode for the preload phase.
+
+    This preload used to submit one INSERT per row through
+    `async_executor().command(...)`. That path silently discarded records above
+    parallel level 1 before 26.10.1 (ArcadeData/arcadedb#7615, fixed in #7625),
+    so the rows now go through
+    `db.insert_many(...)`, which loops Java-side inside one transaction per
+    batch and returns the number written.
+    """
     db.set_read_your_writes(False)
-    async_exec = db.async_executor()
-    async_exec.set_parallel_level(max(1, parallelism))
-    async_exec.set_commit_every(batch_size)
-    async_exec.set_transaction_use_wal(False)
-    return async_exec
 
 
-def reset_arcadedb_async_loader(db, async_exec):
-    async_exec.wait_completion()
-    async_exec.close()
+def reset_arcadedb_bulk_loader(db):
     db.set_read_your_writes(True)
-    async_exec.set_transaction_use_wal(True)
 
 
 def insert_batch_sqlite(conn, table: Dict[str, Any], rows: List[Dict[str, Any]]):
@@ -736,7 +737,7 @@ def to_arcadedb_csv_value(field_type: str, value: Any) -> Any:
     return value
 
 
-def load_tables_arcadedb_async(
+def load_tables_arcadedb_bulk(
     db,
     data_dir: Path,
     batch_size: int,
@@ -744,13 +745,7 @@ def load_tables_arcadedb_async(
     id_pools: Dict[str, List[int]] = {table["name"]: [] for table in TABLE_DEFS}
     next_ids: Dict[str, int] = {table["name"]: 1 for table in TABLE_DEFS}
 
-    async_exec = configure_arcadedb_async_loader(db, batch_size, parallelism=1)
-    errors: List[Exception] = []
-
-    def on_error(exc: Exception):
-        errors.append(exc)
-
-    async_exec.on_error(on_error)
+    configure_arcadedb_bulk_loader(db)
     start = time.time()
     try:
         for table in TABLE_DEFS:
@@ -759,12 +754,21 @@ def load_tables_arcadedb_async(
             if not xml_path.exists():
                 raise FileNotFoundError(f"Missing XML file: {xml_path}")
 
-            columns = [field[0] for field in table["fields"]]
-            placeholders = ", ".join([f"{col} = ?" for col in columns])
-            insert_sql = f"INSERT INTO {table_name} SET {placeholders}"
-
             max_id = 0
-            initial_error_count = len(errors)
+            submitted = 0
+            written = 0
+            pending: List[Dict[str, Any]] = []
+
+            def flush(rows: List[Dict[str, Any]], name: str = table_name) -> int:
+                if not rows:
+                    return 0
+                n = db.insert_many(name, rows, commit_every=batch_size)
+                if n != len(rows):
+                    raise RuntimeError(
+                        f"insert_many wrote {n} of {len(rows)} rows for {name}"
+                    )
+                return n
+
             for attrs in iter_xml_rows(xml_path):
                 row = parse_row(attrs, table)
                 if row is None:
@@ -775,25 +779,28 @@ def load_tables_arcadedb_async(
                 if row_id > max_id:
                     max_id = row_id
 
-                payload = []
+                record: Dict[str, Any] = {}
                 for field_name, field_type, _ in table["fields"]:
                     value = sanitize_value(field_type, row.get(field_name))
-                    payload.append(to_arcadedb_sql_value(value))
+                    record[field_name] = to_arcadedb_sql_value(value)
 
-                async_exec.command("sql", insert_sql, args=payload)
+                pending.append(record)
+                submitted += 1
+                if len(pending) >= batch_size:
+                    written += flush(pending)
+                    pending = []
 
-            async_exec.wait_completion()
-            if len(errors) > initial_error_count:
+            written += flush(pending)
+            if written != submitted:
                 raise RuntimeError(
-                    f"Async preload failed for {table_name} "
-                    f"(first error: {errors[initial_error_count]})"
+                    f"Preload wrote {written} of {submitted} rows " f"for {table_name}"
                 )
 
             next_ids[table_name] = max_id + 1
 
         return id_pools, next_ids, time.time() - start
     finally:
-        reset_arcadedb_async_loader(db, async_exec)
+        reset_arcadedb_bulk_loader(db)
 
 
 def load_tables(
@@ -1104,7 +1111,7 @@ def run_oltp_arcadedb(
 
     ingest_started_at = datetime.now(timezone.utc).isoformat()
     print(f"Ingest start (arcadedb, UTC): {ingest_started_at}")
-    id_pools, next_ids, preload_time = load_tables_arcadedb_async(
+    id_pools, next_ids, preload_time = load_tables_arcadedb_bulk(
         db=db,
         data_dir=data_dir,
         batch_size=batch_size,
@@ -1152,7 +1159,8 @@ def run_oltp_arcadedb(
                     _ = list(
                         db.query(
                             "sql",
-                            f"SELECT {projection} FROM {table_name} WHERE Id = {target_id}",
+                            f"SELECT {projection} FROM {table_name} WHERE Id = ?",
+                            target_id,
                         )
                     )
             elif op == "update":
@@ -1166,7 +1174,8 @@ def run_oltp_arcadedb(
                     db.run_in_transaction(
                         lambda: db.command(
                             "sql",
-                            f"UPDATE {table_name} SET {update_col} = coalesce({update_col}, 0) + 1 WHERE Id = {target_id}",
+                            f"UPDATE {table_name} SET {update_col} = coalesce({update_col}, 0) + 1 WHERE Id = ?",
+                            target_id,
                         ),
                         retries=100,
                     )
@@ -1193,7 +1202,8 @@ def run_oltp_arcadedb(
                     db.run_in_transaction(
                         lambda: db.command(
                             "sql",
-                            f"DELETE FROM {table_name} WHERE Id = {target_id}",
+                            f"DELETE FROM {table_name} WHERE Id = ?",
+                            target_id,
                         ),
                         retries=100,
                     )

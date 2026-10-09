@@ -5,15 +5,9 @@ Tests for NumPy support in ArcadeDB Python bindings.
 import arcadedb_embedded as arcadedb
 import pytest
 
-try:
-    import numpy as np
-
-    HAS_NUMPY = True
-except ImportError:
-    HAS_NUMPY = False
+np = pytest.importorskip("numpy")
 
 
-@pytest.mark.skipif(not HAS_NUMPY, reason="NumPy not installed")
 def test_numpy_array_conversion_in_command(temp_db):
     """Test automatic conversion of NumPy arrays in db.command()."""
     db = temp_db
@@ -39,7 +33,6 @@ def test_numpy_array_conversion_in_command(temp_db):
     assert abs(stored_vec[2] - 0.3) < 0.0001
 
 
-@pytest.mark.skipif(not HAS_NUMPY, reason="NumPy not installed")
 def test_numpy_array_conversion_in_query(temp_db):
     """Test automatic conversion of NumPy arrays in db.query()."""
     db = temp_db
@@ -47,9 +40,17 @@ def test_numpy_array_conversion_in_query(temp_db):
     db.command("sql", "CREATE VERTEX TYPE VectorData")
     db.command("sql", "CREATE PROPERTY VectorData.vector ARRAY_OF_FLOATS")
 
-    # Insert data manually first
+    # Insert data manually first. The vector goes in as ONE array parameter:
+    # a bare Python list as the only argument is the positional-parameter
+    # array itself, so it would bind vector = 0.1.
     with db.transaction():
-        db.command("sql", "INSERT INTO VectorData SET vector = ?", [0.1, 0.2, 0.3])
+        db.command(
+            "sql",
+            "INSERT INTO VectorData SET vector = ?",
+            np.array([0.1, 0.2, 0.3], dtype=np.float32),
+        )
+    stored = db.query("sql", "SELECT vector FROM VectorData").first().get("vector")
+    assert np.allclose(stored, [0.1, 0.2, 0.3])
 
     vec = np.array([0.1, 0.2, 0.3], dtype=np.float32)
 
@@ -60,7 +61,6 @@ def test_numpy_array_conversion_in_query(temp_db):
         pytest.fail(f"Query with NumPy array failed: {e}")
 
 
-@pytest.mark.skipif(not HAS_NUMPY, reason="NumPy not installed")
 def test_numpy_array_conversion_in_transaction(temp_db):
     """Test NumPy array conversion in regular transactions (no batch context)."""
     db = temp_db
