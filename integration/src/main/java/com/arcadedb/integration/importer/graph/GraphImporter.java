@@ -79,9 +79,9 @@ import java.util.logging.Level;
  * {@code int}), plus, while the edges are written, the head of its two edge lists in the edge
  * {@link GraphBatch} (32 to 48 bytes). That is roughly 12 to 17 GB for 200M vertices, on top of the page
  * cache ({@code arcadedb.maxPageRAM}, a quarter of the heap by default). Size the heap for the peak, not for
- * that: an identity map that grows holds its old table and its new one, half as large again, while it
- * copies, which at 200M keys is another 3 to 5 GB for a moment. The edge batch's table is sized once from the
- * vertex count, so it never grows. A pass logs how far it has got
+ * that: a table that grows holds its old copy and its new one, half as large again, while it copies,
+ * which at 200M vertices is another 3 to 5 GB for a moment, once per identity map and once per edge
+ * batch. A pass logs how far it has got
  * every {@value #PROGRESS_INTERVAL_MS} ms, and warns when the JVM spends most of its time collecting
  * garbage, which is what a heap too small for the load looks like (issue #9575).
  * <p>
@@ -1681,7 +1681,8 @@ public class GraphImporter implements AutoCloseable {
     final TypeState dstTs = typeStates.get(ec.dstType);
     final ProgressLog progress = new ProgressLog(edgeType, "edges");
 
-    try (final GraphBatch batch = newEdgeBatch(srcTs, dstTs)) {
+    // A collected edge type knows its edge count: it touches at most two vertices an edge
+    try (final GraphBatch batch = newEdgeBatch(Math.min(endpointVertices(srcTs, dstTs), 2L * ec.srcIdx.size))) {
       final int[] sSrc = ec.srcIdx.data;
       final int[] sDst = ec.dstIdx.data;
       final int size = ec.srcIdx.size;
@@ -1723,7 +1724,8 @@ public class GraphImporter implements AutoCloseable {
     final long unresolvedBefore = unresolvedEdges;
     final ProgressLog progress = new ProgressLog(edgeType, "edge rows");
 
-    try (final GraphBatch batch = newEdgeBatch(fromTs, toTs)) {
+    final long touchable = endpointVertices(fromTs, toTs);
+    try (final GraphBatch batch = newEdgeBatch(limit > 0 ? Math.min(touchable, 2 * limit) : touchable)) {
       esd.source.forEach(record -> {
         if (limit > 0 && rows[0] >= limit)
           return;
@@ -1763,7 +1765,7 @@ public class GraphImporter implements AutoCloseable {
     } catch (final Exception | Error e) {
       if (created[0] > 0)
         LogManager.instance().log(this, Level.WARNING,
-            "  %-12s failed at row %,d: the import is PARTIAL - the %,d edges of the rows before it are on the disk",
+            "  %-12s failed at row %,d: the import is PARTIAL - the %,d edges of the rows before it were written and connected",
             edgeType, rows[0], created[0]);
       throw e;
     } finally {
@@ -1781,19 +1783,24 @@ public class GraphImporter implements AutoCloseable {
   }
 
   /**
-   * The batch one edge type is written through. Its edges can touch at most every vertex of their two
-   * endpoint types, which is how many edge-list heads the batch keeps until it closes: told so, it
-   * sizes that table once rather than growing it through copies that briefly hold two of them.
+   * The batch one edge type is written through. {@code maxVertices} bounds how many vertices its
+   * edges can touch, which is how many edge-list heads the batch keeps until it closes: the table
+   * holding them still grows from small, but its last growth stops at that bound instead of
+   * overshooting it by up to half while two tables are alive.
    */
-  private GraphBatch newEdgeBatch(final TypeState srcTs, final TypeState dstTs) {
+  private GraphBatch newEdgeBatch(final long maxVertices) {
     return database.batch()
         .withBatchSize(500_000)
         .withBidirectional(true)
         .withWAL(false)
         .withParallelFlush(false)
         .withCommitEvery(50_000)
-        .withExpectedVertices(srcTs == dstTs ? srcTs.count : (long) srcTs.count + dstTs.count)
+        .withMaxVertices(maxVertices)
         .build();
+  }
+
+  private static long endpointVertices(final TypeState srcTs, final TypeState dstTs) {
+    return srcTs == dstTs ? srcTs.count : (long) srcTs.count + dstTs.count;
   }
 
   // ═══════════════════════════════════════════════════════════════════

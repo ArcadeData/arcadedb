@@ -414,9 +414,9 @@ public class GraphBatch implements AutoCloseable {
       final boolean lightEdges, final boolean bidirectional, final int commitEvery,
       final boolean useWAL, final WALFile.FlushType walFlush, final boolean preAllocateEdgeChunks,
       final boolean parallelFlush, final int commitRetries, final long commitRetryDelayMs,
-      final int chunkCacheCapacity, final int maxDeferredIncomingEdges, final int expectedVertexCount) {
+      final int chunkCacheCapacity, final int maxDeferredIncomingEdges, final long maxVertexCount) {
     this.database = database;
-    this.deferredHeads = new DeferredHeadChunks(expectedVertexCount);
+    this.deferredHeads = new DeferredHeadChunks(maxVertexCount);
     this.guardOwner = guardOwner;
     this.batchSize = batchSize;
     this.edgeListInitialSize = edgeListInitialSize;
@@ -3558,7 +3558,7 @@ public class GraphBatch implements AutoCloseable {
     private long               commitRetryDelayMs    = 1000;
     private int                chunkCacheCapacity       = DEFAULT_CHUNK_CACHE_CAPACITY;
     private int                maxDeferredIncomingEdges = DEFAULT_MAX_DEFERRED_INCOMING_EDGES;
-    private int                expectedVertexCount      = 0;
+    private long               maxVertexCount           = 0;
 
     Builder(final DatabaseInternal database, final LocalDatabase guardOwner) {
       this.database = database;
@@ -3591,16 +3591,17 @@ public class GraphBatch implements AutoCloseable {
     }
 
     /**
-     * How many distinct vertices the edges of this batch are expected to touch, when the caller knows it (a bulk
-     * loader that has just created them does). The batch keeps the head of the edge lists of every vertex it touches
-     * until {@link GraphBatch#close()}, and a table sized for them up front is allocated once instead of growing
-     * through copies that each hold the old table and the new one at the same time (issue #9575). An overestimate
-     * costs 32 bytes a vertex that never comes; 0, the default, starts small and grows.
+     * The most distinct vertices the edges of this batch can touch, when the caller knows a bound (a bulk loader that
+     * has just created them does). The batch keeps the head of the edge lists of every vertex it touches until
+     * {@link GraphBatch#close()}, in a table that grows by half: the bound stops its last growth at the size the bound
+     * needs instead of overshooting it, and nothing is allocated for vertices the batch never touches (issue #9575).
+     * 0, the default, means no bound. A bound that turns out too low costs nothing but the overshoot it was meant to
+     * save.
      */
-    public Builder withExpectedVertices(final long count) {
+    public Builder withMaxVertices(final long count) {
       if (count < 0)
-        throw new IllegalArgumentException("Expected vertices must not be negative: " + count);
-      this.expectedVertexCount = (int) Math.min(Integer.MAX_VALUE, count);
+        throw new IllegalArgumentException("Max vertices must not be negative: " + count);
+      this.maxVertexCount = count;
       return this;
     }
 
@@ -3770,7 +3771,7 @@ public class GraphBatch implements AutoCloseable {
       try {
         return new GraphBatch(database, guardOwner, effectiveBatchSize, edgeListInitialSize, lightEdges,
             bidirectional, effectiveCommitEvery, effectiveUseWAL, walFlush, preAllocateEdgeChunks, parallelFlush,
-            commitRetries, commitRetryDelayMs, chunkCacheCapacity, maxDeferredIncomingEdges, expectedVertexCount);
+            commitRetries, commitRetryDelayMs, chunkCacheCapacity, maxDeferredIncomingEdges, maxVertexCount);
       } catch (final RuntimeException | Error e) {
         if (guardOwner != null)
           guardOwner.batchFinished();

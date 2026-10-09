@@ -23,6 +23,7 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.GraphBatch;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -270,6 +271,15 @@ class Issue9575GraphImporterLargeLoadTest {
     assertThat(GraphImporter.grownTableCapacity(1 << 30)).isEqualTo((1 << 30) + (1 << 29) + 1);
     assertThat(GraphImporter.grownTableCapacity(1_500_000_000)).isEqualTo(MAX_ARRAY_LENGTH);
     assertThatThrownBy(() -> GraphImporter.grownTableCapacity(MAX_ARRAY_LENGTH)).isInstanceOf(IllegalStateException.class);
+  }
+
+  /** The bound the importer hands its edge batches: a negative one is a caller bug, a huge one allocates nothing. */
+  @Test
+  void anEdgeBatchTakesAVertexBound() {
+    assertThatThrownBy(() -> database.batch().withMaxVertices(-1)).isInstanceOf(IllegalArgumentException.class);
+    try (final GraphBatch batch = database.batch().withMaxVertices(Long.MAX_VALUE).build()) {
+      assertThat(batch).isNotNull();
+    }
   }
 
   @Test
