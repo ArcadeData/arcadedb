@@ -6836,7 +6836,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
       try {
         local = readLocalBootstrapState(dbName, settleBudget(settleDeadline));
       } catch (final Exception e) {
-        LogManager.instance().log(this, Level.WARNING,
+        // A database closed on a node going away is expected, not a warning (issue #9568)
+        LogManager.instance().log(this, isClosedUnderShutdown(dbName, e) ? Level.FINE : Level.WARNING,
             "Could not read local state of '%s' to verify bootstrap divergence: %s", dbName, e.getMessage());
         continue;
       }
