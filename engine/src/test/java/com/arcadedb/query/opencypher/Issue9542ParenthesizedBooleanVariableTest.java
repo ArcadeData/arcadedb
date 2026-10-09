@@ -129,6 +129,8 @@ class Issue9542ParenthesizedBooleanVariableTest extends TestHelper {
   void parenthesizedBacktickedBooleanVariable() {
     assertThat(column("WITH true AS `my flag` WHERE (`my flag`) RETURN 1 AS x", "x")).containsExactly(1L);
     assertThat(column("WITH false AS `flag` WHERE (`flag`) RETURN 1 AS x", "x")).isEmpty();
+    // a doubled backtick is one backtick of the name
+    assertThat(column("WITH true AS `a``b` WHERE (`a``b`) RETURN 1 AS x", "x")).containsExactly(1L);
   }
 
   @Test
