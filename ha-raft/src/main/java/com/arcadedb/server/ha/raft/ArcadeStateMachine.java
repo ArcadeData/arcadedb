@@ -223,6 +223,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
   // position comes only from the snapshot marker (see ha-raft/CLAUDE.md). Never raised back: the node is going away, and
   // neither a restart nor RaftHAServer.restartRatis() reuses this instance (both go through createStateMachine()).
   private final    AtomicLong                replayFloor      = new AtomicLong(Long.MAX_VALUE);
+  // Set once isNodeShuttingDown() has seen the JVM running its shutdown hooks (issue #9550); never cleared.
+  private volatile boolean                   jvmShutdownSeen;
   // The highest index a leader-driven Raft install covered (issues #8577, #8651): a replayed entry at or below it is
   // stale whatever it names, so it is the one boundary every apply path can consult, including the ones that name no
   // database (which have no install gate) and Ratis's own metadata entries (which never reach applyTransaction).
@@ -3568,7 +3570,13 @@ public class ArcadeStateMachine extends BaseStateMachine {
     final ArcadeDBServer srv = this.server;
     if (srv != null && srv.getStatus() == ArcadeDBServer.STATUS.SHUTTING_DOWN)
       return true;
-    return isJvmShuttingDown();
+    // Cached once seen: a JVM shutdown is never withdrawn, and a burst of failing entries would otherwise probe per entry
+    if (jvmShutdownSeen)
+      return true;
+    if (!isJvmShuttingDown())
+      return false;
+    jvmShutdownSeen = true;
+    return true;
   }
 
   /**
