@@ -62,9 +62,10 @@ import java.util.Set;
  * @author Saeed Tabrizi (saeed a_t  nowcando.com)
  */
 public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
+  public static final String NAME = "astar";
+
   // NO EDGE TYPE NAMED: EVERY TYPE. SHARED, AS THE OLTP EXPANSION ASKS FOR IT ONCE PER NODE
   private static final String[] ANY_EDGE_TYPE = new String[0];
-  public static final String NAME = "astar";
 
   private static final Set<String> OPTIONS = Set.of(PARAM_DIRECTION, PARAM_EDGE_TYPE_NAMES, PARAM_VERTEX_AXIS_NAMES,
       PARAM_PARALLEL, PARAM_MAX_DEPTH, PARAM_EMPTY_IF_MAX_DEPTH, PARAM_TIE_BREAKER, PARAM_D_FACTOR, PARAM_HEURISTIC_FORMULA,

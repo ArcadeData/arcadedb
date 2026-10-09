@@ -178,6 +178,12 @@ class Issue8629UnidirectionalGraphAlgorithmsTest extends TestHelper {
     for (final Database db : new Database[] { database, uni })
       db.transaction(() -> db.command("opencypher", "MATCH (a:N {name: 'n3'}) CREATE (a)-[:R {w: 0.5}]->(a)").close());
     assertSameAfterWrite();
+    // an algorithm reads the self loop as the bidirectional type stores it: once per list it sits in, so twice in a
+    // BOTH degree, as a graph degree counts it
+    assertSame("opencypher", "CALL algo.degree(null, 'BOTH') YIELD node, inDegree, outDegree, degree "
+        + "RETURN node, inDegree, outDegree, degree", true);
+    assertSame("opencypher", "CALL algo.triangleCount('R') YIELD node, triangles RETURN node, triangles", true);
+    assertSame("opencypher", "CALL algo.wcc() YIELD node, componentId RETURN count(DISTINCT componentId) AS c", true);
 
     for (final Database db : new Database[] { database, uni })
       db.transaction(() -> db.command("opencypher", "MATCH (a:N {name: 'n3'}) SET a:Extra RETURN a").close());
