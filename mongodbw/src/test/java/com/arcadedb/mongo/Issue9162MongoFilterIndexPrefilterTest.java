@@ -257,6 +257,8 @@ class Issue9162MongoFilterIndexPrefilterTest extends BaseMongoServerTest {
     // both parts bind their own parameters: the _id $in and the field $in must not overwrite each other
     assertThat(ids(c, "{_id: {$in: [1, 3]}, sku: {$in: ['a', 'b']}}")).containsExactly(1);
     assertThat(ids(c, "{_id: {$in: [1, 2, 3]}, sku: 'c', price: {$in: [1]}}")).containsExactly(3);
+    // a range on the field next to an _id $in: the parameters of the two parts keep their own names
+    assertThat(ids(c, "{_id: {$in: [1, 2, 3]}, price: {$gte: 0, $lt: 1}}")).containsExactly(1, 2);
     assertThat(c.updateOne(parse("{_id: 2, sku: 'b'}"), parse("{$set: {hit: 1}}")).getModifiedCount()).isEqualTo(1);
     assertThat(c.updateOne(parse("{_id: 2, sku: 'a'}"), parse("{$set: {hit: 2}}")).getModifiedCount()).isZero();
   }
