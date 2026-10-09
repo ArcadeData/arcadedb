@@ -74,9 +74,9 @@ class ArcadeStateMachineAppliedIndexPerDatabaseTest {
   private String         dbOtherPath;
 
   /**
-   * A real {@link ArcadeDBServer} that records how many times the single-argument
-   * {@link #getDatabase(String)} - the call {@code applyBootstrapFingerprintEntry} reaches only on the
-   * non-skip (verification) path - has been invoked. Everything else delegates to the real server.
+   * A real {@link ArcadeDBServer} that records how many times a database lookup - the call
+   * {@code applyBootstrapFingerprintEntry} reaches only on the non-skip (verification) path - has been invoked.
+   * Everything else delegates to the real server.
    */
   private static final class CountingServer extends ArcadeDBServer {
     final AtomicInteger getDatabaseInvocations = new AtomicInteger();
@@ -89,6 +89,13 @@ class ArcadeStateMachineAppliedIndexPerDatabaseTest {
     public ServerDatabase getDatabase(final String databaseName) {
       getDatabaseInvocations.incrementAndGet();
       return super.getDatabase(databaseName);
+    }
+
+    /** Counted too: since issue #9568 the verification reads an open database without the overload that reopens. */
+    @Override
+    public ServerDatabase getDatabase(final String databaseName, final boolean createIfNotExists, final boolean allowLoad) {
+      getDatabaseInvocations.incrementAndGet();
+      return super.getDatabase(databaseName, createIfNotExists, allowLoad);
     }
   }
 
