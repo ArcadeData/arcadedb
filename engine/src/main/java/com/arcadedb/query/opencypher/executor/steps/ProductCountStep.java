@@ -38,7 +38,8 @@ import java.util.List;
  * over that part alone - so the cost is the sum of the parts' costs rather than their product.
  * <p>
  * The parts are counted in order and the first one with no row ends the count, since the product is then 0 whatever the
- * others hold. A product that does not fit a {@code long} is an error rather than a wrapped number: those rows could not
+ * others hold. A later part is then never run, so an error its own evaluation would raise is not raised either: the
+ * row pipeline, which builds no row once a part is empty, does not evaluate it either. A product that does not fit a {@code long} is an error rather than a wrapped number: those rows could not
  * be counted any other way either.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -91,8 +92,8 @@ public final class ProductCountStep extends AbstractExecutionStep {
       }
       if (overflow)
         throw new CommandExecutionException(
-            "count(*) overflow: the product of the counts of the " + parts.size() + " disconnected parts of the MATCH does "
-                + "not fit a 64-bit integer");
+            "Row count overflow: the product of the counts of the " + parts.size() + " disconnected parts of the MATCH "
+                + "does not fit a 64-bit integer");
 
       if (context.isProfiling())
         rowCount = 1;

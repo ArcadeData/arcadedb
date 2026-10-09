@@ -150,6 +150,9 @@ final class PassThroughWithFolder {
   /**
    * The MATCH with the names its patterns bind resolved against the scope, or null when it cannot be folded: it binds
    * anew a name a WITH dropped, renames a relationship or a path, or reads an alias in an expression.
+   * <p>
+   * Adds the names the clause binds to {@code scope} and {@code bound}, which are the fold's own working state:
+   * {@link #fold} owns both, and a WITH replaces the scope with a fresh map rather than sharing it.
    */
   private static MatchClause foldMatch(final MatchClause match, final Map<String, String> scope, final Set<String> bound) {
     if (!match.hasPathPatterns())
@@ -208,7 +211,8 @@ final class PassThroughWithFolder {
             || (node.hasWhereExpression() && !readsOnlyUnrenamed(CypherReferencedVariables.of(node.getWhereExpression()), scope)))
           return null;
       for (final RelationshipPattern relationship : pattern.getRelationships())
-        if (!valuesReadOnlyUnrenamed(relationship.getProperties(), scope))
+        if (!valuesReadOnlyUnrenamed(relationship.getProperties(), scope) || (relationship.hasWhereExpression()
+            && !readsOnlyUnrenamed(CypherReferencedVariables.of(relationship.getWhereExpression()), scope)))
           return null;
     }
 

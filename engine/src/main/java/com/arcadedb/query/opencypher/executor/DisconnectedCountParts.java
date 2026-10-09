@@ -208,6 +208,10 @@ final class DisconnectedCountParts {
       addName(names, relationship.getVariable());
       if (relationship.getPropertiesParameterName() == null && !addValueNames(names, relationship.getProperties()))
         return null;
+      // an inline WHERE on the relationship can read any variable in scope, so it joins the parts it reads
+      if (relationship.hasWhereExpression()
+          && !addNames(names, CypherReferencedVariables.of(relationship.getWhereExpression())))
+        return null;
     }
     return names;
   }
