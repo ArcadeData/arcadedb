@@ -140,6 +140,8 @@ sql_expect "CREATE VERTEX TYPE" 'SmokeV' "CREATE VERTEX TYPE SmokeV"
 sql_expect "CREATE VERTEX" 'Grace' "CREATE VERTEX SmokeV SET name = 'Grace'"
 sql_expect "MATCH" 'Grace' "MATCH {type: SmokeV, as: p, where: (name = 'Grace')} RETURN p.name AS name"
 sql_expect "DELETE" '"count":1' "DELETE FROM T WHERE n = 43"
+# the math_* functions call java.lang.Math through Method.invoke, refused for unregistered methods (#9495)
+sql_expect "math_ function" '"r":5' "SELECT math_abs(-5) AS r"
 # a full-text index creates its analyzer by class name and Lucene creates its token attributes reflectively: neither is
 # in the GraalVM metadata repository for this Lucene version, so every FULL_TEXT index used to fail here (#9495)
 sql_expect "CREATE PROPERTY" 'name' "CREATE PROPERTY SmokeV.name STRING"

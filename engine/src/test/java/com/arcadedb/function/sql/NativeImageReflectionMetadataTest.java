@@ -30,12 +30,14 @@ import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.net.URISyntaxException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -91,6 +93,50 @@ class NativeImageReflectionMetadataTest {
     missing.removeAll(noArgConstructorsInMetadata());
 
     assertThat(missing).as("add a no-arg <init> entry for each of these to " + METADATA).isEmpty();
+  }
+
+  /**
+   * The {@code math_*} SQL functions ({@link SQLFunctionReflectionFactory}) call every public static method of
+   * {@link Math} through {@code Method.invoke}, which the native image allows only for registered methods: without these
+   * entries every one of them failed there with {@code MissingReflectionRegistrationError} (#9495).
+   */
+  @Test
+  void everyMathMethodBehindTheMathFunctionsIsInTheNativeMetadata() throws IOException {
+    final Set<String> required = new TreeSet<>();
+    for (final Method method : Math.class.getMethods())
+      if (Modifier.isStatic(method.getModifiers()))
+        required.add(signature(method.getName(), Arrays.stream(method.getParameterTypes()).map(Class::getName).toList()));
+    assertThat(required).contains("abs(int)", "sqrt(double)");
+
+    final Set<String> registered = new HashSet<>();
+    final JSONArray reflection = new JSONObject(Files.readString(METADATA, StandardCharsets.UTF_8)).getJSONArray("reflection");
+    for (int i = 0; i < reflection.length(); i++) {
+      final JSONObject entry = reflection.getJSONObject(i);
+      if (!"java.lang.Math".equals(typeOf(entry)))
+        continue;
+      final JSONArray methods = entry.getJSONArray("methods", new JSONArray());
+      for (int m = 0; m < methods.length(); m++) {
+        final JSONObject method = methods.getJSONObject(m);
+        final List<String> types = new ArrayList<>();
+        final JSONArray parameterTypes = method.getJSONArray("parameterTypes", new JSONArray());
+        for (int t = 0; t < parameterTypes.length(); t++)
+          types.add(parameterTypes.getString(t));
+        registered.add(signature(method.getString("name", ""), types));
+      }
+    }
+
+    final Set<String> missing = new TreeSet<>(required);
+    missing.removeAll(registered);
+    assertThat(missing).as("add these java.lang.Math methods to " + METADATA).isEmpty();
+  }
+
+  /** A reflection entry's type is a class name, or an object for a proxy or a lambda: those answer "". */
+  private static String typeOf(final JSONObject entry) {
+    return entry.get("type", "") instanceof String type ? type : "";
+  }
+
+  private static String signature(final String name, final List<String> parameterTypes) {
+    return name + "(" + String.join(",", parameterTypes) + ")";
   }
 
   /**
@@ -164,7 +210,7 @@ class NativeImageReflectionMetadataTest {
     for (int i = 0; i < reflection.length(); i++) {
       final JSONObject entry = reflection.getJSONObject(i);
       if (!entry.getJSONArray("methods", new JSONArray()).isEmpty())
-        result.add(entry.getString("type", ""));
+        result.add(typeOf(entry));
     }
     return result;
   }
@@ -178,7 +224,7 @@ class NativeImageReflectionMetadataTest {
       for (int m = 0; m < methods.length(); m++) {
         final JSONObject method = methods.getJSONObject(m);
         if ("<init>".equals(method.getString("name", "")) && method.getJSONArray("parameterTypes", new JSONArray()).isEmpty())
-          result.add(entry.getString("type", ""));
+          result.add(typeOf(entry));
       }
     }
     return result;

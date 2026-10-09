@@ -487,6 +487,9 @@ Two more groups are listed in full rather than as far as a trace happened to rea
 - the methods the Snowball stemmers' `Among` tables name (`FinnishStemmer`, `HindiStemmer`,
   `IndonesianStemmer`): they are looked up with `MethodHandles.findVirtual` in the stemmer's static
   initializer, so a missing one makes the whole class fail to load.
+- every public static method of `java.lang.Math`: the `math_*` SQL functions (`math_abs`, `math_max`,
+  ...) call them through `Method.invoke`, which the image refuses with a
+  `MissingReflectionRegistrationError` for an unregistered method.
 
 One analyzer still does not work in the native binary: `org.apache.lucene.analysis.th.ThaiAnalyzer`
 fails with "This JRE does not have support for Thai segmentation", because the JDK's dictionary-based

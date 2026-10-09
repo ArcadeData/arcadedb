@@ -1833,7 +1833,708 @@
       ]
     },
     {
-      "type": "java.lang.Math"
+      "type": "java.lang.Math",
+      "methods": [
+        {
+          "name": "IEEEremainder",
+          "parameterTypes": [
+            "double",
+            "double"
+          ]
+        },
+        {
+          "name": "abs",
+          "parameterTypes": [
+            "double"
+          ]
+        },
+        {
+          "name": "abs",
+          "parameterTypes": [
+            "float"
+          ]
+        },
+        {
+          "name": "abs",
+          "parameterTypes": [
+            "int"
+          ]
+        },
+        {
+          "name": "abs",
+          "parameterTypes": [
+            "long"
+          ]
+        },
+        {
+          "name": "absExact",
+          "parameterTypes": [
+            "int"
+          ]
+        },
+        {
+          "name": "absExact",
+          "parameterTypes": [
+            "long"
+          ]
+        },
+        {
+          "name": "acos",
+          "parameterTypes": [
+            "double"
+          ]
+        },
+        {
+          "name": "addExact",
+          "parameterTypes": [
+            "int",
+            "int"
+          ]
+        },
+        {
+          "name": "addExact",
+          "parameterTypes": [
+            "long",
+            "long"
+          ]
+        },
+        {
+          "name": "asin",
+          "parameterTypes": [
+            "double"
+          ]
+        },
+        {
+          "name": "atan",
+          "parameterTypes": [
+            "double"
+          ]
+        },
+        {
+          "name": "atan2",
+          "parameterTypes": [
+            "double",
+            "double"
+          ]
+        },
+        {
+          "name": "cbrt",
+          "parameterTypes": [
+            "double"
+          ]
+        },
+        {
+          "name": "ceil",
+          "parameterTypes": [
+            "double"
+          ]
+        },
+        {
+          "name": "ceilDiv",
+          "parameterTypes": [
+            "int",
+            "int"
+          ]
+        },
+        {
+          "name": "ceilDiv",
+          "parameterTypes": [
+            "long",
+            "int"
+          ]
+        },
+        {
+          "name": "ceilDiv",
+          "parameterTypes": [
+            "long",
+            "long"
+          ]
+        },
+        {
+          "name": "ceilDivExact",
+          "parameterTypes": [
+            "int",
+            "int"
+          ]
+        },
+        {
+          "name": "ceilDivExact",
+          "parameterTypes": [
+            "long",
+            "long"
+          ]
+        },
+        {
+          "name": "ceilMod",
+          "parameterTypes": [
+            "int",
+            "int"
+          ]
+        },
+        {
+          "name": "ceilMod",
+          "parameterTypes": [
+            "long",
+            "int"
+          ]
+        },
+        {
+          "name": "ceilMod",
+          "parameterTypes": [
+            "long",
+            "long"
+          ]
+        },
+        {
+          "name": "clamp",
+          "parameterTypes": [
+            "double",
+            "double",
+            "double"
+          ]
+        },
+        {
+          "name": "clamp",
+          "parameterTypes": [
+            "float",
+            "float",
+            "float"
+          ]
+        },
+        {
+          "name": "clamp",
+          "parameterTypes": [
+            "long",
+            "int",
+            "int"
+          ]
+        },
+        {
+          "name": "clamp",
+          "parameterTypes": [
+            "long",
+            "long",
+            "long"
+          ]
+        },
+        {
+          "name": "copySign",
+          "parameterTypes": [
+            "double",
+            "double"
+          ]
+        },
+        {
+          "name": "copySign",
+          "parameterTypes": [
+            "float",
+            "float"
+          ]
+        },
+        {
+          "name": "cos",
+          "parameterTypes": [
+            "double"
+          ]
+        },
+        {
+          "name": "cosh",
+          "parameterTypes": [
+            "double"
+          ]
+        },
+        {
+          "name": "decrementExact",
+          "parameterTypes": [
+            "int"
+          ]
+        },
+        {
+          "name": "decrementExact",
+          "parameterTypes": [
+            "long"
+          ]
+        },
+        {
+          "name": "divideExact",
+          "parameterTypes": [
+            "int",
+            "int"
+          ]
+        },
+        {
+          "name": "divideExact",
+          "parameterTypes": [
+            "long",
+            "long"
+          ]
+        },
+        {
+          "name": "exp",
+          "parameterTypes": [
+            "double"
+          ]
+        },
+        {
+          "name": "expm1",
+          "parameterTypes": [
+            "double"
+          ]
+        },
+        {
+          "name": "floor",
+          "parameterTypes": [
+            "double"
+          ]
+        },
+        {
+          "name": "floorDiv",
+          "parameterTypes": [
+            "int",
+            "int"
+          ]
+        },
+        {
+          "name": "floorDiv",
+          "parameterTypes": [
+            "long",
+            "int"
+          ]
+        },
+        {
+          "name": "floorDiv",
+          "parameterTypes": [
+            "long",
+            "long"
+          ]
+        },
+        {
+          "name": "floorDivExact",
+          "parameterTypes": [
+            "int",
+            "int"
+          ]
+        },
+        {
+          "name": "floorDivExact",
+          "parameterTypes": [
+            "long",
+            "long"
+          ]
+        },
+        {
+          "name": "floorMod",
+          "parameterTypes": [
+            "int",
+            "int"
+          ]
+        },
+        {
+          "name": "floorMod",
+          "parameterTypes": [
+            "long",
+            "int"
+          ]
+        },
+        {
+          "name": "floorMod",
+          "parameterTypes": [
+            "long",
+            "long"
+          ]
+        },
+        {
+          "name": "fma",
+          "parameterTypes": [
+            "double",
+            "double",
+            "double"
+          ]
+        },
+        {
+          "name": "fma",
+          "parameterTypes": [
+            "float",
+            "float",
+            "float"
+          ]
+        },
+        {
+          "name": "getExponent",
+          "parameterTypes": [
+            "double"
+          ]
+        },
+        {
+          "name": "getExponent",
+          "parameterTypes": [
+            "float"
+          ]
+        },
+        {
+          "name": "hypot",
+          "parameterTypes": [
+            "double",
+            "double"
+          ]
+        },
+        {
+          "name": "incrementExact",
+          "parameterTypes": [
+            "int"
+          ]
+        },
+        {
+          "name": "incrementExact",
+          "parameterTypes": [
+            "long"
+          ]
+        },
+        {
+          "name": "log",
+          "parameterTypes": [
+            "double"
+          ]
+        },
+        {
+          "name": "log10",
+          "parameterTypes": [
+            "double"
+          ]
+        },
+        {
+          "name": "log1p",
+          "parameterTypes": [
+            "double"
+          ]
+        },
+        {
+          "name": "max",
+          "parameterTypes": [
+            "double",
+            "double"
+          ]
+        },
+        {
+          "name": "max",
+          "parameterTypes": [
+            "float",
+            "float"
+          ]
+        },
+        {
+          "name": "max",
+          "parameterTypes": [
+            "int",
+            "int"
+          ]
+        },
+        {
+          "name": "max",
+          "parameterTypes": [
+            "long",
+            "long"
+          ]
+        },
+        {
+          "name": "min",
+          "parameterTypes": [
+            "double",
+            "double"
+          ]
+        },
+        {
+          "name": "min",
+          "parameterTypes": [
+            "float",
+            "float"
+          ]
+        },
+        {
+          "name": "min",
+          "parameterTypes": [
+            "int",
+            "int"
+          ]
+        },
+        {
+          "name": "min",
+          "parameterTypes": [
+            "long",
+            "long"
+          ]
+        },
+        {
+          "name": "multiplyExact",
+          "parameterTypes": [
+            "int",
+            "int"
+          ]
+        },
+        {
+          "name": "multiplyExact",
+          "parameterTypes": [
+            "long",
+            "int"
+          ]
+        },
+        {
+          "name": "multiplyExact",
+          "parameterTypes": [
+            "long",
+            "long"
+          ]
+        },
+        {
+          "name": "multiplyFull",
+          "parameterTypes": [
+            "int",
+            "int"
+          ]
+        },
+        {
+          "name": "multiplyHigh",
+          "parameterTypes": [
+            "long",
+            "long"
+          ]
+        },
+        {
+          "name": "negateExact",
+          "parameterTypes": [
+            "int"
+          ]
+        },
+        {
+          "name": "negateExact",
+          "parameterTypes": [
+            "long"
+          ]
+        },
+        {
+          "name": "nextAfter",
+          "parameterTypes": [
+            "double",
+            "double"
+          ]
+        },
+        {
+          "name": "nextAfter",
+          "parameterTypes": [
+            "float",
+            "double"
+          ]
+        },
+        {
+          "name": "nextDown",
+          "parameterTypes": [
+            "double"
+          ]
+        },
+        {
+          "name": "nextDown",
+          "parameterTypes": [
+            "float"
+          ]
+        },
+        {
+          "name": "nextUp",
+          "parameterTypes": [
+            "double"
+          ]
+        },
+        {
+          "name": "nextUp",
+          "parameterTypes": [
+            "float"
+          ]
+        },
+        {
+          "name": "pow",
+          "parameterTypes": [
+            "double",
+            "double"
+          ]
+        },
+        {
+          "name": "powExact",
+          "parameterTypes": [
+            "int",
+            "int"
+          ]
+        },
+        {
+          "name": "powExact",
+          "parameterTypes": [
+            "long",
+            "int"
+          ]
+        },
+        {
+          "name": "random",
+          "parameterTypes": []
+        },
+        {
+          "name": "rint",
+          "parameterTypes": [
+            "double"
+          ]
+        },
+        {
+          "name": "round",
+          "parameterTypes": [
+            "double"
+          ]
+        },
+        {
+          "name": "round",
+          "parameterTypes": [
+            "float"
+          ]
+        },
+        {
+          "name": "scalb",
+          "parameterTypes": [
+            "double",
+            "int"
+          ]
+        },
+        {
+          "name": "scalb",
+          "parameterTypes": [
+            "float",
+            "int"
+          ]
+        },
+        {
+          "name": "signum",
+          "parameterTypes": [
+            "double"
+          ]
+        },
+        {
+          "name": "signum",
+          "parameterTypes": [
+            "float"
+          ]
+        },
+        {
+          "name": "sin",
+          "parameterTypes": [
+            "double"
+          ]
+        },
+        {
+          "name": "sinh",
+          "parameterTypes": [
+            "double"
+          ]
+        },
+        {
+          "name": "sqrt",
+          "parameterTypes": [
+            "double"
+          ]
+        },
+        {
+          "name": "subtractExact",
+          "parameterTypes": [
+            "int",
+            "int"
+          ]
+        },
+        {
+          "name": "subtractExact",
+          "parameterTypes": [
+            "long",
+            "long"
+          ]
+        },
+        {
+          "name": "tan",
+          "parameterTypes": [
+            "double"
+          ]
+        },
+        {
+          "name": "tanh",
+          "parameterTypes": [
+            "double"
+          ]
+        },
+        {
+          "name": "toDegrees",
+          "parameterTypes": [
+            "double"
+          ]
+        },
+        {
+          "name": "toIntExact",
+          "parameterTypes": [
+            "long"
+          ]
+        },
+        {
+          "name": "toRadians",
+          "parameterTypes": [
+            "double"
+          ]
+        },
+        {
+          "name": "ulp",
+          "parameterTypes": [
+            "double"
+          ]
+        },
+        {
+          "name": "ulp",
+          "parameterTypes": [
+            "float"
+          ]
+        },
+        {
+          "name": "unsignedMultiplyExact",
+          "parameterTypes": [
+            "int",
+            "int"
+          ]
+        },
+        {
+          "name": "unsignedMultiplyExact",
+          "parameterTypes": [
+            "long",
+            "int"
+          ]
+        },
+        {
+          "name": "unsignedMultiplyExact",
+          "parameterTypes": [
+            "long",
+            "long"
+          ]
+        },
+        {
+          "name": "unsignedMultiplyHigh",
+          "parameterTypes": [
+            "long",
+            "long"
+          ]
+        },
+        {
+          "name": "unsignedPowExact",
+          "parameterTypes": [
+            "int",
+            "int"
+          ]
+        },
+        {
+          "name": "unsignedPowExact",
+          "parameterTypes": [
+            "long",
+            "int"
+          ]
+        }
+      ]
     },
     {
       "type": "java.lang.Module",
