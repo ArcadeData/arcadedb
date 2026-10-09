@@ -3835,6 +3835,14 @@
       ]
     },
     {
+      "type": "org.apache.ratis.server.raftlog.segmented.SegmentedRaftLog",
+      "fields": [
+        {
+          "name": "cacheEviction"
+        }
+      ]
+    },
+    {
       "type": "org.apache.ratis.statemachine.impl.TransactionContextImpl",
       "methods": [
         {

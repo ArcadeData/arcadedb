@@ -2545,6 +2545,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
             LogManager.instance().log(this, Level.WARNING,
                 "Old Ratis server is still CLOSING after %dms; closing it from the restart, which interrupts that close",
                 OldRatisServerTermination.CLOSE_IN_PROGRESS_WAIT_MS);
+          // Issue #9556: Ratis 3.3.1 SegmentedRaftLog.close() deadlocks with an in-flight cache eviction
+          RaftLogCacheEviction.stopBeforeClose(oldServer);
           oldServer.close();
           // Issue #8898: a close that returns with the server not CLOSED means a second server is about to start
           // beside one that may still answer the leader. A close Ratis already performed itself, or a gRPC shutdown
@@ -2609,6 +2611,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         if (shutdownRequested) {
           // stop() may have read the old server before this one was published: close the new one here, a second close
           // from stop() is a no-op.
+          RaftLogCacheEviction.stopBeforeClose(this.raftServer); // issue #9556
           this.raftServer.close();
           HALog.log(this, HALog.BASIC, "Recovery abandoned: shutdown requested while the new Ratis server was starting");
           return;
@@ -2822,6 +2825,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         raftClient = null;
       }
       if (raftServer != null) {
+        // Issue #9556: Ratis 3.3.1 SegmentedRaftLog.close() deadlocks with an in-flight cache eviction
+        RaftLogCacheEviction.stopBeforeClose(raftServer);
         raftServer.close();
         raftServer = null;
       }
