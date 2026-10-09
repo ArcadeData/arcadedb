@@ -78,7 +78,10 @@ import java.util.logging.Level;
  * its RID (8 bytes) and its identity in a hash map (11 to 17 bytes, 17 to 26 for a key wider than an
  * {@code int}), plus, while the edges are written, the head of its two edge lists in the edge
  * {@link GraphBatch} (32 to 48 bytes). That is roughly 12 to 17 GB for 200M vertices, on top of the page
- * cache ({@code arcadedb.maxPageRAM}, a quarter of the heap by default). A pass logs how far it has got
+ * cache ({@code arcadedb.maxPageRAM}, a quarter of the heap by default). Size the heap for the peak, not for
+ * that: an identity map that grows holds its old table and its new one, half as large again, while it
+ * copies, which at 200M keys is another 3 to 5 GB for a moment. The edge batch's table is sized once from the
+ * vertex count, so it never grows. A pass logs how far it has got
  * every {@value #PROGRESS_INTERVAL_MS} ms, and warns when the JVM spends most of its time collecting
  * garbage, which is what a heap too small for the load looks like (issue #9575).
  * <p>
@@ -149,8 +152,11 @@ public class GraphImporter implements AutoCloseable {
   static final long RID_POSITION_MASK = (1L << RID_POSITION_BITS) - 1;
   private static final int MAX_PACKED_BUCKET_ID = (1 << (Long.SIZE - 1 - RID_POSITION_BITS)) - 1;
 
-  /** Rows between two looks at the clock while streaming edges: a power of two minus one, used as a mask. */
-  static final int  PROGRESS_ROW_MASK    = (1 << 16) - 1;
+  /**
+   * Rows between two looks at the clock while streaming edges, a power of two minus one used as a
+   * mask: often enough that a source of slow rows still reports on time, rarely enough to cost nothing.
+   */
+  static final int  PROGRESS_ROW_MASK    = (1 << 12) - 1;
   /** How often a pass that is still running says how far it has got. */
   static final long PROGRESS_INTERVAL_MS = 30_000;
   /**
@@ -162,6 +168,9 @@ public class GraphImporter implements AutoCloseable {
 
   /** The largest array the JVM reliably allocates. */
   static final int MAX_ARRAY_LENGTH = Integer.MAX_VALUE - 8;
+
+  /** Load factor of the identity maps: linear probing expects ~6 probes for a miss at 0.7. */
+  private static final double MAX_TABLE_LOAD = 0.7;
 
   private final Database                            database;
   private final List<VertexSourceDef>               vertexSources;
@@ -1672,7 +1681,7 @@ public class GraphImporter implements AutoCloseable {
     final TypeState dstTs = typeStates.get(ec.dstType);
     final ProgressLog progress = new ProgressLog(edgeType, "edges");
 
-    try (final GraphBatch batch = newEdgeBatch()) {
+    try (final GraphBatch batch = newEdgeBatch(srcTs, dstTs)) {
       final int[] sSrc = ec.srcIdx.data;
       final int[] sDst = ec.dstIdx.data;
       final int size = ec.srcIdx.size;
@@ -1714,7 +1723,7 @@ public class GraphImporter implements AutoCloseable {
     final long unresolvedBefore = unresolvedEdges;
     final ProgressLog progress = new ProgressLog(edgeType, "edge rows");
 
-    try (final GraphBatch batch = newEdgeBatch()) {
+    try (final GraphBatch batch = newEdgeBatch(fromTs, toTs)) {
       esd.source.forEach(record -> {
         if (limit > 0 && rows[0] >= limit)
           return;
@@ -1771,13 +1780,19 @@ public class GraphImporter implements AutoCloseable {
           cfg.fromVertexType.equals(cfg.toVertexType) ? cfg.fromVertexType : cfg.fromVertexType + "/" + cfg.toVertexType);
   }
 
-  private GraphBatch newEdgeBatch() {
+  /**
+   * The batch one edge type is written through. Its edges can touch at most every vertex of their two
+   * endpoint types, which is how many edge-list heads the batch keeps until it closes: told so, it
+   * sizes that table once rather than growing it through copies that briefly hold two of them.
+   */
+  private GraphBatch newEdgeBatch(final TypeState srcTs, final TypeState dstTs) {
     return database.batch()
         .withBatchSize(500_000)
         .withBidirectional(true)
         .withWAL(false)
         .withParallelFlush(false)
         .withCommitEvery(50_000)
+        .withExpectedVertices(srcTs == dstTs ? srcTs.count : (long) srcTs.count + dstTs.count)
         .build();
   }
 
@@ -2063,7 +2078,8 @@ public class GraphImporter implements AutoCloseable {
     IdIndex idToIdx   = new IdIndex();
     IdIndex nameToIdx = new IdIndex();
     // The RID of the vertex at each index, packed by packRID(): one long a vertex instead of an int
-    // bucket and a long position kept apart (issue #9575)
+    // bucket and a long position kept apart (issue #9575). The list's backing array, never trimmed:
+    // its length is a capacity and says nothing, only the first `count` entries are vertices
     long[]  rids;
     int     count;
 
@@ -2451,9 +2467,6 @@ public class GraphImporter implements AutoCloseable {
         }
     }
   }
-
-  /** Load factor of the identity maps: linear probing expects ~6 probes for a miss at 0.7. */
-  private static final double MAX_TABLE_LOAD = 0.7;
 
   private static int initialCapacity(final int expected) {
     return (int) Math.min(MAX_ARRAY_LENGTH, Math.max(16L, (long) (expected / MAX_TABLE_LOAD) + 1));

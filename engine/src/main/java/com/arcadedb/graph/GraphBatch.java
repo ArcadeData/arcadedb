@@ -345,7 +345,7 @@ public class GraphBatch implements AutoCloseable {
   // DeferredHeadChunks (both directions in one slot, RIDs packed, no boxing) is safe under this lifecycle because
   // writes are never concurrent and concurrent reads never race a write. It holds an entry per vertex the batch
   // touches, which on a 200M-vertex load is the batch's largest structure (issue #9575).
-  private final DeferredHeadChunks deferredHeads = new DeferredHeadChunks();
+  private final DeferredHeadChunks deferredHeads;
 
   // --- Known-new vertices: created by createVertices(), guaranteed no existing segments ---
   // Allows skipping vertex record loads when creating first segment.
@@ -414,8 +414,9 @@ public class GraphBatch implements AutoCloseable {
       final boolean lightEdges, final boolean bidirectional, final int commitEvery,
       final boolean useWAL, final WALFile.FlushType walFlush, final boolean preAllocateEdgeChunks,
       final boolean parallelFlush, final int commitRetries, final long commitRetryDelayMs,
-      final int chunkCacheCapacity, final int maxDeferredIncomingEdges) {
+      final int chunkCacheCapacity, final int maxDeferredIncomingEdges, final int expectedVertexCount) {
     this.database = database;
+    this.deferredHeads = new DeferredHeadChunks(expectedVertexCount);
     this.guardOwner = guardOwner;
     this.batchSize = batchSize;
     this.edgeListInitialSize = edgeListInitialSize;
@@ -3557,6 +3558,7 @@ public class GraphBatch implements AutoCloseable {
     private long               commitRetryDelayMs    = 1000;
     private int                chunkCacheCapacity       = DEFAULT_CHUNK_CACHE_CAPACITY;
     private int                maxDeferredIncomingEdges = DEFAULT_MAX_DEFERRED_INCOMING_EDGES;
+    private int                expectedVertexCount      = 0;
 
     Builder(final DatabaseInternal database, final LocalDatabase guardOwner) {
       this.database = database;
@@ -3585,6 +3587,20 @@ public class GraphBatch implements AutoCloseable {
       if (expectedEdgeCount < 0)
         throw new IllegalArgumentException("Expected edge count must be >= 0");
       this.expectedEdgeCount = expectedEdgeCount;
+      return this;
+    }
+
+    /**
+     * How many distinct vertices the edges of this batch are expected to touch, when the caller knows it (a bulk
+     * loader that has just created them does). The batch keeps the head of the edge lists of every vertex it touches
+     * until {@link GraphBatch#close()}, and a table sized for them up front is allocated once instead of growing
+     * through copies that each hold the old table and the new one at the same time (issue #9575). An overestimate
+     * costs 32 bytes a vertex that never comes; 0, the default, starts small and grows.
+     */
+    public Builder withExpectedVertices(final long count) {
+      if (count < 0)
+        throw new IllegalArgumentException("Expected vertices must not be negative: " + count);
+      this.expectedVertexCount = (int) Math.min(Integer.MAX_VALUE, count);
       return this;
     }
 
@@ -3754,7 +3770,7 @@ public class GraphBatch implements AutoCloseable {
       try {
         return new GraphBatch(database, guardOwner, effectiveBatchSize, edgeListInitialSize, lightEdges,
             bidirectional, effectiveCommitEvery, effectiveUseWAL, walFlush, preAllocateEdgeChunks, parallelFlush,
-            commitRetries, commitRetryDelayMs, chunkCacheCapacity, maxDeferredIncomingEdges);
+            commitRetries, commitRetryDelayMs, chunkCacheCapacity, maxDeferredIncomingEdges, expectedVertexCount);
       } catch (final RuntimeException | Error e) {
         if (guardOwner != null)
           guardOwner.batchFinished();

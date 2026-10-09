@@ -64,7 +64,17 @@ final class DeferredHeadChunks {
   private int    inCount;
 
   DeferredHeadChunks() {
-    allocate(INITIAL_CAPACITY);
+    this(0);
+  }
+
+  /**
+   * @param expectedVertices how many vertices the batch is expected to touch, 0 when unknown. A table sized for them
+   *                         up front never grows, and growing is when the table costs most: the old one and the new
+   *                         one, half as large again, are both alive while the entries move, two and a half times
+   *                         what the map holds. At 200M vertices that copy alone is more than 15 GB.
+   */
+  DeferredHeadChunks(final int expectedVertices) {
+    allocate((int) Math.max(INITIAL_CAPACITY, Math.min(MAX_CAPACITY, (long) (expectedVertices / MAX_LOAD) + 1)));
   }
 
   RID getOut(final long vertexKey) {
@@ -184,23 +194,28 @@ final class DeferredHeadChunks {
     }
   }
 
-  /** The slot of {@code key}, taken with no head in either direction when the key is not there yet. */
+  /**
+   * The slot of {@code key}, taken with no head in either direction when the key is not there yet. Only a key that
+   * takes a new slot can grow the table: overwriting a head, as the undo logs do when they restore one, never does.
+   */
   private int claim(final long key) {
+    final int existing = indexOf(key);
+    if (existing >= 0)
+      return existing;
     if (size >= threshold)
       grow();
     int i = home(key);
-    while (true) {
-      final long k = keys[i];
-      if (k == key)
-        return i;
-      if (k == FREE_SLOT) {
-        keys[i] = key;
-        size++;
-        return i;
-      }
+    while (keys[i] != FREE_SLOT)
       if (++i == capacity)
         i = 0;
-    }
+    keys[i] = key;
+    size++;
+    return i;
+  }
+
+  /** The number of slots of the table, for tests. */
+  int capacity() {
+    return capacity;
   }
 
   /**
