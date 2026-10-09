@@ -39,8 +39,10 @@ import java.util.List;
  * <p>
  * The parts are counted in order and the first one with no row ends the count, since the product is then 0 whatever the
  * others hold. A later part is then never run, so an error its own evaluation would raise is not raised either: the
- * row pipeline, which builds no row once a part is empty, does not evaluate it either. A product that does not fit a {@code long} is an error rather than a wrapped number: those rows could not
- * be counted any other way either.
+ * row pipeline, which builds no row once a part is empty, does not evaluate it either.
+ * <p>
+ * A product that does not fit a {@code long} is an error rather than a wrapped number: those rows could not be counted
+ * any other way either.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
