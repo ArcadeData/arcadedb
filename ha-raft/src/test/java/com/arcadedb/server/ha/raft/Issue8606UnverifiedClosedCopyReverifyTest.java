@@ -30,6 +30,7 @@ import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.server.StaticBaseServerTest;
 import com.arcadedb.server.TestServerHelper;
+import com.arcadedb.server.UnstartedHttpServers;
 import com.arcadedb.server.http.handler.ExecutionResponse;
 import com.arcadedb.server.security.ServerSecurityUser;
 import com.sun.net.httpserver.HttpServer;
@@ -39,6 +40,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.extension.RegisterExtension;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.ByteArrayOutputStream;
@@ -81,6 +83,8 @@ import static org.mockito.Mockito.when;
  */
 @Timeout(120)
 class Issue8606UnverifiedClosedCopyReverifyTest {
+  @RegisterExtension
+  static final UnstartedHttpServers HTTP_SERVERS = new UnstartedHttpServers();
 
   private static final String     DB_NAME        = "db8606";
   private static final String     PASSWORD       = "DefaultPasswordForTests";
@@ -472,10 +476,9 @@ class Issue8606UnverifiedClosedCopyReverifyTest {
 
   private JSONObject handlerAnswer(final String name) throws Exception {
     // Fully qualified: the JDK's HttpServer, imported above, is the fake leader.
-    final com.arcadedb.server.http.HttpServer httpServer = mock(com.arcadedb.server.http.HttpServer.class);
-    when(httpServer.getServer()).thenReturn(server);
-    final RaftHAPlugin plugin = mock(RaftHAPlugin.class);
-    when(plugin.getRaftHAServer()).thenReturn(raft);
+    final com.arcadedb.server.http.HttpServer httpServer = HTTP_SERVERS.of(server);
+    final RaftHAPlugin plugin = new RaftHAPlugin();
+    plugin.setRaftHAServer(raft);
     final ServerSecurityUser root = TestServerHelper.securityUser("root");
     final ExecutionResponse response = new PostBootstrapStateHandler(httpServer, plugin).execute(null, root,
         new JSONObject().put(UnverifiedClosedCopyCheck.COPY_OF, name));

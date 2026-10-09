@@ -24,8 +24,10 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.FakeArcadeDBServer;
 import com.arcadedb.server.TestServerHelper;
+import com.arcadedb.server.UnstartedHttpServers;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
+import org.junit.jupiter.api.extension.RegisterExtension;
 
 import io.undertow.server.HttpServerExchange;
 import org.junit.jupiter.api.Test;
@@ -47,6 +49,8 @@ import static org.mockito.Mockito.when;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class GetProgressHandlerTest {
+  @RegisterExtension
+  static final UnstartedHttpServers HTTP_SERVERS = new UnstartedHttpServers();
 
   /**
    * A mocked {@link HttpServer} that also answers {@link HttpServer#getServer()}. The base handler's
@@ -58,11 +62,9 @@ class GetProgressHandlerTest {
    * {@code UngatedHandlerPerTypeAclIT}.
    */
   private HttpServer httpServer() {
-    final HttpServer httpServer = mock(HttpServer.class);
     final FakeArcadeDBServer server = FakeArcadeDBServer.create();
     server.returns("existsDatabase", false);
-    when(httpServer.getServer()).thenReturn(server);
-    return httpServer;
+    return HTTP_SERVERS.of(server);
   }
 
   private HttpServerExchange exchangeFor(final String databaseName) {

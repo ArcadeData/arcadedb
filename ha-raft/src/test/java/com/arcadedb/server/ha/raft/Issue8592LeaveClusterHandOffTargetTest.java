@@ -33,7 +33,6 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 /**
  * Regression test for issue #8592: {@link RaftClusterManager#leaveCluster(boolean)} on a leader handed leadership to
@@ -64,7 +63,7 @@ class Issue8592LeaveClusterHandOffTargetTest {
   @BeforeEach
   void setUp() {
     raft = FakeRaftHAServer.detached();
-    monitor = mock(ClusterMonitor.class);
+    monitor = new ClusterMonitor(100);
     leader = new AtomicBoolean(true);
     raft.returns("getClient", mock(RaftClient.class));
     raft.localPeerId(SELF);
@@ -78,7 +77,7 @@ class Issue8592LeaveClusterHandOffTargetTest {
   /** The first configured peer is lagging (the shape a peer that went down takes): the leave hands off to the next. */
   @Test
   void aLaggingFirstPeerIsSkipped() {
-    when(monitor.isReplicaLagging(B.toString())).thenReturn(true);
+    lagging(monitor, B);
 
     manager(C).leaveCluster(false);
 
@@ -142,8 +141,8 @@ class Issue8592LeaveClusterHandOffTargetTest {
    */
   @Test
   void noEligiblePeerSkipsTheHandOffAndStillRemoves() {
-    when(monitor.isReplicaLagging(B.toString())).thenReturn(true);
-    when(monitor.isReplicaLagging(C.toString())).thenReturn(true);
+    lagging(monitor, B);
+    lagging(monitor, C);
 
     manager(null).leaveCluster(false);
 
@@ -177,8 +176,8 @@ class Issue8592LeaveClusterHandOffTargetTest {
   /** The other callers of the no-target overload keep their last resort. */
   @Test
   void theNoTargetTransferKeepsItsBareStepDownFallback() {
-    when(monitor.isReplicaLagging(B.toString())).thenReturn(true);
-    when(monitor.isReplicaLagging(C.toString())).thenReturn(true);
+    lagging(monitor, B);
+    lagging(monitor, C);
 
     manager(null).transferLeadership(1_000);
 
@@ -215,5 +214,14 @@ class Issue8592LeaveClusterHandOffTargetTest {
   private static RaftPeer peer(final RaftPeerId id, final int priority) {
     return RaftPeer.newBuilder().setId(id).setAddress("localhost:" + id.toString().substring(id.toString().indexOf('_') + 1))
         .setPriority(priority).build();
+  }
+
+  /**
+   * Has the real {@code monitor} see {@code replica} acknowledge none of the leader's 1000 committed entries, which is
+   * past the 100-entry warning threshold it was built with: {@link ClusterMonitor#isReplicaLagging} answers true for it.
+   */
+  private static void lagging(final ClusterMonitor monitor, final RaftPeerId replica) {
+    monitor.updateLeaderCommitIndex(1_000L);
+    monitor.updateReplicaMatchIndex(replica.toString(), 0L, 0L);
   }
 }
