@@ -24,10 +24,12 @@ import com.arcadedb.database.DatabaseRID;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.log.LogManager;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.logging.Level;
 
 /**
  * Identity of a lightweight edge.
@@ -45,7 +47,8 @@ import java.util.concurrent.atomic.AtomicInteger;
  * The bucket and offset are unchanged from what the edge-list chunk holds, so this class costs <b>nothing on disk</b>:
  * {@link com.arcadedb.graph.MutableEdgeSegment} writes {@link #getBucketId()} and {@link #getPosition()} exactly as
  * before. It replaces the throwaway marker RID that the traversal path already built for every lightweight edge it
- * materialised, and adds to it only the origin of the entry (a reference and two ints) and the cached occurrence.
+ * materialised, and adds to it only the origin of the entry (the chunk, the position and the direction) and the
+ * cached occurrence and twin count (about 20 bytes).
  *
  * <p>
  * Two lightweight edges of one type over the same ordered pair - an application mistake the <code>UNIQUE</code> flag
@@ -168,7 +171,8 @@ public class LightEdgeRID extends DatabaseRID {
   /**
    * The chains of the owner's edge list that can hold an entry for {@code neighbor}: the one chain of a classic list, or,
    * for a super-node (striped list), the one chain per generation that the neighbour hashes to - twins share their
-   * neighbour, so they share a stripe.
+   * neighbour, so they share a stripe. This leans on {@link StripeDirectory#stripeOf} placing an entry by its neighbour
+   * alone: a placement that also looked at the edge would have to be mirrored here.
    */
   private static List<RID> chainHeads(final DatabaseInternal db, final VertexInternal vertex, final boolean outgoing,
       final RID neighbor) {
@@ -228,10 +232,14 @@ public class LightEdgeRID extends DatabaseRID {
       if (!reached) {
         // THE ENTRY IS NOT IN THE LIST ANY MORE (THE LIST CHANGED UNDER THE QUERY): IT KEEPS THE IDENTITY IT HAD BEFORE
         // THE OCCURRENCE EXISTED
+        LogManager.instance().log(this, Level.FINE, "Lightweight edge %s (%s -> %s) is no longer in the edge list it was read from",
+            this, out, in);
         before = 0;
         found = 0;
       }
     } catch (final RecordNotFoundException e) {
+      LogManager.instance().log(this, Level.FINE, "Cannot resolve the occurrence of lightweight edge %s (%s -> %s): %s", this, out,
+          in, e.getMessage());
       before = 0;
       found = 0;
     }
