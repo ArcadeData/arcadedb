@@ -19,7 +19,12 @@
 package com.arcadedb.query.opencypher;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.RID;
+import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.graph.Vertex;
+import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.graph.olap.GraphAnalyticalView;
 import com.arcadedb.graph.olap.GraphAnalyticalViewRegistry;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -309,6 +314,33 @@ class Issue8750SelfLoopCountPushDownTest extends TestHelper {
     withView("inequalityChains", "(P, Q, Z)", "(K, L, X)", () -> {
       for (int i = 0; i < matches.length; i++)
         assertThat(countMatch(matches[i])).as("with a view: %s", matches[i]).isEqualTo(expected[i]);
+    });
+  }
+
+  /**
+   * The undirected count reads the edge-list heads of the instance the transaction holds: a handle taken before an
+   * edge was appended in the same transaction still points at the previous heads and would hide the newest edges.
+   */
+  @Test
+  void undirectedCountReadsTheTransactionInstance() {
+    database.command("sql", "CREATE VERTEX TYPE P");
+    database.command("sql", "CREATE EDGE TYPE K");
+    final RID[] ids = new RID[2];
+    database.transaction(() -> {
+      ids[0] = database.newVertex("P").save().getIdentity();
+      ids[1] = database.newVertex("P").save().getIdentity();
+    });
+    database.transaction(() -> {
+      final VertexInternal stale = (VertexInternal) database.lookupByRID(ids[0], true).asVertex();
+      final MutableVertex current = stale.modify();
+      current.newEdge("K", current);
+      current.newEdge("K", ids[1].asVertex());
+      database.lookupByRID(ids[1], true).asVertex().modify().newEdge("K", current);
+
+      // a self loop once, the edge to the other vertex and the one back from it
+      assertThat(((DatabaseInternal) database).getGraphEngine().countUndirectedEdges(stale, "K")).isEqualTo(3L);
+      assertThat(IncomingEdgeLookup.countPatternEdges(null, stale, Vertex.DIRECTION.BOTH, "K")).isEqualTo(3L);
+      assertThat(stale.countEdges(Vertex.DIRECTION.BOTH, "K")).isEqualTo(4L);
     });
   }
 
