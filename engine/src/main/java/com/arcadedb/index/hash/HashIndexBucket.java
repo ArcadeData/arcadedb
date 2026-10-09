@@ -139,6 +139,11 @@ public class HashIndexBucket extends PaginatedComponent {
   // Number of times a lookup re-reads the metadata + directory before declaring the index corrupted (#4743).
   static final int MAX_LOOKUP_RETRIES = 3;
 
+  // Number of times a lookup starts again when a RID list reaches a page of another key (#9228). Each retry follows a commit
+  // that freed and reused the page under the lookup, so a hot key under heavy churn can need more than a torn directory read
+  // does; a damaged list fails every attempt the same way, and CHECK DATABASE reports it without racing anything.
+  static final int MAX_RID_LIST_LOOKUP_RETRIES = 64;
+
   // Upper bound on the problems reported by a single structural check, so a badly damaged index does not build a
   // huge list (the first problems are enough to know it must be rebuilt).
   static final int MAX_REPORTED_PROBLEMS = 20;
@@ -414,7 +419,9 @@ public class HashIndexBucket extends PaginatedComponent {
         if (result != null)
           return result;
 
-        if (attempt >= MAX_LOOKUP_RETRIES)
+        // let the commit that is reusing the pages finish before reading the list again
+        Thread.yield();
+        if (attempt >= MAX_RID_LIST_LOOKUP_RETRIES)
           throw new IndexException("The RID list of a key of hash index '" + getName() + "' (fileId=" + fileId
               + ") reaches a page that does not belong to it. The index is corrupted, please rebuild it (DROP and recreate it).");
 
@@ -486,14 +493,19 @@ public class HashIndexBucket extends PaginatedComponent {
             return false;
         } else {
           offset += varIntSize(header);
-          // the header counts the RIDs up to version 2, and the bytes they take from version 3
-          final int end = ridLists ? offset + header : Integer.MAX_VALUE;
-          for (int r = 0; ridLists ? offset < end : r < header; r++) {
-            result.add(readCompressedRID(page, offset));
-            offset += compressedRIDSizeFromPage(page, offset);
-            if (limit > 0 && result.size() >= limit)
-              return true;
-          }
+          // the header is the bytes the RIDs take from version 3, and their number up to version 2
+          if (ridLists)
+            for (final int end = offset + header; offset < end; offset += compressedRIDSizeFromPage(page, offset)) {
+              result.add(readCompressedRID(page, offset));
+              if (limit > 0 && result.size() >= limit)
+                return true;
+            }
+          else
+            for (int r = 0; r < header; r++, offset += compressedRIDSizeFromPage(page, offset)) {
+              result.add(readCompressedRID(page, offset));
+              if (limit > 0 && result.size() >= limit)
+                return true;
+            }
         }
         if (limit > 0 && result.size() >= limit)
           return true;
@@ -592,7 +604,9 @@ public class HashIndexBucket extends PaginatedComponent {
       }
     }
 
-    final MutablePage bucketPage = tx.getPageToModify(new PageId(database, fileId, bucketPageNum), pageSize, false);
+    // read only: the bucket page is taken for modification only by the paths that write it
+    final PageId bucketPageId = new PageId(database, fileId, bucketPageNum);
+    final BasePage bucketPage = tx.getPage(bucketPageId, pageSize);
     final int entryCount = bucketPage.readShort(BUCKET_ENTRY_COUNT) & 0xFFFF;
     final int localDepth = bucketPage.readShort(BUCKET_LOCAL_DEPTH) & LOCAL_DEPTH_MASK;
 
@@ -605,7 +619,7 @@ public class HashIndexBucket extends PaginatedComponent {
 
       // Try to insert into the bucket
       if (totalNeeded <= freeSpace(bucketPage, entryCount)) {
-        insertEntryInSlottedPage(bucketPage, entryCount, serializedKey, serializedRID, hash);
+        insertEntryInSlottedPage(tx.getPageToModify(bucketPageId, pageSize, false), entryCount, serializedKey, serializedRID, hash);
         updateTotalEntries(1);
         return;
       }
@@ -625,7 +639,7 @@ public class HashIndexBucket extends PaginatedComponent {
     }
 
     if (blockedPageNum == NO_OVERFLOW_PAGE)
-      insertIntoOverflow(bucketPage, bucketPageNum, serializedKey, serializedRID, hash);
+      insertIntoOverflow(tx.getPageToModify(bucketPageId, pageSize, false), bucketPageNum, serializedKey, serializedRID, hash);
     else {
       // A RID list takes the RIDs out of the page, instead of a second entry of the key that every later insert of it would
       // find blocked again
