@@ -160,8 +160,10 @@ public interface GraphTraversalProvider {
   /**
    * The number of edges of the given types in the whole provider, sub-types included and every edge type with none given,
    * when the provider can tell it without visiting the nodes; -1 when it cannot, and the caller sums {@link #countEdges}
-   * over the nodes instead. An edge is counted once, at its source: an exact answer to
-   * {@code MATCH ()-[:T]->() RETURN count(*)} for a provider whose node domain is every vertex (issue #9600).
+   * over the nodes instead. An edge is counted once, at its source. The count is of the edges this provider holds: a provider
+   * built over some of the vertex types leaves out the edges that reach the others, so it is the database's count, the
+   * answer to {@code MATCH ()-[:T]->() RETURN count(*)}, only for a provider whose node domain is every vertex
+   * ({@code coversVertexType(null)}), which is what the Cypher edge count requires before asking (issue #9600).
    */
   default long countAllEdges(final String... edgeTypes) {
     return -1;

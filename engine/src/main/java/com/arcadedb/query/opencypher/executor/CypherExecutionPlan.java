@@ -7722,7 +7722,8 @@ public class CypherExecutionPlan {
       if (op == null)
         continue;
       final double pairs = op.estimatedBuildPairs(statistics::vertices, statistics::fanOut);
-      // a tie is broken on the operator itself, so it does not fall to the order the cycle was written in
+      // a tie is broken on the operator itself, so it does not fall to the order the cycle was written in. Its description
+      // names every type, direction and label of both arms and the probe, so two different splits never describe alike
       final String description = op.describe(0, 0);
       if (best == null || pairs < bestPairs || (pairs == bestPairs && description.compareTo(bestDescription) < 0)) {
         best = op;
@@ -7741,9 +7742,9 @@ public class CypherExecutionPlan {
    * edges leave several labels, and LSQB's HAS_CREATOR divided by the posts makes a post look like it has two creators
    * because the comments have one each too. Reading the edge lists of a few vertices is the price of telling the splits of a
    * cycle apart by what they cost, and it is bounded by the sample. A sample is an estimate: on a skewed label (a few
-   * supernodes among many small vertices) it can pick the costlier split, which changes the time and never the count. An
-   * unlabelled position, which has no set to sample from,
-   * falls back to the type's edges over every vertex, off a ready provider when one holds the type (it counts light edges,
+   * supernodes among many small vertices) it can pick the costlier split, which changes the time and never the count. The
+   * count push-downs are not part of the cached plan, so it is taken again at every execution and follows the graph. An
+   * unlabelled position, which has no set to sample from, falls back to the type's edges over every vertex, off a ready provider when one holds the type (it counts light edges,
    * which keep no record) and off the type's record counter otherwise.
    */
   private static final class PairJoinStatistics {

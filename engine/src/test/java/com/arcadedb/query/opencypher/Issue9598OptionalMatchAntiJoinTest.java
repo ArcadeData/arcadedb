@@ -243,6 +243,20 @@ class Issue9598OptionalMatchAntiJoinTest extends TestHelper {
         + "WITH c, h WHERE h IS NULL RETURN count(*) AS n")).isEqualTo(expected);
   }
 
+  /**
+   * Relationship uniqueness is scoped to one MATCH clause: the OPTIONAL MATCH may bind the very relationship the MATCH before
+   * it bound, and so may the pattern predicate. Here it can bind nothing else, so no row has it missing.
+   */
+  @Test
+  void theOptionalMatchMayBindTheRelationshipAnEarlierMatchBound() {
+    populate(29, 100);
+    final String query = "MATCH (c:Comment)-[r:HAS_TAG]->(t:Tag) OPTIONAL MATCH (c)-[h:HAS_TAG]->(t) "
+        + "WITH c, t, h WHERE h IS NULL RETURN count(*) AS n";
+    assertThat(plan(query)).doesNotContain("OPTIONAL MATCH");
+    assertThat(count(query)).isZero();
+    assertAgreesWithTheOptionalMatch(query, "h");
+  }
+
   /** An OPTIONAL MATCH after another one filters in its own place, since the WHERE of an OPTIONAL MATCH is part of it. */
   @Test
   void afterAnotherOptionalMatchTheTestBecomesAFilter() {

@@ -260,6 +260,11 @@ class Issue9600EdgeCountPushDownTest extends TestHelper {
     final String query = "MATCH (p:Person) OPTIONAL MATCH (p)-[:KNOWS]->(q:Person) OPTIONAL MATCH (q)-[:KNOWS]->(p) RETURN count(p) AS n";
     assertThat(count(query)).isEqualTo(count(pipeline(query)));
     assertThat(count(query.replace("count(p)", "count(q)"))).isEqualTo(count(pipeline(query.replace("count(p)", "count(q)"))));
+
+    // a WITH that binds the counted name to what may be null makes count(p) a count of the non-null values again
+    final String rebound = "MATCH (p:Person) OPTIONAL MATCH (p)-[:KNOWS]->(q:Person) WITH q AS p RETURN count(p) AS n";
+    assertThat(count(rebound)).isEqualTo(count(pipeline(rebound)))
+        .isEqualTo(count("MATCH (p:Person) OPTIONAL MATCH (p)-[:KNOWS]->(q:Person) RETURN sum(CASE WHEN q IS NULL THEN 0 ELSE 1 END) AS n"));
   }
 
   /** {@code MATCH (n)}: a subtype's vertices are a supertype's too, and are counted once. */
