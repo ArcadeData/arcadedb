@@ -301,6 +301,8 @@ class Issue9600EdgeCountPushDownTest extends TestHelper {
     // with WHERE, a property map or a dynamic label it is a filter, not a count of the types
     assertThat(plan("MATCH (n) WHERE n.age > 3 RETURN count(n) AS n")).doesNotContain("TYPE COUNT");
     assertThat(plan("MATCH (n {age: 3}) RETURN count(n) AS n")).doesNotContain("TYPE COUNT");
+    assertThat(plan("MATCH (n WHERE n.age > 3) RETURN count(n) AS n")).doesNotContain("TYPE COUNT");
+    assertThat(count("MATCH (n WHERE n.age > 3) RETURN count(n) AS n")).isEqualTo(count("MATCH (n) WHERE n.age > 3 RETURN sum(1) AS n"));
     // a dynamic label names a type only when the query runs
     try (final ResultSet rs = database.query("opencypher", "MATCH (n:$($label)) RETURN count(n) AS n", "label", "Student")) {
       assertThat(((Number) rs.next().getProperty("n")).longValue()).isEqualTo(database.countType("Student", true));
