@@ -168,6 +168,31 @@ class Issue9550ApplyOnDatabaseClosedDuringShutdownTest {
     assertLeftForReplayNotQuarantined();
   }
 
+  /**
+   * The classification is deliberately broad: once the database is closed under a shutting-down node, a failure that is
+   * not a {@code DatabaseIsClosedException} is still taken as caused by the close and deferred to the replay, where a
+   * genuine fault meets the quarantine again.
+   */
+  @Test
+  void anyFailureOnADatabaseClosedDuringShutdownIsLeftForReplay() throws Exception {
+    final Prepared prepared = prepare();
+    final LocalCommit local = new LocalCommit(db.getName(), ArcadeStateMachine.peekWalTransactionId(prepared.walData),
+        prepared.tx, prepared.phase1, prepared.walData);
+    assertThat(sm.registerLocalCommit(local)).isTrue();
+
+    closeUnderTheApplyThread();
+    breakTheReconcile = true;
+    RaftReplicatedDatabase.TEST_PHASE2_COMMIT_FAULT = name -> {
+      publishFailed = true;
+      throw new IllegalStateException("not a closed-database failure");
+    };
+
+    assertThatThrownBy(() -> sm.applyTransaction(ratisContext(txEntry(prepared, ENTRY_INDEX))).get())
+        .isInstanceOf(ExecutionException.class)
+        .hasCauseInstanceOf(EntryLeftForReplayException.class);
+    assertLeftForReplayNotQuarantined();
+  }
+
   /** A schema entry resolves its database through the same lookup, and is left for replay the same way. */
   @Test
   void aSchemaEntryOnADatabaseClosedDuringShutdownIsLeftForReplay() throws Exception {

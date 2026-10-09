@@ -220,8 +220,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
   // The lowest index of a committed entry left for the replay on restart because its database was closed under the
   // apply thread while the node is shutting down (issue #9550); Long.MAX_VALUE while there is none. Later entries of
   // other databases still advance lastAppliedIndex past it, so takeSnapshot() clamps its checkpoint below it: the replay
-  // position comes only from the snapshot marker (see ha-raft/CLAUDE.md). Never lowered back: the node is going away,
-  // and a restart builds a fresh state machine.
+  // position comes only from the snapshot marker (see ha-raft/CLAUDE.md). Never raised back: the node is going away, and
+  // neither a restart nor RaftHAServer.restartRatis() reuses this instance (both go through createStateMachine()).
   private final    AtomicLong                replayFloor      = new AtomicLong(Long.MAX_VALUE);
   // The highest index a leader-driven Raft install covered (issues #8577, #8651): a replayed entry at or below it is
   // stale whatever it names, so it is the one boundary every apply path can consult, including the ones that name no
@@ -3573,7 +3573,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
 
   /**
    * Whether the JVM has started running its shutdown hooks. The runtime refuses a new hook from then on, which is the
-   * only public signal it gives. Costs a thread object and two synchronized calls, so it is read only on the failure
+   * only public signal it gives, so this probe registers a throwaway hook and takes it back; deliberately indirect. Costs a thread object and two synchronized calls, so it is read only on the failure
    * paths of an apply, never per entry.
    */
   static boolean isJvmShuttingDown() {
@@ -3583,6 +3583,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
       Runtime.getRuntime().addShutdownHook(probe);
     } catch (final IllegalStateException shuttingDown) {
       return true;
+    } catch (final RuntimeException cannotTell) {
+      // A runtime that refuses hooks for another reason (a security policy) says nothing about a shutdown: answer "no",
+      // which keeps the disposition this node had before issue #9550
+      return false;
     }
     try {
       Runtime.getRuntime().removeShutdownHook(probe);
