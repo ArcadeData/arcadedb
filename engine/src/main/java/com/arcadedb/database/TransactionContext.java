@@ -161,6 +161,11 @@ public class TransactionContext implements Transaction {
   // a stable order. See IndexReplayConclusion.
   private       Map<IndexInternal, IndexReplayConclusion> indexReplayConclusion = null;
   private       Map<PageId, ImmutablePage>           immutablePages        = new HashMap<>(PAGES_CACHE_CAPACITY);
+  // #9070: per multi-page record this REPEATABLE_READ transaction assembled and validated, the (page, version) pairs of the
+  // images it was assembled from. Pinned pages are taken one at a time, by different reads, so a chain whose pages happen
+  // to all be pinned can still pair a head of one commit with tails of another: only a chain validated on exactly these
+  // images is the transaction's snapshot of the record. Lazily allocated, so a READ_COMMITTED transaction never pays.
+  private       Map<RID, long[]>                     snapshotChunkChains;
   private       RidHashSet                            deletedRecordsInTx    = new RidHashSet(DELETED_SET_CAPACITY);
   private       Map<PageId, MutablePage>             modifiedPages;
   private       Map<PageId, MutablePage>             newPages;
@@ -985,6 +990,8 @@ public class TransactionContext implements Transaction {
    */
   public boolean addUpdatedRecord(final Record record) throws IOException {
     final RID rid = record.getIdentity();
+    // #9070: the transaction's own write is what it reads from now on, never the snapshot of the chain it read before
+    forgetSnapshotChunkChain(rid);
 
     // #7149: the delete wins. A record this transaction already deleted cannot exist at commit, so a write to it
     // can never be observed - exactly as the symmetric order already behaves, where removeRecordFromCache() drops
@@ -1087,6 +1094,41 @@ public class TransactionContext implements Transaction {
     if (page == null)
       page = immutablePages.get(pageId);
     return page;
+  }
+
+  /**
+   * Releases an immutable page pinned by {@code REPEATABLE_READ} so the next {@link #getPage} pins the newest committed
+   * copy. Only for a page no earlier read of this transaction relied on: a multi-page record read that pinned it itself
+   * and found it torn by a concurrent commit (#9070). The transaction's own modified and new pages are never released.
+   */
+  public void unpinPage(final PageId pageId) {
+    // Only the immutable pin: a modified or new copy of the same page is what getPage answers first anyway, and stays
+    immutablePages.remove(pageId);
+  }
+
+  /**
+   * The (page, version) pairs a multi-page record was assembled from the last time this transaction validated it, or
+   * null when it never did (#9070). See {@link #setSnapshotChunkChain}.
+   */
+  public long[] getSnapshotChunkChain(final RID rid) {
+    return snapshotChunkChains == null ? null : snapshotChunkChains.get(rid);
+  }
+
+  /**
+   * Records that the chain of the multi-page record {@code rid}, read from the pinned pages listed as (page, version)
+   * pairs, was validated as one committed state, so a later read from the very same images is the transaction's
+   * snapshot of the record even after a concurrent commit rewrote it (#9070).
+   */
+  public void setSnapshotChunkChain(final RID rid, final long[] pagesAndVersions) {
+    if (snapshotChunkChains == null)
+      snapshotChunkChains = new HashMap<>();
+    snapshotChunkChains.put(rid, pagesAndVersions);
+  }
+
+  /** Drops the snapshot of a multi-page record this transaction writes or deletes (#9070). */
+  private void forgetSnapshotChunkChain(final RID rid) {
+    if (snapshotChunkChains != null && rid != null)
+      snapshotChunkChains.remove(rid);
   }
 
   /**
@@ -1992,6 +2034,7 @@ public class TransactionContext implements Transaction {
     updatedRecordsIndexSnapshot = null;
     newPageCounters.clear();
     immutablePages.clear();
+    snapshotChunkChains = null;
     commitLockTimeout = null;
     useWALOverride = null;
   }
@@ -2940,6 +2983,7 @@ public class TransactionContext implements Transaction {
     modifiedRecordsCache = clearOrReplace(modifiedRecordsCache, RECORDS_CACHE_CAPACITY);
     immutableRecordsCache = clearOrReplace(immutableRecordsCache, RECORDS_CACHE_CAPACITY);
     immutablePages = clearOrReplace(immutablePages, PAGES_CACHE_CAPACITY);
+    snapshotChunkChains = null;
     bucketRecordDelta.clear();
     if (deletedRecordsInTx.size() > DELETED_SET_CAPACITY * 3 / 4)
       deletedRecordsInTx = new RidHashSet(DELETED_SET_CAPACITY);
@@ -3360,6 +3404,7 @@ public class TransactionContext implements Transaction {
    */
   public void addDeletedRecord(final RID rid) {
     deletedRecordsInTx.add(rid);
+    forgetSnapshotChunkChain(rid);
     // A record deleted after an in-tx update no longer needs its indexed-state snapshot (#4935): the delete
     // removes the index entries through its own path, so drop the retained memory right away.
     if (updatedRecordsIndexSnapshot != null)
