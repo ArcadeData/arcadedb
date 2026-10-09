@@ -196,8 +196,49 @@ public final class IncomingEdgeLookup {
           involved.schema); it.hasNext(); it.next())
         ++count;
     for (final Snapshot snapshot : involved.snapshots)
-      count += snapshot.count(vertex.getIdentity());
+      count += snapshot.count(vertex.getIdentity(), false);
     return count;
+  }
+
+  /**
+   * The edges a relationship pattern matches from {@code vertex}: {@link #countEdges}, except that under
+   * {@link Vertex.DIRECTION#BOTH} a self loop is counted once. It sits in the outgoing and in the incoming list of its
+   * vertex, so the vertex API counts it twice, as a graph degree does; an undirected pattern {@code (n)-[:T]-(m)}
+   * matches the relationship once, as the row pipeline, Neo4j and the openCypher TCK do (issues #8750, #9540). The
+   * self loops are told apart on the far end the incoming entries carry, so no record is loaded for it.
+   */
+  public static long countPatternEdges(final CommandContext context, final Vertex vertex, final Vertex.DIRECTION direction,
+      final String... edgeTypes) {
+    if (direction != Vertex.DIRECTION.BOTH)
+      return countEdges(context, vertex, direction, edgeTypes);
+
+    final Involved involved = involved(context, vertex, direction, edgeTypes);
+    if (involved == null)
+      return countUndirectedEdges(vertex, edgeTypes);
+
+    final RID identity = vertex.getIdentity();
+    long count = vertex.countEdges(Vertex.DIRECTION.OUT, edgeTypes);
+    if (involved.closure.anyBidirectional)
+      for (final Iterator<Edge> it = new StoredIncomingEdges(vertex.getEdges(Vertex.DIRECTION.IN, edgeTypes).iterator(),
+          involved.schema); it.hasNext(); )
+        if (!identity.equals(it.next().getOut()))
+          ++count;
+    // A SELF LOOP OF A UNIDIRECTIONAL TYPE IS IN THE OUTGOING LIST, COUNTED ABOVE: THE SCAN ANSWERS THE OTHER EDGES ONLY
+    for (final Snapshot snapshot : involved.snapshots)
+      count += snapshot.count(identity, true);
+    return count;
+  }
+
+  /** {@link Vertex#countEdges} in both directions, a self loop counted once. */
+  private static long countUndirectedEdges(final Vertex vertex, final String[] edgeTypes) {
+    if (vertex instanceof VertexInternal internal)
+      return ((DatabaseInternal) vertex.getDatabase()).getGraphEngine().countUndirectedEdges(internal, edgeTypes);
+
+    long selfLoops = 0;
+    for (final Vertex neighbor : vertex.getVertices(Vertex.DIRECTION.OUT, edgeTypes))
+      if (neighbor.getIdentity().equals(vertex.getIdentity()))
+        ++selfLoops;
+    return vertex.countEdges(Vertex.DIRECTION.BOTH, edgeTypes) - selfLoops;
   }
 
   /**
@@ -763,24 +804,19 @@ public final class IncomingEdgeLookup {
         throw new DatabaseOperationException("Cannot scan bucket '" + bucket.getName() + "'", failure[0]);
     }
 
-    long count(final RID target) {
+    /** The edges into {@code target}, less the ones it is the source of too when {@code skipSelfLoops}. */
+    long count(final RID target, final boolean skipSelfLoops) {
       final UnidirectionalEdgeChanges changes = overlay();
-      if (changes == null) {
-        final int from = firstIndex(target);
-        int to = from;
-        while (to < size && isTarget(to, target))
-          ++to;
-        return to - from;
-      }
+      final boolean deletions = changes != null && changes.hasDeletions();
       // COUNTED ON THE ARRAYS AND THE CHANGES ALONE: NO EDGE IS MATERIALIZED
       long count = 0;
-      final boolean deletions = changes.hasDeletions();
       for (int i = firstIndex(target); i < size && isTarget(i, target); i++)
-        if (!deletions || !changes.isDeletedAfter(edgeIdentityAt(i), builtAt))
+        if ((!skipSelfLoops || !isSource(i, target)) && (!deletions || !changes.isDeletedAfter(edgeIdentityAt(i), builtAt)))
           ++count;
-      for (final UnidirectionalEdgeChanges.Created created : changes.createdInto(typeName, target))
-        if (isLive(created, changes))
-          ++count;
+      if (changes != null)
+        for (final UnidirectionalEdgeChanges.Created created : changes.createdInto(typeName, target))
+          if (isLive(created, changes) && (!skipSelfLoops || !target.equals(created.edge().getOut())))
+            ++count;
       return count;
     }
 
@@ -882,6 +918,10 @@ public final class IncomingEdgeLookup {
 
     private boolean isTarget(final int i, final RID target) {
       return targetBuckets[i] == target.getBucketId() && targetPositions[i] == target.getPosition();
+    }
+
+    private boolean isSource(final int i, final RID source) {
+      return sourceBuckets[i] == source.getBucketId() && sourcePositions[i] == source.getPosition();
     }
 
     /** The first index whose target is not below {@code target}. */

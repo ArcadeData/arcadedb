@@ -29,6 +29,7 @@ import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
+import com.arcadedb.query.opencypher.executor.SelfLoops;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.OperationHeapLimit;
@@ -215,17 +216,18 @@ public final class CountEdgesReturnStep extends AbstractExecutionStep {
       if (provider != null) {
         final int nodeId = provider.getNodeId(vertex.getIdentity());
         if (nodeId >= 0)
-          return provider.countEdges(nodeId, direction, edgeTypes);
+          return CSRCountUtils.hopDegree(provider, nodeId, direction, edgeTypes);
       }
-      // The incoming side of a unidirectional edge type comes from the query's lookup (issue #8625)
-      return IncomingEdgeLookup.countEdges(context, vertex, direction, edgeTypes);
+      // The incoming side of a unidirectional edge type comes from the query's lookup (issue #8625); an undirected self
+      // loop is one relationship (issue #8750)
+      return IncomingEdgeLookup.countPatternEdges(context, vertex, direction, edgeTypes);
     }
 
     // Target label specified — count only neighbors matching the label
     if (provider != null) {
       final int nodeId = provider.getNodeId(vertex.getIdentity());
       if (nodeId >= 0) {
-        final int[] neighborIds = provider.getNeighborIds(nodeId, direction, edgeTypes);
+        final int[] neighborIds = CSRCountUtils.hopNeighborIds(provider, nodeId, direction, edgeTypes);
         final int[] targetBuckets = resolveTargetBuckets(db);
         if (targetBuckets != null) {
           int count = 0;
@@ -249,8 +251,9 @@ public final class CountEdgesReturnStep extends AbstractExecutionStep {
 
     // OLTP fallback with target filtering
     long count = 0;
-    for (final Iterator<Vertex> neighbors = IncomingEdgeLookup.getVertices(context, vertex, direction, edgeTypes);
-        neighbors.hasNext(); ) {
+    final Iterator<Vertex> adjacent = IncomingEdgeLookup.getVertices(context, vertex, direction, edgeTypes);
+    for (final Iterator<Vertex> neighbors = direction == Vertex.DIRECTION.BOTH ?
+        SelfLoops.deduplicating(adjacent, vertex.getIdentity()) : adjacent; neighbors.hasNext(); ) {
       if (Labels.hasLabel(neighbors.next(), targetLabel))
         count++;
     }

@@ -111,11 +111,12 @@ public final class CountEdgesStep extends AbstractExecutionStep {
           if (provider != null) {
             // GAV/CSR path: O(1) count from offset arrays
             final int nodeId = provider.getNodeId(vertex.getIdentity());
-            count = nodeId >= 0 ? provider.countEdges(nodeId, direction, edgeTypes) :
-                IncomingEdgeLookup.countEdges(context, vertex, direction, edgeTypes);
+            count = nodeId >= 0 ? CSRCountUtils.hopDegree(provider, nodeId, direction, edgeTypes) :
+                IncomingEdgeLookup.countPatternEdges(context, vertex, direction, edgeTypes);
           } else
-            // The incoming side of a unidirectional edge type comes from the query's lookup (issue #8625)
-            count = IncomingEdgeLookup.countEdges(context, vertex, direction, edgeTypes);
+            // The incoming side of a unidirectional edge type comes from the query's lookup (issue #8625); an undirected
+            // self loop is one relationship (issue #8750)
+            count = IncomingEdgeLookup.countPatternEdges(context, vertex, direction, edgeTypes);
         } else
           count = 0L; // NULL vertex = LEFT OUTER JOIN semantics
 

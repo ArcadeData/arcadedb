@@ -24,6 +24,7 @@ import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.opencypher.executor.SelfLoops;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.OperationHeapLimit;
@@ -127,11 +128,11 @@ public final class CountChainedEdgesStep extends AbstractExecutionStep {
             final int nodeId = provider.getNodeId(boundVertex.getIdentity());
             if (nodeId >= 0) {
               // First hop: get intermediate neighbors via CSR
-              final int[] intermediateIds = provider.getNeighborIds(nodeId, firstHopDirection, firstHopTypes);
-              // Second hop: count edges for each intermediate via CSR
+              final int[] intermediateIds = CSRCountUtils.hopNeighborIds(provider, nodeId, firstHopDirection, firstHopTypes);
+              // Second hop: count edges for each intermediate via CSR, an undirected self loop once (issue #8750)
               long count = 0;
               for (final int intermediateId : intermediateIds)
-                count += provider.countEdges(intermediateId, secondHopDirection, secondHopTypes);
+                count += CSRCountUtils.hopDegree(provider, intermediateId, secondHopDirection, secondHopTypes);
               totalCount = count;
             } else
               totalCount = countOLTP(boundVertex, context);
@@ -172,13 +173,16 @@ public final class CountChainedEdgesStep extends AbstractExecutionStep {
    */
   private long countOLTP(final Vertex boundVertex, final CommandContext context) {
     // The incoming side of a unidirectional edge type comes from the query's lookup (issue #8625)
-    final Iterator<Vertex> intermediates = IncomingEdgeLookup.getVertices(context, boundVertex, firstHopDirection,
+    final Iterator<Vertex> adjacent = IncomingEdgeLookup.getVertices(context, boundVertex, firstHopDirection,
         firstHopTypes == null || firstHopTypes.length == 0 ? null : firstHopTypes);
+    // An undirected self loop is one relationship, reached from both lists of the vertex (issue #8750)
+    final Iterator<Vertex> intermediates = firstHopDirection == Vertex.DIRECTION.BOTH ?
+        SelfLoops.deduplicating(adjacent, boundVertex.getIdentity()) : adjacent;
 
     long count = 0;
     while (intermediates.hasNext()) {
       final Vertex intermediate = intermediates.next();
-      count += IncomingEdgeLookup.countEdges(context, intermediate, secondHopDirection, secondHopTypes);
+      count += IncomingEdgeLookup.countPatternEdges(context, intermediate, secondHopDirection, secondHopTypes);
     }
     return count;
   }

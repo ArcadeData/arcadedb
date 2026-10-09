@@ -24,6 +24,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.opencypher.executor.SelfLoops;
 import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.VertexType;
@@ -111,8 +112,8 @@ public final class PairHashJoinOp implements CountOp {
 
     final boolean arm1SingleHop = arm1EdgeTypes.length == 1;
     final boolean arm2SingleHop = arm2EdgeTypes.length == 1;
-    final NeighborView arm1View = arm1SingleHop ? provider.getNeighborView(arm1Directions[0], arm1EdgeTypes[0]) : null;
-    final NeighborView arm2View = arm2SingleHop ? provider.getNeighborView(arm2Directions[0], arm2EdgeTypes[0]) : null;
+    final NeighborView arm1View = arm1SingleHop ? CSRCountUtils.patternView(provider, arm1Directions[0], arm1EdgeTypes[0]) : null;
+    final NeighborView arm2View = arm2SingleHop ? CSRCountUtils.patternView(provider, arm2Directions[0], arm2EdgeTypes[0]) : null;
 
     // Every CSR build path needs the build anchor's bucket. Endpoint label filters use the same lookup, so build
     // it once rather than resolving RIDs in each hot loop.
@@ -132,14 +133,14 @@ public final class PairHashJoinOp implements CountOp {
     // For each build node, compute (ep1, ep2) and immediately check if the probe
     // edge exists via binary search on sorted CSR neighbor arrays. O(log d) per check.
     // This eliminates ~3M HashMap operations (merge + get + boxing) ≈ 300ms savings.
-    final NeighborView probeView = provider.getNeighborView(probeDirection, probeEdgeType);
+    final NeighborView probeView = CSRCountUtils.patternView(provider, probeDirection, probeEdgeType);
 
     if (arm1View != null && probeView != null) {
       // Pre-fetch arm2 NeighborViews
       final NeighborView[] arm2Views = new NeighborView[arm2EdgeTypes.length];
       boolean allArm2Views = true;
       for (int h = 0; h < arm2EdgeTypes.length; h++) {
-        arm2Views[h] = provider.getNeighborView(arm2Directions[h], arm2EdgeTypes[h]);
+        arm2Views[h] = CSRCountUtils.patternView(provider, arm2Directions[h], arm2EdgeTypes[h]);
         if (arm2Views[h] == null) { allArm2Views = false; break; }
       }
 
@@ -174,7 +175,7 @@ public final class PairHashJoinOp implements CountOp {
       }
     }
 
-    final NeighborView probeViewFallback = probeView != null ? probeView : provider.getNeighborView(probeDirection, probeEdgeType);
+    final NeighborView probeViewFallback = probeView != null ? probeView : CSRCountUtils.patternView(provider, probeDirection, probeEdgeType);
     long total = 0;
     if (probeViewFallback != null) {
       final int[] probeNbrs = probeViewFallback.neighbors();
@@ -190,7 +191,7 @@ public final class PairHashJoinOp implements CountOp {
         guard.checkPeriodically(p1);
         if (!provider.isNodeLive(p1))
           continue;
-        final int[] neighbors = provider.getNeighborIds(p1, probeDirection, probeEdgeType);
+        final int[] neighbors = CSRCountUtils.hopNeighborIds(provider, p1, probeDirection, probeEdgeType);
         for (final int p2 : neighbors)
           total += pairCounts.get(CSRCountUtils.packPair(p1, p2), 0);
       }
@@ -219,7 +220,7 @@ public final class PairHashJoinOp implements CountOp {
       for (final Iterator<? extends Identifiable> it = db.iterateType(dt.getName(), false); it.hasNext(); ) {
         guard.check();
         final Vertex p1 = it.next().asVertex();
-        for (final RID p2Rid : p1.getConnectedVertexRIDs(probeDirection, probeEdgeType)) {
+        for (final RID p2Rid : SelfLoops.connectedVertexRIDs(p1, probeDirection, probeEdgeType)) {
           final Long cnt = pairCounts.get(p1.getIdentity() + "|" + p2Rid);
           if (cnt != null)
             total += cnt;
@@ -239,7 +240,7 @@ public final class PairHashJoinOp implements CountOp {
       final List<RID> next = new ArrayList<>();
       for (final RID rid : current) {
         final Vertex v = rid.asVertex();
-        for (final RID neighborRid : v.getConnectedVertexRIDs(directions[hop], edgeTypes[hop])) {
+        for (final RID neighborRid : SelfLoops.connectedVertexRIDs(v, directions[hop], edgeTypes[hop])) {
           if (labelBuckets != null && !labelBuckets.contains(neighborRid.getBucketId()))
             continue;
           next.add(neighborRid);
@@ -425,7 +426,7 @@ public final class PairHashJoinOp implements CountOp {
     final NeighborView[] arm2Views = new NeighborView[arm2EdgeTypes.length];
     boolean allArm2Views = true;
     for (int h = 0; h < arm2EdgeTypes.length; h++) {
-      arm2Views[h] = provider.getNeighborView(arm2Directions[h], arm2EdgeTypes[h]);
+      arm2Views[h] = CSRCountUtils.patternView(provider, arm2Directions[h], arm2EdgeTypes[h]);
       if (arm2Views[h] == null) { allArm2Views = false; break; }
     }
 

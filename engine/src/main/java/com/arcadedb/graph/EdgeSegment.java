@@ -120,11 +120,12 @@ public interface EdgeSegment extends Record {
 
   /**
    * Adds to {@code counts[i]} the entries of this segment whose edge bucket {@code edgeMasks[i]} accepts and whose
-   * far-end vertex bucket {@code neighborMasks[i]} accepts, a null neighbor mask accepting any vertex. Every filter is
+   * far-end vertex bucket {@code neighborMasks[i]} accepts, a null edge mask accepting any edge type and a null neighbor
+   * mask any vertex. Every filter is
    * answered in ONE pass over the raw entries, without decoding a {@link RID} or loading a record, so a light edge (no
    * record) weighs the same as a regular one and a label on the far end costs no vertex lookup (issue #9539).
    *
-   * @param edgeMasks     one non-null mask per filter
+   * @param edgeMasks     one mask per filter, null for any edge type
    * @param neighborMasks one mask per filter, null for none
    * @param skipSelfLoops one flag per filter, true to leave out the entries reaching {@code owner} itself, null for none:
    *                      a self loop sits in both lists of its vertex, and an undirected count must take it from one

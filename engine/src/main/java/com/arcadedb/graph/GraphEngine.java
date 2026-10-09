@@ -96,6 +96,10 @@ public class GraphEngine {
     }
   };
 
+  // THE ONE-FILTER ARGUMENTS OF countUndirectedEdges(): ANY FAR END, AND THE SELF LOOPS LEFT OUT OF THE INCOMING LIST
+  private static final EdgeBucketMask[] NO_NEIGHBOR_MASK = new EdgeBucketMask[1];
+  private static final boolean[]        SKIP_SELF_LOOPS  = { true };
+
   private final DatabaseInternal database;
 
   public GraphEngine(final DatabaseInternal database) {
@@ -726,6 +730,32 @@ public class GraphEngine {
     }
 
     return total;
+  }
+
+  /**
+   * The edges an undirected relationship pattern matches from {@code vertex}: {@link #countEdges} in direction
+   * {@link Vertex.DIRECTION#BOTH}, with a self loop counted once. The vertex API counts a self loop in each of the two
+   * lists it sits in, as a graph degree does; a pattern {@code (n)-[:T]-(m)} matches the relationship once, as Neo4j and
+   * the openCypher TCK do (issues #8750, #9540). Same cost as {@link #countEdges}: each list is walked once, the incoming
+   * one telling the self loops apart on the far-end position its entries carry.
+   */
+  public long countUndirectedEdges(final VertexInternal vertex, final String... edgeTypes) {
+    final EdgeBucketMask mask;
+    if (edgeTypes != null && edgeTypes.length > 0) {
+      mask = EdgeBucketMask.of(database, edgeTypes);
+      if (mask == null)
+        return 0L;
+    } else
+      mask = null;
+
+    final long[] counts = new long[1];
+    final EdgeLinkedList outEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.OUT);
+    if (outEdges != null)
+      outEdges.countInto(new EdgeBucketMask[] { mask }, NO_NEIGHBOR_MASK, null, counts);
+    final EdgeLinkedList inEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.IN);
+    if (inEdges != null)
+      inEdges.countInto(new EdgeBucketMask[] { mask }, NO_NEIGHBOR_MASK, SKIP_SELF_LOOPS, counts);
+    return counts[0];
   }
 
   /**

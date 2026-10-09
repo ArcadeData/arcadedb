@@ -488,8 +488,8 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
       }
 
       for (int i = 0; i < filters; i++)
-        if (edgeMasks[i].matches(edgeBucketId) && (neighborMasks[i] == null || neighborMasks[i].matches(vertexBucketId))
-            && !(selfLoop && skipSelfLoops[i]))
+        if ((edgeMasks[i] == null || edgeMasks[i].matches(edgeBucketId))
+            && (neighborMasks[i] == null || neighborMasks[i].matches(vertexBucketId)) && !(selfLoop && skipSelfLoops[i]))
           ++counts[i];
     }
   }

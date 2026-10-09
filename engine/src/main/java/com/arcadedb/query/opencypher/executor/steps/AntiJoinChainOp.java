@@ -22,8 +22,10 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.GraphTraversalProvider;
+import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.opencypher.executor.SelfLoops;
 import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.utility.IntHashSet;
 
@@ -155,7 +157,7 @@ public final class AntiJoinChainOp implements CountOp {
     // Pre-fetch NeighborViews for each hop up to the check position
     final NeighborView[] hopViews = new NeighborView[laterIdx];
     for (int h = 0; h < laterIdx; h++)
-      hopViews[h] = provider.getNeighborView(directions[h], edgeTypes[h]);
+      hopViews[h] = CSRCountUtils.patternView(provider, directions[h], edgeTypes[h]);
 
     // Pre-compute bucket IDs for CSR-based anchor iteration and frontier filtering. A pattern that labels no
     // position needs none of them.
@@ -173,7 +175,7 @@ public final class AntiJoinChainOp implements CountOp {
 
       // Pre-compute anti-join neighbors for Case A (anchor is the anti-join source)
       final int[] anchorAntiNbrs = anchorIsSource
-          ? provider.getNeighborIds(anchorId, antiJoinDirection, antiJoinEdgeType)
+          ? CSRCountUtils.hopNeighborIds(provider, anchorId, antiJoinDirection, antiJoinEdgeType)
           : null;
 
       final long count = countWithAntiJoin(provider, anchorId, anchorAntiNbrs,
@@ -223,7 +225,7 @@ public final class AntiJoinChainOp implements CountOp {
         if (viewDirections[earlier] == viewDirections[v] && viewTypes[earlier].equals(viewTypes[v]))
           views[v] = views[earlier];
       if (views[v] == null)
-        views[v] = provider.getNeighborView(viewDirections[v], viewTypes[v]);
+        views[v] = CSRCountUtils.patternView(provider, viewDirections[v], viewTypes[v]);
       if (views[v] == null)
         return -1;
     }
@@ -236,7 +238,7 @@ public final class AntiJoinChainOp implements CountOp {
     // that gets here, and bucketIds is set whenever a position is labelled
     final NeighborView[] tailViews = new NeighborView[edgeTypes.length - 2];
     for (int h = 2; h < edgeTypes.length; h++) {
-      tailViews[h - 2] = provider.getNeighborView(directions[h], edgeTypes[h]);
+      tailViews[h - 2] = CSRCountUtils.patternView(provider, directions[h], edgeTypes[h]);
       if (tailViews[h - 2] == null)
         return -1;
     }
@@ -448,9 +450,9 @@ public final class AntiJoinChainOp implements CountOp {
     for (final IntHashSet buckets : validBuckets)
       if (buckets.isEmpty())
         return 0;
-    final NeighborView viewA = provider.getNeighborView(reverse(directions[0]), edgeTypes[0]);   // m -> t1
-    final NeighborView viewC = provider.getNeighborView(directions[2], edgeTypes[2]);            // c -> t2 (and the negated pattern)
-    final NeighborView viewR = provider.getNeighborView(reverse(directions[1]), edgeTypes[1]);   // c -> m
+    final NeighborView viewA = CSRCountUtils.patternView(provider, reverse(directions[0]), edgeTypes[0]);   // m -> t1
+    final NeighborView viewC = CSRCountUtils.patternView(provider, directions[2], edgeTypes[2]);            // c -> t2 (and the negated pattern)
+    final NeighborView viewR = CSRCountUtils.patternView(provider, reverse(directions[1]), edgeTypes[1]);   // c -> m
     if (viewA == null || viewC == null || viewR == null)
       return -1;
 
@@ -515,18 +517,18 @@ public final class AntiJoinChainOp implements CountOp {
       final Vertex c = it.next().asVertex();
       final Set<RID> targets = new HashSet<>();
       long t2 = 0;
-      for (final RID tag : c.getConnectedVertexRIDs(cToTags, edgeTypes[2])) {
+      for (final RID tag : SelfLoops.connectedVertexRIDs(c, cToTags, edgeTypes[2])) {
         targets.add(tag);
         if (buckets[3].contains(tag.getBucketId()))
           t2++;
       }
       if (t2 == 0)
         continue;
-      for (final RID m : c.getConnectedVertexRIDs(cToM, edgeTypes[1])) {
+      for (final RID m : SelfLoops.connectedVertexRIDs(c, cToM, edgeTypes[1])) {
         if (!buckets[1].contains(m.getBucketId()))
           continue;
         long t1 = 0;
-        for (final RID a : m.asVertex().getConnectedVertexRIDs(mToTags, edgeTypes[0]))
+        for (final RID a : SelfLoops.connectedVertexRIDs(m.asVertex(), mToTags, edgeTypes[0]))
           if (buckets[0].contains(a.getBucketId()) && !targets.contains(a))
             t1++;
         total += t1 * t2;
@@ -559,9 +561,9 @@ public final class AntiJoinChainOp implements CountOp {
   private static long targetDegree(final Vertex vertex, final Vertex.DIRECTION direction, final String edgeType,
       final IntHashSet targetBuckets) {
     if (targetBuckets == null)
-      return vertex.countEdges(direction, edgeType);
+      return IncomingEdgeLookup.countPatternEdges(null, vertex, direction, edgeType);
     long degree = 0;
-    for (final RID target : vertex.getConnectedVertexRIDs(direction, edgeType))
+    for (final RID target : SelfLoops.connectedVertexRIDs(vertex, direction, edgeType))
       if (targetBuckets.contains(target.getBucketId()))
         degree++;
     return degree;
@@ -615,7 +617,7 @@ public final class AntiJoinChainOp implements CountOp {
           totalNext += view.degree(nid);
       } else {
         for (final int nid : frontier)
-          totalNext += provider.getNeighborIds(nid, directions[h], edgeTypes[h]).length;
+          totalNext += CSRCountUtils.hopNeighborIds(provider, nid, directions[h], edgeTypes[h]).length;
       }
       if (totalNext == 0)
         return 0;
@@ -629,7 +631,7 @@ public final class AntiJoinChainOp implements CountOp {
             nextFrontier[pos++] = nbrs[j];
       } else {
         for (final int nid : frontier) {
-          final int[] neighbors = provider.getNeighborIds(nid, directions[h], edgeTypes[h]);
+          final int[] neighbors = CSRCountUtils.hopNeighborIds(provider, nid, directions[h], edgeTypes[h]);
           System.arraycopy(neighbors, 0, nextFrontier, pos, neighbors.length);
           pos += neighbors.length;
         }
@@ -674,7 +676,7 @@ public final class AntiJoinChainOp implements CountOp {
       // Case B (Q8): anchor is anti-join target. For each frontier node, check
       // whether it has an anti-join edge to the anchor. Use pre-fetched NeighborView
       // + binary search on shared neighbors[] array to avoid per-node int[] allocation.
-      final NeighborView antiView = provider.getNeighborView(antiJoinDirection, antiJoinEdgeType);
+      final NeighborView antiView = CSRCountUtils.patternView(provider, antiJoinDirection, antiJoinEdgeType);
       if (antiView != null) {
         final int[] antiNbrs = antiView.neighbors();
         for (final int frontierNode : frontier) {
@@ -693,7 +695,7 @@ public final class AntiJoinChainOp implements CountOp {
           if (inequalityIdxA >= 0 && inequalityIdxB >= 0
               && isInequalityViolation(anchorId, frontierNode, 0, checkPosition))
             continue;
-          final int[] frontierAntiNbrs = provider.getNeighborIds(frontierNode,
+          final int[] frontierAntiNbrs = CSRCountUtils.hopNeighborIds(provider, frontierNode,
               antiJoinDirection, antiJoinEdgeType);
           if (Arrays.binarySearch(frontierAntiNbrs, anchorId) >= 0)
             continue;
@@ -727,10 +729,10 @@ public final class AntiJoinChainOp implements CountOp {
       final IntHashSet targetBuckets = validBuckets[h + 1];
       long degree = 0;
       if (targetBuckets == null)
-        degree = provider.countEdges(nodeId, directions[h], edgeTypes[h]);
+        degree = CSRCountUtils.hopDegree(provider, nodeId, directions[h], edgeTypes[h]);
       else
         // the label of the hop's target node filters the edges it counts
-        for (final int target : provider.getNeighborIds(nodeId, directions[h], edgeTypes[h]))
+        for (final int target : CSRCountUtils.hopNeighborIds(provider, nodeId, directions[h], edgeTypes[h]))
           if (targetBuckets.contains(bucketIds[target]))
             degree++;
       if (degree == 0)
@@ -889,7 +891,7 @@ public final class AntiJoinChainOp implements CountOp {
       if (gavProvider != null) {
         final int nodeId = gavProvider.getNodeId(vertexRid);
         if (nodeId >= 0) {
-          for (final int nid : gavProvider.getNeighborIds(nodeId, direction, edgeType)) {
+          for (final int nid : CSRCountUtils.hopNeighborIds(gavProvider, nodeId, direction, edgeType)) {
             final RID rid = gavProvider.getRID(nid);
             if (rid != null && (targetBuckets == null || targetBuckets.contains(rid.getBucketId())))
               neighbors.add(rid);
@@ -901,7 +903,7 @@ public final class AntiJoinChainOp implements CountOp {
       }
       // OLTP fallback
       final Vertex v = (Vertex) db.lookupByRID(vertexRid, true);
-      for (final RID rid : v.getConnectedVertexRIDs(direction, edgeType)) {
+      for (final RID rid : SelfLoops.connectedVertexRIDs(v, direction, edgeType)) {
         if (targetBuckets == null || targetBuckets.contains(rid.getBucketId()))
           neighbors.add(rid);
       }
@@ -936,7 +938,7 @@ public final class AntiJoinChainOp implements CountOp {
         final long degree;
         final int nodeId = gavProvider != null && targetBuckets[h] == null ? gavProvider.getNodeId(vertexRid) : -1;
         if (nodeId >= 0)
-          degree = gavProvider.countEdges(nodeId, directions[h], edgeTypes[h]);
+          degree = CSRCountUtils.hopDegree(gavProvider, nodeId, directions[h], edgeTypes[h]);
         else
           degree = targetDegree((Vertex) db.lookupByRID(vertexRid, true), directions[h], edgeTypes[h], targetBuckets[h]);
         if (degree == 0) {
@@ -965,7 +967,7 @@ public final class AntiJoinChainOp implements CountOp {
       guard.check();
       final Vertex anchor = it.next().asVertex();
       final Set<RID> antiJoinSet = new HashSet<>();
-      for (final RID rid : anchor.getConnectedVertexRIDs(antiJoinDirection, antiJoinEdgeType))
+      for (final RID rid : SelfLoops.connectedVertexRIDs(anchor, antiJoinDirection, antiJoinEdgeType))
         antiJoinSet.add(rid);
 
       total += countPathsRec(anchor, 0, db, anchor.getIdentity(), antiJoinSet, hopBuckets);
@@ -995,7 +997,7 @@ public final class AntiJoinChainOp implements CountOp {
     final IntHashSet targetBuckets = hopBuckets[hopIndex + 1];
 
     long count = 0;
-    for (final RID neighborRid : vertex.getConnectedVertexRIDs(directions[hopIndex], edgeTypes[hopIndex])) {
+    for (final RID neighborRid : SelfLoops.connectedVertexRIDs(vertex, directions[hopIndex], edgeTypes[hopIndex])) {
       if (targetBuckets != null && !targetBuckets.contains(neighborRid.getBucketId()))
         continue;
       if (hopIndex + 1 == antiJoinTargetIdx && antiJoinSet.contains(neighborRid))
