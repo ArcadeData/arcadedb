@@ -203,9 +203,44 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
     // No-op with Raft: replication completion is managed by Raft consensus
   }
 
+  /**
+   * The HTTP port setting {@link #endTest()} restarts a stopped server with: the port it bound before, so every other
+   * node still finds it where it was, and - when {@code configured} is a range - the rest of that range after it
+   * (issue #9562). The server was down for the rest of the test, and on a machine running parallel builds another
+   * server can take the port in that window; pinned to that one port, the restart failed and the teardown compared the
+   * stopped server's copy instead. A setting that names a single port, as a subclass that pinned one or drew one does,
+   * keeps exactly the port bound before, and a server that never bound one keeps its configured setting.
+   */
+  static String restartHttpPortSetting(final String configured, final int boundPort) {
+    if (boundPort <= 0)
+      return configured;
+    final int dash = configured.indexOf('-');
+    if (dash < 0)
+      return String.valueOf(boundPort);
+    final int end = Integer.parseInt(configured.substring(dash + 1).trim());
+    return end > boundPort ? boundPort + "-" + end : String.valueOf(boundPort);
+  }
+
+  /**
+   * Runs the teardown's database comparison so that its failure does not replace the failure of the restart before it
+   * (issue #9562). A server the restart could not bring back is compared through the copy it left on disk, which
+   * misses everything written after it stopped, so its {@code DatabaseAreNotIdentical} is a consequence; it is kept
+   * as a suppressed exception of the restart failure, which is the one that propagates.
+   */
+  static void compareWithoutMasking(final Throwable restartFailure, final Runnable comparison) {
+    try {
+      comparison.run();
+    } catch (final RuntimeException | Error e) {
+      if (restartFailure == null)
+        throw e;
+      restartFailure.addSuppressed(e);
+    }
+  }
+
   @AfterEach
   public void endTest() {
     boolean anyServerRestarted = false;
+    Throwable restartFailure = null;
     try {
       if (servers != null) {
         // RESTART ANY SERVER IS DOWN TO CHECK INTEGRITY AFTER THE REALIGNMENT
@@ -213,8 +248,10 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
           if (servers[i] != null && !servers[i].isStarted()) {
             testLog(" Restarting server %d to force re-alignment", i);
             if (servers[i].getHttpServer() != null) {
-              final int oldPort = servers[i].getHttpServer().getPort();
-              servers[i].getConfiguration().setValue(GlobalConfiguration.SERVER_HTTP_INCOMING_PORT, oldPort);
+              final ContextConfiguration configuration = servers[i].getConfiguration();
+              configuration.setValue(GlobalConfiguration.SERVER_HTTP_INCOMING_PORT,
+                  restartHttpPortSetting(configuration.getValueAsString(GlobalConfiguration.SERVER_HTTP_INCOMING_PORT),
+                      servers[i].getHttpServer().getPort()));
               startServer(i);
               anyServerRestarted = true;
             }
@@ -241,10 +278,13 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
               return true;
             });
       }
+    } catch (final RuntimeException | Error e) {
+      restartFailure = e;
+      throw e;
     } finally {
       try {
         LogManager.instance().log(this, Level.INFO, "END OF THE TEST: Check DBS are identical...");
-        checkDatabasesAreIdentical();
+        compareWithoutMasking(restartFailure, this::checkDatabasesAreIdentical);
       } finally {
         // Issue #6297: the cleanup runs BEFORE resetAll(), not after. Every path it deletes is resolved from the
         // live configuration at call time, and SERVER_DATABASE_DIRECTORY is '${arcadedb.server.rootPath}/databases'
