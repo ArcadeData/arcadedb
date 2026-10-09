@@ -213,8 +213,9 @@ public class ArcadeGremlin extends ArcadeQuery {
    * their type, {@code 1:Integer} and {@code 1:Long} (whatever the order of the entries), so no entry is lost. These names are labels
    * that keep the entries apart: a numeric suffix ({@code 1:Long2}) is added only when a real key already uses the generated name</li>
    * </ul>
+   * The shape of a row is fixed by the query, while a generated name depends on the keys of that one map: a row holding both 1 and
+   * 1L is named {@code 1:Integer}/{@code 1:Long}, another row holding only 1L keeps {@code 1}. Package-private for the unit tests.
    */
-  // PACKAGE-PRIVATE FOR THE UNIT TESTS
   static ResultInternal mapToResult(final Map<Object, Object> originalMap) {
     // FAST PATH, THE COMMON CASE: NO TWO KEYS SHARE A NAME, SO ONE PASS AND NO EXTRA ALLOCATION
     final Map<String, Object> flat = new LinkedHashMap<>(originalMap.size() * 4 / 3 + 1);
@@ -222,6 +223,7 @@ public class ArcadeGremlin extends ArcadeQuery {
     for (final Map.Entry<Object, Object> entry : originalMap.entrySet()) {
       final Object originalKey = entry.getKey();
       flat.put(originalKey == T.id ? RID_KEY : originalKey == T.label ? TYPE_KEY : String.valueOf(originalKey), entry.getValue());
+      // A SHARED NAME REPLACES AN ENTRY INSTEAD OF ADDING ONE, SO THE SIZE FALLS BEHIND THE COUNT OF ENTRIES READ
       if (flat.size() != ++processed)
         break;
     }
