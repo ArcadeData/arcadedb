@@ -106,7 +106,9 @@ public class FakeRaftHAServer extends RaftHAServer {
       "getLeaderId", "isLeader", "getLivePeers", "getCommittedPeersOrNull", "getUnambiguousPeerHttpAddress",
       "isSoleVoter", "getClient", "followerContactPeers", "handoffReachablePeers", "getClusterMonitor",
       // What a read guarantee waits on: Ratis's applied index, clamped by any per-database floor
-      "getTrustedAppliedIndex");
+      "getTrustedAppliedIndex",
+      // The read-consistency gate: membership (issue #9590) and the linearizable read barriers, which need a live leader
+      "isRemovedFromConfiguration", "ensureLinearizableRead", "ensureLinearizableFollowerRead");
   private volatile CallLog         log     = new CallLog();
   private final    CallLog.Answers answers = new CallLog.Answers(RECORDED);
 
@@ -606,6 +608,22 @@ public class FakeRaftHAServer extends RaftHAServer {
   @Override
   public void waitForAppliedIndex(final String databaseName, final long targetIndex, final boolean throwOnTimeout) {
     call("waitForAppliedIndex", () -> null, databaseName, targetIndex, throwOnTimeout);
+  }
+
+  /** Recorded; unanswered, the real check, which a detached server answers false (never refuses on missing information). */
+  @Override
+  public boolean isRemovedFromConfiguration() {
+    return bool("isRemovedFromConfiguration", call("isRemovedFromConfiguration", super::isRemovedFromConfiguration));
+  }
+
+  @Override
+  public void ensureLinearizableRead(final String databaseName) {
+    call("ensureLinearizableRead", () -> null, databaseName);
+  }
+
+  @Override
+  public void ensureLinearizableFollowerRead(final String databaseName) {
+    call("ensureLinearizableFollowerRead", () -> null, databaseName);
   }
 
   @Override

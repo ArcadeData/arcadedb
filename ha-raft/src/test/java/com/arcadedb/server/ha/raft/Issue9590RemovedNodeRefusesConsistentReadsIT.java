@@ -116,6 +116,8 @@ class Issue9590RemovedNodeRefusesConsistentReadsIT extends BaseRaftHATest {
     writeOnMemberAndGetBookmark();
 
     final Database removedDb = getServerDatabase(followerIndex, getDatabaseName());
+    assertThat(getRaftPlugin(followerIndex).getRaftHAServer().isRemovedFromConfiguration())
+        .as("the reads below are served by a node that knows it was removed").isTrue();
 
     RaftReplicatedDatabase.applyReadConsistencyContext(Database.READ_CONSISTENCY.EVENTUAL, -1L);
     assertThat(countBefore(removedDb)).isEqualTo(RECORDS_BEFORE);
