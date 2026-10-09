@@ -45,12 +45,22 @@ public class LogicalExpression implements BooleanExpression {
   private final boolean leftCostly;
   private final boolean rightCostly;
 
+  /**
+   * AND and OR are commutative, nulls included, so the operand order is free: the one that cannot run a subquery goes
+   * first and may make the other unnecessary (issue #9579).
+   */
+  private final BooleanExpression first;
+  private final BooleanExpression second;
+
   public LogicalExpression(final Operator operator, final BooleanExpression left, final BooleanExpression right) {
     this.operator = operator;
     this.left = left;
     this.right = right;
     this.leftCostly = ExpressionCost.isCostly(left);
     this.rightCostly = ExpressionCost.isCostly(right);
+    final boolean swap = leftCostly && !rightCostly;
+    this.first = swap ? right : left;
+    this.second = swap ? left : right;
   }
 
   public LogicalExpression(final Operator operator, final BooleanExpression operand) {
@@ -81,12 +91,6 @@ public class LogicalExpression implements BooleanExpression {
   }
 
   private Object evaluateAnd(final Result result, final CommandContext context) {
-    // AND and OR are commutative, nulls included, so the operand order is free: the one that cannot run a subquery goes
-    // first and may make the other unnecessary (issue #9579).
-    final boolean swap = leftCostly && !rightCostly;
-    final BooleanExpression first = swap ? right : left;
-    final BooleanExpression second = swap ? left : right;
-
     final Boolean leftBool = toBoolean(first.evaluateTernary(result, context));
 
     // false AND anything = false: the other operand is result-irrelevant, do not evaluate it.
@@ -102,10 +106,6 @@ public class LogicalExpression implements BooleanExpression {
   }
 
   private Object evaluateOr(final Result result, final CommandContext context) {
-    final boolean swap = leftCostly && !rightCostly;
-    final BooleanExpression first = swap ? right : left;
-    final BooleanExpression second = swap ? left : right;
-
     final Boolean leftBool = toBoolean(first.evaluateTernary(result, context));
 
     // true OR anything = true: the other operand is result-irrelevant, do not evaluate it.

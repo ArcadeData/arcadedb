@@ -48,7 +48,10 @@ class Issue9579And9580SubqueryEvaluationOrderTest {
 
   @BeforeEach
   void setup() {
-    database = new DatabaseFactory("./target/databases/issue9579-9580").create();
+    final DatabaseFactory factory = new DatabaseFactory("./target/databases/issue9579-9580");
+    if (factory.exists())
+      factory.open().drop();
+    database = factory.create();
     database.transaction(() -> {
       database.command("sql", "CREATE VERTEX TYPE Anchor");
       database.command("sql", "CREATE PROPERTY Anchor.uid LONG");
@@ -151,6 +154,79 @@ class Issue9579And9580SubqueryEvaluationOrderTest {
 
     assertThat(rows).hasSize(1);
     assertThat(rows.get(0).<Boolean>getProperty("c0")).isFalse();
+  }
+
+  @Test
+  void costlyOperandOnTheLeftOfOrWithNullOrFalseCheapOperandStillEvaluatesIt() {
+    // keep is null on the missing property: null OR <count result> must be decided by the COUNT, in both orders.
+    final List<Result> rows = collect("""
+        MATCH (u:Anchor)
+        WHERE (COUNT { MATCH (u)-[:EXPAND]->(l:Leaf) WHERE l.mark = true } > 0) OR u.missing = 1
+        RETURN u.uid AS c0""");
+    final List<Result> reversed = collect("""
+        MATCH (u:Anchor)
+        WHERE u.missing = 1 OR (COUNT { MATCH (u)-[:EXPAND]->(l:Leaf) WHERE l.mark = true } > 0)
+        RETURN u.uid AS c0""");
+
+    assertThat(rows).hasSize(1);
+    assertThat(((Number) rows.get(0).getProperty("c0")).longValue()).isEqualTo(2L);
+    assertThat(reversed).hasSize(1);
+    assertThat(((Number) reversed.get(0).getProperty("c0")).longValue()).isEqualTo(2L);
+  }
+
+  @Test
+  void existsSubqueryAfterFalseCheapOperandIsNotEvaluated() {
+    final List<Result> rows = collect("""
+        MATCH (u:Anchor)
+        WHERE EXISTS { MATCH (u)-[:EXPAND]->(l:Leaf) WHERE (l.mark = false AND l.uid / 0 > 0) OR l.mark = true }
+          AND u.uid = 2
+        RETURN u.uid AS c0""");
+
+    assertThat(rows).hasSize(1);
+    assertThat(((Number) rows.get(0).getProperty("c0")).longValue()).isEqualTo(2L);
+  }
+
+  @Test
+  void patternPredicateAfterFalseCheapOperandKeepsTheSameRows() {
+    final List<Result> rows = collect("""
+        MATCH (u:Anchor)
+        WHERE (u)-[:EXPAND]->(:Leaf {mark: true}) AND coalesce(u.keep, false) = true
+        RETURN u.uid AS c0""");
+
+    assertThat(rows).hasSize(1);
+    assertThat(((Number) rows.get(0).getProperty("c0")).longValue()).isEqualTo(2L);
+  }
+
+  @Test
+  void nullAndFalseIsFalseInBothOrdersWithACostlyOperand() {
+    final List<Result> rows = collect("""
+        MATCH (u:Anchor {uid: 2})
+        RETURN (COUNT { MATCH (u)-[:EXPAND]->(l:Leaf) } > 0 AND null) AS a,
+               (null AND COUNT { MATCH (u)-[:EXPAND]->(l:Leaf) } > 0) AS b,
+               (COUNT { MATCH (u)-[:EXPAND]->(l:Leaf) } > 0 AND false) AS c,
+               (false AND COUNT { MATCH (u)-[:EXPAND]->(l:Leaf) } > 0) AS d,
+               (COUNT { MATCH (u)-[:EXPAND]->(l:Leaf) } > 0 OR null) AS e,
+               (null OR COUNT { MATCH (u)-[:EXPAND]->(l:Leaf) } > 0) AS f""");
+
+    assertThat(rows).hasSize(1);
+    final Result row = rows.get(0);
+    assertThat(row.<Object>getProperty("a")).isNull();
+    assertThat(row.<Object>getProperty("b")).isNull();
+    assertThat(row.<Boolean>getProperty("c")).isFalse();
+    assertThat(row.<Boolean>getProperty("d")).isFalse();
+    assertThat(row.<Boolean>getProperty("e")).isTrue();
+    assertThat(row.<Boolean>getProperty("f")).isTrue();
+  }
+
+  @Test
+  void coalesceInAnAggregatingProjectionStopsAtTheFirstNonNullArgument() {
+    // An aggregation in the projection routes evaluation through ExpressionEvaluator rather than the AST's own path.
+    final List<Result> rows = collect("""
+        MATCH (u:Anchor {uid: 1})
+        RETURN count(u) AS n, coalesce(1, COUNT { MATCH (u)-[:EXPAND]->(l:Leaf) WHERE l.uid / 0 > 0 }) AS c0""");
+
+    assertThat(rows).hasSize(1);
+    assertThat(((Number) rows.get(0).getProperty("c0")).longValue()).isEqualTo(1L);
   }
 
   private List<Result> collect(final String query) {
