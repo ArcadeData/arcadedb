@@ -66,7 +66,7 @@ public final class ProductCountStep extends AbstractExecutionStep {
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     if (executed)
-      return new IteratorResultSet(Collections.<Result>emptyList().iterator());
+      return new IteratorResultSet(Collections.emptyIterator());
     executed = true;
 
     final long begin = context.isProfiling() ? System.nanoTime() : 0;

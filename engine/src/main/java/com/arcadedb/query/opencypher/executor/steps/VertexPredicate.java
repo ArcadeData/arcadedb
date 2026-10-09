@@ -213,6 +213,8 @@ public final class VertexPredicate {
           return false;
       if (where == null)
         return true;
+      // One row for every vertex: a per-vertex conjunct only answers a boolean and holds nothing that could keep the
+      // row (CountPushDownPredicates refuses pattern comprehensions, subqueries and pattern predicates)
       if (row == null)
         row = new ResultInternal(context.getDatabase());
       row.setProperty(variable, vertex);
