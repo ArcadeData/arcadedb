@@ -460,6 +460,9 @@ public interface HAServerPlugin extends ServerPlugin {
   /**
    * The HA plugin registered with {@code server}'s plugin manager, whether or not it has registered itself as the
    * server's HA implementation yet, or null when there is none.
+   * <p>
+   * A plugin found here may not have derived its token yet - discovered but not started - and then answers null:
+   * the caller falls back to the raw setting, which is what it read before this lookup existed. That is intended.
    */
   private static HAServerPlugin registeredHAPlugin(final ArcadeDBServer server) {
     for (final ServerPlugin plugin : server.getPlugins())

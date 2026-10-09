@@ -44,7 +44,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>
  * The window is reproduced on a running node by unregistering the HA plugin from the server, which leaves exactly
  * what the starting node has: a running plugin, discovered and registered with the plugin manager, that
- * {@code getHA()} does not name yet.
+ * {@code getHA()} does not name yet. The node's own background HA threads keep running meanwhile and may read
+ * {@code getHA()} as null too - the readiness probe, for instance - which is the state a starting node is in anyway;
+ * every test restores it in a {@code finally}.
  */
 class Issue9554ClusterTokenAcrossHALifecycleIT extends BaseRaftHATest {
 
@@ -116,8 +118,8 @@ class Issue9554ClusterTokenAcrossHALifecycleIT extends BaseRaftHATest {
           .build();
       final HttpResponse<Void> response = HTTP.send(request, HttpResponse.BodyHandlers.discarding());
       assertThat(response.statusCode())
-          .as("a peer's snapshot request carrying the right cluster token must be authenticated")
-          .isNotEqualTo(401);
+          .as("a peer's snapshot request carrying the right cluster token must be authenticated and served")
+          .isEqualTo(200);
     } finally {
       server.setHA(ha);
     }
