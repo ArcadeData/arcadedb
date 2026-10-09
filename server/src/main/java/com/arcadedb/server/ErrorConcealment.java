@@ -73,11 +73,22 @@ public final class ErrorConcealment {
    */
   public static String clientMessage(final boolean conceal, final Object requester, final String surface, final String message,
       final Throwable cause, final Level clientCausedLevel) {
+    return clientMessage(conceal, requester, surface, message, cause, clientCausedLevel, true);
+  }
+
+  /**
+   * {@link #clientMessage(boolean, Object, String, String, Throwable, Level)} for a caller that reports many failures
+   * of one request, one per row of a bulk load: with {@code traceServerFault} false a server fault is logged at
+   * {@code clientCausedLevel} without its stack trace, the caller having logged one already, so a chunk whose every
+   * row fails for the same server-side reason writes one trace and not one per row.
+   */
+  public static String clientMessage(final boolean conceal, final Object requester, final String surface, final String message,
+      final Throwable cause, final Level clientCausedLevel, final boolean traceServerFault) {
     if (!conceal)
       return message;
     // THE TEXT CAN CARRY CLIENT DATA (A DUPLICATED KEY'S VALUES): ONE LINE, SO IT CANNOT FORGE ENTRIES IN A LINE-ORIENTED LOG
     final String logged = singleLine(message);
-    if (ErrorCategory.of(cause) == ErrorCategory.SERVER)
+    if (traceServerFault && ErrorCategory.of(cause) == ErrorCategory.SERVER)
       LogManager.instance().log(requester, Level.SEVERE, "%s: %s (concealed from the client in production mode)", cause, surface,
           logged);
     else
