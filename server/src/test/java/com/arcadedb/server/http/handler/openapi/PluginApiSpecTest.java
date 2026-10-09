@@ -58,6 +58,7 @@ class PluginApiSpecTest {
         "/api/v1/cluster/resync/{database}",
         "/api/v1/cluster/accept-copy/{database}",
         "/api/v1/cluster/accept-diverged/{database}",
+        "/api/v1/cluster/accept-stale-snapshot",
         "/api/v1/cluster/bootstrap-state",
         "/api/v1/cluster/capabilities",
         "/api/v1/cluster/security-seed",
@@ -66,7 +67,7 @@ class PluginApiSpecTest {
 
     final long operations = openAPI.getPaths().values().stream()
         .mapToLong(item -> item.readOperations().size()).sum();
-    assertThat(operations).isEqualTo(16);
+    assertThat(operations).isEqualTo(17);
   }
 
   @Test
@@ -356,6 +357,17 @@ class PluginApiSpecTest {
     assertThat(post.getResponses().keySet()).containsExactlyInAnyOrder("200", "400", "401", "403", "404", "409", "500");
     assertThat(openAPI.getComponents().getSchemas().get("ClusterActionResponse").getProperties().keySet())
         .contains("database", "localServer", "appliedIndex", "divergenceCause", "readFloor");
+  }
+
+  /** Issue #9498: the node-wide floor's override; no database in the path, 404 when no floor stands, 409 with peers. */
+  @Test
+  void acceptStaleSnapshotDeclaresWhatTheHandlerAnswers() {
+    final Operation post = openAPI.getPaths().get("/api/v1/cluster/accept-stale-snapshot").getPost();
+    assertThat(post.getOperationId()).isEqualTo("acceptClusterStaleSnapshot");
+    assertThat(post.getParameters()).as("the floor is node-wide: the route names no database").isNullOrEmpty();
+    assertThat(post.getResponses().keySet()).containsExactlyInAnyOrder("200", "400", "401", "403", "404", "409", "500");
+    assertThat(openAPI.getComponents().getSchemas().get("ClusterActionResponse").getProperties().keySet())
+        .contains("localServer", "appliedIndex", "readFloor", "snapshotIndex");
   }
 
   /**

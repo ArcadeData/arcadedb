@@ -1083,6 +1083,11 @@ service ArcadeDbAdminService {
   // on a node a peer could still resync (a resync from a peer is the way out there) or without HA,
   // INVALID_ARGUMENT on a malformed database name.
   rpc AcceptDivergedDatabase (AcceptDivergedDatabaseRequest) returns (AcceptDivergedDatabaseResponse);
+  // The operator's override of issue #9498, the RPC twin of POST /api/v1/cluster/accept-stale-snapshot: lifts the
+  // node-wide stale-snapshot read floor (issue #6111) of a node that is the only voter of its cluster, accepting its
+  // databases as they are WITHOUT a resync. Root only. NOT_FOUND when no floor stands, FAILED_PRECONDITION on a node a
+  // peer could still resync, while a snapshot download is running, or without HA.
+  rpc AcceptStaleSnapshot (AcceptStaleSnapshotRequest) returns (AcceptStaleSnapshotResponse);
 
   // Read-only administrative view of the server's open HTTP authentication sessions. gRPC has no
   // session of its own - every admin RPC authenticates from the credentials on the request body - so
@@ -1650,6 +1655,20 @@ message AcceptDivergedDatabaseResponse {
   string divergence_cause = 4;
   // The read floor lifted with the quarantine, or -1 when none stood.
   int64 read_floor = 5;
+}
+
+message AcceptStaleSnapshotRequest {
+  DatabaseCredentials credentials = 1;
+}
+message AcceptStaleSnapshotResponse {
+  // The server that lifted the read floor.
+  string local_server = 1;
+  // The node-wide read floor that was lifted: the last Raft index the databases were known to hold.
+  int64 read_floor = 2;
+  // The snapshot marker index the floor was short of, or -1 when no marker was on disk.
+  int64 snapshot_index = 3;
+  // The applied position now recorded for the node.
+  int64 applied_index = 4;
 }
 
 // -----------------------------------------------------------------------------

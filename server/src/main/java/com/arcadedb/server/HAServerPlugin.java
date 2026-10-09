@@ -134,6 +134,30 @@ public interface HAServerPlugin extends ServerPlugin {
         "This HA implementation cannot lift a database quarantine by hand");
   }
 
+  /**
+   * The operator's override of issue #9498: lifts the node-wide stale-snapshot read floor (issue #6111), which stands
+   * while the replication snapshot marker runs ahead of the entries this node applied, accepting this node's databases as
+   * they are WITHOUT a resync, and records who did it. Shared by {@code POST /api/v1/cluster/accept-stale-snapshot} and
+   * the gRPC {@code AcceptStaleSnapshot} RPC. The caller authorizes (root only); this method does not.
+   * <p>
+   * Only on the sole voter of its cluster, which has no peer to resync from. Anywhere else the floor is lifted by a resync
+   * from a peer, and lifting it by hand would leave this node silently short of entries the others applied.
+   *
+   * @param acceptedBy who asked, for the audit line in the server log
+   *
+   * @return what was lifted: {@code localServer}, {@code readFloor}, {@code snapshotIndex} and the {@code appliedIndex}
+   * now recorded
+   *
+   * @throws ServerControlPlane.NotFoundException              when no stale-snapshot read floor stands
+   * @throws ServerControlPlane.OperationNotAvailableException when a peer can serve a resync, a download is running, or
+   *                                                           the HA implementation has no such override
+   * @throws IOException                                       when the change could not be persisted; nothing is lifted
+   */
+  default JSONObject acceptStaleSnapshot(final String acceptedBy) throws IOException {
+    throw new ServerControlPlane.OperationNotAvailableException(
+        "This HA implementation cannot lift a stale-snapshot read floor by hand");
+  }
+
   String getLeaderName();
 
   /**

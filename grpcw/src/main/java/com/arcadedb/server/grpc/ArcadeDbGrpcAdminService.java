@@ -1000,6 +1000,34 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
   }
 
   /**
+   * The operator's override of issue #9498, the twin of {@code POST /api/v1/cluster/accept-stale-snapshot}. A thin adapter
+   * over {@code HAServerPlugin.acceptStaleSnapshot}, the method the HTTP route calls too. Root-only and not leader-routed:
+   * the floor is this node's own. No floor standing is {@code NOT_FOUND}; a node a peer could resync, one running a
+   * download, or one running without HA is {@code FAILED_PRECONDITION}.
+   */
+  @Override
+  public void acceptStaleSnapshot(final AcceptStaleSnapshotRequest req,
+      final StreamObserver<AcceptStaleSnapshotResponse> resp) {
+    respond(resp, "acceptStaleSnapshot", () -> {
+      final ServerSecurityUser user = authenticate(req.getCredentials());
+      requireServerAdmin(user);
+
+      final HAServerPlugin ha = ha();
+      if (ha == null)
+        throw new ServerControlPlane.OperationNotAvailableException(
+            "ArcadeDB is not running with High Availability module enabled: there is no read floor to lift");
+
+      final JSONObject result = ha.acceptStaleSnapshot("user '" + user.getName() + "' (over gRPC)");
+      return AcceptStaleSnapshotResponse.newBuilder()
+          .setLocalServer(result.getString("localServer", ""))
+          .setReadFloor(result.getLong("readFloor", -1L))
+          .setSnapshotIndex(result.getLong("snapshotIndex", -1L))
+          .setAppliedIndex(result.getLong("appliedIndex", -1L))
+          .build();
+    });
+  }
+
+  /**
    * The server's open HTTP authentication sessions, the RPC equivalent of {@code GET /api/v1/sessions}
    * (issue #7310), root-only as {@code GetSessionsHandler}'s {@code checkRootUser} makes it.
    * <p>

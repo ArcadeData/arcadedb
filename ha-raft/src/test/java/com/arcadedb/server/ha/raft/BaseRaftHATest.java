@@ -750,6 +750,21 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
   }
 
   /**
+   * Publishes the node-wide stale-snapshot read floor of issue #6111 on a server, as {@code reinitialize()} does when the
+   * snapshot marker runs ahead of the persisted applied index, for a test outside this package that needs one standing
+   * (issue #9498, the gRPC override). Only {@code reinitialize()} raises it in production, and a live server cannot be
+   * made to restart onto a stale marker from a test, so it goes through the state machine's test hook.
+   */
+  protected void raiseStaleSnapshotFloor(final int serverIndex, final long floor) {
+    getRaftPlugin(serverIndex).getRaftHAServer().getStateMachine().publishStaleSnapshotFloor(floor);
+  }
+
+  /** The node-wide stale-snapshot read floor of a server, {@code -1} when none stands; see {@link #raiseStaleSnapshotFloor}. */
+  protected long getStaleSnapshotFloor(final int serverIndex) {
+    return getRaftPlugin(serverIndex).getRaftHAServer().getStateMachine().getStaleSnapshotAppliedFloor();
+  }
+
+  /**
    * Ensures the replicas about to be compared have caught up, then compares them. The base {@code endTest()}
    * calls the comparison directly, without a Raft-aware wait.
    * <p>

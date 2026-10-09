@@ -688,7 +688,8 @@ public class ClusterAlerts {
             + "itself and needs leadership transferred first (POST /api/v1/cluster/leader). A node that is the only "
             + "voter of its cluster has no peer to resync from: there, and only if the copy is known to be acceptable "
             + "as it is, lift the quarantine with POST " + PostAcceptDivergedHandler.ROUTE + "{database} (root only), "
-            + "which records who did it in the server log.")
+            + "which records who did it in the server log; a node-wide snapshotAppliedFloor is lifted there the same "
+            + "way, with POST " + PostAcceptStaleSnapshotHandler.ROUTE + " (root only, issue #9498).")
         .put("details", new JSONObject()
             .put("snapshotDownloadQueued", state.snapshotDownloadQueued())
             .put("snapshotDownloadInProgress", state.snapshotDownloadInProgress())
