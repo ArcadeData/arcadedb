@@ -24,7 +24,6 @@ import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.schema.Type;
-import com.arcadedb.utility.SubclassMocks;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -36,13 +35,6 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyLong;
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.Mockito.RETURNS_DEEP_STUBS;
-import static org.mockito.Mockito.times;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
 
 /**
  * Issue #8784: a transaction that committed cluster-wide must end, on the node that originated it, as a commit - its
@@ -63,8 +55,8 @@ class Issue8784ReplicatedCommitFiresAfterCommitCallbacksTest {
   Path tempDir;
 
   private LocalDatabase          proxied;
-  private RaftHAServer           raftServer;
-  private RaftTransactionBroker  broker;
+  private FakeRaftHAServer           raftServer;
+  private FakeRaftTransactionBroker  broker;
   private RaftReplicatedDatabase database;
   private ThreadLocal<Boolean>   schemaCommitThread;
   private final AtomicInteger    fired = new AtomicInteger();
@@ -76,13 +68,13 @@ class Issue8784ReplicatedCommitFiresAfterCommitCallbacksTest {
     proxied.getSchema().createDocumentType(TYPE, 1).createProperty("name", Type.STRING);
     proxied.transaction(() -> proxied.newDocument(TYPE).set("name", "seed").save());
 
-    broker = SubclassMocks.mock(RaftTransactionBroker.class);
-    raftServer = SubclassMocks.mock(RaftHAServer.class, RETURNS_DEEP_STUBS);
-    when(raftServer.getTransactionBroker()).thenReturn(broker);
-    when(raftServer.getQuorumTimeout()).thenReturn(1_000L);
-    when(raftServer.getStateMachine()).thenReturn(new ArcadeStateMachine());
-    when(raftServer.isShutdownRequested()).thenReturn(false);
-    when(raftServer.canStateTxPreparedAt()).thenReturn(false);
+    broker = new FakeRaftTransactionBroker();
+    raftServer = FakeRaftHAServer.detached();
+    raftServer.transactionBroker(broker);
+    raftServer.quorumTimeout(1_000L);
+    raftServer.stateMachine(new ArcadeStateMachine());
+    raftServer.shutdownRequested(false);
+    raftServer.txPreparedAtCapable(false);
 
     database = new RaftReplicatedDatabase(null, proxied, raftServer);
 
@@ -118,7 +110,7 @@ class Issue8784ReplicatedCommitFiresAfterCommitCallbacksTest {
   @Test
   void aReplicaMajorityCommittedCommitFiresItsCallbacks() {
     asReplica();
-    when(broker.replicateTransaction(anyString(), any(), any())).thenThrow(
+    broker.fails("replicateTransaction",
         new MajorityCommittedAllFailedException("ALL quorum not reached after MAJORITY commit at logIndex=9"));
 
     final Begun begun = beginUpdate();
@@ -146,7 +138,7 @@ class Issue8784ReplicatedCommitFiresAfterCommitCallbacksTest {
   @Test
   void aLeaderMajorityCommittedCommitWhileTheStateMachineLivesFiresItsCallbacks() {
     asLeader();
-    when(broker.replicateTransaction(anyString(), any(), any())).thenThrow(
+    broker.fails("replicateTransaction",
         new MajorityCommittedAllFailedException("ALL quorum not reached", null, 7L));
 
     final Begun begun = beginUpdate();
@@ -214,7 +206,7 @@ class Issue8784ReplicatedCommitFiresAfterCommitCallbacksTest {
     assertThat(innerCommitted.get()).as("the callback's own transaction committed").isEqualTo(1);
     // The callback's begin() reuses the concluded context, as it does after commit() off HA, so both commits count on it.
     assertThat(begun.tx.getCommitCount()).isEqualTo(begun.commitCountBefore + 2);
-    verify(broker, times(2)).replicateTransaction(anyString(), any(), any());
+    assertThat(broker.calls("replicateTransaction")).hasSize(2);
     assertThat(proxied.isTransactionActive()).as("nothing is left open on the thread").isFalse();
   }
 
@@ -222,8 +214,7 @@ class Issue8784ReplicatedCommitFiresAfterCommitCallbacksTest {
   @Test
   void aRefusedReplicaCommitFiresNothing() {
     asReplica();
-    when(broker.replicateTransaction(anyString(), any(), any()))
-        .thenThrow(new ConcurrentModificationException("Concurrent modification on page 3/0"));
+    broker.fails("replicateTransaction", new ConcurrentModificationException("Concurrent modification on page 3/0"));
 
     final Begun begun = beginUpdate();
     assertThatThrownBy(database::commit).isInstanceOf(ConcurrentModificationException.class);
@@ -234,16 +225,15 @@ class Issue8784ReplicatedCommitFiresAfterCommitCallbacksTest {
   }
 
   private void asReplica() {
-    when(raftServer.isLeader()).thenReturn(false);
+    raftServer.leader(false);
   }
 
   private void asLeader() {
-    when(raftServer.isLeader()).thenReturn(true);
+    raftServer.leader(true);
   }
 
   private void acknowledgeAt(final long logIndex) {
-    when(broker.replicateTransaction(anyString(), any(), any())).thenReturn(logIndex);
-    when(broker.replicateTransaction(anyString(), any(), any(), anyLong())).thenReturn(logIndex);
+    broker.returns("replicateTransaction", logIndex);
   }
 
   private Begun beginUpdate() {
