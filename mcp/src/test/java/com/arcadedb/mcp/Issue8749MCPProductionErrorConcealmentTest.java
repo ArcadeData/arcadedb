@@ -95,6 +95,27 @@ class Issue8749MCPProductionErrorConcealmentTest extends BaseGraphServerTest {
     assertThat(textOf(response)).contains("limit").contains("20");
   }
 
+  /**
+   * An {@link IllegalArgumentException} the ENGINE raises is engine text, whatever its JDK class: {@code duration()}
+   * echoes the string it could not parse. Only the MCP layer's own argument refusals are kept.
+   */
+  @Test
+  void engineIllegalArgumentIsConcealedInProductionMode() throws Exception {
+    final Callable<JSONObject> query = () -> callTool("query", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("language", "opencypher")
+        .put("query", "RETURN duration('" + SECRET + "') AS d"));
+
+    final JSONObject production = withMode("production", query);
+    assertThat(production.getBoolean("isError", false)).isTrue();
+    assertThat(textOf(production)).isEqualTo(ArcadeDBServer.CONCEALED_ERROR_MESSAGE);
+    assertThat(production.toString()).doesNotContain(SECRET);
+
+    final JSONObject development = withMode("development", query);
+    assertThat(development.getBoolean("isError", false)).isTrue();
+    assertThat(textOf(development)).contains(SECRET);
+  }
+
   private JSONObject duplicatedInsert() throws Exception {
     return callTool("execute_command", new JSONObject()
         .put("database", getDatabaseName())

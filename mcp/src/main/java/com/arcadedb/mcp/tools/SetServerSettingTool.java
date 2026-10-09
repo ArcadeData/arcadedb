@@ -20,6 +20,7 @@ package com.arcadedb.mcp.tools;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.mcp.MCPConfiguration;
+import com.arcadedb.mcp.MCPToolArgumentException;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
@@ -66,17 +67,17 @@ public class SetServerSettingTool {
     final String key = MCPToolUtils.requireString(args, "key");
     final String value = args.getString("value", null);
     if (value == null)
-      throw new IllegalArgumentException("'value' is required");
+      throw new MCPToolArgumentException("'value' is required");
 
     // Validate the key exists
     final GlobalConfiguration cfg = GlobalConfiguration.findByKey(key);
     if (cfg == null)
-      throw new IllegalArgumentException("Unknown server setting: " + key);
+      throw new MCPToolArgumentException("Unknown server setting: " + key);
 
     // "" is a legitimate value for a String setting - it is how a caller clears one - and is a valid value for no
     // other type, so it is rejected exactly where it would otherwise be stored unparseable.
     if (value.isEmpty() && cfg.getType() != String.class)
-      throw new IllegalArgumentException(
+      throw new MCPToolArgumentException(
           "'value' must not be empty for setting '" + key + "' of type " + cfg.getType().getSimpleName());
 
     // A non-empty value still has to BE the setting's type (#6875). ContextConfiguration.setValue is a plain map
