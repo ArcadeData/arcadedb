@@ -8249,6 +8249,16 @@ public class ArcadeStateMachine extends BaseStateMachine {
   }
 
   /**
+   * Publishes the stale-snapshot read floor as {@link #reinitialize()} does on a gap. Test hook only.
+   */
+  // @VisibleForTesting
+  void publishStaleSnapshotFloor(final long floor) {
+    // Only reinitialize() raises the floor in production, and a live server cannot be made to restart onto a stale marker
+    // from a test (issue #9498)
+    staleSnapshotAppliedFloor.set(floor);
+  }
+
+  /**
    * Drops the stale-snapshot read floor. Called only where a resync has actually restored the local
    * state up to the marker - never when one is merely requested or in flight (issue #6111).
    */
