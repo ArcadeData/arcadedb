@@ -44,7 +44,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.anyLong;
-import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
@@ -401,8 +400,9 @@ class Issue8480NoTargetTransferIsARealHandoffTest {
   }
 
   private void everyPeerLags() {
-    final ClusterMonitor monitor = mock(ClusterMonitor.class);
-    when(monitor.isReplicaLagging(anyString())).thenReturn(true);
+    final ClusterMonitor monitor = new ClusterMonitor(100);
+    for (final RaftPeerId peer : List.of(SELF, B, C))
+      lagging(monitor, peer);
     raft.returns("getClusterMonitor", monitor);
   }
 
@@ -415,5 +415,14 @@ class Issue8480NoTargetTransferIsARealHandoffTest {
   private static RaftPeer peer(final RaftPeerId id) {
     return RaftPeer.newBuilder().setId(id).setAddress("localhost:" + id.toString().substring(id.toString().indexOf('_') + 1))
         .build();
+  }
+
+  /**
+   * Has the real {@code monitor} see {@code replica} acknowledge none of the leader's 1000 committed entries, which is
+   * past the 100-entry warning threshold it was built with: {@link ClusterMonitor#isReplicaLagging} answers true for it.
+   */
+  private static void lagging(final ClusterMonitor monitor, final RaftPeerId replica) {
+    monitor.updateLeaderCommitIndex(1_000L);
+    monitor.updateReplicaMatchIndex(replica.toString(), 0L, 0L);
   }
 }

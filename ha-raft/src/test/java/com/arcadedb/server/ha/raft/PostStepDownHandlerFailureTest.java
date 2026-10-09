@@ -26,8 +26,6 @@ import org.apache.ratis.protocol.RaftPeerId;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 /**
  * Issue #7127 follow-up: {@code stepDown()} gained a terminal {@link ReplicationException}, so
@@ -80,8 +78,8 @@ class PostStepDownHandlerFailureTest {
   }
 
   private static RaftHAPlugin pluginReturning(final RaftHAServer raftHAServer) {
-    final RaftHAPlugin plugin = mock(RaftHAPlugin.class);
-    when(plugin.getRaftHAServer()).thenReturn(raftHAServer);
+    final RaftHAPlugin plugin = new RaftHAPlugin();
+    plugin.setRaftHAServer(raftHAServer);
     return plugin;
   }
 

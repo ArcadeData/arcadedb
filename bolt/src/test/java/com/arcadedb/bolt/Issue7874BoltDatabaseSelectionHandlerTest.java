@@ -22,14 +22,14 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.exception.DatabaseNotFoundException;
 import com.arcadedb.server.FakeArcadeDBServer;
+import com.arcadedb.server.ServedDatabases;
 import com.arcadedb.server.ServerDatabase;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.RegisterExtension;
 
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 /**
  * Regression test for issue #7874 covering the two arms of {@code ensureDatabase()} that need a server in a
@@ -44,6 +44,8 @@ import static org.mockito.Mockito.when;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class Issue7874BoltDatabaseSelectionHandlerTest {
+  @RegisterExtension
+  static final ServedDatabases SERVED = new ServedDatabases();
 
   /**
    * A server whose databases are not open yet - the state of one still starting - with no default configured.
@@ -70,8 +72,7 @@ class Issue7874BoltDatabaseSelectionHandlerTest {
    */
   @Test
   void aClosedDatabaseIsUnavailableRatherThanNotFound() throws Exception {
-    final ServerDatabase closed = mock(ServerDatabase.class);
-    when(closed.isOpen()).thenReturn(false);
+    final ServerDatabase closed = SERVED.closed("closed-7874");
 
     final FakeArcadeDBServer server = FakeArcadeDBServer.create();
     BoltHandlerProbe.withPassThroughSecurity(server);

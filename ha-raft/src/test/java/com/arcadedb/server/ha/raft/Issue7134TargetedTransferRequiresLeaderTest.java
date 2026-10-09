@@ -24,7 +24,7 @@ import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.TestServerHelper;
-import com.arcadedb.server.http.HttpServer;
+import com.arcadedb.server.UnstartedHttpServers;
 import com.arcadedb.server.http.handler.ExecutionResponse;
 import com.arcadedb.server.security.ServerSecurityUser;
 import org.apache.ratis.client.RaftClient;
@@ -32,6 +32,7 @@ import org.apache.ratis.client.api.AdminApi;
 import org.apache.ratis.protocol.RaftClientReply;
 import org.apache.ratis.protocol.RaftPeerId;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.RegisterExtension;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
@@ -58,6 +59,8 @@ import static org.mockito.Mockito.when;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class Issue7134TargetedTransferRequiresLeaderTest {
+  @RegisterExtension
+  static final UnstartedHttpServers HTTP_SERVERS = new UnstartedHttpServers();
 
   private static final String TARGET_PEER = "peer-c_2436";
   private static final String REAL_LEADER = "peer-b_2435";
@@ -160,7 +163,7 @@ class Issue7134TargetedTransferRequiresLeaderTest {
     doThrow(new ConfigurationException("Failed to transfer leadership to " + TARGET_PEER + ": timeout"))
         .when(raft).transferLeadership(any(String.class), anyLong());
 
-    final PostTransferLeaderHandler handler = new PostTransferLeaderHandler(mock(HttpServer.class), pluginFor(raft));
+    final PostTransferLeaderHandler handler = new PostTransferLeaderHandler(HTTP_SERVERS.of(TestServerHelper.unstartedServer()), pluginFor(raft));
 
     assertThatThrownBy(() -> handler.execute(null, rootUser(), new JSONObject().put("peerId", TARGET_PEER)))
         .as("the handler must not swallow a leader-side failure into a 409")
@@ -173,7 +176,7 @@ class Issue7134TargetedTransferRequiresLeaderTest {
     final RaftHAServer raft = mock(RaftHAServer.class);
     doThrowNotLeader(raft);
 
-    final ExecutionResponse response = new PostStepDownHandler(mock(HttpServer.class), pluginFor(raft))
+    final ExecutionResponse response = new PostStepDownHandler(HTTP_SERVERS.of(TestServerHelper.unstartedServer()), pluginFor(raft))
         .execute(null, rootUser(), new JSONObject());
 
     assertThat(response.getCode()).isEqualTo(409);
@@ -190,7 +193,7 @@ class Issue7134TargetedTransferRequiresLeaderTest {
     when(raft.isLeader()).thenReturn(false);
     when(raft.getLeaderId()).thenReturn(RaftPeerId.valueOf(REAL_LEADER));
 
-    final ExecutionResponse response = new PostTransferLeaderHandler(mock(HttpServer.class), pluginFor(raft))
+    final ExecutionResponse response = new PostTransferLeaderHandler(HTTP_SERVERS.of(TestServerHelper.unstartedServer()), pluginFor(raft))
         .execute(null, rootUser(), new JSONObject());
 
     assertThat(response.getCode()).isEqualTo(409);
@@ -203,7 +206,7 @@ class Issue7134TargetedTransferRequiresLeaderTest {
     final RaftHAServer raft = mock(RaftHAServer.class);
     doThrowNotLeaderOnTransfer(raft);
 
-    final ExecutionResponse response = new PostTransferLeaderHandler(mock(HttpServer.class), pluginFor(raft))
+    final ExecutionResponse response = new PostTransferLeaderHandler(HTTP_SERVERS.of(TestServerHelper.unstartedServer()), pluginFor(raft))
         .execute(null, rootUser(), new JSONObject().put("peerId", TARGET_PEER));
 
     assertThat(response.getCode()).isEqualTo(409);
@@ -223,8 +226,8 @@ class Issue7134TargetedTransferRequiresLeaderTest {
   }
 
   private static RaftHAPlugin pluginFor(final RaftHAServer raft) {
-    final RaftHAPlugin plugin = mock(RaftHAPlugin.class);
-    when(plugin.getRaftHAServer()).thenReturn(raft);
+    final RaftHAPlugin plugin = new RaftHAPlugin();
+    plugin.setRaftHAServer(raft);
     return plugin;
   }
 

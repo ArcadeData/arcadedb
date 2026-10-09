@@ -18,19 +18,16 @@
  */
 package com.arcadedb.server;
 
-import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.MaintenanceCoordinator.Operation;
 import com.arcadedb.server.backup.BackupCoordinator;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.RegisterExtension;
 
 import java.util.List;
 import java.util.Objects;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
 
 /**
  * Issue #7469, the residue left over when {@code create database} and {@code drop database} were enrolled in the
@@ -46,6 +43,8 @@ import static org.mockito.Mockito.when;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class Issue7469CloseDatabaseSlotTest {
+  @RegisterExtension
+  static final ServedDatabases SERVED = new ServedDatabases();
 
   private static final String DB_NAME = "close7469db";
 
@@ -112,17 +111,14 @@ class Issue7469CloseDatabaseSlotTest {
   void closeDatabaseSucceedsAndReleasesItsSlotAfterwards() {
     final BackupCoordinator coordinator = new BackupCoordinator();
     final FakeArcadeDBServer server = FakeArcadeDBServer.create();
-    final ServerDatabase database = mock(ServerDatabase.class);
-    final DatabaseInternal embedded = mock(DatabaseInternal.class);
+    final ServerDatabase database = SERVED.open(DB_NAME);
 
     server.returns("getBackupCoordinator", coordinator);
     server.on("getDatabase", args -> Objects.equals(args[0], DB_NAME) ? database : null);
-    when(database.getEmbedded()).thenReturn(embedded);
-    when(database.getName()).thenReturn(DB_NAME);
 
     new ServerControlPlane(server).closeDatabase(DB_NAME);
 
-    verify(embedded).close();
+    assertThat(database.isOpen()).as("the close reached the database").isFalse();
     assertThat(server.calls("removeDatabase")).containsOnlyOnce(List.of(DB_NAME));
 
     assertThat(coordinator.begin(DB_NAME, Operation.BACKUP)).isNull();
