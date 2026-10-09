@@ -153,11 +153,43 @@ class Issue9598OptionalMatchAntiJoinTest extends TestHelper {
         // posts a comment does not reach in up to three replies
         "MATCH (c:Comment), (p:Post) OPTIONAL MATCH (c)-[h:REPLY_OF*1..3]->(p) WITH c, p, h WHERE h IS NULL RETURN count(*) AS n",
         // the pattern starting at the new node and ending at the bound one
-        "MATCH (t:Tag) OPTIONAL MATCH (c:Comment)-[h:HAS_TAG]->(t) WITH t, h WHERE h IS NULL RETURN count(*) AS n" }) {
+        "MATCH (t:Tag) OPTIONAL MATCH (c:Comment)-[h:HAS_TAG]->(t) WITH t, h WHERE h IS NULL RETURN count(*) AS n",
+        // one relationship type twice: the predicate binds two different relationships, as the OPTIONAL MATCH does
+        "MATCH (c:Comment), (p:Post) OPTIONAL MATCH (c)-[:REPLY_OF]->(:Message)-[h:REPLY_OF]->(p) "
+            + "WITH c, p, h WHERE h IS NULL RETURN count(*) AS n" }) {
       assertThat(plan(query)).as("plan of %s", query).doesNotContain("OPTIONAL MATCH");
       final String variable = query.contains("t IS NULL") ? "t" : "h";
       assertAgreesWithTheOptionalMatch(query, variable);
     }
+  }
+
+  /**
+   * A pattern of more than one hop is evaluated by parsing its text again, so the names written in it must survive the trip:
+   * a label with a space and a relationship type with a backtick in it.
+   */
+  @Test
+  void namesThatNeedQuotingSurviveTheRenderedPattern() {
+    database.getSchema().createVertexType("Odd Tag");
+    database.getSchema().createEdgeType("HAS`TAG");
+    database.transaction(() -> {
+      final List<MutableVertex> tags = new ArrayList<>();
+      for (int i = 0; i < 4; i++)
+        tags.add(database.newVertex("Odd Tag").save());
+      final MutableVertex post = database.newVertex("Post").save();
+      post.newEdge("HAS`TAG", tags.get(0));
+      post.newEdge("HAS`TAG", tags.get(1));
+      for (int i = 0; i < 4; i++) {
+        final MutableVertex comment = database.newVertex("Comment").save();
+        comment.newEdge("REPLY_OF", post);
+        comment.newEdge("HAS`TAG", tags.get(i));
+      }
+    });
+    // the comments tagged with a tag their post does not have: the ones tagged 2 and 3
+    final String query = "MATCH (c:Comment)-[:`HAS``TAG`]->(t:`Odd Tag`) "
+        + "OPTIONAL MATCH (c)-[:REPLY_OF]->(:Message)-[h:`HAS``TAG`]->(t) WITH c, t, h WHERE h IS NULL RETURN count(*) AS n";
+    assertThat(plan(query)).doesNotContain("OPTIONAL MATCH");
+    assertThat(count(query)).isEqualTo(2L);
+    assertAgreesWithTheOptionalMatch(query, "h");
   }
 
   /**
