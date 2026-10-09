@@ -26,6 +26,7 @@ import com.arcadedb.graph.olap.GraphAnalyticalView;
 import com.arcadedb.log.LogManager;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
@@ -66,6 +67,69 @@ public class GraphTraversalProviderRegistry {
   // the next query will see the updated flag. The alternative (always locking) would add contention
   // on every query plan compilation across all databases, even when no providers exist.
   private static volatile boolean hasAnyProviders = false;
+
+  // The recording open on this thread while a plan is built, null otherwise (issue #9587)
+  private static final ThreadLocal<ViewsPassedOver> PASSED_OVER = new ThreadLocal<>();
+
+  /**
+   * The providers the lookups of one plan passed over: each could serve the request but was not ready (restoring, building, or
+   * stale and not to be used stale). A plan built without a view picks it at no later point, so a cached plan keeps walking
+   * the records after the view turns ready (issue #9587); whoever caches the plan keeps this list and plans again once one of
+   * them is ready. Opened by {@link #recordViewsPassedOver()} and closed on the same thread; a recording opened inside
+   * another one hands what it saw to the enclosing one when it is closed.
+   */
+  public static final class ViewsPassedOver implements AutoCloseable {
+    private static final GraphTraversalProvider[] NONE = new GraphTraversalProvider[0];
+
+    private final ViewsPassedOver          enclosing;
+    private       GraphTraversalProvider[] views = NONE;
+
+    private ViewsPassedOver(final ViewsPassedOver enclosing) {
+      this.enclosing = enclosing;
+    }
+
+    private void add(final GraphTraversalProvider provider) {
+      for (final GraphTraversalProvider view : views)
+        if (view == provider)
+          return;
+      views = Arrays.copyOf(views, views.length + 1);
+      views[views.length - 1] = provider;
+    }
+
+    /**
+     * @return the providers passed over so far, empty when none was
+     */
+    public GraphTraversalProvider[] getViews() {
+      return views;
+    }
+
+    @Override
+    public void close() {
+      if (enclosing == null) {
+        PASSED_OVER.remove();
+        return;
+      }
+      PASSED_OVER.set(enclosing);
+      for (final GraphTraversalProvider view : views)
+        enclosing.add(view);
+    }
+  }
+
+  /**
+   * Starts recording, on the calling thread, the providers that the lookups of this class pass over because they are not
+   * ready. To be closed on the same thread, in a try-with-resources.
+   */
+  public static ViewsPassedOver recordViewsPassedOver() {
+    final ViewsPassedOver recording = new ViewsPassedOver(PASSED_OVER.get());
+    PASSED_OVER.set(recording);
+    return recording;
+  }
+
+  private static void passedOver(final GraphTraversalProvider provider) {
+    final ViewsPassedOver recording = PASSED_OVER.get();
+    if (recording != null)
+      recording.add(provider);
+  }
 
   /**
    * Registers a traversal provider for a database.
@@ -183,6 +247,8 @@ public class GraphTraversalProviderRegistry {
     if (!hasAnyProviders)
       return null;
 
+    // Nothing is recorded as passed over here: a plan built in this state is never cached (see isWithheld()), so no cached plan
+    // depends on it. A caller that starts caching such plans must record the covering providers too (issue #9587)
     if (hasUncommittedChanges(database))
       return null;
 
@@ -219,6 +285,7 @@ public class GraphTraversalProviderRegistry {
           if (awaitMs <= 0) {
             // not waiting: this view is skipped as before the setting existed, and a later ready view can still be selected
             mayWait = false;
+            passedOver(provider);
             continue;
           }
           deadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(awaitMs);
@@ -227,11 +294,14 @@ public class GraphTraversalProviderRegistry {
         parkWhileRestoring(List.of(provider), deadlineNanos, null);
         if (provider.isReady())
           found = provider;
-        else
+        else {
           LogManager.instance().log(GraphTraversalProviderRegistry.class, Level.FINE,
               "GraphTraversalProvider '%s' is still restoring after the wait (arcadedb.gavQueryRestoreAwaitTimeout): the query takes the record path",
               provider.getName());
-      }
+          passedOver(provider);
+        }
+      } else
+        passedOver(provider);
     }
     if (found != null && found.isStale())
       LogManager.instance().log(GraphTraversalProviderRegistry.class, Level.FINE,
