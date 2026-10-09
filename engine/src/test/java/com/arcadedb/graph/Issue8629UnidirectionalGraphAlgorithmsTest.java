@@ -169,6 +169,46 @@ class Issue8629UnidirectionalGraphAlgorithmsTest extends TestHelper {
   }
 
   /**
+   * A self loop on the node a write moves is both an outgoing edge and one that ends in it, so the edges a unidirectional
+   * type completes from the scan meet it twice, as both lists of a bidirectional type do: it must be migrated, cloned and
+   * rewired once, not duplicated or lost.
+   */
+  @Test
+  void selfLoopOnTheMovedNodeIsKeptOnce() {
+    for (final Database db : new Database[] { database, uni })
+      db.transaction(() -> db.command("opencypher", "MATCH (a:N {name: 'n3'}) CREATE (a)-[:R {w: 0.5}]->(a)").close());
+    assertSameAfterWrite();
+
+    for (final Database db : new Database[] { database, uni })
+      db.transaction(() -> db.command("opencypher", "MATCH (a:N {name: 'n3'}) SET a:Extra RETURN a").close());
+    assertSameAfterWrite();
+    assertThat(rows(uni, "opencypher", "MATCH (a {name: 'n3'})-[:R]->(a) RETURN count(*) AS n")).containsExactly("{n=1}");
+
+    for (final Database db : new Database[] { database, uni })
+      db.transaction(() -> db.command("opencypher", "MATCH (a {name: 'n3'}) CALL refactor.cloneNodesWithRelationships([a]) "
+          + "YIELD output SET output.name = 'clone' RETURN output").close());
+    assertSameAfterWrite();
+
+    // the merge keeps every relationship: the self loop of the absorbed node becomes one of the survivor, and so does
+    // each edge joining the two merged nodes
+    final long selfLoopsBefore = count(uni, "MATCH (a)-[:R]->(a) RETURN count(*) AS n");
+    final long joining = count(uni, "MATCH (a {name: 'n1'})-[:R]-(b {name: 'n3'}) RETURN count(*) AS n");
+    assertThat(selfLoopsBefore).isPositive();
+    assertThat(joining).isPositive();
+    for (final Database db : new Database[] { database, uni })
+      db.transaction(() -> db.command("opencypher",
+          "MATCH (a:N {name: 'n1'}), (b {name: 'n3'}) CALL refactor.mergeNodes([a, b]) YIELD node RETURN node").close());
+    assertSameAfterWrite();
+    assertThat(count(uni, "MATCH (a)-[:R]->(a) RETURN count(*) AS n")).isEqualTo(selfLoopsBefore + joining);
+  }
+
+  private static long count(final Database db, final String query) {
+    try (final ResultSet rs = db.query("opencypher", query)) {
+      return ((Number) rs.next().getProperty("n")).longValue();
+    }
+  }
+
+  /**
    * A view over the unidirectional graph agrees with the record path over both graphs. PageRank is left out: its view
    * kernel runs a fixed number of iterations while the record path stops on a tolerance, so the two differ on any graph.
    */
