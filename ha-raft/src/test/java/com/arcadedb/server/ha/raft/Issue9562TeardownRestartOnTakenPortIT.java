@@ -60,6 +60,7 @@ class Issue9562TeardownRestartOnTakenPortIT extends BaseRaftHATest {
     return true;
   }
 
+  /** Sets the scene only: what is verified happens in the teardown, see {@link #endTest()}. */
   @Test
   void aStoppedServerWhoseHttpPortWasTakenIsRestartedOnAnotherPortAndCompared() throws IOException {
     final int leader = findLeaderIndex();

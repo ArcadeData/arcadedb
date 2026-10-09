@@ -50,6 +50,13 @@ class Issue9562TeardownRestartTest {
     assertThat(BaseGraphServerTest.restartHttpPortSetting("0", 40123)).isEqualTo("40123");
   }
 
+  /** A setting that cannot be read as a range falls back to the bound port rather than failing the teardown. */
+  @Test
+  void anUnreadableRangeKeepsTheBoundPort() {
+    assertThat(BaseGraphServerTest.restartHttpPortSetting("2480-abc", 2481)).isEqualTo("2481");
+    assertThat(BaseGraphServerTest.restartHttpPortSetting("2480-2485-2489", 2481)).isEqualTo("2481");
+  }
+
   /** A server that never bound a port has no old port to come back on: the configured setting is left alone. */
   @Test
   void aServerThatNeverBoundAPortKeepsItsConfiguredSetting() {

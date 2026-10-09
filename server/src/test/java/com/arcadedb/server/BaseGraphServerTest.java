@@ -209,7 +209,12 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
    * (issue #9562). The server was down for the rest of the test, and on a machine running parallel builds another
    * server can take the port in that window; pinned to that one port, the restart failed and the teardown compared the
    * stopped server's copy instead. A setting that names a single port, as a subclass that pinned one or drew one does,
-   * keeps exactly the port bound before, and a server that never bound one keeps its configured setting.
+   * keeps exactly the port bound before, as does a setting this cannot read as a range, and a server that never bound
+   * one keeps its configured setting.
+   * <p>
+   * A restart can therefore come back on another port. {@code BaseRaftHATest.startServer} re-publishes the bound ports
+   * to every node; any other caller reads the port back from the server ({@link #getServerHttpPort(int)}), never from
+   * a value cached before the restart.
    */
   static String restartHttpPortSetting(final String configured, final int boundPort) {
     if (boundPort <= 0)
@@ -217,15 +222,20 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
     final int dash = configured.indexOf('-');
     if (dash < 0)
       return String.valueOf(boundPort);
-    final int end = Integer.parseInt(configured.substring(dash + 1).trim());
+    final int end;
+    try {
+      end = Integer.parseInt(configured.substring(dash + 1).trim());
+    } catch (final NumberFormatException e) {
+      return String.valueOf(boundPort);
+    }
     return end > boundPort ? boundPort + "-" + end : String.valueOf(boundPort);
   }
 
   /**
-   * Runs the teardown's database comparison so that its failure does not replace the failure of the restart before it
-   * (issue #9562). A server the restart could not bring back is compared through the copy it left on disk, which
-   * misses everything written after it stopped, so its {@code DatabaseAreNotIdentical} is a consequence; it is kept
-   * as a suppressed exception of the restart failure, which is the one that propagates.
+   * Runs the teardown's database comparison so that its failure does not replace the failure of the restart or
+   * realignment before it (issue #9562). A server the restart could not bring back is compared through the copy it
+   * left on disk, which misses everything written after it stopped, so its {@code DatabaseAreNotIdentical} is a
+   * consequence; it is kept as a suppressed exception of the earlier failure, which is the one that propagates.
    */
   static void compareWithoutMasking(final Throwable restartFailure, final Runnable comparison) {
     try {
