@@ -118,6 +118,14 @@ class Issue9542ParenthesizedBooleanVariableTest extends TestHelper {
   }
 
   @Test
+  void labelledOrFilteredSingleNodeIsNeverReadAsABooleanVariable() {
+    database.transaction(() -> database.command("opencypher", "CREATE (:N {id: 1})"));
+    // (n:N) is a label predicate, not a variable: it answers about the node
+    assertThat(column("MATCH (n:N) WHERE (n:N) RETURN n.id AS id", "id")).containsExactly(1);
+    assertThat(column("MATCH (n:N) WHERE (n:Other) RETURN n.id AS id", "id")).isEmpty();
+  }
+
+  @Test
   void parenthesizedBacktickedBooleanVariable() {
     assertThat(column("WITH true AS `my flag` WHERE (`my flag`) RETURN 1 AS x", "x")).containsExactly(1L);
     assertThat(column("WITH false AS `flag` WHERE (`flag`) RETURN 1 AS x", "x")).isEmpty();

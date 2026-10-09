@@ -93,7 +93,11 @@ public class PatternPredicateExpression implements BooleanExpression {
    * the row binds it to (issue #9542). The semantic validator already refused the cases it can prove are entities.
    */
   private boolean isParenthesizedVariable() {
-    return pathPattern != null && pathPattern.isSingleNode() && pathPattern.getFirstNode().getVariable() != null;
+    if (pathPattern == null || !pathPattern.isSingleNode())
+      return false;
+    // (n:Label) and (n {prop: 1}) say something about a node: they are patterns, never a parenthesized variable
+    final NodePattern node = pathPattern.getFirstNode();
+    return node.getVariable() != null && !node.hasLabels() && !node.hasProperties();
   }
 
   private Boolean evaluateParenthesizedVariable(final Result result) {

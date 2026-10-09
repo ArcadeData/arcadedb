@@ -106,6 +106,17 @@ class Issue9573ParallelLightEdgesTest extends TestHelper {
   }
 
   @Test
+  void parallelSelfLoopsAreEachSeenOnceInBothDirections() {
+    database.transaction(() -> {
+      final MutableVertex a = database.newVertex("P").save();
+      a.newLightEdge("K", a);
+      a.newLightEdge("K", a);
+    });
+    assertThat(count("MATCH (a:P)-[r:K]-(b:P) WITH * RETURN count(*) AS n")).isEqualTo(2L);
+    assertThat(count("MATCH (a:P)-[r:K]->(b:P) WITH * RETURN count(*) AS n")).isEqualTo(2L);
+  }
+
+  @Test
   void aSingleLightEdgeIsStillNotReused() {
     database.transaction(() -> {
       final MutableVertex a = database.newVertex("P").save();
