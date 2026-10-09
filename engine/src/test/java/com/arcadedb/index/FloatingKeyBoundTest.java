@@ -60,12 +60,17 @@ class FloatingKeyBoundTest {
   }
 
   @Test
-  void aDecimalIsLossyUnlessTheKeyHoldsItExactly() {
+  void aDecimalIsLossyUnlessTheScanReadsTheKeyAsIt() {
     assertThat(FloatingKeyBound.isLossy(BinaryTypes.TYPE_DOUBLE, new BigDecimal("1.5"))).isFalse();
-    assertThat(FloatingKeyBound.isLossy(BinaryTypes.TYPE_DOUBLE, new BigDecimal("0.1"))).isTrue();
+    assertThat(FloatingKeyBound.isLossy(BinaryTypes.TYPE_DOUBLE, new BigDecimal("0.1"))).as("the decimal the scan reads 0.1d as").isFalse();
+    assertThat(FloatingKeyBound.isLossy(BinaryTypes.TYPE_DOUBLE, new BigDecimal("0.100000000000000006"))).isTrue();
     assertThat(FloatingKeyBound.isLossy(BinaryTypes.TYPE_FLOAT, new BigDecimal("0.5"))).isFalse();
-    assertThat(FloatingKeyBound.isLossy(BinaryTypes.TYPE_FLOAT, new BigDecimal("0.1"))).isTrue();
+    assertThat(FloatingKeyBound.isLossy(BinaryTypes.TYPE_FLOAT, new BigDecimal("0.1"))).as("the scan reads a float as its double").isTrue();
+    assertThat(FloatingKeyBound.isLossy(BinaryTypes.TYPE_FLOAT, new BigDecimal("0.10000000149"))).isTrue();
     assertThat(FloatingKeyBound.isLossy(BinaryTypes.TYPE_DOUBLE, new BigDecimal("1e400"))).as("overflows to an infinity").isTrue();
+    assertThat(FloatingKeyBound.isLossy(BinaryTypes.TYPE_DOUBLE, new BigDecimal(0.1d)))
+        .as("the binary expansion of 0.1 is not the 0.1 the scan reads the key as").isTrue();
+    assertThat(FloatingKeyBound.isLossy(BinaryTypes.TYPE_FLOAT, new BigDecimal(0.1f))).isTrue();
   }
 
   @Test

@@ -18,6 +18,7 @@
  */
 package com.arcadedb.index;
 
+import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinaryTypes;
 
 import java.math.BigDecimal;
@@ -72,10 +73,13 @@ public final class FloatingKeyBound {
       // longValue() keeps only the low 64 bits, so it is read only once the value is known to fit a long
       return value.bitLength() > 63 || value.longValue() > limit || value.longValue() < -limit;
     if (bound instanceof BigDecimal value) {
-      final double rounded = isDouble ? value.doubleValue() : value.floatValue();
+      final Number key = isDouble ? Double.valueOf(value.doubleValue()) : Float.valueOf(value.floatValue());
       // an overflow to an infinity holds no exact value either
-      // the exact binary expansion of the key is the point here, not its shortest decimal reading: BigDecimal.valueOf would be wrong
-      return Double.isInfinite(rounded) || new BigDecimal(rounded).compareTo(value) != 0; // NOPMD
+      if (Double.isInfinite(key.doubleValue()))
+        return true;
+      // The key as the scan reads it: the shortest decimal that round-trips it, not its binary expansion. A bound that is exactly
+      // the binary expansion of the key (new BigDecimal(0.1d)) is still not equal to the key the scan compares with
+      return Type.floatingToBigDecimal(key).compareTo(value) != 0;
     }
     return false;
   }

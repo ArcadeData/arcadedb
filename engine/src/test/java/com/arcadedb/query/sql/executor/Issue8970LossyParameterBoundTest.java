@@ -88,7 +88,7 @@ class Issue8970LossyParameterBoundTest extends TestHelper {
     final Object[] bounds = { TWO_53 + 1, TWO_53 + 3, TWO_53 + 2, TWO_53 - 1, -(TWO_53 + 1), Long.MAX_VALUE, Long.MIN_VALUE,
         BigInteger.valueOf(TWO_53).add(BigInteger.valueOf(5)), new BigDecimal("9007199254740993"), new BigDecimal("0.1"),
         new BigDecimal("0.2"), new BigDecimal("0.10000000000000001"), new BigDecimal("0.100000000000000006"),
-        new BigDecimal("0.15") };
+        new BigDecimal("0.15"), new BigDecimal(0.1d), new BigDecimal(0.2d) };
     for (final Object bound : bounds)
       for (final String operator : new String[] { "=", "<", "<=", ">", ">=", "<>" })
         assertSameAsScan("d " + operator + " ?", bound);
