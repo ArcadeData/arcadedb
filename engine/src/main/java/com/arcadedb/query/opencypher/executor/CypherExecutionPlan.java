@@ -6558,6 +6558,8 @@ public class CypherExecutionPlan {
    * {@link PassThroughWithFolder}.
    */
   private CypherExecutionPlan foldedCountPlan() {
+    // Computed without a lock: two threads racing only fold the same statement twice. The folded plan answers null
+    // here itself, because a statement with no WITH left folds to the very same statement, which ends the recursion
     Optional<CypherExecutionPlan> folded = foldedCountPlan;
     if (folded == null) {
       final CypherStatement foldedStatement = PassThroughWithFolder.fold(statement);

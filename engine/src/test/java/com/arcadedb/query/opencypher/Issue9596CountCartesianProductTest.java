@@ -151,6 +151,10 @@ class Issue9596CountCartesianProductTest extends TestHelper {
     // 40^13 is about 6.7e20, beyond what a long holds: the rows could never be counted either
     assertThatThrownBy(() -> count(match + " RETURN count(*) AS n")).isInstanceOf(CommandExecutionException.class)
         .hasMessageContaining("overflow");
+
+    // an empty part makes the product 0 whatever the others hold: after the overflow, and before it
+    assertThat(count(match + ", (e:Empty) RETURN count(*) AS n")).isZero();
+    assertThat(count("MATCH (e:Empty), " + match.substring("MATCH ".length()) + " RETURN count(*) AS n")).isZero();
   }
 
   @Test
