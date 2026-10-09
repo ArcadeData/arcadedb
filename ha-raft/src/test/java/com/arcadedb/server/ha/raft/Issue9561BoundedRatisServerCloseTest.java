@@ -169,12 +169,20 @@ class Issue9561BoundedRatisServerCloseTest {
     assertThat(getField(raft, "raftServer")).isSameAs(oldProxy);
     assertThat(getField(raft, "restartFailureCount")).isEqualTo(2);
 
-    // Once the close finishes, the gate opens again.
+    // Once the close finishes, the gate opens again: the next attempt gets past it and closes the old server again (a
+    // no-op on a real Ratis server). The fake's second close requests a shutdown, so the attempt ends there instead of
+    // starting a real Ratis server.
     final Thread stuck = (Thread) getField(raft, "stuckRatisClose");
     assertThat(stuck).isNotNull();
+    old.onLaterClose = () -> setFieldUnchecked(raft, "shutdownRequested", true);
     release.countDown();
     stuck.join(TimeUnit.SECONDS.toMillis(30));
     assertThat(stuck.isAlive()).isFalse();
+
+    raft.restartRatisIfNeeded();
+    assertThat(getField(raft, "stuckRatisClose")).as("the gate is released").isNull();
+    assertThat(old.closes.get()).as("the attempt got past the gate").isEqualTo(2);
+    assertThat(getField(raft, "restartFailureCount")).as("an abandoned attempt is not a failure").isEqualTo(2);
   }
 
   @Test
@@ -202,12 +210,16 @@ class Issue9561BoundedRatisServerCloseTest {
   private final class HangingServer {
     final AtomicInteger closes = new AtomicInteger();
     volatile LifeCycle.State state = LifeCycle.State.RUNNING;
+    volatile Runnable        onLaterClose;
 
     RaftServer proxy() {
       return (RaftServer) Proxy.newProxyInstance(RaftServer.class.getClassLoader(), new Class<?>[] { RaftServer.class },
           (self, method, args) -> switch (method.getName()) {
             case "close" -> {
-              closes.incrementAndGet();
+              if (closes.incrementAndGet() > 1 && onLaterClose != null)
+                onLaterClose.run();
+              if (state != LifeCycle.State.RUNNING)
+                yield null; // like Ratis: a close runs at most once
               state = LifeCycle.State.CLOSING;
               blockUntilReleased();
               state = LifeCycle.State.CLOSED;
@@ -237,6 +249,14 @@ class Issue9561BoundedRatisServerCloseTest {
     final Field field = RaftHAServer.class.getDeclaredField(name);
     field.setAccessible(true);
     field.set(target, value);
+  }
+
+  private static void setFieldUnchecked(final Object target, final String name, final Object value) {
+    try {
+      setField(target, name, value);
+    } catch (final Exception e) {
+      throw new IllegalStateException(e);
+    }
   }
 
   private static Object getField(final Object target, final String name) throws Exception {
