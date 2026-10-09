@@ -29,7 +29,8 @@ import com.arcadedb.query.sql.executor.CommandContext;
 /**
  * id() function - returns the internal ID of a node or relationship as a numeric (Long) value, to match Neo4j semantics where id() returns INTEGER. The two
  * components of an ArcadeDB {@link RID} (bucketId, offset) are packed into a single Long so it can participate in numeric predicates like
- * {@code WHERE id(n) >= 0}. For a stable string identifier use {@code elementId()} instead.
+ * {@code WHERE id(n) >= 0}. For a stable string identifier use {@code elementId()} instead. A lightweight edge has no record to name, so its id() is
+ * {@code null}.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -54,8 +55,15 @@ public class IdFunction implements StatelessFunction {
     checkArity(args);
     if (args[0] == null)
       return null;
-    if (args[0] instanceof Identifiable identifiable)
-      return encodeRidAsLong(identifiable.getIdentity());
+    if (args[0] instanceof Identifiable identifiable) {
+      final RID identity = identifiable.getIdentity();
+      // A lightweight edge has no record, hence no position to pack: its RID is the type marker #bucket:-1 that every
+      // lightweight edge of the type shares. Nothing could resolve an id() built from it back to the edge, so there is
+      // no id to give (issue #9573); elementId() and the edge itself still identify it.
+      if (identity.getPosition() < 0)
+        return null;
+      return encodeRidAsLong(identity);
+    }
     return null;
   }
 

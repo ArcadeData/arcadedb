@@ -19,7 +19,6 @@
 package com.arcadedb.query.opencypher.executor.operators;
 
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.database.RID;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GhostEdgeReporter;
@@ -36,7 +35,6 @@ import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.graph.EdgeIdentitySet;
 
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
@@ -124,7 +122,7 @@ public class ExpandAll extends AbstractPhysicalOperator {
       // Cached set of edge RIDs already bound by same-clause preceding rel vars in
       // the current input row. Computed once per input row, queried per edge.
       private EdgeIdentitySet currentInputUsedEdgeRids = null;
-      private Set<RID> emittedSelfLoops = null; // lazily created for a source vertex that has self-loops
+      private EdgeIdentitySet emittedSelfLoops = null; // lazily created for a source vertex that has self-loops
       private final List<Result> buffer = new ArrayList<>();
       private int bufferIndex = 0;
       private boolean finished = false;
@@ -220,7 +218,7 @@ public class ExpandAll extends AbstractPhysicalOperator {
             // only for a vertex that actually carries a self-loop, so the common case pays nothing.
             if (direction == Direction.BOTH && edge.getOut().equals(edge.getIn())) {
               if (emittedSelfLoops == null)
-                emittedSelfLoops = new HashSet<>();
+                emittedSelfLoops = new EdgeIdentitySet();
               if (!emittedSelfLoops.add(edge.getIdentity()))
                 continue;
             }

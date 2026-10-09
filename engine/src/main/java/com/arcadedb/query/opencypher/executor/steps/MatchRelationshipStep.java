@@ -29,6 +29,7 @@ import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.IncomingEdgeLookup;
+import com.arcadedb.graph.LightEdgeRID;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.query.opencypher.InlineProperties;
@@ -558,7 +559,7 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
 
             // If the relationship variable is already bound from a previous step, verify the traversed
             // edge matches the bound value (identity check)
-            if (boundRelationshipEdge != null && !boundRelationshipEdge.getIdentity().equals(edge.getIdentity()))
+            if (boundRelationshipEdge != null && !LightEdgeRID.isSameEdge(boundRelationshipEdge.getIdentity(), edge.getIdentity()))
               continue;
 
             // If the target variable is already bound from a previous step,
@@ -995,17 +996,17 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
       if (prop.equals(relationshipVariable))
         continue;
       final Object val = result.getProperty(prop);
-      if (val instanceof Edge && ((Edge) val).getIdentity().equals(edgeRid))
+      if (val instanceof Edge && LightEdgeRID.isSameEdge(((Edge) val).getIdentity(), edgeRid))
         return true;
       if (val instanceof TraversalPath) {
         for (final Edge pathEdge : ((TraversalPath) val).getEdges())
-          if (pathEdge.getIdentity().equals(edgeRid))
+          if (LightEdgeRID.isSameEdge(pathEdge.getIdentity(), edgeRid))
             return true;
       }
       // Check edge lists from VLP relationship variables
       if (val instanceof List) {
         for (final Object item : (List<Object>) val)
-          if (item instanceof Edge && ((Edge) item).getIdentity().equals(edgeRid))
+          if (item instanceof Edge && LightEdgeRID.isSameEdge(((Edge) item).getIdentity(), edgeRid))
             return true;
       }
     }
