@@ -97,11 +97,28 @@ public final class ErrorConcealment {
     return ArcadeDBServer.CONCEALED_ERROR_MESSAGE;
   }
 
-  /** {@code text} with its line breaks replaced by spaces; the same instance when it has none. */
+  /**
+   * {@code text} with every control character replaced by a space: the line breaks (CR, LF, NEL and the Unicode line
+   * and paragraph separators) that would start a forged entry, and the others (the ESC of a terminal escape sequence,
+   * NUL) that would rewrite what an operator's terminal shows. The same instance when it has none.
+   */
   static String singleLine(final String text) {
-    if (text == null || (text.indexOf('\n') < 0 && text.indexOf('\r') < 0))
+    if (text == null)
+      return null;
+    int i = 0;
+    while (i < text.length() && !isControl(text.charAt(i)))
+      ++i;
+    if (i == text.length())
       return text;
-    return text.replace("\r\n", " ").replace('\r', ' ').replace('\n', ' ');
+    final char[] chars = text.toCharArray();
+    for (; i < chars.length; i++)
+      if (isControl(chars[i]))
+        chars[i] = ' ';
+    return new String(chars);
+  }
+
+  private static boolean isControl(final char c) {
+    return Character.isISOControl(c) || c == ' ' || c == ' ';
   }
 
   /**

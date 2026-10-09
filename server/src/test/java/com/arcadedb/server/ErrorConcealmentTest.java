@@ -44,7 +44,9 @@ class ErrorConcealmentTest {
   void theLoggedTextIsOneLine() {
     // client data in a message must not be able to start a forged entry in a line-oriented log
     assertThat(ErrorConcealment.singleLine("key [a]\r\n2026-10-09 SEVERE forged\nnext\rlast")).isEqualTo(
-        "key [a] 2026-10-09 SEVERE forged next last");
+        "key [a]  2026-10-09 SEVERE forged next last");
+    // the other control characters too: a terminal escape sequence, NUL, NEL and the Unicode line separators
+    assertThat(ErrorConcealment.singleLine("a\u001B[2Jb\u0000c\u0085d e f\tg")).isEqualTo("a [2Jb c d e f g");
     final String plain = "no line break";
     assertThat(ErrorConcealment.singleLine(plain)).isSameAs(plain);
     assertThat(ErrorConcealment.singleLine(null)).isNull();
