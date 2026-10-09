@@ -23,6 +23,7 @@ import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.event.BeforeRecordDeleteListener;
 import com.arcadedb.exception.ArcadeDBException;
+import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
@@ -158,7 +159,8 @@ public class Issue9161RedisQueryArityTest extends BaseRedisServerTest {
   @Test
   void hDelOnAnUnknownIndexIsAnErrorAndDeletesNothing() {
     final Database database = getServerDatabase(0, getDatabaseName());
-    assertThatThrownBy(() -> database.command("redis", "HDEL NoSuchType[id] 1").close()).isInstanceOf(ArcadeDBException.class);
+    assertThatThrownBy(() -> database.command("redis", "HDEL NoSuchType[id] 1").close()).isInstanceOf(CommandParsingException.class)
+        .hasMessageContaining("Index 'NoSuchType[id]' not found");
   }
 
   @Test
