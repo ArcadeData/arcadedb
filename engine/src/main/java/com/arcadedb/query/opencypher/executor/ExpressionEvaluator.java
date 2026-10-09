@@ -145,8 +145,13 @@ public class ExpressionEvaluator {
     }
 
     // coalesce() stops at its first non-null argument (issue #9580)
-    if (function instanceof CoalesceFunction)
-      return expression.evaluateCoalesce(function, arg -> evaluate(arg, result, context), result, context);
+    if (function instanceof CoalesceFunction) {
+      final List<Expression> arguments = expression.getArguments();
+      Object value = null;
+      for (int i = 0; i < arguments.size() && value == null; i++)
+        value = evaluate(arguments.get(i), result, context);
+      return expression.finishCoalesce(function, value, result, context);
+    }
 
     // Evaluate arguments
     final Object[] args = new Object[expression.getArguments().size()];

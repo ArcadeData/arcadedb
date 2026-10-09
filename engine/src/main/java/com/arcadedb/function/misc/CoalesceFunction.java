@@ -23,6 +23,9 @@ import com.arcadedb.query.sql.executor.CommandContext;
 
 /**
  * coalesce() function - returns the first non-null argument.
+ * <p>
+ * A Cypher call site does not go through {@link #execute}: {@code FunctionCallExpression} evaluates the arguments lazily and
+ * stops at the first non-null one (issue #9580), so a change to what coalesce means has to be made there too.
  */
 public class CoalesceFunction implements StatelessFunction {
   @Override
