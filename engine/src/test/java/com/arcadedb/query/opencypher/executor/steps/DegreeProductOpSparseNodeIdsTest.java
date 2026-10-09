@@ -26,7 +26,10 @@ import org.junit.jupiter.api.Test;
 import static com.arcadedb.query.opencypher.executor.steps.SparseNodeIdProvider.HIGH_ID;
 import static org.assertj.core.api.Assertions.assertThat;
 
-/** Regression coverage for issue #6967 in {@link DegreeProductOp}. */
+/**
+ * Regression coverage for issue #6967 in {@link DegreeProductOp}. The fixture has no database, so the operator gets no
+ * central label: a label is resolved against a schema, and filtering on it is covered by the openCypher tests (#9283).
+ */
 class DegreeProductOpSparseNodeIdsTest {
 
   @Test
@@ -34,7 +37,7 @@ class DegreeProductOpSparseNodeIdsTest {
     final SparseNodeIdProvider provider = new SparseNodeIdProvider().withoutViews()
         .withEdges("ARM", Vertex.DIRECTION.OUT, 0, 2)
         .withEdges("ARM", Vertex.DIRECTION.OUT, HIGH_ID, 2, 3, 4);
-    final DegreeProductOp op = new DegreeProductOp("Central", new DegreeProductOp.Arm[] {
+    final DegreeProductOp op = new DegreeProductOp(null, new DegreeProductOp.Arm[] {
         new DegreeProductOp.Arm(new String[] { "ARM" }, new Vertex.DIRECTION[] { Vertex.DIRECTION.OUT }, false)
     });
 
@@ -53,7 +56,7 @@ class DegreeProductOpSparseNodeIdsTest {
     final SparseNodeIdProvider provider = new SparseNodeIdProvider()
         .withEdges("ARM", Vertex.DIRECTION.OUT, 0, 2)
         .withEdges("ARM", Vertex.DIRECTION.OUT, HIGH_ID, 2, 3, 4);
-    final DegreeProductOp op = new DegreeProductOp("Central", new DegreeProductOp.Arm[] {
+    final DegreeProductOp op = new DegreeProductOp(null, new DegreeProductOp.Arm[] {
         new DegreeProductOp.Arm(new String[] { "ARM" }, new Vertex.DIRECTION[] { Vertex.DIRECTION.OUT }, false)
     });
 
