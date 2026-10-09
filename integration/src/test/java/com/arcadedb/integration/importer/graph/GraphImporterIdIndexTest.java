@@ -195,6 +195,47 @@ class GraphImporterIdIndexTest {
     }
   }
 
+  /**
+   * The tables grow by half rather than doubling (issue #9575), so their size is no longer a power of
+   * two and the slot comes from a multiply-shift instead of a mask. Every key put through a dozen
+   * growths must still resolve, and a key never put must not.
+   */
+  @Test
+  void tablesOfAnySizeKeepEveryKeyThroughTheirGrowths() {
+    final Random random = new Random(9575);
+    final LongIntMap longKeys = new LongIntMap(16);
+    final IntIntMap intKeys = new IntIntMap(16);
+    final Map<Long, Integer> longReference = new HashMap<>();
+    final Map<Integer, Integer> intReference = new HashMap<>();
+    final Set<Integer> capacities = new HashSet<>();
+
+    for (int i = 0; i < 200_000; i++) {
+      final long longKey = 2_000_000_000L + random.nextInt(1_000_000) * 7L;
+      longKeys.put(longKey, i);
+      longReference.put(longKey, i);
+      final int intKey = random.nextInt();
+      if (intKey == Integer.MIN_VALUE)
+        continue;
+      intKeys.put(intKey, i);
+      intReference.put(intKey, i);
+      capacities.add(longKeys.capacity());
+    }
+
+    for (final Map.Entry<Long, Integer> e : longReference.entrySet())
+      assertThat(longKeys.get(e.getKey(), -1)).isEqualTo(e.getValue());
+    for (final Map.Entry<Integer, Integer> e : intReference.entrySet())
+      assertThat(intKeys.get(e.getKey(), -1)).isEqualTo(e.getValue());
+    assertThat(longKeys.get(1L, -1)).isEqualTo(-1);
+    assertThat(intKeys.size()).isEqualTo(intReference.size());
+
+    // growth by half: many distinct sizes, most of them not a power of two, and never more than ~2.2
+    // slots a key once grown
+    assertThat(capacities).hasSizeGreaterThan(10);
+    assertThat(capacities.stream().filter(c -> Integer.bitCount(c) != 1).count()).isGreaterThan(capacities.size() / 2);
+    assertThat(longKeys.capacity()).isLessThan((int) (longReference.size() * 2.2));
+    assertThat(intKeys.capacity()).isLessThan((int) (intReference.size() * 2.2));
+  }
+
   /** And the index resolves them, through both the int table and the widened one. */
   @Test
   void stridedKeysResolveOnBothSidesOfTheIntBoundary() {
