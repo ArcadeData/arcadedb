@@ -2599,6 +2599,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       raft.awaitApplied(raft::isLeaderReady, raft.getQuorumTimeout());
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
+      throw new NeedRetryException("Database '" + getName() + "': interrupted while waiting for this leader to become "
+          + "ready for a schema change. Please retry");
     }
   }
 

@@ -1493,6 +1493,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * that already has the request, whose Ratis retry cache answers it by client and call id without calling this method
    * again. The binding is per database and term rather than per session for that reason.
    * <p>
+   * The term is read here, before Ratis appends: if this node is deposed in between, Ratis itself refuses the append,
+   * because a leader only appends in its own term.
+   * <p>
    * Refused before Ratis appends anything, through the context, so the entry reaches no node and costs Ratis nothing (the
    * same channel the #6965 page-version refusal uses). The proposer sees a definite {@link NeedRetryException}: its session
    * fails, and a DDL caller retries against the current leader.
@@ -1525,7 +1528,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * recording session, so a previous binding left behind is replaced rather than counted.
    */
   void bindSchemaSession(final String databaseName, final long term) {
-    schemaSessionTerms.put(databaseName, term);
+    final Long previous = schemaSessionTerms.put(databaseName, term);
+    if (previous != null)
+      // Only a session that never reached its unbind leaves one behind, so the exclusivity this map relies on was broken.
+      LogManager.instance().log(this, Level.WARNING,
+          "Schema session on database '%s' replaced a binding to Raft term %d that was never ended", databaseName,
+          previous);
   }
 
   /** Ends the binding taken by {@link #bindSchemaSession}; a binding to another term is left alone. */
