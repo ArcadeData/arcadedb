@@ -44,8 +44,8 @@ public class PhysicalPlan {
   private final long totalEstimatedCardinality;
   private final boolean indexOrdered;
   // The views the planner passed over because they were not ready, see passesOverAReadyView(). Set once, before the plan is put
-  // in the plan cache, whose synchronized map publishes it to every thread that gets the plan from there
-  private GraphTraversalProvider[] viewsPassedOver = NO_VIEWS;
+  // in the plan cache; volatile so the threads reusing the plan see it whatever map the cache keeps plans in
+  private volatile GraphTraversalProvider[] viewsPassedOver = NO_VIEWS;
 
   public PhysicalPlan(final LogicalPlan logicalPlan, final AnchorSelection anchor,
                      final double totalEstimatedCost, final long totalEstimatedCardinality) {
