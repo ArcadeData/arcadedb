@@ -337,6 +337,7 @@ class Issue8557ConcurrentLeadershipHandOffsTest {
       try {
         release.await(10, TimeUnit.SECONDS);
       } catch (final InterruptedException e) {
+        // An answer cannot throw a checked exception: keep the interrupt for the caller to see
         Thread.currentThread().interrupt();
       }
       return false;

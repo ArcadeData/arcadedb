@@ -425,7 +425,10 @@ public class FakeRaftHAServer extends RaftHAServer {
   /** Recorded; unanswered, the real clamp of the (detached, so unreadable) Ratis applied index. */
   @Override
   public long getTrustedAppliedIndex(final String databaseName) {
-    return (Long) call("getTrustedAppliedIndex", () -> super.getTrustedAppliedIndex(databaseName), databaseName);
+    final Object answer = call("getTrustedAppliedIndex", () -> super.getTrustedAppliedIndex(databaseName), databaseName);
+    if (!(answer instanceof Long index))
+      throw new IllegalStateException("The answer set for 'getTrustedAppliedIndex' must be a Long, it gave " + answer);
+    return index;
   }
 
   @Override

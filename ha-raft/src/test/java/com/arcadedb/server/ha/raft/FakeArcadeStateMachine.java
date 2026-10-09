@@ -26,7 +26,6 @@ import java.util.Set;
 import java.util.function.Function;
 import java.util.function.Supplier;
 
-
 /**
  * A real {@link ArcadeStateMachine}, never wired to a Raft server, whose recovery flags and last applied position are set
  * by the test (issue #9464). It replaces a Mockito mock that stubbed them to describe a follower mid-recovery, which a
