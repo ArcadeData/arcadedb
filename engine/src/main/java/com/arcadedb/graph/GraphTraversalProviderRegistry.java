@@ -247,6 +247,8 @@ public class GraphTraversalProviderRegistry {
     if (!hasAnyProviders)
       return null;
 
+    // Nothing is recorded as passed over here: a plan built in this state is never cached (see isWithheld()), so no cached plan
+    // depends on it. A caller that starts caching such plans must record the covering providers too (issue #9587)
     if (hasUncommittedChanges(database))
       return null;
 
