@@ -34,6 +34,8 @@
         <logback-classic.version>1.6.5</logback-classic.version>
         <allowIncompleteProjects>true</allowIncompleteProjects>
         <assertj-db.version>3.0.2</assertj-db.version>
+        <jedis.version>8.0.1</jedis.version>
+        <mongo-java-driver.version>3.12.14</mongo-java-driver.version>
     </properties>
 
     <artifactId>arcadedb-e2e</artifactId>
@@ -93,6 +95,18 @@
             <groupId>org.neo4j.driver</groupId>
             <artifactId>neo4j-java-driver</artifactId>
             <version>${neo4j-driver.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>redis.clients</groupId>
+            <artifactId>jedis</artifactId>
+            <version>${jedis.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.mongodb</groupId>
+            <artifactId>mongo-java-driver</artifactId>
+            <version>${mongo-java-driver.version}</version>
             <scope>test</scope>
         </dependency>
     </dependencies>

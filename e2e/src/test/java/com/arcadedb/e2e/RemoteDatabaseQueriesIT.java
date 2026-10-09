@@ -53,6 +53,7 @@ class RemoteDatabaseQueriesIT extends ArcadeContainerTemplate {
 
   @Test
   void simpleGremlinQuery() {
+    assumeGremlin();
     database.transaction(() -> {
       final ResultSet result = database.query("gremlin", "g.V().limit(10)");
       assertThat(CollectionUtils.countEntries(result)).isEqualTo(10);
