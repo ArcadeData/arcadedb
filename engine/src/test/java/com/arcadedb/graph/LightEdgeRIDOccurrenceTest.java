@@ -89,6 +89,31 @@ class LightEdgeRIDOccurrenceTest extends TestHelper {
   }
 
   @Test
+  void theUnfilteredIteratorNumbersTwinsToo() {
+    final RID[] ids = new RID[2];
+    database.transaction(() -> {
+      final MutableVertex a = database.newVertex("P").save();
+      final MutableVertex b = database.newVertex("P").save();
+      a.newLightEdge("K", b);
+      a.newLightEdge("K", b);
+      ids[0] = a.getIdentity();
+      ids[1] = b.getIdentity();
+    });
+    final List<LightEdgeRID> out = new ArrayList<>();
+    for (final Edge edge : database.lookupByRID(ids[0], true).asVertex().getEdges(Vertex.DIRECTION.OUT))
+      out.add((LightEdgeRID) edge.getIdentity());
+    final List<LightEdgeRID> in = new ArrayList<>();
+    for (final Edge edge : database.lookupByRID(ids[1], true).asVertex().getEdges(Vertex.DIRECTION.IN))
+      in.add((LightEdgeRID) edge.getIdentity());
+    assertThat(out).hasSize(2);
+    assertThat(in).hasSize(2);
+    assertThat(out.get(0).getTwinCount()).isEqualTo(2);
+    assertThat(out.get(0).getOccurrence()).isNotEqualTo(out.get(1).getOccurrence());
+    for (final LightEdgeRID fromSource : out)
+      assertThat(in.stream().filter(fromTarget -> LightEdgeRID.isSameEdge(fromSource, fromTarget)).count()).isEqualTo(1L);
+  }
+
+  @Test
   void anEntryThatIsNoLongerInTheListKeepsTheTripleIdentity() {
     final RID[] ids = new RID[2];
     database.transaction(() -> {

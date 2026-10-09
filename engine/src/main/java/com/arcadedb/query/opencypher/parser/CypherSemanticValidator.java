@@ -2298,7 +2298,7 @@ public class CypherSemanticValidator {
     /**
      * {@code WHERE (name)} is a parenthesized variable, not a pattern, unless {@code name} is a graph entity: a node,
      * a relationship or a path is no Boolean, and a lone node pattern is no predicate. A name of unknown kind (a
-     * {@code WITH}, an {@code UNWIND}, a parameter) is left to the runtime check, which sees the value (issue #9542).
+     * {@code WITH}, an {@code UNWIND}, a {@code collect}) is left to the runtime check, which sees the value (issue #9542).
      */
     private void checkSingleNodePredicate(final NodePattern node) {
       // a label or a property map makes it a node pattern whatever the variable holds
