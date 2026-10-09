@@ -23,6 +23,7 @@ import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.ErrorConcealment;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.ws.insert.WebSocketInsertProtocol;
 import com.arcadedb.server.security.ServerSecurityException;
@@ -232,10 +233,14 @@ public class WebSocketReceiveListener extends AbstractReceiveListener {
     } catch (final JSONException e) {
       sendError(channel, "Unable to parse JSON", e.getMessage(), e);
     } catch (final DatabaseOperationException e) {
-      sendError(channel, "Database error", e.getMessage(), e);
+      // Engine text, which production mode conceals like every other surface does (issue #8749)
+      sendError(channel, "Database error",
+          ErrorConcealment.clientMessage(ErrorConcealment.isConcealing(httpServer.getServer()), this, "/ws", e.getMessage(), e), e);
     } catch (final Exception e) {
       LogManager.instance().log(this, getErrorLogLevel(), "Error on command execution (%s)", e, getClass().getSimpleName());
-      sendError(channel, "Internal error", e.getMessage(), e);
+      // Outside development the entry above is FINE, which no operator sees: the concealed answer writes its own
+      sendError(channel, "Internal error",
+          ErrorConcealment.clientMessage(ErrorConcealment.isConcealing(httpServer.getServer()), this, "/ws", e.getMessage(), e), e);
     }
   }
 

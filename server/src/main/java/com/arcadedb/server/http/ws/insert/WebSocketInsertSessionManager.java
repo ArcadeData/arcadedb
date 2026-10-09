@@ -22,6 +22,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.ErrorConcealment;
 import com.arcadedb.server.http.HttpSession;
 import com.arcadedb.server.http.HttpSessionManager;
 import com.arcadedb.server.security.ServerSecurityUser;
@@ -192,7 +193,8 @@ public class WebSocketInsertSessionManager {
         afterClaimHook.run();
 
       database = server.getDatabase(databaseName, false, false);
-      session = new WebSocketInsertSession(id, database, user, channelId, options, externalId, externalSession);
+      session = new WebSocketInsertSession(id, database, user, channelId, options, externalId, externalSession,
+          () -> ErrorConcealment.isConcealing(server));
       // Before it is registered, not after: a session the sweep can see must already know where to send its
       // expiry, or the sweep would have nothing to dispatch to and would roll it back on its own thread.
       session.setChannel(channel);

@@ -27,6 +27,7 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.ErrorConcealment;
 import com.arcadedb.mcp.tools.ExecuteCommandTool;
 import com.arcadedb.mcp.tools.FullTextSearchTool;
 import com.arcadedb.mcp.tools.GetSchemaTool;
@@ -277,7 +278,7 @@ public class MCPDispatcher {
       return result(id, MCPResources.list(server, user, config));
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.WARNING, "MCP[%s] resources/list -> error: %s", transport, e.getMessage());
-      return error(id, -32603, "Internal error: " + e.getMessage(), 200);
+      return error(id, -32603, "Internal error: " + clientMessage(e.getMessage(), e), 200);
     }
   }
 
@@ -305,7 +306,7 @@ public class MCPDispatcher {
       return error(id, -32002, e.getMessage(), 200);
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.WARNING, "MCP[%s] resources/read -> error: %s", transport, e.getMessage());
-      return error(id, -32603, "Internal error: " + e.getMessage(), 200);
+      return error(id, -32603, "Internal error: " + clientMessage(e.getMessage(), e), 200);
     }
   }
 
@@ -314,7 +315,7 @@ public class MCPDispatcher {
       return result(id, MCPPrompts.list(config, toolAllowed));
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.WARNING, "MCP[%s] prompts/list -> error: %s", transport, e.getMessage());
-      return error(id, -32603, "Internal error: " + e.getMessage(), 200);
+      return error(id, -32603, "Internal error: " + clientMessage(e.getMessage(), e), 200);
     }
   }
 
@@ -337,7 +338,7 @@ public class MCPDispatcher {
       return error(id, -32602, "Invalid params: " + e.getMessage(), 200);
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.WARNING, "MCP[%s] prompts/get -> error: %s", transport, e.getMessage());
-      return error(id, -32603, "Internal error: " + e.getMessage(), 200);
+      return error(id, -32603, "Internal error: " + clientMessage(e.getMessage(), e), 200);
     }
   }
 
@@ -412,11 +413,27 @@ public class MCPDispatcher {
       LogManager.instance()
           .log(this, Level.INFO, "MCP[%s] tools/call '%s' -> permission denied: %s", transport, toolName, e.getMessage());
       return toolError(id, e.getMessage());
-    } catch (final Exception e) {
+    } catch (final IllegalArgumentException e) {
+      // The tools' own argument validation ("'database' is required", "Unknown tool"): text this server words about the
+      // request, which the caller needs to correct it, so it is kept in every mode
       LogManager.instance()
           .log(this, Level.WARNING, "MCP[%s] tools/call '%s' -> error: %s", transport, toolName, e.getMessage());
       return toolError(id, e.getMessage());
+    } catch (final Exception e) {
+      LogManager.instance()
+          .log(this, Level.WARNING, "MCP[%s] tools/call '%s' -> error: %s", transport, toolName, e.getMessage());
+      return toolError(id, clientMessage(e.getMessage(), e));
     }
+  }
+
+  /**
+   * The text an error answer carries for a failure the ENGINE raised - a query or command the {@code query} and
+   * {@code execute_command} tools ran, a resource read: the message, or, in production mode, the placeholder every
+   * surface uses ({@link ArcadeDBServer#CONCEALED_ERROR_MESSAGE}), with the detail written to the server log. A
+   * duplicated key's message carries the stored key values, and before issue #8749 MCP returned it in every mode.
+   */
+  private String clientMessage(final String message, final Throwable cause) {
+    return ErrorConcealment.clientMessage(ErrorConcealment.isConcealing(server), this, "MCP[" + transport + "]", message, cause);
   }
 
   private EffectiveToolProfile effectiveProfile(final ServerSecurityUser user) {
