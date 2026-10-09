@@ -138,6 +138,29 @@ class Issue9555UnpublishedSchemaChangeQuarantineTest {
     assertThat(stateMachine.quarantineCause(db.getName())).isEqualTo(DivergenceCause.UNPUBLISHED_SCHEMA_CHANGE);
   }
 
+  /** The followers already staged the leading slices; refusing a later one still leaves the change unpublished. */
+  @Test
+  void aCompactionWhoseSealedSliceIsRefusedMidSequenceQuarantinesTheProposer() {
+    final AtomicInteger slices = new AtomicInteger();
+    final FakeRaftTransactionBroker broker = new FakeRaftTransactionBroker().on("replicateSealedChunk", args -> {
+      if (slices.incrementAndGet() == 2)
+        throw new NeedRetryException("Refused a schema change on database 'issue9555' allocated in Raft term 7");
+      return null;
+    });
+    final FakeRaftHAServer raft = leader(broker);
+    raft.getConfiguration().setValue(GlobalConfiguration.HA_TS_MAX_SEALED_INLINE_SIZE, 64 * 1024);
+    final RaftReplicatedDatabase replicated = replicated(raft);
+
+    assertThatThrownBy(() -> replicated.runWithCompactionReplication(() -> {
+      replicated.recordTimeSeriesSealedChange("Sensor", 0, "Sensor_0.ts.sealed", new byte[256 * 1024]);
+      return true;
+    })).isInstanceOf(NeedRetryException.class);
+
+    assertThat(broker.calls("replicateSealedChunk")).as("the first slice went out, the second was refused").hasSize(2);
+    assertThat(broker.calls("replicateSchema")).isEmpty();
+    assertThat(stateMachine.quarantineCause(db.getName())).isEqualTo(DivergenceCause.UNPUBLISHED_SCHEMA_CHANGE);
+  }
+
   /** Dispatched and unanswered: the entry may still commit, so the local compaction may be the committed one. */
   @Test
   void aCompactionWhosePublishingEntryHasAnUnknownOutcomeIsNotQuarantined() {
