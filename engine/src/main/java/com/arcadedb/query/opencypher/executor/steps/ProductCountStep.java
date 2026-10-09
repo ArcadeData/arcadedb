@@ -80,7 +80,7 @@ public final class ProductCountStep extends AbstractExecutionStep {
         final long count = part.count(context);
         if (count == 0) {
           product = 0;
-          overflow = false;
+          overflow = false; // an empty part makes the product 0, whatever an earlier part overflowed to
           break;
         }
         if (!overflow) {
