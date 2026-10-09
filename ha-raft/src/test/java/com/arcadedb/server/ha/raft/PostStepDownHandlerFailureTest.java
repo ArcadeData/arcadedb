@@ -19,6 +19,7 @@
 package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.server.http.handler.ExecutionResponse;
 import com.arcadedb.server.security.ServerSecurityUser;
 import org.apache.ratis.protocol.RaftPeerId;
@@ -85,8 +86,7 @@ class PostStepDownHandlerFailureTest {
   }
 
   private static ServerSecurityUser rootUser() {
-    final ServerSecurityUser user = mock(ServerSecurityUser.class);
-    when(user.getName()).thenReturn("root");
+    final ServerSecurityUser user = TestServerHelper.securityUser("root");
     return user;
   }
 }

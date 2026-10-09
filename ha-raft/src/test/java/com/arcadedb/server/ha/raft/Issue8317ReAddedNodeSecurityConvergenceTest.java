@@ -20,8 +20,8 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.FakeArcadeDBServer;
+import com.arcadedb.server.FakeServerSecurity;
 import com.arcadedb.server.security.ReplicatedUsersPersistenceException;
 import com.arcadedb.server.security.ServerSecurity;
 import org.apache.ratis.proto.RaftProtos.LogEntryProto;
@@ -38,10 +38,6 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.Mockito.doThrow;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 /**
  * Issue #8317: a node removed from the cluster and re-added with its config volume retained still holds a recorded
@@ -155,7 +151,7 @@ class Issue8317ReAddedNodeSecurityConvergenceTest {
   void theStateMachineReportsEachInstallWithItsIndex(@TempDir final Path databaseDirectory) throws Exception {
     final ArcadeStateMachine sm = new ArcadeStateMachine();
     try {
-      sm.setServer(serverWith(mock(ServerSecurity.class), databaseDirectory));
+      sm.setServer(serverWith(FakeServerSecurity.create(), databaseDirectory));
       final RuntimeJoinDetector detector = new RuntimeJoinDetector();
       sm.setRuntimeJoinDetector(detector);
 
@@ -182,8 +178,8 @@ class Issue8317ReAddedNodeSecurityConvergenceTest {
    */
   @Test
   void aSupersededEntryIsNotAnInstall(@TempDir final Path databaseDirectory) throws Exception {
-    final ServerSecurity security = mock(ServerSecurity.class);
-    when(security.applyReplicatedUsers(anyString(), anyString())).thenReturn(false);
+    final FakeServerSecurity security = FakeServerSecurity.create();
+    security.returns("applyReplicatedUsers", false);
     final ArcadeStateMachine sm = new ArcadeStateMachine();
     try {
       sm.setServer(serverWith(security, databaseDirectory));
@@ -205,9 +201,9 @@ class Issue8317ReAddedNodeSecurityConvergenceTest {
    */
   @Test
   void aDocumentInForceInMemoryWhoseWriteFailedIsAnInstall(@TempDir final Path databaseDirectory) throws Exception {
-    final ServerSecurity security = mock(ServerSecurity.class);
-    doThrow(new ReplicatedUsersPersistenceException("applied in memory, not persisted",
-        new IOException("No space left on device"))).when(security).applyReplicatedUsers(anyString());
+    final FakeServerSecurity security = FakeServerSecurity.create();
+    security.fails("applyReplicatedUsers", new ReplicatedUsersPersistenceException("applied in memory, not persisted",
+        new IOException("No space left on device")));
     final ArcadeStateMachine sm = new ArcadeStateMachine();
     try {
       sm.setServer(serverWith(security, databaseDirectory));
