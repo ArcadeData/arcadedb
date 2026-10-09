@@ -140,7 +140,12 @@ class LightEdgeRIDOccurrenceTest extends TestHelper {
     final List<LightEdgeRID> twins = hubEdges.stream().filter(e -> e.getInRID().equals(twinTargetRID)).toList();
     assertThat(twins.get(0).getTwinCount()).isEqualTo(2);
     assertThat(twins.get(0).getOccurrence()).isNotEqualTo(twins.get(1).getOccurrence());
-    assertThat(identities(twinTargetRID, Vertex.DIRECTION.IN)).hasSize(2);
+    final List<LightEdgeRID> incoming = identities(twinTargetRID, Vertex.DIRECTION.IN);
+    assertThat(incoming).hasSize(2);
+    // read from the striped list of the hub and from the plain list of the target, each copy is the same relationship as
+    // exactly one copy on the other side
+    for (final LightEdgeRID fromHub : twins)
+      assertThat(incoming.stream().filter(fromTarget -> LightEdgeRID.isSameEdge(fromHub, fromTarget)).count()).isEqualTo(1L);
     // a leaf reaches the hub and walks back over the same edge: it must not be mistaken for a twin
     final List<LightEdgeRID> out = hubEdges.stream().filter(e -> !e.getInRID().equals(twinTargetRID)).toList();
     assertThat(out).hasSize(degree);

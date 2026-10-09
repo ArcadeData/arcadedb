@@ -24,6 +24,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.function.StatelessFunction;
+import com.arcadedb.graph.LightEdgeRID;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 /**
@@ -60,7 +61,7 @@ public class IdFunction implements StatelessFunction {
       // A lightweight edge has no record, hence no position to pack: its RID is the type marker #bucket:-1 that every
       // lightweight edge of the type shares. Nothing could resolve an id() built from it back to the edge, so there is
       // no id to give (issue #9573); elementId() and the edge itself still identify it.
-      if (identity.getPosition() < 0)
+      if (identity instanceof LightEdgeRID)
         return null;
       return encodeRidAsLong(identity);
     }

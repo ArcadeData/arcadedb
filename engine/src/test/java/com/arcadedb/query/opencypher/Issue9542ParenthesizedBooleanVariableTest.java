@@ -126,6 +126,13 @@ class Issue9542ParenthesizedBooleanVariableTest extends TestHelper {
   }
 
   @Test
+  void parenthesizedNodeNotProvableAtValidationFailsWhenARowReachesIt() {
+    database.transaction(() -> database.command("opencypher", "CREATE (:N {id: 1})"));
+    assertThatThrownBy(() -> column("MATCH (n:N) WITH collect(n) AS ns UNWIND ns AS x WITH x WHERE (x) RETURN 1 AS v", "v"))
+        .hasMessageContaining("InvalidArgumentType");
+  }
+
+  @Test
   void parenthesizedBacktickedBooleanVariable() {
     assertThat(column("WITH true AS `my flag` WHERE (`my flag`) RETURN 1 AS x", "x")).containsExactly(1L);
     assertThat(column("WITH false AS `flag` WHERE (`flag`) RETURN 1 AS x", "x")).isEmpty();
