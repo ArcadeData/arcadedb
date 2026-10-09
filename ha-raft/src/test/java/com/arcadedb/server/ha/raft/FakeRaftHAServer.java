@@ -62,6 +62,8 @@ public class FakeRaftHAServer extends RaftHAServer {
   private final    ContextConfiguration             configuration;
   private final    Answers<Boolean>                 leader             = new Answers<>(false);
   private final    Answers<Long>                    currentTerm        = new Answers<>(-1L);
+  // Null until a test sets it: a leader is then ready as soon as it leads, which is what every test before #9547 assumed
+  private volatile Answers<Boolean>                 leaderReady;
   private final    Answers<Long>                    commitIndex        = new Answers<>(-1L);
   private final    Map<RaftPeerId, Answers<String>> peerHttpAddresses  = new ConcurrentHashMap<>();
   private final    Map<RaftPeerId, String>          peerHttpsAddresses = new ConcurrentHashMap<>();
@@ -143,6 +145,21 @@ public class FakeRaftHAServer extends RaftHAServer {
     for (int i = 0; i < leader.length; i++)
       boxed[i] = leader[i];
     this.leader.set(boxed);
+    return this;
+  }
+
+  /**
+   * Whether a LEADER is also ready (issue #9547): Ratis reports a freshly elected leader as not ready until it has applied
+   * the first entry of its term. Read only while {@link #leader} answers {@code true}; several values are answered in
+   * order, then the last one sticks. Unset, a leader is ready.
+   */
+  public FakeRaftHAServer leaderReady(final boolean... leaderReady) {
+    final Boolean[] boxed = new Boolean[leaderReady.length];
+    for (int i = 0; i < leaderReady.length; i++)
+      boxed[i] = leaderReady[i];
+    final Answers<Boolean> answers = new Answers<>(true);
+    answers.set(boxed);
+    this.leaderReady = answers;
     return this;
   }
 
@@ -415,7 +432,8 @@ public class FakeRaftHAServer extends RaftHAServer {
   @Override
   public LeadershipState getLeadershipState() {
     final boolean leading = leader.next();
-    return new LeadershipState(leading, leading);
+    final Answers<Boolean> ready = leaderReady;
+    return new LeadershipState(leading, leading && (ready == null || ready.next()));
   }
 
   @Override

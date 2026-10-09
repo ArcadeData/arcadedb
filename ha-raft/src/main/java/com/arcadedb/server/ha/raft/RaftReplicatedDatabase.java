@@ -2366,6 +2366,12 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     if (proxied.getFileManager().isRecordingChangesOnCurrentThread())
       return proxied.recordFileChanges(callback);
 
+    // Issue #9547: a freshly elected leader is a few applies away from ready. Wait for that here, BEFORE claiming the
+    // recording session, so the wait does not hold off every other DDL and compaction on this database. The binding
+    // itself happens under the session below, which is what makes it exclusive per database, and re-checks readiness
+    // without waiting.
+    awaitLeaderReady();
+
     // On the leader, record file changes and send them via Raft immediately
     // (like the legacy HA system) so replicas have the files before WAL pages arrive
     acquireRecordingSession();
@@ -2412,7 +2418,23 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     // abandoned prefix and it has to be retired - see retireAbandonedInstalments (issue #6136).
     boolean published = false;
 
+    // The term this session is bound to (issue #9547), or below zero while it is bound to none.
+    long sessionTerm = NOT_A_READY_LEADER;
+
     try {
+      // Before the callback allocates a single file id (issue #9547): see bindSchemaSessionToTerm. The wait for
+      // readiness already happened above, outside the session. Inside the try, like the exclusive window below, so
+      // whatever follows the binding unwinds through the finally that ends it - a binding left behind would vouch for a
+      // later resend in the same term.
+      sessionTerm = bindSchemaSessionToTerm();
+      if (sessionTerm == NOT_A_READY_LEADER) {
+        if (!isLeader())
+          throw schemaChangesNeedTheLeader();
+        throw new NeedRetryException("Database '" + getName() + "': this server was elected leader but has not applied "
+            + "every entry committed before its term yet (waited up to " + quorumTimeoutOrZero()
+            + " ms), so a schema change cannot allocate file ids safely right now. Please retry");
+      }
+
       // Inside the try so a refusal to start (entries still in flight) unwinds through the finally like any failure.
       exclusiveOn = beginLeaderExclusive();
       final RET result = proxied.recordFileChanges(callback);
@@ -2550,11 +2572,98 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         }
         schemaWalBuffer.get().clear();
         schemaBucketDeltaBuffer.get().clear();
-        proxied.getFileManager().stopRecordingChanges();
+        try {
+          // After the retirement above, which submits an entry of its own and must still find the session bound, and
+          // before the recording session is released: the next session on this database can bind the same term, and
+          // ending this binding after it would end that one (issue #9547).
+          unbindSchemaSession(sessionTerm);
+        } finally {
+          proxied.getFileManager().stopRecordingChanges();
+        }
       } finally {
         endLeaderExclusive(exclusiveOn);
       }
     }
+  }
+
+  /**
+   * Returned by {@link #bindSchemaSessionToTerm} when this node is not a leader that may allocate file ids now. Kept apart
+   * from the {@code -1} of an unreadable term, which lets the session run (unbound); both are below zero, which is all
+   * {@link #unbindSchemaSession} tests.
+   */
+  private static final long NOT_A_READY_LEADER = Long.MIN_VALUE;
+
+  /**
+   * Waits, up to the quorum timeout, for this leader to become ready (issue #9547). Called before the recording session
+   * is claimed; {@link #bindSchemaSessionToTerm} then decides under the session, so giving up here is not a refusal.
+   */
+  private long quorumTimeoutOrZero() {
+    final RaftHAServer raft = raftHAServer;
+    return raft != null ? raft.getQuorumTimeout() : 0L;
+  }
+
+  private void awaitLeaderReady() {
+    final RaftHAServer raft = raftHAServer;
+    if (raft == null || raft.isLeaderReady())
+      return;
+    try {
+      raft.awaitApplied(raft::isLeaderReady, raft.getQuorumTimeout());
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new NeedRetryException("Database '" + getName() + "': interrupted while waiting for this leader to become "
+          + "ready for a schema change. Please retry");
+    }
+  }
+
+  /**
+   * Binds the schema session this thread has just claimed to the current Raft term, so the leader refuses to append its
+   * entries once that term is over (issue #9547, see {@code ArcadeStateMachine.staleSchemaProposalRefusal}). Called once
+   * the file recording session is held, which makes the binding exclusive per database, and before the session
+   * allocates any file id. A session nested on the same database never gets here - {@code recordFileChanges} delegates
+   * to the frame already recording on this thread - so the outer frame's binding is the only one and stays in place.
+   * Never waits: a caller that can afford to wait for readiness does so before claiming the session.
+   * <p>
+   * Requires the leader to be READY, which Ratis reports only once it has applied the first entry of its own term, and
+   * with it every entry committed before that term. That is what makes the ids this node's file manager hands out
+   * safe to publish: an entry a previous leader committed but this node has not applied yet can already use the next
+   * id, and this node would allocate it again - the entry would then reach the log behind the one it collides with, and
+   * each node would hold one of the two files. Readiness is re-checked after the term is read, so a session that saw a
+   * later term become ready is bound to the earlier one and refused at append, never the other way around.
+   *
+   * @return the term the session is bound to, {@code -1} when the term cannot be read (the session runs unbound and the
+   * leader refuses its entries), or {@link #NOT_A_READY_LEADER}
+   */
+  private long bindSchemaSessionToTerm() {
+    final RaftHAServer raft = raftHAServer;
+    if (raft == null || !raft.isLeaderReady())
+      return NOT_A_READY_LEADER;
+
+    final long term = raft.getCurrentTerm();
+    if (!raft.isLeaderReady())
+      return NOT_A_READY_LEADER;
+    if (term < 0) {
+      // The division could not be read (an in-place restart, issue #5271). Run unbound rather than guess a term: the
+      // leader then refuses this session's entries, which is the safe answer, and this line says why before it does.
+      LogManager.instance().log(this, Level.WARNING,
+          "Schema session on database '%s' could not read the Raft term, so it is not bound to one and its changes will "
+              + "be refused by the leader; retry once the Raft server is back (issue #9547)", getName());
+      return -1L;
+    }
+
+    // The same accessor unbindSchemaSession uses, so the two can never address different state machines.
+    final ArcadeStateMachine stateMachine = stateMachineOrNull();
+    if (stateMachine != null)
+      stateMachine.bindSchemaSession(getName(), term);
+    return term;
+  }
+
+  /** Ends the binding {@link #bindSchemaSessionToTerm} took, if it took one. */
+  private void unbindSchemaSession(final long term) {
+    if (term < 0)
+      return;
+    final ArcadeStateMachine stateMachine = stateMachineOrNull();
+    if (stateMachine != null)
+      stateMachine.unbindSchemaSession(getName(), term);
   }
 
   /**
@@ -3250,7 +3359,23 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     schemaBucketDeltaBuffer.get().clear();
     compactionSealedBuffer.get().clear();
     isSchemaCommitThread.set(Boolean.TRUE);
+    // The term this session is bound to (issue #9547), or below zero while it is bound to none.
+    long sessionTerm = NOT_A_READY_LEADER;
     try {
+      // Issue #9547: the compaction allocates the id of the file it writes from this node's file manager, so it must not
+      // start before every entry committed ahead of this term has been applied here, and its entries must not be
+      // appended in any other term. Deferred rather than waited for: it runs again on the next schedule. Bound inside
+      // the try so the finally always ends the binding.
+      // An unreadable term (-1) skips too: the session would run unbound and the leader would refuse every entry it
+      // produced, after the whole compaction had been done locally for nothing.
+      sessionTerm = bindSchemaSessionToTerm();
+      if (sessionTerm < 0) {
+        HALog.log(this, HALog.DETAILED,
+            "Skipping compaction for database '%s' because this node is not a ready leader with a readable Raft term; "
+                + "will retry on next schedule", getName());
+        return false;
+      }
+
       // #5443: remember how long every paginated file is BEFORE the compaction, so the pages it appends
       // to already-existing files can be shipped afterwards (see the loop below).
       final Map<Integer, Integer> pageCountsBefore = snapshotPageCounts();
@@ -3382,7 +3507,12 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       schemaWalBuffer.get().clear();
       schemaBucketDeltaBuffer.get().clear();
       compactionSealedBuffer.get().clear();
-      proxied.getFileManager().stopRecordingChanges();
+      try {
+        // Before the recording session is released, for the reason recordFileChanges gives (issue #9547).
+        unbindSchemaSession(sessionTerm);
+      } finally {
+        proxied.getFileManager().stopRecordingChanges();
+      }
     }
   }
 
