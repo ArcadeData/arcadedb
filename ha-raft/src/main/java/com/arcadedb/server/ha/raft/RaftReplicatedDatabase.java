@@ -3530,7 +3530,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       // node - the file id is allocated, the compacted file written and the index's sub-indexes swapped. A definite
       // refusal of any of them leaves this node with a layout no other node has, so the database is quarantined and
       // resynced now. An indeterminate failure (ReplicationDispatchedTimeoutException) is not a NeedRetryException and
-      // passes through: its entry may still commit, and then this node's layout is the committed one.
+      // passes through: its entry may still commit, and then this node's layout is the committed one. Why every
+      // NeedRetryException the broker raises is definite is listed on SchemaInstalmentState.refusal.
       try {
         for (int store = 0; store < recordedSealed.size(); store++) {
           final RaftLogEntryCodec.TsSealedBlob blob = recordedSealed.get(store);

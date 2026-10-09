@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
@@ -112,6 +113,28 @@ class Issue9555UnpublishedSchemaChangeQuarantineTest {
       return true;
     })).isInstanceOf(QuorumNotReachedException.class);
 
+    assertThat(stateMachine.quarantineCause(db.getName())).isEqualTo(DivergenceCause.UNPUBLISHED_SCHEMA_CHANGE);
+  }
+
+  /**
+   * A sealed TimeSeries store too big for one entry ships its leading slices ahead of the publishing entry (#4416). The
+   * sealed file is already swapped here, so a refused slice leaves the same divergence as a refused publishing entry.
+   */
+  @Test
+  void aCompactionWhoseDeliveryOnlySealedSliceIsRefusedQuarantinesTheProposer() {
+    final FakeRaftTransactionBroker broker = new FakeRaftTransactionBroker().fails("replicateSealedChunk",
+        new NeedRetryException("Refused a schema change on database 'issue9555' allocated in Raft term 7"));
+    final FakeRaftHAServer raft = leader(broker);
+    raft.getConfiguration().setValue(GlobalConfiguration.HA_TS_MAX_SEALED_INLINE_SIZE, 64 * 1024);
+    final RaftReplicatedDatabase replicated = replicated(raft);
+
+    assertThatThrownBy(() -> replicated.runWithCompactionReplication(() -> {
+      replicated.recordTimeSeriesSealedChange("Sensor", 0, "Sensor_0.ts.sealed", new byte[256 * 1024]);
+      return true;
+    })).isInstanceOf(NeedRetryException.class);
+
+    assertThat(broker.calls("replicateSealedChunk")).as("the refusal came from a delivery-only slice").hasSize(1);
+    assertThat(broker.calls("replicateSchema")).as("so nothing was published").isEmpty();
     assertThat(stateMachine.quarantineCause(db.getName())).isEqualTo(DivergenceCause.UNPUBLISHED_SCHEMA_CHANGE);
   }
 
