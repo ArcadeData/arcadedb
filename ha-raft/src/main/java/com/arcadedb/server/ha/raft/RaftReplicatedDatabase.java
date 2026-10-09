@@ -2751,6 +2751,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     }
   }
 
+  /** How deep {@link #isIndeterminatePublishFailure} and {@link #isDeterministicPublishFailure} follow a cause chain. */
+  private static final int MAX_CAUSE_DEPTH = 32;
+
   /**
    * Whether {@code failure} leaves the outcome of its entry unknown (issue #9558): the entry was dispatched and may still
    * commit ({@link ReplicationDispatchedTimeoutException}), or it is committed and only its local apply failed
@@ -2760,7 +2763,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    */
   // @VisibleForTesting
   static boolean isIndeterminatePublishFailure(final Throwable failure) {
-    for (Throwable t = failure; t != null; t = t.getCause() == t ? null : t.getCause())
+    // Bounded, so a cause chain that loops back on itself further down cannot spin forever
+    Throwable t = failure;
+    for (int depth = 0; t != null && depth < MAX_CAUSE_DEPTH; t = t.getCause() == t ? null : t.getCause(), depth++)
       if (t instanceof ReplicationDispatchedTimeoutException || t instanceof MajorityCommittedAllFailedException)
         return true;
     return false;
@@ -2774,7 +2779,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    */
   // @VisibleForTesting
   static boolean isDeterministicPublishFailure(final Throwable failure) {
-    for (Throwable t = failure; t != null; t = t.getCause() == t ? null : t.getCause())
+    // Bounded, so a cause chain that loops back on itself further down cannot spin forever
+    Throwable t = failure;
+    for (int depth = 0; t != null && depth < MAX_CAUSE_DEPTH; t = t.getCause() == t ? null : t.getCause(), depth++)
       if (t instanceof ReplicatedEntryTooLargeException)
         return true;
     return false;

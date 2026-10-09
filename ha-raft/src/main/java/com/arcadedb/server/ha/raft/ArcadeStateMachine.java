@@ -6986,6 +6986,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // persisted applied index above), and a database recreated under the same name starts from a clean ledger.
     pageVersions.clear(databaseName);
     lastSchemaChangeIndex.remove(databaseName);
+    // Nor a compaction hold-off (issue #9558): it described a payload of the database being dropped
+    compactionPublished(databaseName);
     // The copy the served index described is going away with it (issue #8579): a database recreated under the same
     // name must not inherit it.
     final InstallApplyGate installGate = installApplyGates.get(databaseName);

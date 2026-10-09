@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
@@ -25,6 +26,7 @@ import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.network.binary.ReplicatedEntryTooLargeException;
+import com.arcadedb.server.FakeArcadeDBServer;
 import com.arcadedb.server.TestServerHelper;
 import org.apache.ratis.protocol.ClientId;
 import org.junit.jupiter.api.AfterEach;
@@ -216,6 +218,23 @@ class Issue9558UnpublishableSchemaChangeTest {
 
     assertThat(stateMachine.deferCompactionAfterUnpublishableChange(name))
         .as("the streak starts over").isEqualTo(ArcadeStateMachine.COMPACTION_BACK_OFF_BASE_MS);
+  }
+
+  /** A database dropped while held off takes the hold-off with it: one recreated under the name starts clean. */
+  @Test
+  void droppingADatabaseForgetsItsCompactionHoldOff() {
+    final ArcadeStateMachine sm = new ArcadeStateMachine();
+    sm.compactionBackOffClock = clock::get;
+    sm.setServer(FakeArcadeDBServer.create((String) null, new ContextConfiguration()));
+    sm.deferCompactionAfterUnpublishableChange("dropped9558");
+    sm.deferCompactionAfterUnpublishableChange("other9558");
+
+    sm.applyDropDatabaseEntry(RaftLogEntryCodec.decode(RaftLogEntryCodec.encodeDropDatabaseEntry("dropped9558")));
+
+    assertThat(sm.isCompactionHeldOff("dropped9558")).isFalse();
+    assertThat(sm.deferCompactionAfterUnpublishableChange("dropped9558")).as("its streak starts over")
+        .isEqualTo(ArcadeStateMachine.COMPACTION_BACK_OFF_BASE_MS);
+    assertThat(sm.isCompactionHeldOff("other9558")).as("an unrelated database keeps its hold-off").isTrue();
   }
 
   /**
