@@ -874,6 +874,25 @@ public final class RaftLogEntryCodec {
   }
 
   /**
+   * Reads only the database name of the {@code (type, databaseName)} envelope header, without decoding the body
+   * (issue #9547). A schema entry can carry a whole compacted index, so a check that needs nothing but the database it
+   * targets must not pay for decompressing it.
+   *
+   * @throws RaftLogEntryDecodeException when the header itself cannot be read
+   */
+  public static String peekDatabaseName(final ByteString data) {
+    try (final InputStream input = data.newInput();
+        final DataInputStream dis = new DataInputStream(input)) {
+      dis.readByte();
+      return dis.readUTF();
+    } catch (final IOException e) {
+      throw new RaftLogEntryDecodeException(
+          "Failed to read the Raft log entry envelope header (the entry ended before its type byte or database name): "
+              + e.getMessage(), null, null, e);
+    }
+  }
+
+  /**
    * Decodes a ByteString back into a DecodedEntry.
    */
   public static DecodedEntry decode(final ByteString data) {

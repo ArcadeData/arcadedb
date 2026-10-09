@@ -2367,6 +2367,18 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       throw schemaChangesNeedTheLeader();
     }
 
+    // Before the callback allocates a single file id (issue #9547): see bindSchemaSessionToTerm. A freshly elected leader
+    // is a few applies away from ready, so the DDL waits for it up to the quorum timeout rather than failing at once.
+    final long sessionTerm = bindSchemaSessionToTerm(true);
+    if (sessionTerm == NOT_A_READY_LEADER) {
+      proxied.getFileManager().stopRecordingChanges();
+      if (!isLeader())
+        throw schemaChangesNeedTheLeader();
+      throw new NeedRetryException("Database '" + getName() + "': this server was elected leader but has not applied "
+          + "every entry committed before its term yet, so a schema change cannot allocate file ids safely right now. "
+          + "Please retry");
+    }
+
     final long schemaVersionBefore = proxied.getSchema().getEmbedded().getVersion();
 
     // Capture schema changes, then send via Raft after releasing the write lock
@@ -2539,11 +2551,76 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         }
         schemaWalBuffer.get().clear();
         schemaBucketDeltaBuffer.get().clear();
-        proxied.getFileManager().stopRecordingChanges();
+        try {
+          // After the retirement above, which submits an entry of its own and must still find the session bound, and
+          // before the recording session is released: the next session on this database can bind the same term, and
+          // ending this binding after it would end that one (issue #9547).
+          unbindSchemaSession(sessionTerm);
+        } finally {
+          proxied.getFileManager().stopRecordingChanges();
+        }
       } finally {
         endLeaderExclusive(exclusiveOn);
       }
     }
+  }
+
+  /** Returned by {@link #bindSchemaSessionToTerm} when this node is not a leader that may allocate file ids now. */
+  private static final long NOT_A_READY_LEADER = Long.MIN_VALUE;
+
+  /**
+   * Binds the schema session this thread has just claimed to the current Raft term, so the leader refuses to append its
+   * entries once that term is over (issue #9547, see {@code ArcadeStateMachine.staleSchemaProposalRefusal}). Called once
+   * the file recording session is held, which makes the binding exclusive per database, and before the session
+   * allocates any file id.
+   * <p>
+   * Requires the leader to be READY, which Ratis reports only once it has applied the first entry of its own term, and
+   * with it every entry committed before that term. That is what makes the ids this node's file manager hands out
+   * safe to publish: an entry a previous leader committed but this node has not applied yet can already use the next
+   * id, and this node would allocate it again - the entry would then reach the log behind the one it collides with, and
+   * each node would hold one of the two files. Readiness is re-checked after the term is read, so a session that saw a
+   * later term become ready is bound to the earlier one and refused at append, never the other way around.
+   *
+   * @param waitForReady whether to wait, up to the quorum timeout, for a leader that is not ready yet
+   *
+   * @return the term the session is bound to, {@code -1} when the term cannot be read (the session runs unbound and the
+   * leader refuses its entries), or {@link #NOT_A_READY_LEADER}
+   */
+  private long bindSchemaSessionToTerm(final boolean waitForReady) {
+    final RaftHAServer raft = raftHAServer;
+    if (raft == null)
+      return NOT_A_READY_LEADER;
+    if (!raft.isLeaderReady()) {
+      if (!waitForReady)
+        return NOT_A_READY_LEADER;
+      try {
+        if (!raft.awaitApplied(raft::isLeaderReady, raft.getQuorumTimeout()))
+          return NOT_A_READY_LEADER;
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+        return NOT_A_READY_LEADER;
+      }
+    }
+
+    final long term = raft.getCurrentTerm();
+    if (!raft.isLeaderReady())
+      return NOT_A_READY_LEADER;
+    if (term < 0)
+      return -1L;
+
+    final ArcadeStateMachine stateMachine = raft.getStateMachine();
+    if (stateMachine != null)
+      stateMachine.bindSchemaSession(getName(), term);
+    return term;
+  }
+
+  /** Ends the binding {@link #bindSchemaSessionToTerm} took, if it took one. */
+  private void unbindSchemaSession(final long term) {
+    if (term < 0)
+      return;
+    final ArcadeStateMachine stateMachine = stateMachineOrNull();
+    if (stateMachine != null)
+      stateMachine.unbindSchemaSession(getName(), term);
   }
 
   /**
@@ -3231,6 +3308,18 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       return false;
     }
 
+    // Issue #9547: the compaction allocates the id of the file it writes from this node's file manager, so it must not
+    // start before every entry committed ahead of this term has been applied here, and its entries must not be appended
+    // in any other term. Deferred rather than waited for: it runs again on the next schedule.
+    final long sessionTerm = bindSchemaSessionToTerm(false);
+    if (sessionTerm == NOT_A_READY_LEADER) {
+      proxied.getFileManager().stopRecordingChanges();
+      HALog.log(this, HALog.DETAILED,
+          "Skipping compaction for database '%s' because this node is not a ready leader; will retry on next schedule",
+          getName());
+      return false;
+    }
+
     // Mark this thread so commits executed inside the compaction (e.g. the TimeSeries Phase-4c
     // mutable-bucket clear) buffer their WAL into schemaWalBuffer instead of shipping a separate
     // TX_ENTRY. They then ride the SCHEMA_ENTRY below, atomically with any sealed-store blobs and
@@ -3371,7 +3460,12 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       schemaWalBuffer.get().clear();
       schemaBucketDeltaBuffer.get().clear();
       compactionSealedBuffer.get().clear();
-      proxied.getFileManager().stopRecordingChanges();
+      try {
+        // Before the recording session is released, for the reason recordFileChanges gives (issue #9547).
+        unbindSchemaSession(sessionTerm);
+      } finally {
+        proxied.getFileManager().stopRecordingChanges();
+      }
     }
   }
 
