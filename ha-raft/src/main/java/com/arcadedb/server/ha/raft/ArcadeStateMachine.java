@@ -1489,6 +1489,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
    *       session, or a session that could not read the term when it began) or the session was bound to an earlier term (a resend that found this node re-elected, with the
    *       interim leader's entries committed ahead of it).</li>
    * </ul>
+   * A resend in the SAME term is not refused here, and needs not be: one term has one leader, so it reaches the node
+   * that already has the request, whose Ratis retry cache answers it by client and call id without calling this method
+   * again. The binding is per database and term rather than per session for that reason.
+   * <p>
    * Refused before Ratis appends anything, through the context, so the entry reaches no node and costs Ratis nothing (the
    * same channel the #6965 page-version refusal uses). The proposer sees a definite {@link NeedRetryException}: its session
    * fails, and a DDL caller retries against the current leader.

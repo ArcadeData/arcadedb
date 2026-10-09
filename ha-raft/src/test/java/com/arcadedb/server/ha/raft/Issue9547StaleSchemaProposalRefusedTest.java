@@ -268,6 +268,23 @@ class Issue9547StaleSchemaProposalRefusedTest {
     assertThat(afterNested.get()).isNull();
   }
 
+  /** A compaction cannot run unbound: with no readable term every entry it produced would be refused after the work. */
+  @Test
+  void aCompactionThatCannotReadTheTermIsDeferred() throws Exception {
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached().stateMachine(stateMachine).leader(true).currentTerm(-1L)
+        .transactionBroker(new FakeRaftTransactionBroker());
+    final RaftReplicatedDatabase replicated = new RaftReplicatedDatabase(TestServerHelper.unstartedServer(), db, raft);
+    final AtomicBoolean ran = new AtomicBoolean();
+
+    assertThat(replicated.runWithCompactionReplication(() -> {
+      ran.set(true);
+      return true;
+    })).isFalse();
+
+    assertThat(ran).isFalse();
+    assertThat(db.getFileManager().getRecordedChanges()).isNull();
+  }
+
   /** A compaction that the leader defers leaves no binding behind for a later resend in the same term to hide behind. */
   @Test
   void aDeferredCompactionLeavesNoBindingBehind() throws Exception {

@@ -2420,8 +2420,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         if (!isLeader())
           throw schemaChangesNeedTheLeader();
         throw new NeedRetryException("Database '" + getName() + "': this server was elected leader but has not applied "
-            + "every entry committed before its term yet, so a schema change cannot allocate file ids safely right now. "
-            + "Please retry");
+            + "every entry committed before its term yet (waited up to " + quorumTimeoutOrZero()
+            + " ms), so a schema change cannot allocate file ids safely right now. Please retry");
       }
 
       // Inside the try so a refusal to start (entries still in flight) unwinds through the finally like any failure.
@@ -2586,6 +2586,11 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * Waits, up to the quorum timeout, for this leader to become ready (issue #9547). Called before the recording session
    * is claimed; {@link #bindSchemaSessionToTerm} then decides under the session, so giving up here is not a refusal.
    */
+  private long quorumTimeoutOrZero() {
+    final RaftHAServer raft = raftHAServer;
+    return raft != null ? raft.getQuorumTimeout() : 0L;
+  }
+
   private void awaitLeaderReady() {
     final RaftHAServer raft = raftHAServer;
     if (raft == null || raft.isLeaderReady())
@@ -2632,7 +2637,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       return -1L;
     }
 
-    final ArcadeStateMachine stateMachine = raft.getStateMachine();
+    // The same accessor unbindSchemaSession uses, so the two can never address different state machines.
+    final ArcadeStateMachine stateMachine = stateMachineOrNull();
     if (stateMachine != null)
       stateMachine.bindSchemaSession(getName(), term);
     return term;
@@ -3347,11 +3353,13 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       // start before every entry committed ahead of this term has been applied here, and its entries must not be
       // appended in any other term. Deferred rather than waited for: it runs again on the next schedule. Bound inside
       // the try so the finally always ends the binding.
+      // An unreadable term (-1) skips too: the session would run unbound and the leader would refuse every entry it
+      // produced, after the whole compaction had been done locally for nothing.
       sessionTerm = bindSchemaSessionToTerm();
-      if (sessionTerm == NOT_A_READY_LEADER) {
+      if (sessionTerm < 0) {
         HALog.log(this, HALog.DETAILED,
-            "Skipping compaction for database '%s' because this node is not a ready leader; will retry on next schedule",
-            getName());
+            "Skipping compaction for database '%s' because this node is not a ready leader with a readable Raft term; "
+                + "will retry on next schedule", getName());
         return false;
       }
 
