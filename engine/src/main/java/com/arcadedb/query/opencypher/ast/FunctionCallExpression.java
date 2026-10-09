@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.ast;
 
 import com.arcadedb.function.StatelessFunction;
+import com.arcadedb.function.misc.CoalesceFunction;
 import com.arcadedb.query.opencypher.LoadCSVRowContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -71,6 +72,8 @@ public class FunctionCallExpression implements Expression {
       if (resolver != null) {
         final StatelessFunction function = resolver.apply(functionName);
         if (function != null) {
+          if (function instanceof CoalesceFunction)
+            return evaluateCoalesce(function, arg -> arg.evaluate(result, context), result, context);
           final Object[] args = new Object[arguments.size()];
           for (int i = 0; i < args.length; i++)
             args[i] = arguments.get(i).evaluate(result, context);
@@ -79,6 +82,26 @@ public class FunctionCallExpression implements Expression {
       }
     }
     throw new UnsupportedOperationException("Function evaluation requires StatelessFunction: " + functionName);
+  }
+
+  /**
+   * Evaluates {@code coalesce()} one argument at a time and stops at the first non-null one, as the openCypher
+   * reference does: an argument after it is never evaluated, so {@code coalesce(null, 0, COUNT { ... })} does not run the
+   * COUNT (issue #9580), and {@code coalesce(1, 1/0)} does not raise. Every other function takes all of its arguments
+   * evaluated up front. {@code evaluator} resolves one argument, which is how the two evaluation paths - the AST's own and
+   * the {@code ExpressionEvaluator}'s, with its aggregation overrides - share this rule instead of each carrying a copy.
+   */
+  public Object evaluateCoalesce(final StatelessFunction function, final Function<Expression, Object> evaluator,
+      final Result result, final CommandContext context) {
+    validateArity(function);
+    Object value = null;
+    for (final Expression argument : arguments) {
+      value = evaluator.apply(argument);
+      if (value != null)
+        break;
+    }
+    LoadCSVRowContext.bind(result, context);
+    return value;
   }
 
   /**
