@@ -140,7 +140,7 @@ class Issue9547StaleSchemaProposalRefusedTest {
         request(localClient, schemaEntry(STALE_COMPACTION), 4));
 
     assertThat(context.getException()).isInstanceOf(NeedRetryException.class);
-    assertThat(context.getException().getMessage()).contains("outside of a schema session");
+    assertThat(context.getException().getMessage()).contains("not bound to a Raft term");
   }
 
   @Test
@@ -226,6 +226,40 @@ class Issue9547StaleSchemaProposalRefusedTest {
     assertThat(duringSession.get()).as("the session's own entries are accepted in its term").isNull();
     assertThat(stateMachine.staleSchemaProposalRefusal(db.getName(), true)).as("a resend after the session is not")
         .isNotNull();
+  }
+
+  /**
+   * A session that cannot read the term (the division is restarting) runs unbound rather than guessing one, so the leader
+   * refuses its entries: the callback still runs, but nothing it allocated can reach the log.
+   */
+  @Test
+  void aSchemaChangeThatCannotReadTheTermRunsUnboundAndItsEntriesAreRefused() {
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached().stateMachine(stateMachine).leader(true).currentTerm(-1L)
+        .transactionBroker(new FakeRaftTransactionBroker());
+    final RaftReplicatedDatabase replicated = new RaftReplicatedDatabase(TestServerHelper.unstartedServer(), db, raft);
+    final AtomicReference<NeedRetryException> duringSession = new AtomicReference<>();
+
+    replicated.recordFileChanges(() -> {
+      duringSession.set(stateMachine.staleSchemaProposalRefusal(db.getName(), true));
+      return null;
+    });
+
+    assertThat(duringSession.get()).isNotNull();
+    assertThat(duringSession.get().getMessage()).contains("could not read its Raft term");
+  }
+
+  /** A compaction that the leader defers leaves no binding behind for a later resend in the same term to hide behind. */
+  @Test
+  void aDeferredCompactionLeavesNoBindingBehind() throws Exception {
+    stateMachine.bindSchemaSession(db.getName(), 7L);
+    stateMachine.unbindSchemaSession(db.getName(), 7L);
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached().stateMachine(stateMachine).leader(true).leaderReady(false)
+        .currentTerm(7L).transactionBroker(new FakeRaftTransactionBroker());
+    final RaftReplicatedDatabase replicated = new RaftReplicatedDatabase(TestServerHelper.unstartedServer(), db, raft);
+
+    assertThat(replicated.runWithCompactionReplication(() -> true)).isFalse();
+
+    assertThat(stateMachine.staleSchemaProposalRefusal(db.getName(), true)).isNotNull();
   }
 
   @Test

@@ -1486,7 +1486,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
    *   <li><b>Another node's entry</b> is refused outright: no node submits a schema entry unless it is the leader, so one
    *       arriving from someone else's client is the resend of a node that lost leadership.</li>
    *   <li><b>This node's own entry</b> is refused when no session is bound for its database (a resend that outlived its
-   *       session) or the session was bound to an earlier term (a resend that found this node re-elected, with the
+   *       session, or a session that could not read the term when it began) or the session was bound to an earlier term (a resend that found this node re-elected, with the
    *       interim leader's entries committed ahead of it).</li>
    * </ul>
    * Refused before Ratis appends anything, through the context, so the entry reaches no node and costs Ratis nothing (the
@@ -1503,8 +1503,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
     final Long sessionTerm = schemaSessionTerms.get(databaseName);
     if (sessionTerm == null)
       return new NeedRetryException("Refused a schema change on database '" + databaseName + "' proposed by this node "
-          + "outside of a schema session: it is the resend of a session that has already ended, and the file ids it "
-          + "allocated may have been taken since. Please retry");
+          + "that is not bound to a Raft term: either the resend of a session that has already ended, whose file ids "
+          + "may have been taken since, or a session that started while this node could not read its Raft term. Please "
+          + "retry");
 
     final long term = currentRaftTerm();
     if (sessionTerm != term)

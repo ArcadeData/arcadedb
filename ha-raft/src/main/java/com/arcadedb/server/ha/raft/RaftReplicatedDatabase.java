@@ -2367,18 +2367,6 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       throw schemaChangesNeedTheLeader();
     }
 
-    // Before the callback allocates a single file id (issue #9547): see bindSchemaSessionToTerm. A freshly elected leader
-    // is a few applies away from ready, so the DDL waits for it up to the quorum timeout rather than failing at once.
-    final long sessionTerm = bindSchemaSessionToTerm(true);
-    if (sessionTerm == NOT_A_READY_LEADER) {
-      proxied.getFileManager().stopRecordingChanges();
-      if (!isLeader())
-        throw schemaChangesNeedTheLeader();
-      throw new NeedRetryException("Database '" + getName() + "': this server was elected leader but has not applied "
-          + "every entry committed before its term yet, so a schema change cannot allocate file ids safely right now. "
-          + "Please retry");
-    }
-
     final long schemaVersionBefore = proxied.getSchema().getEmbedded().getVersion();
 
     // Capture schema changes, then send via Raft after releasing the write lock
@@ -2413,7 +2401,23 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     // abandoned prefix and it has to be retired - see retireAbandonedInstalments (issue #6136).
     boolean published = false;
 
+    // The term this session is bound to (issue #9547), or below zero while it is bound to none.
+    long sessionTerm = NOT_A_READY_LEADER;
+
     try {
+      // Before the callback allocates a single file id (issue #9547): see bindSchemaSessionToTerm. A freshly elected
+      // leader is a few applies away from ready, so the DDL waits for it up to the quorum timeout rather than failing at
+      // once. Inside the try, like the exclusive window below, so whatever follows the binding unwinds through the
+      // finally that ends it - a binding left behind would vouch for a later resend in the same term.
+      sessionTerm = bindSchemaSessionToTerm(true);
+      if (sessionTerm == NOT_A_READY_LEADER) {
+        if (!isLeader())
+          throw schemaChangesNeedTheLeader();
+        throw new NeedRetryException("Database '" + getName() + "': this server was elected leader but has not applied "
+            + "every entry committed before its term yet, so a schema change cannot allocate file ids safely right now. "
+            + "Please retry");
+      }
+
       // Inside the try so a refusal to start (entries still in flight) unwinds through the finally like any failure.
       exclusiveOn = beginLeaderExclusive();
       final RET result = proxied.recordFileChanges(callback);
@@ -2605,8 +2609,14 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     final long term = raft.getCurrentTerm();
     if (!raft.isLeaderReady())
       return NOT_A_READY_LEADER;
-    if (term < 0)
+    if (term < 0) {
+      // The division could not be read (an in-place restart, issue #5271). Run unbound rather than guess a term: the
+      // leader then refuses this session's entries, which is the safe answer, and this line says why before it does.
+      LogManager.instance().log(this, Level.WARNING,
+          "Schema session on database '%s' could not read the Raft term, so it is not bound to one and its changes will "
+              + "be refused by the leader; retry once the Raft server is back (issue #9547)", getName());
       return -1L;
+    }
 
     final ArcadeStateMachine stateMachine = raft.getStateMachine();
     if (stateMachine != null)
@@ -3308,18 +3318,6 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       return false;
     }
 
-    // Issue #9547: the compaction allocates the id of the file it writes from this node's file manager, so it must not
-    // start before every entry committed ahead of this term has been applied here, and its entries must not be appended
-    // in any other term. Deferred rather than waited for: it runs again on the next schedule.
-    final long sessionTerm = bindSchemaSessionToTerm(false);
-    if (sessionTerm == NOT_A_READY_LEADER) {
-      proxied.getFileManager().stopRecordingChanges();
-      HALog.log(this, HALog.DETAILED,
-          "Skipping compaction for database '%s' because this node is not a ready leader; will retry on next schedule",
-          getName());
-      return false;
-    }
-
     // Mark this thread so commits executed inside the compaction (e.g. the TimeSeries Phase-4c
     // mutable-bucket clear) buffer their WAL into schemaWalBuffer instead of shipping a separate
     // TX_ENTRY. They then ride the SCHEMA_ENTRY below, atomically with any sealed-store blobs and
@@ -3328,7 +3326,21 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     schemaBucketDeltaBuffer.get().clear();
     compactionSealedBuffer.get().clear();
     isSchemaCommitThread.set(Boolean.TRUE);
+    // The term this session is bound to (issue #9547), or below zero while it is bound to none.
+    long sessionTerm = NOT_A_READY_LEADER;
     try {
+      // Issue #9547: the compaction allocates the id of the file it writes from this node's file manager, so it must not
+      // start before every entry committed ahead of this term has been applied here, and its entries must not be
+      // appended in any other term. Deferred rather than waited for: it runs again on the next schedule. Bound inside
+      // the try so the finally always ends the binding.
+      sessionTerm = bindSchemaSessionToTerm(false);
+      if (sessionTerm == NOT_A_READY_LEADER) {
+        HALog.log(this, HALog.DETAILED,
+            "Skipping compaction for database '%s' because this node is not a ready leader; will retry on next schedule",
+            getName());
+        return false;
+      }
+
       // #5443: remember how long every paginated file is BEFORE the compaction, so the pages it appends
       // to already-existing files can be shipped afterwards (see the loop below).
       final Map<Integer, Integer> pageCountsBefore = snapshotPageCounts();
