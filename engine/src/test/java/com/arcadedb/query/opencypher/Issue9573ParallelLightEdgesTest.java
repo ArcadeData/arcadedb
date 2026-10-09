@@ -117,6 +117,30 @@ class Issue9573ParallelLightEdgesTest extends TestHelper {
   }
 
   @Test
+  void twinsStayCountedAfterADeleteAndAnAppendReorderTheLists() {
+    final MutableVertex[] ends = new MutableVertex[2];
+    database.transaction(() -> {
+      ends[0] = database.newVertex("P").save();
+      ends[1] = database.newVertex("P").save();
+      ends[0].newLightEdge("K", ends[1]);
+      ends[0].newLightEdge("K", ends[1]);
+      ends[0].newLightEdge("K", ends[1]);
+    });
+    // drop one copy, then add one back: the entries of the two lists are no longer in the order they were appended
+    database.transaction(() -> {
+      final MutableVertex a = database.lookupByRID(ends[0].getIdentity(), true).asVertex().modify();
+      a.getEdges(com.arcadedb.graph.Vertex.DIRECTION.OUT, "K").iterator().next().delete();
+      a.newLightEdge("K", database.lookupByRID(ends[1].getIdentity(), true).asVertex());
+    });
+    assertThat(count("MATCH (x:P)-[r1:K]->(y:P) WITH * RETURN count(*) AS n")).isEqualTo(3L);
+    assertThat(count("MATCH (x:P)<-[r1:K]-(y:P) WITH * RETURN count(*) AS n")).isEqualTo(3L);
+    assertThat(count("MATCH (x:P)-[r1:K]->(y:P)<-[r2:K]-(z:P) WITH * RETURN count(*) AS n")).isEqualTo(6L);
+    assertThat(count("MATCH (x:P)-[r1:K]->(y:P)-[r2:K]->(z:P) WITH * RETURN count(*) AS n")).isEqualTo(0L);
+    // three copies between a and b: ordered pairs of distinct copies, from either end = 3 * 2 * 2
+    assertThat(count("MATCH (x:P)-[r1:K]-(y:P)-[r2:K]-(z:P) WITH * RETURN count(*) AS n")).isEqualTo(12L);
+  }
+
+  @Test
   void aSingleLightEdgeIsStillNotReused() {
     database.transaction(() -> {
       final MutableVertex a = database.newVertex("P").save();

@@ -44,15 +44,15 @@ import java.util.concurrent.atomic.AtomicInteger;
  * <p>
  * The bucket and offset are unchanged from what the edge-list chunk holds, so this class costs <b>nothing on disk</b>:
  * {@link com.arcadedb.graph.MutableEdgeSegment} writes {@link #getBucketId()} and {@link #getPosition()} exactly as
- * before. It also costs nothing extra in allocations - it replaces the throwaway marker RID that the traversal path
- * already built for every lightweight edge it materialised.
+ * before. It replaces the throwaway marker RID that the traversal path already built for every lightweight edge it
+ * materialised, and adds to it only the origin of the entry (a reference and two ints) and the cached occurrence.
  *
  * <p>
  * Two lightweight edges of one type over the same ordered pair - an application mistake the <code>UNIQUE</code> flag
  * exists to prevent - are two entries in the edge lists and, to a query, two relationships (issue #9573). They share
  * this triple, so {@link #equals} cannot tell them apart and must not (the triple is also how one is located to be
  * deleted). What can is the <b>occurrence</b>: how many entries with the same triple precede this one in the edge list
- * it was read from. An iterator that reads an edge off a list records where (segment, position) at no cost; the
+ * it was read from. An iterator that reads an edge off a list records where (segment, position) for a few bytes; the
  * occurrence itself is resolved lazily, by re-walking the list, and only when {@link EdgeIdentitySet} meets a second
  * edge with the same triple - which is when the question "same entry or its twin?" has to be answered.
  *

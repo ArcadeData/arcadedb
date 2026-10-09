@@ -53,6 +53,8 @@ public class PatternPredicateExpression implements BooleanExpression {
   private final PathPattern pathPattern;
   private final boolean isNegated;
   private final String patternText;
+  // THE PATTERN NEVER CHANGES, SO WHETHER IT IS A PARENTHESIZED VARIABLE IS DECIDED ONCE
+  private final boolean parenthesizedVariable;
 
   public PatternPredicateExpression(final PathPattern pathPattern, final boolean isNegated) {
     this(pathPattern, isNegated, null);
@@ -62,11 +64,12 @@ public class PatternPredicateExpression implements BooleanExpression {
     this.pathPattern = pathPattern;
     this.isNegated = isNegated;
     this.patternText = patternText;
+    this.parenthesizedVariable = computeParenthesizedVariable(pathPattern);
   }
 
   @Override
   public Object evaluateTernary(final Result result, final CommandContext context) {
-    if (isParenthesizedVariable()) {
+    if (parenthesizedVariable) {
       final Boolean value = evaluateParenthesizedVariable(result);
       if (value == null)
         return null;
@@ -77,7 +80,7 @@ public class PatternPredicateExpression implements BooleanExpression {
 
   @Override
   public boolean evaluate(final Result result, final CommandContext context) {
-    if (isParenthesizedVariable())
+    if (parenthesizedVariable)
       return Boolean.TRUE.equals(evaluateTernary(result, context));
 
     // Pattern predicates check if a pattern exists
@@ -92,7 +95,7 @@ public class PatternPredicateExpression implements BooleanExpression {
    * {@code name} is a graph entity (not a predicate) or a value (a parenthesized expression) is known only from what
    * the row binds it to (issue #9542). The semantic validator already refused the cases it can prove are entities.
    */
-  private boolean isParenthesizedVariable() {
+  private static boolean computeParenthesizedVariable(final PathPattern pathPattern) {
     if (pathPattern == null || !pathPattern.isSingleNode())
       return false;
     // (n:Label) and (n {prop: 1}) say something about a node: they are patterns, never a parenthesized variable

@@ -42,8 +42,9 @@ import java.util.Set;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class EdgeIdentitySet {
-  private final RidHashSet           recordBacked = new RidHashSet();
-  private       Map<RID, LightUsage> recordLess;
+  private final RidHashSet      recordBacked = new RidHashSet();
+  // A TRIPLE MAPS TO THE RID OF ITS ONLY EDGE, OR TO A LightUsage ONCE A SECOND EDGE WITH THE SAME TRIPLE ARRIVED
+  private       Map<RID, Object> recordLess;
 
   /**
    * @return true if the set did not already contain the edge
@@ -54,12 +55,19 @@ public class EdgeIdentitySet {
 
     if (recordLess == null)
       recordLess = new HashMap<>();
-    final LightUsage usage = recordLess.get(edgeRID);
-    if (usage == null) {
-      recordLess.put(edgeRID, new LightUsage(edgeRID));
+    final Object held = recordLess.get(edgeRID);
+    if (held == null) {
+      recordLess.put(edgeRID, edgeRID);
       return true;
     }
-    return usage.add(edgeRID);
+    if (held instanceof LightUsage usage)
+      return usage.add(edgeRID);
+
+    final LightUsage usage = new LightUsage((RID) held);
+    final boolean added = usage.add(edgeRID);
+    if (added)
+      recordLess.put(edgeRID, usage);
+    return added;
   }
 
   public boolean contains(final RID edgeRID) {
@@ -68,15 +76,17 @@ public class EdgeIdentitySet {
 
     if (recordLess == null)
       return false;
-    final LightUsage usage = recordLess.get(edgeRID);
-    return usage != null && usage.contains(edgeRID);
+    final Object held = recordLess.get(edgeRID);
+    if (held == null)
+      return false;
+    return held instanceof LightUsage usage ? usage.contains(edgeRID) : LightEdgeRID.isSameEdge((RID) held, edgeRID);
   }
 
   public int size() {
     int size = recordBacked.size();
     if (recordLess != null)
-      for (final LightUsage usage : recordLess.values())
-        size += usage.size();
+      for (final Object held : recordLess.values())
+        size += held instanceof LightUsage usage ? usage.size() : 1;
     return size;
   }
 
