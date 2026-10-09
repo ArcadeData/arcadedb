@@ -609,6 +609,9 @@ public abstract class ContainersTestTemplate {
             -Darcadedb.server.restoreImportAllowLocalUrls=true
             """, name, quorum, serverList))
         .withEnv("ARCADEDB_OPTS_MEMORY", memoryOpts)
+        // Issue #9549: an OutOfMemoryError heap dump goes to the bind-mounted ./target/logs/<name>, which the CI jobs
+        // upload, instead of the image's anonymous log volume, where it was lost with the container
+        .withEnv("ARCADEDB_HEAP_DUMP_DIR", "/home/arcadedb/logs")
         .withCreateContainerCmdModifier(cmd -> cmd.getHostConfig().withMemory(containerMemoryBytes))
         .waitingFor(Wait.forHttp("/api/v1/health").forPort(2480).forStatusCode(204));
     containers.add(container);
