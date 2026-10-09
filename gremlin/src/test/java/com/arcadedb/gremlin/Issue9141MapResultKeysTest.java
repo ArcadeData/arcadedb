@@ -27,7 +27,9 @@ import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -114,7 +116,7 @@ class Issue9141MapResultKeysTest {
   @Test
   void threeKeysThatPrintAlikeAreAllKept() {
     final Result result = run("g.V().has('name',within('a','b','d')).groupCount().by('val')").get(0);
-    assertThat(result.getPropertyNames()).containsExactlyInAnyOrder("1", "1:Long", "1:String");
+    assertThat(result.getPropertyNames()).containsExactlyInAnyOrder("1:Integer", "1:Long", "1:String");
   }
 
   @Test
@@ -125,6 +127,28 @@ class Issue9141MapResultKeysTest {
     assertThat(result.<String>getProperty("@type")).isEqualTo("person");
     assertThat(result.<String>getProperty("@rid:String")).isEqualTo("mine");
     assertThat(result.<String>getProperty("@rid")).startsWith("#");
+  }
+
+  @Test
+  void typedKeyNamesDoNotDependOnTheOrderOfTheEntries() {
+    final Map<Object, Object> forward = new LinkedHashMap<>();
+    forward.put(1, "int");
+    forward.put(1L, "long");
+    final Map<Object, Object> reversed = new LinkedHashMap<>();
+    reversed.put(1L, "long");
+    reversed.put(1, "int");
+
+    for (final Map<Object, Object> map : List.of(forward, reversed)) {
+      final Result result = ArcadeGremlin.mapToResult(map);
+      assertThat(result.<String>getProperty("1:Integer")).isEqualTo("int");
+      assertThat(result.<String>getProperty("1:Long")).isEqualTo("long");
+      assertThat(result.getPropertyNames()).hasSize(2);
+    }
+
+    // A KEY THAT PRINTS ALONE KEEPS ITS PLAIN NAME
+    final Map<Object, Object> single = new LinkedHashMap<>();
+    single.put(1L, "long");
+    assertThat(ArcadeGremlin.mapToResult(single).<String>getProperty("1")).isEqualTo("long");
   }
 
   @Test
