@@ -58,7 +58,7 @@ public final class FloatingKeyBound {
    * True when {@code bound} is a number the floating point key type {@code keyType} cannot hold: an integer past the range a
    * double (2^53) or a float (2^24) holds exactly, or a {@code BigDecimal} that is not exactly a double (a float). A {@code Double}
    * or {@code Float} bound is not: it is read as the key it narrows to, on both sides (issue #8882). Allocates nothing for an
-   * integer or a floating point bound.
+   * integer or a floating point bound; a {@code BigDecimal} bound allocates its decimal reading of the key.
    */
   public static boolean isLossy(final byte keyType, final Object bound) {
     if (!isFloating(keyType))
