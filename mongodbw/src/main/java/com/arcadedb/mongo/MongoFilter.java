@@ -22,6 +22,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.parser.Identifier;
@@ -61,7 +62,7 @@ import java.util.regex.PatternSyntaxException;
  * answer a document whose {@code _id} is the string {@code "1"}. Only an empty filter is answered by SQL alone.
  * <p>
  * A field other than the {@code _id} narrows the candidates too, but only where SQL provably cannot answer narrower than the matcher
- * (issue #9162): a field whose declared type is a scalar, so that no array is stored in it, compared with an operand of that
+ * (issue #9162): a field that an index starts with and whose declared type is a scalar, so that no array is stored in it, compared with an operand of that
  * kind by equality, {@code $in} or (for an integer field) a range. SQL then only coerces more values to equal, and a secondary index
  * on the field answers the lookup, which keeps a bulk upsert by a unique key from being O(n^2). A field the schema does not declare
  * is never narrowed, whatever index it has: an array stored in it is invisible to the index and to a SQL comparison, and an index
@@ -239,7 +240,7 @@ final class MongoFilter {
         }
       } else if (!key.startsWith("$") && !"_id".equals(key) && key.indexOf('.') < 0) {
         final Property property = type.getPolymorphicPropertyIfExists(key);
-        if (property != null && narrowingType(property.getType())) {
+        if (property != null && narrowingType(property.getType()) && leadsAnIndex(type, key)) {
           final Document operators = narrowingOperators(property.getType(), operand);
           if (operators != null)
             conjuncts.add(new Document(key, operators));
@@ -249,6 +250,18 @@ final class MongoFilter {
     if (conjuncts.isEmpty())
       return null;
     return conjuncts.size() == 1 && conjuncts.getFirst() instanceof Document single ? single : new Document("$and", conjuncts);
+  }
+
+  /**
+   * Whether an index of the type starts with the field: only then does SQL narrow the candidates, a comparison without an index is a
+   * scan of the type like the matcher's own, so it would gain nothing and only expose a record that does not hold the declared type
+   * (stored before the property was declared) to being missed.
+   */
+  private static boolean leadsAnIndex(final DocumentType type, final String field) {
+    for (final TypeIndex index : type.getAllIndexes(true))
+      if (field.equals(index.getPropertyNames().getFirst()))
+        return true;
+    return false;
   }
 
   /**
