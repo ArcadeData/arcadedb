@@ -652,6 +652,9 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
     // provider would silently produce wrong results (issue #9240).
     if (relTypes != null && relTypes.length != 0)
       return null;
+    // A view serves the committed graph only: refused while this transaction holds changes, as the registry lookup above
+    if (GraphTraversalProviderRegistry.isWithheld(db))
+      return null;
     // Coverage checked before readiness: coversEdgeType() is a pure config check, while a
     // GraphAnalyticalView's isReady() (see #6641) dispatches its deferred restore-from-disk as a
     // side effect when one is pending. Checking coverage first means a whole-graph algorithm only

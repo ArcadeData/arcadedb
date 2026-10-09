@@ -118,6 +118,31 @@ class AbstractAlgoProcedureFindProviderTest {
     assertThat(new Probe().find(database, null)).isSameAs(provider);
   }
 
+  /**
+   * A view serves the committed graph only, so the whole-graph fallback must refuse it while the calling transaction holds
+   * changes, as the registry lookup in front of it does: the algorithm would otherwise miss the transaction's own writes.
+   */
+  @Test
+  void aWholeGraphLookupRefusesAViewWhileTheTransactionHoldsChanges() {
+    final FinishesAfterTheFirstAsk provider = new FinishesAfterTheFirstAsk() {
+      @Override
+      public boolean isReady() {
+        return true;
+      }
+    };
+    GraphTraversalProviderRegistry.register(database, provider);
+    database.getSchema().createVertexType("Person");
+
+    database.begin();
+    try {
+      database.newVertex("Person").save();
+      assertThat(new Probe().find(database, null)).as("uncommitted vertex").isNull();
+    } finally {
+      database.rollback();
+    }
+    assertThat(new Probe().find(database, null)).as("nothing pending").isSameAs(provider);
+  }
+
   /** Exposes the protected lookup. */
   private static final class Probe extends AbstractAlgoProcedure {
     GraphTraversalProvider find(final Database db, final String[] relTypes) {
