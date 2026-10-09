@@ -8785,8 +8785,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // A download that is running owns the floor: it clears it when it lands, or re-arms it when it fails. Lifting the
     // floor under it would let the download's own completion record positions this override did not decide.
     if (snapshotDownloadInProgress.get() || !snapshotDownloadLock.tryLock())
-      throw new IllegalStateException("a snapshot download is running on this node, and it either fills the gap or "
-          + "leaves the read floor in place: retry once it has finished");
+      throw new IllegalStateException("a snapshot download or install is running on this node, and it either fills the "
+          + "gap or leaves the read floor in place: retry once it has finished");
     final StaleSnapshotAcceptance acceptance;
     try {
       synchronized (appliedIndexFileLock) {
@@ -8800,20 +8800,37 @@ public class ArcadeStateMachine extends BaseStateMachine {
         final long accepted = Math.max(snapshotIndex, globalAppliedIndex);
 
         final long previousGlobal = globalAppliedIndex;
-        final Map<String, Long> previousByDb = new HashMap<>(appliedIndexByDb);
-        globalAppliedIndex = accepted;
-        if (server != null)
-          for (final String dbName : server.getDatabaseNames())
-            if (!divergedDatabases.containsKey(dbName) && !staleDatabaseAppliedFloors.containsKey(dbName))
-              appliedIndexByDb.merge(dbName, accepted, Math::max);
-        if (!persistAppliedIndexFile()) {
-          globalAppliedIndex = previousGlobal;
-          appliedIndexByDb.clear();
-          appliedIndexByDb.putAll(previousByDb);
+        // Only the entries this override moves are remembered, so a rollback puts back exactly those: the per-database
+        // map is read without the lock, and clearing it to restore a copy would show those readers an empty map
+        final Map<String, Long> previousByDb = new HashMap<>();
+        boolean persisted = false;
+        try {
+          globalAppliedIndex = accepted;
+          if (server != null)
+            for (final String dbName : server.getDatabaseNames())
+              if (!divergedDatabases.containsKey(dbName) && !staleDatabaseAppliedFloors.containsKey(dbName)) {
+                final Long previousPosition = appliedIndexByDb.get(dbName);
+                if (previousPosition == null || previousPosition < accepted) {
+                  previousByDb.put(dbName, previousPosition != null ? previousPosition : -1L);
+                  appliedIndexByDb.put(dbName, accepted);
+                }
+              }
+          persisted = persistAppliedIndexFile();
+        } finally {
+          if (!persisted) {
+            // Whatever stopped the write - a refused rename or anything thrown on the way - nothing is lifted
+            globalAppliedIndex = previousGlobal;
+            for (final Map.Entry<String, Long> entry : previousByDb.entrySet())
+              if (entry.getValue() < 0)
+                appliedIndexByDb.remove(entry.getKey());
+              else
+                appliedIndexByDb.put(entry.getKey(), entry.getValue());
+          }
+        }
+        if (!persisted)
           throw new IOException("the change could not be written to " + getAppliedIndexFile()
               + ", so the read floor would come back at the next restart: check that the .raft directory is writable "
               + "and has free space");
-        }
         // Accumulate rather than set, as the resync does: the apply thread may already have gone past the marker
         lastAppliedIndex.accumulateAndGet(accepted, Math::max);
         // The queued download the gap armed has nothing left to fill: dropped, or the node stays "resync queued"

@@ -197,7 +197,7 @@ class Issue9498AcceptStaleSnapshotFloorTest {
     try {
       assertThatThrownBy(() -> RaftHAPlugin.acceptStaleSnapshot(sm, true, SERVER, "user 'root'"))
           .isInstanceOf(ServerControlPlane.OperationNotAvailableException.class)
-          .hasMessageContaining("download is running");
+          .hasMessageContaining("is running");
       assertThat(sm.getStaleSnapshotAppliedFloor()).isEqualTo(PERSISTED_APPLIED);
       assertThat(sm.readPersistedAppliedIndex()).isEqualTo(PERSISTED_APPLIED);
     } finally {
@@ -226,6 +226,32 @@ class Issue9498AcceptStaleSnapshotFloorTest {
     assertThat(sm.readPersistedAppliedIndex()).as("the in-memory position is put back").isEqualTo(PERSISTED_APPLIED);
     assertThat(sm.readPersistedAppliedIndex(HEALTHY_DB)).isEqualTo(PERSISTED_APPLIED);
     assertThat(raft.calls("notifyApplied")).isEmpty();
+  }
+
+  /**
+   * The rollback puts back exactly what the override moved: a database that had a position gets it back, and one that had
+   * none is not left with the accepted one.
+   */
+  @Test
+  void aFailedWritePutsBackEveryPerDatabasePosition() throws Exception {
+    sm.close();
+    sm = newStateMachine(Set.of(HEALTHY_DB, "fresh9498"));
+    sm.initialize(stubRaftServer(), RaftGroupId.valueOf(UUID.randomUUID()), raftStorage);
+    sm.setRaftHAServer(raft);
+    assertThat(sm.getStaleSnapshotAppliedFloor()).isEqualTo(PERSISTED_APPLIED);
+
+    final Path file = root.resolve("databases").resolve(".raft").resolve("applied-index");
+    Files.delete(file);
+    Files.createDirectories(file);
+    Files.writeString(file.resolve("blocker"), "x");
+
+    assertThatThrownBy(() -> RaftHAPlugin.acceptStaleSnapshot(sm, true, SERVER, "user 'root'"))
+        .isInstanceOf(IOException.class);
+
+    assertThat(sm.getStaleSnapshotAppliedFloor()).isEqualTo(PERSISTED_APPLIED);
+    assertThat(sm.readPersistedAppliedIndex()).isEqualTo(PERSISTED_APPLIED);
+    assertThat(sm.readPersistedAppliedIndex(HEALTHY_DB)).isEqualTo(PERSISTED_APPLIED);
+    assertThat(sm.readPersistedAppliedIndex("fresh9498")).as("a database with no position is not given one").isEqualTo(-1L);
   }
 
   /**
