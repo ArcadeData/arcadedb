@@ -850,7 +850,9 @@ public class ArcadeDBServer {
     try {
       recordLifecycleOwner();
       stopInternal();
-      // Only after a stop that completed: the databases are closed, so the hook has nothing left to order (issue #9548)
+      // Only after a stop that completed: the databases are closed, so the hook has nothing left to order (issue #9548).
+      // A stopInternal() that throws skips this on purpose and leaves the hook in place: whatever it failed to close is
+      // still the hook's to close at the JVM exit, in its order.
       removeShutdownHook();
     } finally {
       clearLifecycleOwner();
@@ -858,35 +860,6 @@ public class ArcadeDBServer {
     }
   }
 
-  /**
-   * Stops the server from the JVM shutdown hook, and NEVER blocks the JVM from exiting (issue #5418).
-   * <p>
-   * A shutdown hook that waits unconditionally for the lifecycle mutex can hang the process for good.
-   * The observed path: {@link #start()} holds the mutex while Apache Ratis tries to bind its gRPC port;
-   * if the port is taken, Ratis reports the failure by calling {@code System.exit()} from that very
-   * thread. {@code System.exit()} runs the shutdown hooks and waits for them, so the starting thread is
-   * now parked inside {@code Shutdown.exit()} still holding the mutex, while this hook waits for a mutex
-   * that can never be released - a deadlock in which the JVM cannot exit and only SIGKILL ends it. Any
-   * startup port conflict was enough to trigger it.
-   * <p>
-   * So the wait is bounded, and the bound depends on what the mutex holder is likely doing - see
-   * {@link ShutdownHookBound} and {@link #chooseShutdownHookBound} (issue #7025):
-   * <ul>
-   *   <li>the holder is parked inside {@code System.exit()}: it is waiting for this hook and can never
-   *       release the mutex, so there is nothing to wait for at all;</li>
-   *   <li>{@code STARTING} with no database open yet: nothing worth flushing, so wait only briefly, for
-   *       the benign race where a concurrent start is about to finish;</li>
-   *   <li>anything else - databases are open, even though the status may still read {@code STARTING}
-   *       because {@code loadDatabases()} runs long before the HTTP service, the plugins and the HA
-   *       bring-up - a legitimate concurrent {@code stop()} may be flushing them, and so may the tail of a
-   *       {@code start()} that has not released the mutex yet. Cutting that short would cost a WAL
-   *       recovery on every open database at the next start (the #7025 report: a liveness probe killing
-   *       a pod mid-start left three databases to replay their WAL on every restart, each one slower than
-   *       the last). Wait up to {@code arcadedb.server.shutdownTimeout}.</li>
-   * </ul>
-   * If the mutex never arrives, the databases are left as they are: the next open replays the WAL,
-   * exactly as after a kill. That is strictly better than a process that cannot be stopped.
-   */
   /** The JVM shutdown hook this server registered, which the engine's own hook waits for (issue #9548). */
   // @VisibleForTesting
   Thread getShutdownHook() {
@@ -921,7 +894,7 @@ public class ArcadeDBServer {
   }
 
   /**
-   * Takes the shutdown hook away once a {@link #stop()} has closed the databases (review of PR #9551): the hook has
+   * Takes the shutdown hook away once a {@link #stop()} has closed the databases (issue #9548): the hook has
    * nothing left to do, and an embedder or a test suite that creates and stops many servers would otherwise keep one
    * hook - and the whole server it captures - per instance for the life of the JVM. Once the JVM is shutting down the
    * runtime refuses the removal, and the hook stays registered with the engine too: a stop running on another thread
@@ -942,6 +915,35 @@ public class ArcadeDBServer {
     }
   }
 
+  /**
+   * Stops the server from the JVM shutdown hook, and NEVER blocks the JVM from exiting (issue #5418).
+   * <p>
+   * A shutdown hook that waits unconditionally for the lifecycle mutex can hang the process for good.
+   * The observed path: {@link #start()} holds the mutex while Apache Ratis tries to bind its gRPC port;
+   * if the port is taken, Ratis reports the failure by calling {@code System.exit()} from that very
+   * thread. {@code System.exit()} runs the shutdown hooks and waits for them, so the starting thread is
+   * now parked inside {@code Shutdown.exit()} still holding the mutex, while this hook waits for a mutex
+   * that can never be released - a deadlock in which the JVM cannot exit and only SIGKILL ends it. Any
+   * startup port conflict was enough to trigger it.
+   * <p>
+   * So the wait is bounded, and the bound depends on what the mutex holder is likely doing - see
+   * {@link ShutdownHookBound} and {@link #chooseShutdownHookBound} (issue #7025):
+   * <ul>
+   *   <li>the holder is parked inside {@code System.exit()}: it is waiting for this hook and can never
+   *       release the mutex, so there is nothing to wait for at all;</li>
+   *   <li>{@code STARTING} with no database open yet: nothing worth flushing, so wait only briefly, for
+   *       the benign race where a concurrent start is about to finish;</li>
+   *   <li>anything else - databases are open, even though the status may still read {@code STARTING}
+   *       because {@code loadDatabases()} runs long before the HTTP service, the plugins and the HA
+   *       bring-up - a legitimate concurrent {@code stop()} may be flushing them, and so may the tail of a
+   *       {@code start()} that has not released the mutex yet. Cutting that short would cost a WAL
+   *       recovery on every open database at the next start (the #7025 report: a liveness probe killing
+   *       a pod mid-start left three databases to replay their WAL on every restart, each one slower than
+   *       the last). Wait up to {@code arcadedb.server.shutdownTimeout}.</li>
+   * </ul>
+   * If the mutex never arrives, the databases are left as they are: the next open replays the WAL,
+   * exactly as after a kill. That is strictly better than a process that cannot be stopped.
+   */
   // @VisibleForTesting
   void stopFromShutdownHook() {
     // Snapshot the status once: start() can flip it STARTING -> ONLINE while still holding the

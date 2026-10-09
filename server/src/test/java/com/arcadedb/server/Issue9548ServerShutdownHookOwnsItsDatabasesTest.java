@@ -48,7 +48,7 @@ class Issue9548ServerShutdownHookOwnsItsDatabasesTest {
   }
 
   /**
-   * Review of PR #9551: a stopped server has closed its databases, so its hook has nothing left to order. Left in place,
+   * A stopped server has closed its databases, so its hook has nothing left to order. Left in place,
    * the runtime and the engine's registry would keep one hook, and the whole server it captures, per instance created in
    * the JVM. A start() of the same instance puts it back.
    */
