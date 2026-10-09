@@ -170,6 +170,24 @@ class Issue9141MapResultKeysTest {
   }
 
   @Test
+  void aNullKeyThatCollidesIsKept() {
+    final Map<Object, Object> map = new LinkedHashMap<>();
+    map.put(null, "nothing");
+    map.put("null", "text");
+    final Result result = ArcadeGremlin.mapToResult(map);
+    assertThat(result.<String>getProperty("null:null")).isEqualTo("nothing");
+    assertThat(result.<String>getProperty("null:String")).isEqualTo("text");
+  }
+
+  @Test
+  void collisionsWithNullValuesAreDetected() {
+    final Map<Object, Object> map = new LinkedHashMap<>();
+    map.put(1, null);
+    map.put(1L, null);
+    assertThat(ArcadeGremlin.mapToResult(map).getPropertyNames()).containsExactlyInAnyOrder("1:Integer", "1:Long");
+  }
+
+  @Test
   void aNullKeyIsAnswered() {
     final List<Result> results = run("g.V().hasLabel('person').group().by(constant(null)).by(count())");
     assertThat(results).hasSize(1);

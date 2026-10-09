@@ -214,6 +214,18 @@ public class ArcadeGremlin extends ArcadeQuery {
    * </ul>
    */
   static ResultInternal mapToResult(final Map<Object, Object> originalMap) {
+    // FAST PATH, THE COMMON CASE: NO TWO KEYS SHARE A NAME, SO ONE PASS AND NO EXTRA ALLOCATION
+    final Map<String, Object> flat = new LinkedHashMap<>(originalMap.size());
+    int processed = 0;
+    for (final Map.Entry<Object, Object> entry : originalMap.entrySet()) {
+      final Object originalKey = entry.getKey();
+      flat.put(originalKey == T.id ? RID_KEY : originalKey == T.label ? TYPE_KEY : String.valueOf(originalKey), entry.getValue());
+      if (flat.size() != ++processed)
+        break;
+    }
+    if (flat.size() == originalMap.size() && processed == originalMap.size())
+      return new ResultInternal(flat);
+
     final Map<String, Object> result = new LinkedHashMap<>(originalMap.size());
 
     // THE TOKENS TAKE THEIR RESERVED NAMES FIRST, SO NOTHING ELSE CAN DISPLACE THEM
@@ -232,7 +244,6 @@ public class ArcadeGremlin extends ArcadeQuery {
     }
     // A NAME PRINTED BY SEVERAL KEYS (OR BY A RESERVED ONE) IS GIVEN TO NONE OF THEM BARE, SO THE NAME OF A KEY DOES NOT DEPEND ON
     // THE ORDER OF THE ENTRIES: 1 AND 1L ARE ALWAYS "1:Integer" AND "1:Long"
-
     for (final Map.Entry<Object, Object> entry : originalMap.entrySet()) {
       final Object originalKey = entry.getKey();
       if (originalKey == T.id || originalKey == T.label)
