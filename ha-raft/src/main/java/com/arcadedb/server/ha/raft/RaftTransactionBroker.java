@@ -105,6 +105,12 @@ public class RaftTransactionBroker {
 
   /**
    * Replicates schema changes (file additions/removals, schema JSON, embedded WAL entries).
+   * <p>
+   * Every {@code SCHEMA_ENTRY} - this method, the instalments and the sealed slices - must be submitted by the LEADER, from
+   * inside a schema session {@code RaftReplicatedDatabase} has bound to the current Raft term ({@code recordFileChanges} or
+   * {@code runWithCompactionReplication}). The leader refuses any other before appending it (issue #9547, see
+   * {@code ArcadeStateMachine.staleSchemaProposalRefusal}): one from another node's client, or one of its own outside a
+   * session bound to the current term. A new producer that does not fit has to be designed against that rule, not around it.
    */
   public void replicateSchema(final String dbName, final String schemaJson,
       final Map<Integer, String> filesToAdd, final Map<Integer, String> filesToRemove,

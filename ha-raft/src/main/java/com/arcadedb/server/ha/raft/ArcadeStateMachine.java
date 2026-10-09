@@ -57,8 +57,10 @@ import com.arcadedb.server.security.SecurityGroupFileRepository;
 import com.arcadedb.server.security.SecurityUserFileRepository;
 import com.arcadedb.utility.DedicatedThreadPool.PoolStats;
 import com.arcadedb.utility.FileUtils;
+import org.apache.ratis.client.RaftClient;
 import org.apache.ratis.proto.RaftProtos;
 import org.apache.ratis.proto.RaftProtos.LogEntryProto;
+import org.apache.ratis.protocol.ClientId;
 import org.apache.ratis.protocol.Message;
 import org.apache.ratis.protocol.RaftClientRequest;
 import org.apache.ratis.protocol.RaftGroupId;
@@ -550,6 +552,20 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * it was before the check existed. Only ever moves forward.
    */
   private final ConcurrentHashMap<String, AtomicLong> lastSchemaChangeIndex = new ConcurrentHashMap<>();
+
+  /**
+   * Per database, the Raft term the schema session currently open on this leader was bound to (issue #9547): the DDL or
+   * compaction whose {@code SCHEMA_ENTRY} may be appended right now. Registered by
+   * {@code RaftReplicatedDatabase} once it holds the database's file recording session, which is exclusive per database,
+   * so there is at most one entry per name. {@link #startTransaction} refuses a schema entry this node submitted when no
+   * session is bound for its database, or when the binding is to a term that is no longer the current one.
+   * <p>
+   * The file ids a session allocates come from this node's own {@code FileManager}, so they are only safe to publish in
+   * the term whose committed history that file manager already reflected when the session began. An entry the Ratis
+   * client resends after a leadership change, landing on this node again once it is re-elected, would otherwise be
+   * appended after a colliding allocation the interim leader committed, and every node would hold one of the two files.
+   */
+  private final ConcurrentHashMap<String, Long> schemaSessionTerms = new ConcurrentHashMap<>();
 
   // Wall-clock of the END of the last leadership hand-off attempted by handOffLeadershipWhileReplacingDatabase(); 0 =
   // none yet. Throttles the retry of a hand-off that failed, so a cluster with no eligible peer is not put through an
@@ -1331,14 +1347,30 @@ public class ArcadeStateMachine extends BaseStateMachine {
    */
   @Override
   public TransactionContext startTransaction(final RaftClientRequest request) throws IOException {
-    final RaftHAServer raft = this.raftHAServer;
-    final boolean isLocalOrigin = raft != null
-        && raft.getClient() != null
-        && raft.getClient().getId().equals(request.getClientId());
+    final ClientId localClientId = localClientId();
+    final boolean isLocalOrigin = localClientId != null && localClientId.equals(request.getClientId());
 
     final TransactionContext.Builder context = TransactionContext.newBuilder()
         .setStateMachine(this)
         .setClientRequest(request);
+
+    // A schema entry allocates file ids from its proposer's local file manager, so it may only enter the log from the
+    // session that allocated them, on this leader, in the term that session was bound to (issue #9547). Checked only when
+    // the origin of the request can be told at all: with no client of our own there is nothing to compare against.
+    final ByteString content = request.getMessage() != null ? request.getMessage().getContent() : null;
+    if (localClientId != null && content != null && !content.isEmpty()
+        && RaftLogEntryType.fromId(content.byteAt(0)) == RaftLogEntryType.SCHEMA_ENTRY) {
+      final NeedRetryException refusal;
+      try {
+        refusal = staleSchemaProposalRefusal(RaftLogEntryCodec.peekDatabaseName(content), isLocalOrigin);
+      } catch (final RuntimeException e) {
+        return context.build().setException(e);
+      }
+      if (refusal != null) {
+        LogManager.instance().log(this, Level.WARNING, "%s", refusal.getMessage());
+        return context.build().setException(refusal);
+      }
+    }
 
     // A transaction entry is validated here against the page versions the log has assigned so far (issue #6965):
     // one validated on its originating node against a version the log has already moved past is refused before Ratis
@@ -1347,7 +1379,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // refusal thrown from preAppendTransaction, by contrast, leaks the leader's pending-write permit in Ratis 3.3.0,
     // and enough of them would wedge the leader for good. An accepted entry reserves its versions, so the next entry
     // on the same pages is checked against them rather than against a local copy that has not caught up yet.
-    final ByteString data = request.getMessage() != null ? request.getMessage().getContent() : null;
+    final ByteString data = content;
     if (data == null || data.isEmpty() || RaftLogEntryType.fromId(data.byteAt(0)) != RaftLogEntryType.TX_ENTRY)
       return context.setStateMachineContext(isLocalOrigin ? Boolean.TRUE : null).build();
 
@@ -1436,6 +1468,92 @@ public class ArcadeStateMachine extends BaseStateMachine {
     }
 
     return context.setStateMachineContext(new AppendedEntry(isLocalOrigin, decoded, entryId, pages)).build();
+  }
+
+  /**
+   * Why the leader must not append a {@code SCHEMA_ENTRY} for {@code databaseName}, or {@code null} when it may (issue
+   * #9547).
+   * <p>
+   * Every producer of a schema entry - a DDL through {@code recordFileChanges}, an index or TimeSeries compaction through
+   * {@code runWithCompactionReplication}, and the instalments, sealed slices and retirements inside those - runs only on
+   * the leader, and allocates the ids of the files it creates from that node's own {@code FileManager}. Such an entry is
+   * therefore only valid when it is appended by the node that allocated its ids, in the term that node bound the session
+   * to. Ratis does not know that: its client resends a request it got no answer for to whichever node leads NOW. An
+   * entry an isolated leader submitted reached the next leader that way, after that leader had committed its own
+   * compaction under the same file id, and every node in the cluster then held one of the two files and quarantined
+   * the database on the other.
+   * <ul>
+   *   <li><b>Another node's entry</b> is refused outright: no node submits a schema entry unless it is the leader, so one
+   *       arriving from someone else's client is the resend of a node that lost leadership.</li>
+   *   <li><b>This node's own entry</b> is refused when no session is bound for its database (a resend that outlived its
+   *       session, or a session that could not read the term when it began) or the session was bound to an earlier term (a resend that found this node re-elected, with the
+   *       interim leader's entries committed ahead of it).</li>
+   * </ul>
+   * A resend in the SAME term is not refused here, and needs not be: one term has one leader, so it reaches the node
+   * that already has the request, whose Ratis retry cache answers it by client and call id without calling this method
+   * again. The binding is per database and term rather than per session for that reason.
+   * <p>
+   * The term is read here, before Ratis appends: if this node is deposed in between, Ratis itself refuses the append,
+   * because a leader only appends in its own term.
+   * <p>
+   * Refused before Ratis appends anything, through the context, so the entry reaches no node and costs Ratis nothing (the
+   * same channel the #6965 page-version refusal uses). The proposer sees a definite {@link NeedRetryException}: its session
+   * fails, and a DDL caller retries against the current leader.
+   */
+  // @VisibleForTesting
+  NeedRetryException staleSchemaProposalRefusal(final String databaseName, final boolean isLocalOrigin) {
+    if (!isLocalOrigin)
+      return new NeedRetryException("Refused a schema change on database '" + databaseName + "' proposed by another "
+          + "node: schema changes are only proposed by the leader, so this is the resend of a node that has lost the "
+          + "leadership, and the file ids it allocated may already name other files here. Please retry on the leader");
+
+    final Long sessionTerm = schemaSessionTerms.get(databaseName);
+    if (sessionTerm == null)
+      return new NeedRetryException("Refused a schema change on database '" + databaseName + "' proposed by this node "
+          + "that is not bound to a Raft term: either the resend of a session that has already ended, whose file ids "
+          + "may have been taken since, or a session that started while this node could not read its Raft term. Please "
+          + "retry");
+
+    final long term = currentRaftTerm();
+    if (sessionTerm != term)
+      return new NeedRetryException("Refused a schema change on database '" + databaseName + "' allocated in Raft term "
+          + sessionTerm + " while this leader is in term " + term + ": entries committed by the leaders in between can "
+          + "already use the file ids it allocated. Please retry");
+    return null;
+  }
+
+  /**
+   * Binds the schema session that has just claimed {@code databaseName}'s file recording session on this leader to
+   * {@code term} (issue #9547). See {@link #staleSchemaProposalRefusal}. Only one session per database can hold the
+   * recording session, so a previous binding left behind is replaced rather than counted.
+   */
+  void bindSchemaSession(final String databaseName, final long term) {
+    final Long previous = schemaSessionTerms.put(databaseName, term);
+    if (previous != null)
+      // Only a session that never reached its unbind leaves one behind, so the exclusivity this map relies on was broken.
+      LogManager.instance().log(this, Level.WARNING,
+          "Schema session on database '%s' replaced a binding to Raft term %d that was never ended", databaseName,
+          previous);
+  }
+
+  /** Ends the binding taken by {@link #bindSchemaSession}; a binding to another term is left alone. */
+  void unbindSchemaSession(final String databaseName, final long term) {
+    schemaSessionTerms.remove(databaseName, term);
+  }
+
+  /** The id of the Raft client this node submits its own entries through, or {@code null} when it has none yet. */
+  // @VisibleForTesting
+  ClientId localClientId() {
+    final RaftHAServer raft = this.raftHAServer;
+    final RaftClient client = raft != null ? raft.getClient() : null;
+    return client != null ? client.getId() : null;
+  }
+
+  /** The Raft term this node is in, or {@code -1} when it cannot be read. */
+  // @VisibleForTesting
+  long currentRaftTerm() {
+    final RaftHAServer raft = this.raftHAServer;
+    return raft != null ? raft.getCurrentTerm() : -1L;
   }
 
   /**
