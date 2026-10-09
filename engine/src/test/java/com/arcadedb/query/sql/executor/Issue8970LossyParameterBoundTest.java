@@ -52,6 +52,18 @@ class Issue8970LossyParameterBoundTest extends TestHelper {
       database.command("sql", "CREATE INDEX ON I (d) NOTUNIQUE");
       database.command("sql", "CREATE INDEX ON I (f) NOTUNIQUE");
       database.command("sql", "CREATE INDEX ON I (d, id) NOTUNIQUE");
+      for (final String type : new String[] { "C", "CN" }) {
+        database.command("sql", "CREATE VERTEX TYPE " + type);
+        database.command("sql", "CREATE PROPERTY " + type + ".id INTEGER");
+        database.command("sql", "CREATE PROPERTY " + type + ".d DOUBLE");
+      }
+      database.command("sql", "CREATE INDEX ON C (id, d) NOTUNIQUE");
+      for (final String type : new String[] { "C", "CN" }) {
+        database.command("sql", "INSERT INTO " + type + " SET id = 1, d = 9007199254740992.0");
+        database.command("sql", "INSERT INTO " + type + " SET id = 1, d = 9007199254740994.0");
+        database.command("sql", "INSERT INTO " + type + " SET id = 1, d = 0.1");
+        database.command("sql", "INSERT INTO " + type + " SET id = 2, d = 9007199254740994.0");
+      }
       for (final String type : new String[] { "H", "HN" }) {
         database.command("sql", "CREATE VERTEX TYPE " + type);
         database.command("sql", "CREATE PROPERTY " + type + ".id INTEGER");
@@ -111,6 +123,19 @@ class Issue8970LossyParameterBoundTest extends TestHelper {
         ids.add(rs.next().<Integer>getProperty("id"));
     }
     return ids;
+  }
+
+  @Test
+  void aLossyBoundOnTheSecondPropertyOfACompositeIndexAgreesWithTheUnindexedType() {
+    final Object[] bounds = { TWO_53 + 1, TWO_53 + 3, new BigDecimal("0.1") };
+    for (final Object bound : bounds)
+      for (final String operator : new String[] { "=", "<", "<=", ">", ">=" }) {
+        final String where = "id = ? AND d " + operator + " ?";
+        assertThat(sql("C", where, 1, bound)).as("C %s with %s", where, bound).isEqualTo(sql("CN", where, 1, bound));
+      }
+    assertThat(sql("C", "id = ? AND d = ?", 1, TWO_53 + 1)).isEmpty();
+    assertThat(sql("C", "id = ? AND d BETWEEN ? AND ?", 1, TWO_53 + 1, TWO_53 + 3))
+        .isEqualTo(sql("CN", "id = ? AND d BETWEEN ? AND ?", 1, TWO_53 + 1, TWO_53 + 3));
   }
 
   @Test
