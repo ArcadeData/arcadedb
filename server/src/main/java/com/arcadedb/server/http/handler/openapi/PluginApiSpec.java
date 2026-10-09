@@ -937,7 +937,7 @@ public class PluginApiSpec implements OpenApiContributor {
         which is not a replication fault; 'APPLY_ERROR' an unexpected error while applying a committed entry; \
         'SNAPSHOT_INSTALL_INCOMPLETE' an install that did not reach the snapshot's index; \
         'UNPUBLISHED_SCHEMA_CHANGE' a schema change or compaction this node ran locally whose replication was \
-        refused, so no other node holds it.""");
+        refused or could not be published, so no other node holds it.""");
     cause.setEnum(List.of("WAL_VERSION_GAP", "UNDECODABLE_LOG_ENTRY", "APPLY_ERROR", "SNAPSHOT_INSTALL_INCOMPLETE",
         "UNPUBLISHED_SCHEMA_CHANGE"));
     // Declared since issue #7741 added it to the response. The vocabulary is written out here rather than read

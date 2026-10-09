@@ -344,10 +344,21 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
      * draining the queue, or from a send Ratis rejected synchronously) and one it never queued
      * ({@code ReplicationQueueFullException}). A dispatched entry with no answer is a {@code ReplicationDispatchedTimeoutException}.
      * <p>
+     * Since issue #9558 also any other failure of an instalment's submit that is not indeterminate, such as a
+     * {@code ReplicatedEntryTooLargeException} from the splitter: it leaves the instalment's pages just as unpublished,
+     * and is deterministic rather than transient. A failure BEFORE the submit (the broker lookup) is not recorded here:
+     * nothing was announced yet, the pages are still in the buffer, and a final entry that goes out later carries them.
+     * <p>
      * Sticky: once set, the session cannot publish any more (see {@code recordFileChanges}), even if the callback
      * swallowed the exception. A plain field, because a session and its instalments run on the one thread that owns it.
      */
-    private NeedRetryException         refusal;
+    private RuntimeException           refusal;
+    /**
+     * An instalment failed with an outcome nobody knows yet ({@link #isIndeterminatePublishFailure}): its entry may
+     * still commit, so a session that then fails is NOT quarantined on the strength of pages that entry may yet carry
+     * to every node (issue #9558). A definite {@link #refusal} still is.
+     */
+    private boolean                    indeterminate;
   }
 
   /**
@@ -2437,6 +2448,12 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     // The term this session is bound to (issue #9547), or below zero while it is bound to none.
     long sessionTerm = NOT_A_READY_LEADER;
 
+    // Issue #9558: what the finally block needs to tell a session that left a change on this node only from one that did
+    // not. The failure the session ends with, and whether it ended in the callback or after it: past the callback, every
+    // failure that stops the final entry leaves the callback's change unpublished here.
+    Throwable sessionFailure = null;
+    boolean callbackReturned = false;
+
     try {
       // Before the callback allocates a single file id (issue #9547): see bindSchemaSessionToTerm. The wait for
       // readiness already happened above, outside the session. Inside the try, like the exclusive window below, so
@@ -2454,6 +2471,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       // Inside the try so a refusal to start (entries still in flight) unwinds through the finally like any failure.
       exclusiveOn = beginLeaderExclusive();
       final RET result = proxied.recordFileChanges(callback);
+      callbackReturned = true;
 
       // Issue #9555: an instalment of this session was definitely refused, and the callback went on as if it had not (it
       // swallowed the exception, or a caller between it and the instalment did). That instalment's files were already
@@ -2508,17 +2526,12 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       final int shippedInstalments = instalmentState.instalments;
       if (!addFiles.isEmpty() || !removeFiles.isEmpty() || schemaChanged || !walEntries.isEmpty()
           || shippedInstalments > 0) {
-        try {
-          final RaftHAServer raft = requireRaftServer();
-          RaftHAServer.requireTransactionBroker(raft).replicateSchema(getName(), serializedSchema, addFiles, removeFiles,
-              walEntries, bucketDeltas, Collections.emptyList(), Collections.emptyList(), schemaDelta);
-        } catch (final NeedRetryException e) {
-          // Definite: the entry is not in the log, and the callback's change is already on this node (issue #9555). The
-          // finally block quarantines the database once the session is wound down. A ReplicationDispatchedTimeoutException
-          // is not a NeedRetryException and passes through untouched: that entry may still commit.
-          instalmentState.refusal = e;
-          throw e;
-        }
+        // A failure here leaves the callback's change on this node only, and the finally block quarantines the database
+        // once the session is wound down (issue #9555 for a refusal, #9558 for an entry too large to split or a broker
+        // that is gone). A ReplicationDispatchedTimeoutException is left alone there: that entry may still commit.
+        final RaftHAServer raft = requireRaftServer();
+        RaftHAServer.requireTransactionBroker(raft).replicateSchema(getName(), serializedSchema, addFiles, removeFiles,
+            walEntries, bucketDeltas, Collections.emptyList(), Collections.emptyList(), schemaDelta);
         // Set HERE, not after the logging below: the change is published the moment that call returns, and a
         // diagnostic that threw would otherwise send the finally block into retireAbandonedInstalments to report a
         // divergence that does not exist. Harmless for on-disk state - the compensation only ever targets files
@@ -2576,19 +2589,26 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
             null, getName(), shippedInstalments, instalmentState.elapsedMs);
 
       return result;
+    } catch (final Throwable t) {
+      sessionFailure = t;
+      throw t;
     } finally {
       // Released last and in a finally of its own: this cleanup must not be able to leave the registration open, which is
       // silent and permanent (every replica write to the database is refused until the node restarts). It stays open
       // through the retire submit above, which still belongs to the exclusive operation.
       try {
-        if (!published)
+        if (!published) {
+          // Asked BEFORE the retirement and before the buffers are cleared below: what the callback committed here and
+          // never shipped is read off the buffered WAL itself (issue #9558).
+          final Throwable unpublished = unpublishedSchemaChange(instalmentState, sessionFailure, callbackReturned);
           retireAbandonedInstalments(instalmentState);
-        // After the retirement, which still needs the session bound to submit its own entry, and before the session is
-        // released, so no other session on this database can start from the diverged state first (issue #9555). Cheap
-        // to do while the session is held: the quarantine is an in-memory mark plus one small file write, and the resync
-        // and the leadership hand-off it requests are both submitted to executors rather than run here.
-        if (!published && instalmentState.refusal != null)
-          quarantineUnpublishedChange("schema change", instalmentState.refusal);
+          // After the retirement, which still needs the session bound to submit its own entry, and before the session
+          // is released, so no other session on this database can start from the diverged state first (issue #9555).
+          // Cheap to do while the session is held: the quarantine is an in-memory mark plus one small file write, and
+          // the resync and the leadership hand-off it requests are both submitted to executors rather than run here.
+          if (unpublished != null)
+            quarantineUnpublishedChange("schema change", unpublished, false);
+        }
         if (outerSchemaCommitThread == null)
           isSchemaCommitThread.remove();
         else
@@ -2695,26 +2715,112 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   }
 
   /**
-   * Quarantines this database and starts its resync because a schema session's entry was definitely refused after the
-   * session had already changed it locally (issue #9555), see
+   * Quarantines this database and starts its resync because a schema session changed it locally and the change could not
+   * be published (issue #9555 for a definite refusal, #9558 for every other failure that is not indeterminate), see
    * {@link ArcadeStateMachine#quarantineUnpublishedSchemaChange}. Never throws: it runs on the failure path of the
    * session, whose own exception is the one the caller must see.
+   * <p>
+   * A compaction that failed DETERMINISTICALLY - anything but a {@link NeedRetryException}, which the broker raises only
+   * for a transient refusal - is also held off on this node (issue #9558): the resync brings back the state the compaction
+   * started from, and the next schedule would otherwise run it again, fail again and quarantine again. A DDL is not: it
+   * runs once per request, and the caller who sees it fail is the one who decides whether to send it again.
+   *
+   * @param compaction whether the session was a compaction, which a scheduler re-runs on its own
    */
-  private void quarantineUnpublishedChange(final String session, final NeedRetryException refusal) {
+  private void quarantineUnpublishedChange(final String session, final Throwable failure, final boolean compaction) {
     try {
       final ArcadeStateMachine stateMachine = stateMachineOrNull();
-      if (stateMachine != null)
-        stateMachine.quarantineUnpublishedSchemaChange(getName(), session, refusal);
-      else
+      if (stateMachine != null) {
+        stateMachine.quarantineUnpublishedSchemaChange(getName(), session, failure);
+        // Beside the quarantine, not instead of it, and recorded whether or not the quarantine took (the only voter is
+        // not quarantined): either way the next schedule would hit the same wall
+        if (compaction && !(failure instanceof NeedRetryException))
+          stateMachine.deferCompactionAfterUnpublishableChange(getName());
+      } else
         LogManager.instance().log(this, Level.SEVERE,
-            "The %s on database '%s' was applied locally but its replication was refused (%s), and there is no Raft "
-                + "state machine to quarantine the database on: this node holds a change no other node has (issue #9555)",
-            session, getName(), refusal.getClass().getSimpleName() + ": " + refusal.getMessage());
+            "The %s on database '%s' was applied locally but could not be replicated (%s), and there is no Raft state "
+                + "machine to quarantine the database on: this node holds a change no other node has (issues #9555, #9558)",
+            session, getName(), failure.getClass().getSimpleName() + ": " + failure.getMessage());
     } catch (final RuntimeException e) {
       LogManager.instance().log(this, Level.SEVERE,
-          "Could not quarantine database '%s' after its %s was refused by the leader: this node may hold a change no "
-              + "other node has (issue #9555)", e, getName(), session);
+          "Could not quarantine database '%s' after its %s could not be replicated: this node may hold a change no "
+              + "other node has (issues #9555, #9558)", e, getName(), session);
     }
+  }
+
+  /**
+   * Whether {@code failure} leaves the outcome of its entry unknown (issue #9558): the entry was dispatched and may still
+   * commit ({@link ReplicationDispatchedTimeoutException}), or it is committed and only its local apply failed
+   * ({@link MajorityCommittedAllFailedException}). Either way the local change may be exactly what the log will say, so
+   * it must not be quarantined. The cause chain is walked because the engine code a schema session unwinds through can
+   * wrap the broker's exception (a commit inside the callback reports its instalment as a {@code TransactionException}).
+   */
+  // @VisibleForTesting
+  static boolean isIndeterminatePublishFailure(final Throwable failure) {
+    for (Throwable t = failure; t != null; t = t.getCause() == t ? null : t.getCause())
+      if (t instanceof ReplicationDispatchedTimeoutException || t instanceof MajorityCommittedAllFailedException)
+        return true;
+    return false;
+  }
+
+  /** Records an instalment's failure on its session, see {@link SchemaInstalmentState#refusal} (issues #9555, #9558). */
+  private static void recordInstalmentFailure(final SchemaInstalmentState state, final RuntimeException failure) {
+    if (isIndeterminatePublishFailure(failure))
+      state.indeterminate = true;
+    else if (state.refusal == null)
+      state.refusal = failure;
+  }
+
+  /**
+   * The failure a {@code recordFileChanges} session that did not publish must be quarantined for, or {@code null} when it
+   * left nothing on this node that the other nodes lack (issue #9558). Decided per failure class:
+   * <ul>
+   *   <li>an instalment that failed definitely ({@link SchemaInstalmentState#refusal}): always, the pages it carried are
+   *       committed here;</li>
+   *   <li>an indeterminate failure, of the session or of one of its instalments: never, its entry may still commit;</li>
+   *   <li>a failure AFTER the callback returned - the final entry refused, too large to split, the broker gone: always,
+   *       since the callback's change is complete here and the final entry is the only thing that publishes it;</li>
+   *   <li>a failure of the callback itself: only when a commit it made is still sitting unshipped in the buffer with a
+   *       page in a file this node still has. A callback that failed before committing anything, or whose engine code
+   *       dropped what it had built (a failed index build drops its index), left nothing behind, and quarantining it
+   *       would turn every refused DDL into a resync.</li>
+   * </ul>
+   */
+  private Throwable unpublishedSchemaChange(final SchemaInstalmentState state, final Throwable sessionFailure,
+      final boolean callbackReturned) {
+    if (state.refusal != null)
+      return state.refusal;
+    if (sessionFailure == null || state.indeterminate || isIndeterminatePublishFailure(sessionFailure))
+      return null;
+    if (callbackReturned || bufferedWalTouchesFilesStillHere())
+      return sessionFailure;
+    return null;
+  }
+
+  /**
+   * Whether the WAL buffered by this thread's schema session - committed here, never shipped - wrote a page into a file
+   * this node still has (issue #9558): those pages are on this node only. Read off the WAL itself, on the failure path
+   * only, so the commits of a session that publishes pay nothing for it. A WAL image that cannot be read answers
+   * {@code true}: it was committed here, and nothing shows it landed only in files that are gone.
+   */
+  private boolean bufferedWalTouchesFilesStillHere() {
+    final List<byte[]> buffered = schemaWalBuffer.get();
+    if (buffered.isEmpty())
+      return false;
+    final FileManager fileManager = proxied.getFileManager();
+    for (final byte[] wal : buffered) {
+      final WALFile.WALTransaction tx;
+      try {
+        tx = ArcadeStateMachine.deserializeWalTransaction(wal);
+      } catch (final RuntimeException e) {
+        return true;
+      }
+      if (tx.pages != null)
+        for (final WALFile.WALPage page : tx.pages)
+          if (fileManager.existsFile(page.fileId))
+            return true;
+    }
+    return false;
   }
 
   /** Ends the binding {@link #bindSchemaSessionToTerm} took, if it took one. */
@@ -3017,9 +3123,10 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     final long startedAtNanos = System.nanoTime();
     try {
       broker.replicateSchemaInstalment(getName(), newFiles, walEntries, bucketDeltas);
-    } catch (final NeedRetryException e) {
+    } catch (final RuntimeException e) {
       // The pages this instalment carried are already committed here (issue #9555): see SchemaInstalmentState.refusal.
-      state.refusal = e;
+      // Any failure but an indeterminate one, since issue #9558: an instalment too large to split is just as unpublished.
+      recordInstalmentFailure(state, e);
       throw e;
     } finally {
       // In a finally so a failed instalment is counted too: an instalment that timed out against a slow quorum
@@ -3397,6 +3504,17 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       return false;
     }
 
+    // Issue #9558: the last compaction of this database could not be published for a reason that does not go away by
+    // itself, and was quarantined for it. Running it again before the window ends would only repeat that. Deferred like a
+    // contended session below, so the caller's own contract (reschedule on the next trigger) is all that is needed.
+    final ArcadeStateMachine backOffOn = stateMachineOrNull();
+    if (backOffOn != null && backOffOn.isCompactionHeldOff(getName())) {
+      HALog.log(this, HALog.DETAILED,
+          "Skipping compaction for database '%s' because the last one could not be published and compactions are held "
+              + "off on this node; will retry on a later schedule", getName());
+      return false;
+    }
+
     if (!proxied.getFileManager().startRecordingChanges()) {
       // Another recordFileChanges/runWithCompactionReplication session is already active on this
       // node. Running the compaction now would either share the active session's recordedChanges
@@ -3444,138 +3562,35 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       // to already-existing files can be shipped afterwards (see the loop below).
       final Map<Integer, Integer> pageCountsBefore = snapshotPageCounts();
 
-      final boolean result = invokeCompaction(compaction);
+      final boolean result;
+      try {
+        result = invokeCompaction(compaction);
+      } catch (final Throwable t) {
+        // Issue #9558: the compaction failed on its own, but a commit it made (the TimeSeries mutable-bucket clear) may
+        // already be applied here and sitting unshipped in the buffer, which the finally block below throws away.
+        if (!isIndeterminatePublishFailure(t) && bufferedWalTouchesFilesStillHere())
+          quarantineUnpublishedChange("compaction", t, true);
+        throw t;
+      }
       if (!result)
         return false;
 
-      final Map<Integer, String> addFiles = new HashMap<>();
-      final Map<Integer, String> removeFiles = new HashMap<>();
-      final List<FileManager.FileChange> changes = proxied.getFileManager().getRecordedChanges();
-      if (changes != null)
-        for (final FileManager.FileChange change : changes) {
-          if (change.create)
-            addFiles.put(change.fileId, change.fileName);
-          else
-            removeFiles.put(change.fileId, change.fileName);
-        }
-
-      // Buffered WAL from commits that ran inside the compaction (e.g. the TimeSeries mutable-bucket
-      // clear). These are correctly-versioned (positive txId) and apply over the existing follower
-      // pages without a version gap. Each pairs index-aligned with its bucket-delta map.
-      final List<byte[]> walEntries = new ArrayList<>(schemaWalBuffer.get());
-      final List<Map<Integer, Integer>> bucketDeltas = new ArrayList<>(schemaBucketDeltaBuffer.get());
-
-      // Synthetic WAL for genuinely new paginated files (e.g. LSM index compaction output).
-      // txId=-1 on followers signals forceApply to bypass version-gap checks. The TimeSeries sealed
-      // store is not a paginated file, so it contributes none here - it ships as a blob instead.
-      // #4743: chunked against the maximum replicated entry size so a big compacted index does not
-      // produce one oversized Raft entry (which would make the leader step down, over and over).
-      final RaftTransactionBroker broker = RaftHAServer.requireTransactionBroker(requireRaftServer());
-      final long walChunkBudget = broker.walChunkBudget();
-      for (final int fileId : addFiles.keySet())
-        appendFilePagesAsWal(fileId, walChunkBudget, walEntries, bucketDeltas, 0);
-
-      // #5443: a compaction does not only CREATE files - an incremental round APPENDS a new series to the
-      // already-existing compacted file. Those pages are written eagerly and deliberately without WAL, and
-      // the file is not in addFiles because it is not new, so nothing replicated them: the follower kept
-      // the shorter file and every key in the appended series became unfindable there, silently, while the
-      // records themselves replicated normally through their own transactions. Ship the appended range of
-      // every pre-existing paginated component that grew during this session.
-      for (final Map.Entry<Integer, Integer> grown : pagesGrownDuringSession(pageCountsBefore, addFiles).entrySet())
-        appendFilePagesAsWal(grown.getKey(), walChunkBudget, walEntries, bucketDeltas, grown.getValue());
-
-      final List<RaftLogEntryCodec.TsSealedBlob> recordedSealed = new ArrayList<>(compactionSealedBuffer.get());
-      // Released here rather than only in the finally (#6933): the shipping loop below drops each sliced store's
-      // image as it goes, and a second list still holding it would make that release do nothing. Nothing can add
-      // to the buffer any more - the compaction callback has returned.
-      compactionSealedBuffer.get().clear();
-
-      if (addFiles.isEmpty() && removeFiles.isEmpty() && walEntries.isEmpty() && recordedSealed.isEmpty())
-        return result;
-
-      // #4416: a sealed store bigger than one Raft entry is shipped as an ordered sequence of slices instead of
-      // being refused. Everything but the final slice of each store goes out HERE, ahead of the publishing entry,
-      // as a delivery-only entry the follower merely stages; the final slice is handed to replicateSchema below
-      // so the install lands in the same entry as the mutable-bucket clear WAL.
-      //
-      // WHAT A FAILURE PART-WAY THROUGH THIS LOOP LEAVES, since the loop makes several quorum round trips where
-      // the whole-file path made one, and nothing here retries or rolls back. The compaction has already run
-      // LOCALLY - the sealed file is swapped and the mutable-bucket clear is committed on this node, because
-      // commit() inside the session buffers the WAL for shipping AFTER applying it here - so a throw leaves this
-      // node sealed and the others still holding those samples in their (fully replicated) mutable bucket. Every
-      // node still answers the same sample count; what diverges is where the samples live, and the page versions
-      // this node advanced past theirs. The recovery is the one that already existed for a failed whole-file
-      // compaction, not a new one: the next entry touching those pages hits a version gap on the followers and
-      // escalates to a snapshot resync, and a follower's part-written staging file is truncated by the first
-      // slice of the next sequence. Since issue #9555 a DEFINITE refusal of any of these entries (the leader turned it
-      // away before appending it) quarantines and resyncs this node at once instead - see the try below; what this
-      // paragraph describes remains the outcome of every other failure. Deliberately not retried here - a retry
-      // would re-ship a sealed image the next compaction is about to rewrite anyway.
-      // #6933: the whole session is planned BEFORE anything ships, because the publishing entry has to carry the
-      // final slice of EVERY sliced store plus every whole blob, and a plan that cannot fit has to be refused
-      // here rather than by the splitter after the delivery-only slices are already in the Raft log. The schema
-      // JSON is serialized early for the same reason - its encoded size is part of what the sealed payload has
-      // to leave room for.
-      final JSONObject compactionSchema = proxied.getSchema().getEmbedded().toJSON();
-      final String serializedSchema = compactionSchema.toString();
-      final long sealedChunkBudget = GlobalConfiguration.replicatedSealedChunkBudget(getReplicationConfiguration());
-      final List<SealedSlicePlan> sealedPlans = planSealedShipping(recordedSealed, sealedChunkBudget,
-          publishingSealedCapacity(sealedChunkBudget, broker.maxEntrySize(),
-              publishingHeaderSize(getName(), serializedSchema, addFiles, removeFiles)), getName());
-
-      final List<RaftLogEntryCodec.TsSealedBlob> sealedBlobs = new ArrayList<>(recordedSealed.size());
-      final List<RaftLogEntryCodec.TsSealedChunk> finalSealedChunks = new ArrayList<>();
-      int sealedSlicesShipped = 0;
-      // Issue #9555: from here on every entry this session submits carries a compaction that has ALREADY run on this
-      // node - the file id is allocated, the compacted file written and the index's sub-indexes swapped. A definite
-      // refusal of any of them leaves this node with a layout no other node has, so the database is quarantined and
-      // resynced now. An indeterminate failure (ReplicationDispatchedTimeoutException) is not a NeedRetryException and
-      // passes through: its entry may still commit, and then this node's layout is the committed one. Why every
-      // NeedRetryException the broker raises is definite is listed on SchemaInstalmentState.refusal.
+      // Issue #9555 / #9558: from here on the compaction has ALREADY run on this node - the file id is allocated, the
+      // compacted file written and the index's sub-indexes swapped - so every failure up to the moment the publishing
+      // entry is accepted leaves this node with a layout no other node has: a refusal, the broker gone, a plan or an
+      // entry too large to replicate, a page that cannot be read back. All of them quarantine and resync this node; the
+      // deterministic ones also hold the next compactions off (see quarantineUnpublishedChange). An indeterminate failure
+      // (ReplicationDispatchedTimeoutException) passes through: its entry may still commit, and then this node's layout
+      // is the committed one. Why every NeedRetryException the broker raises is definite is listed on
+      // SchemaInstalmentState.refusal.
+      final boolean[] published = { false };
       try {
-        for (int store = 0; store < recordedSealed.size(); store++) {
-          final RaftLogEntryCodec.TsSealedBlob blob = recordedSealed.get(store);
-          final SealedSlicePlan plan = sealedPlans.get(store);
-          if (!plan.sliced()) {
-            sealedBlobs.add(blob);
-            continue;
-          }
-          // One slice materialized at a time (#6933): the source image is already one whole-file array on this
-          // thread, and cutting the sequence up front made it two.
-          for (int i = 0; i < plan.count() - 1; i++)
-            broker.replicateSealedChunk(getName(), plan.slice(blob, i));
-          finalSealedChunks.add(plan.slice(blob, plan.count() - 1));
-          sealedSlicesShipped += plan.count();
-          // Nothing needs this store's image any more - only its final slice publishes - so let an N-shard session
-          // stop holding N whole-file arrays at once.
-          recordedSealed.set(store, null);
-          // Per-STORE, not per-session: the burst that costs latency is one store's sequence of round trips, and
-          // summing across stores would hide a single pathological shard behind a busy-but-healthy cycle.
-          sealedChunksMaxSequence.accumulateAndGet(plan.count(), Math::max);
-        }
-        sealedChunksShipped.addAndGet(sealedSlicesShipped);
-
-        broker.replicateSchema(getName(), serializedSchema, addFiles, removeFiles, walEntries, bucketDeltas,
-            sealedBlobs, finalSealedChunks);
-      } catch (final NeedRetryException e) {
-        quarantineUnpublishedChange("compaction", e);
-        throw e;
+        return publishCompaction(result, pageCountsBefore, published);
+      } catch (final Throwable t) {
+        if (!published[0] && !isIndeterminatePublishFailure(t))
+          quarantineUnpublishedChange("compaction", t, true);
+        throw t;
       }
-
-      // A compaction entry always carries the whole document - its size is what the sealed payload was budgeted
-      // against, so there is nothing to gain from a delta here - but it still MOVES the followers, so the base a
-      // later delta is diffed against has to advance with it (issue #6989).
-      rememberReplicatedSchema(compactionSchema, serializedSchema.length());
-
-      HALog.log(this, HALog.DETAILED,
-          "Compaction for database '%s' replicated via Raft: addFiles=%d, removeFiles=%d, walEntries=%d, "
-              + "sealedBlobs=%d, sealedSlices=%d",
-          getName(), addFiles.size(), removeFiles.size(), walEntries.size(), sealedBlobs.size(), sealedSlicesShipped);
-
-      if (HALog.isEnabled(HALog.DETAILED))
-        logSchemaPayloadDiagnostics("compaction", serializedSchema, addFiles, removeFiles);
-
-      return result;
     } finally {
       // A bare remove() is enough here, unlike recordFileChanges: a compaction runs on its own scheduler
       // thread and defers (returns false above) whenever a session is already open, so it never nests
@@ -3591,6 +3606,144 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         proxied.getFileManager().stopRecordingChanges();
       }
     }
+  }
+
+  /**
+   * Ships what a compaction that has already run here changed, as one publishing entry preceded by the delivery-only
+   * slices of any sealed store too big for it. Split from {@link #runWithCompactionReplication} so everything that can
+   * fail after the compaction ran is in one place for its caller to classify (issue #9558).
+   *
+   * @param published set to {@code true} the moment the publishing entry is accepted, so a failure after it - of the
+   *                  bookkeeping or of a diagnostic - is not mistaken for an unpublished change
+   *
+   * @return {@code result}, once the change is published or there was nothing to publish
+   */
+  private boolean publishCompaction(final boolean result, final Map<Integer, Integer> pageCountsBefore,
+      final boolean[] published) throws IOException {
+    final Map<Integer, String> addFiles = new HashMap<>();
+    final Map<Integer, String> removeFiles = new HashMap<>();
+    final List<FileManager.FileChange> changes = proxied.getFileManager().getRecordedChanges();
+    if (changes != null)
+      for (final FileManager.FileChange change : changes) {
+        if (change.create)
+          addFiles.put(change.fileId, change.fileName);
+        else
+          removeFiles.put(change.fileId, change.fileName);
+      }
+
+    // Buffered WAL from commits that ran inside the compaction (e.g. the TimeSeries mutable-bucket
+    // clear). These are correctly-versioned (positive txId) and apply over the existing follower
+    // pages without a version gap. Each pairs index-aligned with its bucket-delta map.
+    final List<byte[]> walEntries = new ArrayList<>(schemaWalBuffer.get());
+    final List<Map<Integer, Integer>> bucketDeltas = new ArrayList<>(schemaBucketDeltaBuffer.get());
+
+    // Synthetic WAL for genuinely new paginated files (e.g. LSM index compaction output).
+    // txId=-1 on followers signals forceApply to bypass version-gap checks. The TimeSeries sealed
+    // store is not a paginated file, so it contributes none here - it ships as a blob instead.
+    // #4743: chunked against the maximum replicated entry size so a big compacted index does not
+    // produce one oversized Raft entry (which would make the leader step down, over and over).
+    final RaftTransactionBroker broker = RaftHAServer.requireTransactionBroker(requireRaftServer());
+    final long walChunkBudget = broker.walChunkBudget();
+    for (final int fileId : addFiles.keySet())
+      appendFilePagesAsWal(fileId, walChunkBudget, walEntries, bucketDeltas, 0);
+
+    // #5443: a compaction does not only CREATE files - an incremental round APPENDS a new series to the
+    // already-existing compacted file. Those pages are written eagerly and deliberately without WAL, and
+    // the file is not in addFiles because it is not new, so nothing replicated them: the follower kept
+    // the shorter file and every key in the appended series became unfindable there, silently, while the
+    // records themselves replicated normally through their own transactions. Ship the appended range of
+    // every pre-existing paginated component that grew during this session.
+    for (final Map.Entry<Integer, Integer> grown : pagesGrownDuringSession(pageCountsBefore, addFiles).entrySet())
+      appendFilePagesAsWal(grown.getKey(), walChunkBudget, walEntries, bucketDeltas, grown.getValue());
+
+    final List<RaftLogEntryCodec.TsSealedBlob> recordedSealed = new ArrayList<>(compactionSealedBuffer.get());
+    // Released here rather than only in the finally (#6933): the shipping loop below drops each sliced store's
+    // image as it goes, and a second list still holding it would make that release do nothing. Nothing can add
+    // to the buffer any more - the compaction callback has returned.
+    compactionSealedBuffer.get().clear();
+
+    if (addFiles.isEmpty() && removeFiles.isEmpty() && walEntries.isEmpty() && recordedSealed.isEmpty())
+      return result;
+
+    // #4416: a sealed store bigger than one Raft entry is shipped as an ordered sequence of slices instead of
+    // being refused. Everything but the final slice of each store goes out HERE, ahead of the publishing entry,
+    // as a delivery-only entry the follower merely stages; the final slice is handed to replicateSchema below
+    // so the install lands in the same entry as the mutable-bucket clear WAL.
+    //
+    // WHAT A FAILURE PART-WAY THROUGH THIS LOOP LEAVES, since the loop makes several quorum round trips where
+    // the whole-file path made one, and nothing here retries or rolls back. The compaction has already run
+    // LOCALLY - the sealed file is swapped and the mutable-bucket clear is committed on this node, because
+    // commit() inside the session buffers the WAL for shipping AFTER applying it here - so a throw leaves this
+    // node sealed and the others still holding those samples in their (fully replicated) mutable bucket. Every
+    // node still answers the same sample count; what diverges is where the samples live, and the page versions
+    // this node advanced past theirs. The recovery is the one that already existed for a failed whole-file
+    // compaction, not a new one: the next entry touching those pages hits a version gap on the followers and
+    // escalates to a snapshot resync, and a follower's part-written staging file is truncated by the first
+    // slice of the next sequence. Since issues #9555 and #9558 any failure but an indeterminate one (a definite
+    // refusal, an entry too large to replicate, a broker that is gone) quarantines and resyncs this node at once
+    // instead - see the caller; what this paragraph describes remains the outcome of an indeterminate one. Deliberately
+    // not retried here - a retry would re-ship a sealed image the next compaction is about to rewrite anyway.
+    // #6933: the whole session is planned BEFORE anything ships, because the publishing entry has to carry the
+    // final slice of EVERY sliced store plus every whole blob, and a plan that cannot fit has to be refused
+    // here rather than by the splitter after the delivery-only slices are already in the Raft log. The schema
+    // JSON is serialized early for the same reason - its encoded size is part of what the sealed payload has
+    // to leave room for.
+    final JSONObject compactionSchema = proxied.getSchema().getEmbedded().toJSON();
+    final String serializedSchema = compactionSchema.toString();
+    final long sealedChunkBudget = GlobalConfiguration.replicatedSealedChunkBudget(getReplicationConfiguration());
+    final List<SealedSlicePlan> sealedPlans = planSealedShipping(recordedSealed, sealedChunkBudget,
+        publishingSealedCapacity(sealedChunkBudget, broker.maxEntrySize(),
+            publishingHeaderSize(getName(), serializedSchema, addFiles, removeFiles)), getName());
+
+    final List<RaftLogEntryCodec.TsSealedBlob> sealedBlobs = new ArrayList<>(recordedSealed.size());
+    final List<RaftLogEntryCodec.TsSealedChunk> finalSealedChunks = new ArrayList<>();
+    int sealedSlicesShipped = 0;
+    // A failure of any of these entries, or of anything above, is classified by the caller (issues #9555, #9558).
+    for (int store = 0; store < recordedSealed.size(); store++) {
+      final RaftLogEntryCodec.TsSealedBlob blob = recordedSealed.get(store);
+      final SealedSlicePlan plan = sealedPlans.get(store);
+      if (!plan.sliced()) {
+        sealedBlobs.add(blob);
+        continue;
+      }
+      // One slice materialized at a time (#6933): the source image is already one whole-file array on this
+      // thread, and cutting the sequence up front made it two.
+      for (int i = 0; i < plan.count() - 1; i++)
+        broker.replicateSealedChunk(getName(), plan.slice(blob, i));
+      finalSealedChunks.add(plan.slice(blob, plan.count() - 1));
+      sealedSlicesShipped += plan.count();
+      // Nothing needs this store's image any more - only its final slice publishes - so let an N-shard session
+      // stop holding N whole-file arrays at once.
+      recordedSealed.set(store, null);
+      // Per-STORE, not per-session: the burst that costs latency is one store's sequence of round trips, and
+      // summing across stores would hide a single pathological shard behind a busy-but-healthy cycle.
+      sealedChunksMaxSequence.accumulateAndGet(plan.count(), Math::max);
+    }
+    sealedChunksShipped.addAndGet(sealedSlicesShipped);
+
+    broker.replicateSchema(getName(), serializedSchema, addFiles, removeFiles, walEntries, bucketDeltas,
+        sealedBlobs, finalSealedChunks);
+    // Published: nothing below may send the caller into a quarantine for a change every node now holds.
+    published[0] = true;
+    // And whatever held this database's compactions off is over (issue #9558)
+    final ArcadeStateMachine stateMachine = stateMachineOrNull();
+    if (stateMachine != null)
+      stateMachine.compactionPublished(getName());
+
+    // A compaction entry always carries the whole document - its size is what the sealed payload was budgeted
+    // against, so there is nothing to gain from a delta here - but it still MOVES the followers, so the base a
+    // later delta is diffed against has to advance with it (issue #6989).
+    rememberReplicatedSchema(compactionSchema, serializedSchema.length());
+
+    HALog.log(this, HALog.DETAILED,
+        "Compaction for database '%s' replicated via Raft: addFiles=%d, removeFiles=%d, walEntries=%d, "
+            + "sealedBlobs=%d, sealedSlices=%d",
+        getName(), addFiles.size(), removeFiles.size(), walEntries.size(), sealedBlobs.size(), sealedSlicesShipped);
+
+    if (HALog.isEnabled(HALog.DETAILED))
+      logSchemaPayloadDiagnostics("compaction", serializedSchema, addFiles, removeFiles);
+
+    return result;
   }
 
   private static boolean invokeCompaction(final Callable<Boolean> compaction) throws IOException, InterruptedException {
