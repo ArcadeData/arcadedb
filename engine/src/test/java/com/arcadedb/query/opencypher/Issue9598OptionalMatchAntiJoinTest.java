@@ -174,6 +174,9 @@ class Issue9598OptionalMatchAntiJoinTest extends TestHelper {
         // an open upper bound, rendered and parsed again
         "MATCH (c:Comment)-[:HAS_TAG]->(t:Tag) OPTIONAL MATCH (c)-[:REPLY_OF*2..]->(:Message)-[h:HAS_TAG]->(t) "
             + "WITH c, t, h WHERE h IS NULL RETURN count(*) AS n",
+        // a label disjunction and alternative relationship types, rendered and parsed again
+        "MATCH (c:Comment)-[:HAS_TAG]->(t:Tag) OPTIONAL MATCH (c)-[:REPLY_OF|HAS_TAG]->(:Post|Comment)-[h:HAS_TAG]->(t) "
+            + "WITH c, t, h WHERE h IS NULL RETURN count(*) AS n",
         // one relationship type twice: the predicate binds two different relationships, as the OPTIONAL MATCH does
         "MATCH (c:Comment), (p:Post) OPTIONAL MATCH (c)-[:REPLY_OF]->(:Message)-[h:REPLY_OF]->(p) "
             + "WITH c, p, h WHERE h IS NULL RETURN count(*) AS n" }) {

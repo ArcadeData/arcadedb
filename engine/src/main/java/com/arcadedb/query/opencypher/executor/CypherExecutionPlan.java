@@ -25,6 +25,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.engine.Bucket;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.function.graph.IdFunction;
@@ -7781,11 +7782,19 @@ public class CypherExecutionPlan {
 
     double fanOut(final String fromLabel, final String edgeType, final Vertex.DIRECTION direction) {
       return fanOuts.computeIfAbsent(fromLabel + '\u0000' + edgeType + '\u0000' + direction, key -> {
-        if (fromLabel != null && database.getSchema().getTypeOrNull(fromLabel) instanceof VertexType) {
+        if (fromLabel != null && database.getSchema().getTypeOrNull(fromLabel) instanceof VertexType type) {
+          // spread over the label's buckets, sub-types' included, rather than the first records of the first one: those are
+          // the oldest, and in a graph that grew they are often the best connected
+          final List<Bucket> buckets = type.getBuckets(true);
+          final int perBucket = Math.max(1, (SAMPLE + buckets.size() - 1) / Math.max(1, buckets.size()));
           long sampled = 0;
           long degrees = 0;
-          for (final Iterator<Record> it = database.iterateType(fromLabel, true); it.hasNext() && sampled < SAMPLE; ++sampled)
-            degrees += it.next().asVertex().countEdges(direction, edgeType);
+          for (int b = 0; b < buckets.size() && sampled < SAMPLE; b++) {
+            int fromBucket = 0;
+            for (final Iterator<Record> it = database.iterateBucket(buckets.get(b).getName());
+                 it.hasNext() && fromBucket < perBucket && sampled < SAMPLE; ++fromBucket, ++sampled)
+              degrees += it.next().asVertex().countEdges(direction, edgeType);
+          }
           return sampled == 0 ? 0D : (double) degrees / sampled;
         }
         final long sources = vertices(null);
