@@ -41,6 +41,8 @@ final class ExpressionCost {
   static boolean isCostly(final Expression expression) {
     if (expression == null)
       return false;
+    if (expression instanceof BooleanWrapperExpression wrapper)
+      return isCostly(wrapper.getBooleanExpression());
     if (expression instanceof TernaryLogicalExpression logical)
       return logical.isCostly();
     final Probe probe = new Probe();
@@ -53,6 +55,8 @@ final class ExpressionCost {
       return false;
     // A logical node already knows: its flag was computed from its operands when it was built, and asking again would
     // re-walk the whole chain once per link.
+    if (predicate instanceof BooleanWrapperExpression wrapper)
+      return isCostly(wrapper.getBooleanExpression());
     if (predicate instanceof LogicalExpression logical)
       return logical.isCostly();
     final Probe probe = new Probe();

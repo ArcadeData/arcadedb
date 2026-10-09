@@ -45,20 +45,28 @@ public class TernaryLogicalExpression implements Expression {
   private final boolean leftCostly;
   private final boolean rightCostly;
 
+  /** The operands in evaluation order: AND and OR are commutative, nulls included, so the cheap one goes first (#9579). */
+  private final Expression first;
+  private final Expression second;
+
   public TernaryLogicalExpression(final Operator operator, final Expression left, final Expression right) {
     this.operator = operator;
     this.left = left;
     this.right = right;
     this.leftCostly = ExpressionCost.isCostly(left);
     this.rightCostly = ExpressionCost.isCostly(right);
-  }
-
-  boolean isCostly() {
-    return leftCostly || rightCostly;
+    final boolean swap = leftCostly && !rightCostly;
+    this.first = swap ? right : left;
+    this.second = swap ? left : right;
   }
 
   public TernaryLogicalExpression(final Operator operator, final Expression operand) {
     this(operator, operand, null);
+  }
+
+  /** True when an operand runs a subquery or pattern match per row, so an enclosing AND/OR knows to put it last. */
+  boolean isCostly() {
+    return leftCostly || rightCostly;
   }
 
   @Override
@@ -72,16 +80,13 @@ public class TernaryLogicalExpression implements Expression {
   }
 
   private Object evaluateAnd(final Result result, final CommandContext context) {
-    // AND and OR are commutative, nulls included: evaluate the operand that cannot run a subquery first, so it can make
-    // the other unnecessary (issue #9579).
-    final boolean swap = leftCostly && !rightCostly;
-    final Boolean leftBool = toBoolean((swap ? right : left).evaluate(result, context));
+    final Boolean leftBool = toBoolean(first.evaluate(result, context));
 
     // false AND anything = false: the other operand is result-irrelevant, do not evaluate it.
     if (Boolean.FALSE.equals(leftBool))
       return false;
 
-    final Boolean rightBool = toBoolean((swap ? left : right).evaluate(result, context));
+    final Boolean rightBool = toBoolean(second.evaluate(result, context));
 
     // false AND anything = false
     if (Boolean.FALSE.equals(rightBool))
@@ -96,14 +101,13 @@ public class TernaryLogicalExpression implements Expression {
   }
 
   private Object evaluateOr(final Result result, final CommandContext context) {
-    final boolean swap = leftCostly && !rightCostly;
-    final Boolean leftBool = toBoolean((swap ? right : left).evaluate(result, context));
+    final Boolean leftBool = toBoolean(first.evaluate(result, context));
 
     // true OR anything = true: the other operand is result-irrelevant, do not evaluate it.
     if (Boolean.TRUE.equals(leftBool))
       return true;
 
-    final Boolean rightBool = toBoolean((swap ? left : right).evaluate(result, context));
+    final Boolean rightBool = toBoolean(second.evaluate(result, context));
 
     // true OR anything = true
     if (Boolean.TRUE.equals(rightBool))
