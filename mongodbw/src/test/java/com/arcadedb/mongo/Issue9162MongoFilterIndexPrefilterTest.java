@@ -301,6 +301,25 @@ class Issue9162MongoFilterIndexPrefilterTest extends BaseMongoServerTest {
   }
 
   @Test
+  void aQuoteInAnOperandIsBoundNeverConcatenated() {
+    declareProducts();
+    final MongoCollection<Document> c = client.getDatabase(getDatabaseName()).getCollection("products");
+    final String tricky = "o'x\" OR sku <> '";
+    c.insertMany(List.of(new Document("_id", 1).append("sku", tricky), new Document("_id", 2).append("sku", "plain")));
+
+    assertThat(ids(c, new Document("sku", tricky))).containsExactly(1);
+    assertThat(ids(c, new Document("sku", new Document("$in", List.of(tricky, "nothing"))))).containsExactly(1);
+    assertThat(ids(c, new Document("$or", List.of(new Document("sku", "x' OR '1'='1"), new Document("sku", "y"))))).isEmpty();
+  }
+
+  private static List<Object> ids(final MongoCollection<Document> collection, final Document filter) {
+    final List<Object> ids = new ArrayList<>();
+    for (final Document d : collection.find(filter).sort(Document.parse("{_id:1}")))
+      ids.add(d.get("_id"));
+    return ids;
+  }
+
+  @Test
   void aListInADeclaredListFieldStillMatchesThroughItsElements() {
     declareProducts();
     final MongoCollection<Document> c = client.getDatabase(getDatabaseName()).getCollection("products");

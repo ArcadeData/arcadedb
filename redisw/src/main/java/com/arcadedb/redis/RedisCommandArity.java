@@ -58,7 +58,8 @@ public final class RedisCommandArity {
    * @param command       the upper-case command name
    * @param argumentCount the arguments including the command name
    *
-   * @throws RedisException when the count is outside the command's bounds
+   * @throws RedisException when the count is outside the command's bounds; a caller that is not the wire path translates it to its own
+   *                        kind of client error (the query language answers a {@code CommandParsingException}, an HTTP 4xx)
    */
   public static void checkRam(final String command, final int argumentCount) {
     check(RAM.get(command), command, argumentCount);
