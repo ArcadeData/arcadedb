@@ -1788,8 +1788,6 @@ public class GraphBatch implements AutoCloseable {
 
     final long startNs = System.nanoTime();
 
-    // Every vertex with a deferred head in either direction: one entry carries both, so the union is the key set.
-
     // Sort by vertex key for page locality.
     // NOTE (concurrency): Arrays.parallelSort forks to the JDK common ForkJoinPool, which is
     // discouraged elsewhere in the engine (see QueryEngineManager class javadoc, "No JDK common
@@ -1797,6 +1795,8 @@ public class GraphBatch implements AutoCloseable {
     // foreground operational task, not a hot per-query path - and the sort dominates its own
     // critical section. Migrate to QueryEngineManager.getExecutorService() if profiling later
     // shows common-pool contention with user code during overlapping bulk loads.
+    // Every vertex with a deferred head in either direction: one entry carries both, so the union is the key set. The
+    // array and the sort's scratch space are 8 bytes a vertex each, on top of the table, for the length of the sort.
     final long[] sortedKeys = deferredHeads.keys();
     Arrays.parallelSort(sortedKeys);
 
