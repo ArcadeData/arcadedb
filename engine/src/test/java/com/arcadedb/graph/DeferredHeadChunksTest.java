@@ -157,20 +157,44 @@ class DeferredHeadChunksTest {
 
   /**
    * Growing holds the old table and the new one at the same time, which at bulk-load scale is the costliest moment of
-   * the batch: a table sized for the vertices it will see must never grow, and neither must overwriting a head that is
-   * already there - the undo logs restore heads that way.
+   * the batch. A bound on the vertices the batch can touch allocates nothing up front, stops the last growth at the
+   * size the bound needs instead of overshooting it, and a bound that turns out too low still leaves a working table.
+   * Overwriting a head that is already there - the undo logs restore heads that way - never grows the table at all.
    */
   @Test
-  void aTableSizedUpFrontNeverGrows() {
+  void aBoundStopsTheLastGrowthAndAllocatesNothingUpFront() {
+    // a bound of 200M vertices on a batch that touches ten of them: nothing is paid for the other 199,999,990
+    final DeferredHeadChunks sparse = new DeferredHeadChunks(200_000_000L);
+    for (int i = 0; i < 10; i++)
+      sparse.putOut(key(1, i), new RID(5, i));
+    assertThat(sparse.capacity()).isEqualTo(new DeferredHeadChunks().capacity());
+
+    // filled to its bound: the table ends no larger than the bound needs at the maximum load
     final int vertices = 100_000;
-    final DeferredHeadChunks heads = new DeferredHeadChunks(vertices);
-    final int capacity = heads.capacity();
+    final DeferredHeadChunks bounded = new DeferredHeadChunks(vertices);
+    final DeferredHeadChunks unbounded = new DeferredHeadChunks();
     for (int i = 0; i < vertices; i++) {
-      heads.putOut(key(1, i), new RID(5, i));
-      heads.putIn(key(1, i), new RID(6, i));
+      bounded.putOut(key(1, i), new RID(5, i));
+      bounded.putIn(key(1, i), new RID(6, i));
+      unbounded.putOut(key(1, i), new RID(5, i));
     }
-    assertThat(heads.capacity()).isEqualTo(capacity);
-    assertThat(heads.size()).isEqualTo(vertices);
+    assertThat(bounded.size()).isEqualTo(vertices);
+    assertThat(bounded.capacity()).isLessThanOrEqualTo((int) (vertices / 0.75) + 2);
+    assertThat(bounded.capacity()).isLessThanOrEqualTo(unbounded.capacity());
+
+    // the widest bound there is: no overflow in its arithmetic, and still nothing allocated up front
+    final DeferredHeadChunks widest = new DeferredHeadChunks(Long.MAX_VALUE);
+    for (int i = 0; i < vertices; i++)
+      widest.putOut(key(4, i), new RID(5, i));
+    assertThat(widest.capacity()).isEqualTo(unbounded.capacity());
+
+    // a bound that was wrong: the table keeps growing and loses nothing
+    final DeferredHeadChunks tooLow = new DeferredHeadChunks(1_000);
+    for (int i = 0; i < vertices; i++)
+      tooLow.putIn(key(3, i), new RID(6, i));
+    assertThat(tooLow.size()).isEqualTo(vertices);
+    for (int i = 0; i < vertices; i++)
+      assertThat(tooLow.getIn(key(3, i))).isEqualTo(new RID(6, i));
 
     // n = how many new keys a default table takes before the next one grows it
     final DeferredHeadChunks probe = new DeferredHeadChunks();

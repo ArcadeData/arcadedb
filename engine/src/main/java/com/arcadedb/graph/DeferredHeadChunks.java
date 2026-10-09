@@ -62,19 +62,24 @@ final class DeferredHeadChunks {
   private int    size;
   private int    outCount;
   private int    inCount;
+  // The most slots the table may ever need: enough for every vertex the batch can touch at all
+  private final int maxCapacity;
 
   DeferredHeadChunks() {
     this(0);
   }
 
   /**
-   * @param expectedVertices how many vertices the batch is expected to touch, 0 when unknown. A table sized for them
-   *                         up front never grows, and growing is when the table costs most: the old one and the new
-   *                         one, half as large again, are both alive while the entries move, two and a half times
-   *                         what the map holds. At 200M vertices that copy alone is more than 15 GB.
+   * @param maxVertices the most distinct vertices the batch can touch, 0 when unknown. The table still starts small and
+   *                    grows by half, so a batch that touches few of them pays for few; what the bound changes is the
+   *                    last growth, which stops at the size the bound needs instead of overshooting it by up to half.
+   *                    Growing is when the table costs most - the old one and the new one are both alive while the
+   *                    entries move - so the overshoot is paid twice: at 200M vertices it is gigabytes.
    */
-  DeferredHeadChunks(final int expectedVertices) {
-    allocate((int) Math.max(INITIAL_CAPACITY, Math.min(MAX_CAPACITY, (long) (expectedVertices / MAX_LOAD) + 1)));
+  DeferredHeadChunks(final long maxVertices) {
+    maxCapacity = maxVertices <= 0 ? MAX_CAPACITY :
+        (int) Math.max(INITIAL_CAPACITY, Math.min(MAX_CAPACITY, (long) (Math.min(maxVertices, MAX_CAPACITY) / MAX_LOAD) + 2));
+    allocate(INITIAL_CAPACITY);
   }
 
   RID getOut(final long vertexKey) {
@@ -140,6 +145,11 @@ final class DeferredHeadChunks {
 
   boolean isEmpty() {
     return size == 0;
+  }
+
+  /** The number of slots of the table, for tests. */
+  int capacity() {
+    return capacity;
   }
 
   /** The keys of every vertex with a deferred head, in no particular order. */
@@ -213,11 +223,6 @@ final class DeferredHeadChunks {
     return i;
   }
 
-  /** The number of slots of the table, for tests. */
-  int capacity() {
-    return capacity;
-  }
-
   /**
    * Frees slot {@code hole} by shifting back every entry of the run after it that would no longer be reachable from its
    * home slot, so lookups never need tombstones.
@@ -247,13 +252,15 @@ final class DeferredHeadChunks {
   }
 
   private void grow() {
-    if (capacity == MAX_CAPACITY)
+    if (capacity >= MAX_CAPACITY)
       throw new IllegalStateException("GraphBatch cannot track the edge list heads of more than " + size + " vertices in one batch");
+    // Past the bound only when the caller's bound was wrong: the table keeps working, it just grows as if unbounded
+    final long limit = capacity < maxCapacity ? maxCapacity : MAX_CAPACITY;
     final long[] oldKeys = keys;
     final long[] oldOut = outHeads;
     final long[] oldIn = inHeads;
     final int oldCapacity = capacity;
-    allocate((int) Math.min(MAX_CAPACITY, (long) oldCapacity + (oldCapacity >> 1)));
+    allocate((int) Math.min(limit, (long) oldCapacity + (oldCapacity >> 1)));
     for (int i = 0; i < oldCapacity; i++) {
       final long k = oldKeys[i];
       if (k == FREE_SLOT)
