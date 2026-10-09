@@ -44,6 +44,7 @@ import com.arcadedb.index.IndexInternal;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.utility.RetryBackoff;
 import com.arcadedb.utility.StringUtils;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
@@ -69,6 +70,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.IntConsumer;
+import java.util.function.LongConsumer;
 import java.util.logging.Level;
 
 public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
@@ -87,6 +89,14 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
    * production.
    */
   public static volatile IntConsumer TEST_BEFORE_BATCH_COMMIT_HOOK = null;
+
+  /**
+   * Test-only observation hook (issue #9529). Receives the backoff in milliseconds {@code commitBatch()} is about to
+   * sleep before replaying a batch after a {@link ConcurrentModificationException}, so a test can check the wait
+   * without timing it. Not called when the backoff is disabled ({@link GlobalConfiguration#TX_RETRY_DELAY} = 0).
+   * Always {@code null} in production.
+   */
+  public static volatile LongConsumer TEST_BATCH_RETRY_DELAY_HOOK = null;
 
   // Volatile, not final (issue #8292): the instance every worker commits through is the database's CURRENT wrapper,
   // and the executor is created lazily, so it can predate the HA wrap or outlive a wrapper a plugin restart replaced.
@@ -697,12 +707,17 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
      */
     void commitBatch(final boolean currentUseWAL, final WALFile.FlushType currentSync,
         final boolean beginFreshTransaction) {
-      final int maxRetries = database.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_RETRIES);
+      final ContextConfiguration configuration = database.getConfiguration();
+      final int maxRetries = configuration.getValueAsInteger(GlobalConfiguration.TX_RETRIES);
       Throwable lastFailure = null;
 
       for (int attempt = 0; attempt <= maxRetries; ++attempt) {
         try {
           if (attempt > 0) {
+            // #9529: the same jittered exponential backoff LocalDatabase.transaction() applies between attempts. A
+            // replay re-executes the whole batch, so running it back to back raced the workers that had just caused
+            // the conflict on the same tail page and could burn every retry in a row.
+            delayBeforeReplay(attempt - 1, configuration);
             replayingBatch = true;
             try {
               database.begin();
@@ -762,6 +777,23 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
       if (lastFailure instanceof final Error err)
         throw err;
       throw new RuntimeException(lastFailure);
+    }
+
+    private void delayBeforeReplay(final int retry, final ContextConfiguration configuration) {
+      final long delay = RetryBackoff.delayMs(retry, configuration.getValueAsInteger(GlobalConfiguration.TX_RETRY_DELAY_BASE),
+          configuration.getValueAsInteger(GlobalConfiguration.TX_RETRY_DELAY));
+      if (delay <= 0)
+        return;
+
+      final LongConsumer hook = TEST_BATCH_RETRY_DELAY_HOOK;
+      if (hook != null)
+        hook.accept(delay);
+
+      try {
+        Thread.sleep(delay);
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
     }
 
     /**
