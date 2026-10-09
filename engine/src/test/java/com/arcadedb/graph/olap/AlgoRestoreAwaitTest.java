@@ -29,6 +29,7 @@ import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.utility.StallAwareStopwatch;
+import org.awaitility.Awaitility;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -125,7 +126,8 @@ class AlgoRestoreAwaitTest {
     }
 
     assertThat(restored.awaitReady(60, TimeUnit.SECONDS)).isTrue();
-    assertThat(restored.isRestoring()).as("the restore has ended").isFalse();
+    // awaitReady() returns once the view is READY, which the restore task publishes just before it clears the in-flight flag
+    Awaitility.await("the restore has ended").atMost(10, TimeUnit.SECONDS).until(() -> !restored.isRestoring());
   }
 
   @Test
