@@ -473,6 +473,7 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
     final boolean checkSelfLoops = skipSelfLoops != null;
     final long ownerBucketId = checkSelfLoops ? owner.getBucketId() : -1;
     final long ownerPosition = checkSelfLoops ? owner.getPosition() : -1;
+    // AN ENTRY IS FOUR NUMBERS, IN THE ORDER add() WRITES THEM: EDGE BUCKET, EDGE POSITION, VERTEX BUCKET, VERTEX POSITION
     buffer.position(CONTENT_START_POSITION);
     while (buffer.position() < used) {
       final long edgeBucketId = buffer.getNumber();
