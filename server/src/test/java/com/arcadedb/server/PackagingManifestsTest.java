@@ -207,9 +207,11 @@ class PackagingManifestsTest {
   void dependabotKeepsTrackingTheDockerBaseMajor() {
     // The ignore rule holds the base image on its major (a JDK major is a deliberate move, not a weekly bump). Left
     // below the major the Dockerfile uses, it ignores every tag of that major too, digest refreshes included, so
-    // the base never receives a security update again.
+    // the base never receives a security update again. A future major bump of the Dockerfile therefore has to move
+    // this rule in the same change, which is the point.
     final Matcher m = Pattern.compile(
-        "dependency-name: \"eclipse-temurin\"\\s*\\n\\s*versions: \\[ \">(\\d+)\" ]").matcher(read(DEPENDABOT));
+        "dependency-name:\\s*[\"']?eclipse-temurin[\"']?\\s*\\n\\s*versions:\\s*\\[\\s*[\"']>\\s*(\\d+)[\"']\\s*]")
+        .matcher(read(DEPENDABOT));
     assertThat(m.find()).as("%s no longer pins the eclipse-temurin major", DEPENDABOT).isTrue();
     assertThat(Integer.parseInt(m.group(1))).isEqualTo(baseJavaMajor(read(DOCKERFILE)));
   }
