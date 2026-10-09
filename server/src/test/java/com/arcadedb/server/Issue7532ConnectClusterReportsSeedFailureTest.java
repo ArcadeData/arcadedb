@@ -25,17 +25,12 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import com.arcadedb.server.security.ServerSecurity;
-
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.anyLong;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 /**
  * Issue #7532, absorbing #7550: the two admission verbs no longer disagree about a residual seed failure.
@@ -183,13 +178,12 @@ class Issue7532ConnectClusterReportsSeedFailureTest extends StaticBaseServerTest
     // production catch is there for is a security store that is not installed, which a started ArcadeDBServer
     // always has. seedSecurityStateClusterWide collects its per-document failures itself, so what is exercised
     // here is everything around them.
-    final ArcadeDBServer unstartedServer = mock(ArcadeDBServer.class);
-    when(unstartedServer.getHA()).thenReturn(new SeedingHAPlugin());
-    when(unstartedServer.getConfiguration()).thenReturn(new ContextConfiguration());
-    final ServerSecurity security = mock(ServerSecurity.class);
-    when(security.seedSecurityStateClusterWide(anyLong()))
-        .thenThrow(new IllegalStateException("security store not installed"));
-    when(unstartedServer.getSecurity()).thenReturn(security);
+    final FakeArcadeDBServer unstartedServer = FakeArcadeDBServer.create();
+    unstartedServer.setHA(new SeedingHAPlugin());
+    unstartedServer.returns("getConfiguration", new ContextConfiguration());
+    final FakeServerSecurity security = FakeServerSecurity.create();
+    security.fails("seedSecurityStateClusterWide", new IllegalStateException("security store not installed"));
+    unstartedServer.security(security);
 
     assertThat(new ServerControlPlane(unstartedServer).connectCluster(PEER_ADDRESS).failedSeeds())
         .containsExactly("users", "groups", "API tokens");

@@ -24,13 +24,11 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.TestServerHelper;
 import org.junit.jupiter.api.Test;
 
+import java.util.Arrays;
 import java.util.List;
 
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
+import static org.assertj.core.api.Assertions.assertThat;
+
 
 /**
  * Issue #8109, absorbing #7827: the compare-and-set decision of a security mutation runs a synchronous capability
@@ -52,25 +50,25 @@ class Issue8109PreconditionProbeOffSwitchTest {
 
   @Test
   void withTheGateOffAUserChangeNeverRunsAProbeRound() {
-    final RaftTransactionBroker broker = mock(RaftTransactionBroker.class);
-    final RaftHAServer raft = raftWhoseCacheSays(broker, List.of());
+    final FakeRaftTransactionBroker broker = new FakeRaftTransactionBroker();
+    final FakeRaftHAServer raft = raftWhoseCacheSays(broker, List.of());
 
     pluginOn(raft, false).replicateSecurityUsers(USERS, FINGERPRINT);
 
-    verify(raft, never()).peersMissingCapabilityNow(anyString());
-    verify(broker).replicateSecurityUsers(USERS, FINGERPRINT);
+    assertThat(raft.calls("peersMissingCapabilityNow")).isEmpty();
+    assertThat(broker.calls("replicateSecurityUsers")).containsOnlyOnce(Arrays.asList(USERS, FINGERPRINT));
   }
 
   /** The gated documents' own round was already switched off by the gate; the precondition's must be too. */
   @Test
   void withTheGateOffAGroupChangeNeverRunsAProbeRound() {
-    final RaftTransactionBroker broker = mock(RaftTransactionBroker.class);
-    final RaftHAServer raft = raftWhoseCacheSays(broker, List.of());
+    final FakeRaftTransactionBroker broker = new FakeRaftTransactionBroker();
+    final FakeRaftHAServer raft = raftWhoseCacheSays(broker, List.of());
 
     pluginOn(raft, false).replicateSecurityGroups(GROUPS, FINGERPRINT);
 
-    verify(raft, never()).peersMissingCapabilityNow(anyString());
-    verify(broker).replicateSecurityGroups(GROUPS, FINGERPRINT);
+    assertThat(raft.calls("peersMissingCapabilityNow")).isEmpty();
+    assertThat(broker.calls("replicateSecurityGroups")).containsOnlyOnce(Arrays.asList(GROUPS, FINGERPRINT));
   }
 
   /**
@@ -79,32 +77,32 @@ class Issue8109PreconditionProbeOffSwitchTest {
    */
   @Test
   void withTheGateOffAPeerTheCacheDoesNotKnowWithholdsThePrecondition() {
-    final RaftTransactionBroker broker = mock(RaftTransactionBroker.class);
-    final RaftHAServer raft = raftWhoseCacheSays(broker, List.of("arcadedb2"));
+    final FakeRaftTransactionBroker broker = new FakeRaftTransactionBroker();
+    final FakeRaftHAServer raft = raftWhoseCacheSays(broker, List.of("arcadedb2"));
 
     pluginOn(raft, false).replicateSecurityUsers(USERS, FINGERPRINT);
 
-    verify(raft, never()).peersMissingCapabilityNow(anyString());
-    verify(broker).replicateSecurityUsers(USERS, null);
+    assertThat(raft.calls("peersMissingCapabilityNow")).isEmpty();
+    assertThat(broker.calls("replicateSecurityUsers")).containsOnlyOnce(Arrays.asList(USERS, null));
   }
 
   /** The control: with the gate on - the default - the decision still asks now, as #7559 requires. */
   @Test
   void withTheGateOnTheDecisionStillAsksNow() {
-    final RaftTransactionBroker broker = mock(RaftTransactionBroker.class);
-    final RaftHAServer raft = raftWhoseCacheSays(broker, List.of("arcadedb2"));
-    when(raft.peersMissingCapabilityNow(anyString())).thenReturn(List.of());
+    final FakeRaftTransactionBroker broker = new FakeRaftTransactionBroker();
+    final FakeRaftHAServer raft = raftWhoseCacheSays(broker, List.of("arcadedb2"));
+    raft.returns("peersMissingCapabilityNow", List.of());
 
     pluginOn(raft, true).replicateSecurityUsers(USERS, FINGERPRINT);
 
-    verify(raft).peersMissingCapabilityNow(PeerCapabilities.SECURITY_PRECONDITION);
-    verify(broker).replicateSecurityUsers(USERS, FINGERPRINT);
+    assertThat(raft.calls("peersMissingCapabilityNow")).containsOnlyOnce(Arrays.asList(PeerCapabilities.SECURITY_PRECONDITION));
+    assertThat(broker.calls("replicateSecurityUsers")).containsOnlyOnce(Arrays.asList(USERS, FINGERPRINT));
   }
 
-  private static RaftHAServer raftWhoseCacheSays(final RaftTransactionBroker broker, final List<String> missing) {
-    final RaftHAServer raft = mock(RaftHAServer.class);
-    when(raft.getTransactionBroker()).thenReturn(broker);
-    when(raft.peersMissingCapability(anyString())).thenReturn(missing);
+  private static FakeRaftHAServer raftWhoseCacheSays(final RaftTransactionBroker broker, final List<String> missing) {
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+    raft.transactionBroker(broker);
+    raft.returns("peersMissingCapability", missing);
     return raft;
   }
 

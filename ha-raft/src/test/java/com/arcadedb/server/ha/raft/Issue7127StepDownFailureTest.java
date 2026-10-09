@@ -25,6 +25,7 @@ import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.exception.TransactionCommittedRemotelyException;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.FakeArcadeDBServer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -40,13 +41,6 @@ import java.util.stream.Collectors;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.Mockito.doAnswer;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
 
 /**
  * Issue #7127: exercise the real step-down loop, including recovery through a real database commit.
@@ -55,18 +49,18 @@ import static org.mockito.Mockito.when;
  */
 class Issue7127StepDownFailureTest {
   private final ContextConfiguration config = configuration();
-  private final ArcadeDBServer server = mock(ArcadeDBServer.class);
+  private final FakeArcadeDBServer server = FakeArcadeDBServer.create();
   private final CountDownLatch stopped = new CountDownLatch(1);
   private ControlledTransfers raft;
 
   @BeforeEach
   void setUp() {
-    when(server.getServerName()).thenReturn("ArcadeDB_0");
-    when(server.getConfiguration()).thenReturn(config);
-    doAnswer(invocation -> {
+    server.returns("getServerName", "ArcadeDB_0");
+    server.returns("getConfiguration", config);
+    server.on("stop", args -> {
       stopped.countDown();
       return null;
-    }).when(server).stop();
+    });
     raft = new ControlledTransfers(server, config);
   }
 
@@ -142,9 +136,9 @@ class Issue7127StepDownFailureTest {
       // single call on a mock. Generous on purpose: a wider bound cannot turn a passing run red, while a tight
       // one turns a full-suite stop-the-world pause into a false failure (see CLAUDE.md on wall-clock bounds).
       assertThat(stopped.await(60, TimeUnit.SECONDS)).as("emergency server stop must be reached").isTrue();
-      verify(server).stop();
+      assertThat(server.calls("stop")).hasSize(1);
     } else
-      verify(server, never()).stop();
+      assertThat(server.calls("stop")).isEmpty();
   }
 
   @Test
@@ -156,7 +150,7 @@ class Issue7127StepDownFailureTest {
 
     assertThat(raft.fallbackAttempts).isEqualTo(2);
     assertThat(raft.targetedAttempts).isEqualTo(4);
-    verify(server, never()).stop();
+    assertThat(server.calls("stop")).isEmpty();
   }
 
   @ParameterizedTest
@@ -170,7 +164,7 @@ class Issue7127StepDownFailureTest {
     assertThat(raft.fallbackAttempts).isEqualTo(demotionAttempt);
     assertThat(raft.targetedAttempts).isEqualTo(2 * demotionAttempt);
     assertThat(raft.isLeader()).isFalse();
-    verify(server, never()).stop();
+    assertThat(server.calls("stop")).isEmpty();
   }
 
   private void commitWithPhase2Failure() {
@@ -193,7 +187,7 @@ class Issue7127StepDownFailureTest {
           .isInstanceOf(TransactionCommittedRemotelyException.class)
           .hasMessageContaining("Do NOT retry")
           .hasCause(fault);
-      verify(raft.broker).replicateTransaction(anyString(), any(), any());
+      assertThat(raft.broker.calls("replicateTransaction")).hasSize(1);
     } finally {
       RaftReplicatedDatabase.TEST_PHASE2_COMMIT_FAULT = null;
       local.setWrappedDatabaseInstance(local);
@@ -215,7 +209,7 @@ class Issue7127StepDownFailureTest {
       return getLivePeers().stream().map(peer -> peer.getId().toString()).collect(Collectors.toSet());
     }
 
-    private final RaftTransactionBroker broker = mock(RaftTransactionBroker.class);
+    private final FakeRaftTransactionBroker broker = new FakeRaftTransactionBroker();
     private int targetedAttempts;
     private int fallbackAttempts;
     private boolean leader = true;
@@ -225,7 +219,7 @@ class Issue7127StepDownFailureTest {
 
     private ControlledTransfers(final ArcadeDBServer server, final ContextConfiguration config) {
       super(server, config);
-      when(broker.replicateTransaction(anyString(), any(), any())).thenReturn(1L);
+      broker.returns("replicateTransaction", 1L);
     }
 
     @Override

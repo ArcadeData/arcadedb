@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.FakeArcadeDBServer;
 import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -34,15 +35,11 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 import static org.assertj.core.api.Assertions.assertThatNoException;
-import static org.mockito.Mockito.atLeastOnce;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
 
 /**
  * Regression test for issue #7298, the sibling of #7221.
@@ -78,7 +75,7 @@ class Issue7298BootstrapReplaySkipMissingDatabaseTest {
    * that call is the proof the install was actually reached - independent of the log lines, which is what the old
    * guard got wrong in the first place.
    */
-  private ArcadeDBServer mockServerWithDatabaseRegistered(final boolean registered) {
+  private FakeArcadeDBServer mockServerWithDatabaseRegistered(final boolean registered) {
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, serverDir.toString());
     // 0 retries with no backoff: the leader is unknown in this unit test, so the install fails immediately
@@ -87,9 +84,9 @@ class Issue7298BootstrapReplaySkipMissingDatabaseTest {
     config.setValue(GlobalConfiguration.HA_SNAPSHOT_INSTALL_RETRY_BASE_MS, 0L);
     config.setValue(GlobalConfiguration.NETWORK_USE_SSL, false);
 
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getConfiguration()).thenReturn(config);
-    when(server.existsDatabase(DB_NAME)).thenReturn(registered);
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create();
+    server.returns("getConfiguration", config);
+    server.on("existsDatabase", args -> Objects.equals(args[0], DB_NAME) ? registered : false);
     return server;
   }
 
@@ -134,7 +131,7 @@ class Issue7298BootstrapReplaySkipMissingDatabaseTest {
    */
   @Test
   void anAppliedEntryWhoseDatabaseIsGoneReinstallsItInsteadOfSkipping() throws Exception {
-    final ArcadeDBServer server = mockServerWithDatabaseRegistered(false);
+    final FakeArcadeDBServer server = mockServerWithDatabaseRegistered(false);
     final ArcadeStateMachine sm = stateMachineOn(server);
     sm.writePersistedAppliedIndex(ENTRY_INDEX, DB_NAME);
 
@@ -142,7 +139,7 @@ class Issue7298BootstrapReplaySkipMissingDatabaseTest {
     // on the Raft StateMachineUpdater thread, where an escaping exception trips the critical-error halt.
     assertThatNoException().isThrownBy(() -> sm.applyBootstrapFingerprintEntry(bootstrapEntry(), ENTRY_INDEX));
 
-    verify(server, atLeastOnce()).getBackupCoordinator();
+    assertThat(server.calls("getBackupCoordinator")).isNotEmpty();
     // The failed install hands off to a retry on the lifecycle executor, which persists the unreconciled mark under
     // .raft before it releases its holder. Waiting for the release keeps that write from racing the @TempDir
     // cleanup, which surfaced as "Failed to close extension context" with the test itself green.
@@ -156,13 +153,13 @@ class Issue7298BootstrapReplaySkipMissingDatabaseTest {
    */
   @Test
   void anAppliedEntryWhoseDatabaseIsStillHereStillSkips() throws Exception {
-    final ArcadeDBServer server = mockServerWithDatabaseRegistered(true);
+    final FakeArcadeDBServer server = mockServerWithDatabaseRegistered(true);
     final ArcadeStateMachine sm = stateMachineOn(server);
     sm.writePersistedAppliedIndex(ENTRY_INDEX, DB_NAME);
 
     sm.applyBootstrapFingerprintEntry(bootstrapEntry(), ENTRY_INDEX);
 
-    verify(server, never()).getBackupCoordinator();
+    assertThat(server.calls("getBackupCoordinator")).isEmpty();
     // The baseline is recorded before the skip either way, as it always was.
     assertThat(sm.getBootstrapBaseline(DB_NAME)).isNotNull();
   }
@@ -179,7 +176,7 @@ class Issue7298BootstrapReplaySkipMissingDatabaseTest {
    */
   @Test
   void aFailedReinstallIsRecordedDurablyRatherThanOnlyLogged() throws Exception {
-    final ArcadeDBServer server = mockServerWithDatabaseRegistered(false);
+    final FakeArcadeDBServer server = mockServerWithDatabaseRegistered(false);
     final ArcadeStateMachine sm = stateMachineOn(server);
     sm.writePersistedAppliedIndex(ENTRY_INDEX, DB_NAME);
 
@@ -203,13 +200,13 @@ class Issue7298BootstrapReplaySkipMissingDatabaseTest {
    */
   @Test
   void thePeriodicCheckRetriesTheInstallWhenTheDirectoryIsGone() {
-    final ArcadeDBServer server = mockServerWithDatabaseRegistered(false);
+    final FakeArcadeDBServer server = mockServerWithDatabaseRegistered(false);
     final ArcadeStateMachine sm = stateMachineOn(server);
     sm.markBootstrapUnreconciled(DB_NAME);
 
     sm.reconcileBootstrapDivergence(Map.of(DB_NAME, new ArcadeStateMachine.BootstrapBaseline("0".repeat(64), 7L)));
 
-    verify(server, atLeastOnce()).getBackupCoordinator();
+    assertThat(server.calls("getBackupCoordinator")).isNotEmpty();
     assertThat(sm.getBootstrapUnreconciledDatabases())
         .as("the install failed again, so the mark stays for the next tick")
         .contains(DB_NAME);
@@ -221,7 +218,7 @@ class Issue7298BootstrapReplaySkipMissingDatabaseTest {
    */
   @Test
   void thePeriodicCheckLeavesAClosedButPresentDatabaseAlone() throws Exception {
-    final ArcadeDBServer server = mockServerWithDatabaseRegistered(false);
+    final FakeArcadeDBServer server = mockServerWithDatabaseRegistered(false);
     final ArcadeStateMachine sm = stateMachineOn(server);
     sm.markBootstrapUnreconciled(DB_NAME);
     // A closed database, files and all: an EMPTY directory is what a failed install leaves behind, and holds no
@@ -230,7 +227,7 @@ class Issue7298BootstrapReplaySkipMissingDatabaseTest {
 
     sm.reconcileBootstrapDivergence(Map.of(DB_NAME, new ArcadeStateMachine.BootstrapBaseline("0".repeat(64), 7L)));
 
-    verify(server, never()).getBackupCoordinator();
+    assertThat(server.calls("getBackupCoordinator")).isEmpty();
     assertThat(sm.getBootstrapUnreconciledDatabases())
         .as("a closed database keeps its mark: absence from the registry is not evidence of convergence")
         .contains(DB_NAME);
@@ -244,13 +241,13 @@ class Issue7298BootstrapReplaySkipMissingDatabaseTest {
    */
   @Test
   void aGenuineLateJoinerStillWaitsForTheFollowOnInstallEntry() throws Exception {
-    final ArcadeDBServer server = mockServerWithDatabaseRegistered(false);
+    final FakeArcadeDBServer server = mockServerWithDatabaseRegistered(false);
     final ArcadeStateMachine sm = stateMachineOn(server);
     // No persisted applied index for this database at all: readPersistedAppliedIndex(dbName) answers -1.
 
     sm.applyBootstrapFingerprintEntry(bootstrapEntry(), ENTRY_INDEX);
 
-    verify(server, never()).getBackupCoordinator();
+    assertThat(server.calls("getBackupCoordinator")).isEmpty();
     assertThat(sm.getBootstrapBaseline(DB_NAME)).isNotNull();
   }
 }

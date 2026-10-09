@@ -21,8 +21,9 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.FakeArcadeDBServer;
+import com.arcadedb.server.FakeServerSecurity;
 import com.arcadedb.server.security.ReplicatedUsersPersistenceException;
-import com.arcadedb.server.security.ServerSecurity;
 import org.apache.ratis.proto.RaftProtos.LogEntryProto;
 import org.apache.ratis.proto.RaftProtos.StateMachineLogEntryProto;
 import org.apache.ratis.protocol.Message;
@@ -37,20 +38,16 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.lang.reflect.Proxy;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.Mockito.doAnswer;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 /**
  * Issue #7252: whether a {@code SECURITY_USERS_ENTRY} whose local persist failed is replayed after a restart,
@@ -234,22 +231,24 @@ class Issue7252SecurityEntryReplayAfterRestartTest {
    */
   private static ArcadeDBServer serverWhoseUsersFileFailsOnce(final AtomicBoolean firstWriteFailed,
       final Path databaseDirectory, final Path usersFile) {
-    final ServerSecurity security = mock(ServerSecurity.class);
-    doAnswer(invocation -> {
+    final FakeServerSecurity security = FakeServerSecurity.create();
+    security.on("applyReplicatedUsers", args -> {
       if (firstWriteFailed.compareAndSet(false, true))
         throw new ReplicatedUsersPersistenceException("Replicated users applied in memory but could NOT be persisted",
             new IOException("No space left on device"));
-      Files.writeString(usersFile, invocation.getArgument(0, String.class), StandardCharsets.UTF_8);
+      try {
+        Files.writeString(usersFile, (String) args[0], StandardCharsets.UTF_8);
+      } catch (final IOException e) {
+        throw new UncheckedIOException(e);
+      }
       return null;
-    }).when(security).applyReplicatedUsers(anyString());
+    });
 
     final ContextConfiguration configuration = new ContextConfiguration();
     configuration.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, databaseDirectory.toString());
 
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getSecurity()).thenReturn(security);
-    when(server.getConfiguration()).thenReturn(configuration);
-    when(server.getDatabaseNames()).thenReturn(Set.of());
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create(configuration);
+    server.security(security);
     return server;
   }
 

@@ -183,20 +183,21 @@ class Issue7514UnreachablePeerRefusalTest {
         + "seq=null, RW, null, ADD, servers:[localhost_2436|localhost:2436], listeners:[] for 60 attempts "
         + "with RetryLimited(maxAttempts=60, sleepTime=1s)";
 
-    final RaftHAServer server = mock(RaftHAServer.class);
+    final FakeRaftHAServer server = FakeRaftHAServer.detached();
     final RaftClient client = mock(RaftClient.class);
     final AdminApi admin = mock(AdminApi.class);
     final RaftClientReply reply = mock(RaftClientReply.class);
 
-    when(server.getClient()).thenReturn(client);
+    server.client(client);
     when(client.admin()).thenReturn(admin);
     when(reply.isSuccess()).thenReturn(false);
     when(reply.getException()).thenReturn(new RaftException(ratisText));
     when(admin.setConfiguration(org.mockito.ArgumentMatchers.<SetConfigurationRequest.Arguments>any()))
         .thenReturn(reply);
-    when(server.getLivePeers()).thenReturn(List.of(peer("A"), peer("B")));
-    when(server.getHttpAddresses()).thenReturn(new HashMap<>());
-    when(server.getRaftGroup()).thenReturn(RaftGroup.valueOf(RaftGroupId.randomId()));
+    server.livePeers(List.of(peer("A"), peer("B")));
+    server.committedPeers(List.of(peer("A"), peer("B")));
+    server.httpAddresses(new HashMap<>());
+    server.raftGroup(RaftGroup.valueOf(RaftGroupId.randomId()));
 
     assertThatThrownBy(() -> new RaftClusterManager(server, 0).addPeer("D", "localhost:2447"))
         .isInstanceOf(ConfigurationException.class)
@@ -209,19 +210,20 @@ class Issue7514UnreachablePeerRefusalTest {
   /** The removal path shares the helper and gets its own sentence, not the add's. */
   @Test
   void aRemovalThatRanOutOfBudgetIsReportedInItsOwnSentence() throws Exception {
-    final RaftHAServer server = mock(RaftHAServer.class);
+    final FakeRaftHAServer server = FakeRaftHAServer.detached();
     final RaftClient client = mock(RaftClient.class);
     final AdminApi admin = mock(AdminApi.class);
     final RaftClientReply reply = mock(RaftClientReply.class);
 
-    when(server.getClient()).thenReturn(client);
+    server.client(client);
     when(client.admin()).thenReturn(admin);
     when(reply.isSuccess()).thenReturn(false);
     when(reply.getException()).thenReturn(new RaftException("no leader"));
     when(admin.setConfiguration(org.mockito.ArgumentMatchers.<SetConfigurationRequest.Arguments>any()))
         .thenReturn(reply);
-    when(server.getLivePeers()).thenReturn(List.of(peer("A"), peer("B"), peer("C")));
-    when(server.getHttpAddresses()).thenReturn(new HashMap<>());
+    server.livePeers(List.of(peer("A"), peer("B"), peer("C")));
+    server.committedPeers(List.of(peer("A"), peer("B"), peer("C")));
+    server.httpAddresses(new HashMap<>());
 
     assertThatThrownBy(() -> new RaftClusterManager(server, 0).removePeer("C"))
         .isInstanceOf(ConfigurationException.class)

@@ -19,15 +19,13 @@
 package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.server.http.handler.ExecutionResponse;
 import com.arcadedb.server.security.ServerSecurityUser;
 import org.apache.ratis.protocol.RaftPeerId;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.doThrow;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 /**
  * Issue #7127 follow-up: {@code stepDown()} gained a terminal {@link ReplicationException}, so
@@ -44,13 +42,12 @@ import static org.mockito.Mockito.when;
  */
 class PostStepDownHandlerFailureTest {
 
-  private final RaftHAServer raftHAServer = mock(RaftHAServer.class);
+  private final FakeRaftHAServer raftHAServer = FakeRaftHAServer.detached();
   private final PostStepDownHandler handler = new PostStepDownHandler(null, pluginReturning(raftHAServer));
 
   @Test
   void exhaustedTransfersAnswer503RatherThanTheGeneric500() {
-    doThrow(new ReplicationException("Cannot step down: no other peer available for leadership transfer"))
-        .when(raftHAServer).stepDown();
+    raftHAServer.fails("stepDown", new ReplicationException("Cannot step down: no other peer available for leadership transfer"));
 
     final ExecutionResponse response = handler.execute(null, rootUser(), new JSONObject());
 
@@ -63,8 +60,7 @@ class PostStepDownHandlerFailureTest {
 
   @Test
   void aRefusalStillAnswers409() {
-    doThrow(new NotTheLeaderRefusalException("Refusing to step down", RaftPeerId.valueOf("ArcadeDB_1")))
-        .when(raftHAServer).stepDown();
+    raftHAServer.fails("stepDown", new NotTheLeaderRefusalException("Refusing to step down", RaftPeerId.valueOf("ArcadeDB_1")));
 
     final ExecutionResponse response = handler.execute(null, rootUser(), new JSONObject());
 
@@ -82,14 +78,13 @@ class PostStepDownHandlerFailureTest {
   }
 
   private static RaftHAPlugin pluginReturning(final RaftHAServer raftHAServer) {
-    final RaftHAPlugin plugin = mock(RaftHAPlugin.class);
-    when(plugin.getRaftHAServer()).thenReturn(raftHAServer);
+    final RaftHAPlugin plugin = new RaftHAPlugin();
+    plugin.setRaftHAServer(raftHAServer);
     return plugin;
   }
 
   private static ServerSecurityUser rootUser() {
-    final ServerSecurityUser user = mock(ServerSecurityUser.class);
-    when(user.getName()).thenReturn("root");
+    final ServerSecurityUser user = TestServerHelper.securityUser("root");
     return user;
   }
 }

@@ -22,9 +22,12 @@ import com.arcadedb.engine.OperationProgress;
 import com.arcadedb.engine.OperationProgressRegistry;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
-import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.FakeArcadeDBServer;
+import com.arcadedb.server.TestServerHelper;
+import com.arcadedb.server.UnstartedHttpServers;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
+import org.junit.jupiter.api.extension.RegisterExtension;
 
 import io.undertow.server.HttpServerExchange;
 import org.junit.jupiter.api.Test;
@@ -33,11 +36,9 @@ import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -48,6 +49,8 @@ import static org.mockito.Mockito.when;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class GetProgressHandlerTest {
+  @RegisterExtension
+  static final UnstartedHttpServers HTTP_SERVERS = new UnstartedHttpServers();
 
   /**
    * A mocked {@link HttpServer} that also answers {@link HttpServer#getServer()}. The base handler's
@@ -59,11 +62,9 @@ class GetProgressHandlerTest {
    * {@code UngatedHandlerPerTypeAclIT}.
    */
   private HttpServer httpServer() {
-    final HttpServer httpServer = mock(HttpServer.class);
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.existsDatabase(anyString())).thenReturn(false);
-    when(httpServer.getServer()).thenReturn(server);
-    return httpServer;
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create();
+    server.returns("existsDatabase", false);
+    return HTTP_SERVERS.of(server);
   }
 
   private HttpServerExchange exchangeFor(final String databaseName) {
@@ -79,11 +80,7 @@ class GetProgressHandlerTest {
   }
 
   private ServerSecurityUser userAuthorizedOn(final String... databases) {
-    final ServerSecurityUser user = mock(ServerSecurityUser.class);
-    final Set<String> authorized = Set.of(databases);
-    when(user.canAccessToDatabase(anyString()))
-        .thenAnswer(invocation -> authorized.contains("*") || authorized.contains((String) invocation.getArgument(0)));
-    return user;
+    return TestServerHelper.securityUser("user", databases);
   }
 
   @Test

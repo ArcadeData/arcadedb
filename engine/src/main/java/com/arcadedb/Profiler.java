@@ -25,6 +25,7 @@ import com.arcadedb.engine.FileManager;
 import com.arcadedb.engine.PageManager;
 import com.arcadedb.engine.ScanReadAheadBudget;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.sql.executor.QueryAdmissionGate;
 import com.arcadedb.query.sql.executor.QueryHeapBudget;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.FileUtils;
@@ -402,6 +403,16 @@ public class Profiler {
     json.put("scanReadAheadReserved", new JSONObject().put("space", ScanReadAheadBudget.getReservedBytes()));
     json.put("scanReadAheadReservedPeak", new JSONObject().put("space", ScanReadAheadBudget.getPeakReservedBytes()));
     json.put("scanReadAheadLimit", new JSONObject().put("space", ScanReadAheadBudget.getLimitBytes()));
+    // #9518: THE REQUESTS OF REMOTE CLIENTS THE ADMISSION GATE STARTED, KEPT WAITING AND REFUSED
+    final QueryAdmissionGate admissionGate = QueryAdmissionGate.getInstance();
+    json.put("queryAdmissionRunning", new JSONObject().put("value", admissionGate.getRunning()));
+    json.put("queryAdmissionQueued", new JSONObject().put("value", admissionGate.getQueued()));
+    json.put("queryAdmissionAdmitted", new JSONObject().put("count", admissionGate.getAdmitted()));
+    json.put("queryAdmissionAdmittedAfterWaiting", new JSONObject().put("count", admissionGate.getAdmittedAfterWaiting()));
+    json.put("queryAdmissionRefused", new JSONObject().put("count", admissionGate.getRefused()));
+    json.put("queryAdmissionHeapDeferrals", new JSONObject().put("count", admissionGate.getHeapDeferrals()));
+    // IN MS, LIKE snapshotBarrierTime
+    json.put("queryAdmissionWaitTime", new JSONObject().put("count", admissionGate.getTotalWaitNanos() / 1_000_000));
     json.put("commands", new JSONObject().put("count", commands));
     json.put("scanType", new JSONObject().put("count", scanType));
     json.put("scanBucket", new JSONObject().put("count", scanBucket));
@@ -738,6 +749,10 @@ public class Profiler {
           FileUtils.getSizeAsString(ScanReadAheadBudget.getReservedBytes()),
           FileUtils.getSizeAsString(ScanReadAheadBudget.getPeakReservedBytes()),
           FileUtils.getSizeAsString(ScanReadAheadBudget.getLimitBytes())));
+      final QueryAdmissionGate admissionGate = QueryAdmissionGate.getInstance();
+      buffer.append("%n QUERY-ADMISSION running=%d queued=%d admitted=%d afterWaiting=%d refused=%d heapDeferrals=%d waitTime=%dms".formatted(
+          admissionGate.getRunning(), admissionGate.getQueued(), admissionGate.getAdmitted(), admissionGate.getAdmittedAfterWaiting(),
+          admissionGate.getRefused(), admissionGate.getHeapDeferrals(), admissionGate.getTotalWaitNanos() / 1_000_000));
 
       buffer.append("%n INDEXES compactions=%d".formatted(indexCompactions));
 

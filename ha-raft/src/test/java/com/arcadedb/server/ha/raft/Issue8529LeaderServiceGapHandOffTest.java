@@ -20,7 +20,7 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.FakeArcadeDBServer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -38,12 +38,6 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.anyLong;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
 
 /**
  * Issue #8529: the #8491 hand-off moved leadership away only from a leader that was REPLACING one of its databases.
@@ -81,38 +75,38 @@ class Issue8529LeaderServiceGapHandOffTest {
 
   @Test
   void aLeaderMissingADatabaseTheBaselineCommittedHandsOff() {
-    final RaftHAServer raft = leader(true);
+    final FakeRaftHAServer raft = leader(true);
     final ArcadeStateMachine sm = stateMachine(raft);
     sm.markBootstrapUnreconciled(MISSING_DB); // marked, and no directory on disk: missing
 
     assertThat(sm.hasLeaderServiceGap()).isTrue();
     assertThat(sm.describeLeaderServiceGaps()).as("the log mirrors the predicate").hasSize(1);
     assertThat(sm.handOffLeadershipWhileReplacingDatabase()).isTrue();
-    verify(raft).transferLeadership(anyLong(), eq(false));
+    assertThat(raft.calls("transferLeadership")).filteredOn(Issue8529LeaderServiceGapHandOffTest::isHandOff).hasSize(1);
   }
 
   @Test
   void aLeaderWithAPendingBootstrapReplacementHandsOff() throws Exception {
-    final RaftHAServer raft = leader(true);
+    final FakeRaftHAServer raft = leader(true);
     final ArcadeStateMachine sm = stateMachine(raft);
     pendingBootstrapReplacements(sm).add(KEPT_DB);
 
     assertThat(sm.hasLeaderServiceGap()).isTrue();
     assertThat(sm.describeLeaderServiceGaps()).as("the log mirrors the predicate").hasSize(1);
     assertThat(sm.handOffLeadershipWhileReplacingDatabase()).isTrue();
-    verify(raft).transferLeadership(anyLong(), eq(false));
+    assertThat(raft.calls("transferLeadership")).filteredOn(Issue8529LeaderServiceGapHandOffTest::isHandOff).hasSize(1);
   }
 
   @Test
   void aLeaderHoldingAStaleSnapshotGapHandsOff() throws Exception {
-    final RaftHAServer raft = leader(true);
+    final FakeRaftHAServer raft = leader(true);
     final ArcadeStateMachine sm = stateMachine(raft);
     staleSnapshotAppliedFloor(sm).set(100L);
 
     assertThat(sm.hasLeaderServiceGap()).isTrue();
     assertThat(sm.describeLeaderServiceGaps()).as("the log mirrors the predicate").hasSize(1);
     assertThat(sm.handOffLeadershipWhileReplacingDatabase()).isTrue();
-    verify(raft).transferLeadership(anyLong(), eq(false));
+    assertThat(raft.calls("transferLeadership")).filteredOn(Issue8529LeaderServiceGapHandOffTest::isHandOff).hasSize(1);
   }
 
   // -- what must NOT hand off --------------------------------------------------------------------------------------
@@ -123,7 +117,7 @@ class Issue8529LeaderServiceGapHandOffTest {
    */
   @Test
   void aLeaderThatKeptItsOwnCopyDoesNotHandOff() throws Exception {
-    final RaftHAServer raft = leader(true);
+    final FakeRaftHAServer raft = leader(true);
     final ArcadeStateMachine sm = stateMachine(raft);
     final Path kept = serverDir.resolve(KEPT_DB);
     Files.createDirectories(kept);
@@ -133,29 +127,29 @@ class Issue8529LeaderServiceGapHandOffTest {
     assertThat(sm.hasLeaderServiceGap()).isFalse();
     assertThat(sm.describeLeaderServiceGaps()).isEmpty();
     assertThat(sm.handOffLeadershipWhileReplacingDatabase()).isFalse();
-    verify(raft, never()).transferLeadership(anyLong(), eq(false));
+    assertThat(raft.calls("transferLeadership")).filteredOn(Issue8529LeaderServiceGapHandOffTest::isHandOff).isEmpty();
   }
 
   @Test
   void aFollowerWithAGapDoesNotTransfer() throws Exception {
-    final RaftHAServer raft = leader(false);
+    final FakeRaftHAServer raft = leader(false);
     final ArcadeStateMachine sm = stateMachine(raft);
     staleSnapshotAppliedFloor(sm).set(100L);
     pendingBootstrapReplacements(sm).add(KEPT_DB);
 
     assertThat(sm.handOffLeadershipWhileReplacingDatabase()).isFalse();
-    verify(raft, never()).transferLeadership(anyLong(), eq(false));
+    assertThat(raft.calls("transferLeadership")).filteredOn(Issue8529LeaderServiceGapHandOffTest::isHandOff).isEmpty();
   }
 
   @Test
   void aHealthyLeaderHasNoGap() {
-    final RaftHAServer raft = leader(true);
+    final FakeRaftHAServer raft = leader(true);
     final ArcadeStateMachine sm = stateMachine(raft);
 
     assertThat(sm.hasLeaderServiceGap()).isFalse();
     assertThat(sm.describeLeaderServiceGaps()).isEmpty();
     assertThat(sm.handOffLeadershipWhileReplacingDatabase()).isFalse();
-    verify(raft, never()).transferLeadership(anyLong(), eq(false));
+    assertThat(raft.calls("transferLeadership")).filteredOn(Issue8529LeaderServiceGapHandOffTest::isHandOff).isEmpty();
   }
 
   /**
@@ -203,8 +197,10 @@ class Issue8529LeaderServiceGapHandOffTest {
 
   private void assertTheHealthTickHandsOff(final GapSetup gap) throws Exception {
     final CountDownLatch transferred = new CountDownLatch(1);
-    final RaftHAServer smRaft = leader(true);
-    when(smRaft.transferLeadership(anyLong(), eq(false))).thenAnswer(invocation -> {
+    final FakeRaftHAServer smRaft = leader(true);
+    smRaft.on("transferLeadership", args -> {
+      if (!isHandOff(args))
+        return false;
       transferred.countDown();
       return true;
     });
@@ -239,8 +235,10 @@ class Issue8529LeaderServiceGapHandOffTest {
   void repeatedHandOffsWhileTheGapPersistsBackOff() throws Exception {
     final AtomicLong clock = new AtomicLong(1_000_000L);
     final AtomicInteger attempts = new AtomicInteger();
-    final RaftHAServer raft = leader(true);
-    when(raft.transferLeadership(anyLong(), eq(false))).thenAnswer(invocation -> {
+    final FakeRaftHAServer raft = leader(true);
+    raft.on("transferLeadership", args -> {
+      if (!isHandOff(args))
+        return false;
       attempts.incrementAndGet();
       return true;
     });
@@ -282,8 +280,10 @@ class Issue8529LeaderServiceGapHandOffTest {
   void aFollowerHealthTickForgetsTheBackOffOnlyOnceTheGapCloses() throws Exception {
     final AtomicLong clock = new AtomicLong(1_000_000L);
     final AtomicInteger attempts = new AtomicInteger();
-    final RaftHAServer raft = leader(true);
-    when(raft.transferLeadership(anyLong(), eq(false))).thenAnswer(invocation -> {
+    final FakeRaftHAServer raft = leader(true);
+    raft.on("transferLeadership", args -> {
+      if (!isHandOff(args))
+        return false;
       attempts.incrementAndGet();
       return true;
     });
@@ -324,9 +324,9 @@ class Issue8529LeaderServiceGapHandOffTest {
   private static RaftHAServer tickServer(final boolean isLeader) {
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.HA_SERVER_LIST, "localhost:2434:2480,localhost:2435:2481,localhost:2436:2482");
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getServerName()).thenReturn("ArcadeDB_0");
-    when(server.getConfiguration()).thenReturn(config);
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create();
+    server.returns("getServerName", "ArcadeDB_0");
+    server.returns("getConfiguration", config);
     return new RaftHAServer(server, config) {
       @Override
       public boolean isLeader() {
@@ -335,20 +335,28 @@ class Issue8529LeaderServiceGapHandOffTest {
     };
   }
 
-  private static RaftHAServer leader(final boolean isLeader) {
-    final RaftHAServer raft = mock(RaftHAServer.class);
-    when(raft.isLeader()).thenReturn(isLeader);
-    when(raft.transferLeadership(anyLong(), eq(false))).thenReturn(true);
+  /** The hand-off's form of the request, {@code transferLeadership(timeoutMs, false)}: no bare step-down fallback. */
+  private static boolean isHandOff(final Object[] args) {
+    return args.length == 2 && Boolean.FALSE.equals(args[1]);
+  }
+
+  private static boolean isHandOff(final List<Object> args) {
+    return isHandOff(args.toArray());
+  }
+
+  private static FakeRaftHAServer leader(final boolean isLeader) {
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+    raft.leader(isLeader);
+    // The hand-off asks for transferLeadership(timeout, false): that form succeeds, as the mock's stub answered
+    raft.on("transferLeadership", args -> isHandOff(args));
     return raft;
   }
 
   private ArcadeStateMachine stateMachine(final RaftHAServer raft) {
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, serverDir.toString());
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getConfiguration()).thenReturn(config);
-    when(server.existsDatabase(MISSING_DB)).thenReturn(false);
-    when(server.existsDatabase(KEPT_DB)).thenReturn(false);
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create();
+    server.returns("getConfiguration", config);
 
     final ArcadeStateMachine sm = new ArcadeStateMachine();
     sm.setServer(server);

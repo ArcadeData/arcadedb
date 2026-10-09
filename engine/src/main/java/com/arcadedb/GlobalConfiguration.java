@@ -113,6 +113,8 @@ public enum GlobalConfiguration {
         // A SCAN OF LARGE RECORDS READS AHEAD LITTLE: ABOUT TWO RECORDS OF 86KB PER BATCH INSTEAD OF A DOZEN (#9404)
         QUERY_BATCH_MAX_BYTES.setValue(200L * 1024);
         QUERY_SCAN_READ_AHEAD_MAX_RAM.setValue(16L);
+        // HALF OF THE 16 HTTP WORKER THREADS BELOW AT MOST WAIT IN THE QUERY ADMISSION QUEUE, WHEN THE GATE IS ENABLED (#9518)
+        QUERY_QUEUE_MAX_SIZE.setValue(8);
 
         QUERY_PARALLELISM_POOL_THREADS.setValue(2);
         QUERY_PARALLELISM_QUEUE_SIZE.setValue(64);
@@ -945,6 +947,44 @@ public enum GlobalConfiguration {
         final long maxHeap = Runtime.getRuntime().maxMemory();
         return maxHeap == Long.MAX_VALUE ? 0L : maxHeap / 2 / 1024 / 1024;
       }),
+
+  QUERY_MAX_CONCURRENT("arcadedb.queryMaxConcurrent", SCOPE.JVM, """
+      Maximum number of requests of remote clients (HTTP, Postgres, Bolt, Redis, gRPC, Gremlin Server, MCP, MongoDB) that \
+      may run at once in the JVM, across every database (issue #9518). A request that arrives when this many are running, \
+      or when the heap the running queries hold reserved is above arcadedb.queryAdmissionHeapWatermark, waits in a queue \
+      and starts in arrival order (FIFO) as soon as both allow it, instead of running at once and risking a refusal from \
+      arcadedb.queryMaxHeapRAM. The wait happens before anything of the request runs, never in the middle of it, and a \
+      query started from inside a running one shares its slot. A request that waits longer than arcadedb.queryQueueTimeout, \
+      or that finds arcadedb.queryQueueMaxSize requests already waiting, fails with a QueryAdmissionException, which is \
+      transient (HTTP answers it with 503). Waiting requests park the thread that received them, so keep \
+      arcadedb.queryQueueMaxSize below arcadedb.server.httpWorkerThreads to leave HTTP threads for the other requests. The \
+      MongoDB protocol runs its requests on threads shared by other connections, so it does not wait: a request that \
+      cannot start at once is refused. The embedded API does not go through the gate. When left at the default it is \
+      twice the number of cores, at least 4. 0 or a negative value disables the gate: every request runs at once""",
+      Integer.class, 0, null, value -> Math.max(4, 2 * Runtime.getRuntime().availableProcessors())),
+
+  QUERY_ADMISSION_HEAP_WATERMARK("arcadedb.queryAdmissionHeapWatermark", SCOPE.JVM, """
+      Percentage of arcadedb.queryMaxHeapRAM above which the query admission gate (arcadedb.queryMaxConcurrent) stops \
+      starting new queries and lets them wait in its queue until the running ones give heap back (issue #9518). A running \
+      query keeps growing after it started, so this is headroom, not a guarantee: the heap budget still refuses the query \
+      that would exceed it. When no query admitted by the gate is running, the next one starts whatever the heap, so a \
+      budget held by other work cannot stall the queue for good. Ignored when the gate or the heap budget is disabled. \
+      0 or a negative value admits on the number of running queries alone""",
+      Integer.class, 80),
+
+  QUERY_QUEUE_TIMEOUT("arcadedb.queryQueueTimeout", SCOPE.JVM, """
+      Maximum time in milliseconds a query waits in the queue of the query admission gate (arcadedb.queryMaxConcurrent) \
+      before it fails with a QueryAdmissionException (HTTP 503) without having run (issue #9518). 0 or a negative value \
+      does not wait: a query that cannot start at once is refused""",
+      Long.class, 30_000L),
+
+  QUERY_QUEUE_MAX_SIZE("arcadedb.queryQueueMaxSize", SCOPE.JVM, """
+      Maximum number of queries that may wait in the queue of the query admission gate (arcadedb.queryMaxConcurrent) at \
+      once (issue #9518). A query that finds the queue full fails at once with a QueryAdmissionException (HTTP 503) \
+      without having run. Each waiting query parks the HTTP worker thread that received it, so this bounds how many of \
+      those threads the queue can take away from the other requests. 0 or a negative value disables the queue: a query \
+      that cannot start at once is refused""",
+      Integer.class, 256),
 
   QUERY_MAX_RANGE_SIZE("arcadedb.queryMaxRangeSize", SCOPE.DATABASE, """
       Maximum number of elements a range() expression is allowed to produce. If exceeded, the query is rejected with a \

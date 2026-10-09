@@ -24,6 +24,7 @@ import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.CallLog;
 import com.arcadedb.server.TestServerHelper;
 import org.apache.ratis.client.RaftClient;
 import org.apache.ratis.client.api.AdminApi;
@@ -43,7 +44,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.anyLong;
-import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
@@ -67,21 +67,21 @@ class Issue8480NoTargetTransferIsARealHandoffTest {
   private static final RaftPeerId B    = RaftPeerId.valueOf("peer-b_2435");
   private static final RaftPeerId C    = RaftPeerId.valueOf("peer-c_2436");
 
-  private RaftHAServer raft;
+  private FakeRaftHAServer raft;
   private AdminApi     admin;
 
   @BeforeEach
   void setUp() {
-    raft = mock(RaftHAServer.class);
+    raft = FakeRaftHAServer.detached();
     admin = mock(AdminApi.class);
     final RaftClient client = mock(RaftClient.class);
     when(client.admin()).thenReturn(admin);
-    when(raft.getClient()).thenReturn(client);
-    when(raft.getLocalPeerId()).thenReturn(SELF);
-    when(raft.isLeader()).thenReturn(true);
-    when(raft.getLivePeers()).thenReturn(List.of(peer(SELF), peer(B), peer(C)));
+    raft.returns("getClient", client);
+    raft.localPeerId(SELF);
+    raft.leader(true);
+    raft.returns("getLivePeers", List.of(peer(SELF), peer(B), peer(C)));
     // Both peers answer (issue #8556): these tests are about the transfer loop, not reachability.
-    when(raft.handoffReachablePeers()).thenReturn(Set.of(B.toString(), C.toString()));
+    raft.returns("handoffReachablePeers", Set.of(B.toString(), C.toString()));
   }
 
   /** The crux: the no-target form picks a peer and makes a targeted transfer, and never issues the bare step-down. */
@@ -103,7 +103,7 @@ class Issue8480NoTargetTransferIsARealHandoffTest {
     final RaftClientReply ok = reply(true);
     when(admin.transferLeadership(eq(B), anyLong())).thenReturn(failed);
     when(admin.transferLeadership(eq(C), anyLong())).thenReturn(ok);
-    when(raft.getLeaderId()).thenReturn(SELF);
+    raft.leaderId(SELF);
 
     assertThat(manager().transferLeadership(10_000)).isTrue();
 
@@ -119,8 +119,8 @@ class Issue8480NoTargetTransferIsARealHandoffTest {
   @Test
   void leadershipLostMidTransferWithNoNewLeaderReportsFalse() throws Exception {
     // true for the entry guard, false from the first targeted transfer on
-    when(raft.isLeader()).thenReturn(true, false);
-    when(raft.getLeaderId()).thenReturn(null);
+    raft.leader(true, false);
+    raft.leaderId(null);
 
     // A short budget: the "did another leader settle?" check waits out the caller's remaining budget.
     assertThat(manager().transferLeadership(200)).isFalse();
@@ -139,9 +139,9 @@ class Issue8480NoTargetTransferIsARealHandoffTest {
   void aTransferThatWonDespiteAFailedCallIsReportedAsAHandoff() throws Exception {
     when(admin.transferLeadership(eq(B), anyLong())).thenThrow(new IOException("client-1 is already CLOSED"));
     // entry guard, the targeted overload's own guard, then the check after the failure
-    when(raft.isLeader()).thenReturn(true, true, false);
+    raft.leader(true, true, false);
     // isLeaderNow(B) right after the failure has not seen B yet; the settle check then does
-    when(raft.getLeaderId()).thenReturn(null, B);
+    raft.on("getLeaderId", CallLog.inOrder(null, B));
 
     assertThat(manager().transferLeadership(10_000)).isTrue();
 
@@ -158,7 +158,7 @@ class Issue8480NoTargetTransferIsARealHandoffTest {
     everyPeerLags();
     final RaftClientReply ok = reply(true);
     when(admin.transferLeadership(isNull(), anyLong())).thenReturn(ok);
-    when(raft.getLeaderId()).thenReturn(null);
+    raft.leaderId(null);
 
     assertThat(manager().transferLeadership(100)).isFalse();
 
@@ -172,7 +172,7 @@ class Issue8480NoTargetTransferIsARealHandoffTest {
     everyPeerLags();
     final RaftClientReply ok = reply(true);
     when(admin.transferLeadership(isNull(), anyLong())).thenReturn(ok);
-    when(raft.getLeaderId()).thenReturn(null, null, SELF);
+    raft.on("getLeaderId", CallLog.inOrder(null, null, SELF));
 
     assertThat(manager().transferLeadership(100)).isFalse();
   }
@@ -183,7 +183,7 @@ class Issue8480NoTargetTransferIsARealHandoffTest {
     everyPeerLags();
     final RaftClientReply ok = reply(true);
     when(admin.transferLeadership(isNull(), anyLong())).thenReturn(ok);
-    when(raft.getLeaderId()).thenReturn(null, null, C);
+    raft.on("getLeaderId", CallLog.inOrder(null, null, C));
 
     assertThat(manager().transferLeadership(10_000)).isTrue();
   }
@@ -325,7 +325,7 @@ class Issue8480NoTargetTransferIsARealHandoffTest {
       return ok;
     });
     final AtomicInteger polls = new AtomicInteger();
-    when(raft.getLeaderId()).thenAnswer(invocation -> {
+    raft.on("getLeaderId", args -> {
       polls.incrementAndGet();
       return null;
     });
@@ -340,7 +340,7 @@ class Issue8480NoTargetTransferIsARealHandoffTest {
    */
   @Test
   void theBareStepDownIsNeverSentFromANodeThatIsNoLongerTheLeader() throws Exception {
-    when(raft.isLeader()).thenReturn(false);
+    raft.leader(false);
 
     assertThat(manager().stepDownWithoutTarget(10_000)).isFalse();
 
@@ -400,9 +400,10 @@ class Issue8480NoTargetTransferIsARealHandoffTest {
   }
 
   private void everyPeerLags() {
-    final ClusterMonitor monitor = mock(ClusterMonitor.class);
-    when(monitor.isReplicaLagging(anyString())).thenReturn(true);
-    when(raft.getClusterMonitor()).thenReturn(monitor);
+    final ClusterMonitor monitor = new ClusterMonitor(100);
+    for (final RaftPeerId peer : List.of(SELF, B, C))
+      lagging(monitor, peer);
+    raft.returns("getClusterMonitor", monitor);
   }
 
   private static RaftClientReply reply(final boolean success) {
@@ -414,5 +415,14 @@ class Issue8480NoTargetTransferIsARealHandoffTest {
   private static RaftPeer peer(final RaftPeerId id) {
     return RaftPeer.newBuilder().setId(id).setAddress("localhost:" + id.toString().substring(id.toString().indexOf('_') + 1))
         .build();
+  }
+
+  /**
+   * Has the real {@code monitor} see {@code replica} acknowledge none of the leader's 1000 committed entries, which is
+   * past the 100-entry warning threshold it was built with: {@link ClusterMonitor#isReplicaLagging} answers true for it.
+   */
+  private static void lagging(final ClusterMonitor monitor, final RaftPeerId replica) {
+    monitor.updateLeaderCommitIndex(1_000L);
+    monitor.updateReplicaMatchIndex(replica.toString(), 0L, 0L);
   }
 }

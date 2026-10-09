@@ -21,15 +21,24 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.CallLog;
 import com.arcadedb.server.TestServerHelper;
+import org.apache.ratis.client.RaftClient;
+import org.apache.ratis.protocol.RaftGroup;
+import org.apache.ratis.protocol.RaftPeer;
 import org.apache.ratis.protocol.RaftPeerId;
 
+import java.lang.reflect.Field;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Function;
+import java.util.function.Supplier;
 
 /**
  * A real {@link RaftHAServer}, built detached (never started, no Ratis), whose view of the cluster - leadership, the
@@ -62,8 +71,42 @@ public class FakeRaftHAServer extends RaftHAServer {
   private volatile String                           localHttpsAddress;
   private volatile String                           leaderHttpAddress;
   private volatile String                           clusterToken;
-  private volatile ArcadeStateMachine               stateMachine;
   private volatile UnverifiedClosedCopyCheck        unverifiedClosedCopyCheck;
+
+  // The cluster-membership view: each answers the real detached server's own view until the test sets it
+  private final Setting<ArcadeStateMachine>               stateMachineSetting  = new Setting<>();
+  private final Setting<RaftClient>                       client               = new Setting<>();
+  private final Setting<RaftGroup>                        raftGroup            = new Setting<>();
+  private final Setting<Map<RaftPeerId, String>>          httpAddresses        = new Setting<>();
+  private final Setting<Collection<RaftPeer>>             livePeers            = new Setting<>();
+  private final Setting<Collection<RaftPeer>>             committedPeers       = new Setting<>();
+  private final Setting<Integer>                          configuredServers    = new Setting<>();
+  private final Setting<Map<String, ReplicationLatency>>  replicationLatencies = new Setting<>();
+  private final Setting<List<Map<String, Object>>>        followerStates       = new Setting<>();
+  private final Setting<Long>                             raftLogStartIndex    = new Setting<>();
+  private final Setting<Long>                             quorumTimeout        = new Setting<>();
+  private final Setting<Boolean>                          shutdownRequested    = new Setting<>();
+  private final Setting<Boolean>                          txPreparedAtCapable  = new Setting<>();
+  private final Setting<TrustedHttpClientCache>           httpsClients         = new Setting<>();
+  private final Setting<Long>                             lastAppliedIndex     = new Setting<>();
+  private final Setting<RaftTransactionBroker>            transactionBroker    = new Setting<>();
+  private final Setting<PeerCapabilityRegistry>           capabilityRegistry   = new Setting<>();
+  private final Setting<LocalDropVerbs>                   localDropVerbs       = new Setting<>();
+
+  // Calls whose effect is the call itself: recorded, answered by the test, else by what an unstubbed mock answered
+  private static final Set<String> RECORDED = Set.of("peersMissingCapability", "peersMissingCapabilityNow",
+      "waitForAppliedIndex",
+      // Leadership and lifecycle: the effect is the request itself, which a detached server could not carry out
+      "transferLeadership", "stepDown", "handOffLeadershipToResync", "notifyApplied", "leaveCluster", "stop",
+      "newMembershipClient",
+      // Getters a test answers from a function of the moment (a leader that changes once a transfer is asked for);
+      // each still answers the value set with its setter when no function is set
+      "getLeaderId", "isLeader", "getLivePeers", "getCommittedPeersOrNull", "getUnambiguousPeerHttpAddress",
+      "isSoleVoter", "getClient", "followerContactPeers", "handoffReachablePeers", "getClusterMonitor",
+      // What a read guarantee waits on: Ratis's applied index, clamped by any per-database floor
+      "getTrustedAppliedIndex");
+  private volatile CallLog         log     = new CallLog();
+  private final    CallLog.Answers answers = new CallLog.Answers(RECORDED);
 
   private FakeRaftHAServer(final ArcadeDBServer server, final ContextConfiguration configuration) {
     super(server, configuration);
@@ -75,6 +118,13 @@ public class FakeRaftHAServer extends RaftHAServer {
     final ContextConfiguration configuration = new ContextConfiguration();
     configuration.setValue(GlobalConfiguration.HA_SERVER_LIST, "localhost:2434:2480");
     return new FakeRaftHAServer(TestServerHelper.unstartedServer("localhost"), configuration);
+  }
+
+  /** A detached fake owned by {@code server}, which {@link #getServer()} then answers. */
+  public static FakeRaftHAServer detached(final ArcadeDBServer server) {
+    final ContextConfiguration configuration = new ContextConfiguration();
+    configuration.setValue(GlobalConfiguration.HA_SERVER_LIST, "localhost:2434:2480");
+    return new FakeRaftHAServer(server, configuration);
   }
 
   /** A follower of {@code leaderPeerId}, whose HTTP address is {@code leaderHttpAddress}. */
@@ -140,10 +190,168 @@ public class FakeRaftHAServer extends RaftHAServer {
 
   /**
    * The state machine {@link #getStateMachine()} answers instead of the detached server's own fresh one - which has
-   * never applied anything, so a test of a RUNNING cluster hands in one that has.
+   * never applied anything, so a test of a RUNNING cluster hands in one that has. It is set on the getter AND on the
+   * {@code stateMachine} field, which the server's own lag and stuck-follower checks read directly.
    */
   public FakeRaftHAServer stateMachine(final ArcadeStateMachine stateMachine) {
-    this.stateMachine = stateMachine;
+    stateMachineSetting.set(stateMachine);
+    // Also the field the server's own checks read directly, so the getter and the field can never disagree
+    try {
+      final Field field = RaftHAServer.class.getDeclaredField("stateMachine");
+      field.setAccessible(true);
+      field.set(this, stateMachine);
+    } catch (final ReflectiveOperationException e) {
+      throw new IllegalStateException("RaftHAServer has no 'stateMachine' field to set", e);
+    }
+    return this;
+  }
+
+  /** No state machine at all, as before the Raft server has created one. */
+  public FakeRaftHAServer noStateMachine() {
+    return stateMachine(null);
+  }
+
+  public FakeRaftHAServer client(final RaftClient client) {
+    this.client.set(client);
+    return this;
+  }
+
+  public FakeRaftHAServer raftGroup(final RaftGroup raftGroup) {
+    this.raftGroup.set(raftGroup);
+    return this;
+  }
+
+  public FakeRaftHAServer httpAddresses(final Map<RaftPeerId, String> httpAddresses) {
+    this.httpAddresses.set(httpAddresses);
+    return this;
+  }
+
+  public FakeRaftHAServer livePeers(final Collection<RaftPeer> livePeers) {
+    this.livePeers.set(livePeers);
+    return this;
+  }
+
+  /** The committed membership; {@code null} is "no information this tick", as {@code getCommittedPeersOrNull} defines. */
+  public FakeRaftHAServer committedPeers(final Collection<RaftPeer> committedPeers) {
+    this.committedPeers.set(committedPeers);
+    return this;
+  }
+
+  public FakeRaftHAServer configuredServers(final int configuredServers) {
+    this.configuredServers.set(configuredServers);
+    return this;
+  }
+
+  public FakeRaftHAServer replicationLatencies(final Map<String, ReplicationLatency> replicationLatencies) {
+    this.replicationLatencies.set(replicationLatencies);
+    return this;
+  }
+
+  public FakeRaftHAServer followerStates(final List<Map<String, Object>> followerStates) {
+    this.followerStates.set(followerStates);
+    return this;
+  }
+
+  /** How long a replication waits for its quorum; unset, the configured {@code arcadedb.ha.quorumTimeout}. */
+  public FakeRaftHAServer quorumTimeout(final long quorumTimeoutMs) {
+    this.quorumTimeout.set(quorumTimeoutMs);
+    return this;
+  }
+
+  /** A server that is shutting down: the commit path stops waiting for the local apply. Unset, it is not. */
+  public FakeRaftHAServer shutdownRequested(final boolean shutdownRequested) {
+    this.shutdownRequested.set(shutdownRequested);
+    return this;
+  }
+
+  /**
+   * Whether every peer can read the {@code tx-prepared-at-index} section, so a commit may state it. Unset, the real
+   * answer, which on a detached server asks a registry that has heard from no peer.
+   */
+  public FakeRaftHAServer txPreparedAtCapable(final boolean capable) {
+    this.txPreparedAtCapable.set(capable);
+    return this;
+  }
+
+  public FakeRaftHAServer raftLogStartIndex(final long raftLogStartIndex) {
+    this.raftLogStartIndex.set(raftLogStartIndex);
+    return this;
+  }
+
+  /** The applied index Ratis reports; set it again to model the follower applying entries between two reads. */
+  public FakeRaftHAServer lastAppliedIndex(final long lastAppliedIndex) {
+    this.lastAppliedIndex.set(lastAppliedIndex);
+    return this;
+  }
+
+  public FakeRaftHAServer transactionBroker(final RaftTransactionBroker transactionBroker) {
+    this.transactionBroker.set(transactionBroker);
+    return this;
+  }
+
+  public FakeRaftHAServer peerCapabilityRegistry(final PeerCapabilityRegistry registry) {
+    this.capabilityRegistry.set(registry);
+    return this;
+  }
+
+  // Package-private like LocalDropVerbs itself
+  FakeRaftHAServer localDropVerbs(final LocalDropVerbs verbs) {
+    this.localDropVerbs.set(verbs);
+    return this;
+  }
+
+  /**
+   * Records on {@code log} from now on, which other fakes (a {@link FakeRaftTransactionBroker}) may share. Call it
+   * before the fake is used: calls already recorded stay on the previous log. Answers already set are kept.
+   */
+  public FakeRaftHAServer recordingOn(final CallLog log) {
+    this.log = log;
+    return this;
+  }
+
+  public CallLog log() {
+    return log;
+  }
+
+  /** The argument lists of every call to the recorded {@code method}, in arrival order. */
+  public List<List<Object>> calls(final String method) {
+    return log.argsOf(this, method);
+  }
+
+  /** The recorded {@code method} answers {@code value} from now on. */
+  public FakeRaftHAServer returns(final String method, final Object value) {
+    return on(method, args -> value);
+  }
+
+  /** The recorded {@code method} throws {@code failure} from now on. */
+  public FakeRaftHAServer fails(final String method, final RuntimeException failure) {
+    return on(method, args -> {
+      throw failure;
+    });
+  }
+
+  /** The recorded {@code method} runs {@code answer} on its arguments from now on. */
+  public FakeRaftHAServer on(final String method, final Function<Object[], Object> answer) {
+    answers.set(method, answer);
+    return this;
+  }
+
+  private Object call(final String method, final Supplier<Object> fallback, final Object... args) {
+    log.record(this, method, args);
+    final Function<Object[], Object> answer = answers.get(method);
+    return answer != null ? answer.apply(args) : fallback.get();
+  }
+
+  /** A boolean answer, refused with the method's name when a set answer is null or not a boolean. */
+  private static boolean bool(final String method, final Object answer) {
+    if (!(answer instanceof Boolean value))
+      throw new IllegalStateException("The answer set for '" + method + "' must be a Boolean, it gave "
+          + (answer == null ? "null" : answer.getClass().getSimpleName()));
+    return value;
+  }
+
+  FakeRaftHAServer httpsClients(final TrustedHttpClientCache httpsClients) {
+    this.httpsClients.set(httpsClients);
     return this;
   }
 
@@ -201,7 +409,7 @@ public class FakeRaftHAServer extends RaftHAServer {
 
   @Override
   public boolean isLeader() {
-    return leader.next();
+    return bool("isLeader", call("isLeader", leader::next));
   }
 
   @Override
@@ -212,7 +420,7 @@ public class FakeRaftHAServer extends RaftHAServer {
 
   @Override
   public RaftPeerId getLeaderId() {
-    return leaderId;
+    return (RaftPeerId) call("getLeaderId", () -> leaderId);
   }
 
   @Override
@@ -232,18 +440,29 @@ public class FakeRaftHAServer extends RaftHAServer {
 
   @Override
   public String getPeerHttpAddress(final RaftPeerId peerId) {
+    if (peerId == null)
+      return null;
     final Answers<String> answers = peerHttpAddresses.get(peerId);
     return answers != null ? answers.next() : null;
   }
 
+  /** Recorded; unanswered, the real clamp of the (detached, so unreadable) Ratis applied index. */
+  @Override
+  public long getTrustedAppliedIndex(final String databaseName) {
+    final Object answer = call("getTrustedAppliedIndex", () -> super.getTrustedAppliedIndex(databaseName), databaseName);
+    if (!(answer instanceof Long index))
+      throw new IllegalStateException("The answer set for 'getTrustedAppliedIndex' must be a Long, it gave " + answer);
+    return index;
+  }
+
   @Override
   public String getUnambiguousPeerHttpAddress(final RaftPeerId peerId) {
-    return getPeerHttpAddress(peerId);
+    return (String) call("getUnambiguousPeerHttpAddress", () -> getPeerHttpAddress(peerId), peerId);
   }
 
   @Override
   public String getPeerHttpsAddress(final RaftPeerId peerId) {
-    return peerHttpsAddresses.get(peerId);
+    return peerId == null ? null : peerHttpsAddresses.get(peerId);
   }
 
   @Override
@@ -269,8 +488,188 @@ public class FakeRaftHAServer extends RaftHAServer {
 
   @Override
   public ArcadeStateMachine getStateMachine() {
-    final ArcadeStateMachine set = stateMachine;
-    return set != null ? set : super.getStateMachine();
+    return stateMachineSetting.orElse(super::getStateMachine);
+  }
+
+  @Override
+  public RaftClient getClient() {
+    return (RaftClient) call("getClient", () -> client.orElse(super::getClient));
+  }
+
+  @Override
+  public RaftGroup getRaftGroup() {
+    return raftGroup.orElse(super::getRaftGroup);
+  }
+
+  @Override
+  public Map<RaftPeerId, String> getHttpAddresses() {
+    return httpAddresses.orElse(super::getHttpAddresses);
+  }
+
+  @Override
+  @SuppressWarnings("unchecked")
+  public Collection<RaftPeer> getLivePeers() {
+    return (Collection<RaftPeer>) call("getLivePeers", () -> livePeers.orElse(super::getLivePeers));
+  }
+
+  @Override
+  @SuppressWarnings("unchecked")
+  public Collection<RaftPeer> getCommittedPeersOrNull() {
+    return (Collection<RaftPeer>) call("getCommittedPeersOrNull", () -> committedPeers.orElse(super::getCommittedPeersOrNull));
+  }
+
+  @Override
+  public int getConfiguredServers() {
+    return configuredServers.orElse(super::getConfiguredServers);
+  }
+
+  @Override
+  public Map<String, ReplicationLatency> getReplicationLatencies() {
+    return replicationLatencies.orElse(super::getReplicationLatencies);
+  }
+
+  @Override
+  public List<Map<String, Object>> getFollowerStates() {
+    return followerStates.orElse(super::getFollowerStates);
+  }
+
+  @Override
+  public long getQuorumTimeout() {
+    return quorumTimeout.orElse(super::getQuorumTimeout);
+  }
+
+  @Override
+  public boolean isShutdownRequested() {
+    return shutdownRequested.orElse(super::isShutdownRequested);
+  }
+
+  @Override
+  public boolean canStateTxPreparedAt() {
+    return txPreparedAtCapable.orElse(super::canStateTxPreparedAt);
+  }
+
+  @Override
+  public long getRaftLogStartIndex() {
+    return raftLogStartIndex.orElse(super::getRaftLogStartIndex);
+  }
+
+  @Override
+  public long getLastAppliedIndex() {
+    return lastAppliedIndex.orElse(super::getLastAppliedIndex);
+  }
+
+  @Override
+  public RaftTransactionBroker getTransactionBroker() {
+    return transactionBroker.orElse(super::getTransactionBroker);
+  }
+
+  @Override
+  public PeerCapabilityRegistry getPeerCapabilityRegistry() {
+    return capabilityRegistry.orElse(super::getPeerCapabilityRegistry);
+  }
+
+  @Override
+  LocalDropVerbs getLocalDropVerbs() {
+    return localDropVerbs.orElse(super::getLocalDropVerbs);
+  }
+
+  @Override
+  @SuppressWarnings("unchecked")
+  public List<String> peersMissingCapability(final String capability) {
+    return (List<String>) call("peersMissingCapability", List::of, capability);
+  }
+
+  @Override
+  @SuppressWarnings("unchecked")
+  public List<String> peersMissingCapabilityNow(final String capability) {
+    return (List<String>) call("peersMissingCapabilityNow", List::of, capability);
+  }
+
+  @Override
+  public void waitForAppliedIndex(final String databaseName, final long targetIndex, final boolean throwOnTimeout) {
+    call("waitForAppliedIndex", () -> null, databaseName, targetIndex, throwOnTimeout);
+  }
+
+  @Override
+  @SuppressWarnings("unchecked")
+  Set<String> followerContactPeers() {
+    return (Set<String>) call("followerContactPeers", super::followerContactPeers);
+  }
+
+  @Override
+  @SuppressWarnings("unchecked")
+  Set<String> handoffReachablePeers() {
+    return (Set<String>) call("handoffReachablePeers", super::handoffReachablePeers);
+  }
+
+  @Override
+  public ClusterMonitor getClusterMonitor() {
+    return (ClusterMonitor) call("getClusterMonitor", super::getClusterMonitor);
+  }
+
+  /**
+   * Not a sole voter unless a test says so. The detached server's own answer would be "yes" - its server list holds this
+   * node alone - and a sole voter takes paths (#9308) a member of a real cluster never does.
+   */
+  @Override
+  public boolean isSoleVoter() {
+    return bool("isSoleVoter", call("isSoleVoter", () -> false));
+  }
+
+  @Override
+  public boolean transferLeadership(final long timeoutMs) {
+    return bool("transferLeadership", call("transferLeadership", () -> false, timeoutMs));
+  }
+
+  @Override
+  public boolean transferLeadership(final long timeoutMs, final boolean bareStepDownFallback) {
+    return bool("transferLeadership", call("transferLeadership", () -> false, timeoutMs, bareStepDownFallback));
+  }
+
+  @Override
+  public void transferLeadership(final String targetPeerId, final long timeoutMs) {
+    call("transferLeadership", () -> null, targetPeerId, timeoutMs);
+  }
+
+  @Override
+  public void stepDown() {
+    call("stepDown", () -> null);
+  }
+
+  @Override
+  void handOffLeadershipToResync(final String reason) {
+    call("handOffLeadershipToResync", () -> null, reason);
+  }
+
+  @Override
+  public void notifyApplied() {
+    call("notifyApplied", () -> null);
+  }
+
+  @Override
+  public void leaveCluster() {
+    call("leaveCluster", () -> null);
+  }
+
+  @Override
+  public void leaveCluster(final boolean force) {
+    call("leaveCluster", () -> null, force);
+  }
+
+  /** Recorded and answered like the rest: a detached server has nothing to stop, and a test may count the calls. */
+  @Override
+  public void stop() {
+    call("stop", () -> null);
+  }
+
+  @Override
+  RaftClient newMembershipClient() {
+    return (RaftClient) call("newMembershipClient", () -> null);
+  }
+
+  @Override
+  TrustedHttpClientCache getHttpsClients() {
+    return httpsClients.orElse(super::getHttpsClients);
   }
 
   @Override
@@ -292,6 +691,26 @@ public class FakeRaftHAServer extends RaftHAServer {
   @Override
   public long getCommitIndex() {
     return commitIndex.next();
+  }
+
+  /**
+   * A value the test may set - possibly to {@code null} - else the real server's own answer. The value and its "set"
+   * mark travel together in one immutable holder, so a concurrent read never sees one without the other.
+   */
+  private static final class Setting<T> {
+    private record Held<T>(T value) {
+    }
+
+    private volatile Held<T> held;
+
+    private void set(final T value) {
+      this.held = new Held<>(value);
+    }
+
+    private T orElse(final Supplier<T> real) {
+      final Held<T> current = held;
+      return current != null ? current.value() : real.get();
+    }
   }
 
   /**

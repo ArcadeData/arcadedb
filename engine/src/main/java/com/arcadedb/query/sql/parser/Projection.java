@@ -123,6 +123,28 @@ public class Projection extends SimpleNode {
   }
 
   public Result calculateSingle(final CommandContext context, final Result record) {
+    return calculateSingle(context, record, null);
+  }
+
+  /**
+   * Whether {@link #calculateSingle} answers the record it is given as it is: a projection of {@code @this} alone.
+   */
+  public boolean returnsRecordAsIs() {
+    return items.size() == 1 &&
+        items.getFirst().getExpression() != null &&
+        Property.THIS_PROPERTY.equals(items.getFirst().getExpression().toString()) &&
+        items.getFirst().nestedProjection == null;
+  }
+
+  /**
+   * The row this projection makes of {@code record}.
+   *
+   * @param itemValues when not null, what {@link ProjectionItem#execute(Result, CommandContext)} answered on
+   *                   {@code record} for every item that is neither {@code *} nor excluded, by the index of the item: the
+   *                   aggregation of a GROUP BY evaluates the items itself, and makes the row only when an expression
+   *                   needs it (issue #9496)
+   */
+  public Result calculateSingle(final CommandContext context, final Result record, final Object[] itemValues) {
     initExcludes();
     // ONE READ OF EACH, held for the whole row. Both fields are volatile (see initExcludes), and re-reading them
     // per use would both cost a volatile read per property and let one row see two different - though
@@ -133,14 +155,12 @@ public class Projection extends SimpleNode {
     if (isExpand())
       throw new IllegalStateException("This is an expand projection, it cannot be calculated as a single result" + this);
 
-    if (items.size() == 1 &&
-        items.getFirst().getExpression() != null &&
-        Property.THIS_PROPERTY.equals(items.getFirst().getExpression().toString()) &&
-        items.getFirst().nestedProjection == null)
+    if (returnsRecordAsIs())
       return record;
 
     final ResultInternal result = new ResultInternal(context.getDatabase());
-    for (final ProjectionItem item : items) {
+    for (int i = 0; i < items.size(); i++) {
+      final ProjectionItem item = items.get(i);
       if (item.exclude)
         continue;
 
@@ -180,7 +200,7 @@ public class Projection extends SimpleNode {
 
         });
       } else {
-        result.setProperty(item.getProjectionAliasAsString(), item.execute(record, context));
+        result.setProperty(item.getProjectionAliasAsString(), itemValues != null ? itemValues[i] : item.execute(record, context));
       }
     }
 

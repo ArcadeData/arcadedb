@@ -258,20 +258,16 @@ class Issue8446SharedSecurityConvergenceWindowTest extends StaticBaseServerTest 
     when(ha.getRuntimeJoinIndex()).thenAnswer(invocation -> joinIndex.get());
     when(ha.securityDocumentsNotInstalledSinceRuntimeJoin()).thenReturn(List.of("users"));
 
-    final ServerSecurity security = mock(ServerSecurity.class);
-    when(security.unconvergedClusterSecurityDocuments()).thenReturn(List.of("users"));
+    final ServerSecurity security = TestServerHelper.securityConvergedExcept("users");
 
     final ContextConfiguration configuration = new ContextConfiguration();
     configuration.setValue(GlobalConfiguration.HA_ENABLED, true);
     configuration.setValue(GlobalConfiguration.SERVER_READINESS_REQUIRES_HA, true);
     configuration.setValue(GlobalConfiguration.HA_SECURITY_CONVERGENCE_READINESS_TIMEOUT, windowMs);
 
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getStatus()).thenReturn(ArcadeDBServer.STATUS.ONLINE);
-    when(server.getConfiguration()).thenReturn(configuration);
-    when(server.getHA()).thenReturn(ha);
-    when(server.getSecurity()).thenReturn(security);
-    when(server.getSecurityConvergenceGate()).thenReturn(new SecurityConvergenceGate());
+    // A real server owns its own, fresh security convergence gate
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create(configuration).online().security(security);
+    server.setHA(ha);
     return server;
   }
 

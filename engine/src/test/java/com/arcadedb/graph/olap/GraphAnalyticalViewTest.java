@@ -985,6 +985,8 @@ class GraphAnalyticalViewTest extends TestHelper {
     database.getSchema().createVertexType("Company");
     database.getSchema().createEdgeType("FOLLOWS");
     database.getSchema().createEdgeType("WORKS_AT");
+    // an unlisted type counts against the view only once it holds a vertex a walk could reach
+    database.transaction(() -> database.newVertex("Company").save());
 
     GraphTraversalProviderRegistry.clearAll(database);
 
@@ -994,7 +996,7 @@ class GraphAnalyticalViewTest extends TestHelper {
         .withEdgeTypes("FOLLOWS")
         .build();
 
-    // coversVertexType(null) should be false — Company is not covered
+    // coversVertexType(null) should be false — Company is not covered and holds a vertex
     assertThat(gav.coversVertexType(null)).isFalse();
     // coversEdgeType(null) should be false — WORKS_AT is not covered
     assertThat(gav.coversEdgeType(null)).isFalse();

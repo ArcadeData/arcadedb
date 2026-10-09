@@ -119,6 +119,17 @@ class ErrorCategoryTest {
         .isEqualTo(ErrorCategory.SERVER);
   }
 
+  /**
+   * Issue #9518: a query the admission gate did not start, because it waited too long or found the queue full, never
+   * ran, so the same request re-issued later can succeed.
+   */
+  @Test
+  void aQueryNotAdmittedByTheGateIsRetryableOnEveryWireProtocol() {
+    assertThat(ErrorCategory.of(new QueryAdmissionException("the queue is full"))).isEqualTo(ErrorCategory.RETRY);
+    assertThat(ErrorCategory.of(new CommandExecutionException("wrapped", new QueryAdmissionException("the queue is full"))))
+        .as("and through a wrapper").isEqualTo(ErrorCategory.RETRY);
+  }
+
   @Test
   void theRemainingClientErrorCategoriesAreRecognised() {
     assertThat(ErrorCategory.of(new DuplicatedKeyException("idx", "k", new RID(1, 1))))

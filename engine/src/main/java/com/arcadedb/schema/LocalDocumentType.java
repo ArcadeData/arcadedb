@@ -92,6 +92,16 @@ public class LocalDocumentType implements DocumentType {
   protected final Map<String, Property>             properties                   = new ConcurrentHashMap<>();
   protected final Map<Integer, List<IndexInternal>> bucketIndexesByBucket        = new HashMap<>();
   protected final Map<List<String>, TypeIndex>      indexesByProperties          = new ConcurrentHashMap<>();
+  /**
+   * The property lists of the indexes {@link TypeIndexBuilder} is populating right now (issue #9331). The index is registered
+   * bucket by bucket, each bucket index before its entries are committed, so for the whole build it covers only part of
+   * the records: a query that picked it answered with the rows of the buckets built so far, empty ones included.
+   * <p>
+   * A count per property list and not a flag: ArcadeDB keeps one index per property set, so two builds on the same properties
+   * are two attempts at the same index, and the marker has to outlive the first to finish. The index belongs to the type the
+   * builder runs on, which is also the type the readiness check asks (the TypeIndex is minted on it), subtypes included.
+   */
+  private final Map<List<String>, AtomicInteger>    indexesUnderConstruction     = new ConcurrentHashMap<>();
   protected final RecordEventsRegistry              events                       = new RecordEventsRegistry();
   protected final Map<String, Object>               custom                       = new HashMap<>();
   // The four bucket lists are copy-on-write: reassigned under the schema mutation lock and read lock-free by query
@@ -1896,6 +1906,31 @@ public class LocalDocumentType implements DocumentType {
   @Override
   public int hashCode() {
     return Objects.hash(name);
+  }
+
+  /** Marks the index on {@code propertyNames} as being populated, see {@link #indexesUnderConstruction}. */
+  void beginIndexConstruction(final List<String> propertyNames) {
+    // One map operation: a computeIfAbsent() then an increment could take the counter an end is just removing, and the build
+    // would count on a detached one
+    indexesUnderConstruction.compute(propertyNames, (key, count) -> {
+      if (count == null)
+        return new AtomicInteger(1);
+      count.incrementAndGet();
+      return count;
+    });
+  }
+
+  void endIndexConstruction(final List<String> propertyNames) {
+    indexesUnderConstruction.computeIfPresent(propertyNames, (k, count) -> count.decrementAndGet() <= 0 ? null : count);
+  }
+
+  /**
+   * Whether the index on {@code propertyNames} is still being populated, and so cannot answer a query yet.
+   */
+  public boolean isIndexUnderConstruction(final List<String> propertyNames) {
+    // The emptiness test is the fast path: this runs for every index of every query planned, and nothing is being built nearly
+    // always
+    return !indexesUnderConstruction.isEmpty() && indexesUnderConstruction.containsKey(propertyNames);
   }
 
   protected void addIndexInternal(final IndexInternal index, final int bucketId, final String[] propertyNames,

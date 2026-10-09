@@ -25,7 +25,9 @@ import com.arcadedb.bolt.packstream.PackStreamReader;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.server.ArcadeDBServer;
-import com.arcadedb.server.security.ServerSecurity;
+import com.arcadedb.server.FakeArcadeDBServer;
+import com.arcadedb.server.FakeServerSecurity;
+import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.server.security.ServerSecurityUser;
 
 import java.io.ByteArrayInputStream;
@@ -35,11 +37,6 @@ import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.net.Socket;
 import java.util.Map;
-
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 /**
  * Drives one of {@code BoltNetworkExecutor}'s private request handlers and reports the FAILURE the connection
@@ -67,10 +64,10 @@ final class BoltHandlerProbe {
    * Gives a server double the security service the executor now consults to re-resolve its user on every request,
    * answering the user it is handed: these tests drive handlers with a user already bound and are not about it.
    */
-  static void withPassThroughSecurity(final ArcadeDBServer server) {
-    final ServerSecurity security = mock(ServerSecurity.class);
-    when(security.revalidate(any(ServerSecurityUser.class))).thenAnswer(invocation -> invocation.getArgument(0));
-    when(server.getSecurity()).thenReturn(security);
+  static void withPassThroughSecurity(final FakeArcadeDBServer server) {
+    final FakeServerSecurity security = FakeServerSecurity.create();
+    security.on("revalidate", args -> args[0]);
+    server.security(security);
   }
 
   private BoltHandlerProbe() {
@@ -93,9 +90,9 @@ final class BoltHandlerProbe {
   @SuppressWarnings("unchecked")
   static Map<String, Object> failureMetadataOf(final String handlerName, final String state,
       final RuntimeException failure) throws Exception {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create();
     withPassThroughSecurity(server);
-    when(server.getConfiguration()).thenReturn(new ContextConfiguration());
+    server.returns("getConfiguration", new ContextConfiguration());
 
     try (final Socket socket = new Socket()) {
       final BoltNetworkExecutor executor = new BoltNetworkExecutor(server, socket, null);
@@ -182,9 +179,7 @@ final class BoltHandlerProbe {
    * with no user, and these probes are about what it answers once the database has been authorized.
    */
   private static ServerSecurityUser grantedEverywhere() {
-    final ServerSecurityUser user = mock(ServerSecurityUser.class);
-    when(user.getName()).thenReturn("root");
-    when(user.canAccessToDatabase(anyString())).thenReturn(true);
+    final ServerSecurityUser user = TestServerHelper.securityUser("root", "*");
     return user;
   }
 

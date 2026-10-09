@@ -29,8 +29,6 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 /**
  * Issue #8457: the lag tick must actually forward the follower's {@code nextIndex} and the leader's own log start
@@ -52,31 +50,31 @@ class Issue8457NotifyLoopExporterWiringTest {
     }
   }
 
-  private final AtomicLong now = new AtomicLong(0);
-  private RaftHAServer     haServer;
-  private ClusterMonitor   monitor;
+  private final AtomicLong       now = new AtomicLong(0);
+  private       FakeRaftHAServer haServer;
+  private       ClusterMonitor   monitor;
 
   @BeforeEach
   void setUp() {
-    haServer = mock(RaftHAServer.class);
+    haServer = FakeRaftHAServer.detached();
     monitor = new ClusterMonitor(1000L, 60_000L, id -> {
     });
     monitor.setClock(now::get);
 
-    when(haServer.isLeader()).thenReturn(true);
-    when(haServer.getLeaderId()).thenReturn(LEADER);
-    when(haServer.getCurrentTerm()).thenReturn(3L);
-    when(haServer.getCommitIndex()).thenReturn(105L);
-    when(haServer.getConfiguredServers()).thenReturn(2);
-    when(haServer.getReplicationLatencies()).thenReturn(Map.of());
-    when(haServer.getStateMachine()).thenReturn(null);
-    when(haServer.getLivePeers()).thenReturn(List.of(peer(LEADER), peer(STUCK)));
+    haServer.leader(true);
+    haServer.leaderId(LEADER);
+    haServer.currentTerm(3L);
+    haServer.commitIndex(105L);
+    haServer.configuredServers(2);
+    haServer.replicationLatencies(Map.of());
+    haServer.noStateMachine();
+    haServer.livePeers(List.of(peer(LEADER), peer(STUCK)));
   }
 
   @Test
   void lagTickForwardsNextIndexAndLogStartSoTheLoopIsDetected() {
-    when(haServer.getRaftLogStartIndex()).thenReturn(100L);
-    when(haServer.getFollowerStates()).thenReturn(List.of(state(true)));
+    haServer.raftLogStartIndex(100L);
+    haServer.followerStates(List.of(state(true)));
 
     tickAt(0);
     tickAt(60_000);
@@ -86,8 +84,8 @@ class Issue8457NotifyLoopExporterWiringTest {
 
   @Test
   void unknownLeaderLogStartLeavesTheReplicaHealthy() {
-    when(haServer.getRaftLogStartIndex()).thenReturn(-1L);
-    when(haServer.getFollowerStates()).thenReturn(List.of(state(true)));
+    haServer.raftLogStartIndex(-1L);
+    haServer.followerStates(List.of(state(true)));
 
     tickAt(0);
     tickAt(60_000);
@@ -97,8 +95,8 @@ class Issue8457NotifyLoopExporterWiringTest {
 
   @Test
   void entryWithoutNextIndexLeavesTheReplicaHealthy() {
-    when(haServer.getRaftLogStartIndex()).thenReturn(100L);
-    when(haServer.getFollowerStates()).thenReturn(List.of(state(false)));
+    haServer.raftLogStartIndex(100L);
+    haServer.followerStates(List.of(state(false)));
 
     tickAt(0);
     tickAt(60_000);

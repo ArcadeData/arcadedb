@@ -45,6 +45,7 @@ import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.CommandTimeoutOverride;
 import com.arcadedb.query.sql.executor.IteratorResultSet;
+import com.arcadedb.query.sql.executor.QueryAdmissionGate;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -572,7 +573,6 @@ public class PostgresNetworkExecutor extends Thread {
         // Execute(s) depend on this same fullResultSet being run exactly once.
         try {
           beginImplicitTransactionBlock(portal);
-          final ResultSet resultSet = runPortalQuery(portal);
           // Materializes the whole result now (issue #6458): Describe needs every row's columns, not just the
           // first, to catch a property that only shows up on a later row (documents can be sparse) - and the
           // portal keeps this list so the Execute(s) that follow slice it by their own row-limit instead of
@@ -580,9 +580,13 @@ public class PostgresNetworkExecutor extends Thread {
           // the simple-query path (issue #7034): the portal's row limit bounds what each Execute SENDS, not
           // what is held here. Marked executed only once the rows are held, so a refused portal is not left
           // looking like a drained one.
-          portal.fullResultSet = browseAndCacheBoundedResultSet(resultSet);
-          portal.executed = true;
-          resolvePortalColumns(portal, true);
+          // The query admission slot (issue #9518) covers the query and its column resolution, which may replay the query for an
+          // empty result, and goes back before anything is written to the client
+          try (final QueryAdmissionGate.Ticket ignored = QueryAdmissionGate.getInstance().admit()) {
+            portal.fullResultSet = browseAndCacheBoundedResultSet(runPortalQuery(portal));
+            portal.executed = true;
+            resolvePortalColumns(portal, true);
+          }
           answerWithColumns(portal);
           portal.rowsDescribed = true;
           rememberDescribedLayout(portal);
@@ -864,7 +868,6 @@ public class PostgresNetworkExecutor extends Thread {
           portal.fullResultSet = showResultSet(portal.showName);
         if (!portal.executed) {
           final long engineStart = System.nanoTime();
-          final ResultSet resultSet = runPortalQuery(portal);
           if (portal.isExpectingResult) {
             // Materializes the whole result now (issue #6458), the same way Describe('P') does: a client that
             // never Described this portal first (it already knows the row shape) reaches this branch instead,
@@ -872,23 +875,29 @@ public class PostgresNetworkExecutor extends Thread {
             // own row-limit below rather than re-running the statement. Bounded by the same cap as the
             // simple-query path (issue #7034): the Execute's own row limit bounds what is SENT, not what is
             // held here.
-            portal.fullResultSet = browseAndCacheBoundedResultSet(resultSet);
-            portal.executed = true;
-            profile.addEngineNanos(System.nanoTime() - engineStart);
-            // Execute never answers with a RowDescription (issue #8244): PostgreSQL's protocol reserves it for
-            // Describe, and a client that bound a statement it already knows the shape of sends Bind/Execute/Sync
-            // with no Describe - pgjdbc once prepareThreshold promotes a statement - and reads a RowDescription it
-            // did not ask for as the answer to a Describe it never sent, which desynchronizes the connection. The
-            // columns are still resolved here, since the data rows are encoded from them. portal.columnsDescribed
-            // means a real Describe('S') already told the client this exact shape/OIDs - and, for a schemaless
-            // type, a client that negotiated binary transfer off that promise cannot have it silently swapped for a
-            // differently-typed one here (issue #6725): keep the promised columns.
-            if (!portal.columnsDescribed) {
-              final long serStart = System.nanoTime();
-              resolvePortalColumns(portal, false);
-              profile.addSerializationNanos(System.nanoTime() - serStart);
+            // The query admission slot (issue #9518) covers the query and its column resolution, as in Describe
+            try (final QueryAdmissionGate.Ticket ignored = QueryAdmissionGate.getInstance().admit()) {
+              portal.fullResultSet = browseAndCacheBoundedResultSet(runPortalQuery(portal));
+              portal.executed = true;
+              profile.addEngineNanos(System.nanoTime() - engineStart);
+              // Execute never answers with a RowDescription (issue #8244): PostgreSQL's protocol reserves it for
+              // Describe, and a client that bound a statement it already knows the shape of sends Bind/Execute/Sync
+              // with no Describe - pgjdbc once prepareThreshold promotes a statement - and reads a RowDescription it
+              // did not ask for as the answer to a Describe it never sent, which desynchronizes the connection. The
+              // columns are still resolved here, since the data rows are encoded from them. portal.columnsDescribed
+              // means a real Describe('S') already told the client this exact shape/OIDs - and, for a schemaless
+              // type, a client that negotiated binary transfer off that promise cannot have it silently swapped for a
+              // differently-typed one here (issue #6725): keep the promised columns.
+              if (!portal.columnsDescribed) {
+                final long serStart = System.nanoTime();
+                resolvePortalColumns(portal, false);
+                profile.addSerializationNanos(System.nanoTime() - serStart);
+              }
             }
           } else {
+            try (final QueryAdmissionGate.Ticket ignored = QueryAdmissionGate.getInstance().admit()) {
+              runPortalQuery(portal);
+            }
             portal.executed = true;
             profile.addEngineNanos(System.nanoTime() - engineStart);
           }
@@ -1069,6 +1078,8 @@ public class PostgresNetworkExecutor extends Thread {
     Query query = null;
     String queryText = null;
     CatalogAnswer catalogAnswer = null;
+    // HELD FROM THE MOMENT THE STATEMENT STARTS UNTIL ITS ROWS AND COLUMNS ARE RESOLVED, NOT WHILE THEY ARE WRITTEN (ISSUE #9518)
+    QueryAdmissionGate.Ticket admission = null;
     try {
       final long deserStart = System.nanoTime();
       queryText = normalizeStatementText(readString());
@@ -1207,8 +1218,10 @@ public class PostgresNetworkExecutor extends Thread {
             commandTag = transactionControl.name();
             answersNoRows = true;
             resultSet = new IteratorResultSet(Collections.emptyIterator());
-          } else
+          } else {
+            admission = QueryAdmissionGate.getInstance().admit();
             resultSet = database.command(query.language, query.query, server.getConfiguration());
+          }
         }
       }
       final List<Result> cachedResultSet = browseAndCacheBoundedResultSet(resultSet);
@@ -1227,6 +1240,9 @@ public class PostgresNetworkExecutor extends Thread {
           if (schemaColumns != null)
             columns = schemaColumns;
         }
+        // THE SLOT GOES BACK ONCE THE COLUMNS ARE RESOLVED - THEIR PROBE MAY REPLAY THE QUERY - AND BEFORE ANY ROW IS WRITTEN
+        if (admission != null)
+          admission.close();
         writeRowDescription(columns);
         writeDataRows(cachedResultSet, columns);
       }
@@ -1246,6 +1262,8 @@ public class PostgresNetworkExecutor extends Thread {
     } catch (final Exception e) {
       failSimpleQuery(clientMessage("Error on executing query: " + e.getMessage(), e), sqlStateFor(e));
     } finally {
+      if (admission != null)
+        admission.close();
       CommandTimeoutOverride.clear();
       if (!explicitTransactionStarted)
         // A simple Query outside an explicit block is a transaction of its own, and the portals bound before it
@@ -2654,6 +2672,14 @@ public class PostgresNetworkExecutor extends Thread {
    * @return the number of rows sent
    */
   private int copyOut(final PostgresCopyStatement copy, final String language, final Object[] parameters,
+      final Statement parsed, final QueryProfile profile) throws IOException {
+    // THE ROWS ARE STREAMED AS THE QUERY PRODUCES THEM, SO THE ADMISSION SLOT (ISSUE #9518) IS HELD UNTIL THE LAST ONE IS WRITTEN
+    try (final QueryAdmissionGate.Ticket ignored = QueryAdmissionGate.getInstance().admit()) {
+      return copyOutAdmitted(copy, language, parameters, parsed, profile);
+    }
+  }
+
+  private int copyOutAdmitted(final PostgresCopyStatement copy, final String language, final Object[] parameters,
       final Statement parsed, final QueryProfile profile) throws IOException {
     final String queryText = copy.getQuery();
     final long engineStart = System.nanoTime();

@@ -20,6 +20,7 @@ package com.arcadedb.server.gremlin;
 
 import com.arcadedb.gremlin.ArcadeGraph;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.sql.executor.QueryAdmissionGate;
 import com.arcadedb.server.ArcadeDBServer;
 import org.apache.tinkerpop.gremlin.groovy.engine.GremlinExecutor;
 import org.apache.tinkerpop.gremlin.jsr223.GremlinScriptEngine;
@@ -29,6 +30,7 @@ import org.apache.tinkerpop.gremlin.server.GraphManager;
 import org.apache.tinkerpop.gremlin.server.Settings;
 import org.apache.tinkerpop.gremlin.structure.Graph;
 import org.apache.tinkerpop.gremlin.structure.Transaction;
+import org.apache.tinkerpop.gremlin.util.message.RequestMessage;
 
 import javax.script.Bindings;
 import javax.script.ScriptContext;
@@ -54,6 +56,10 @@ import java.util.logging.Level;
 public class ArcadeGraphManager implements GraphManager {
 
   private static ArcadeDBServer serverInstance;
+
+  // THE QUERY ADMISSION SLOT (ISSUE #9518) OF THE REQUEST THE CURRENT gremlinPool THREAD EVALUATES. TINKERPOP CALLS
+  // beforeQueryStart, onQuerySuccess AND onQueryError ON THAT THREAD, AROUND THE EVALUATION
+  private static final ThreadLocal<QueryAdmissionGate.Ticket> ADMISSION = new ThreadLocal<>();
 
   // THE GLOBAL BINDINGS OF THE GREMLIN EXECUTOR, ONCE THE SERVER HAS BUILT THEM (#9147)
   private volatile    Bindings               scriptGlobals;
@@ -421,6 +427,40 @@ public class ArcadeGraphManager implements GraphManager {
         }
       }
     });
+  }
+
+  /**
+   * Waits for the query admission gate (issue #9518) before a script or a traversal is evaluated, like the requests of
+   * every other protocol. Called by Gremlin Server on the thread that then evaluates the request, inside the error handling
+   * that answers the client: a refused request is answered with the refusal, nothing of it having run. A slot left by a
+   * request whose end was not reported is given back first, so it cannot be mistaken for the slot of an enclosing query.
+   */
+  @Override
+  public void beforeQueryStart(final RequestMessage msg) {
+    releaseAdmission();
+    ADMISSION.set(QueryAdmissionGate.getInstance().admit());
+  }
+
+  @Override
+  public void onQuerySuccess(final RequestMessage msg) {
+    releaseAdmission();
+  }
+
+  @Override
+  public void onQueryError(final RequestMessage msg, final Throwable error) {
+    releaseAdmission();
+  }
+
+  /**
+   * Gives back the admission slot the current thread holds for a Gremlin request, if any. Also called once the gremlinPool
+   * task that evaluated a request ends, so a slot cannot outlive its request whatever path the evaluation took.
+   */
+  static void releaseAdmission() {
+    final QueryAdmissionGate.Ticket admission = ADMISSION.get();
+    if (admission != null) {
+      ADMISSION.remove();
+      admission.close();
+    }
   }
 
   /**

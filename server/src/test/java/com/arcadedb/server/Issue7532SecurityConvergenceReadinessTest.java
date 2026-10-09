@@ -170,9 +170,8 @@ class Issue7532SecurityConvergenceReadinessTest {
   /** Convergence is the one thing that clears the window, so a later join is measured from itself. */
   @Test
   void convergenceClearsTheWindow() {
-    final ServerSecurity security = mock(ServerSecurity.class);
-    when(security.unconvergedClusterSecurityDocuments())
-        .thenReturn(List.of("users"), List.of(), List.of("users"));
+    final FakeServerSecurity security = FakeServerSecurity.create();
+    security.on("unconvergedClusterSecurityDocuments", CallLog.inOrder(List.of("users"), List.of(), List.of("users")));
 
     final ServerControlPlane controlPlane = new ServerControlPlane(
         onlineServerWith(caughtUpHaWith(3), security, configurationWith(true, WINDOW_MS)));
@@ -193,9 +192,8 @@ class Issue7532SecurityConvergenceReadinessTest {
    */
   @Test
   void aFreshWindowReportsItsOwnGiveUpDecision() {
-    final ServerSecurity security = mock(ServerSecurity.class);
-    when(security.unconvergedClusterSecurityDocuments())
-        .thenReturn(List.of("users"), List.of("users"), List.of(), List.of("users"), List.of("users"));
+    final FakeServerSecurity security = FakeServerSecurity.create();
+    security.on("unconvergedClusterSecurityDocuments", CallLog.inOrder(List.of("users"), List.of("users"), List.of(), List.of("users"), List.of("users")));
 
     final ServerControlPlane controlPlane = new ServerControlPlane(
         onlineServerWith(caughtUpHaWith(3), security, configurationWith(true, 1L)));
@@ -242,8 +240,8 @@ class Issue7532SecurityConvergenceReadinessTest {
    */
   @Test
   void aSignalThatCannotBeReadDoesNotFailTheProbe() {
-    final ServerSecurity security = mock(ServerSecurity.class);
-    when(security.unconvergedClusterSecurityDocuments()).thenThrow(new IllegalStateException("not installed"));
+    final FakeServerSecurity security = FakeServerSecurity.create();
+    security.fails("unconvergedClusterSecurityDocuments", new IllegalStateException("not installed"));
 
     assertThat(new ServerControlPlane(
         onlineServerWith(caughtUpHaWith(3), security, configurationWith(true, WINDOW_MS))).notReadyReason()).isNull();
@@ -304,8 +302,8 @@ class Issue7532SecurityConvergenceReadinessTest {
   }
 
   private static ServerSecurity securityMissing(final String... documents) {
-    final ServerSecurity security = mock(ServerSecurity.class);
-    when(security.unconvergedClusterSecurityDocuments()).thenReturn(List.of(documents));
+    final FakeServerSecurity security = FakeServerSecurity.create();
+    security.returns("unconvergedClusterSecurityDocuments", List.of(documents));
     return security;
   }
 
@@ -318,13 +316,13 @@ class Issue7532SecurityConvergenceReadinessTest {
     return configuration;
   }
 
-  private static ArcadeDBServer onlineServerWith(final HAServerPlugin ha, final ServerSecurity security,
+  private static FakeArcadeDBServer onlineServerWith(final HAServerPlugin ha, final ServerSecurity security,
       final ContextConfiguration configuration) {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getStatus()).thenReturn(ArcadeDBServer.STATUS.ONLINE);
-    when(server.getConfiguration()).thenReturn(configuration);
-    when(server.getHA()).thenReturn(ha);
-    when(server.getSecurity()).thenReturn(security);
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create();
+    server.status(ArcadeDBServer.STATUS.ONLINE);
+    server.returns("getConfiguration", configuration);
+    server.setHA(ha);
+    server.security(security);
     return server;
   }
 }

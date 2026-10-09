@@ -18,8 +18,11 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.server.CallLog;
 import org.apache.ratis.protocol.RaftPeerId;
 import org.junit.jupiter.api.Test;
+
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -88,6 +91,38 @@ class FakeRaftHAServerTest {
   }
 
   @Test
+  void leadershipRequestsAreRecordedPerOverloadAndAnswerTheMockDefaults() {
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+
+    assertThat(raft.transferLeadership(1_000L)).isFalse();
+    assertThat(raft.transferLeadership(1_000L, false)).isFalse();
+    raft.transferLeadership("peer-b", 2_000L);
+    raft.stepDown();
+
+    assertThat(raft.calls("transferLeadership")).containsExactly(List.of(1_000L), List.of(1_000L, false), List.of("peer-b", 2_000L));
+    assertThat(raft.calls("stepDown")).hasSize(1);
+    assertThat(raft.isSoleVoter()).as("a member of a real cluster, unless a test says otherwise").isFalse();
+  }
+
+  @Test
+  void aGetterAnswersAFunctionOfTheMomentWhenOneIsSet() {
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached().leaderId(LEADER);
+    assertThat(raft.getLeaderId()).as("the value set, while no function is").isEqualTo(LEADER);
+
+    raft.on("getLeaderId", CallLog.inOrder(null, null, LEADER));
+    assertThat(raft.getLeaderId()).isNull();
+    assertThat(raft.getLeaderId()).isNull();
+    assertThat(raft.getLeaderId()).isEqualTo(LEADER);
+    assertThat(raft.getLeaderId()).as("the last value sticks").isEqualTo(LEADER);
+  }
+
+  @Test
+  void aBooleanAnswerThatIsNotABooleanIsRefusedByName() {
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached().returns("isLeader", null);
+    assertThatThrownBy(raft::isLeader).isInstanceOf(IllegalStateException.class).hasMessageContaining("isLeader");
+  }
+
+  @Test
   void anEmptySequenceIsRefused() {
     final FakeRaftHAServer raft = FakeRaftHAServer.detached();
 
@@ -109,5 +144,21 @@ class FakeRaftHAServerTest {
     assertThat(FakeRaftHAServer.detached().leaderHttpAddress("leader:2480").getLeaderHttpAddress()).isEqualTo("leader:2480");
     assertThat(FakeRaftHAServer.followerOf("peer-b", "peer-b:2480").leaderHttpAddress("other:2480").getLeaderHttpAddress())
         .isEqualTo("other:2480");
+  }
+
+  @Test
+  void theTrustedAppliedIndexIsRecordedAndAnswerable() {
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+    // Read once unanswered, for the value the detached server reports on its own; that read is recorded too
+    final long unanswered = raft.getTrustedAppliedIndex("db");
+
+    raft.on("getTrustedAppliedIndex", args -> "db".equals(args[0]) ? 42L : unanswered);
+
+    assertThat(raft.getTrustedAppliedIndex("db")).isEqualTo(42L);
+    assertThat(raft.getTrustedAppliedIndex("other")).isEqualTo(unanswered);
+    assertThat(raft.calls("getTrustedAppliedIndex")).as("the unanswered read, then the two answered ones")
+        .containsExactly(List.of("db"), List.of("db"), List.of("other"));
+    assertThatThrownBy(() -> raft.returns("getTrustedAppliedIndex", null).getTrustedAppliedIndex("db"))
+        .isInstanceOf(IllegalStateException.class).hasMessageContaining("getTrustedAppliedIndex");
   }
 }

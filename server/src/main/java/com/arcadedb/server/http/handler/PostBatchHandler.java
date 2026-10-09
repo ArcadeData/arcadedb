@@ -21,8 +21,10 @@ package com.arcadedb.server.http.handler;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.QueryAdmissionException;
 import com.arcadedb.graph.GraphBatch;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.sql.executor.QueryAdmissionGate;
 import com.arcadedb.network.SilenceBoundedInputStream;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.serializer.json.JSONObject;
@@ -504,6 +506,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     // Applies to the forwarding path too: while the leader is busy the follower cannot drain the client
     // socket either, so its own watchdog would kill the upload it is relaying (issue #5470).
     final Integer previousReadTimeout = relaxConnectionReadTimeout(exchange);
+    QueryAdmissionGate.Ticket admission = null;
     try {
       // On a follower of a replicated database the request must run on the leader: the bulk
       // path mutates shared state (schema dictionary, type metadata) that only the leader can
@@ -513,6 +516,17 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
       final HAServerPlugin ha = httpServer.getServer().getHA();
       if (ha != null && !ha.isLeader())
         return forwardBatchToLeader(exchange, ha, databaseName, user, contentType, inputStream, streaming);
+
+      // A load is work like a command: it waits for the query admission gate (issue #9518) like one, inside the session
+      // lock and once the read timeout is relaxed, so the client socket is not dropped while the request waits. Only where
+      // it runs: a follower that relays it to the leader does no work here and takes no slot
+      try {
+        admission = QueryAdmissionGate.getInstance().admit();
+      } catch (final QueryAdmissionException e) {
+        // Refused before a byte of the body was read: the upload is declined, not drained first, as the other refusals do
+        inputStream.close();
+        throw e;
+      }
 
       final DatabaseInternal database = httpServer.getServer().getDatabase(databaseName, false, false);
       final boolean isCsv = contentType.contains("text/csv");
@@ -547,6 +561,8 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
         emitCommitIndexBookmark(exchange, haDb);
       }
     } finally {
+      if (admission != null)
+        admission.close();
       restoreConnectionReadTimeout(exchange, previousReadTimeout);
     }
   }

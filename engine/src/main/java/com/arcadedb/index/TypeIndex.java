@@ -740,17 +740,33 @@ public class TypeIndex implements RangeIndex, IndexInternal {
    * concurrently with queries: an index being created is registered before its sub-indexes exist (no type yet) and one being
    * dropped stays registered for a while after it was invalidated. Best effort, the index can still go away right after the
    * call, so a caller that reads the metadata of an index must also be ready for an {@link IndexException}. Never throws.
+   * <p>
+   * An index still being populated by {@code TypeIndexBuilder} is not ready either (issue #9331). The answer is for the
+   * planners and lookups: writes, uniqueness checks and index maintenance do not consult it.
    */
   public boolean isReadyForQueries() {
     if (!valid)
       return false;
     try {
       final IndexInternal first = firstOrNull();
-      return first != null && first.getType() != null;
+      if (first == null || first.getType() == null)
+        return false;
+      // Complete: while TypeIndexBuilder populates it, the index holds the entries of the buckets built so far only (#9331)
+      return !(type instanceof LocalDocumentType local) || !local.isIndexUnderConstruction(first.getPropertyNames());
     } catch (final IndexException e) {
       LogManager.instance().log(this, Level.FINE, "Index '%s' is not ready for queries: %s", null, getName(), e.getMessage());
       return false;
     }
+  }
+
+  /**
+   * Whether {@code e} is the page manager's answer for the file of an index deleted under a lookup or an open cursor ("File with
+   * id n was not found", see {@code FileManager#getFile}). The one place that knows the wording, for the readers that turn it
+   * into a stale-index signal when the index is no longer valid (issue #9331).
+   */
+  public static boolean isFileNotFound(final IllegalArgumentException e) {
+    final String message = e.getMessage();
+    return message != null && message.startsWith("File with id");
   }
 
   /**
@@ -769,13 +785,13 @@ public class TypeIndex implements RangeIndex, IndexInternal {
 
   /**
    * The property names of this index when it can answer an exact key lookup (not a FULL_TEXT, vector or geospatial one, which
-   * answer by token or similarity), null when it cannot or when it went away while being read: a concurrent DDL can drop or
-   * rebuild an index right after {@link #isReadyForQueries()} said yes (issue #8918).
+   * answer by token or similarity), null when it cannot, when it is still being populated, or when it went away while being
+   * read: a concurrent DDL can drop or rebuild an index right after {@link #isReadyForQueries()} said yes (issue #8918).
    */
   public List<String> getPropertyNamesIfExactKeyLookup() {
     try {
       final Schema.INDEX_TYPE indexType = getType();
-      return indexType != null && indexType.isExactKeyLookup() ? getPropertyNames() : null;
+      return indexType != null && indexType.isExactKeyLookup() && isReadyForQueries() ? getPropertyNames() : null;
     } catch (final IndexException e) {
       return null;
     }

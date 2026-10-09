@@ -20,7 +20,7 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.FakeArcadeDBServer;
 import org.apache.ratis.proto.RaftProtos;
 import org.apache.ratis.protocol.RaftGroupId;
 import org.apache.ratis.protocol.RaftPeerId;
@@ -215,13 +215,13 @@ class Issue6760PartialSnapshotInstallTest {
     replaceReconciler(sm, new StubReconciler(Set.of(STALE_DB)));
 
     final AtomicLong floorSeenByAWokenWaiter = new AtomicLong(Long.MIN_VALUE);
-    final RaftHAServer raft = followerRaft();
+    final FakeRaftHAServer raft = followerRaft();
     // Stands in for the woken waiter: notifyApplied() is the moment it can re-check, so whatever the floor reads
     // here is exactly what that waiter would have based its decision on.
-    org.mockito.Mockito.doAnswer(inv -> {
+    raft.on("notifyApplied", args -> {
       floorSeenByAWokenWaiter.set(sm.getDatabaseAppliedFloor(STALE_DB));
       return null;
-    }).when(raft).notifyApplied();
+    });
     sm.setRaftHAServer(raft);
 
     try {
@@ -327,12 +327,12 @@ class Issue6760PartialSnapshotInstallTest {
     }
   }
 
-  private static RaftHAServer followerRaft() {
-    final RaftHAServer raft = mock(RaftHAServer.class);
-    when(raft.isLeader()).thenReturn(false);
-    when(raft.getLeaderId()).thenReturn(RaftPeerId.valueOf(LEADER_PEER_ID));
-    when(raft.getUnambiguousPeerHttpAddress(RaftPeerId.valueOf(LEADER_PEER_ID))).thenReturn("peer-b:2480");
-    when(raft.getLocalHttpAddress()).thenReturn(LOCAL_HTTP);
+  private static FakeRaftHAServer followerRaft() {
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+    raft.leader(false);
+    raft.leaderId(RaftPeerId.valueOf(LEADER_PEER_ID));
+    raft.peerHttpAddress(RaftPeerId.valueOf(LEADER_PEER_ID), "peer-b:2480");
+    raft.localHttpAddress(LOCAL_HTTP);
     return raft;
   }
 
@@ -356,9 +356,9 @@ class Issue6760PartialSnapshotInstallTest {
     config.setValue(GlobalConfiguration.HA_AUTO_ACQUIRE_DATABASES, false);
     config.setValue(GlobalConfiguration.HA_SNAPSHOT_INSTALL_RETRIES, 0);
 
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getConfiguration()).thenReturn(config);
-    when(server.getDatabaseNames()).thenReturn(databaseNames);
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create();
+    server.returns("getConfiguration", config);
+    server.returns("getDatabaseNames", databaseNames);
 
     final ArcadeStateMachine sm = new ArcadeStateMachine();
     sm.setServer(server);
@@ -393,8 +393,8 @@ class Issue6760PartialSnapshotInstallTest {
     config.setValue(GlobalConfiguration.HA_SERVER_LIST, "localhost:2434:2480");
     config.setValue(GlobalConfiguration.HA_QUORUM_TIMEOUT, quorumTimeoutMs);
 
-    final ArcadeDBServer mockServer = mock(ArcadeDBServer.class);
-    when(mockServer.getServerName()).thenReturn("localhost");
+    final FakeArcadeDBServer mockServer = FakeArcadeDBServer.create();
+    mockServer.returns("getServerName", "localhost");
 
     final RaftHAServer raft = new RaftHAServer(mockServer, config);
 

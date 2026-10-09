@@ -27,12 +27,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.ArgumentMatchers.contains;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
 
 /**
  * Regression tests for issue #9308: the sole-voter escape #8940 added to the forceSnapshot replay guard was not applied
@@ -49,7 +43,7 @@ class Issue9308SoleVoterApplyErrorTest {
   private static final String DB_NAME = "db9308";
 
   private final AtomicBoolean      soleVoter = new AtomicBoolean(true);
-  private       RaftHAServer       raft;
+  private       FakeRaftHAServer       raft;
   private       ArcadeStateMachine sm;
   private       int                prevRetries;
   private       int                prevDelay;
@@ -61,9 +55,9 @@ class Issue9308SoleVoterApplyErrorTest {
     GlobalConfiguration.TX_RETRIES.setValue(0);
     GlobalConfiguration.TX_RETRY_DELAY.setValue(0);
 
-    raft = mock(RaftHAServer.class);
-    when(raft.isLeader()).thenReturn(true);
-    when(raft.isSoleVoter()).thenAnswer(inv -> soleVoter.get());
+    raft = FakeRaftHAServer.detached();
+    raft.leader(true);
+    raft.on("isSoleVoter", args -> soleVoter.get());
     sm = new ArcadeStateMachine();
     sm.setRaftHAServer(raft);
   }
@@ -94,7 +88,7 @@ class Issue9308SoleVoterApplyErrorTest {
     assertThat(sm.isDatabaseDiverged(DB_NAME)).as("nothing could ever lift this quarantine").isFalse();
     assertThat(sm.isResyncInProgress()).as("the node must stay in the ready set").isFalse();
     assertThat(sm.isHaltedAfterCriticalError()).isFalse();
-    verify(raft, never()).handOffLeadershipToResync(anyString());
+    assertThat(raft.calls("handOffLeadershipToResync")).isEmpty();
   }
 
   /**
@@ -142,7 +136,7 @@ class Issue9308SoleVoterApplyErrorTest {
 
     assertThat(sm.isDatabaseDiverged(DB_NAME)).isTrue();
     assertThat(sm.quarantineCause(DB_NAME)).isEqualTo(DivergenceCause.APPLY_ERROR);
-    verify(raft).handOffLeadershipToResync(contains("'" + DB_NAME + "'"));
+    assertThat(raft.calls("handOffLeadershipToResync")).singleElement().satisfies(args -> assertThat((String) args.get(0)).contains("'" + DB_NAME + "'"));
   }
 
   /**

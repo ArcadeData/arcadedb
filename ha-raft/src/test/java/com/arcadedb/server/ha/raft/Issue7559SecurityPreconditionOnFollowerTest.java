@@ -24,13 +24,12 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.TestServerHelper;
 import org.junit.jupiter.api.Test;
 
+import java.util.Arrays;
 import java.util.List;
+import java.util.Objects;
 
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
+import static org.assertj.core.api.Assertions.assertThat;
+
 
 /**
  * Issue #7559: the compare-and-set of issue #7509 engaged only when the mutation happened to be submitted on the
@@ -87,32 +86,32 @@ class Issue7559SecurityPreconditionOnFollowerTest {
 
   @Test
   void aFollowerStillWritesThePreconditionOnAUsersEntry() {
-    final RaftTransactionBroker broker = mock(RaftTransactionBroker.class);
+    final FakeRaftTransactionBroker broker = new FakeRaftTransactionBroker();
     final RaftHAPlugin plugin = pluginOn(followerWhoseCacheIsEmptyButWhoseClusterIsUniform(broker));
 
     plugin.replicateSecurityUsers(USERS, FINGERPRINT);
 
-    verify(broker).replicateSecurityUsers(USERS, FINGERPRINT);
+    assertThat(broker.calls("replicateSecurityUsers")).containsOnlyOnce(Arrays.asList(USERS, FINGERPRINT));
   }
 
   @Test
   void aFollowerStillWritesThePreconditionOnAGroupsEntry() {
-    final RaftTransactionBroker broker = mock(RaftTransactionBroker.class);
+    final FakeRaftTransactionBroker broker = new FakeRaftTransactionBroker();
     final RaftHAPlugin plugin = pluginOn(followerWhoseCacheIsEmptyButWhoseClusterIsUniform(broker));
 
     plugin.replicateSecurityGroups(GROUPS, FINGERPRINT);
 
-    verify(broker).replicateSecurityGroups(GROUPS, FINGERPRINT);
+    assertThat(broker.calls("replicateSecurityGroups")).containsOnlyOnce(Arrays.asList(GROUPS, FINGERPRINT));
   }
 
   @Test
   void aFollowerStillWritesThePreconditionOnAnApiTokensEntry() {
-    final RaftTransactionBroker broker = mock(RaftTransactionBroker.class);
+    final FakeRaftTransactionBroker broker = new FakeRaftTransactionBroker();
     final RaftHAPlugin plugin = pluginOn(followerWhoseCacheIsEmptyButWhoseClusterIsUniform(broker));
 
     plugin.replicateSecurityApiTokens(API_TOKENS, FINGERPRINT);
 
-    verify(broker).replicateSecurityApiTokens(API_TOKENS, FINGERPRINT);
+    assertThat(broker.calls("replicateSecurityApiTokens")).containsOnlyOnce(Arrays.asList(API_TOKENS, FINGERPRINT));
   }
 
   // ---------------------------------------------------------------------------------------------------------
@@ -128,17 +127,17 @@ class Issue7559SecurityPreconditionOnFollowerTest {
    */
   @Test
   void aStaleAllClearCacheDoesNotOutrankAPeerThatCannotReadAPrecondition() {
-    final RaftTransactionBroker broker = mock(RaftTransactionBroker.class);
-    final RaftHAServer raft = mock(RaftHAServer.class);
-    when(raft.getTransactionBroker()).thenReturn(broker);
+    final FakeRaftTransactionBroker broker = new FakeRaftTransactionBroker();
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+    raft.transactionBroker(broker);
     // What a recently demoted leader still believes...
-    when(raft.peersMissingCapability(PeerCapabilities.SECURITY_PRECONDITION)).thenReturn(List.of());
+    raft.on("peersMissingCapability", a -> Objects.equals(a[0], PeerCapabilities.SECURITY_PRECONDITION) ? List.of() : List.of());
     // ...and what the cluster actually answers when asked now.
-    when(raft.peersMissingCapabilityNow(anyString())).thenReturn(List.of(LAGGING_PEER));
+    raft.returns("peersMissingCapabilityNow", List.of(LAGGING_PEER));
 
     pluginOn(raft).replicateSecurityUsers(USERS, FINGERPRINT);
 
-    verify(broker).replicateSecurityUsers(USERS, null);
+    assertThat(broker.calls("replicateSecurityUsers")).containsOnlyOnce(Arrays.asList(USERS, null));
   }
 
   /**
@@ -148,14 +147,14 @@ class Issue7559SecurityPreconditionOnFollowerTest {
    */
   @Test
   void theDecisionIsNeverTakenOnTheLeaderOnlyCachedAnswer() {
-    final RaftHAServer raft = mock(RaftHAServer.class);
-    when(raft.getTransactionBroker()).thenReturn(mock(RaftTransactionBroker.class));
-    when(raft.peersMissingCapabilityNow(anyString())).thenReturn(List.of());
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+    raft.transactionBroker(new FakeRaftTransactionBroker());
+    raft.returns("peersMissingCapabilityNow", List.of());
 
     pluginOn(raft).replicateSecurityUsers(USERS, FINGERPRINT);
 
-    verify(raft, never()).peersMissingCapability(PeerCapabilities.SECURITY_PRECONDITION);
-    verify(raft).peersMissingCapabilityNow(PeerCapabilities.SECURITY_PRECONDITION);
+    assertThat(raft.calls("peersMissingCapability")).doesNotContain(Arrays.asList(PeerCapabilities.SECURITY_PRECONDITION));
+    assertThat(raft.calls("peersMissingCapabilityNow")).containsOnlyOnce(Arrays.asList(PeerCapabilities.SECURITY_PRECONDITION));
   }
 
   // ---------------------------------------------------------------------------------------------------------
@@ -171,14 +170,14 @@ class Issue7559SecurityPreconditionOnFollowerTest {
    */
   @Test
   void aSeedSubmissionWithNoFingerprintNeverAsksTheClusterAboutAPrecondition() {
-    final RaftHAServer raft = mock(RaftHAServer.class);
-    when(raft.getTransactionBroker()).thenReturn(mock(RaftTransactionBroker.class));
-    when(raft.peersMissingCapabilityNow(anyString())).thenReturn(List.of());
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+    raft.transactionBroker(new FakeRaftTransactionBroker());
+    raft.returns("peersMissingCapabilityNow", List.of());
 
     pluginOn(raft).replicateSecurityUsers(USERS);
 
-    verify(raft, never()).peersMissingCapabilityNow(PeerCapabilities.SECURITY_PRECONDITION);
-    verify(raft, never()).peersMissingCapability(PeerCapabilities.SECURITY_PRECONDITION);
+    assertThat(raft.calls("peersMissingCapabilityNow")).doesNotContain(Arrays.asList(PeerCapabilities.SECURITY_PRECONDITION));
+    assertThat(raft.calls("peersMissingCapability")).doesNotContain(Arrays.asList(PeerCapabilities.SECURITY_PRECONDITION));
   }
 
   /**
@@ -188,14 +187,14 @@ class Issue7559SecurityPreconditionOnFollowerTest {
    */
   @Test
   void aSeedGroupsSubmissionAsksOnlyAboutTheEntryTypeAndNotAboutAPrecondition() {
-    final RaftHAServer raft = mock(RaftHAServer.class);
-    when(raft.getTransactionBroker()).thenReturn(mock(RaftTransactionBroker.class));
-    when(raft.peersMissingCapabilityNow(anyString())).thenReturn(List.of());
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+    raft.transactionBroker(new FakeRaftTransactionBroker());
+    raft.returns("peersMissingCapabilityNow", List.of());
 
     pluginOn(raft).replicateSecurityGroups(GROUPS);
 
-    verify(raft).peersMissingCapabilityNow(PeerCapabilities.SECURITY_GROUPS_ENTRY);
-    verify(raft, never()).peersMissingCapabilityNow(PeerCapabilities.SECURITY_PRECONDITION);
+    assertThat(raft.calls("peersMissingCapabilityNow")).containsOnlyOnce(Arrays.asList(PeerCapabilities.SECURITY_GROUPS_ENTRY));
+    assertThat(raft.calls("peersMissingCapabilityNow")).doesNotContain(Arrays.asList(PeerCapabilities.SECURITY_PRECONDITION));
   }
 
   /**
@@ -206,17 +205,17 @@ class Issue7559SecurityPreconditionOnFollowerTest {
    */
   @Test
   void aGatedDocumentWithAFingerprintAsksAboutBothTokens() {
-    final RaftTransactionBroker broker = mock(RaftTransactionBroker.class);
-    final RaftHAServer raft = mock(RaftHAServer.class);
-    when(raft.getTransactionBroker()).thenReturn(broker);
-    when(raft.peersMissingCapability(anyString())).thenReturn(List.of(LAGGING_PEER));
-    when(raft.peersMissingCapabilityNow(anyString())).thenReturn(List.of());
+    final FakeRaftTransactionBroker broker = new FakeRaftTransactionBroker();
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+    raft.transactionBroker(broker);
+    raft.returns("peersMissingCapability", List.of(LAGGING_PEER));
+    raft.returns("peersMissingCapabilityNow", List.of());
 
     pluginOn(raft).replicateSecurityApiTokens(API_TOKENS, FINGERPRINT);
 
-    verify(raft).peersMissingCapabilityNow(PeerCapabilities.SECURITY_API_TOKENS_ENTRY);
-    verify(raft).peersMissingCapabilityNow(PeerCapabilities.SECURITY_PRECONDITION);
-    verify(broker).replicateSecurityApiTokens(API_TOKENS, FINGERPRINT);
+    assertThat(raft.calls("peersMissingCapabilityNow")).containsOnlyOnce(Arrays.asList(PeerCapabilities.SECURITY_API_TOKENS_ENTRY));
+    assertThat(raft.calls("peersMissingCapabilityNow")).containsOnlyOnce(Arrays.asList(PeerCapabilities.SECURITY_PRECONDITION));
+    assertThat(broker.calls("replicateSecurityApiTokens")).containsOnlyOnce(Arrays.asList(API_TOKENS, FINGERPRINT));
   }
 
   // ---------------------------------------------------------------------------------------------------------
@@ -225,12 +224,12 @@ class Issue7559SecurityPreconditionOnFollowerTest {
    * A node whose capability cache holds nothing - a follower, which is every node that has not been elected - in a
    * cluster where every peer does in fact answer with the capability when asked.
    */
-  private static RaftHAServer followerWhoseCacheIsEmptyButWhoseClusterIsUniform(
+  private static FakeRaftHAServer followerWhoseCacheIsEmptyButWhoseClusterIsUniform(
       final RaftTransactionBroker broker) {
-    final RaftHAServer raft = mock(RaftHAServer.class);
-    when(raft.getTransactionBroker()).thenReturn(broker);
-    when(raft.peersMissingCapability(anyString())).thenReturn(List.of(LAGGING_PEER, "arcadedb1"));
-    when(raft.peersMissingCapabilityNow(anyString())).thenReturn(List.of());
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+    raft.transactionBroker(broker);
+    raft.returns("peersMissingCapability", List.of(LAGGING_PEER, "arcadedb1"));
+    raft.returns("peersMissingCapabilityNow", List.of());
     return raft;
   }
 

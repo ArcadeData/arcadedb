@@ -20,6 +20,7 @@ package com.arcadedb.engine;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Binary;
+import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
@@ -170,19 +171,22 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   /**
    * Layout of the trace {@link #loadMultiPageRecord} keeps of the chain it walked, one stride per chunk consumed, so
    * the read can be validated against what it actually READ instead of against the version of the pages that read
-   * happened to touch (#6217). Four longs in one flat array rather than an object per chunk: this is the read path of
-   * every record too big for its page, and the trace is thrown away at the end of the read.
+   * happened to touch (#6217). Five longs in one flat array rather than an object per chunk: this is the read path of
+   * every record too big for its page, and the trace is thrown away at the end of the read. The fifth says whether a
+   * retry reads that chunk's page afresh (#9070): under {@code REPEATABLE_READ} only a page this read pinned itself can
+   * be released and re-pinned, a page the transaction held before keeps answering with the image it already has.
    * <p>
    * The two things NOT in it are the ones that are derivable: a chunk's content offset inside the assembled record is
    * the sum of the sizes before it, and the pointer a chunk carries to the next one is that chunk's own
    * (page, slot) - which is why the validation can check the chain's SHAPE, and not only its bytes, without storing
    * anything more.
    */
-  private static final   int                       CHAIN_TRACE_STRIDE               = 4;
+  private static final   int                       CHAIN_TRACE_STRIDE               = 5;
   private static final   int                       CHAIN_TRACE_PAGE_NUMBER          = 0;
   private static final   int                       CHAIN_TRACE_PAGE_VERSION         = 1;
   private static final   int                       CHAIN_TRACE_SLOT                 = 2;
   private static final   int                       CHAIN_TRACE_CHUNK_SIZE           = 3;
+  private static final   int                       CHAIN_TRACE_REFRESHABLE          = 4;
   /** No page the read walked has moved since: the chain is trivially the one that was read. */
   private static final   int                       CHAIN_READ_UNCHANGED             = 0;
   /** A page the read walked has moved, but not one byte this record owns on it: the read stands (#6217). */
@@ -2453,7 +2457,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     try {
       final TransactionContext readTransaction = database.getTransaction();
       final PageId headPageId = new PageId(database, file.getFileId(), pageId);
-      // #8987: BEFORE the read pins it - a head pinned by this very read is not a snapshot older than the chain's tails
+      // #9070: BEFORE the read pins it - only a head this very read pinned can be released and re-pinned by a retry of
+      // the chain walk, one the transaction already held has been read by others in the image it has
       final boolean headPrePinned = readTransaction.getPinnedPage(headPageId) != null;
       final BasePage page = readTransaction.getPage(headPageId, pageSize);
 
@@ -2490,7 +2495,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         return getRecordInternal(placeHolderPointer, true, false);
       } else if (isChunkHead(recordSize[0])) {
         // FOUND 1ST CHUNK, LOAD THE ENTIRE MULTI-PAGE RECORD
-        return loadMultiPageRecord(rid, page, recordPositionInPage, recordSize, headPrePinned);
+        return loadMultiPageRecord(rid, page, recordPositionInPage, recordSize, !headPrePinned);
       } else if (recordSize[0] == NEXT_CHUNK)
         // CANNOT LOAD PARTIAL CHUNK
         return null;
@@ -2732,6 +2737,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       // so declare those bytes covered by it. Everything else here - a multi-page record, a placeholder, a record on
       // a brand-new page - stays undeclared, which is what makes a forgotten poison call harmless.
       final int previousCoverage = selectedPage.beginCoveredWrite(singleSlotInsert ? MutablePage.COVERAGE_SLOT_MERGE : 0);
+      // #9483: a record that fits is appended at the end of the page's content, which leaves no hole. The multi-page
+      // branch writes through paths that do not make that promise, so only the plain append is declared.
+      final boolean packedAppend = spaceNeeded <= spaceAvailableInCurrentPage;
+      final boolean previousPackedWrite = packedAppend && selectedPage.beginPackedWrite();
       final short recordCountInPage;
       try {
         // RESERVE A SPOT IMMEDIATELY TO AVOID USAGE FOR MULTI PAGE RECORD
@@ -2771,6 +2780,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           updatePageStatistics(selectedPage, spaceAvailableInCurrentPage, -spaceNeeded);
         }
       } finally {
+        if (packedAppend)
+          selectedPage.endPackedWrite(previousPackedWrite);
         selectedPage.endCoveredWrite(previousCoverage);
       }
 
@@ -4079,11 +4090,21 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
                 MutablePage.COVERAGE_SLOT_MERGE :
                 (edgeAppendReplayable ? MutablePage.COVERAGE_EDGE_APPEND_MERGE : 0));
         final long footprintBefore = recordSize[0] + recordSize[1];
+        // #9483: an overwrite of the same footprint moves nothing and frees nothing, so it cannot leave a hole. A
+        // shorter one does, and stays undeclared. footprintBefore is what the read side calls a footprint (content plus
+        // size marker, see recordFootprint), which is what the comparison below must keep meaning. The declaration spans
+        // exactly the two writes below - the size marker and the content - and nothing that could move bytes may ever
+        // be added between begin and end.
+        final long sizeMarker = isPlaceHolder ? -1L * bufferSize : bufferSize;
+        final boolean packedOverwrite = bufferSize + Binary.getNumberSpace(sizeMarker) == footprintBefore;
+        final boolean previousPackedWrite = packedOverwrite && page.beginPackedWrite();
         try {
-          recordSize[1] = page.writeNumber(recordPositionInPage, isPlaceHolder ? -1L * bufferSize : bufferSize);
+          recordSize[1] = page.writeNumber(recordPositionInPage, sizeMarker);
           final int recordContentPositionInPage = (int) (recordPositionInPage + recordSize[1]);
           page.writeByteArray(recordContentPositionInPage, buffer.getContent(), buffer.getContentBeginOffset(), bufferSize);
         } finally {
+          if (packedOverwrite)
+            page.endPackedWrite(previousPackedWrite);
           page.endCoveredWrite(previousCoverage);
         }
 
@@ -4622,6 +4643,88 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     }
   }
 
+  /**
+   * What the commit runs on every bucket page the transaction modified or created (#9483). A page every write of
+   * which was declared hole-free ({@link MutablePage#beginPackedWrite()}: records appended at the end of the content,
+   * records overwritten in place by the same footprint, records grown inside the page) was packed when the
+   * transaction found it and still is, so the proof of that ({@link #packedContentEnd}) - a walk of the whole slot
+   * table, the largest single part of the commit of a small-record transaction - is not paid again. The accounting
+   * {@link #compressPageInternal} does for a page it proves is not needed either: each of those writes already told
+   * the free-space statistics the exact free tail it left, and an overwrite of the same footprint changes none.
+   * <p>
+   * "Packed when the transaction found it" holds by induction: every committed page went through this method or
+   * through {@link #compressPage}, and the rebased pages of the commit-time merges are compressed in full by the two
+   * rebase methods themselves (#5608), so they never arrive here already skipped. The one exception is a page an old
+   * engine left a hole in: appended to now, it keeps the hole until a write that can free bytes lands on it, which
+   * costs the space it always cost - nothing reads through a hole.
+   * <p>
+   * Under assertions (surefire's default) the skip is held to its word: the proof is run anyway, a page that fails
+   * it is an assertion error unless the hole came in with the committed image ({@link #failedProofIsExplained}), and
+   * the free-space claim check keeps confronting every write with the page.
+   *
+   * @return true when the full compression was skipped: the same answer with and without assertions, but on a page
+   * that brought a hole in from an old engine, which the assertions send through the full compression.
+   *
+   * @author Luca Garulli (l.garulli@arcadedata.com)
+   */
+  public boolean compressPageAtCommit(final MutablePage page) throws IOException {
+    if (page.hasOnlyPackedWrites()) {
+      if (!CHECK_FREE_SPACE_CLAIMS)
+        return true;
+
+      final short recordCountInPage = page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
+      final int contentEndInPage = packedContentEnd(page, recordCountInPage);
+      if (contentEndInPage > 0) {
+        verifyFreeSpaceClaim(page, page.getMaxContentSize() - contentEndInPage, recordCountInPage);
+        // The other half of the contract: a declared write reports the exact free tail it leaves, because nothing
+        // re-measures this page. A claim demoted to a floor means a write gave bytes back unreported, which only the
+        // full compression would have accounted for - even when the floor itself is honest.
+        assert page.getFreeSpaceClaim() == MutablePage.FREE_SPACE_CLAIM_UNKNOWN || page.isFreeSpaceClaimExact() :
+            "page " + page.getPageId() + " of bucket '" + componentName
+                + "' skips the commit-time compression, but a write on it gave bytes back without reporting them";
+        return true;
+      }
+
+      assert failedProofIsExplained(page, recordCountInPage) :
+          "page " + page.getPageId() + " of bucket '" + componentName + "' (" + recordCountInPage + " record slots) was "
+              + "written only by writes declared hole-free (MutablePage.beginPackedWrite) and found packed, but has a "
+              + "hole now: one of those writes broke its promise. Fix the write, or stop declaring it";
+    }
+    compressPage(page, false);
+    return false;
+  }
+
+  /**
+   * Under assertions only: whether a page every write of which was declared hole-free may fail the proof that it is
+   * packed without any of those writes being at fault (#9483). It may when it holds no live record - there is
+   * nothing to pack, which the proof reports the same way - and when the hole came in with the committed image the
+   * transaction started from, i.e. a page an old engine wrote. A brand-new page is born empty and a committed page is
+   * packed by the commit that wrote it, so anything else is a declared write that left a hole.
+   *
+   * @author Luca Garulli (l.garulli@arcadedata.com)
+   */
+  private boolean failedProofIsExplained(final MutablePage page, final short recordCountInPage) throws IOException {
+    if (getOrderedRecordsInPage(page, recordCountInPage).isEmpty())
+      return true;
+
+    // The commit holds this file's lock, so the committed image cannot move between the two reads below
+    final PageManager pageManager = database.getPageManager();
+    final int committedVersion = pageManager.getMostRecentVersionOfPage(page.getPageId(), pageSize);
+    if (committedVersion != page.getVersion())
+      // THE TRANSACTION STARTED FROM AN OLDER IMAGE, WHICH IS NOT HERE TO ASK: THE VERSION CHECK REFUSES OR REBASES IT
+      return true;
+    if (committedVersion == 0)
+      // A BRAND-NEW PAGE: NOTHING CAN HAVE COME IN WITH IT
+      return false;
+
+    final ImmutablePage committed = pageManager.getImmutablePage(page.getPageId(), pageSize, false, false);
+    if (committed == null)
+      return true;
+    final short committedRecordCount = committed.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
+    return !getOrderedRecordsInPage(committed, committedRecordCount).isEmpty()
+        && packedContentEnd(committed, committedRecordCount) < 0;
+  }
+
   private void compressPageInternal(final MutablePage page, final boolean forceWipeOut) throws IOException {
     final short recordCountInPage = page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
 
@@ -4714,7 +4817,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    *
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
-  int packedContentEnd(final MutablePage page, final short recordCountInPage) {
+  int packedContentEnd(final BasePage page, final short recordCountInPage) {
     final int pageContentSize = page.getContentSize();
     final int maxFootprint = getPageSize() - contentHeaderSize;
     int footprints = 0;
@@ -4786,12 +4889,14 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * Holds what a transaction's writes SAID this page's free tail would be against what the page, read here, actually
    * has (#6396).
    * <p>
-   * Everything the free-space statistics are told by a write is a delta that write computes about its own bytes,
-   * and nothing observable after a commit depends on it being right: every page a transaction touches is compressed
-   * at commit, {@link #compressPageInternal} MEASURES its free tail there and {@link #accountCompressedPage}
-   * overwrites whatever the deltas had accumulated. So a writer could be - and, until #6154, #6339 and #6358 were
+   * Everything the free-space statistics are told by a write is a delta that write computes about its own bytes.
+   * Until #9483 nothing observable after a commit depended on it being right: every page a transaction touched was
+   * compressed at commit, {@link #compressPageInternal} MEASURED its free tail there and {@link #accountCompressedPage}
+   * overwrote whatever the deltas had accumulated. So a writer could be - and, until #6154, #6339 and #6358 were
    * each opened for one, repeatedly was - thousands of bytes wrong without a single red test. Two independent
-   * descriptions of one quantity, and no mechanism keeping them honest.
+   * descriptions of one quantity, and no mechanism keeping them honest. Since #9483 a page written only by writes
+   * declared hole-free skips that compression ({@link #compressPageAtCommit}), so for such a page the deltas ARE what
+   * the statistics keep, and this check is what holds them to it.
    * <p>
    * This is that mechanism, and it needs no fixture: every commit in every test becomes a check of the write-path
    * arithmetic. The comparison is an EQUALITY, against the tail the page has BEFORE the defrag - which is exactly
@@ -5083,19 +5188,36 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * A byte comparison rather than the 64-bit fold {@code offPageContentFingerprint} uses on the commit side: it costs
    * the same walk, is paid only on a page that actually moved, and unlike a hash it cannot be wrong. The commit side
    * has to compare two points in TIME and can only carry a number across them; a read holds both images at once.
+   * <p>
+   * <b>Under {@code REPEATABLE_READ} the record must also read the same at every read of the transaction (#8987,
+   * #9070).</b> Every page the walk fetches is pinned, but pins are taken one at a time and by different reads, so a head
+   * pinned by the read of a neighbour on its page can sit on tails a later commit rewrote. Two rules keep a read from
+   * pairing them. A chain read from images that differ from the newest commit is the transaction's snapshot only when
+   * this very record was validated on exactly those images before ({@link TransactionContext#getSnapshotChunkChain}):
+   * pages that merely happen to all be pinned prove nothing. And a chain that fails the validation is retried by
+   * releasing and re-pinning only the pages THIS read pinned, never by reading a head the transaction does not hold: a
+   * record assembled from an unpinned head is not the one the next read finds. A chunk on a page the transaction held
+   * before the read that no longer matches the newest commit reads the same at every attempt, and the record its pages
+   * belonged to is no longer there to complete, so the read fails with a {@link ConcurrentModificationException}.
    *
-   *
-   * @param headPrePinned whether the transaction already held the head page before the read fetched it (#8987): a chain
-   *                      is a snapshot older than this read only if its head was pinned before it too, otherwise a newer
-   *                      head can sit on tails pinned earlier by a neighbour record's read.
+   * @param headPinnedByThisRead whether the head page was pinned by the very read that asks for the record (#9070), so
+   *                             that a retry may release it and pin the newest copy. False when the caller already
+   *                             held it - a neighbour's read, a scan reading the rest of the page, an update that took
+   *                             it for modification - since releasing it would change what those already read.
    *
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   private Binary loadMultiPageRecord(final RID originalRID, BasePage firstPage, int recordPositionInPage,
-                                     long[] recordSize, final boolean headPrePinned) throws IOException {
+                                     long[] recordSize, final boolean headPinnedByThisRead) throws IOException {
     final int maxRetries = database.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_RETRIES);
     final PageId firstPageId = firstPage.pageId;
     final int firstChunkSlot = (int) (originalRID.getPosition() % maxRecordsInPage);
+    final TransactionContext walkTransaction = database.getTransactionIfExists();
+    final boolean repeatableRead = walkTransaction != null
+            && walkTransaction.getIsolationLevel() == Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ;
+    // Whether a retry can read the head chunk from a newer image: under READ_COMMITTED it re-reads it from the page
+    // manager, under REPEATABLE_READ only a head this read pinned itself can be released and pinned again.
+    final boolean headRefreshable = !repeatableRead || headPinnedByThisRead;
 
     for (int retry = 0; retry <= maxRetries; retry++) {
       // Trace of the chunks this attempt consumed, in chain order: where each one was, at which version of its page,
@@ -5122,10 +5244,13 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       // for the chain that doubles back on its very first hop, long before this threshold (code review on #6258).
       LongHashSet visitedChunks = null;
 
-      // #8987: whether the head and every continuation page were ALREADY pinned by the transaction when this walk began, so that the chain
-      // is a snapshot taken before it. Only the first attempt can say so: a later one finds the pages its predecessor pinned.
-      final TransactionContext walkTransaction = database.getTransactionIfExists();
-      boolean tailsPrePinned = retry == 0 && headPrePinned && walkTransaction != null;
+      // #9070: whether the chunk about to be consumed is on a page a retry reads afresh, and how many such chunks the walk
+      // met - the count only spares the backward look-up of isPageReadAfreshByARetry to a chain read from held pages.
+      boolean currentRefreshable = headRefreshable;
+      int refreshableChunks = 0;
+      // The page fetched by a hop that then broke: not in the trace, but pinned by this read like the chunks that are.
+      int brokenHopPage = -1;
+      boolean brokenHopRefreshable = false;
 
       boolean chainInconsistent = false;
       final Binary record = new Binary();
@@ -5151,6 +5276,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           chainTrace[trace + CHAIN_TRACE_PAGE_VERSION] = page.getVersion();
           chainTrace[trace + CHAIN_TRACE_SLOT] = currentSlot;
           chainTrace[trace + CHAIN_TRACE_CHUNK_SIZE] = chunkSize;
+          chainTrace[trace + CHAIN_TRACE_REFRESHABLE] = currentRefreshable ? 1L : 0L;
+          if (currentRefreshable)
+            ++refreshableChunks;
           ++chunks;
           lastNextChunkPointer = nextChunkPointer;
 
@@ -5168,10 +5296,13 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           }
 
           final PageId nextPageId = new PageId(database, file.getFileId(), chunkPageId);
-          if (tailsPrePinned && walkTransaction.getPinnedPage(nextPageId) == null)
-            tailsPrePinned = false;
+          final boolean nextRefreshable = isPageReadAfreshByARetry(walkTransaction, repeatableRead, nextPageId, chainTrace,
+                  chunks, refreshableChunks);
 
+          // A getPage that throws pins nothing: the transaction caches a page only once it has loaded it
           final BasePage nextPage = database.getTransaction().getPage(nextPageId, pageSize);
+          brokenHopPage = chunkPageId;
+          brokenHopRefreshable = nextRefreshable;
 
           final int nextRecordPositionInPage = getRecordPositionInPage(nextPage, chunkPositionInPage);
           if (nextRecordPositionInPage == 0) {
@@ -5205,6 +5336,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
             brokenChainReason = "unexpected marker at chunk " + (chunks - 1);
             break;
           }
+          // The hop landed on a chunk: the next iteration traces it, with the page it was read from
+          brokenHopPage = -1;
+          currentRefreshable = nextRefreshable;
         }
       } catch (final Exception e) {
         brokenChainReason = "error walking the chain: " + e.getMessage();
@@ -5237,7 +5371,16 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         // chunk it cannot make sense of as a chunk that changed. What is left to come out of here is the failure to
         // LOAD a page at all, which is an I/O error and not a conflict - absorbing it would spend the retry budget
         // on a broken disk and then report it as "the record was modified during read".
-        final int verdict = validateChainRead(chainTrace, chunks, record, lastNextChunkPointer, headMarker, tailsPrePinned);
+        final int verdict;
+        if (repeatableRead && isSnapshotOfThisTransaction(walkTransaction, originalRID, chainTrace, chunks))
+          // #9070: exactly the images this record was validated on earlier in the transaction, so its snapshot, whatever
+          // committed since. A commit made after that read is not a change made during this one.
+          verdict = CHAIN_READ_UNCHANGED;
+        else {
+          verdict = validateChainRead(chainTrace, chunks, record, lastNextChunkPointer, headMarker, false);
+          if (verdict != CHAIN_READ_CHANGED && repeatableRead && isChainPinnedWhole(walkTransaction, chainTrace, chunks))
+            walkTransaction.setSnapshotChunkChain(originalRID, pagesAndVersions(chainTrace, chunks));
+        }
         if (verdict == CHAIN_READ_REVALIDATED)
           database.getPageManager().incrementChunkChainReadRevalidations();
         chainInconsistent = verdict == CHAIN_READ_CHANGED;
@@ -5250,28 +5393,47 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
       database.getPageManager().incrementChunkChainReadRetries();
 
-      // Retry by re-fetching the first page with fresh data
+      // Decided BEFORE the pins are released: which chunks the next attempt reads from the same image is what the trace says
+      final boolean worthRetrying = aRetryWouldReadSomethingElse(chainTrace, chunks, record, lastNextChunkPointer, headMarker,
+              refreshableChunks > 0 || (brokenHopPage >= 0 && brokenHopRefreshable));
+
+      if (repeatableRead)
+        // #9070: a failed read leaves no pin behind. The pages it pinned itself may hold images of a commit the rest of
+        // the chain predates, and kept pinned they would be taken by the retry, or by a later read, as images this
+        // transaction already relied on.
+        unpinPagesPinnedByThisRead(walkTransaction, chainTrace, chunks, brokenHopPage >= 0 && brokenHopRefreshable ?
+                brokenHopPage :
+                -1);
+
+      if (!worthRetrying)
+        throw new ConcurrentModificationException(
+                "Multi-page record " + originalRID + " was modified during read and cannot be re-read in this "
+                        + "transaction: its chunks are pinned by the transaction's own snapshot, so no retry can "
+                        + "assemble a different one. Please retry the operation in a new transaction");
+
       if (retry < maxRetries) {
-        final BasePage refreshedFirstPage = database.getPageManager().getImmutablePage(firstPageId, pageSize, false, true);
-        if (refreshedFirstPage == null)
-          throw new ConcurrentModificationException(
-                  "First page of multi-page record " + originalRID + " was removed during read");
-
-        if (!aRetryWouldReadSomethingElse(refreshedFirstPage, chainTrace, chunks))
-          throw new ConcurrentModificationException(
-                  "Multi-page record " + originalRID + " was modified during read and cannot be re-read in this "
-                          + "transaction: its chunks are pinned by the transaction's own snapshot, so no retry can "
-                          + "assemble a different one. Please retry the operation in a new transaction");
-
         LogManager.instance().log(this, Level.FINE,
                 "Multi-page record %s read inconsistent (attempt %d/%d), retrying...", originalRID,
                 retry + 1, maxRetries);
-        firstPage = refreshedFirstPage;
-        recordPositionInPage = getRecordPositionInPage(firstPage, firstChunkSlot);
-        if (recordPositionInPage == 0)
-          throw new ConcurrentModificationException(
-                  "Multi-page record " + originalRID + " was deleted during read");
-        recordSize = firstPage.readNumberAndSize(recordPositionInPage);
+
+        if (headRefreshable) {
+          // Retry by re-fetching the first page with fresh data. Under REPEATABLE_READ through the transaction, which
+          // pins it again: a head read from the page manager alone is not the one the next read of the record finds.
+          final BasePage refreshedFirstPage = repeatableRead ?
+                  walkTransaction.getPage(firstPageId, pageSize) :
+                  database.getPageManager().getImmutablePage(firstPageId, pageSize, false, true);
+          if (refreshedFirstPage == null)
+            throw new ConcurrentModificationException(
+                    "First page of multi-page record " + originalRID + " was removed during read");
+
+          firstPage = refreshedFirstPage;
+          recordPositionInPage = getRecordPositionInPage(firstPage, firstChunkSlot);
+          if (recordPositionInPage == 0)
+            throw new ConcurrentModificationException(
+                    "Multi-page record " + originalRID + " was deleted during read");
+          recordSize = firstPage.readNumberAndSize(recordPositionInPage);
+        }
+        // Otherwise the head the transaction holds, which is the only one it can read: the tails are what can change
       } else
         throw new ConcurrentModificationException(
                 "Multi-page record " + originalRID + " was modified during read after " + maxRetries
@@ -5297,30 +5459,28 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    *                             it is part of what the comparison checks: a head whose marker changed under the read
    *                             is a slot that stopped being what it was, exactly like one whose size or pointer did.
    *
-   * @param tailsPrePinned       whether the transaction already held every continuation page when the walk began: the
-   *                             pages the walk pins itself can come from different commits, so only a chain pinned
-   *                             before it is a snapshot (#8987).
+   * @param onlyChunksReadAgain  checks only the chunks a retry would read from the very same image, the ones not flagged
+   *                             {@link #CHAIN_TRACE_REFRESHABLE} (#9070): whether one of them moved is whether a retry
+   *                             is futile.
    *
    * @return {@link #CHAIN_READ_UNCHANGED}, {@link #CHAIN_READ_REVALIDATED} or {@link #CHAIN_READ_CHANGED}.
    *
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   private int validateChainRead(final long[] chainTrace, final int chunks, final Binary record,
-                                final long lastNextChunkPointer, final long headMarker, final boolean tailsPrePinned)
+                                final long lastNextChunkPointer, final long headMarker, final boolean onlyChunksReadAgain)
           throws IOException {
     int verdict = CHAIN_READ_UNCHANGED;
     int contentOffset = 0;
 
-    // A chain whose continuation pages the transaction held BEFORE this walk, and still holds whole, IS its snapshot (#8987): under REPEATABLE_READ a later commit on it is not a
-    // change made during the read, the chain is exactly what the transaction pinned and what every read of the record
-    // must keep returning. A chain only partly held (its head pinned by a read of a neighbour on the same page) is
-    // validated as before: its other chunks came from the page manager and a commit can have torn the read.
-    if (tailsPrePinned && isChainPinnedWhole(chainTrace, chunks))
-      return CHAIN_READ_UNCHANGED;
-
     for (int chunk = 0; chunk < chunks; ++chunk) {
       final int trace = chunk * CHAIN_TRACE_STRIDE;
       final int chunkSize = (int) chainTrace[trace + CHAIN_TRACE_CHUNK_SIZE];
+
+      if (onlyChunksReadAgain && chainTrace[trace + CHAIN_TRACE_REFRESHABLE] != 0) {
+        contentOffset += chunkSize;
+        continue;
+      }
 
       final BasePage currentPage = database.getPageManager()
               .getImmutablePage(new PageId(database, file.getFileId(), (int) chainTrace[trace + CHAIN_TRACE_PAGE_NUMBER]),
@@ -5350,10 +5510,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   }
 
   /** Whether every chunk of the traced chain was read from a page this transaction holds, at the version it read. */
-  private boolean isChainPinnedWhole(final long[] chainTrace, final int chunks) {
-    final TransactionContext transaction = database.getTransactionIfExists();
-    if (transaction == null)
-      return false;
+  private boolean isChainPinnedWhole(final TransactionContext transaction, final long[] chainTrace, final int chunks) {
     for (int chunk = 0; chunk < chunks; ++chunk) {
       final int trace = chunk * CHAIN_TRACE_STRIDE;
       final BasePage pinned = transaction.getPinnedPage(
@@ -5365,49 +5522,108 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   }
 
   /**
+   * Whether the traced chain was read from exactly the page images this transaction validated the record on before
+   * (#9070). A page version names one committed image of the page, so the same (page, version) list is the same chain,
+   * byte for byte.
+   */
+  private static boolean isSnapshotOfThisTransaction(final TransactionContext transaction, final RID rid,
+                                                     final long[] chainTrace, final int chunks) {
+    final long[] snapshot = transaction.getSnapshotChunkChain(rid);
+    if (snapshot == null || snapshot.length != chunks * 2)
+      return false;
+    for (int chunk = 0; chunk < chunks; ++chunk) {
+      final int trace = chunk * CHAIN_TRACE_STRIDE;
+      if (snapshot[chunk * 2] != chainTrace[trace + CHAIN_TRACE_PAGE_NUMBER]
+              || snapshot[chunk * 2 + 1] != chainTrace[trace + CHAIN_TRACE_PAGE_VERSION])
+        return false;
+    }
+    return true;
+  }
+
+  /** The (page, version) pairs of the traced chain, in chain order: what {@link #isSnapshotOfThisTransaction} compares. */
+  private static long[] pagesAndVersions(final long[] chainTrace, final int chunks) {
+    final long[] pairs = new long[chunks * 2];
+    for (int chunk = 0; chunk < chunks; ++chunk) {
+      final int trace = chunk * CHAIN_TRACE_STRIDE;
+      pairs[chunk * 2] = chainTrace[trace + CHAIN_TRACE_PAGE_NUMBER];
+      pairs[chunk * 2 + 1] = chainTrace[trace + CHAIN_TRACE_PAGE_VERSION];
+    }
+    return pairs;
+  }
+
+  /**
+   * Whether a retry of the chain walk reads the page {@code pageId} afresh (#9070): a page the transaction does not
+   * hold is read from the page manager again, and under {@code REPEATABLE_READ} so is one this very read pinned, which
+   * the retry releases first. A page the transaction held before the read (pinned by an earlier read, or modified by the
+   * transaction itself) answers every attempt with the image it already has.
+   */
+  private static boolean isPageReadAfreshByARetry(final TransactionContext transaction, final boolean repeatableRead,
+                                                  final PageId pageId, final long[] chainTrace, final int chunks,
+                                                  final int refreshableChunks) {
+    if (transaction == null || transaction.getPinnedPage(pageId) == null)
+      return true;
+
+    if (repeatableRead && refreshableChunks > 0) {
+      // Pinned, but possibly by this very walk at an earlier chunk on the same page: the newest such chunk says by whom
+      final int pageNumber = pageId.getPageNumber();
+      for (int chunk = chunks - 1; chunk >= 0; --chunk) {
+        final int trace = chunk * CHAIN_TRACE_STRIDE;
+        if (chainTrace[trace + CHAIN_TRACE_PAGE_NUMBER] == pageNumber)
+          return chainTrace[trace + CHAIN_TRACE_REFRESHABLE] != 0;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Releases the pages a failed chain walk pinned itself, the chunks flagged {@link #CHAIN_TRACE_REFRESHABLE} plus the
+   * page of a hop that broke ({@code brokenHopPage}, or -1), so a retry pins their newest copies (#9070).
+   */
+  private void unpinPagesPinnedByThisRead(final TransactionContext transaction, final long[] chainTrace, final int chunks,
+                                          final int brokenHopPage) {
+    for (int chunk = 0; chunk < chunks; ++chunk) {
+      final int trace = chunk * CHAIN_TRACE_STRIDE;
+      if (chainTrace[trace + CHAIN_TRACE_REFRESHABLE] != 0)
+        transaction.unpinPage(new PageId(database, file.getFileId(), (int) chainTrace[trace + CHAIN_TRACE_PAGE_NUMBER]));
+    }
+    if (brokenHopPage >= 0)
+      transaction.unpinPage(new PageId(database, file.getFileId(), brokenHopPage));
+  }
+
+  /**
    * Whether another attempt at {@link #loadMultiPageRecord} could possibly read anything other than what this one
    * just did (#6258).
    * <p>
    * The retry exists for {@code READ_COMMITTED}, where the transaction caches no page: every attempt re-reads the
    * whole chain from the {@link PageManager}, so a read torn by a commit landing mid-walk genuinely reassembles
-   * cleanly on the next pass. Under {@code REPEATABLE_READ} it is a different machine. The retry re-fetches the head
-   * page straight from the page manager, deliberately bypassing the transaction, but the walk takes its continuation
-   * pages from {@link TransactionContext#getPage}, which serves them from the snapshot this transaction has already
-   * pinned. So every attempt pairs a fresh head with the very same tails, reproduces the very same mix, and is
-   * rejected for the very same reason - the whole retry budget spent on a verdict that was settled before the first
-   * retry started, and spent on the slowest read path there is, under contention, on the largest records.
+   * cleanly on the next pass. Under {@code REPEATABLE_READ} a page the transaction held before the read answers every
+   * attempt with the image it already has, so a chunk on such a page that no longer matches the newest commit is
+   * matched against it again at every attempt and fails again: the whole retry budget spent on a verdict that was
+   * settled before the first retry started, on the slowest read path there is, under contention, on the largest
+   * records.
    * <p>
    * The question is answered from the trace rather than from the isolation level, because the isolation level is not
-   * actually what decides it: a retry is worth making when the head page has MOVED (the next walk starts from
-   * different bytes, and may well follow the chain somewhere else entirely), or when any continuation page is one
-   * this transaction has not pinned (it will be re-read, and can differ). When neither holds, the next walk reads
-   * byte for byte what this one read, and the read fails now instead of three chain walks from now.
+   * actually what decides it: a retry is worth making when some page is read afresh by it
+   * ({@link #CHAIN_TRACE_REFRESHABLE}) and every chunk read from a page that is not still matches the newest committed
+   * state (#9070). When either fails, the next walk reproduces the mismatch, and the read fails now instead of three
+   * chain walks from now.
+   *
+   * @param anyPageReadAfresh whether a chunk of the trace, or the page of a hop that broke, is read afresh by a retry.
    *
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
-  private boolean aRetryWouldReadSomethingElse(final BasePage refreshedFirstPage, final long[] chainTrace,
-                                               final int chunks) {
+  private boolean aRetryWouldReadSomethingElse(final long[] chainTrace, final int chunks, final Binary record,
+                                               final long lastNextChunkPointer, final long headMarker,
+                                               final boolean anyPageReadAfresh) throws IOException {
     if (chunks == 0)
       // Nothing was read: there is no evidence a retry is futile.
       return true;
 
-    if (refreshedFirstPage.getVersion() != chainTrace[/* chunk 0 */ CHAIN_TRACE_PAGE_VERSION])
-      // The head chunk this walk started from is no longer the committed one.
-      return true;
+    if (!anyPageReadAfresh)
+      return false;
 
-    final TransactionContext transaction = database.getTransactionIfExists();
-    if (transaction == null)
-      return true;
-
-    for (int chunk = 1; chunk < chunks; ++chunk) {
-      final PageId pageId = new PageId(database, file.getFileId(),
-              (int) chainTrace[chunk * CHAIN_TRACE_STRIDE + CHAIN_TRACE_PAGE_NUMBER]);
-      if (!transaction.hasPageForRecord(pageId))
-        // Not pinned by this transaction: the next walk reloads it, and it can come back different.
-        return true;
-    }
-
-    return false;
+    // onlyChunksReadAgain: the chunks a retry reads afresh are skipped, a change there is exactly what a retry fixes
+    return validateChainRead(chainTrace, chunks, record, lastNextChunkPointer, headMarker, true) != CHAIN_READ_CHANGED;
   }
 
   /**
@@ -6359,14 +6575,22 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       // NOT ENOUGH ROOM LEFT IN THE PAGE
       return false;
 
-    // THERE IS SPACE LEFT IN THE PAGE, SHIFT ON THE RIGHT THE EXISTENT RECORDS
-    if (lastRecordPositionInPage != recordPositionInPage)
-      // NOT LAST RECORD IN PAGE, SHIFT NEXT RECORDS
-      shiftFollowingRecordsRight(page, recordCountInPage, (int) (recordPositionInPage + recordSize[0] + recordSize[1]),
-              pageOccupiedInBytes, additionalSpaceNeeded);
+    // #9483: what follows the record moves right by exactly the bytes the record gains, so a packed page stays packed,
+    // and the statistics are told the exact free tail below. Declared here rather than at the callers because both
+    // halves of that promise are made here; a growth that does not fit returned above, writing nothing.
+    final boolean previousPackedWrite = page.beginPackedWrite();
+    try {
+      // THERE IS SPACE LEFT IN THE PAGE, SHIFT ON THE RIGHT THE EXISTENT RECORDS
+      if (lastRecordPositionInPage != recordPositionInPage)
+        // NOT LAST RECORD IN PAGE, SHIFT NEXT RECORDS
+        shiftFollowingRecordsRight(page, recordCountInPage, (int) (recordPositionInPage + recordSize[0] + recordSize[1]),
+                pageOccupiedInBytes, additionalSpaceNeeded);
 
-    recordSize[1] = page.writeNumber(recordPositionInPage, isPlaceHolder ? -1L * contentSize : contentSize);
-    page.writeByteArray((int) (recordPositionInPage + recordSize[1]), content, contentOffset, contentSize);
+      recordSize[1] = page.writeNumber(recordPositionInPage, isPlaceHolder ? -1L * contentSize : contentSize);
+      page.writeByteArray((int) (recordPositionInPage + recordSize[1]), content, contentOffset, contentSize);
+    } finally {
+      page.endPackedWrite(previousPackedWrite);
+    }
 
     updatePageStatistics(page, spaceAvailableInCurrentPage, -additionalSpaceNeeded);
     return true;
@@ -6694,6 +6918,19 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
           bestPageAnalysis = pageAnalysis;
           break;
+        } else if (pageAnalysis.spaceAvailableInCurrentPage > -1 && pageAnalysis.spaceAvailableInCurrentPage < pageStats) {
+          // #9483: the statistics promised more than the page has. A commit that only appended to a page no longer
+          // re-measures it, so an entry rewritten while the appends were still private (a gather reads the committed
+          // image) can outlive that commit over-stated. Correct it here, or every allocation that trusts it pays this
+          // page read and slot walk again for a page that cannot take the record. Safe against concurrent writers of
+          // the map: the whole scan, the probe included, runs under the freeSpaceInPages monitor every one of them
+          // takes, and this branch only ever lowers an entry, to what the page holds.
+          if (pageAnalysis.spaceAvailableInCurrentPage < MINIMUM_SPACE_LEFT_IN_PAGE) {
+            if (pagesToRemove == null)
+              pagesToRemove = new int[snapSize];
+            pagesToRemove[pagesToRemoveCount++] = pageId;
+          } else
+            freeSpaceInPages.put(pageId, pageAnalysis.spaceAvailableInCurrentPage);
         }
       }
     }

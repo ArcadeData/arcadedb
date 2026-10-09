@@ -20,28 +20,26 @@ package com.arcadedb.server.security;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.engine.FileManager;
-import com.arcadedb.schema.Schema;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
-import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.FakeArcadeDBServer;
+import com.arcadedb.server.ServedDatabases;
 import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.utility.DedicatedThreadPool.PoolStats;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.RegisterExtension;
 
 import java.io.File;
-import java.util.List;
+import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
 
-import static com.arcadedb.utility.SubclassMocks.mock;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.when;
 
 /**
  * Issue #7856: the permission-refresh worker's load - the numbers behind the {@code pool=security_refresh}
@@ -52,6 +50,8 @@ import static org.mockito.Mockito.when;
  * refresh is running, the second fills the one slot, and the third has nowhere to go.
  */
 class Issue7856PermissionsRefreshPoolStatsTest {
+  @RegisterExtension
+  static final ServedDatabases SERVED = new ServedDatabases();
 
   private static final String CONFIG_PATH     = "target/test-security-7856-pool-stats";
   private static final String DATABASE        = "graph";
@@ -71,23 +71,27 @@ class Issue7856PermissionsRefreshPoolStatsTest {
       FileUtils.deleteRecursively(dir);
     assertThat(dir.mkdirs()).isTrue();
 
-    final ServerDatabase database = mockDatabase();
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getDatabaseNames()).thenAnswer(invocation -> {
+    final ServerDatabase database = SERVED.open(DATABASE);
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create();
+    server.on("getDatabaseNames", args -> {
       // Only the worker is held: any other caller of the name list must not be parked by the test.
       if (WORKER_NAME.equals(Thread.currentThread().getName())) {
         sweepStarted.countDown();
-        releaseSweep.await(TIMEOUT_MS, TimeUnit.MILLISECONDS);
+        try {
+          releaseSweep.await(TIMEOUT_MS, TimeUnit.MILLISECONDS);
+        } catch (final InterruptedException e) {
+          Thread.currentThread().interrupt();
+        }
       }
       return Set.of(DATABASE);
     });
-    when(server.getDatabase(DATABASE)).thenReturn(database);
+    server.on("getDatabase", args -> Objects.equals(args[0], DATABASE) ? database : null);
 
     final ContextConfiguration configuration = new ContextConfiguration();
     configuration.setValue(GlobalConfiguration.SERVER_SECURITY_RELOAD_EVERY, 600_000);
 
     security = new ServerSecurity(server, configuration, CONFIG_PATH);
-    when(server.getSecurity()).thenReturn(security);
+    server.security(security);
   }
 
   @AfterEach
@@ -163,17 +167,4 @@ class Issue7856PermissionsRefreshPoolStatsTest {
         .toString();
   }
 
-  private static ServerDatabase mockDatabase() {
-    final FileManager fileManager = mock(FileManager.class);
-    when(fileManager.getFiles()).thenReturn(List.of());
-
-    final Schema schema = mock(Schema.class);
-    when(schema.getTypes()).thenReturn(List.of());
-
-    final ServerDatabase db = mock(ServerDatabase.class);
-    when(db.getName()).thenReturn(DATABASE);
-    when(db.getFileManager()).thenReturn(fileManager);
-    when(db.getSchema()).thenReturn(schema);
-    return db;
-  }
 }

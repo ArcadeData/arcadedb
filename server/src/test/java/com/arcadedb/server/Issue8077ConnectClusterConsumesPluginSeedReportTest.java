@@ -20,7 +20,6 @@ package com.arcadedb.server;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.server.ServerControlPlane.OperationNotAvailableException;
-import com.arcadedb.server.security.ServerSecurity;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -32,11 +31,6 @@ import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.ArgumentMatchers.anyLong;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
 
 /**
  * Issue #8077: the seed report of {@code connect cluster} moved down into {@code HAServerPlugin}, so the embedded
@@ -51,41 +45,41 @@ class Issue8077ConnectClusterConsumesPluginSeedReportTest {
 
   private static final String PEER_ADDRESS = "db2:2435";
 
-  private ArcadeDBServer server;
-  private ServerSecurity security;
+  private FakeArcadeDBServer server;
+  private FakeServerSecurity security;
 
   @BeforeEach
   void setUp() {
-    server = mock(ArcadeDBServer.class);
-    when(server.getConfiguration()).thenReturn(new ContextConfiguration());
-    security = mock(ServerSecurity.class);
-    when(security.seedSecurityStateClusterWide(anyLong())).thenReturn(List.of());
-    when(server.getSecurity()).thenReturn(security);
+    server = FakeArcadeDBServer.create();
+    server.returns("getConfiguration", new ContextConfiguration());
+    security = FakeServerSecurity.create();
+    security.returns("seedSecurityStateClusterWide", List.of());
+    server.security(security);
   }
 
   /** The plugin's report is the verb's report, and nothing seeds a second time - neither the leader nor locally. */
   @Test
   void aPluginThatReportsItsOwnSeedIsNotSeededAgain() {
     final RecordingHAPlugin ha = new RecordingHAPlugin(Optional.of(List.of("groups")));
-    when(server.getHA()).thenReturn(ha);
+    server.setHA(ha);
 
     final ServerControlPlane.ConnectClusterResult result = new ServerControlPlane(server).connectCluster(PEER_ADDRESS);
 
     assertThat(result.failedSeeds()).containsExactly("groups");
     assertThat(ha.steps).as("one seed request per connect cluster (issue #7834)")
         .containsExactly("join+report " + PEER_ADDRESS);
-    verify(security, never()).seedSecurityStateClusterWide(anyLong());
+    assertThat(security.calls("seedSecurityStateClusterWide")).isEmpty();
   }
 
   /** A clean report from the plugin is a clean join, still with no second seed. */
   @Test
   void aCleanPluginReportIsACleanJoin() {
     final RecordingHAPlugin ha = new RecordingHAPlugin(Optional.of(List.of()));
-    when(server.getHA()).thenReturn(ha);
+    server.setHA(ha);
 
     assertThat(new ServerControlPlane(server).connectCluster(PEER_ADDRESS).hasFailedSeeds()).isFalse();
     assertThat(ha.steps).containsExactly("join+report " + PEER_ADDRESS);
-    verify(security, never()).seedSecurityStateClusterWide(anyLong());
+    assertThat(security.calls("seedSecurityStateClusterWide")).isEmpty();
   }
 
   /**
@@ -96,11 +90,11 @@ class Issue8077ConnectClusterConsumesPluginSeedReportTest {
   void aPluginThatLeavesTheSeedToItsCallerIsAskedForTheLeaderSeed() {
     final RecordingHAPlugin ha = new RecordingHAPlugin(Optional.empty());
     ha.leaderSeed = Optional.of(List.of("users"));
-    when(server.getHA()).thenReturn(ha);
+    server.setHA(ha);
 
     assertThat(new ServerControlPlane(server).connectCluster(PEER_ADDRESS).failedSeeds()).containsExactly("users");
     assertThat(ha.steps).containsExactly("join+report " + PEER_ADDRESS, "seed " + PEER_ADDRESS);
-    verify(security, never()).seedSecurityStateClusterWide(anyLong());
+    assertThat(security.calls("seedSecurityStateClusterWide")).isEmpty();
   }
 
   /** The interface default joins through connectCluster and reports nothing of its own. */
@@ -117,7 +111,7 @@ class Issue8077ConnectClusterConsumesPluginSeedReportTest {
   void anImplementationWithoutRuntimeMembershipIsStillRefusedAsAPrecondition() {
     final HAServerPlugin ha = new BaseHAPlugin() {
     };
-    when(server.getHA()).thenReturn(ha);
+    server.setHA(ha);
 
     assertThatThrownBy(() -> new ServerControlPlane(server).connectCluster(PEER_ADDRESS))
         .isInstanceOf(OperationNotAvailableException.class)
@@ -133,13 +127,13 @@ class Issue8077ConnectClusterConsumesPluginSeedReportTest {
         throw new UnsupportedOperationException("no runtime membership here");
       }
     };
-    when(server.getHA()).thenReturn(ha);
+    server.setHA(ha);
 
     assertThatThrownBy(() -> new ServerControlPlane(server).connectCluster(PEER_ADDRESS))
         .isInstanceOf(OperationNotAvailableException.class)
         .hasMessageContaining(PEER_ADDRESS)
         .hasMessageContaining("no runtime membership here");
-    verify(security, never()).seedSecurityStateClusterWide(anyLong());
+    assertThat(security.calls("seedSecurityStateClusterWide")).isEmpty();
   }
 
   /** Overrides the reporting form, as the Raft implementation does. */

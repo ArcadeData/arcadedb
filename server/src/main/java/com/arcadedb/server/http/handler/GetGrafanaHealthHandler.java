@@ -67,4 +67,10 @@ public class GetGrafanaHealthHandler extends AbstractObservabilityHandler {
 
     return new ExecutionResponse(200, result.toString());
   }
+
+  /** Manages a session or answers a probe: never held behind the queries in the admission gate (issue #9518). */
+  @Override
+  protected boolean goesThroughAdmissionGate() {
+    return false;
+  }
 }

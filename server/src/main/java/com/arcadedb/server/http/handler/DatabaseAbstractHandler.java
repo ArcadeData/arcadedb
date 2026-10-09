@@ -26,6 +26,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.sql.executor.QueryAdmissionGate;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ForwardedRequestIdContext;
@@ -217,6 +218,7 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
     emitCommitIndexBookmarkOnResponseCommit(exchange, haDbForRead);
 
     final AtomicReference<ExecutionResponse> response = new AtomicReference<>();
+    QueryAdmissionGate.Ticket admission = null;
     try {
       // Set read consistency context for HA follower reads.
       // Must be inside the try block so the finally always clears the ThreadLocal.
@@ -249,6 +251,7 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
         }
       }
       boolean finalAtomicTransaction = atomicTransaction;
+      admission = admit(exchange);
       if (activeSession != null) {
         // EXECUTE THE CODE LOCKING THE CURRENT SESSION. THIS AVOIDS USING THE SAME SESSION FROM MULTIPLE THREADS AT THE SAME TIME
         activeSession.execute(user, () -> {
@@ -273,22 +276,28 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
       emitCommitIndexBookmark(exchange, haDbForRead);
 
     } finally {
-      // Clear read consistency context
-      if (haDbForRead != null)
-        haDbForRead.clearReadConsistencyContext();
+      try {
+        // Clear read consistency context
+        if (haDbForRead != null)
+          haDbForRead.clearReadConsistencyContext();
 
-      if (activeSession != null)
-        // DETACH CURRENT CONTEXT/TRANSACTIONS FROM CURRENT THREAD
-        DatabaseContext.INSTANCE.removeContext(database.getDatabasePath());
-      else if (database != null) {
-        try {
-          if (!atomicTransaction)
-            // NO TRANSACTION, ROLLBACK TO MAKE SURE ANY PENDING OPERATION IS REMOVED
-            database.rollbackAllNested();
-        } finally {
-          // DO NOT CLEAN THE CURRENT SESSION BECAUSE IT COULD HAVE AN OPEN TX
-          cleanTL(database, null);
+        if (activeSession != null)
+          // DETACH CURRENT CONTEXT/TRANSACTIONS FROM CURRENT THREAD
+          DatabaseContext.INSTANCE.removeContext(database.getDatabasePath());
+        else if (database != null) {
+          try {
+            if (!atomicTransaction)
+              // NO TRANSACTION, ROLLBACK TO MAKE SURE ANY PENDING OPERATION IS REMOVED
+              database.rollbackAllNested();
+          } finally {
+            // DO NOT CLEAN THE CURRENT SESSION BECAUSE IT COULD HAVE AN OPEN TX
+            cleanTL(database, null);
+          }
         }
+      } finally {
+        // LAST: THE SLOT COVERS THE WHOLE REQUEST, ITS COMMIT AND ITS CLEANUP INCLUDED
+        if (admission != null)
+          admission.close();
       }
     }
 
@@ -444,6 +453,39 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
    */
   protected boolean participatesInSessionTransaction() {
     return true;
+  }
+
+  /**
+   * Waits until the query admission gate (issue #9518) lets the request start: in arrival order, when a slot is free and
+   * the running queries leave enough of the heap budget. The caller holds the ticket until the request is done - its
+   * auto-commit and its cleanup included - so the next request starts only once this one has given back the heap its
+   * buffers reserved. Null when the handler does not go through the gate.
+   * <p>
+   * Taken BEFORE the session lock, never inside it: a request waiting for its slot while holding its session's lock would
+   * keep a concurrent {@code /rollback} from ending the session for as long as it waits. Taken first, the only wait a slot
+   * holder can still do is the bounded wait for its session lock, held by a request that already runs, so there is no cycle.
+   * A request that reached this point on an IO thread - the gate was enabled after it was dispatched - does not wait there:
+   * it is refused if it cannot start at once.
+   */
+  private QueryAdmissionGate.Ticket admit(final HttpServerExchange exchange) {
+    if (!goesThroughAdmissionGate())
+      return null;
+    final QueryAdmissionGate gate = QueryAdmissionGate.getInstance();
+    return exchange.isInIoThread() ? gate.admit(0) : gate.admit();
+  }
+
+  /**
+   * Whether the requests of this handler wait for the query admission gate (issue #9518). True for every request that runs
+   * work in a database; a handler that only manages a session or answers a health probe answers false, because it must
+   * never be held behind the queries it would release or report on.
+   */
+  protected boolean goesThroughAdmissionGate() {
+    return true;
+  }
+
+  @Override
+  protected boolean mayWaitForAdmission() {
+    return goesThroughAdmissionGate() && QueryAdmissionGate.getInstance().isEnabled();
   }
 
   protected boolean requiresDatabase() {

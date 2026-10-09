@@ -26,7 +26,7 @@ import com.arcadedb.database.ProtocolContext;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.FakeArcadeDBServer;
 import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.utility.FileUtils;
 import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
@@ -41,14 +41,13 @@ import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatNoException;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 /**
  * Regression tests for issue #8363 (consolidating #7959 and #7960 part 2): a client already connected to a node, or
@@ -73,7 +72,7 @@ class Issue8363DirectoryReplacementClientGateTest {
 
   private LocalDatabase          localDb;
   private RaftReplicatedDatabase replicated;
-  private ArcadeStateMachine     stateMachine;
+  private FakeArcadeStateMachine     stateMachine;
   private RID                    seedRid;
 
   @BeforeEach
@@ -84,14 +83,14 @@ class Issue8363DirectoryReplacementClientGateTest {
     localDb.getSchema().createDocumentType("Seed");
     localDb.transaction(() -> seedRid = localDb.newDocument("Seed").set("k", 1).save().getIdentity());
 
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getConfiguration()).thenReturn(configuration());
-    stateMachine = mock(ArcadeStateMachine.class);
-    final RaftHAServer raft = mock(RaftHAServer.class);
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create();
+    server.returns("getConfiguration", configuration());
+    stateMachine = new FakeArcadeStateMachine();
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
     // The leader, so a read-only command executes here rather than being forwarded: the gate must hold on the
     // local path, which is the one that reads the copy on disk.
-    when(raft.isLeader()).thenReturn(true);
-    when(raft.getStateMachine()).thenReturn(stateMachine);
+    raft.leader(true);
+    raft.stateMachine(stateMachine);
     replicated = new RaftReplicatedDatabase(server, localDb, raft);
     // As a server database runs: a scan with no transaction open begins one, through the wrapper.
     localDb.setAutoTransaction(true);
@@ -203,10 +202,10 @@ class Issue8363DirectoryReplacementClientGateTest {
   /** Between a failed bootstrap download and its retry no install is registered, but the holder still is. */
   @Test
   void everyClientEntryPointIsRefusedWhileTheBootstrapHoldsTheDatabase() {
-    when(stateMachine.isBootstrapInstallInFlight(DB_NAME)).thenReturn(true);
+    stateMachine.on("isBootstrapInstallInFlight", args -> DB_NAME.equals(args[0]));
     assertEveryClientEntryPointIsRefused("bolt");
 
-    when(stateMachine.isBootstrapInstallInFlight(DB_NAME)).thenReturn(false);
+    stateMachine.on("isBootstrapInstallInFlight", args -> false);
     assertEveryClientEntryPointIsServed("bolt");
   }
 
@@ -214,7 +213,7 @@ class Issue8363DirectoryReplacementClientGateTest {
   @Test
   void theEngineIsNeverRefused() {
     SnapshotInstaller.markInstallInFlightForTesting(Path.of(DB_PATH));
-    when(stateMachine.isBootstrapInstallInFlight(DB_NAME)).thenReturn(true);
+    stateMachine.on("isBootstrapInstallInFlight", args -> DB_NAME.equals(args[0]));
 
     assertThat(ProtocolContext.get()).isEqualTo(ProtocolContext.INTERNAL);
     assertEveryClientEntryPointIsServed(ProtocolContext.INTERNAL);
@@ -225,7 +224,7 @@ class Issue8363DirectoryReplacementClientGateTest {
   void anotherDatabaseBeingReplacedDoesNotRefuseThisOne() {
     final Path other = Path.of(DB_DIR, "another-database-8363");
     SnapshotInstaller.markInstallInFlightForTesting(other);
-    when(stateMachine.isBootstrapInstallInFlight("another-database-8363")).thenReturn(true);
+    stateMachine.on("isBootstrapInstallInFlight", args -> "another-database-8363".equals(args[0]));
     try {
       assertEveryClientEntryPointIsServed("http");
     } finally {
@@ -262,12 +261,12 @@ class Issue8363DirectoryReplacementClientGateTest {
    */
   @Test
   void anInstallDrivenFromAClientThreadRunsAsTheEngineAndHandsTheTagBack() {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create();
     // Observed from inside the install, where it reads its retry settings - after it has registered the directory.
     final ContextConfiguration config = configuration();
     final List<String> protocolsInsideTheInstall = new CopyOnWriteArrayList<>();
     final List<Boolean> registeredInsideTheInstall = new CopyOnWriteArrayList<>();
-    when(server.getConfiguration()).thenAnswer(invocation -> {
+    server.on("getConfiguration", args -> {
       protocolsInsideTheInstall.add(ProtocolContext.get());
       registeredInsideTheInstall.add(SnapshotInstaller.isInstallInFlight(DB_PATH));
       return config;
@@ -295,18 +294,19 @@ class Issue8363DirectoryReplacementClientGateTest {
   @Test
   void aClientReadingDuringARealBootstrapReinstallIsRefusedAndTheInstallIsNot() throws Exception {
     final ArcadeStateMachine realStateMachine = new ArcadeStateMachine();
-    final RaftHAServer raft = mock(RaftHAServer.class);
-    when(raft.isLeader()).thenReturn(true);
-    when(raft.getStateMachine()).thenReturn(realStateMachine);
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getConfiguration()).thenReturn(configuration());
-    when(server.existsDatabase(DB_NAME)).thenReturn(true);
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+    raft.leader(true);
+    raft.stateMachine(realStateMachine);
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create();
+    server.returns("getConfiguration", configuration());
+    server.on("existsDatabase", args -> Objects.equals(args[0], DB_NAME));
     final RaftReplicatedDatabase wrapper = new RaftReplicatedDatabase(server, localDb, raft);
-    when(server.getDatabase(DB_NAME)).thenReturn(new ServerDatabase(null, localDb));
+    final ServerDatabase servedDb = new ServerDatabase(null, localDb);
+    server.on("getDatabase", args -> Objects.equals(args[0], DB_NAME) ? servedDb : null);
 
     final AtomicReference<Throwable> clientOutcome = new AtomicReference<>();
     final AtomicReference<Throwable> installThreadOutcome = new AtomicReference<>();
-    when(server.getBackupCoordinator()).thenAnswer(invocation -> {
+    server.on("getBackupCoordinator", args -> {
       final Thread client = new Thread(() -> {
         ProtocolContext.set("postgres");
         try {
@@ -318,7 +318,11 @@ class Issue8363DirectoryReplacementClientGateTest {
         }
       });
       client.start();
-      client.join();
+      try {
+        client.join();
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
       try {
         close(wrapper.query("sql", "select from Seed"));
       } catch (final Throwable t) {

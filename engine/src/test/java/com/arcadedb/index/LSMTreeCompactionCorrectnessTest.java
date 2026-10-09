@@ -116,6 +116,18 @@ class LSMTreeCompactionCorrectnessTest extends TestHelper {
     return rids;
   }
 
+  /**
+   * The case-insensitive way to ask a COLLATE CI index: a plain comparison is the one a scan makes, case sensitive, with or
+   * without the index (issue #9403), while the lower-cased property is answered from the folded keys.
+   */
+  private List<RID> lookupIgnoringCase(final String lowerCaseValue) {
+    final List<RID> rids = new ArrayList<>();
+    final ResultSet rs = database.query("sql", "SELECT FROM " + TYPE_NAME + " WHERE email.toLowerCase() = ?", lowerCaseValue);
+    while (rs.hasNext())
+      rids.add(rs.next().getIdentity().get());
+    return rids;
+  }
+
   @Test
   void caseInsensitiveFlagsSurviveCompactionFileSwap() {
     database.getConfiguration().setValue(GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE, 0);
@@ -132,11 +144,13 @@ class LSMTreeCompactionCorrectnessTest extends TestHelper {
       for (int i = 0; i < 1_000; i++)
         database.newDocument(TYPE_NAME).set("email", i % 2 == 0 ? "MixedCase" : "mixedcase").save();
     });
-    assertThat(lookup("MIXEDCASE")).hasSize(1_000);
+    assertThat(lookupIgnoringCase("mixedcase")).hasSize(1_000);
+    assertThat(lookup("MIXEDCASE")).as("a plain comparison stays case sensitive").isEmpty();
 
     compactAll();
 
-    assertThat(lookup("MIXEDCASE")).hasSize(1_000);
+    assertThat(lookupIgnoringCase("mixedcase")).hasSize(1_000);
+    assertThat(lookup("MIXEDCASE")).as("a plain comparison stays case sensitive").isEmpty();
   }
 
   // ---- #4942: compaction must not lose a re-inserted key/RID (ADD, REMOVE, ADD of the same key+RID) ----

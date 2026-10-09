@@ -22,9 +22,13 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.parser.Identifier;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.Property;
+import com.arcadedb.schema.Type;
 import com.arcadedb.utility.TimeBoundRegex;
 import de.bwaldvogel.mongo.backend.DefaultQueryMatcher;
 import de.bwaldvogel.mongo.backend.QueryMatcher;
@@ -57,8 +61,18 @@ import java.util.regex.PatternSyntaxException;
  * filter on them. SQL alone would not be exact even there: it coerces across the types of an {@code _id}, so {@code {_id: 1}} would
  * answer a document whose {@code _id} is the string {@code "1"}. Only an empty filter is answered by SQL alone.
  * <p>
- * Every filter that no {@code _id} equality or {@code $in} narrows reads the whole type: restoring the index for the other fields is
- * tracked in issue #9162.
+ * A field other than the {@code _id} narrows the candidates too, but only where SQL provably cannot answer narrower than the matcher
+ * (issue #9162): a field that an index starts with and whose declared type is a scalar, so that no array is stored in it, compared with an operand of that
+ * kind by equality, {@code $in} or (for an integer field) a range. SQL then only coerces more values to equal, and a secondary index
+ * on the field answers the lookup, which keeps a bulk upsert by a unique key from being O(n^2). A field the schema does not declare
+ * is never narrowed, whatever index it has: an array stored in it is invisible to the index and to a SQL comparison, and an index
+ * created by the MongoDB {@code createIndexes} command on such a field does not keep arrays out. The declared type is relied upon as a
+ * contract of the schema: the engine converts what it writes to the type, but a record stored BEFORE the property was declared is not
+ * converted, so an array or a value of another kind left in such a record by a late {@code CREATE PROPERTY} is not found through the
+ * narrowed lookup (rebuild or rewrite the records when declaring a property on a type that holds data). The matcher always tests the whole
+ * filter on the candidates, so a conjunct that is not narrowed here is still applied.
+ * <p>
+ * Every other filter reads the whole type.
  * <p>
  * Known leniency of the matcher: a regular expression is also tested against the string form of a number, which MongoDB does not.
  * <p>
@@ -73,6 +87,7 @@ final class MongoFilter {
   private static final Set<String> NARROWING_OPERATORS = Set.of("$eq", "$in");
 
   private final boolean      empty;
+  private final Document     filter;
   private final Document     idPart;
   private final Document     normalized;
   private final QueryMatcher matcher;
@@ -88,6 +103,7 @@ final class MongoFilter {
    */
   MongoFilter(final Database database, final Document filter, final RegexBudget budget) {
     this.empty = filter == null || filter.isEmpty();
+    this.filter = filter;
     // the part of the filter on the _id narrows the candidates through the unique index (an _id is never an array, so the SQL cannot
     // miss a match there), and the matcher tests the whole filter on what it returns
     this.idPart = empty ? null :
@@ -160,13 +176,168 @@ final class MongoFilter {
 
   /**
    * Appends the {@code WHERE} clause that selects the candidates of the filter: its part on the {@code _id} for a filter that
-   * {@link #narrowsById() narrows by _id}, nothing for any other (every record of the type is a candidate).
+   * {@link #narrowsById() narrows by _id}, joined with the conjuncts on declared scalar fields that
+   * {@link #narrowingPart(Document, DocumentType) narrow} (issue #9162), nothing for a filter with neither (every record of the type is
+   * a candidate).
+   *
+   * @param type the type of the collection, or {@code null} when it is not known: only the {@code _id} then narrows
    */
-  void appendCandidateWhere(final StringBuilder sqlText, final Map<String, Object> params) {
-    if (idPart != null) {
-      sqlText.append(" WHERE ");
+  void appendCandidateWhere(final StringBuilder sqlText, final Map<String, Object> params, final DocumentType type) {
+    // a type with subtypes also reads them, and a subtype may redeclare a property with another type: not narrowed
+    final Document fields = type != null && !empty && type.getSubTypes().isEmpty() ? narrowingPart(filter, type) : null;
+    if (idPart == null && fields == null)
+      return;
+
+    sqlText.append(" WHERE ");
+    if (idPart != null)
       MongoDBToSqlTranslator.buildExpression(sqlText, params, idPart);
+    if (fields != null) {
+      if (idPart != null)
+        sqlText.append(" AND ");
+      MongoDBToSqlTranslator.buildExpression(sqlText, params, fields);
     }
+  }
+
+  /**
+   * The part of a query that SQL can use to narrow the candidates without ever dropping a document the matcher accepts, or
+   * {@code null} when there is none. Each conjunct that qualifies is kept as it is, the others are left out: dropping a conjunct only
+   * widens the candidates, the matcher tests the whole filter on them.
+   * <ul>
+   *   <li>a field is narrowed only when its declared type is one of {@link #narrowingType}, so it cannot hold an array, with a
+   *   plain top-level name (a dotted path traverses arrays and embedded documents);</li>
+   *   <li>an operator narrows only with an operand of the kind of the field ({@link #compatible}): MongoDB brackets the types, SQL
+   *   coerces them, and a null operand also matches a missing field;</li>
+   *   <li>{@code $and} narrows with the conjuncts of its items, {@code $or} only when every branch narrows, and {@code $nor} never.</li>
+   * </ul>
+   * The {@code _id} is not here: it has its own path ({@link #narrowsById()}).
+   */
+  private static Document narrowingPart(final Document query, final DocumentType type) {
+    final List<Object> conjuncts = new ArrayList<>();
+    for (final Map.Entry<String, Object> entry : query.entrySet()) {
+      final String key = entry.getKey();
+      final Object operand = entry.getValue();
+
+      if ("$and".equals(key)) {
+        if (operand instanceof List<?> items)
+          for (final Object item : items)
+            if (item instanceof Document document) {
+              final Document part = narrowingPart(document, type);
+              if (part != null)
+                conjuncts.add(part);
+            }
+      } else if ("$or".equals(key)) {
+        if (operand instanceof List<?> branches && !branches.isEmpty()) {
+          final List<Object> narrowed = new ArrayList<>(branches.size());
+          for (final Object branch : branches) {
+            final Document part = branch instanceof Document document ? narrowingPart(document, type) : null;
+            // a branch that does not narrow can hold any record: so can the $or
+            if (part == null)
+              break;
+            narrowed.add(part);
+          }
+          if (narrowed.size() == branches.size())
+            conjuncts.add(new Document("$or", narrowed));
+        }
+      } else if (!key.startsWith("$") && !"_id".equals(key) && key.indexOf('.') < 0) {
+        final Property property = type.getPolymorphicPropertyIfExists(key);
+        if (property != null && narrowingType(property.getType()) && leadsAnIndex(type, key)) {
+          final Document operators = narrowingOperators(property.getType(), operand);
+          if (operators != null)
+            conjuncts.add(new Document(key, operators));
+        }
+      }
+    }
+    if (conjuncts.isEmpty())
+      return null;
+    return conjuncts.size() == 1 && conjuncts.getFirst() instanceof Document single ? single : new Document("$and", conjuncts);
+  }
+
+  /**
+   * Whether an index of the type starts with the field: only then does SQL narrow the candidates, a comparison without an index is a
+   * scan of the type like the matcher's own, so it would gain nothing and only expose a record that does not hold the declared type
+   * (stored before the property was declared) to being missed.
+   */
+  private static boolean leadsAnIndex(final DocumentType type, final String field) {
+    for (final TypeIndex index : type.getAllIndexes(true))
+      if (field.equals(index.getPropertyNames().getFirst()))
+        return true;
+    return false;
+  }
+
+  /**
+   * The types a declared property can have for SQL to narrow the candidates: the scalars that are compared the same way by SQL and by
+   * the matcher. Not the floating point {@code FLOAT} (a stored single precision value is not the double the operand is), nor
+   * {@code DECIMAL} (scale), nor the temporal types (zones and precision), nor the containers.
+   */
+  private static boolean narrowingType(final Type type) {
+    return switch (type) {
+      case STRING, BOOLEAN, BYTE, SHORT, INTEGER, LONG, DOUBLE -> true;
+      default -> false;
+    };
+  }
+
+  /**
+   * The operators of a field that narrow, or {@code null} when none does. A plain operand is an equality.
+   */
+  private static Document narrowingOperators(final Type type, final Object operand) {
+    if (operand instanceof Document document && isOperatorDocument(document)) {
+      final Document result = new Document();
+      for (final Map.Entry<String, Object> entry : document.entrySet())
+        if (narrows(type, entry.getKey(), entry.getValue()))
+          result.put(entry.getKey(), entry.getValue());
+      return result.isEmpty() ? null : result;
+    }
+    return narrows(type, "$eq", operand) ? new Document("$eq", operand) : null;
+  }
+
+  private static boolean narrows(final Type type, final String operator, final Object operand) {
+    return switch (operator) {
+      case "$eq" -> compatible(type, operand);
+      case "$in" -> {
+        if (!(operand instanceof List<?> list) || list.isEmpty())
+          yield false;
+        for (final Object item : list)
+          if (!compatible(type, item))
+            yield false;
+        yield true;
+      }
+      // a range only on an integer field: a string follows the collation of the index (not the code point order of MongoDB), and a
+      // floating point one has NaN and the rounding of what is stored
+      case "$gt", "$gte", "$lt", "$lte" -> isIntegral(type) && compatible(type, operand);
+      default -> false;
+    };
+  }
+
+  private static boolean isIntegral(final Type type) {
+    return type == Type.BYTE || type == Type.SHORT || type == Type.INTEGER || type == Type.LONG;
+  }
+
+  /**
+   * Whether an operand is of the kind of a field, so that SQL and the matcher compare the same two values: a string with a string, a
+   * boolean with a boolean, an integral number that the integer type can hold with an integer field, a number a double holds exactly
+   * with a double field.
+   */
+  private static boolean compatible(final Type type, final Object operand) {
+    return switch (type) {
+      case STRING -> operand instanceof String;
+      case BOOLEAN -> operand instanceof Boolean;
+      case BYTE -> integral(operand) && fits(operand, Byte.MIN_VALUE, Byte.MAX_VALUE);
+      case SHORT -> integral(operand) && fits(operand, Short.MIN_VALUE, Short.MAX_VALUE);
+      case INTEGER -> integral(operand) && fits(operand, Integer.MIN_VALUE, Integer.MAX_VALUE);
+      case LONG -> integral(operand);
+      // 2^53: every integer up to it is a double, past it a long is rounded and the two comparisons may part
+      case DOUBLE -> operand instanceof Double d ? Double.isFinite(d) : integral(operand) && fits(operand, -(1L << 53), 1L << 53);
+      default -> false;
+    };
+  }
+
+  private static boolean integral(final Object operand) {
+    return operand instanceof Integer || operand instanceof Long || operand instanceof Short || operand instanceof Byte;
+  }
+
+  private static boolean fits(final Object integral, final long min, final long max) {
+    final long value = ((Number) integral).longValue();
+    return value >= min && value <= max;
   }
 
   /**
@@ -177,7 +348,7 @@ final class MongoFilter {
     // protocol and bounded by the command timeout, like every other query
     final Map<String, Object> params = new HashMap<>();
     final StringBuilder text = new StringBuilder("SELECT FROM ").append(Identifier.quote(collectionName));
-    appendCandidateWhere(text, params);
+    appendCandidateWhere(text, params, database.getSchema().getTypeOrNull(collectionName));
     try (final ResultSet rs = database.query("sql", text.toString(), params)) {
       while (rs.hasNext()) {
         final Result row = rs.next();

@@ -19,6 +19,7 @@
 package com.arcadedb.function.sql;
 
 import com.arcadedb.function.AggregatedFunction;
+import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 
 import java.util.function.Consumer;
@@ -84,6 +85,26 @@ public abstract class SQLAggregatedFunction extends SQLFunctionConfigurableAbstr
   @Override
   public boolean aggregateResults() {
     return configuredParameters.length == 1;
+  }
+
+  /**
+   * Feeds the arguments of one row to the cross-row state: what the aggregation of a query calls for every row, which
+   * ignores the value {@link #execute} returns. A function whose return value costs something to build per row (a boxed
+   * running total, a running average) overrides it to skip that (#9496). Like every call the aggregation makes,
+   * {@link #execute} gets no current record nor current result (both null), and an override must not need them.
+   * <p>
+   * A built-in aggregate must not keep {@code params} itself, only the values in it: the aggregation of a GROUP BY feeds
+   * a built-in aggregate the same array for every row (and no row: {@code self} is null), see
+   * {@code AggregateRowEvaluator}.
+   *
+   * @param self    the row, passed to {@link #execute} as its {@code self}; null when the row was read by another worker of
+   *                a parallel GROUP BY, which hands over only the arguments (the key exchange, #9496): a function whose
+   *                partials merge must fold its arguments alone
+   * @param params  the values of the arguments for this row
+   * @param context the command context
+   */
+  public void aggregate(final Object self, final Object[] params, final CommandContext context) {
+    execute(self, null, null, params, context);
   }
 
   /**

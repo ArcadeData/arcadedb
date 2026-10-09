@@ -18,7 +18,7 @@
  */
 package com.arcadedb.server.ha.raft;
 
-import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.FakeArcadeDBServer;
 import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -33,8 +33,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 /**
  * Regression test for issue #8364, the follow-up of #8182.
@@ -217,9 +215,9 @@ class Issue8364StateMachineCloseAwaitsHelperExecutorsTest {
    * {@code onCatchUpThread} and then reports no plugin, so the attempt ends without dialling anyone and releases the
    * once-per-start request on its way out: the last thing the task does is observable.
    */
-  private static ArcadeDBServer serverWhoseCatchUpRuns(final Runnable onCatchUpThread) {
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getHA()).thenAnswer(invocation -> {
+  private static FakeArcadeDBServer serverWhoseCatchUpRuns(final Runnable onCatchUpThread) {
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create();
+    server.on("getHA", args -> {
       if (Thread.currentThread().getName().equals(SecurityCatchUp.THREAD_NAME))
         onCatchUpThread.run();
       return null;
@@ -232,7 +230,7 @@ class Issue8364StateMachineCloseAwaitsHelperExecutorsTest {
     catchUp.afterSnapshotInstall(serverWhoseCatchUpRuns(() -> {
       entered.countDown();
       holdIgnoringInterrupts(HOLD_MS);
-    }), mock(RaftHAServer.class));
+    }), FakeRaftHAServer.detached());
     assertThat(entered.await(30, TimeUnit.SECONDS)).as("the catch-up must start").isTrue();
     assertThat(catchUp.hasRequestedSinceStart()).as("the catch-up is in flight, holding the request").isTrue();
   }
@@ -285,7 +283,7 @@ class Issue8364StateMachineCloseAwaitsHelperExecutorsTest {
       } finally {
         done.countDown();
       }
-    }), mock(RaftHAServer.class));
+    }), FakeRaftHAServer.detached());
 
     assertThat(done.await(30, TimeUnit.SECONDS)).as("the catch-up must reach its plugin lookup and close").isTrue();
     if (outcome.get() instanceof AssertionError e)

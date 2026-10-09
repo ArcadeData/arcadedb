@@ -19,26 +19,24 @@
 package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.serializer.json.JSONObject;
-import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.TestServerHelper;
+import com.arcadedb.server.UnstartedHttpServers;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.handler.ExecutionResponse;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.RegisterExtension;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.Mockito.doThrow;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
 
 /**
  * Issue #8490: the leader's stalled-replica recovery (#4728) ordered a follower that had merely been STOPPED to drop
@@ -59,6 +57,8 @@ import static org.mockito.Mockito.when;
  * </ul>
  */
 class Issue8490StaleForcedResyncTest {
+  @RegisterExtension
+  static final UnstartedHttpServers HTTP_SERVERS = new UnstartedHttpServers();
 
   private static final long   LAG_THRESHOLD      = 1_000L;
   private static final long   RESYNC_DURATION_MS = 60_000L;
@@ -330,10 +330,10 @@ class Issue8490StaleForcedResyncTest {
   @Nested
   class TheFollowerCheck {
 
-    private RaftHAServer follower(final long term, final long trustedApplied) {
-      final RaftHAServer raft = mock(RaftHAServer.class);
-      when(raft.getCurrentTerm()).thenReturn(term);
-      when(raft.getTrustedAppliedIndex(DB)).thenReturn(trustedApplied);
+    private FakeRaftHAServer follower(final long term, final long trustedApplied) {
+      final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+      raft.currentTerm(term);
+      raft.on("getTrustedAppliedIndex", args -> DB.equals(args[0]) ? trustedApplied : 0L);
       return raft;
     }
 
@@ -368,27 +368,25 @@ class Issue8490StaleForcedResyncTest {
   @Nested
   class TheDrop {
 
-    private final ArcadeStateMachine stateMachine = mock(ArcadeStateMachine.class);
+    private final FakeArcadeStateMachine stateMachine = new FakeArcadeStateMachine();
 
     private PostResyncDatabaseHandler handlerOnFollower() {
-      final RaftHAServer raft = mock(RaftHAServer.class);
-      when(raft.isLeader()).thenReturn(false);
-      when(raft.getLeaderHttpAddress()).thenReturn("leader:2480");
-      when(raft.getStateMachine()).thenReturn(stateMachine);
+      final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+      raft.leader(false);
+      raft.leaderHttpAddress("leader:2480");
+      raft.stateMachine(stateMachine);
 
-      final RaftHAPlugin plugin = mock(RaftHAPlugin.class);
-      when(plugin.getRaftHAServer()).thenReturn(raft);
-      final HttpServer httpServer = mock(HttpServer.class);
-      final ArcadeDBServer server = TestServerHelper.unstartedServer("arcadedb-1");
-      when(httpServer.getServer()).thenReturn(server);
+      final RaftHAPlugin plugin = new RaftHAPlugin();
+
+      plugin.setRaftHAServer(raft);
+      final HttpServer httpServer = HTTP_SERVERS.of(TestServerHelper.unstartedServer("arcadedb-1"));
       return new PostResyncDatabaseHandler(httpServer, plugin);
     }
 
     private ExecutionResponse post(final PostResyncDatabaseHandler handler, final JSONObject body) {
       final HttpServerExchange exchange = new HttpServerExchange(null);
       exchange.setRelativePath("/" + DB);
-      final ServerSecurityUser root = mock(ServerSecurityUser.class);
-      when(root.getName()).thenReturn("root");
+      final ServerSecurityUser root = TestServerHelper.securityUser("root");
       return handler.execute(exchange, root, body);
     }
 
@@ -396,8 +394,11 @@ class Issue8490StaleForcedResyncTest {
     @Test
     void aRefusedOrderIsAnsweredWith409() {
       final StalledResyncOrder order = new StalledResyncOrder(16, -1, 643_581);
-      doThrow(new StaleResyncOrderException("Stale resync order for database 'chaos': this node is not behind"))
-          .when(stateMachine).resyncDatabaseFromLeader(DB, order);
+      stateMachine.on("resyncDatabaseFromLeader", args -> {
+        if (DB.equals(args[0]) && order.equals(args[1]))
+          throw new StaleResyncOrderException("Stale resync order for database 'chaos': this node is not behind");
+        return null;
+      });
 
       final ExecutionResponse response = post(handlerOnFollower(), order.toJSON());
 
@@ -411,7 +412,7 @@ class Issue8490StaleForcedResyncTest {
       final ExecutionResponse response = post(handlerOnFollower(), order.toJSON());
 
       assertThat(response.getCode()).isEqualTo(200);
-      verify(stateMachine).resyncDatabaseFromLeader(DB, order);
+      assertThat(stateMachine.calls("resyncDatabaseFromLeader")).containsExactly(List.of(DB, order));
     }
 
     /** An operator's resync carries no order, so the state machine is asked for an unconditional one. */
@@ -420,7 +421,7 @@ class Issue8490StaleForcedResyncTest {
       final ExecutionResponse response = post(handlerOnFollower(), new JSONObject());
 
       assertThat(response.getCode()).isEqualTo(200);
-      verify(stateMachine).resyncDatabaseFromLeader(DB, null);
+      assertThat(stateMachine.calls("resyncDatabaseFromLeader")).containsExactly(Arrays.asList(DB, null));
     }
   }
 }

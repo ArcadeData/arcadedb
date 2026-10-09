@@ -18,6 +18,7 @@
  */
 package com.arcadedb.graph;
 
+import com.arcadedb.database.Binary;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.ImmutableDocument;
 import com.arcadedb.database.RID;
@@ -66,6 +67,12 @@ public class ImmutableLightEdge extends ImmutableDocument implements LightEdge {
   @Override
   public Object getIfPresent(final String propertyName, final Object absentValue) {
     return absentValue;
+  }
+
+  @Override
+  public Binary locateProperties(final int[] slotByNameId, final int[] positions, final int wanted) {
+    // NO CONTENT TO LOCATE IN: THE CALLER ASKS getIfPresent(), WHICH ANSWERS EVERY PROPERTY ABSENT
+    return null;
   }
 
   public MutableEdge modify() {
