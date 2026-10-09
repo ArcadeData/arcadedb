@@ -4035,6 +4035,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * the capability registry, which can be one poll behind: a peer that has just accepted its own copy would still read as
    * quarantined there, and a second accept elsewhere in that window would choose a second copy (review on PR #9567).
    * The questions go out in parallel and share one deadline, so the request costs one round however many voters there are.
+   * It blocks its caller for up to that deadline, which is acceptable for a rare root-only override that already runs on a
+   * worker thread ({@link PostAcceptDivergedHandler#mustExecuteOnWorkerThread()}). It narrows the window in which two
+   * nodes can each accept a different copy to the duration of two concurrent requests; it does not serialize them.
    */
   public String refuseUnlessNoOtherVoterServesNow(final String databaseName) {
     final ArcadeDBServer localServer = getServer();

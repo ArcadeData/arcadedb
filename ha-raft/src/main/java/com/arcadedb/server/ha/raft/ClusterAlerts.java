@@ -730,8 +730,8 @@ public class ClusterAlerts {
         .put("recommendation", "Pick the copy to keep - typically the node that applied the most entries for the "
             + "database, checked with CHECK DATABASE - and lift its quarantine there with POST "
             + PostAcceptDivergedHandler.ROUTE + "{database} (root only, logged): the entries its quarantine skipped are "
-            + "NOT replayed. Once one node has accepted, this alert clears and every other node refuses the override, so "
-            + "only one copy can be chosen. Then make that node the leader if it is not already (POST "
+            + "NOT replayed. Accept on ONE node only: once it has, every other node asks the voters before lifting and "
+            + "refuses, but two accepts sent at the same moment can both pass. Then make that node the leader if it is not already (POST "
             + "/api/v1/cluster/leader on the current leader, with {\"peerId\": \"<its peer id>\"}): the other nodes "
             + "resync from it on their next health tick. If no copy can be trusted, restore the database from a "
             + "backup instead.")
