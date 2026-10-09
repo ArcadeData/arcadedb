@@ -145,6 +145,19 @@ class Issue9301PartialVertexCoverageViewTest extends TestHelper {
         ((LocalBucket) bucket).setCachedRecordCount(-1);
       assertThat(view.coversVertexType(null)).as("unknown counter, no page written").isTrue();
 
+      // an uncommitted vertex of an unlisted type, linked to a listed one: the view cannot see it, so no walk gets the view
+      database.begin();
+      try {
+        final MutableVertex pending = database.newVertex("M").set("id", 32).save();
+        database.query("sql", "SELECT FROM B WHERE id = 11").next().getVertex().get().newEdge("E", pending);
+        assertThat(GraphTraversalProviderRegistry.findProvider(database, "E")).as("transaction holds changes").isNull();
+        assertThat(count("opencypher", "MATCH (b:B)-[:E]->(m:M) RETURN count(*) AS n")).as("own write seen").isEqualTo(3);
+        assertThat(count("sql", "SELECT count(*) AS n FROM (SELECT expand(out('E')) FROM B)")).as("own write seen").isEqualTo(3);
+      } finally {
+        database.rollback();
+      }
+      assertThat(GraphTraversalProviderRegistry.findProvider(database, "E")).as("rolled back").isSameAs(view);
+
       // a vertex of an unlisted type makes the view partial again, with no schema change to notice it
       final RID[] m1 = new RID[1];
       database.transaction(() -> m1[0] = database.newVertex("M").set("id", 31).save().getIdentity());
@@ -152,6 +165,13 @@ class Issue9301PartialVertexCoverageViewTest extends TestHelper {
       assertThat(GraphTraversalProviderRegistry.findProvider(database, "E")).isNull();
       database.transaction(() -> m1[0].asVertex().delete());
       assertThat(view.coversVertexType(null)).as("M is empty again").isTrue();
+
+      // emptied, then its counter lost: not provable without a scan, so partial until a count(*) recounts the bucket
+      for (final Bucket bucket : database.getSchema().getType("M").getBuckets(false))
+        ((LocalBucket) bucket).setCachedRecordCount(-1);
+      assertThat(view.coversVertexType(null)).as("unknown counter, pages written").isFalse();
+      assertThat(count("sql", "SELECT count(*) AS n FROM M")).as("C's vertices, polymorphic").isEqualTo(2);
+      assertThat(view.coversVertexType(null)).as("recounted").isTrue();
     } finally {
       database.command("sql", "DROP GRAPH ANALYTICAL VIEW g9301");
     }
