@@ -308,6 +308,11 @@ public class DatabaseFactory implements AutoCloseable {
    * waiting for it in any case, so a bound here would only re-open the race it exists to close. A hook not started yet
    * is waited for up to {@code startGraceMs}, shared by all of them, since the JVM starts its hooks together and in no
    * particular order. The calling thread itself, if registered, is skipped.
+   * <p>
+   * An owning hook that never returns therefore keeps this one from closing what that owner left open. That costs
+   * nothing the JVM was not already paying: it cannot exit while any hook runs, so a hung owner hangs the exit either
+   * way. The ArcadeDB server's hook bounds its own wait for the lifecycle lock ({@code arcadedb.server.shutdownTimeout})
+   * for exactly that reason.
    */
   // @VisibleForTesting
   static void awaitOwningShutdownHooks(final long startGraceMs) {

@@ -35,17 +35,48 @@ class Issue9548ServerShutdownHookOwnsItsDatabasesTest {
 
   @Test
   void theServerRegistersItsShutdownHookAsTheOwnerOfItsDatabases() {
+    final ArcadeDBServer server = new ArcadeDBServer(configuration());
+    final Thread hook = server.getShutdownHook();
+    try {
+      assertThat(hook).isNotNull();
+      assertThat(hook.getName()).isEqualTo("arcadedb-shutdown-hook");
+      assertThat(hook.getState()).as("the hook only runs at the JVM shutdown").isEqualTo(Thread.State.NEW);
+      assertThat(DatabaseFactory.isOwningShutdownHook(hook)).isTrue();
+    } finally {
+      server.stop();
+    }
+  }
+
+  /**
+   * Review of PR #9551: a stopped server has closed its databases, so its hook has nothing left to order. Left in place,
+   * the runtime and the engine's registry would keep one hook, and the whole server it captures, per instance created in
+   * the JVM. A start() of the same instance puts it back.
+   */
+  @Test
+  void aStopTakesTheHookAwayAndAStartPutsItBack() {
+    final ArcadeDBServer server = new ArcadeDBServer(configuration());
+    final Thread hook = server.getShutdownHook();
+    assertThat(DatabaseFactory.isOwningShutdownHook(hook)).isTrue();
+
+    server.stop();
+    assertThat(DatabaseFactory.isOwningShutdownHook(hook)).isFalse();
+    assertThat(Runtime.getRuntime().removeShutdownHook(hook)).as("no longer added to the runtime").isFalse();
+
+    // What start() does first, before bringing anything up
+    server.installShutdownHook();
+    try {
+      assertThat(DatabaseFactory.isOwningShutdownHook(hook)).isTrue();
+    } finally {
+      server.stop();
+    }
+    assertThat(DatabaseFactory.isOwningShutdownHook(hook)).isFalse();
+  }
+
+  private static ContextConfiguration configuration() {
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.SERVER_NAME, "issue9548");
     config.setValue(GlobalConfiguration.SERVER_ROOT_PATH, "./target");
     config.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, "./target/databases");
-
-    final ArcadeDBServer server = new ArcadeDBServer(config);
-
-    final Thread hook = server.getShutdownHook();
-    assertThat(hook).isNotNull();
-    assertThat(hook.getName()).isEqualTo("arcadedb-shutdown-hook");
-    assertThat(hook.getState()).as("the hook only runs at the JVM shutdown").isEqualTo(Thread.State.NEW);
-    assertThat(DatabaseFactory.isOwningShutdownHook(hook)).isTrue();
+    return config;
   }
 }
