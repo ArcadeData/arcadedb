@@ -122,7 +122,7 @@ updates:
     open-pull-requests-limit: 10
     ignore:
       - dependency-name: "eclipse-temurin"
-        versions: [ ">21" ]
+        versions: [ ">25" ]
 
   # Studio Frontend Dependencies (npm) - HIGH PRIORITY
   - package-ecosystem: "npm"
