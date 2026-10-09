@@ -6480,7 +6480,11 @@ public class CypherExecutionPlan {
     return null;
   }
 
-  /** Whether a node or relationship position of a non-optional MATCH binds the name, so no matched row carries it as null. */
+  /**
+   * Whether a node or relationship position of a non-optional MATCH binds the name, so no matched row carries it as null.
+   * Sound only for what {@link #isMatchReturnOnlyStatement()} admits: with no WITH, UNWIND or CALL nothing can bind the name
+   * again before the RETURN. A quantified group's own variables are not positions of the outer path and are not found here.
+   */
   private boolean isBoundByEveryRow(final String name) {
     if (statement.getMatchClauses() == null)
       return false;
@@ -7744,8 +7748,9 @@ public class CypherExecutionPlan {
    * cycle apart by what they cost, and it is bounded by the sample. A sample is an estimate: on a skewed label (a few
    * supernodes among many small vertices) it can pick the costlier split, which changes the time and never the count. The
    * count push-downs are not part of the cached plan, so it is taken again at every execution and follows the graph. An
-   * unlabelled position, which has no set to sample from, falls back to the type's edges over every vertex, off a ready provider when one holds the type (it counts light edges,
-   * which keep no record) and off the type's record counter otherwise.
+   * unlabelled position, which has no set to sample from, falls back to the type's edges over every vertex, off a ready
+   * provider when one holds the type (it counts light edges, which keep no record) and off the type's record counter
+   * otherwise.
    */
   private static final class PairJoinStatistics {
     private static final int SAMPLE = 32;

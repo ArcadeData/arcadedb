@@ -221,6 +221,8 @@ class Issue9598OptionalMatchAntiJoinTest extends TestHelper {
         CHAIN + "OPTIONAL MATCH (comment)-[h:HAS_TAG]->(tag1) WITH tag1, tag2, h LIMIT 1000000 WHERE h IS NULL RETURN count(*) AS n",
         CHAIN + "OPTIONAL MATCH (comment)-[h:HAS_TAG]->(tag1) WHERE tag1 <> tag2 WITH tag1, tag2, h WHERE h IS NULL RETURN count(*) AS n",
         CHAIN + "OPTIONAL MATCH (comment)-[h:HAS_TAG]->(tag1) WITH tag1, tag2, h WHERE h IS NOT NULL RETURN count(*) AS n",
+        // a property of the relationship tested for null: true for a relationship that has no such property, not an absence
+        CHAIN + "OPTIONAL MATCH (comment)-[h:HAS_TAG]->(tag1) WITH tag1, tag2, h WHERE h.weight IS NULL RETURN count(*) AS n",
         // the test only inside another expression: not a conjunct of its own
         CHAIN + "OPTIONAL MATCH (comment)-[h:HAS_TAG]->(tag1) WITH tag1, tag2, h WHERE h IS NULL OR tag1 = tag2 RETURN count(*) AS n",
         CHAIN + "OPTIONAL MATCH (comment)-[h:HAS_TAG]->(tag1) WITH tag1, tag2, h WHERE NOT (h IS NOT NULL) RETURN count(*) AS n",
