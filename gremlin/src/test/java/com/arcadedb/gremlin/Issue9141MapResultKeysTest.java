@@ -112,6 +112,22 @@ class Issue9141MapResultKeysTest {
   }
 
   @Test
+  void threeKeysThatPrintAlikeAreAllKept() {
+    final Result result = run("g.V().has('name',within('a','b','d')).groupCount().by('val')").get(0);
+    assertThat(result.getPropertyNames()).containsExactlyInAnyOrder("1", "1:Long", "1:String");
+  }
+
+  @Test
+  void aPropertyNamedLikeATokenKeyIsKept() {
+    graph.addVertex(T.label, "person", "name", "g", "@rid", "mine");
+    graph.tx().commit();
+    final Result result = run("g.V().has('name','g').elementMap()").get(0);
+    assertThat(result.<String>getProperty("@type")).isEqualTo("person");
+    assertThat(result.<String>getProperty("@rid:String")).isEqualTo("mine");
+    assertThat(result.<String>getProperty("@rid")).startsWith("#");
+  }
+
+  @Test
   void aNullKeyIsAnswered() {
     final List<Result> results = run("g.V().hasLabel('person').group().by(constant(null)).by(count())");
     assertThat(results).hasSize(1);
