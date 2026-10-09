@@ -63,9 +63,11 @@ class CypherHeapElementsLimitIssue8585Test extends TestHelper {
 
   @Test
   void cartesianProductBufferIsBounded() {
-    assertExceedsLimit("MATCH (a:N), (b:M) RETURN count(*) AS c");
+    assertExceedsLimit("MATCH (a:N), (b:M) RETURN a.id AS x, b.id AS y");
     // Two MATCH clauses are the same product
-    assertExceedsLimit("MATCH (a:N) MATCH (b:M) RETURN count(*) AS c");
+    assertExceedsLimit("MATCH (a:N) MATCH (b:M) RETURN a.id AS x, b.id AS y");
+    // A count of the product builds no row since issue #9596: it is the product of the two counts
+    assertThat(singleLong("MATCH (a:N), (b:M) RETURN count(*) AS c")).isEqualTo((long) ROWS * ROWS);
   }
 
   @Test

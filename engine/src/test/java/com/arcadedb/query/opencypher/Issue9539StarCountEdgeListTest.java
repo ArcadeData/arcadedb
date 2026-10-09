@@ -46,7 +46,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * arm walked the list again and looked up every neighbor to check the far-end label. The count now walks each edge
  * list once for all the arms leaving in its direction and checks the label on the bucket the entry carries.
  * <p>
- * Every count here is checked against the ordinary row pipeline, reached through a {@code WITH *} that the count
+ * Every count here is checked against the ordinary row pipeline, reached through a {@code sum(1)} that the count
  * push-downs decline, so the push-down is compared with the pipeline it stands in for, not with a number
  * worked out by hand.
  *
@@ -409,9 +409,12 @@ class Issue9539StarCountEdgeListTest extends TestHelper {
     assertThat(count(pushedDown)).as(pushedDown).isEqualTo(count(pipeline));
   }
 
-  /** The same count through the ordinary row pipeline: the push-down detectors only take a MATCH ... RETURN statement. */
+  /**
+   * The same count through the ordinary row pipeline: no count push-down answers a {@code sum()}. A {@code WITH *} used to
+   * be the barrier, until issue #9597 made a pass-through {@code WITH} transparent to the push-downs.
+   */
   private static String pipelineQuery(final String match) {
-    return match + " WITH * RETURN count(*) AS n";
+    return match + " RETURN sum(1) AS n";
   }
 
   private String starPlan(final String match) {

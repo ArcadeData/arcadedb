@@ -162,7 +162,7 @@ class Issue8426GAVEdgeSubTypeSlicesTest extends TestHelper {
     database.command("sql", "DROP GRAPH ANALYTICAL VIEW gav8426");
     for (final String query : QUERIES)
       assertThat(withView.get(query)).as(query)
-          .isEqualTo(answer(query.replace(" RETURN count(*) AS n", " WITH * RETURN count(*) AS n")));
+          .isEqualTo(answer(query.replace(" RETURN count(*) AS n", " RETURN sum(1) AS n")));
   }
 
   /** An edge type with no edges when the view was built has no slice, yet an untyped hop must still see its later edges. */
@@ -208,7 +208,7 @@ class Issue8426GAVEdgeSubTypeSlicesTest extends TestHelper {
       x.modify().newEdge("M", y);
     });
     final String query = "MATCH (a:P)-[:K]-(b:P)-[:L]-(c:P)-[:M]-(d:P) WHERE a <> c RETURN count(*) AS n";
-    final List<String> expected = answer(query.replace(" RETURN count(*) AS n", " WITH * RETURN count(*) AS n"));
+    final List<String> expected = answer(query.replace(" RETURN count(*) AS n", " RETURN sum(1) AS n"));
     assertThat(answer(query)).isEqualTo(expected);
 
     createView("VERTEX TYPES (P) PROPERTIES (id)");
@@ -227,7 +227,7 @@ class Issue8426GAVEdgeSubTypeSlicesTest extends TestHelper {
 
   /**
    * The answer the record path gives, which is what a view has to reproduce. A {@code count(*)} chain is answered by the
-   * count push-down with or without a view, so the reference for those goes through {@code WITH *}, which the push-down
+   * count push-down with or without a view, so the reference for those goes through {@code sum(1)}, which the push-down
    * does not claim.
    */
   /** getDegrees on a parent type sums its slices once each, on a two- and a three-level hierarchy, with and without an overlay. */
@@ -270,7 +270,7 @@ class Issue8426GAVEdgeSubTypeSlicesTest extends TestHelper {
   private Map<String, List<String>> oracle() {
     final Map<String, List<String>> expected = new LinkedHashMap<>();
     for (final String query : QUERIES)
-      expected.put(query, answer(query.replace(" RETURN count(*) AS n", " WITH * RETURN count(*) AS n")));
+      expected.put(query, answer(query.replace(" RETURN count(*) AS n", " RETURN sum(1) AS n")));
     // The oracle has to see the sub-typed edges, or the comparison proves nothing
     assertThat(expected.get(QUERIES[2])).isNotEqualTo(expected.get(QUERIES[3]));
     return expected;

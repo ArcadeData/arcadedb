@@ -258,7 +258,9 @@ class Issue8335GAVOneHopAggregationTest extends TestHelper {
       loop.modify().newEdge("KNOWS", loop);
     });
 
-    final String query = "MATCH (a:Person)-[:KNOWS]-(b:Person) WHERE a.id = 10000 RETURN count(*) AS n";
+    // count(b), not count(*): since issue #9595 the chain count push-down applies a WHERE on one node itself, and it
+    // answers off the stale view's adjacency, which is what useWhenStale accepts. This pins the one-hop scan.
+    final String query = "MATCH (a:Person)-[:KNOWS]-(b:Person) WHERE a.id = 10000 RETURN count(b) AS n";
     assertThat(plan(query)).contains("provider=gav8335");
     assertThat(answerCount(query)).isEqualTo(1L);
   }

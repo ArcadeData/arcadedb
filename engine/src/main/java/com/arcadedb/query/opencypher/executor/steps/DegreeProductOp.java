@@ -44,9 +44,11 @@ public final class DegreeProductOp implements CountOp {
   /** The one-filter self-loop flag of an undirected last hop read off the IN list. Shared, so never written. */
   private static final boolean[] SKIP_SELF_LOOP = { true };
 
-  private final String centralLabel;
-  private final Arm[] arms;
-  private final String[] allEdgeTypes;
+  private final String          centralLabel;
+  /** The property filter on the central node, on top of its label; null for none (issue #9595). */
+  private final VertexPredicate centralPredicate;
+  private final Arm[]           arms;
+  private final String[]        allEdgeTypes;
 
   /**
    * A single arm extending from the central node.
@@ -57,6 +59,11 @@ public final class DegreeProductOp implements CountOp {
     final boolean             optional;
     /** One entry per hop: the label of the node that hop reaches, or null for none. The array itself is null when no hop has one. */
     final String[]            endpointLabels;
+    /**
+     * One entry per hop: the property filter on the node that hop reaches, or null for none. The array itself is null when no
+     * hop has one (issue #9595).
+     */
+    final VertexPredicate[]   endpointPredicates;
 
     public Arm(final String[] edgeTypes, final Vertex.DIRECTION[] directions, final boolean optional) {
       this(edgeTypes, directions, optional, null);
@@ -64,6 +71,11 @@ public final class DegreeProductOp implements CountOp {
 
     public Arm(final String[] edgeTypes, final Vertex.DIRECTION[] directions, final boolean optional,
         final String[] endpointLabels) {
+      this(edgeTypes, directions, optional, endpointLabels, null);
+    }
+
+    public Arm(final String[] edgeTypes, final Vertex.DIRECTION[] directions, final boolean optional,
+        final String[] endpointLabels, final VertexPredicate[] endpointPredicates) {
       this.edgeTypes = edgeTypes;
       this.directions = directions;
       this.optional = optional;
@@ -72,10 +84,15 @@ public final class DegreeProductOp implements CountOp {
         for (final String label : endpointLabels)
           any |= label != null;
       this.endpointLabels = any ? endpointLabels : null;
+      this.endpointPredicates = VertexPredicate.any(endpointPredicates) ? endpointPredicates : null;
     }
 
     boolean hasEndpointLabel() {
       return endpointLabels != null;
+    }
+
+    boolean hasEndpointPredicate() {
+      return endpointPredicates != null;
     }
 
     /** The bucket ids each hop's endpoint label stands for (sub-types included), null where the hop has no label. */
@@ -90,7 +107,12 @@ public final class DegreeProductOp implements CountOp {
   }
 
   public DegreeProductOp(final String centralLabel, final Arm[] arms) {
+    this(centralLabel, null, arms);
+  }
+
+  public DegreeProductOp(final String centralLabel, final VertexPredicate centralPredicate, final Arm[] arms) {
     this.centralLabel = centralLabel;
+    this.centralPredicate = centralPredicate;
     this.arms = arms;
 
     // Pre-compute all edge types
@@ -123,6 +145,9 @@ public final class DegreeProductOp implements CountOp {
     // cases, so fall back to the OLTP path which iterates the central type. See issue #5094.
     if (!hasMandatoryArm())
       return executeOLTP(db, guard);
+
+    if (hasPredicate())
+      return executeFiltered(provider, db, guard);
 
     final int nodeIdUpperBound = provider.getNodeIdUpperBound();
 
@@ -197,6 +222,133 @@ public final class DegreeProductOp implements CountOp {
 
     // Slow path: per-node CSR lookup (fallback for multi-hop arms or missing views)
     return executePerNode(provider, armBuckets, centralBuckets, bucketIds, nodeIdUpperBound, guard);
+  }
+
+  /** Whether the central node or a node an arm reaches carries a property predicate. */
+  private boolean hasPredicate() {
+    if (centralPredicate != null)
+      return true;
+    for (final Arm arm : arms)
+      if (arm.hasEndpointPredicate())
+        return true;
+    return false;
+  }
+
+  /**
+   * The degree product when a property predicate filters the central node or a node an arm reaches (issue #9595).
+   * <p>
+   * The predicate-free paths above precompute a degree array per arm over every node, which would ask a predicate of
+   * every vertex of the graph. This walks the central nodes the label keeps instead and asks each predicate only of the
+   * vertices a central node reaches, once per vertex whatever the number of central nodes reaching it. The checks run
+   * cheapest first: the mandatory arms with no predicate settle a central node on adjacency alone, so a vertex they rule
+   * out has neither its own predicate nor its neighbors' asked.
+   */
+  private long executeFiltered(final GraphTraversalProvider provider, final Database db, final WorkGuard guard) {
+    final int nodeIdUpperBound = provider.getNodeIdUpperBound();
+    final IntHashSet centralBuckets = CSRCountUtils.buildValidBuckets(db, centralLabel);
+    if (centralBuckets != null && centralBuckets.isEmpty())
+      return 0;
+    final int[] bucketIds = precomputeBucketIds(provider, nodeIdUpperBound, guard);
+    final VertexPredicate.Evaluation central = centralPredicate != null ? centralPredicate.evaluation(db, provider) : null;
+
+    final IntHashSet[][] armBuckets = new IntHashSet[arms.length][];
+    final VertexPredicate.Evaluation[][] armFilters = new VertexPredicate.Evaluation[arms.length][];
+    final NeighborView[] firstHopViews = new NeighborView[arms.length];
+    for (int a = 0; a < arms.length; a++) {
+      armBuckets[a] = arms[a].endpointBuckets(db);
+      armFilters[a] = VertexPredicate.evaluations(arms[a].endpointPredicates, db, provider);
+      if (arms[a].edgeTypes.length == 1)
+        firstHopViews[a] = provider.getNeighborView(arms[a].directions[0], arms[a].edgeTypes[0]);
+    }
+
+    // mandatory arms that read adjacency only, then the central predicate, then the mandatory arms that read vertices,
+    // then the optional arms, which never rule a central node out
+    final int[] order = new int[arms.length];
+    int ordered = 0;
+    for (int a = 0; a < arms.length; a++)
+      if (!arms[a].optional && !arms[a].hasEndpointPredicate())
+        order[ordered++] = a;
+    final int adjacencyOnly = ordered;
+    for (int a = 0; a < arms.length; a++)
+      if (!arms[a].optional && arms[a].hasEndpointPredicate())
+        order[ordered++] = a;
+    for (int a = 0; a < arms.length; a++)
+      if (arms[a].optional)
+        order[ordered++] = a;
+
+    long total = 0;
+    for (int v = 0; v < nodeIdUpperBound; v++) {
+      guard.checkPeriodically(v);
+      if (!provider.isNodeLive(v) || (centralBuckets != null && !centralBuckets.contains(bucketIds[v])))
+        continue;
+      long product = 1;
+      for (int i = 0; i < order.length && product != 0; i++) {
+        if (i == adjacencyOnly && central != null && !central.acceptsNode(v)) {
+          product = 0;
+          break;
+        }
+        final int a = order[i];
+        final long degree = filteredArmDegree(provider, v, arms[a], firstHopViews[a], armBuckets[a], armFilters[a], bucketIds);
+        product *= arms[a].optional ? Math.max(1, degree) : degree;
+      }
+      // every arm adjacency-only: the central predicate was not reached in the loop
+      if (product != 0 && adjacencyOnly == order.length && central != null && !central.acceptsNode(v))
+        product = 0;
+      total += product;
+    }
+    return total;
+  }
+
+  /**
+   * The paths of one arm from a central node, each node it reaches checked against the hop's label and property
+   * predicate. An undirected hop reaches a self loop once, as the pattern matches it.
+   */
+  private static long filteredArmDegree(final GraphTraversalProvider provider, final int centralNode, final Arm arm,
+      final NeighborView firstHopView, final IntHashSet[] buckets, final VertexPredicate.Evaluation[] filters,
+      final int[] bucketIds) {
+    if (arm.edgeTypes.length == 1 && firstHopView != null) {
+      final int[] neighbors = firstHopView.neighbors();
+      final boolean undirected = arm.directions[0] == Vertex.DIRECTION.BOTH;
+      long count = 0;
+      boolean skipSelf = false;
+      for (int j = firstHopView.offset(centralNode), end = firstHopView.offsetEnd(centralNode); j < end; j++) {
+        final int neighbor = neighbors[j];
+        if (undirected && neighbor == centralNode) {
+          // A SELF LOOP IS TWO ENTRIES OF THE MERGED RANGE AND ONE RELATIONSHIP (ISSUES #8750, #9540)
+          skipSelf = !skipSelf;
+          if (!skipSelf)
+            continue;
+        }
+        if (reaches(neighbor, 0, buckets, filters, bucketIds))
+          count++;
+      }
+      return count;
+    }
+
+    int[] frontier = { centralNode };
+    for (int h = 0; h < arm.edgeTypes.length; h++) {
+      int size = 0;
+      int[] next = new int[0];
+      for (final int node : frontier)
+        for (final int neighbor : CSRCountUtils.hopNeighborIds(provider, node, arm.directions[h], arm.edgeTypes[h]))
+          if (reaches(neighbor, h, buckets, filters, bucketIds)) {
+            if (size == next.length)
+              next = Arrays.copyOf(next, Math.max(8, size * 2));
+            next[size++] = neighbor;
+          }
+      if (size == 0)
+        return 0;
+      frontier = size == next.length ? next : Arrays.copyOf(next, size);
+    }
+    return frontier.length;
+  }
+
+  /** Whether a node an arm reaches at {@code hop} passes the hop's label and property predicate. */
+  private static boolean reaches(final int node, final int hop, final IntHashSet[] buckets,
+      final VertexPredicate.Evaluation[] filters, final int[] bucketIds) {
+    if (buckets != null && buckets[hop] != null && !buckets[hop].contains(bucketIds[node]))
+      return false;
+    return filters == null || filters[hop] == null || filters[hop].acceptsNode(node);
   }
 
   /**
@@ -451,6 +603,9 @@ public final class DegreeProductOp implements CountOp {
     private final EdgeBucketMask[][] lastHopEdgeMasks;
     private final EdgeBucketMask[][] lastHopNeighborMasks;
     private final long[]             lastHopCount = new long[1];
+    /** [arm][hop]: the property predicate of the node the hop reaches, asked by RID; null where there is none. */
+    private final VertexPredicate.Evaluation[][] armFilters;
+    private final VertexPredicate.Evaluation     centralFilter;
     private       WorkGuard          guard;
     private       int                neighborsVisited;
 
@@ -461,10 +616,13 @@ public final class DegreeProductOp implements CountOp {
       this.reachedMasks = new EdgeBucketMask[arms.length][];
       this.matchesNothing = new boolean[arms.length];
       this.armCounts = new long[arms.length];
+      this.armFilters = new VertexPredicate.Evaluation[arms.length][];
+      this.centralFilter = centralPredicate != null ? centralPredicate.evaluation(database, null) : null;
 
       int multiHop = 0;
       for (int a = 0; a < arms.length; a++) {
         final Arm arm = arms[a];
+        armFilters[a] = VertexPredicate.evaluations(arm.endpointPredicates, database, null);
         final IntHashSet[] endpointBuckets = arm.endpointBuckets(database);
         edgeMasks[a] = new EdgeBucketMask[arm.edgeTypes.length];
         reachedMasks[a] = new EdgeBucketMask[arm.edgeTypes.length];
@@ -481,7 +639,7 @@ public final class DegreeProductOp implements CountOp {
               matchesNothing[a] = true;
           }
         }
-        if (arm.edgeTypes.length > 1 && !matchesNothing[a])
+        if (walksPaths(a))
           ++multiHop;
       }
 
@@ -490,7 +648,7 @@ public final class DegreeProductOp implements CountOp {
       this.lastHopNeighborMasks = new EdgeBucketMask[arms.length][];
       multiHop = 0;
       for (int a = 0; a < arms.length; a++)
-        if (arms[a].edgeTypes.length > 1 && !matchesNothing[a]) {
+        if (walksPaths(a)) {
           multiHopArms[multiHop++] = a;
           final int lastHop = arms[a].edgeTypes.length - 1;
           lastHopEdgeMasks[a] = new EdgeBucketMask[] { edgeMasks[a][lastHop] };
@@ -537,8 +695,16 @@ public final class DegreeProductOp implements CountOp {
 
     private boolean readsList(final int a, final Vertex.DIRECTION direction) {
       final Arm arm = arms[a];
-      return arm.edgeTypes.length == 1 && !matchesNothing[a]
+      return arm.edgeTypes.length == 1 && !matchesNothing[a] && !arm.hasEndpointPredicate()
           && (arm.directions[0] == direction || arm.directions[0] == Vertex.DIRECTION.BOTH);
+    }
+
+    /**
+     * Whether the arm is counted by walking its paths rather than off one raw edge-list pass: a multi-hop arm, and one
+     * whose reached node carries a property predicate, which only the vertex itself can answer (issue #9595).
+     */
+    private boolean walksPaths(final int a) {
+      return !matchesNothing[a] && (arms[a].edgeTypes.length > 1 || arms[a].hasEndpointPredicate());
     }
 
     private boolean settles(final int a, final Vertex.DIRECTION settledDirection) {
@@ -557,6 +723,9 @@ public final class DegreeProductOp implements CountOp {
         final VertexInternal vertex = (VertexInternal) it.next().asVertex();
         Arrays.fill(armCounts, 0);
         if (!countList(vertex, outGroup) || !countList(vertex, inGroup))
+          continue;
+        // the scan already holds the central vertex, so its predicate reads nothing more
+        if (centralFilter != null && !centralFilter.accepts(vertex))
           continue;
 
         boolean skip = false;
@@ -604,7 +773,7 @@ public final class DegreeProductOp implements CountOp {
       final Arm arm = arms[a];
       final Vertex.DIRECTION direction = arm.directions[hop];
       final boolean undirected = direction == Vertex.DIRECTION.BOTH;
-      if (hop == arm.edgeTypes.length - 1) {
+      if (hop == arm.edgeTypes.length - 1 && (armFilters[a] == null || armFilters[a][hop] == null)) {
         // THE LAST HOP IS COUNTED ON RAW ENTRIES, ITS LABEL ON THE ENTRY'S VERTEX BUCKET
         final EdgeBucketMask[] edgeMask = lastHopEdgeMasks[a];
         final EdgeBucketMask[] neighborMask = lastHopNeighborMasks[a];
@@ -633,6 +802,8 @@ public final class DegreeProductOp implements CountOp {
     private long countNextHop(final VertexInternal vertex, final int a, final int hop, final Vertex.DIRECTION direction,
         final boolean skipSelfLoops) {
       final EdgeBucketMask reached = reachedMasks[a][hop];
+      final VertexPredicate.Evaluation filter = armFilters[a] != null ? armFilters[a][hop] : null;
+      final boolean lastHop = hop == arms[a].edgeTypes.length - 1;
       final RID self = vertex.getIdentity();
       long count = 0;
       for (final RID neighbor : graphEngine.getConnectedVertexRIDs(vertex, direction, arms[a].edgeTypes[hop])) {
@@ -641,7 +812,10 @@ public final class DegreeProductOp implements CountOp {
         // the label is checked on the RID, so a neighbor it rejects is never looked up
         if ((reached != null && !reached.matches(neighbor.getBucketId())) || (skipSelfLoops && neighbor.equals(self)))
           continue;
-        count += countPath((VertexInternal) database.lookupByRID(neighbor, false), a, hop + 1);
+        // the property predicate reads the neighbor, once per neighbor across the whole count (issue #9595)
+        if (filter != null && !filter.acceptsRid(neighbor))
+          continue;
+        count += lastHop ? 1 : countPath((VertexInternal) database.lookupByRID(neighbor, false), a, hop + 1);
       }
       return count;
     }
@@ -675,7 +849,10 @@ public final class DegreeProductOp implements CountOp {
     final StringBuilder sb = new StringBuilder();
     final String ind = "  ".repeat(Math.max(0, depth * indent));
     sb.append(ind).append("+ COUNT STAR JOIN (CSR degree product)\n");
-    sb.append(ind).append("  central: ").append(centralLabel).append(", arms: ").append(arms.length);
+    sb.append(ind).append("  central: ").append(centralLabel);
+    if (centralPredicate != null)
+      sb.append(' ').append(centralPredicate.describe());
+    sb.append(", arms: ").append(arms.length);
     for (int i = 0; i < arms.length; i++) {
       sb.append("\n").append(ind).append("  arm ").append(i).append(arms[i].optional ? " [OPTIONAL]" : "").append(": ");
       for (int j = 0; j < arms[i].edgeTypes.length; j++) {
@@ -683,8 +860,16 @@ public final class DegreeProductOp implements CountOp {
         sb.append(arms[i].directions[j] == Vertex.DIRECTION.OUT ? "-[:" : "<-[:");
         sb.append(arms[i].edgeTypes[j]);
         sb.append(arms[i].directions[j] == Vertex.DIRECTION.OUT ? "]->" : "]-");
-        if (arms[i].endpointLabels != null && arms[i].endpointLabels[j] != null)
-          sb.append("(:").append(arms[i].endpointLabels[j]).append(")");
+        final String label = arms[i].endpointLabels != null ? arms[i].endpointLabels[j] : null;
+        final VertexPredicate predicate = arms[i].endpointPredicates != null ? arms[i].endpointPredicates[j] : null;
+        if (label != null || predicate != null) {
+          sb.append("(");
+          if (label != null)
+            sb.append(':').append(label);
+          if (predicate != null)
+            sb.append(label != null ? " " : "").append(predicate.describe());
+          sb.append(")");
+        }
       }
     }
     return sb.toString();

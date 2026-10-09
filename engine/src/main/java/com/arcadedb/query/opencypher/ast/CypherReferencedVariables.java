@@ -151,6 +151,19 @@ public final class CypherReferencedVariables {
     return new CypherReferencedVariables(Collections.unmodifiableSet(collector.names), true);
   }
 
+  /** The same as {@link #of(Expression)} for a predicate, such as one conjunct of a {@code WHERE}. */
+  public static CypherReferencedVariables of(final BooleanExpression predicate) {
+    if (predicate == null)
+      return UNKNOWN;
+
+    final Collector collector = new Collector();
+    CypherExpressionWalker.walk(predicate, collector);
+    if (!collector.complete)
+      return UNKNOWN;
+
+    return new CypherReferencedVariables(Collections.unmodifiableSet(collector.names), true);
+  }
+
   /** The answer to use when there is no statement to inspect. */
   public static CypherReferencedVariables unknown() {
     return UNKNOWN;

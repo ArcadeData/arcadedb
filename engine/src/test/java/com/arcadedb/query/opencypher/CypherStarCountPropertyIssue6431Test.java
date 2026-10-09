@@ -43,6 +43,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@code tryDetectStarCountStar} anyway (matching the pair-join and chain-hop detectors, which check both
  * at their own level rather than relying solely on the outer guard), so the detector stays correct on its
  * own if the outer guard's scope or placement ever changes.
+ * <p>
+ * Since issue #9595 an inline property map of constants is no longer something the operator cannot check: the star
+ * count applies it per vertex, on the central node and on an arm endpoint, so those two shapes keep the push-down and
+ * are pinned here to the same answers. A dynamic label is still declined.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -65,27 +69,28 @@ class CypherStarCountPropertyIssue6431Test extends TestHelper {
 
   /**
    * Only {@code a1} is an active Author; {@code a2}, who wrote the tagged post {@code p1}, is inactive. The
-   * degree product would count the in-degree of {@code WROTE} on each tagged Post - 1 for both p1 and p2 -
-   * with no way to check the {@code status} property on the arm endpoint, so it would over-count p1 too.
+   * degree product counted the in-degree of {@code WROTE} on each tagged Post - 1 for both p1 and p2 - with no way
+   * to check the {@code status} property on the arm endpoint, so it would have over-counted p1 too. Since issue #9595
+   * it checks it, once per author.
    */
   @Test
-  void aPropertyFilteredArmEndpointDeclinesTheStarCountPushDown() {
+  void aPropertyFilteredArmEndpointIsAppliedByTheStarCount() {
     final String query = "MATCH (p:Post)<-[:WROTE]-(a:Author {status:'active'}), (p)-[:TAGGED]->(:Topic) RETURN count(*) AS c";
-    assertThat(explainOf(query)).doesNotContain("COUNT STAR JOIN");
+    assertThat(explainOf(query)).contains("COUNT STAR JOIN").contains("{status: active}");
     assertThat(scalarOf(query)).isEqualTo(1);
     assertThat(scalarOf(query)).isEqualTo(rowCountOf(
         "MATCH (p:Post)<-[:WROTE]-(a:Author {status:'active'}), (p)-[:TAGGED]->(t:Topic) RETURN p"));
   }
 
   /**
-   * The same gap on the central variable itself: only {@code p1} is published, but the degree product
-   * enumerates every {@code Post} that is the central variable's label, with no way to check the
-   * {@code status} property filter written directly on it.
+   * The same gap on the central variable itself: only {@code p1} is published, but the degree product enumerated
+   * every {@code Post} that is the central variable's label, with no way to check the {@code status} property filter
+   * written directly on it. Since issue #9595 it checks it on each central node.
    */
   @Test
-  void aPropertyFilteredCentralVariableDeclinesTheStarCountPushDown() {
+  void aPropertyFilteredCentralVariableIsAppliedByTheStarCount() {
     final String query = "MATCH (p:Post {status:'published'})<-[:WROTE]-(:Author), (p)-[:TAGGED]->(:Topic) RETURN count(*) AS c";
-    assertThat(explainOf(query)).doesNotContain("COUNT STAR JOIN");
+    assertThat(explainOf(query)).contains("COUNT STAR JOIN").contains("central: Post {status: published}");
     assertThat(scalarOf(query)).isEqualTo(1);
     assertThat(scalarOf(query)).isEqualTo(rowCountOf(
         "MATCH (p:Post {status:'published'})<-[:WROTE]-(a:Author), (p)-[:TAGGED]->(t:Topic) RETURN p"));
