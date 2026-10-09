@@ -491,7 +491,11 @@ public class RedisQueryEngine implements QueryEngine {
 
     final String cmd = parts.getFirst().toUpperCase(Locale.ENGLISH);
     // the table the RESP wire path uses (#9161): a surplus argument is no longer an amount, a missing one no longer defaults
-    RedisCommandArity.checkRam(cmd, parts.size());
+    try {
+      RedisCommandArity.checkRam(cmd, parts.size());
+    } catch (final RedisException e) {
+      throw badRequest(e);
+    }
     return switch (cmd) {
       case "PING" -> ping(parts);
       case "SET" -> set(parts);
@@ -510,6 +514,14 @@ public class RedisQueryEngine implements QueryEngine {
       case "HDEL" -> hDel(parts);
       default -> throw new CommandParsingException("Command not found: " + cmd);
     };
+  }
+
+  /**
+   * A command the caller got wrong (argument count, malformed RID) is a client error, as the per-command checks of this engine always
+   * were: a {@link RedisException} would be answered as an internal error (HTTP 500).
+   */
+  private static CommandParsingException badRequest(final RedisException e) {
+    return new CommandParsingException(e.getMessage(), e);
   }
 
   private List<String> parseCommand(final String command) {
@@ -823,7 +835,7 @@ public class RedisQueryEngine implements QueryEngine {
    */
   private int hDel(final List<String> parts) {
     if (parts.size() < 2)
-      throw RedisCommandArity.wrongArity("HDEL");
+      throw badRequest(RedisCommandArity.wrongArity("HDEL"));
 
     final String firstArg = parts.get(1);
     // Same reasoning as hSet() above: counted into a local inside the block, published only once the block has
@@ -836,7 +848,11 @@ public class RedisQueryEngine implements QueryEngine {
         final String rid = parts.get(i);
         if (!rid.startsWith("#"))
           throw new CommandParsingException("All arguments must be RIDs when first argument is a RID");
-        rids.add(RedisRecords.parseRid(rid));
+        try {
+          rids.add(RedisRecords.parseRid(rid));
+        } catch (final RedisException e) {
+          throw badRequest(e);
+        }
       }
       database.transaction(() -> {
         int removed = 0;
@@ -847,7 +863,7 @@ public class RedisQueryEngine implements QueryEngine {
     } else {
       // It's an index lookup
       if (parts.size() < 3)
-        throw RedisCommandArity.wrongArity("HDEL");
+        throw badRequest(RedisCommandArity.wrongArity("HDEL"));
 
       final Index index = database.getSchema().getIndexByName(firstArg);
       database.transaction(() -> {

@@ -161,6 +161,12 @@ public class Issue9161RedisQueryArityTest extends BaseRedisServerTest {
     assertThatThrownBy(() -> database.command("redis", "HDEL NoSuchType[id] 1").close()).isInstanceOf(ArcadeDBException.class);
   }
 
+  @Test
+  void overHttpAWrongArgumentCountIsAClientErrorNotAServerError() {
+    assertThatThrownBy(() -> executeCommand(0, "redis", "INCR issue9161http 5")).hasMessageStartingWith("HTTP 4")
+        .hasMessageContaining("wrong number of arguments for 'incr' command");
+  }
+
   private static void refused(final Database database, final String command, final String name) {
     assertThatThrownBy(() -> database.command("redis", command).close()).as(command)
         .hasMessageContaining("wrong number of arguments for '" + name + "' command");
