@@ -865,6 +865,8 @@ public class RedisQueryEngine implements QueryEngine {
       if (parts.size() < 3)
         throw badRequest(RedisCommandArity.wrongArity("HDEL"));
 
+      if (!database.getSchema().existsIndex(firstArg))
+        throw new CommandParsingException("Index '" + firstArg + "' not found");
       final Index index = database.getSchema().getIndexByName(firstArg);
       database.transaction(() -> {
         int removed = 0;
