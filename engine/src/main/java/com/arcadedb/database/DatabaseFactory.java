@@ -35,6 +35,7 @@ import java.util.*;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 
 public class DatabaseFactory implements AutoCloseable {
@@ -55,6 +56,23 @@ public class DatabaseFactory implements AutoCloseable {
    * (#7458).
    */
   private static final long SHUTDOWN_CLOSE_TIMEOUT_MS = 30_000;
+
+  /**
+   * Milliseconds the JVM shutdown hook waits for an owning hook (see {@link #registerOwningShutdownHook}) that the JVM
+   * has not started yet. The JVM starts every hook at once, so a hook still unstarted past this grace is one nobody is
+   * going to start - removed from the runtime without being unregistered here - and waiting longer would only delay the
+   * exit.
+   */
+  private static final long OWNING_HOOK_START_GRACE_MS = 5_000;
+
+  /**
+   * The JVM shutdown hooks of the components that close, themselves and in their own order, the databases they opened
+   * (issue #9548). The JVM runs every shutdown hook concurrently, so without this the hook below closed a server's
+   * databases while that server's own hook was still stopping what writes into them - the Raft apply thread of a leader
+   * among them, which then failed to publish a transaction the cluster had already committed and quarantined the
+   * database. Kept in a concurrent set: a server registers from its own thread, the hook reads it during the shutdown.
+   */
+  private static final Set<Thread> OWNING_SHUTDOWN_HOOKS = ConcurrentHashMap.newKeySet();
 
   /**
    * #5418: the engine's background threads are daemons, so a leaked (never closed) {@link Database} no longer
@@ -234,6 +252,10 @@ public class DatabaseFactory implements AutoCloseable {
    * be reintroduced here by a database whose lock some other daemon thread never releases.
    */
   private static void closeActiveDatabaseInstancesOnShutdown() {
+    // FIRST, before even looking at the registry: an owning hook may still be about to close what is in it, in the order
+    // its databases need (issue #9548). What it leaves open - it gave up, or it owns only some of them - is closed below.
+    awaitOwningShutdownHooks(OWNING_HOOK_START_GRACE_MS);
+
     if (ACTIVE_INSTANCES.isEmpty())
       return;
 
@@ -251,6 +273,65 @@ public class DatabaseFactory implements AutoCloseable {
           Could not close %d database(s) within %d ms during the JVM shutdown: giving up so the shutdown can \
           complete. The unflushed pages are replayed from the WAL on the next open""", null, ACTIVE_INSTANCES.size(),
           SHUTDOWN_CLOSE_TIMEOUT_MS);
+  }
+
+  /**
+   * Registers the JVM shutdown hook of a component that closes the databases it opened ITSELF, in an order it controls,
+   * so that the engine's own shutdown hook waits for that hook to finish before closing whatever is still open (issue
+   * #9548). The ArcadeDB server is the one such component: it stops its plugins - the Raft HA service, whose apply thread
+   * writes into the databases - before it closes the databases, and the JVM, which runs every shutdown hook
+   * concurrently, used to let the engine's hook close them in between.
+   * <p>
+   * The wait itself costs the exit nothing, since the JVM waits for every hook anyway, the registered one included; what
+   * it changes is that closing the databases the owner left open (ones it did not open, or all of them if it gave up)
+   * now runs after that hook rather than alongside it. A registered hook the JVM never starts (removed from the runtime
+   * and not {@link #unregisterOwningShutdownHook unregistered} here) is waited for only for a short grace.
+   *
+   * @param hook the thread passed to {@link Runtime#addShutdownHook(Thread)}
+   */
+  public static void registerOwningShutdownHook(final Thread hook) {
+    OWNING_SHUTDOWN_HOOKS.add(Objects.requireNonNull(hook, "hook"));
+  }
+
+  /** The counterpart of {@link #registerOwningShutdownHook}, for a hook removed from the runtime. */
+  public static void unregisterOwningShutdownHook(final Thread hook) {
+    OWNING_SHUTDOWN_HOOKS.remove(hook);
+  }
+
+  /** Whether {@code hook} is registered through {@link #registerOwningShutdownHook}. */
+  public static boolean isOwningShutdownHook(final Thread hook) {
+    return OWNING_SHUTDOWN_HOOKS.contains(hook);
+  }
+
+  /**
+   * Waits for every registered owning hook to finish (issue #9548). A started hook is joined without a bound: the JVM is
+   * waiting for it in any case, so a bound here would only re-open the race it exists to close. A hook not started yet
+   * is waited for up to {@code startGraceMs}, shared by all of them, since the JVM starts its hooks together and in no
+   * particular order. The calling thread itself, if registered, is skipped.
+   */
+  // @VisibleForTesting
+  static void awaitOwningShutdownHooks(final long startGraceMs) {
+    final long startDeadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(startGraceMs);
+    final Thread current = Thread.currentThread();
+    try {
+      for (final Thread hook : OWNING_SHUTDOWN_HOOKS) {
+        if (hook == current)
+          continue;
+        while (true) {
+          final Thread.State state = hook.getState();
+          if (state == Thread.State.TERMINATED)
+            break;
+          if (state == Thread.State.NEW) {
+            if (System.nanoTime() - startDeadline >= 0)
+              break;
+            Thread.sleep(10);
+          } else
+            hook.join();
+        }
+      }
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+    }
   }
 
   private static void checkForActiveInstance(final String databasePath) {

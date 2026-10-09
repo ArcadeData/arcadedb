@@ -271,6 +271,8 @@ public class ArcadeDBServer {
    * hook itself and will never release the lock, so the hook does not wait for it at all.
    */
   private volatile    Thread                                lifecycleOwner;
+  /** The JVM shutdown hook this server registered (issue #9548). */
+  private             Thread                                shutdownHook;
   private final       List<ReplicationCallback>             testEventListeners                   = new ArrayList<>();
   private volatile    STATUS                                status                               = STATUS.OFFLINE;
   /**
@@ -878,6 +880,12 @@ public class ArcadeDBServer {
    * If the mutex never arrives, the databases are left as they are: the next open replays the WAL,
    * exactly as after a kill. That is strictly better than a process that cannot be stopped.
    */
+  /** The JVM shutdown hook this server registered, which the engine's own hook waits for (issue #9548). */
+  // @VisibleForTesting
+  Thread getShutdownHook() {
+    return shutdownHook;
+  }
+
   // @VisibleForTesting
   void stopFromShutdownHook() {
     // Snapshot the status once: start() can flip it STARTING -> ONLINE while still holding the
@@ -2476,7 +2484,7 @@ public class ArcadeDBServer {
     configuration.getValueAsString(GlobalConfiguration.SERVER_PLUGINS);
     pluginManager = new PluginManager(this, configuration);
 
-    Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+    final Thread hook = new Thread(() -> {
       // Mark logger as shutting down to prevent NPE when handlers are closed (issue #2813)
       DefaultLogger.setShuttingDown(true);
       try {
@@ -2502,7 +2510,15 @@ public class ArcadeDBServer {
           // the logger may already be closing down
         }
       }
-    }, "arcadedb-shutdown-hook"));
+    }, "arcadedb-shutdown-hook");
+    Runtime.getRuntime().addShutdownHook(hook);
+    // Issue #9548: the engine's own shutdown hook closes every open database, and the JVM runs it concurrently with this
+    // one. stopInternal() stops the plugins - the Raft HA service, whose apply thread writes into the databases - BEFORE
+    // it closes the databases, and the engine's hook used to close them in between: a leader committing across the
+    // shutdown then failed to publish an entry the cluster had committed and quarantined its own database. Registered,
+    // this hook is waited for, and the engine's hook closes only what is still open after it.
+    DatabaseFactory.registerOwningShutdownHook(hook);
+    shutdownHook = hook;
 
     hostAddress = assignHostAddress();
   }
