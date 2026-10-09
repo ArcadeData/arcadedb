@@ -238,9 +238,9 @@ public final class OptionalMatchAntiJoinRewriter {
     if (readsAfter(statement, index + 2, introduced, projectsStar))
       return null;
 
+    final PathPattern absent = anonymized(pattern, introduced, inScope);
     final BooleanExpression notPattern = new LogicalExpression(LogicalExpression.Operator.NOT,
-        new PatternPredicateExpression(anonymized(pattern, introduced, inScope), false,
-            render(anonymized(pattern, introduced, inScope))));
+        new PatternPredicateExpression(absent, false, render(absent)));
     final BooleanExpression rest = and(remaining);
 
     // The negated pattern joins the WHERE of the non-optional MATCH before it, or filters in the OPTIONAL MATCH's place
