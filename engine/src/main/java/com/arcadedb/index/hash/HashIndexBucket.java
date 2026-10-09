@@ -186,6 +186,10 @@ public class HashIndexBucket extends PaginatedComponent {
   // different key with the same 64-bit hash, which needs that collision and the race at once. Writers run under the commit
   // lock and never meet a torn list, so for them a wrong owner is corruption.
   static final int RID_LIST_PAGE_MARKER   = 0x4000;
+  // A page on the free list. Every freed page is marked, not just the last one: a lookup that read the entry before the
+  // commit that freed the list must stop at the first freed page it reaches and start again, instead of reading on into
+  // the free list, whose pages can hold RIDs the key no longer has
+  static final int RID_FREE_PAGE_MARKER   = 0x4001;
   static final int RID_PAGE_MARKER        = 0;                       // short (2)
   static final int RID_PAGE_COUNT         = 2;                       // short (2): RIDs on this page
   static final int RID_PAGE_NEXT          = 4;                       // int (4): next page of the list, or of the free list
@@ -419,6 +423,12 @@ public class HashIndexBucket extends PaginatedComponent {
         final List<RID> result = searchBucket(bucketPageNum, serializedKey, hash, limit);
         if (result != null)
           return result;
+
+        // Under REPEATABLE_READ the transaction keeps the pages it read: the retry must read them again, not the same stale
+        // copies (its own changes stay, unpinFiles only drops the immutable pages)
+        final TransactionContext tx = database.getTransactionIfExists();
+        if (tx != null)
+          tx.unpinFiles(List.of(fileId));
 
         if (attempt >= MAX_RID_LIST_LOOKUP_RETRIES)
           throw new IndexException("The RID list of a key of hash index '" + getName() + "' (fileId=" + fileId
@@ -1539,8 +1549,8 @@ public class HashIndexBucket extends PaginatedComponent {
       }
       chainOwner[current] = freeMark;
       final BasePage freePage = readPage(current);
-      if (!isRidListPage(freePage)) {
-        problems.add("the free list of RID list pages reaches page " + current + ", which is not a RID list page");
+      if (!isFreeRidListPage(freePage)) {
+        problems.add("the free list of RID list pages reaches page " + current + ", which is not a free RID list page");
         break;
       }
       current = freePage.readInt(RID_PAGE_NEXT);
@@ -2254,7 +2264,7 @@ public class HashIndexBucket extends PaginatedComponent {
             if (current == tailPageNum)
               entryPage.writeInt(valueOffset + 1 + Binary.INT_SERIALIZED_SIZE, previous);
           }
-          freeRidListPages(current, page);
+          freeRidListPage(page);
         } else if (nextPage != null) {
           // Merge the next page in this one when its RIDs fit, so deletions do not leave a chain of half empty pages
           final int nextLength = (nextPage.readShort(RID_PAGE_DATA_END) & 0xFFFF) - RID_PAGE_CONTENT_START;
@@ -2267,7 +2277,7 @@ public class HashIndexBucket extends PaginatedComponent {
             page.writeInt(RID_PAGE_NEXT, nextPage.readInt(RID_PAGE_NEXT));
             if (next == tailPageNum)
               entryPage.writeInt(valueOffset + 1 + Binary.INT_SERIALIZED_SIZE, current);
-            freeRidListPages(next, tx.getPageToModify(new PageId(database, fileId, next), pageSize, false));
+            freeRidListPage(tx.getPageToModify(new PageId(database, fileId, next), pageSize, false));
           }
         }
         return 1;
@@ -2287,28 +2297,36 @@ public class HashIndexBucket extends PaginatedComponent {
     final int maxChainPages = getTotalPages();
     int chainSteps = 0;
     int last = NO_OVERFLOW_PAGE;
+    MutablePage lastPage = null;
     for (int current = headPage; current != NO_OVERFLOW_PAGE; ) {
       if (++chainSteps > maxChainPages)
         throw corruptedRidList(current, "the list is cyclic");
-      final BasePage page = ridListPage(current, hash);
+      final MutablePage page = ridListPageToModify(current, hash);
       ridCount += page.readShort(RID_PAGE_COUNT) & 0xFFFF;
+      page.writeShort(RID_PAGE_MARKER, (short) RID_FREE_PAGE_MARKER);
       last = current;
+      lastPage = page;
       current = page.readInt(RID_PAGE_NEXT);
     }
     if (last != tailPage)
       // freeing from the head to a wrong last page would put on the free list pages still in use, or lose some
       throw corruptedRidList(tailPage, "the entry names it as the last page of the list, which ends at page " + last);
     // the pages of the list are already chained: the whole list goes on top of the free list at once
-    freeRidListPages(headPage, ridListPageToModify(tailPage, hash));
+    pushOnFreeList(headPage, lastPage);
     return ridCount;
   }
 
+  /** Marks one RID list page (already taken for modification) as free and puts it on top of the free list. */
+  private void freeRidListPage(final MutablePage page) throws IOException {
+    page.writeShort(RID_PAGE_MARKER, (short) RID_FREE_PAGE_MARKER);
+    pushOnFreeList(page.getPageId().getPageNumber(), page);
+  }
+
   /**
-   * Puts the chain of RID list pages from {@code firstPage} to {@code lastPage} (already taken for modification) on top of the
-   * free list. The pages keep their owner: a lookup that still reaches one reads RIDs of the key it is looking for, as a read
-   * of a page an instant earlier would have, until the page is given to another key.
+   * Puts the chain of free RID list pages from {@code firstPage} to {@code lastPage} (already taken for modification and
+   * marked free) on top of the free list.
    */
-  private void freeRidListPages(final int firstPage, final MutablePage lastPage) throws IOException {
+  private void pushOnFreeList(final int firstPage, final MutablePage lastPage) throws IOException {
     lastPage.writeInt(RID_PAGE_NEXT, readFreeRidListPage());
     writeFreeRidListPage(firstPage);
   }
@@ -2324,8 +2342,8 @@ public class HashIndexBucket extends PaginatedComponent {
       if (!isValidBucketPage(free))
         throw corruptedRidList(free, "the free list reaches an invalid page");
       page = tx.getPageToModify(new PageId(database, fileId, free), pageSize, false);
-      if (!isRidListPage(page))
-        throw corruptedRidList(free, "the free list reaches a page that is not a RID list page");
+      if (!isFreeRidListPage(page))
+        throw corruptedRidList(free, "the free list reaches a page that is not a free RID list page");
       writeFreeRidListPage(page.readInt(RID_PAGE_NEXT));
     } else {
       final int newPageNum = getTotalPages();
@@ -2355,12 +2373,19 @@ public class HashIndexBucket extends PaginatedComponent {
     return database.getTransaction().getPageToModify(new PageId(database, fileId, pageNum), pageSize, false);
   }
 
+  /** True for a RID list page, in use or free. */
   static boolean isRidListPage(final BasePage page) {
-    return (page.readShort(RID_PAGE_MARKER) & 0xFFFF) == RID_LIST_PAGE_MARKER;
+    final int marker = page.readShort(RID_PAGE_MARKER) & 0xFFFF;
+    return marker == RID_LIST_PAGE_MARKER || marker == RID_FREE_PAGE_MARKER;
   }
 
+  static boolean isFreeRidListPage(final BasePage page) {
+    return (page.readShort(RID_PAGE_MARKER) & 0xFFFF) == RID_FREE_PAGE_MARKER;
+  }
+
+  /** True for a page in use by the RID list of the key of the given hash, whose data area is sane. */
   private boolean isRidListPageOf(final BasePage page, final long hash) {
-    if (!isRidListPage(page) || page.readLong(RID_PAGE_OWNER) != hash)
+    if ((page.readShort(RID_PAGE_MARKER) & 0xFFFF) != RID_LIST_PAGE_MARKER || page.readLong(RID_PAGE_OWNER) != hash)
       return false;
     final int dataEnd = page.readShort(RID_PAGE_DATA_END) & 0xFFFF;
     return dataEnd >= RID_PAGE_CONTENT_START && dataEnd <= ridListPageEnd();
