@@ -44,7 +44,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * ({@code COUNT EDGES RETURN}), the {@code OPTIONAL MATCH ... WITH n, count(m)} optimization and the {@code COUNT { }}
  * subquery.
  * <p>
- * The generic checks compare every push-down with the ordinary row pipeline, reached through a {@code WITH *} that
+ * The generic checks compare every push-down with the ordinary row pipeline, reached through a {@code sum(1)} that
  * the push-downs decline, so a count is checked against the pipeline it stands in for.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -373,9 +373,12 @@ class Issue8750SelfLoopCountPushDownTest extends TestHelper {
     }
   }
 
-  /** The same count through the ordinary row pipeline: the push-down detectors only take a MATCH ... RETURN statement. */
+  /**
+   * The same count through the ordinary row pipeline: no count push-down answers a {@code sum()}. A {@code WITH *} used to
+   * be the barrier, until issue #9597 made a pass-through {@code WITH} transparent to the push-downs.
+   */
   private static String pipelineQuery(final String match) {
-    return match + " WITH * RETURN count(*) AS n";
+    return match + " RETURN sum(1) AS n";
   }
 
   private String plan(final String query) {

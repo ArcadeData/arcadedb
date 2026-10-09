@@ -50,11 +50,19 @@ public final class PropagateChainOp implements CountOp {
   private final int                inequalityIdxB;
   private final RID                anchorRid;
   private final VertexInternal     anchorVertex;
+  /** One per position: the property filter on top of its label, null where it has none. Null when no position has one. */
+  private final VertexPredicate[]  predicates;
 
   public PropagateChainOp(final String[] nodeLabels, final String[] edgeTypes,
       final Vertex.DIRECTION[] directions,
       final int inequalityIdxA, final int inequalityIdxB) {
-    this(nodeLabels, edgeTypes, directions, inequalityIdxA, inequalityIdxB, null, null);
+    this(nodeLabels, edgeTypes, directions, inequalityIdxA, inequalityIdxB, null, null, null);
+  }
+
+  public PropagateChainOp(final String[] nodeLabels, final String[] edgeTypes,
+      final Vertex.DIRECTION[] directions,
+      final int inequalityIdxA, final int inequalityIdxB, final RID anchorRid, final VertexInternal anchorVertex) {
+    this(nodeLabels, edgeTypes, directions, inequalityIdxA, inequalityIdxB, anchorRid, anchorVertex, null);
   }
 
   /**
@@ -67,12 +75,17 @@ public final class PropagateChainOp implements CountOp {
    *                     properties is a multi-page read. The walk still reads the copy the transaction caches for
    *                     that RID when there is one, as a lookup would, so a handle taken before a write in the same
    *                     transaction does not hide the adjacency the write produced.
+   * @param predicates   one entry per position (null where the position has none): the property predicates written on
+   *                     the node, applied once per distinct vertex the position reaches (issue #9595). Null for none.
    */
   public PropagateChainOp(final String[] nodeLabels, final String[] edgeTypes,
       final Vertex.DIRECTION[] directions,
-      final int inequalityIdxA, final int inequalityIdxB, final RID anchorRid, final VertexInternal anchorVertex) {
+      final int inequalityIdxA, final int inequalityIdxB, final RID anchorRid, final VertexInternal anchorVertex,
+      final VertexPredicate[] predicates) {
     if (anchorVertex != null && !anchorVertex.getIdentity().equals(anchorRid))
       throw new IllegalArgumentException("Anchor vertex " + anchorVertex.getIdentity() + " is not " + anchorRid);
+    if (predicates != null && predicates.length != nodeLabels.length)
+      throw new IllegalArgumentException("Expected one predicate slot per position, found " + predicates.length);
     this.nodeLabels = nodeLabels;
     this.edgeTypes = edgeTypes;
     this.directions = directions;
@@ -80,6 +93,7 @@ public final class PropagateChainOp implements CountOp {
     this.inequalityIdxB = inequalityIdxB;
     this.anchorRid = anchorRid;
     this.anchorVertex = anchorVertex;
+    this.predicates = VertexPredicate.any(predicates) ? predicates : null;
   }
 
   @Override
@@ -100,8 +114,9 @@ public final class PropagateChainOp implements CountOp {
 
   @Override
   public long execute(final GraphTraversalProvider provider, final Database db, final WorkGuard guard) {
+    final VertexPredicate.Evaluation[] filters = VertexPredicate.evaluations(predicates, db, provider);
     if (anchorRid != null)
-      return executeFromSeededAnchor(provider, db, guard);
+      return executeFromSeededAnchor(provider, db, filters, guard);
 
     final int nodeIdUpperBound = provider.getNodeIdUpperBound();
     final int hops = edgeTypes.length;
@@ -122,7 +137,7 @@ public final class PropagateChainOp implements CountOp {
     if (inequalityIdxA >= 0 && inequalityIdxB >= 0
         && Math.min(inequalityIdxA, inequalityIdxB) == 0
         && hops <= 2)
-      return executePerSourceInequality(provider, nodeIdUpperBound, validBuckets, guard);
+      return executePerSourceInequality(provider, nodeIdUpperBound, validBuckets, filters, guard);
 
     // Standard dense array propagation for chains without inequality
     // (or with inequality source not at position 0)
@@ -143,6 +158,9 @@ public final class PropagateChainOp implements CountOp {
       if (anchorBuckets == null || anchorBuckets.contains(bucketIds[v]))
         current[v] = 1;
     }
+    // A property predicate is asked after the label, of the vertices the label kept: once per vertex per position,
+    // whatever the number of paths reaching it (issue #9595)
+    applyFilter(filters, 0, current, continuationOf(provider, 0));
 
     // THE PATHS FROM THE ANCHORS TO THE EARLIER POSITION OF THE INEQUALITY: WHAT A PATH THAT CLOSES ON ITSELF THERE IS
     // REACHED BY. THE PROPAGATION BELOW COMPUTES THEM ON ITS WAY, AND EACH LEVEL IS A NEW ARRAY, SO IT IS KEPT AS IT IS
@@ -154,6 +172,7 @@ public final class PropagateChainOp implements CountOp {
       guard.check();
       current = CSRCountUtils.propagateOneHop(provider, current, directions[hop], edgeTypes[hop]);
       CSRCountUtils.filterByBuckets(bucketIds, current, validBuckets[hop + 1]);
+      applyFilter(filters, hop + 1, current, continuationOf(provider, hop + 1));
       if (hop + 1 == idxA)
         prefix = current;
     }
@@ -167,7 +186,7 @@ public final class PropagateChainOp implements CountOp {
     }
 
     if (inequalityIdxA >= 0 && inequalityIdxB >= 0)
-      total -= countSelfLoopPaths(provider, validBuckets, prefix, bucketIds, guard);
+      total -= countSelfLoopPaths(provider, validBuckets, filters, prefix, bucketIds, guard);
 
     return total;
   }
@@ -181,6 +200,42 @@ public final class PropagateChainOp implements CountOp {
   }
 
   /**
+   * Zeroes the counts of the nodes the property predicate of {@code position} refuses, if it has one. A node
+   * {@code continuation} leaves by no edge is zeroed without asking: it carries no path further.
+   */
+  private static void applyFilter(final VertexPredicate.Evaluation[] filters, final int position, final long[] counts,
+      final NeighborView continuation) {
+    if (filters != null && filters[position] != null)
+      filters[position].filter(counts, continuation);
+  }
+
+  /**
+   * The view of the hop leaving {@code position} forward, when there is one and the position has a predicate to save
+   * reads for: null for the last position, which no hop leaves.
+   */
+  private NeighborView continuationOf(final GraphTraversalProvider provider, final int position) {
+    if (predicates == null || predicates[position] == null || position >= edgeTypes.length)
+      return null;
+    return provider.getNeighborView(directions[position], edgeTypes[position]);
+  }
+
+  /** Whether the property predicate of {@code position}, if it has one, accepts the provider's node. */
+  private static boolean passes(final VertexPredicate.Evaluation[] filters, final int position, final int nodeId) {
+    return filters == null || filters[position] == null || filters[position].acceptsNode(nodeId);
+  }
+
+  /** Keeps the entries of {@code nodes[0, size)} the property predicate of {@code position} accepts, in place. */
+  private static int[] retainPassing(final VertexPredicate.Evaluation[] filters, final int position, final int[] nodes) {
+    if (filters == null || filters[position] == null)
+      return nodes;
+    int kept = 0;
+    for (final int node : nodes)
+      if (filters[position].acceptsNode(node))
+        nodes[kept++] = node;
+    return kept == nodes.length ? nodes : Arrays.copyOf(nodes, kept);
+  }
+
+  /**
    * The chain walked from the one vertex the outer row bound to position 0.
    * <p>
    * Nothing here is sized by the graph: the dense {@code long[nodeCount]} arrays of the enumerating path would be
@@ -191,8 +246,9 @@ public final class PropagateChainOp implements CountOp {
    * A label written on the seeded position filters the bound vertex rather than naming a set to enumerate:
    * {@code COUNT { (n:Q)-[:LINKS]->(:Q) }} under an {@code n} of another label is 0, not the count over {@code Q}.
    */
-  private long executeFromSeededAnchor(final GraphTraversalProvider provider, final Database db, final WorkGuard guard) {
-    if (!anchorMatchesLabel(db, nodeLabels[0], anchorRid.getBucketId()))
+  private long executeFromSeededAnchor(final GraphTraversalProvider provider, final Database db,
+      final VertexPredicate.Evaluation[] filters, final WorkGuard guard) {
+    if (!anchorMatchesLabel(db, nodeLabels[0], anchorRid.getBucketId()) || !seededAnchorPasses(filters))
       return 0;
 
     final int hops = edgeTypes.length;
@@ -210,12 +266,22 @@ public final class PropagateChainOp implements CountOp {
       guard.check();
       frontier = expandFrontier(provider, frontier, provider.getNeighborView(directions[h], edgeTypes[h]), h,
           validBuckets[h + 1]);
+      // asked by RID: a node-id memo would be sized by the graph, and this runs once per outer row
+      frontier = retainPassingByRid(provider, filters, h + 1, frontier);
       if (frontier.length == 0)
         return 0;
     }
 
     final int lastHop = hops - 1;
     final IntHashSet targetBuckets = validBuckets[hops];
+    if (filters != null && filters[hops] != null) {
+      // A property predicate on the far end has to see every neighbor, so the last hop is expanded rather than counted
+      if (targetBuckets != null && targetBuckets.isEmpty())
+        return 0;
+      final int[] reached = expandFrontier(provider, frontier, provider.getNeighborView(directions[lastHop], edgeTypes[lastHop]),
+          lastHop, targetBuckets);
+      return retainPassingByRid(provider, filters, hops, reached).length;
+    }
     long total = 0;
     if (targetBuckets == null || targetBuckets.isEmpty()) {
       for (final int node : frontier)
@@ -255,6 +321,25 @@ public final class PropagateChainOp implements CountOp {
    * bucket, so it walks the supertype chain instead of allocating a bucket set. That matters because a seeded
    * operator is built and run once per outer row, where the enumerating one is built once per query.
    */
+  /** Whether the bound vertex passes the property predicate of position 0, the row's own vertex read no further. */
+  private boolean seededAnchorPasses(final VertexPredicate.Evaluation[] filters) {
+    if (filters == null || filters[0] == null)
+      return true;
+    return anchorVertex != null ? filters[0].accepts(anchorVertex) : filters[0].acceptsRid(anchorRid);
+  }
+
+  /** {@link #retainPassing} asked by RID, for the walks that must not allocate per graph node. */
+  private static int[] retainPassingByRid(final GraphTraversalProvider provider, final VertexPredicate.Evaluation[] filters,
+      final int position, final int[] nodes) {
+    if (filters == null || filters[position] == null)
+      return nodes;
+    int kept = 0;
+    for (final int node : nodes)
+      if (filters[position].acceptsRid(provider.getRID(node)))
+        nodes[kept++] = node;
+    return kept == nodes.length ? nodes : Arrays.copyOf(nodes, kept);
+  }
+
   private static boolean anchorMatchesLabel(final Database db, final String label, final int bucketId) {
     if (label == null || !db.getSchema().existsType(label))
       return true;
@@ -276,7 +361,8 @@ public final class PropagateChainOp implements CountOp {
    * For Q6 (10K persons × ~1.7K frontier nodes each): ~17M CSR ops (comparable to dense + self-loop).
    */
   private long executePerSourceInequality(final GraphTraversalProvider provider,
-      final int nodeIdUpperBound, final IntHashSet[] validBuckets, final WorkGuard guard) {
+      final int nodeIdUpperBound, final IntHashSet[] validBuckets, final VertexPredicate.Evaluation[] filters,
+      final WorkGuard guard) {
     final int idxB = Math.max(inequalityIdxA, inequalityIdxB);
 
     // Pre-fetch NeighborViews for hops up to the inequality target
@@ -297,7 +383,7 @@ public final class PropagateChainOp implements CountOp {
 
     // The paths each node at the inequality target continues into, labels included: one backward pass, not a product
     // of the node's own degrees, which ignored the labels of the tail
-    final long[] suffix = idxB < edgeTypes.length ? suffixCounts(provider, idxB, validBuckets, bucketIds, guard) : null;
+    final long[] suffix = idxB < edgeTypes.length ? suffixCounts(provider, idxB, validBuckets, filters, bucketIds, guard) : null;
 
     long totalCount = 0;
 
@@ -307,11 +393,14 @@ public final class PropagateChainOp implements CountOp {
         continue;
       if (anchorBuckets != null && !anchorBuckets.contains(bucketIds[srcId]))
         continue;
+      if (!passes(filters, 0, srcId))
+        continue;
 
       // Expand from srcId through hops [0, idxB)
       int[] frontier = new int[]{srcId};
       for (int h = 0; h < idxB; h++) {
-        frontier = expandFrontierFast(provider, frontier, views[h], h, validBuckets[h + 1], bucketIds);
+        frontier = retainPassing(filters, h + 1,
+            expandFrontierFast(provider, frontier, views[h], h, validBuckets[h + 1], bucketIds));
         if (frontier.length == 0)
           break;
       }
@@ -342,7 +431,7 @@ public final class PropagateChainOp implements CountOp {
    * hop and ignores the labels written on them, so the subtraction was off on such chains.
    */
   private long countSelfLoopPaths(final GraphTraversalProvider provider, final IntHashSet[] validBuckets,
-      final long[] prefix, final int[] bucketIds, final WorkGuard guard) {
+      final VertexPredicate.Evaluation[] filters, final long[] prefix, final int[] bucketIds, final WorkGuard guard) {
     final int nodeIdUpperBound = provider.getNodeIdUpperBound();
     final int idxA = Math.min(inequalityIdxA, inequalityIdxB);
     final int idxB = Math.max(inequalityIdxA, inequalityIdxB);
@@ -353,7 +442,7 @@ public final class PropagateChainOp implements CountOp {
     // and compute |E0_reverse_nbrs(m) ∩ E2_nbrs(c)| for each middle edge (m,c).
     // For Q5: 2.6M REPLY_OF edges × ~2 merge ops = ~5M ops (vs 16K × 300 = ~14M per-anchor).
     if (subChainLength == 3 && idxA == 0 && idxB == edgeTypes.length) {
-      final long selfLoops = countSelfLoop3HopEdgeScan(provider, nodeIdUpperBound, validBuckets, bucketIds, guard);
+      final long selfLoops = countSelfLoop3HopEdgeScan(provider, nodeIdUpperBound, validBuckets, filters, bucketIds, guard);
       if (selfLoops >= 0)
         return selfLoops;
     }
@@ -362,14 +451,14 @@ public final class PropagateChainOp implements CountOp {
     final NeighborView[] subViews = new NeighborView[subChainLength];
     for (int h = 0; h < subChainLength; h++)
       subViews[h] = provider.getNeighborView(directions[idxA + h], edgeTypes[idxA + h]);
-    final long[] suffix = idxB < edgeTypes.length ? suffixCounts(provider, idxB, validBuckets, bucketIds, guard) : null;
+    final long[] suffix = idxB < edgeTypes.length ? suffixCounts(provider, idxB, validBuckets, filters, bucketIds, guard) : null;
 
     long selfLoopTotal = 0;
     for (int vId = 0; vId < nodeIdUpperBound; vId++) {
       guard.checkPeriodically(vId);
       if (prefix[vId] == 0 || !provider.isNodeLive(vId) || (suffix != null && suffix[vId] == 0))
         continue;
-      final long loopCount = countLoopsFromNode(provider, vId, subViews, idxA, subChainLength, validBuckets);
+      final long loopCount = countLoopsFromNode(provider, vId, subViews, idxA, subChainLength, validBuckets, filters);
       if (loopCount > 0)
         selfLoopTotal += prefix[vId] * loopCount * (suffix != null ? suffix[vId] : 1L);
     }
@@ -381,7 +470,8 @@ public final class PropagateChainOp implements CountOp {
    * position after it included: a backward propagation from the chain's end, one pass per hop.
    */
   private long[] suffixCounts(final GraphTraversalProvider provider, final int fromPosition,
-      final IntHashSet[] validBuckets, final int[] bucketIds, final WorkGuard guard) {
+      final IntHashSet[] validBuckets, final VertexPredicate.Evaluation[] filters, final int[] bucketIds,
+      final WorkGuard guard) {
     final int nodeIdUpperBound = provider.getNodeIdUpperBound();
     final int hops = edgeTypes.length;
     long[] counts = new long[nodeIdUpperBound];
@@ -391,11 +481,13 @@ public final class PropagateChainOp implements CountOp {
       if (provider.isNodeLive(v) && (endBuckets == null || endBuckets.contains(bucketIds[v])))
         counts[v] = 1;
     }
+    applyFilter(filters, hops, counts, null);
     for (int h = hops - 1; h >= fromPosition; h--) {
       guard.check();
       // a node reaches through hop h the nodes whose reverse adjacency lists it at position h + 1
       counts = CSRCountUtils.propagateOneHop(provider, counts, reverseDir(directions[h]), edgeTypes[h]);
       CSRCountUtils.filterByBuckets(bucketIds, counts, validBuckets[h]);
+      applyFilter(filters, h, counts, null);
     }
     return counts;
   }
@@ -413,7 +505,8 @@ public final class PropagateChainOp implements CountOp {
    * Avg ~2 merge comparisons per edge → ~5M ops total at ~3-5ns = ~15-25ms.
    */
   private long countSelfLoop3HopEdgeScan(final GraphTraversalProvider provider,
-      final int nodeIdUpperBound, final IntHashSet[] validBuckets, final int[] bucketIds, final WorkGuard guard) {
+      final int nodeIdUpperBound, final IntHashSet[] validBuckets, final VertexPredicate.Evaluation[] filters,
+      final int[] bucketIds, final WorkGuard guard) {
     // E0: edge from pos0 to pos1, direction directions[0]
     // E1: edge from pos1 to pos2, direction directions[1] (middle, iterated)
     // E2: edge from pos2 to pos3, direction directions[2]
@@ -442,7 +535,7 @@ public final class PropagateChainOp implements CountOp {
       return 0;
     // THE CLOSING VERTEX STANDS AT POSITIONS 0 AND 3 AT ONCE, SO IT CARRIES BOTH LABELS: A VERTEX THE DENSE COUNT NEVER
     // STARTED FROM, OR NEVER ENDED AT, CLOSES NO PATH IT COUNTED
-    final boolean[] closing = closingVertices(provider, nodeIdUpperBound, validBuckets[0], validBuckets[3], bucketIds);
+    final boolean[] closing = closingVertices(provider, nodeIdUpperBound, validBuckets[0], validBuckets[3], filters, bucketIds);
 
     long selfLoop = 0;
     // AN UNDIRECTED HOP'S MERGED RANGE HOLDS EACH SELF LOOP TWICE: THE RANGE OF b HOLDS b TWICE FOR ONE RELATIONSHIP
@@ -468,6 +561,9 @@ public final class PropagateChainOp implements CountOp {
       final int aStart = viewA.offset(b);
       final int aEnd = viewA.offsetEnd(b);
       if (aStart == aEnd) continue;
+      // the property predicate last: it may read the vertex, the adjacency checks above do not
+      if (!passes(filters, 1, b))
+        continue;
 
       // For each E1 neighbor c (pos2 node):
       boolean skipSelf = false;
@@ -487,6 +583,8 @@ public final class PropagateChainOp implements CountOp {
         final int cStart = viewC.offset(c);
         final int cEnd = viewC.offsetEnd(c);
         if (cStart == cEnd) continue;
+        if (!passes(filters, 2, c))
+          continue;
 
         // Count |setA ∩ setC| via sorted merge (both CSR ranges are sorted)
         selfLoop += sortedIntersectionCount(aNbrs, aStart, aEnd, undirectedA ? b : -1, cNbrs, cStart, cEnd,
@@ -541,13 +639,16 @@ public final class PropagateChainOp implements CountOp {
    * labels: null when neither position is labelled, so every vertex may.
    */
   private static boolean[] closingVertices(final GraphTraversalProvider provider, final int nodeIdUpperBound,
-      final IntHashSet firstBuckets, final IntHashSet lastBuckets, final int[] bucketIds) {
-    if (firstBuckets == null && lastBuckets == null)
+      final IntHashSet firstBuckets, final IntHashSet lastBuckets, final VertexPredicate.Evaluation[] filters,
+      final int[] bucketIds) {
+    final boolean filtered = filters != null && (filters[0] != null || filters[filters.length - 1] != null);
+    if (firstBuckets == null && lastBuckets == null && !filtered)
       return null;
     final boolean[] closing = new boolean[nodeIdUpperBound];
     for (int v = 0; v < nodeIdUpperBound; v++)
       closing[v] = provider.isNodeLive(v) && (firstBuckets == null || firstBuckets.contains(bucketIds[v]))
-          && (lastBuckets == null || lastBuckets.contains(bucketIds[v]));
+          && (lastBuckets == null || lastBuckets.contains(bucketIds[v])) && passes(filters, 0, v)
+          && passes(filters, filters == null ? 0 : filters.length - 1, v);
     return closing;
   }
 
@@ -569,7 +670,7 @@ public final class PropagateChainOp implements CountOp {
    */
   private long countLoopsFromNode(final GraphTraversalProvider provider, final int vId,
       final NeighborView[] subViews, final int startHop, final int subChainLength,
-      final IntHashSet[] validBuckets) {
+      final IntHashSet[] validBuckets, final VertexPredicate.Evaluation[] filters) {
     if (subChainLength == 0)
       return 1;
 
@@ -579,7 +680,8 @@ public final class PropagateChainOp implements CountOp {
 
     // Expand through all hops except the last
     for (int h = 0; h < subChainLength - 1; h++) {
-      frontier = expandFrontier(provider, frontier, subViews[h], startHop + h, validBuckets[startHop + h + 1]);
+      frontier = retainPassing(filters, startHop + h + 1,
+          expandFrontier(provider, frontier, subViews[h], startHop + h, validBuckets[startHop + h + 1]));
       if (frontier.length == 0)
         return 0;
     }
@@ -594,6 +696,8 @@ public final class PropagateChainOp implements CountOp {
       if (!lastBuckets.contains(vRid.getBucketId()))
         return 0;
     }
+    if (!passes(filters, lastHopIdx + 1, vId))
+      return 0;
 
     long loopCount = 0;
     final NeighborView lastView = subViews[subChainLength - 1];
@@ -747,6 +851,8 @@ public final class PropagateChainOp implements CountOp {
     // the vertex types cannot serve: it answers for the vertices it maps with the adjacency it holds, which is
     // missing every edge that leaves the view (issue #5757).
     final GraphTraversalProvider provider = CSRCountUtils.findAcceleratingProvider(db, edgeTypes);
+    // asked by RID only here: the walk is keyed by RID, and a seeded one runs once per outer row
+    final VertexPredicate.Evaluation[] filters = VertexPredicate.evaluations(predicates, db, provider);
 
     // BFS count propagation: each unique vertex at each level is processed once,
     // with its count capturing path multiplicity. This reduces O(paths) traversals
@@ -756,15 +862,19 @@ public final class PropagateChainOp implements CountOp {
     RidLongHashMap current = new RidLongHashMap();
     if (anchorRid != null) {
       // A seeded anchor is an anchor set of one, and its label - if the body wrote one - filters it (issue #5758).
-      if (!anchorMatchesLabel(db, nodeLabels[0], anchorRid.getBucketId()))
+      if (!anchorMatchesLabel(db, nodeLabels[0], anchorRid.getBucketId()) || !seededAnchorPasses(filters))
         return 0;
       if (anchorVertex == null)
         // With the row's own vertex the first hop expands that handle and never reads this level.
         current.put(anchorRid, 1L);
     } else {
+      final VertexPredicate.Evaluation anchorFilter = filters != null ? filters[0] : null;
       for (final Iterator<? extends Identifiable> it = CSRCountUtils.iterateAnchors(db, nodeLabels[0]); it.hasNext(); ) {
         guard.check();
-        current.put(it.next().getIdentity(), 1L);
+        final Identifiable anchor = it.next();
+        // the scan already holds the record, so the predicate reads nothing more
+        if (anchorFilter == null || anchorFilter.accepts(anchor))
+          current.put(anchor.getIdentity(), 1L);
       }
     }
 
@@ -784,25 +894,36 @@ public final class PropagateChainOp implements CountOp {
 
       final RidLongHashMap next = hop < lastHop ? new RidLongHashMap() : null;
       final int h = hop;
+      final VertexPredicate.Evaluation targetFilter = filters != null ? filters[hop + 1] : null;
       if (hop == 0 && anchorVertex != null)
         // The seeded level is the anchor alone, with one path, and the outer row already holds it.
-        expandNeighbors(db, provider, anchorVertex, directions[0], edgeTypes[0], targetBuckets,
-            next == null ? neighborRid -> total[0]++ : neighborRid -> next.add(neighborRid, 1L));
+        expandNeighbors(db, provider, anchorVertex, directions[0], edgeTypes[0], targetBuckets, filtered(targetFilter,
+            next == null ? neighborRid -> total[0]++ : neighborRid -> next.add(neighborRid, 1L)));
       else
         current.forEach((bucketId, offset, pathCount) -> {
           guard.check();
           final RID rid = db.newRID(bucketId, offset);
-          expandNeighbors(db, provider, rid, directions[h], edgeTypes[h], targetBuckets,
-              next == null ? neighborRid -> total[0] += pathCount : neighborRid -> next.add(neighborRid, pathCount));
+          expandNeighbors(db, provider, rid, directions[h], edgeTypes[h], targetBuckets, filtered(targetFilter,
+              next == null ? neighborRid -> total[0] += pathCount : neighborRid -> next.add(neighborRid, pathCount)));
         });
       current = next;
     }
 
     // Subtract self-loop paths for inequality
     if (inequalityIdxA >= 0 && inequalityIdxB >= 0)
-      total[0] -= countSelfLoopPathsOLTP(db, provider, prefix, guard);
+      total[0] -= countSelfLoopPathsOLTP(db, provider, filters, prefix, guard);
 
     return total[0];
+  }
+
+  /** The consumer behind the property predicate of the position it receives, or the consumer itself when there is none. */
+  private static Consumer<RID> filtered(final VertexPredicate.Evaluation filter, final Consumer<RID> consumer) {
+    if (filter == null)
+      return consumer;
+    return rid -> {
+      if (filter.acceptsRid(rid))
+        consumer.accept(rid);
+    };
   }
 
   /**
@@ -871,7 +992,7 @@ public final class PropagateChainOp implements CountOp {
    * prefix or a tail longer than one hop, ignores their labels, and read the prefix hops from the wrong end.
    */
   private long countSelfLoopPathsOLTP(final Database db, final GraphTraversalProvider provider,
-      final RidLongHashMap prefix, final WorkGuard guard) {
+      final VertexPredicate.Evaluation[] filters, final RidLongHashMap prefix, final WorkGuard guard) {
     final int idxA = Math.min(inequalityIdxA, inequalityIdxB);
     final int idxB = Math.max(inequalityIdxA, inequalityIdxB);
 
@@ -884,13 +1005,14 @@ public final class PropagateChainOp implements CountOp {
     prefix.forEach((bucketId, offset, prefixCount) -> {
       guard.check();
       final RID vertexRid = db.newRID(bucketId, offset);
-      final long loopCount = pathCounts(db, provider, vertexRid, idxA, idxB, positionBuckets).get(vertexRid, 0);
+      final long loopCount = pathCounts(db, provider, vertexRid, idxA, idxB, positionBuckets, filters).get(vertexRid, 0);
       if (loopCount == 0)
         return;
       long tailCount = 1;
       if (idxB < edgeTypes.length) {
         final long[] tail = { 0 };
-        pathCounts(db, provider, vertexRid, idxB, edgeTypes.length, positionBuckets).forEach((b, o, count) -> tail[0] += count);
+        pathCounts(db, provider, vertexRid, idxB, edgeTypes.length, positionBuckets, filters)
+            .forEach((b, o, count) -> tail[0] += count);
         tailCount = tail[0];
       }
       selfLoopTotal[0] += prefixCount * loopCount * tailCount;
@@ -900,18 +1022,21 @@ public final class PropagateChainOp implements CountOp {
 
   /**
    * The paths from {@code start}, standing at position {@code fromPosition}, through the hops up to position
-   * {@code toPosition}, by the vertex they end at: a walk that merges the paths reaching the same vertex, the labels of
-   * every position it crosses included.
+   * {@code toPosition}, by the vertex they end at: a walk that merges the paths reaching the same vertex, the labels and
+   * property predicates of every position it crosses included.
    */
   private RidLongHashMap pathCounts(final Database db, final GraphTraversalProvider provider, final RID start,
-      final int fromPosition, final int toPosition, final IntHashSet[] positionBuckets) {
+      final int fromPosition, final int toPosition, final IntHashSet[] positionBuckets,
+      final VertexPredicate.Evaluation[] filters) {
     RidLongHashMap current = new RidLongHashMap();
     current.put(start, 1L);
     for (int h = fromPosition; h < toPosition; h++) {
       final int hop = h;
       final RidLongHashMap next = new RidLongHashMap();
+      final VertexPredicate.Evaluation targetFilter = filters != null ? filters[hop + 1] : null;
       current.forEach((bucketId, offset, pathCount) -> expandNeighbors(db, provider, db.newRID(bucketId, offset),
-          directions[hop], edgeTypes[hop], positionBuckets[hop + 1], neighborRid -> next.add(neighborRid, pathCount)));
+          directions[hop], edgeTypes[hop], positionBuckets[hop + 1],
+          filtered(targetFilter, neighborRid -> next.add(neighborRid, pathCount))));
       current = next;
     }
     return current;
@@ -931,12 +1056,19 @@ public final class PropagateChainOp implements CountOp {
     for (int i = 0; i < edgeTypes.length; i++) {
       if (i > 0)
         sb.append(" → ");
-      sb.append("(").append(nodeLabels[i] != null ? nodeLabels[i] : "?").append(")");
+      appendNode(sb, i);
       sb.append(directions[i] == Vertex.DIRECTION.OUT ? "-[:" : "<-[:");
       sb.append(edgeTypes[i]);
       sb.append(directions[i] == Vertex.DIRECTION.OUT ? "]->" : "]-");
     }
-    sb.append("(").append(nodeLabels[edgeTypes.length] != null ? nodeLabels[edgeTypes.length] : "?").append(")");
+    appendNode(sb, edgeTypes.length);
     return sb.toString();
+  }
+
+  private void appendNode(final StringBuilder sb, final int position) {
+    sb.append("(").append(nodeLabels[position] != null ? nodeLabels[position] : "?");
+    if (predicates != null && predicates[position] != null)
+      sb.append(' ').append(predicates[position].describe());
+    sb.append(")");
   }
 }

@@ -349,7 +349,7 @@ public class SimpleCypherStatement implements CypherStatement {
    * leader, or {@code SubqueryStep} skipping the refresh #6362 needs), the same asymmetry
    * {@link CypherReferencedVariables} applies to its own "shape not modelled" answer.
    */
-  private static boolean isConfirmedPureFunctionName(final String rawName) {
+  public static boolean isConfirmedPureFunctionName(final String rawName) {
     final String name = rawName.toLowerCase(Locale.ROOT);
     return !name.contains(".") || CypherFunctionRegistry.hasFunction(name) || CypherBuiltinFunctions.isBuiltin(name)
         || name.startsWith(SQL_FUNCTION_PREFIX) || DefaultSQLFunctionFactory.getInstance().hasFunction(name);
