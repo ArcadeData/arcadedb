@@ -2709,7 +2709,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         LogManager.instance().log(this, Level.SEVERE,
             "The %s on database '%s' was applied locally but its replication was refused (%s), and there is no Raft "
                 + "state machine to quarantine the database on: this node holds a change no other node has (issue #9555)",
-            session, getName(), refusal.getMessage());
+            session, getName(), refusal.getClass().getSimpleName() + ": " + refusal.getMessage());
     } catch (final RuntimeException e) {
       LogManager.instance().log(this, Level.SEVERE,
           "Could not quarantine database '%s' after its %s was refused by the leader: this node may hold a change no "

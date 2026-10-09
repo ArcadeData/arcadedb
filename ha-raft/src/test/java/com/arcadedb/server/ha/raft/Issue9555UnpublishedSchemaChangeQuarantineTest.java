@@ -161,6 +161,16 @@ class Issue9555UnpublishedSchemaChangeQuarantineTest {
     assertThat(stateMachine.quarantineCause(db.getName())).isEqualTo(DivergenceCause.UNPUBLISHED_SCHEMA_CHANGE);
   }
 
+  /**
+   * The contract the fix is keyed on: the quarantine fires on a {@code NeedRetryException}, so the failures whose entry
+   * may already be in the log must never become one.
+   */
+  @Test
+  void theIndeterminateReplicationFailuresAreNotRetryableRefusals() {
+    assertThat(new ReplicationDispatchedTimeoutException("dispatched")).isNotInstanceOf(NeedRetryException.class);
+    assertThat(new MajorityCommittedAllFailedException("committed", null, 1L)).isNotInstanceOf(NeedRetryException.class);
+  }
+
   /** Dispatched and unanswered: the entry may still commit, so the local compaction may be the committed one. */
   @Test
   void aCompactionWhosePublishingEntryHasAnUnknownOutcomeIsNotQuarantined() {
