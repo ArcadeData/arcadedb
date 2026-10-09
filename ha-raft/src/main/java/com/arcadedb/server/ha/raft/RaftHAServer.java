@@ -2576,11 +2576,13 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
           // Issue #8898: a close that returns with the server not CLOSED means a second server is about to start
           // beside one that may still answer the leader. A close Ratis already performed itself, or a gRPC shutdown
           // close() swallowed, reports CLOSED here: the gRPC check in the try block below covers those.
-          final LifeCycle.State afterClose = closeStillRunning != null ? null : oldServer.getLifeCycleState();
-          if (afterClose != null && afterClose != LifeCycle.State.CLOSED)
-            LogManager.instance().log(this, Level.WARNING,
-                "Old Ratis server is %s after close(); restart proceeds anyway",
-                afterClose);
+          if (closeStillRunning == null) {
+            final LifeCycle.State afterClose = oldServer.getLifeCycleState();
+            if (afterClose != LifeCycle.State.CLOSED)
+              LogManager.instance().log(this, Level.WARNING,
+                  "Old Ratis server is %s after close(); restart proceeds anyway",
+                  afterClose);
+          }
         }
       } catch (final Throwable t) {
         LogManager.instance().log(this, Level.WARNING, "Error closing old Ratis server before restart: %s", t, t.getMessage());
@@ -2591,7 +2593,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
           // Issue #9561: remembered so the next attempts fail too while it runs, instead of closing it a second time. The
           // closer also returns early when this thread was interrupted: the catch below then sees the restart as
           // abandoned and does not count it, and the interrupt flag stays set for the health monitor to see.
-          stuckRatisClose = closeStillRunning;
+          rememberStuckRatisClose(closeStillRunning);
           throw new IOException("The old Ratis server did not close within " + ratisCloseTimeoutMs()
               + "ms (or the wait was interrupted); not starting a new server beside one whose storage lock and gRPC ports "
               + "may still be held");
@@ -2649,7 +2651,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
           // later restart attempt does not start a server beside it (stop() may already have read the server field).
           final Thread newServerStillClosing = RatisServerCloser.close(this.raftServer, ratisCloseTimeoutMs());
           if (newServerStillClosing != null)
-            stuckRatisClose = newServerStillClosing;
+            rememberStuckRatisClose(newServerStillClosing);
           HALog.log(this, HALog.BASIC, "Recovery abandoned: shutdown requested while the new Ratis server was starting");
           return;
         }
@@ -2720,11 +2722,23 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     }
     final Thread stillClosing = RatisServerCloser.close(server, timeoutMs);
     if (stillClosing != null) {
-      stuckRatisClose = stillClosing;
+      rememberStuckRatisClose(stillClosing);
       LogManager.instance().log(this, Level.SEVERE,
           "Ratis HA service stopped without its Ratis server closing (thread %s); the storage lock and gRPC ports may "
               + "stay held until that close finishes", stillClosing.getName());
     }
+  }
+
+  /**
+   * Records a Ratis close that outlived its bound (issue #9561), keeping an earlier one that is still running: the gate in
+   * {@link #restartRatis} must wait for every close still in flight, and the oldest is the one it already reports. The
+   * read-then-write is not atomic against stop(), which does not take recoveryLock; losing that race only drops a
+   * reference on a node that is shutting down, where no restart reads it again.
+   */
+  private void rememberStuckRatisClose(final Thread closer) {
+    final Thread previous = stuckRatisClose;
+    if (previous == null || !previous.isAlive())
+      stuckRatisClose = closer;
   }
 
   /** How long a Ratis server close may take before the caller stops waiting for it (issue #9561). */

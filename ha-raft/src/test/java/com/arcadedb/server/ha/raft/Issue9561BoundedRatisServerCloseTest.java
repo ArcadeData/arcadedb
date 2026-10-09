@@ -148,6 +148,28 @@ class Issue9561BoundedRatisServerCloseTest {
   }
 
   @Test
+  void aZeroCloseTimeoutMakesStopWaitForTheCloseWithoutABound() throws Exception {
+    final RaftHAServer raft = detachedServer(0L);
+    final HangingServer old = new HangingServer();
+    setField(raft, "raftServer", old.proxy());
+    // released well after the 300ms bound the other tests use: a stop() that gave up would see the close still running
+    final Thread releaser = new Thread(() -> {
+      try {
+        Thread.sleep(1_000L);
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
+      release.countDown();
+    }, "issue9561-releaser");
+    releaser.start();
+
+    raft.stop();
+
+    assertThat(old.state).as("stop() waited for the close to finish").isEqualTo(LifeCycle.State.CLOSED);
+    assertThat(getField(raft, "stuckRatisClose")).isNull();
+  }
+
+  @Test
   void stopAfterARestartCloseTimedOutWaitsForThatCloseInsteadOfClosingAgain() throws Exception {
     final RaftHAServer raft = detachedServer();
     final HangingServer old = new HangingServer();
@@ -255,9 +277,13 @@ class Issue9561BoundedRatisServerCloseTest {
   }
 
   private static RaftHAServer detachedServer() {
+    return detachedServer(CLOSE_TIMEOUT_MS);
+  }
+
+  private static RaftHAServer detachedServer(final long closeTimeoutMs) {
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.HA_SERVER_LIST, SERVER_LIST);
-    config.setValue(GlobalConfiguration.HA_RATIS_CLOSE_TIMEOUT_MS, CLOSE_TIMEOUT_MS);
+    config.setValue(GlobalConfiguration.HA_RATIS_CLOSE_TIMEOUT_MS, closeTimeoutMs);
     final ArcadeDBServer arcadeServer = TestServerHelper.unstartedServer("ArcadeDB_0");
     return new RaftHAServer(arcadeServer, config);
   }
