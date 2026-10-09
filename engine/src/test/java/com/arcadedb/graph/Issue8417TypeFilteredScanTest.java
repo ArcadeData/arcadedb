@@ -33,7 +33,6 @@ import org.junit.jupiter.api.Test;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Proxy;
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -133,7 +132,7 @@ class Issue8417TypeFilteredScanTest {
       // EXHAUST A CHUNK OF FOREIGN ENTRIES AND HOP BEFORE IT FINDS ANYTHING
       final EdgeSegment head = (EdgeSegment) database.lookupByRID(((VertexInternal) unit).getInEdgesHeadChunk(), true);
       assertThat(head.getPrevious()).isNotNull();
-      assertThat(head.count(new HashSet<>(database.getSchema().getType("Parent").getBucketIds(true)))).isZero();
+      assertThat(head.count(EdgeBucketMask.of((DatabaseInternal) database, new String[] { "Parent" }))).isZero();
 
       assertThat(ridsOf(unit.getVertices(Vertex.DIRECTION.IN, "Parent").iterator())).containsExactly(ids[1]);
       assertThat(ridsOf(unit.getEdges(Vertex.DIRECTION.IN, "Parent").iterator())).containsExactly(ids[2]);

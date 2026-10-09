@@ -20,7 +20,11 @@ package com.arcadedb.query.opencypher;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
+import com.arcadedb.graph.EdgeBucketMask;
+import com.arcadedb.graph.EdgeLinkedList;
+import com.arcadedb.graph.EdgeSegment;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.StripeDirectory;
 import com.arcadedb.graph.Vertex;
@@ -217,6 +221,76 @@ class Issue9539StarCountEdgeListTest extends TestHelper {
     } finally {
       database.command("sql", "DROP GRAPH ANALYTICAL VIEW selfLoops");
     }
+  }
+
+  /**
+   * The edge-list primitive itself, below the operator: several filters answered in one walk of a chain of many
+   * segments, mixing record and light edges, two edge types, two far-end labels and self loops.
+   */
+  @Test
+  void countIntoAnswersEveryFilterInOneWalkOfAMultiSegmentChain() {
+    database.command("sql", "CREATE VERTEX TYPE X");
+    database.command("sql", "CREATE VERTEX TYPE Y");
+    database.command("sql", "CREATE EDGE TYPE A");
+    database.command("sql", "CREATE EDGE TYPE B");
+
+    final long[] expected = new long[5];
+    final RID[] hubRid = new RID[1];
+    database.transaction(() -> {
+      final MutableVertex hub = database.newVertex("X").save();
+      hubRid[0] = hub.getIdentity();
+      for (int i = 0; i < 300; i++) {
+        final boolean toX = i % 3 == 0;
+        final MutableVertex far = database.newVertex(toX ? "X" : "Y").save();
+        final String type = i % 4 == 0 ? "B" : "A";
+        if (i % 2 == 0)
+          hub.newLightEdge(type, far);
+        else
+          hub.newEdge(type, far);
+        if (type.equals("A")) {
+          expected[0]++;
+          if (toX)
+            expected[1]++;
+        } else
+          expected[2]++;
+      }
+      for (int i = 0; i < 3; i++) {
+        if (i == 0)
+          hub.newLightEdge("A", hub);
+        else
+          hub.newEdge("A", hub);
+        // a self loop of A reaches an X (the hub itself)
+        expected[0]++;
+        expected[1]++;
+      }
+      // the same filter as the first, leaving the self loops out
+      expected[3] = expected[0] - 3;
+      // both types at once
+      expected[4] = expected[0] + expected[2];
+    });
+
+    database.transaction(() -> {
+      final DatabaseInternal internal = (DatabaseInternal) database;
+      final VertexInternal hub = (VertexInternal) hubRid[0].asVertex(true);
+      final EdgeLinkedList out = internal.getGraphEngine().getEdgeHeadChunk(hub, Vertex.DIRECTION.OUT);
+      assertThat(((EdgeSegment) database.lookupByRID(hub.getOutEdgesHeadChunk(), true)).getPreviousRID())
+          .as("the OUT list spans several segments").isNotNull();
+
+      final EdgeBucketMask a = EdgeBucketMask.of(internal, new String[] { "A" });
+      final EdgeBucketMask b = EdgeBucketMask.of(internal, new String[] { "B" });
+      final EdgeBucketMask x = EdgeBucketMask.ofBucketIds(database.getSchema().getType("X").getBucketIds(true).stream()
+          .mapToInt(Integer::intValue).toArray());
+      final long[] counts = new long[5];
+      out.countInto(new EdgeBucketMask[] { a, a, b, a, EdgeBucketMask.of(internal, new String[] { "A", "B" }) },
+          new EdgeBucketMask[] { null, x, null, null, null }, new boolean[] { false, false, false, true, false }, counts);
+      assertThat(counts).containsExactly(expected);
+
+      // the single-filter count behind Vertex.countEdges agrees
+      assertThat(hub.countEdges(Vertex.DIRECTION.OUT, "A")).isEqualTo(expected[0]);
+      assertThat(hub.countEdges(Vertex.DIRECTION.OUT, "B")).isEqualTo(expected[2]);
+      assertThat(hub.countEdges(Vertex.DIRECTION.OUT)).isEqualTo(expected[4]);
+      assertThat(hub.countEdges(Vertex.DIRECTION.IN, "A")).isEqualTo(3L);
+    });
   }
 
   @Test

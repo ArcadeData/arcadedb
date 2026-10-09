@@ -362,21 +362,20 @@ public class EdgeLinkedList {
    *                  {@code MultiValue.getSize} - do not see a {@code SchemaException}.
    */
   public long count(final String... edgeTypes) {
+    // THE SAME PRIMITIVE BUCKET MASK THE FILTERED ITERATORS USE (#8417): NO BOXED SET BUILT AND PROBED PER CALL (#9539)
+    final EdgeBucketMask mask;
     if (edgeTypes != null && edgeTypes.length > 0) {
-      // THE SAME PRIMITIVE BUCKET MASK THE FILTERED ITERATORS USE (#8417): NO BOXED SET BUILT AND PROBED PER CALL (#9539)
-      final EdgeBucketMask mask = EdgeBucketMask.of((DatabaseInternal) vertex.getDatabase(), edgeTypes);
+      mask = EdgeBucketMask.of((DatabaseInternal) vertex.getDatabase(), edgeTypes);
       if (mask == null)
         return 0;
-      final long[] total = new long[1];
-      countInto(new EdgeBucketMask[] { mask }, new EdgeBucketMask[1], null, total);
-      return total[0];
-    }
+    } else
+      mask = null;
 
     long total = 0;
     EdgeSegment current = lastSegment;
     final ChainCycleGuard guard = newCycleGuard();
     while (current != null) {
-      total += current.count(null);
+      total += current.count(mask);
       current = previousOf(current, guard);
     }
 

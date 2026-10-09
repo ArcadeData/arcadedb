@@ -23,7 +23,6 @@ import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
-import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
 @ExcludeFromJacocoGeneratedReport
@@ -113,7 +112,11 @@ public interface EdgeSegment extends Record {
 
   int getRecordSize();
 
-  long count(Set<Integer> fileIds);
+  /**
+   * Counts the entries of this segment whose edge bucket {@code edgeMask} accepts, every entry when it is null. Reads the
+   * raw bucket number of each entry and steps over the rest without decoding it.
+   */
+  long count(EdgeBucketMask edgeMask);
 
   /**
    * Adds to {@code counts[i]} the entries of this segment whose edge bucket {@code edgeMasks[i]} accepts and whose

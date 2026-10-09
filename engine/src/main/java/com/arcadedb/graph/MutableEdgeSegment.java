@@ -23,7 +23,6 @@ import com.arcadedb.serializer.BinaryTypes;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
-import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static com.arcadedb.schema.Property.RID_PROPERTY;
@@ -436,7 +435,7 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
   }
 
   @Override
-  public long count(final Set<Integer> fileIds) {
+  public long count(final EdgeBucketMask edgeMask) {
     long total = 0;
 
     final int used = getUsed();
@@ -444,16 +443,13 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
       buffer.position(CONTENT_START_POSITION);
 
       while (buffer.position() < used) {
-        final int fileId = (int) buffer.getNumber();
+        final long edgeBucketId = buffer.getNumber();
         // SKIP EDGE RID POSITION AND VERTEX RID
-        buffer.getNumber();
-        buffer.getNumber();
-        buffer.getNumber();
+        buffer.skipNumber();
+        buffer.skipNumber();
+        buffer.skipNumber();
 
-        if (fileIds != null) {
-          if (fileIds.contains(fileId))
-            ++total;
-        } else
+        if (edgeMask == null || edgeMask.matches(edgeBucketId))
           ++total;
       }
     }
@@ -469,19 +465,26 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
       return;
 
     final int filters = edgeMasks.length;
-    final long ownerBucketId = owner != null ? owner.getBucketId() : Long.MIN_VALUE;
-    final long ownerPosition = owner != null ? owner.getPosition() : Long.MIN_VALUE;
+    // THE POSITION OF THE FAR END IS DECODED ONLY WHEN A FILTER HAS TO TELL A SELF LOOP APART
+    final boolean checkSelfLoops = skipSelfLoops != null && owner != null;
+    final long ownerBucketId = checkSelfLoops ? owner.getBucketId() : -1;
+    final long ownerPosition = checkSelfLoops ? owner.getPosition() : -1;
     buffer.position(CONTENT_START_POSITION);
     while (buffer.position() < used) {
       final long edgeBucketId = buffer.getNumber();
-      buffer.getNumber(); // EDGE POSITION: NEGATIVE FOR A LIGHT EDGE, IRRELEVANT TO THE COUNT
+      buffer.skipNumber(); // EDGE POSITION: NEGATIVE FOR A LIGHT EDGE, IRRELEVANT TO THE COUNT
       final long vertexBucketId = buffer.getNumber();
-      final long vertexPosition = buffer.getNumber();
-      final boolean selfLoop = vertexBucketId == ownerBucketId && vertexPosition == ownerPosition;
+      final boolean selfLoop;
+      if (checkSelfLoops)
+        selfLoop = buffer.getNumber() == ownerPosition && vertexBucketId == ownerBucketId;
+      else {
+        buffer.skipNumber(); // VERTEX POSITION
+        selfLoop = false;
+      }
 
       for (int i = 0; i < filters; i++)
         if (edgeMasks[i].matches(edgeBucketId) && (neighborMasks[i] == null || neighborMasks[i].matches(vertexBucketId))
-            && !(selfLoop && skipSelfLoops != null && skipSelfLoops[i]))
+            && !(selfLoop && skipSelfLoops[i]))
           ++counts[i];
     }
   }
