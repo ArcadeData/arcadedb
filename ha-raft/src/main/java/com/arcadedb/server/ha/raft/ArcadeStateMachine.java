@@ -589,8 +589,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
 
   // Keyed by database name and empty on every healthy node, so the check a compaction makes is one isEmpty() (issue #9558)
   private final ConcurrentHashMap<String, CompactionBackOff> compactionBackOffs = new ConcurrentHashMap<>();
-  // Clock of the compaction back-off. Package-private and mutable only so tests can drive the window without sleeping.
-  LongSupplier compactionBackOffClock = System::currentTimeMillis;
+  // Clock of the compaction back-off, in milliseconds. Monotonic, because it only ever measures an interval: a wall clock
+  // stepped back would stretch a hold-off, one stepped forward would end it early. Package-private and mutable only so
+  // tests can drive the window without sleeping.
+  LongSupplier compactionBackOffClock = () -> System.nanoTime() / 1_000_000L;
 
   // Wall-clock of the END of the last leadership hand-off attempted by handOffLeadershipWhileReplacingDatabase(); 0 =
   // none yet. Throttles the retry of a hand-off that failed, so a cluster with no eligible peer is not put through an

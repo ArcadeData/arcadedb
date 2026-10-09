@@ -2744,7 +2744,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
             "The %s on database '%s' was applied locally but could not be replicated (%s), and there is no Raft state "
                 + "machine to quarantine the database on: this node holds a change no other node has (issues #9555, #9558)",
             session, getName(), failure.getClass().getSimpleName() + ": " + failure.getMessage());
-    } catch (final RuntimeException e) {
+    } catch (final Throwable e) {
+      // Throwable, not RuntimeException: an Error raised here would otherwise replace the session's own failure, which is
+      // the one the caller must see
       LogManager.instance().log(this, Level.SEVERE,
           "Could not quarantine database '%s' after its %s could not be replicated: this node may hold a change no "
               + "other node has (issues #9555, #9558)", e, getName(), session);
