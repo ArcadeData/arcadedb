@@ -80,8 +80,12 @@ public final class EdgeBucketMask {
     return ofBucketIds(ids);
   }
 
-  /** Builds the mask over the given bucket ids, which it sorts in place. Returns {@code null} for none or a negative id. */
-  static EdgeBucketMask ofBucketIds(final int[] ids) {
+  /**
+   * Builds the mask over the given bucket ids, which it sorts in place. Returns {@code null} for none or a negative id.
+   * The ids need not be edge buckets: a count that filters the far end of an entry by the vertex buckets of a label
+   * uses the same mask on the vertex bucket the entry carries (issue #9539).
+   */
+  public static EdgeBucketMask ofBucketIds(final int[] ids) {
     if (ids.length == 0)
       return null;
     Arrays.sort(ids);

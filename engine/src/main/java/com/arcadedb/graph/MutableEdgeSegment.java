@@ -462,6 +462,31 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
   }
 
   @Override
+  public void countInto(final EdgeBucketMask[] edgeMasks, final EdgeBucketMask[] neighborMasks, final boolean[] skipSelfLoops,
+      final RID owner, final long[] counts) {
+    final int used = getUsed();
+    if (used <= CONTENT_START_POSITION)
+      return;
+
+    final int filters = edgeMasks.length;
+    final long ownerBucketId = owner != null ? owner.getBucketId() : Long.MIN_VALUE;
+    final long ownerPosition = owner != null ? owner.getPosition() : Long.MIN_VALUE;
+    buffer.position(CONTENT_START_POSITION);
+    while (buffer.position() < used) {
+      final long edgeBucketId = buffer.getNumber();
+      buffer.getNumber(); // EDGE POSITION: NEGATIVE FOR A LIGHT EDGE, IRRELEVANT TO THE COUNT
+      final long vertexBucketId = buffer.getNumber();
+      final long vertexPosition = buffer.getNumber();
+      final boolean selfLoop = vertexBucketId == ownerBucketId && vertexPosition == ownerPosition;
+
+      for (int i = 0; i < filters; i++)
+        if (edgeMasks[i].matches(edgeBucketId) && (neighborMasks[i] == null || neighborMasks[i].matches(vertexBucketId))
+            && !(selfLoop && skipSelfLoops != null && skipSelfLoops[i]))
+          ++counts[i];
+    }
+  }
+
+  @Override
   public EdgeSegment getPrevious() {
     final RID nextRID = getPreviousRID();
     return nextRID == null ? null : (EdgeSegment) database.lookupByRID(nextRID, true);

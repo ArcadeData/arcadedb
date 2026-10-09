@@ -204,13 +204,13 @@ public final class CSRCountUtils {
     for (int hop = 0; hop < edgeTypes.length; hop++) {
       int totalNext = 0;
       for (final int nid : current)
-        totalNext += provider.getNeighborIds(nid, directions[hop], edgeTypes[hop]).length;
+        totalNext += hopNeighborIds(provider, nid, directions[hop], edgeTypes[hop]).length;
       if (totalNext == 0)
         return new int[0];
       final int[] next = new int[totalNext];
       int pos = 0;
       for (final int nid : current) {
-        final int[] neighbors = provider.getNeighborIds(nid, directions[hop], edgeTypes[hop]);
+        final int[] neighbors = hopNeighborIds(provider, nid, directions[hop], edgeTypes[hop]);
         System.arraycopy(neighbors, 0, next, pos, neighbors.length);
         pos += neighbors.length;
       }
@@ -230,6 +230,35 @@ public final class CSRCountUtils {
       }
     }
     return current;
+  }
+
+  /**
+   * The neighbors one relationship pattern reaches from a node. An undirected hop reads both adjacency lists of the node
+   * and a self loop sits in both, so the provider answers it twice; the pattern matches it once, as the row pipeline and
+   * Neo4j do, so one of the two copies is dropped (issue #9539). A directed hop is answered as the provider gives it.
+   */
+  public static int[] hopNeighborIds(final GraphTraversalProvider provider, final int nodeId,
+      final Vertex.DIRECTION direction, final String edgeType) {
+    final int[] neighbors = provider.getNeighborIds(nodeId, direction, edgeType);
+    if (direction != Vertex.DIRECTION.BOTH)
+      return neighbors;
+
+    int selfCopies = 0;
+    for (final int neighbor : neighbors)
+      if (neighbor == nodeId)
+        ++selfCopies;
+    if (selfCopies < 2)
+      return neighbors;
+
+    int toDrop = selfCopies / 2;
+    final int[] result = new int[neighbors.length - toDrop];
+    int pos = 0;
+    for (final int neighbor : neighbors)
+      if (neighbor == nodeId && toDrop > 0)
+        --toDrop;
+      else
+        result[pos++] = neighbor;
+    return result;
   }
 
   /**
