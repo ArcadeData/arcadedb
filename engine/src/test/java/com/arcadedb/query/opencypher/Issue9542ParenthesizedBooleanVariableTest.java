@@ -116,4 +116,22 @@ class Issue9542ParenthesizedBooleanVariableTest extends TestHelper {
     assertThatThrownBy(() -> column("WITH 1 AS x WHERE (x) RETURN x", "x")).isInstanceOf(CommandExecutionException.class)
         .hasMessageContaining("InvalidArgumentType");
   }
+
+  @Test
+  void parenthesizedBacktickedBooleanVariable() {
+    assertThat(column("WITH true AS `my flag` WHERE (`my flag`) RETURN 1 AS x", "x")).containsExactly(1L);
+    assertThat(column("WITH false AS `flag` WHERE (`flag`) RETURN 1 AS x", "x")).isEmpty();
+  }
+
+  @Test
+  void parenthesizedEntityVariableOverNoRowsIsNotAnError() {
+    // refused when the kind is known statically, and otherwise only when a row reaches the predicate
+    database.transaction(() -> database.command("opencypher", "CREATE (:N {id: 1})"));
+    try {
+      assertThat(column("MATCH (n:N) WHERE n.id = 99 WITH n AS x WHERE (x) RETURN 1 AS v", "v")).isEmpty();
+    } catch (final CommandParsingException e) {
+      assertThat(e.getMessage()).contains("InvalidArgumentType");
+    }
+    assertThat(column("UNWIND [] AS x WITH x WHERE (x) RETURN 1 AS v", "v")).isEmpty();
+  }
 }

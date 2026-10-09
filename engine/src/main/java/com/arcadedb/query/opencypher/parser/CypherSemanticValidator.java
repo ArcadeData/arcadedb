@@ -1160,7 +1160,7 @@ public class CypherSemanticValidator {
       final PathPattern path = ((PatternPredicateExpression) boolExpr).getPathPattern();
       if (path != null) {
         // A single-node pattern in WHERE is no predicate: WHERE (n) with n a node is refused by
-        // FunctionArgumentChecks, which knows the kind of n at that point. WHERE (flag) with flag bound to a value
+        // FunctionArgumentChecks#checkSingleNodePredicate, which knows the kind of n at that point. WHERE (flag) with flag bound to a value
         // is a parenthesized expression, resolved at runtime (issue #9542).
         checkPatternPredicateVariables(path, scope);
       }
