@@ -94,8 +94,9 @@ class Issue7641DropInReplicasWaitsForLocalApplyTest {
 
     databaseWith(raft).dropInReplicas();
 
-    // The #9510 membership check comes first: a removed node refuses before it submits anything.
-    assertThat(log.methods()).containsExactly("isRemovedFromConfiguration", "replicateDropDatabase", "waitForAppliedIndex");
+    // Relative order only: other recorded calls (the #9510 membership check) may come before the two that matter here.
+    assertThat(log.methods()).containsSubsequence("replicateDropDatabase", "waitForAppliedIndex")
+        .containsOnlyOnce("replicateDropDatabase", "waitForAppliedIndex");
     assertThat(raft.calls("waitForAppliedIndex")).containsExactly(List.of(DB_NAME, COMMITTED_LOG_INDEX, true));
   }
 

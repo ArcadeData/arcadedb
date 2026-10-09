@@ -2303,9 +2303,15 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     if (consistency == Database.READ_CONSISTENCY.READ_YOUR_WRITES) {
       if (!isLeader() && ctx.readAfterIndex() >= 0) {
         // A bookmark already applied here needs no wait, so membership only matters for one still ahead of this node.
-        if (raftHAServer.getTrustedAppliedIndex(getName()) < ctx.readAfterIndex())
+        if (raftHAServer.getTrustedAppliedIndex(getName()) < ctx.readAfterIndex()) {
           refuseReadWhileRemovedFromConfiguration(consistency);
-        raftHAServer.waitForAppliedIndex(getName(), ctx.readAfterIndex());
+          raftHAServer.waitForAppliedIndex(getName(), ctx.readAfterIndex());
+          // Removed while waiting: the wait gave up short of the bookmark, and serving now would hand back data missing
+          // the write the bookmark names, from a node that will never catch up. A member that timed out keeps the
+          // documented degrade-to-EVENTUAL contract.
+          if (raftHAServer.getTrustedAppliedIndex(getName()) < ctx.readAfterIndex())
+            refuseReadWhileRemovedFromConfiguration(consistency);
+        }
       }
     } else if (consistency == Database.READ_CONSISTENCY.LINEARIZABLE) {
       refuseReadWhileRemovedFromConfiguration(consistency);
