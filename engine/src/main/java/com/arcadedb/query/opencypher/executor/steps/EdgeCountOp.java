@@ -109,7 +109,9 @@ public final class EdgeCountOp implements CountOp {
     for (final Iterator<Record> it = Labels.iterateMatchingVertices(db, null, false); it.hasNext(); ) {
       guard.checkPeriodically(visited++);
       final VertexInternal vertex = (VertexInternal) it.next().asVertex();
-      sum += undirected ? graphEngine.countUndirectedEdges(vertex, edgeTypes) : vertex.countEdges(Vertex.DIRECTION.OUT, edgeTypes);
+      sum += undirected ?
+          graphEngine.countUndirectedEdges(vertex, edgeTypes) :
+          vertex.countEdges(Vertex.DIRECTION.OUT, edgeTypes);
     }
     return sum;
   }
