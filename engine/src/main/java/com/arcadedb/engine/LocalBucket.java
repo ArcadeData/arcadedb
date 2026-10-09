@@ -5621,6 +5621,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     if (!anyPageReadAfresh)
       return false;
 
+    // onlyChunksReadAgain: the chunks a retry reads afresh are skipped, a change there is exactly what a retry fixes
     return validateChainRead(chainTrace, chunks, record, lastNextChunkPointer, headMarker, true) != CHAIN_READ_CHANGED;
   }
 
