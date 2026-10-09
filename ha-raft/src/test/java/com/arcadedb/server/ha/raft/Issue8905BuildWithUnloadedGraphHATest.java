@@ -108,15 +108,13 @@ class Issue8905BuildWithUnloadedGraphHATest extends BaseRaftHATest {
     bucketIndex.build(null, (phase, processed, total, insertsInProgress) -> graphBuilt.set(true));
     assertThat(graphBuilt.get()).as("PHASE 3 must not run on a replicated database").isFalse();
 
-    final long expected = replica.getSchema().getIndexByName(index.getName()).countEntries();
-    assertVectorIndexOnEveryServer(index.getName(), expected);
-    // NO SEARCH AND NO FURTHER WRITE HERE, UNLIKE Issue8291WalDisabledTransactionHATest. A build over a populated index
-    // appends a second entry for every record, and what a node makes of them afterwards is not this issue's: a graph
-    // build from pages keeps one entry per record in memory, so a node that searched reports half the entries of one
-    // that did not; a delete leaves the nodes disagreeing on how many duplicates are live (issue #9506). An insert on
-    // the leader no longer reuses a vector id the replica allocated (issue #9428, Issue9428FollowerVectorInsertHATest).
-    // That this build commits nothing outside the wrapper - the defect - is pinned by
-    // Issue8905VectorBuildCommitsReachTheWrapperTest, which also searches the index after a build that skipped PHASE 3.
+    // ONE ENTRY PER RECORD: A BUILD OVER A POPULATED INDEX REPLACES THE RECORDS' VECTORS (ISSUE #9506)
+    assertVectorIndexOnEveryServer(index.getName(), GRAPH_RECORDS);
+    // NO SEARCH AND NO FURTHER WRITE HERE, UNLIKE Issue8291WalDisabledTransactionHATest: what a node makes of the index
+    // afterwards is not this issue's. An insert on the leader no longer reuses a vector id the replica allocated (issue
+    // #9428, Issue9428FollowerVectorInsertHATest). That this build commits nothing outside the wrapper - the defect - is
+    // pinned by Issue8905VectorBuildCommitsReachTheWrapperTest, which also searches the index after a build that skipped
+    // PHASE 3.
     // Before the fix THIS build already failed, above.
   }
 

@@ -72,7 +72,7 @@ class Issue9428FollowerVectorInsertHATest extends BaseRaftHATest {
 
   /**
    * A build run on a follower allocates vector ids too, and the leader learns of them only from the replicated pages.
-   * A build over a populated index appends a second entry per record, which is why the expected count doubles.
+   * The build replaces every record's vector id with a fresh one, so the leader has to have moved past those too.
    */
   @Test
   void anInsertOnTheLeaderAfterABuildOnAFollowerGetsAFreshVectorId() throws Exception {
@@ -89,12 +89,11 @@ class Issue9428FollowerVectorInsertHATest extends BaseRaftHATest {
     final LSMVectorIndex bucketIndex =
         (LSMVectorIndex) ((TypeIndex) follower.getSchema().getIndexByName(index.getName())).getIndexesOnBuckets()[0];
     bucketIndex.build(null, null);
-    // TODO(#9506) TWICE THE RECORDS: THE BUILD APPENDS A SECOND ENTRY PER RECORD (ISSUE #9506). WHEN THAT IS FIXED THESE TWO
-    // EXPECTATIONS BECOME BATCH AND BATCH + 1, AND THE INSERT BELOW STILL HAS TO GET AN ID OF ITS OWN
-    assertIndexOnEveryServer(index.getName(), BATCH, 2L * BATCH);
+    // ONE ENTRY PER RECORD: THE BUILD REPLACES THE RECORDS' VECTORS RATHER THAN ADDING A SECOND ONE (ISSUE #9506)
+    assertIndexOnEveryServer(index.getName(), BATCH);
 
     insert(leader, BATCH, 1);
-    assertIndexOnEveryServer(index.getName(), BATCH + 1, 2L * BATCH + 1);
+    assertIndexOnEveryServer(index.getName(), BATCH + 1);
   }
 
   private static TypeIndex createVectorIndex(final Database leader) {
