@@ -26,6 +26,7 @@ import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.Labels;
+import com.arcadedb.query.opencypher.executor.SelfLoops;
 import com.arcadedb.utility.IntHashSet;
 
 import java.util.Arrays;
@@ -57,20 +58,30 @@ public final class CSRCountUtils {
     final NeighborView view = provider.getNeighborView(dir, edgeType);
     if (view != null) {
       final int[] nbrs = view.neighbors();
+      final boolean undirected = dir == Vertex.DIRECTION.BOTH;
       for (int v = 0; v < nodeCount; v++) {
         if (current[v] == 0)
           continue;
         final long pathCount = current[v];
-        for (int j = view.offset(v), end = view.offsetEnd(v); j < end; j++)
-          next[nbrs[j]] += pathCount;
+        if (undirected) {
+          // A SELF LOOP IS TWO ENTRIES OF THE MERGED RANGE AND ONE RELATIONSHIP: EACH PAIR CARRIES THE PATHS ONCE
+          int selfEntries = 0;
+          for (int j = view.offset(v), end = view.offsetEnd(v); j < end; j++)
+            if (nbrs[j] == v)
+              ++selfEntries;
+            else
+              next[nbrs[j]] += pathCount;
+          next[v] += pathCount * (selfEntries / 2);
+        } else
+          for (int j = view.offset(v), end = view.offsetEnd(v); j < end; j++)
+            next[nbrs[j]] += pathCount;
       }
     } else {
       for (int v = 0; v < nodeCount; v++) {
         if (current[v] == 0)
           continue;
         final long pathCount = current[v];
-        final int[] neighbors = provider.getNeighborIds(v, dir, edgeType);
-        for (final int neighbor : neighbors)
+        for (final int neighbor : hopNeighborIds(provider, v, dir, edgeType))
           next[neighbor] += pathCount;
       }
     }
@@ -238,27 +249,106 @@ public final class CSRCountUtils {
    * Neo4j do, so one of the two copies is dropped (issue #9539). A directed hop is answered as the provider gives it.
    */
   public static int[] hopNeighborIds(final GraphTraversalProvider provider, final int nodeId,
-      final Vertex.DIRECTION direction, final String edgeType) {
-    final int[] neighbors = provider.getNeighborIds(nodeId, direction, edgeType);
-    if (direction != Vertex.DIRECTION.BOTH)
-      return neighbors;
+      final Vertex.DIRECTION direction, final String... edgeTypes) {
+    final int[] neighbors = provider.getNeighborIds(nodeId, direction, edgeTypes);
+    return direction == Vertex.DIRECTION.BOTH ? SelfLoops.deduplicate(neighbors, nodeId) : neighbors;
+  }
 
-    int selfCopies = 0;
-    for (final int neighbor : neighbors)
+  /**
+   * The number of relationships one pattern hop matches from a node: {@link GraphTraversalProvider#countEdges}, with a
+   * self loop counted once on an undirected hop, where the provider counts it in both of the lists it sits in (issues
+   * #8750, #9540).
+   */
+  public static long hopDegree(final GraphTraversalProvider provider, final int nodeId,
+      final Vertex.DIRECTION direction, final String... edgeTypes) {
+    final long degree = provider.countEdges(nodeId, direction, edgeTypes);
+    return direction == Vertex.DIRECTION.BOTH && degree > 0 ? degree - selfLoops(provider, nodeId, edgeTypes) : degree;
+  }
+
+  /**
+   * The self loops of a node: the equal range of its own id in its sorted outgoing adjacency when the provider can
+   * answer it exactly, otherwise counted off the outgoing neighbors. Every self loop is in the outgoing list, whatever
+   * the edge type declares.
+   */
+  public static long selfLoops(final GraphTraversalProvider provider, final int nodeId, final String... edgeTypes) {
+    final long exact = provider.countEdgesBetween(nodeId, nodeId, Vertex.DIRECTION.OUT, edgeTypes);
+    if (exact >= 0)
+      return exact;
+    long count = 0;
+    for (final int neighbor : provider.getNeighborIds(nodeId, Vertex.DIRECTION.OUT, edgeTypes))
       if (neighbor == nodeId)
-        ++selfCopies;
-    if (selfCopies < 2)
-      return neighbors;
+        ++count;
+    return count;
+  }
 
-    int toDrop = selfCopies / 2;
-    final int[] result = new int[neighbors.length - toDrop];
+  /**
+   * The {@link NeighborView} of one pattern hop over a whole graph. A directed hop is the provider's own view. The merged
+   * view of an undirected hop holds every self loop twice, once per list it sits in, and the pattern matches it once
+   * (issues #8750, #9540): the view is returned as it is when it holds no self loop, which one sequential pass tells and
+   * is the common case, and otherwise as a copy keeping one entry of each pair. Meant for the operators that run once
+   * per query; a per-row caller reads the provider's view and drops the copies itself ({@link #appendHopNeighbors}).
+   *
+   * @return null when the provider has no view for the hop
+   */
+  public static NeighborView patternView(final GraphTraversalProvider provider, final Vertex.DIRECTION direction,
+      final String... edgeTypes) {
+    final NeighborView view = provider.getNeighborView(direction, edgeTypes);
+    if (view == null || direction != Vertex.DIRECTION.BOTH)
+      return view;
+
+    final int nodeCount = view.nodeCount();
+    final int[] nbrs = view.neighbors();
+    int selfEntries = 0;
+    int entries = 0;
+    for (int v = 0; v < nodeCount; v++) {
+      final int from = view.offset(v);
+      final int end = view.offsetEnd(v);
+      entries += end - from;
+      for (int j = from; j < end; j++)
+        if (nbrs[j] == v)
+          ++selfEntries;
+    }
+    if (selfEntries == 0)
+      return view;
+
+    // SIZED ON THE RANGES, NOT ON THE ARRAY: A ZERO-COPY VIEW MAY BE BACKED BY A LARGER BUFFER
+    final int[] offsets = new int[nodeCount + 1];
+    final int[] neighbors = new int[entries - selfEntries / 2];
     int pos = 0;
-    for (final int neighbor : neighbors)
-      if (neighbor == nodeId && toDrop > 0)
-        --toDrop;
-      else
-        result[pos++] = neighbor;
-    return result;
+    for (int v = 0; v < nodeCount; v++) {
+      offsets[v] = pos;
+      pos = appendHopNeighbors(view, v, true, neighbors, pos);
+    }
+    offsets[nodeCount] = pos;
+    return new NeighborView(nodeCount, offsets, pos == neighbors.length ? neighbors : Arrays.copyOf(neighbors, pos));
+  }
+
+  /**
+   * Copies the neighbors a pattern hop reaches from {@code node} out of {@code view} into {@code target} from
+   * {@code pos}, keeping one entry of the two a self loop has in the merged range of an undirected hop.
+   *
+   * @return the position after the last entry copied
+   */
+  public static int appendHopNeighbors(final NeighborView view, final int node, final boolean undirected,
+      final int[] target, int pos) {
+    final int[] nbrs = view.neighbors();
+    final int from = view.offset(node);
+    final int end = view.offsetEnd(node);
+    if (!undirected) {
+      System.arraycopy(nbrs, from, target, pos, end - from);
+      return pos + end - from;
+    }
+    boolean skip = false;
+    for (int j = from; j < end; j++) {
+      final int neighbor = nbrs[j];
+      if (neighbor == node) {
+        skip = !skip;
+        if (!skip)
+          continue;
+      }
+      target[pos++] = neighbor;
+    }
+    return pos;
   }
 
   /**

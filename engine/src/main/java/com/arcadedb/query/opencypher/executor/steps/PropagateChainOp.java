@@ -144,12 +144,18 @@ public final class PropagateChainOp implements CountOp {
         current[v] = 1;
     }
 
+    // THE PATHS FROM THE ANCHORS TO THE EARLIER POSITION OF THE INEQUALITY: WHAT A PATH THAT CLOSES ON ITSELF THERE IS
+    // REACHED BY. THE PROPAGATION BELOW COMPUTES THEM ON ITS WAY, AND EACH LEVEL IS A NEW ARRAY, SO IT IS KEPT AS IT IS
+    final int idxA = Math.min(inequalityIdxA, inequalityIdxB);
+    long[] prefix = idxA == 0 ? current : null;
     for (int hop = 0; hop < hops; hop++) {
       // One hop is a full O(V + E) pass, so a per-hop check is the natural granularity here - the pass itself is
       // sequential array arithmetic that a per-element check would only slow down (issue #6266).
       guard.check();
       current = CSRCountUtils.propagateOneHop(provider, current, directions[hop], edgeTypes[hop]);
       CSRCountUtils.filterByBuckets(bucketIds, current, validBuckets[hop + 1]);
+      if (hop + 1 == idxA)
+        prefix = current;
     }
 
     long total = 0;
@@ -161,7 +167,7 @@ public final class PropagateChainOp implements CountOp {
     }
 
     if (inequalityIdxA >= 0 && inequalityIdxB >= 0)
-      total -= countSelfLoopPaths(provider, validBuckets, guard);
+      total -= countSelfLoopPaths(provider, validBuckets, prefix, bucketIds, guard);
 
     return total;
   }
@@ -213,20 +219,28 @@ public final class PropagateChainOp implements CountOp {
     long total = 0;
     if (targetBuckets == null || targetBuckets.isEmpty()) {
       for (final int node : frontier)
-        total += provider.countEdges(node, directions[lastHop], edgeTypes[lastHop]);
+        total += CSRCountUtils.hopDegree(provider, node, directions[lastHop], edgeTypes[lastHop]);
       return total;
     }
 
     final NeighborView lastView = provider.getNeighborView(directions[lastHop], edgeTypes[lastHop]);
     if (lastView != null) {
       final int[] nbrs = lastView.neighbors();
-      for (final int node : frontier)
+      final boolean undirected = directions[lastHop] == Vertex.DIRECTION.BOTH;
+      for (final int node : frontier) {
+        int selfEntries = 0;
         for (int j = lastView.offset(node), end = lastView.offsetEnd(node); j < end; j++)
-          if (targetBuckets.contains(provider.getRID(nbrs[j]).getBucketId()))
+          if (undirected && nbrs[j] == node)
+            ++selfEntries;
+          else if (targetBuckets.contains(provider.getRID(nbrs[j]).getBucketId()))
             total++;
+        // AN UNDIRECTED SELF LOOP IS TWO ENTRIES OF THE MERGED RANGE AND ONE RELATIONSHIP (ISSUES #8750, #9540)
+        if (selfEntries > 0 && targetBuckets.contains(provider.getRID(node).getBucketId()))
+          total += selfEntries / 2;
+      }
     } else {
       for (final int node : frontier)
-        for (final int neighbor : provider.getNeighborIds(node, directions[lastHop], edgeTypes[lastHop]))
+        for (final int neighbor : CSRCountUtils.hopNeighborIds(provider, node, directions[lastHop], edgeTypes[lastHop]))
           if (targetBuckets.contains(provider.getRID(neighbor).getBucketId()))
             total++;
     }
@@ -281,6 +295,10 @@ public final class PropagateChainOp implements CountOp {
     if (anchorBuckets != null && anchorBuckets.isEmpty())
       return 0;
 
+    // The paths each node at the inequality target continues into, labels included: one backward pass, not a product
+    // of the node's own degrees, which ignored the labels of the tail
+    final long[] suffix = idxB < edgeTypes.length ? suffixCounts(provider, idxB, validBuckets, bucketIds, guard) : null;
+
     long totalCount = 0;
 
     for (int srcId = 0; srcId < nodeIdUpperBound; srcId++) {
@@ -308,25 +326,23 @@ public final class PropagateChainOp implements CountOp {
         if (p == srcId)
           continue; // inequality: skip paths where endpoints match
 
-        // Compute tail: degree product for hops [idxB, end)
-        if (idxB >= edgeTypes.length) {
-          totalCount++; // no tail hops — endpoint is the chain end
-        } else {
-          long tailCount = 1;
-          for (int h = idxB; h < edgeTypes.length; h++) {
-            tailCount *= provider.countEdges(p, directions[h], edgeTypes[h]);
-            if (tailCount == 0)
-              break;
-          }
-          totalCount += tailCount;
-        }
+        // The tail: the paths from p through hops [idxB, end), or the endpoint itself when the chain ends here
+        totalCount += suffix == null ? 1 : suffix[p];
       }
     }
     return totalCount;
   }
 
-  private long countSelfLoopPaths(final GraphTraversalProvider provider,
-      final IntHashSet[] validBuckets, final WorkGuard guard) {
+  /**
+   * The paths the dense count holds that the inequality excludes: those whose two inequality positions are the same
+   * vertex {@code v}. Each is a path from an anchor to {@code v} ({@code prefix[v]}, computed by the dense propagation on
+   * its way), a sub-chain leaving {@code v} and closing on it, and a path from {@code v} through the rest of the chain
+   * ({@link #suffixCounts}), so their number is the sum over {@code v} of the product of the three. The prefix and the
+   * tail used to be taken as products of {@code v}'s own degrees, which is wrong for a prefix or a tail longer than one
+   * hop and ignores the labels written on them, so the subtraction was off on such chains.
+   */
+  private long countSelfLoopPaths(final GraphTraversalProvider provider, final IntHashSet[] validBuckets,
+      final long[] prefix, final int[] bucketIds, final WorkGuard guard) {
     final int nodeIdUpperBound = provider.getNodeIdUpperBound();
     final int idxA = Math.min(inequalityIdxA, inequalityIdxB);
     final int idxB = Math.max(inequalityIdxA, inequalityIdxB);
@@ -337,63 +353,51 @@ public final class PropagateChainOp implements CountOp {
     // and compute |E0_reverse_nbrs(m) ∩ E2_nbrs(c)| for each middle edge (m,c).
     // For Q5: 2.6M REPLY_OF edges × ~2 merge ops = ~5M ops (vs 16K × 300 = ~14M per-anchor).
     if (subChainLength == 3 && idxA == 0 && idxB == edgeTypes.length) {
-      return countSelfLoop3HopEdgeScan(provider, nodeIdUpperBound, validBuckets, guard);
+      final long selfLoops = countSelfLoop3HopEdgeScan(provider, nodeIdUpperBound, validBuckets, bucketIds, guard);
+      if (selfLoops >= 0)
+        return selfLoops;
     }
 
-    // GENERAL PATH: per-anchor expansion
-    long selfLoopTotal = 0;
-
+    // GENERAL PATH: the sub-chain expanded from every vertex a counted path reaches at idxA
     final NeighborView[] subViews = new NeighborView[subChainLength];
     for (int h = 0; h < subChainLength; h++)
       subViews[h] = provider.getNeighborView(directions[idxA + h], edgeTypes[idxA + h]);
+    final long[] suffix = idxB < edgeTypes.length ? suffixCounts(provider, idxB, validBuckets, bucketIds, guard) : null;
 
-    // The sub-chain is walked from every vertex the inequality's earlier position accepts: the label's own when it
-    // carries one, the whole node domain when it does not (issue #5757). Enumerating them off the CSR bucket ids
-    // rather than db.iterateType also keeps the self-loop subtraction from reading records.
-    final IntHashSet anchorBuckets = validBuckets[idxA];
-    if (anchorBuckets != null && anchorBuckets.isEmpty())
-      return 0;
-    final int[] anchorBucketIds = anchorBuckets == null ? null
-        : precomputeBucketIds(provider, nodeIdUpperBound, guard);
-
+    long selfLoopTotal = 0;
     for (int vId = 0; vId < nodeIdUpperBound; vId++) {
-      guard.check();
-      if (!provider.isNodeLive(vId))
+      guard.checkPeriodically(vId);
+      if (prefix[vId] == 0 || !provider.isNodeLive(vId) || (suffix != null && suffix[vId] == 0))
         continue;
-      if (anchorBuckets != null && !anchorBuckets.contains(anchorBucketIds[vId]))
-        continue;
-
-      long loopCount = countLoopsFromNode(provider, vId, subViews, idxA, subChainLength, validBuckets);
-
-      // Multiply by the remaining chain after idxB
-      if (loopCount > 0 && idxB < edgeTypes.length) {
-        long tailCount = 1;
-        for (int h = idxB; h < edgeTypes.length; h++) {
-          final long degree = provider.countEdges(vId, directions[h], edgeTypes[h]);
-          if (degree == 0) {
-            tailCount = 0;
-            break;
-          }
-          tailCount *= degree;
-        }
-        loopCount *= tailCount;
-      }
-
-      // Multiply by prefix chain before idxA
-      if (loopCount > 0 && idxA > 0) {
-        long prefixCount = 1;
-        for (int h = idxA - 1; h >= 0; h--) {
-          final long degree = provider.countEdges(vId, directions[h], edgeTypes[h]);
-          prefixCount *= degree;
-          if (prefixCount == 0)
-            break;
-        }
-        loopCount *= prefixCount;
-      }
-
-      selfLoopTotal += loopCount;
+      final long loopCount = countLoopsFromNode(provider, vId, subViews, idxA, subChainLength, validBuckets);
+      if (loopCount > 0)
+        selfLoopTotal += prefix[vId] * loopCount * (suffix != null ? suffix[vId] : 1L);
     }
     return selfLoopTotal;
+  }
+
+  /**
+   * The paths each node starts at position {@code fromPosition} through the rest of the chain, the labels of every
+   * position after it included: a backward propagation from the chain's end, one pass per hop.
+   */
+  private long[] suffixCounts(final GraphTraversalProvider provider, final int fromPosition,
+      final IntHashSet[] validBuckets, final int[] bucketIds, final WorkGuard guard) {
+    final int nodeIdUpperBound = provider.getNodeIdUpperBound();
+    final int hops = edgeTypes.length;
+    long[] counts = new long[nodeIdUpperBound];
+    final IntHashSet endBuckets = validBuckets[hops];
+    for (int v = 0; v < nodeIdUpperBound; v++) {
+      guard.checkPeriodically(v);
+      if (provider.isNodeLive(v) && (endBuckets == null || endBuckets.contains(bucketIds[v])))
+        counts[v] = 1;
+    }
+    for (int h = hops - 1; h >= fromPosition; h--) {
+      guard.check();
+      // a node reaches through hop h the nodes whose reverse adjacency lists it at position h + 1
+      counts = CSRCountUtils.propagateOneHop(provider, counts, reverseDir(directions[h]), edgeTypes[h]);
+      CSRCountUtils.filterByBuckets(bucketIds, counts, validBuckets[h]);
+    }
+    return counts;
   }
 
   /**
@@ -409,7 +413,7 @@ public final class PropagateChainOp implements CountOp {
    * Avg ~2 merge comparisons per edge → ~5M ops total at ~3-5ns = ~15-25ms.
    */
   private long countSelfLoop3HopEdgeScan(final GraphTraversalProvider provider,
-      final int nodeIdUpperBound, final IntHashSet[] validBuckets, final WorkGuard guard) {
+      final int nodeIdUpperBound, final IntHashSet[] validBuckets, final int[] bucketIds, final WorkGuard guard) {
     // E0: edge from pos0 to pos1, direction directions[0]
     // E1: edge from pos1 to pos2, direction directions[1] (middle, iterated)
     // E2: edge from pos2 to pos3, direction directions[2]
@@ -423,10 +427,8 @@ public final class PropagateChainOp implements CountOp {
     final NeighborView viewE1 = provider.getNeighborView(directions[1], edgeTypes[1]);
     final NeighborView viewC = provider.getNeighborView(directions[2], edgeTypes[2]);
 
-    if (viewA == null || viewE1 == null || viewC == null) {
-      // Fallback: can't get NeighborViews, use per-anchor approach
-      return countSelfLoopPerAnchorFallback(provider, nodeIdUpperBound, validBuckets, guard);
-    }
+    if (viewA == null || viewE1 == null || viewC == null)
+      return -1; // no NeighborViews: the caller expands per vertex
 
     final int[] aNbrs = viewA.neighbors();
     final int[] e1Nbrs = viewE1.neighbors();
@@ -438,10 +440,17 @@ public final class PropagateChainOp implements CountOp {
     final IntHashSet pos2Buckets = validBuckets[2];
     if ((pos1Buckets != null && pos1Buckets.isEmpty()) || (pos2Buckets != null && pos2Buckets.isEmpty()))
       return 0;
-    final int[] bucketIds = (pos1Buckets != null || pos2Buckets != null)
-        ? precomputeBucketIds(provider, nodeIdUpperBound, guard) : null;
+    // THE CLOSING VERTEX STANDS AT POSITIONS 0 AND 3 AT ONCE, SO IT CARRIES BOTH LABELS: A VERTEX THE DENSE COUNT NEVER
+    // STARTED FROM, OR NEVER ENDED AT, CLOSES NO PATH IT COUNTED
+    final IntHashSet pos0Buckets = validBuckets[0];
+    final IntHashSet pos3Buckets = validBuckets[3];
 
     long selfLoop = 0;
+    // AN UNDIRECTED HOP'S MERGED RANGE HOLDS EACH SELF LOOP TWICE: THE RANGE OF b HOLDS b TWICE FOR ONE RELATIONSHIP
+    // (ISSUES #8750, #9540), SO ITS RUNS ARE HALVED BELOW
+    final boolean undirectedA = revDir0 == Vertex.DIRECTION.BOTH;
+    final boolean undirectedE1 = directions[1] == Vertex.DIRECTION.BOTH;
+    final boolean undirectedC = directions[2] == Vertex.DIRECTION.BOTH;
 
     // Scan all E1 edges by iterating pos1 nodes
     for (int b = 0; b < nodeIdUpperBound; b++) {
@@ -462,8 +471,14 @@ public final class PropagateChainOp implements CountOp {
       if (aStart == aEnd) continue;
 
       // For each E1 neighbor c (pos2 node):
+      boolean skipSelf = false;
       for (int j = e1Start; j < e1End; j++) {
         final int c = e1Nbrs[j];
+        if (undirectedE1 && c == b) {
+          skipSelf = !skipSelf;
+          if (!skipSelf)
+            continue;
+        }
 
         // Check pos2 type filter
         if (pos2Buckets != null && !pos2Buckets.contains(bucketIds[c]))
@@ -475,7 +490,8 @@ public final class PropagateChainOp implements CountOp {
         if (cStart == cEnd) continue;
 
         // Count |setA ∩ setC| via sorted merge (both CSR ranges are sorted)
-        selfLoop += sortedIntersectionCount(aNbrs, aStart, aEnd, cNbrs, cStart, cEnd);
+        selfLoop += sortedIntersectionCount(aNbrs, aStart, aEnd, undirectedA ? b : -1, cNbrs, cStart, cEnd,
+            undirectedC ? c : -1, pos0Buckets, pos3Buckets, bucketIds);
       }
     }
     return selfLoop;
@@ -486,10 +502,14 @@ public final class PropagateChainOp implements CountOp {
    * a value present {@code p} times in one range and {@code q} times in the other closes {@code p * q} paths, one per pair
    * of parallel edges (issue #8426). Counting the value once, or the smaller of {@code p} and {@code q}, left the
    * self-loop subtraction short on a graph with parallel edges, so the inequality count came out too high.
-   * O(|a| + |b|) time, O(1) space.
+   * {@code aSelf} and {@code bSelf} name the node a range belongs to when it is the merged range of an undirected hop
+   * (-1 otherwise): there a self loop is two entries and one relationship, so the run of that value is halved
+   * (issues #8750, #9540). A value outside {@code aBuckets} or {@code bBuckets} (null: any), the labels of the two
+   * ranges' own positions, closes no counted path. O(|a| + |b|) time, O(1) space.
    */
-  private static long sortedIntersectionCount(final int[] a, int aStart, final int aEnd,
-      final int[] b, int bStart, final int bEnd) {
+  private static long sortedIntersectionCount(final int[] a, int aStart, final int aEnd, final int aSelf,
+      final int[] b, int bStart, final int bEnd, final int bSelf, final IntHashSet aBuckets, final IntHashSet bBuckets,
+      final int[] bucketIds) {
     long count = 0;
     while (aStart < aEnd && bStart < bEnd) {
       final int av = a[aStart], bv = b[bStart];
@@ -506,6 +526,12 @@ public final class PropagateChainOp implements CountOp {
           bRun++;
           bStart++;
         }
+        if ((aBuckets != null && !aBuckets.contains(bucketIds[av])) || (bBuckets != null && !bBuckets.contains(bucketIds[av])))
+          continue;
+        if (av == aSelf)
+          aRun /= 2;
+        if (bv == bSelf)
+          bRun /= 2;
         count += (long) aRun * bRun;
       }
     }
@@ -516,35 +542,6 @@ public final class PropagateChainOp implements CountOp {
     if (dir == Vertex.DIRECTION.OUT) return Vertex.DIRECTION.IN;
     if (dir == Vertex.DIRECTION.IN) return Vertex.DIRECTION.OUT;
     return Vertex.DIRECTION.BOTH;
-  }
-
-  /**
-   * Fallback per-anchor self-loop when NeighborViews are unavailable.
-   */
-  private long countSelfLoopPerAnchorFallback(final GraphTraversalProvider provider,
-      final int nodeIdUpperBound, final IntHashSet[] validBuckets, final WorkGuard guard) {
-    // Reuse existing per-anchor expansion logic
-    final int subChainLength = Math.max(inequalityIdxA, inequalityIdxB);
-    final NeighborView[] subViews = new NeighborView[subChainLength];
-    for (int h = 0; h < subChainLength; h++)
-      subViews[h] = provider.getNeighborView(directions[h], edgeTypes[h]);
-
-    final IntHashSet anchorBuckets = validBuckets[0];
-    if (anchorBuckets != null && anchorBuckets.isEmpty())
-      return 0;
-    final int[] bucketIds = anchorBuckets == null ? null
-        : precomputeBucketIds(provider, nodeIdUpperBound, guard);
-
-    long selfLoopTotal = 0;
-    for (int vId = 0; vId < nodeIdUpperBound; vId++) {
-      guard.check();
-      if (!provider.isNodeLive(vId))
-        continue;
-      if (anchorBuckets != null && !anchorBuckets.contains(bucketIds[vId]))
-        continue;
-      selfLoopTotal += countLoopsFromNode(provider, vId, subViews, 0, subChainLength, validBuckets);
-    }
-    return selfLoopTotal;
   }
 
   /**
@@ -587,18 +584,23 @@ public final class PropagateChainOp implements CountOp {
 
     long loopCount = 0;
     final NeighborView lastView = subViews[subChainLength - 1];
+    // A SELF LOOP OF vId ITSELF IS TWO ENTRIES OF ITS MERGED RANGE ON AN UNDIRECTED HOP, AND ONE RELATIONSHIP
+    final boolean undirected = directions[lastHopIdx] == Vertex.DIRECTION.BOTH;
     if (lastView != null) {
       final int[] nbrs = lastView.neighbors();
       for (final int node : frontier) {
         // Binary search for vId in node's sorted neighbor list
         final int start = lastView.offset(node);
         final int end = lastView.offsetEnd(node);
-        loopCount += occurrencesOf(nbrs, start, end, vId);
+        final int occurrences = occurrencesOf(nbrs, start, end, vId);
+        loopCount += undirected && node == vId ? occurrences / 2 : occurrences;
       }
     } else {
       for (final int node : frontier) {
-        final int[] neighbors = provider.getNeighborIds(node, directions[lastHopIdx], edgeTypes[lastHopIdx]);
-        loopCount += occurrencesOf(neighbors, 0, neighbors.length, vId);
+        final int[] neighbors = CSRCountUtils.hopNeighborIds(provider, node, directions[lastHopIdx], edgeTypes[lastHopIdx]);
+        for (final int neighbor : neighbors)
+          if (neighbor == vId)
+            ++loopCount;
       }
     }
     return loopCount;
@@ -635,7 +637,7 @@ public final class PropagateChainOp implements CountOp {
         totalNext += view.degree(node);
     } else {
       for (final int node : frontier)
-        totalNext += provider.getNeighborIds(node, directions[hopIdx], edgeTypes[hopIdx]).length;
+        totalNext += CSRCountUtils.hopNeighborIds(provider, node, directions[hopIdx], edgeTypes[hopIdx]).length;
     }
     if (totalNext == 0)
       return new int[0];
@@ -644,14 +646,13 @@ public final class PropagateChainOp implements CountOp {
     final int[] next = new int[totalNext];
     int pos = 0;
     if (view != null) {
-      final int[] nbrs = view.neighbors();
-      for (final int node : frontier) {
-        for (int j = view.offset(node), end = view.offsetEnd(node); j < end; j++)
-          next[pos++] = nbrs[j];
-      }
+      // AN UNDIRECTED SELF LOOP IS TWO ENTRIES OF THE MERGED RANGE AND ONE RELATIONSHIP (ISSUES #8750, #9540)
+      final boolean undirected = directions[hopIdx] == Vertex.DIRECTION.BOTH;
+      for (final int node : frontier)
+        pos = CSRCountUtils.appendHopNeighbors(view, node, undirected, next, pos);
     } else {
       for (final int node : frontier) {
-        final int[] neighbors = provider.getNeighborIds(node, directions[hopIdx], edgeTypes[hopIdx]);
+        final int[] neighbors = CSRCountUtils.hopNeighborIds(provider, node, directions[hopIdx], edgeTypes[hopIdx]);
         System.arraycopy(neighbors, 0, next, pos, neighbors.length);
         pos += neighbors.length;
       }
@@ -683,7 +684,7 @@ public final class PropagateChainOp implements CountOp {
         totalNext += view.degree(node);
     } else {
       for (final int node : frontier)
-        totalNext += provider.getNeighborIds(node, directions[hopIdx], edgeTypes[hopIdx]).length;
+        totalNext += CSRCountUtils.hopNeighborIds(provider, node, directions[hopIdx], edgeTypes[hopIdx]).length;
     }
     if (totalNext == 0)
       return new int[0];
@@ -691,14 +692,13 @@ public final class PropagateChainOp implements CountOp {
     final int[] next = new int[totalNext];
     int pos = 0;
     if (view != null) {
-      final int[] nbrs = view.neighbors();
-      for (final int node : frontier) {
-        for (int j = view.offset(node), end = view.offsetEnd(node); j < end; j++)
-          next[pos++] = nbrs[j];
-      }
+      // AN UNDIRECTED SELF LOOP IS TWO ENTRIES OF THE MERGED RANGE AND ONE RELATIONSHIP (ISSUES #8750, #9540)
+      final boolean undirected = directions[hopIdx] == Vertex.DIRECTION.BOTH;
+      for (final int node : frontier)
+        pos = CSRCountUtils.appendHopNeighbors(view, node, undirected, next, pos);
     } else {
       for (final int node : frontier) {
-        final int[] neighbors = provider.getNeighborIds(node, directions[hopIdx], edgeTypes[hopIdx]);
+        final int[] neighbors = CSRCountUtils.hopNeighborIds(provider, node, directions[hopIdx], edgeTypes[hopIdx]);
         System.arraycopy(neighbors, 0, next, pos, neighbors.length);
         pos += neighbors.length;
       }
@@ -760,8 +760,13 @@ public final class PropagateChainOp implements CountOp {
     // run once per outer row - then allocates nothing per neighbour.
     final long[] total = {0};
     final int lastHop = edgeTypes.length - 1;
+    // THE PATHS FROM THE ANCHORS TO THE EARLIER POSITION OF THE INEQUALITY, KEPT FROM THE LEVEL THE WALK BUILDS FOR IT
+    final int idxA = Math.min(inequalityIdxA, inequalityIdxB);
+    RidLongHashMap prefix = null;
     for (int hop = 0; hop <= lastHop; hop++) {
       guard.check();
+      if (hop == idxA)
+        prefix = current;
       final IntHashSet targetBuckets = CSRCountUtils.buildValidBuckets(db, nodeLabels[hop + 1]);
 
       final RidLongHashMap next = hop < lastHop ? new RidLongHashMap() : null;
@@ -782,15 +787,11 @@ public final class PropagateChainOp implements CountOp {
 
     // Subtract self-loop paths for inequality
     if (inequalityIdxA >= 0 && inequalityIdxB >= 0)
-      total[0] -= countSelfLoopPathsOLTP(db, provider, guard);
+      total[0] -= countSelfLoopPathsOLTP(db, provider, prefix, guard);
 
     return total[0];
   }
 
-  /**
-   * OLTP self-loop counting: for each anchor vertex, BFS through the sub-chain
-   * and check for paths that return to the anchor.
-   */
   /**
    * Expands neighbors from a vertex RID, using GAV/CSR when available, falling back to OLTP.
    */
@@ -800,7 +801,7 @@ public final class PropagateChainOp implements CountOp {
     if (provider != null) {
       final int nodeId = provider.getNodeId(vertexRid);
       if (nodeId >= 0) {
-        final int[] neighborIds = provider.getNeighborIds(nodeId, direction, edgeType);
+        final int[] neighborIds = CSRCountUtils.hopNeighborIds(provider, nodeId, direction, edgeType);
         for (final int nid : neighborIds) {
           final RID neighborRid = provider.getRID(nid);
           if (neighborRid != null && (targetBuckets == null || targetBuckets.contains(neighborRid.getBucketId())))
@@ -838,75 +839,69 @@ public final class PropagateChainOp implements CountOp {
 
   private static void expandLoaded(final Vertex v, final Vertex.DIRECTION direction, final String edgeType,
       final IntHashSet targetBuckets, final Consumer<RID> consumer) {
+    // AN UNDIRECTED HOP WALKS BOTH LISTS AND A SELF LOOP SITS IN EACH: EVERY SECOND SIGHTING IS THE SAME RELATIONSHIP
+    final RID self = direction == Vertex.DIRECTION.BOTH ? v.getIdentity() : null;
+    int selfSeen = 0;
     for (final RID neighborRid : v.getConnectedVertexRIDs(direction, edgeType)) {
+      if (self != null && self.equals(neighborRid) && (++selfSeen & 1) == 0)
+        continue;
       if (targetBuckets == null || targetBuckets.contains(neighborRid.getBucketId()))
         consumer.accept(neighborRid);
     }
   }
 
+  /**
+   * The paths the walk counted that the inequality excludes, as {@link #countSelfLoopPaths} computes them on the CSR:
+   * for every vertex {@code v} a counted path reaches at the earlier inequality position, the paths reaching it
+   * ({@code prefix}), times the sub-chains leaving {@code v} and closing on it, times the paths from {@code v} through
+   * the rest of the chain. The prefix and the tail used to be products of {@code v}'s own degrees, which is wrong for a
+   * prefix or a tail longer than one hop, ignores their labels, and read the prefix hops from the wrong end.
+   */
   private long countSelfLoopPathsOLTP(final Database db, final GraphTraversalProvider provider,
-      final WorkGuard guard) {
+      final RidLongHashMap prefix, final WorkGuard guard) {
     final int idxA = Math.min(inequalityIdxA, inequalityIdxB);
     final int idxB = Math.max(inequalityIdxA, inequalityIdxB);
-    final int subLength = idxB - idxA;
 
-    // One bucket set per sub-chain hop, built once rather than per anchor
-    final IntHashSet[] subChainBuckets = new IntHashSet[subLength];
-    for (int h = 0; h < subLength; h++)
-      subChainBuckets[h] = CSRCountUtils.buildValidBuckets(db, nodeLabels[idxA + h + 1]);
+    // One bucket set per position, built once rather than per vertex
+    final IntHashSet[] positionBuckets = new IntHashSet[edgeTypes.length + 1];
+    for (int i = idxA + 1; i <= edgeTypes.length; i++)
+      positionBuckets[i] = CSRCountUtils.buildValidBuckets(db, nodeLabels[i]);
 
-    long selfLoopTotal = 0;
-
-    for (final Iterator<? extends Identifiable> it = CSRCountUtils.iterateAnchors(db, nodeLabels[idxA]); it.hasNext(); ) {
+    final long[] selfLoopTotal = { 0 };
+    prefix.forEach((bucketId, offset, prefixCount) -> {
       guard.check();
-      final Vertex anchor = it.next().asVertex();
-      final RID anchorRid = anchor.getIdentity();
-
-      // Sparse BFS from anchor through sub-chain [idxA, idxB)
-      // using per-source map to deduplicate within this source's expansion
-      RidLongHashMap cur = new RidLongHashMap();
-      cur.put(anchorRid, 1L);
-
-      for (int h = 0; h < subLength; h++) {
-        final int hopIdx = idxA + h;
-        final IntHashSet targetBuckets = subChainBuckets[h];
-
-        final RidLongHashMap next = new RidLongHashMap();
-        cur.forEach((bucketId, offset, pathCount) -> {
-          final RID rid = db.newRID(bucketId, offset);
-          expandNeighbors(db, provider, rid, directions[hopIdx], edgeTypes[hopIdx], targetBuckets,
-              neighborRid -> next.add(neighborRid, pathCount));
-        });
-        cur = next;
+      final RID vertexRid = db.newRID(bucketId, offset);
+      final long loopCount = pathCounts(db, provider, vertexRid, idxA, idxB, positionBuckets).get(vertexRid, 0);
+      if (loopCount == 0)
+        return;
+      long tailCount = 1;
+      if (idxB < edgeTypes.length) {
+        final long[] tail = { 0 };
+        pathCounts(db, provider, vertexRid, idxB, edgeTypes.length, positionBuckets).forEach((b, o, count) -> tail[0] += count);
+        tailCount = tail[0];
       }
+      selfLoopTotal[0] += prefixCount * loopCount * tailCount;
+    });
+    return selfLoopTotal[0];
+  }
 
-      long loopCount = cur.get(anchorRid, 0);
-
-      // Multiply by tail after idxB
-      if (loopCount > 0 && idxB < edgeTypes.length) {
-        long tailCount = 1;
-        for (int h = idxB; h < edgeTypes.length; h++) {
-          tailCount *= anchor.countEdges(directions[h], edgeTypes[h]);
-          if (tailCount == 0)
-            break;
-        }
-        loopCount *= tailCount;
-      }
-
-      // Multiply by prefix before idxA
-      if (loopCount > 0 && idxA > 0) {
-        long prefixCount = 1;
-        for (int h = idxA - 1; h >= 0; h--) {
-          prefixCount *= anchor.countEdges(directions[h], edgeTypes[h]);
-          if (prefixCount == 0)
-            break;
-        }
-        loopCount *= prefixCount;
-      }
-
-      selfLoopTotal += loopCount;
+  /**
+   * The paths from {@code start}, standing at position {@code fromPosition}, through the hops up to position
+   * {@code toPosition}, by the vertex they end at: a walk that merges the paths reaching the same vertex, the labels of
+   * every position it crosses included.
+   */
+  private RidLongHashMap pathCounts(final Database db, final GraphTraversalProvider provider, final RID start,
+      final int fromPosition, final int toPosition, final IntHashSet[] positionBuckets) {
+    RidLongHashMap current = new RidLongHashMap();
+    current.put(start, 1L);
+    for (int h = fromPosition; h < toPosition; h++) {
+      final int hop = h;
+      final RidLongHashMap next = new RidLongHashMap();
+      current.forEach((bucketId, offset, pathCount) -> expandNeighbors(db, provider, db.newRID(bucketId, offset),
+          directions[hop], edgeTypes[hop], positionBuckets[hop + 1], neighborRid -> next.add(neighborRid, pathCount)));
+      current = next;
     }
-    return selfLoopTotal;
+    return current;
   }
 
   @Override
