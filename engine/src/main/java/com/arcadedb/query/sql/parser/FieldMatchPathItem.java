@@ -22,7 +22,6 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
-import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.util.Map;
@@ -41,6 +40,11 @@ public class FieldMatchPathItem extends MatchPathItem {
    */
   public boolean isBidirectional() {
     return false;
+  }
+
+  @Override
+  protected FieldMatchPathItem newInstance() {
+    return new FieldMatchPathItem();
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
@@ -95,12 +99,7 @@ public class FieldMatchPathItem extends MatchPathItem {
 
   @Override
   public MatchPathItem copy() {
-    FieldMatchPathItem result = null;
-    try {
-      result = getClass().getConstructor().newInstance();
-    } catch (final Exception e) {
-      throw new ArcadeDBException(e);
-    }
+    final FieldMatchPathItem result = newInstance();
     result.field = field == null ? null : field.copy();
     result.method = method == null ? null : method.copy();
     result.filter = filter == null ? null : filter.copy();

@@ -23,5 +23,10 @@ package com.arcadedb.query.sql.parser;
 public class BothPathItemOpt extends BothPathItem {
   public BothPathItemOpt() {
   }
+
+  @Override
+  protected MatchPathItem newInstance() {
+    return new BothPathItemOpt();
+  }
 }
 /* JavaCC - OriginalChecksum=96af673f114382e530f23ae7937cb201 (do not edit this line) */

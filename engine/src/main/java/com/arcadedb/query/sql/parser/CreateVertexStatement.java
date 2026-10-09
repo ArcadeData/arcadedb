@@ -21,7 +21,6 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.CreateVertexExecutionPlanner;
@@ -121,14 +120,18 @@ public class CreateVertexStatement extends Statement {
     }
   }
 
+  /**
+   * Creates the empty instance {@link #copy()} fills in. A subclass that inherits {@code copy()} overrides it to keep the
+   * runtime type of the copy. It replaces a reflective lookup of the no-arg constructor, which fails in the GraalVM native
+   * image, where no parser constructor is registered for reflection (#9495).
+   */
+  protected CreateVertexStatement newInstance() {
+    return new CreateVertexStatement();
+  }
+
   @Override
   public CreateVertexStatement copy() {
-    CreateVertexStatement result;
-    try {
-      result = getClass().getConstructor().newInstance();
-    } catch (final Exception e) {
-      throw new ArcadeDBException(e);
-    }
+    final CreateVertexStatement result = newInstance();
     result.targetType = targetType == null ? null : targetType.copy();
     result.targetBucketName = targetBucketName == null ? null : targetBucketName.copy();
     result.targetBucket = targetBucket == null ? null : targetBucket.copy();

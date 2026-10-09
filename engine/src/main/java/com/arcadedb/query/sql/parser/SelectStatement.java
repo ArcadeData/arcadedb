@@ -26,7 +26,6 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.log.LogManager;
@@ -260,27 +259,32 @@ public class SelectStatement extends Statement {
     return planner.createExecutionPlan(context, false);
   }
 
+  /**
+   * Creates the empty instance {@link #copy()} fills in. A subclass that inherits {@code copy()} overrides it to keep the
+   * runtime type of the copy. It replaces a reflective lookup of the no-arg constructor, which fails in the GraalVM native
+   * image, where no parser constructor is registered for reflection (#9495).
+   */
+  protected SelectStatement newInstance() {
+    return new SelectStatement();
+  }
+
   @Override
   public SelectStatement copy() {
-    try {
-      final SelectStatement result = getClass().getConstructor().newInstance();
-      result.originalStatement = originalStatement;
-      result.target = target == null ? null : target.copy();
-      result.projection = projection == null ? null : projection.copy();
-      result.whereClause = whereClause == null ? null : whereClause.copy();
-      result.groupBy = groupBy == null ? null : groupBy.copy();
-      result.orderBy = orderBy == null ? null : orderBy.copy();
-      result.unwind = unwind == null ? null : unwind.copy();
-      result.skip = skip == null ? null : skip.copy();
-      result.limit = limit == null ? null : limit.copy();
-      result.letClause = letClause == null ? null : letClause.copy();
-      result.timeout = timeout == null ? null : timeout.copy();
-      // A COPY IS THE SAME TREE: CARRY THE MEMO SO THE PLANNER'S PER-EXECUTION COPIES DO NOT RE-WALK IT (#8400)
-      result.resultCacheable = resultCacheable;
-      return result;
-    } catch (final Exception e) {
-      throw new ArcadeDBException(e);
-    }
+    final SelectStatement result = newInstance();
+    result.originalStatement = originalStatement;
+    result.target = target == null ? null : target.copy();
+    result.projection = projection == null ? null : projection.copy();
+    result.whereClause = whereClause == null ? null : whereClause.copy();
+    result.groupBy = groupBy == null ? null : groupBy.copy();
+    result.orderBy = orderBy == null ? null : orderBy.copy();
+    result.unwind = unwind == null ? null : unwind.copy();
+    result.skip = skip == null ? null : skip.copy();
+    result.limit = limit == null ? null : limit.copy();
+    result.letClause = letClause == null ? null : letClause.copy();
+    result.timeout = timeout == null ? null : timeout.copy();
+    // A COPY IS THE SAME TREE: CARRY THE MEMO SO THE PLANNER'S PER-EXECUTION COPIES DO NOT RE-WALK IT (#8400)
+    result.resultCacheable = resultCacheable;
+    return result;
   }
 
   @Override

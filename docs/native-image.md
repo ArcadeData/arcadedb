@@ -473,3 +473,31 @@ satisfies. They are therefore listed unconditionally in `reachability-metadata.j
 with `trace.sh` keeps them, because both phases merge into the existing file rather than replacing it.
 Without them the Raft server fails to start with a `MissingReflectionRegistrationError` on the first
 of them it touches, and the node exits, which `ha-smoke.sh` reports as a node that exited early.
+
+Two more groups are listed in full rather than as far as a trace happened to reach them (#9495), and
+`NativeImageReflectionMetadataTest` (engine module) fails on the JVM when one of them is missing:
+
+- every SQL function and method the engine registers by class, since each call creates it through
+  its no-arg constructor (`cchShortestPath()` was missing and failed only in the native binary);
+- every Lucene analyzer and token attribute with a public no-arg constructor. A full-text index
+  creates its analyzer from the class name in its metadata and Lucene creates its token attributes
+  through a reflective factory, and the metadata repository has no entries for the Lucene version
+  ArcadeDB ships, so without them no `FULL_TEXT` index could be created. A Lucene upgrade that adds
+  an analyzer turns that test red until the entry is added;
+- the methods the Snowball stemmers' `Among` tables name (`FinnishStemmer`, `HindiStemmer`,
+  `IndonesianStemmer`): they are looked up with `MethodHandles.findVirtual` in the stemmer's static
+  initializer, so a missing one makes the whole class fail to load.
+- every public static method of `java.lang.Math`: the `math_*` SQL functions (`math_abs`, `math_max`,
+  ...) call them through `Method.invoke`, which the image refuses with a
+  `MissingReflectionRegistrationError` for an unregistered method.
+
+One analyzer still does not work in the native binary: `org.apache.lucene.analysis.th.ThaiAnalyzer`
+fails with "This JRE does not have support for Thai segmentation", because the JDK's dictionary-based
+Thai `BreakIterator` is not available in the image (`-H:IncludeLocales=th` plus the `jdk.localedata`
+dictionary resource were tried and are not enough). The other 44 analyzers with a public no-arg
+constructor were verified against the binary.
+
+ArcadeDB's own code must not instantiate classes reflectively where a plain `new` will do: the SQL
+AST `copy()` methods used `getClass().getConstructor()`, which made every `UPDATE`/`DELETE` fail in
+the native binary while passing on the JVM (#9495). `Issue9495ReflectionFreeCopyTest` refuses that
+pattern in the SQL parser sources.

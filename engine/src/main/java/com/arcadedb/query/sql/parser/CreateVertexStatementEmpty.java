@@ -24,5 +24,10 @@ public class CreateVertexStatementEmpty extends CreateVertexStatement {
   public CreateVertexStatementEmpty() {
   }
 
+  @Override
+  protected CreateVertexStatement newInstance() {
+    return new CreateVertexStatementEmpty();
+  }
+
 }
 /* JavaCC - OriginalChecksum=016e27188dd8fae2a4e129ad660c5c23 (do not edit this line) */
