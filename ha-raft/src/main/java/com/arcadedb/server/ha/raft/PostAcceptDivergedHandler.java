@@ -32,8 +32,8 @@ import java.net.InetSocketAddress;
 
 /**
  * POST /api/v1/cluster/accept-diverged/{database} - the operator's override of issue #9449. Lifts the quarantine standing
- * on {@code database} (and the read floor that goes with it) on a node that is the sole voter of its cluster, accepting
- * its copy as it is.
+ * on {@code database} (and the read floor that goes with it) on a node that is the sole voter of its cluster, or whose
+ * every voter holds the same database quarantined (issue #9553), accepting its copy as it is.
  * <p>
  * Since #9308 a sole voter no longer RAISES a quarantine, but one restored from disk (#7735) or raised while the node
  * still had peers keeps it not-ready and its Raft log un-checkpointed for good: nothing lifts a quarantine but a resync
@@ -42,7 +42,7 @@ import java.net.InetSocketAddress;
  * address, the applied index and the cause. The same override is reachable over gRPC through
  * {@link HAServerPlugin#acceptDivergedDatabase}.
  * <p>
- * Root only. 404 when nothing stands on the database, 409 when this node is not the sole voter (the resync is the way
+ * Root only. 404 when nothing stands on the database, 409 when a peer could still serve a resync (the resync is the way
  * out there), 500 when the change could not be persisted (nothing is lifted then).
  */
 public class PostAcceptDivergedHandler extends AbstractServerHttpHandler {

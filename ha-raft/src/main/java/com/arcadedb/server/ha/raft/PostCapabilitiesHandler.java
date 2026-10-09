@@ -67,6 +67,13 @@ public class PostCapabilitiesHandler extends AbstractServerHttpHandler {
    */
   static final String SERVICE_GAP = "serviceGap";
 
+  /**
+   * The document's list of the databases this node holds quarantined (issue #9553), sorted. Absent means none. Read by
+   * every peer's capability poll, so a node can tell that no voter of the cluster holds a copy of a database it could
+   * resync from - the state in which every quarantine waits on a resync no peer can serve.
+   */
+  static final String QUARANTINED = "quarantined";
+
   private final RaftHAPlugin plugin;
 
   public PostCapabilitiesHandler(final HttpServer httpServer, final RaftHAPlugin plugin) {
@@ -86,7 +93,8 @@ public class PostCapabilitiesHandler extends AbstractServerHttpHandler {
     final ArcadeStateMachine stateMachine = raftHAServer.getStateMachine();
     return new ExecutionResponse(200,
         advertisement(raftHAServer.getLocalPeerId().toString(), raftHAServer.getAdvertisedCapabilities(),
-            stateMachine != null && stateMachine.hasLeaderServiceGap()).toString());
+            stateMachine != null && stateMachine.hasLeaderServiceGap(),
+            stateMachine != null ? stateMachine.getQuarantinedDatabaseNames() : Set.of()).toString());
   }
 
   /**
@@ -104,6 +112,16 @@ public class PostCapabilitiesHandler extends AbstractServerHttpHandler {
    */
   // @VisibleForTesting
   static JSONObject advertisement(final String peerId, final Set<String> capabilities, final boolean serviceGap) {
+    return advertisement(peerId, capabilities, serviceGap, Set.of());
+  }
+
+  /**
+   * As {@link #advertisement(String, Set, boolean)}, also carrying {@link #QUARANTINED} when this node holds a
+   * quarantine (issue #9553). Written only when non-empty, for the same reason as {@link #SERVICE_GAP}.
+   */
+  // @VisibleForTesting
+  static JSONObject advertisement(final String peerId, final Set<String> capabilities, final boolean serviceGap,
+      final Set<String> quarantined) {
     final JSONArray array = new JSONArray();
     for (final String capability : new TreeSet<>(capabilities))
       array.put(capability);
@@ -114,6 +132,12 @@ public class PostCapabilitiesHandler extends AbstractServerHttpHandler {
         .put("capabilities", array);
     if (serviceGap)
       json.put(SERVICE_GAP, true);
+    if (quarantined != null && !quarantined.isEmpty()) {
+      final JSONArray names = new JSONArray();
+      for (final String name : new TreeSet<>(quarantined))
+        names.put(name);
+      json.put(QUARANTINED, names);
+    }
     return json;
   }
 }

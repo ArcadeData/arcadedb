@@ -604,23 +604,39 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
     final ArcadeStateMachine sm = s != null ? s.getStateMachine() : null;
     if (sm == null)
       throw new ServerControlPlane.OperationNotAvailableException("The HA layer of this server has not started yet");
-    return acceptDivergedDatabase(sm, s.isSoleVoter(), server.getServerName(), databaseName, acceptedBy);
+    // A sole voter has no peer to resync from (issue #9449); nor has a node whose every peer holds the same database
+    // quarantined (issue #9553): there, accepting one copy is the way out the all-voters-quarantined alert names.
+    boolean noResyncSource = s.isSoleVoter();
+    if (!noResyncSource && s.isQuarantinedOnEveryVoter(databaseName)) {
+      // The registry can be one poll behind: confirm with every voter now, so a copy another node has just accepted
+      // cannot be overridden by a second accept here (review on PR #9567)
+      final String refusal = s.refuseUnlessNoOtherVoterServesNow(databaseName);
+      if (refusal != null)
+        throw new ServerControlPlane.OperationNotAvailableException("Database '" + databaseName + "': every voter was "
+            + "last reported holding it quarantined, but asked now, " + refusal + ". Nothing was lifted: if a voter "
+            + "serves it, this node resyncs from it once it leads; otherwise retry once every voter answers");
+      noResyncSource = true;
+    }
+    return acceptDivergedDatabase(sm, noResyncSource, server.getServerName(), databaseName, acceptedBy);
   }
 
   /**
    * The override of issue #9449 past the HA lookup, so it can be driven with a real state machine and a chosen voter
    * count. Package-private for tests.
    * <p>
-   * Refused on a node that is not the sole voter: there the quarantine is lifted by the targeted resync from a peer (or,
-   * on a leader, by the hand-off that lets one), and lifting it by hand would leave this copy silently different from
-   * every other server's, since nothing replays the entry the quarantine skipped.
+   * Refused unless no peer can serve a resync: on a sole voter, or where every voter reports the same database
+   * quarantined (issue #9553), which the caller decides and passes as {@code noResyncSource}. Anywhere else the quarantine
+   * is lifted by the targeted resync from a peer (or, on a leader, by the hand-off that lets one), and lifting it by hand
+   * would leave this copy silently different from every other server's, since nothing replays the entry the quarantine
+   * skipped. Where every voter holds it quarantined there is no good copy for this one to differ from: the operator picks
+   * the one to keep, and the others resync from it once it leads.
    * <p>
    * The voter count is read before the lift, not atomically with it: a peer added to the configuration in between would
    * see the lift go through on a node that has just gained someone to resync from. The window is one operator request
    * wide and the joining peer installs its copy FROM this node anyway, so it inherits the same state rather than
    * diverging from it; a membership change cannot be held off from inside the state machine's file lock.
    */
-  static JSONObject acceptDivergedDatabase(final ArcadeStateMachine sm, final boolean soleVoter, final String localServer,
+  static JSONObject acceptDivergedDatabase(final ArcadeStateMachine sm, final boolean noResyncSource, final String localServer,
       final String databaseName, final String acceptedBy) throws IOException {
     if (databaseName == null || !PostVerifyDatabaseHandler.VALID_DATABASE_NAME.matcher(databaseName).matches())
       throw new IllegalArgumentException("Invalid database name '" + databaseName + "'");
@@ -628,12 +644,13 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
     if (sm.quarantineCause(databaseName) == null && sm.getDatabaseAppliedFloor(databaseName) < 0)
       throw new ServerControlPlane.NotFoundException(notQuarantined(databaseName));
 
-    if (!soleVoter)
+    if (!noResyncSource)
       throw new ServerControlPlane.OperationNotAvailableException("Database '" + databaseName + "' is quarantined on this "
-          + "node, but this node is not the only voter of its cluster, so the quarantine is lifted by a resync from a peer "
-          + "(POST /api/v1/cluster/resync/" + databaseName + " on this node, or a leadership transfer when this node is "
-          + "the leader). Accepting the copy by hand is only allowed on a sole voter, where no peer exists to resync from: "
-          + "anywhere else it would leave this copy silently different from the other servers'");
+          + "node, but this node is not the only voter of its cluster and not every voter reports it quarantined, so the "
+          + "quarantine is lifted by a resync from a peer (POST /api/v1/cluster/resync/" + databaseName + " on this node, "
+          + "or a leadership transfer when this node is the leader). Accepting the copy by hand is only allowed where no "
+          + "peer can serve a resync - on a sole voter, or when every voter holds the database quarantined: anywhere else "
+          + "it would leave this copy silently different from the other servers'");
 
     final ArcadeStateMachine.DivergedAcceptance acceptance = sm.acceptDivergedDatabase(databaseName, acceptedBy);
     if (acceptance == null)
