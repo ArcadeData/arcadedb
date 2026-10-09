@@ -1,4 +1,2 @@
 # Test files that still mock a concrete server/HA type (issue #9464). This list only shrinks: remove a file once it
 # no longer mocks one of the guarded types. Format: <path> <Type>[,<Type>...]. Never add to it - use a real server/database or a fake.
-ha-raft/src/test/java/com/arcadedb/server/ha/raft/Issue6965LocalCommitHandshakeTest.java RaftHAServer,RaftTransactionBroker
-ha-raft/src/test/java/com/arcadedb/server/ha/raft/Issue8784ReplicatedCommitFiresAfterCommitCallbacksTest.java RaftHAServer,RaftTransactionBroker

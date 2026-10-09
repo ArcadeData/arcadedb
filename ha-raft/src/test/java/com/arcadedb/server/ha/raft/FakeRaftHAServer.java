@@ -84,6 +84,9 @@ public class FakeRaftHAServer extends RaftHAServer {
   private final Setting<Map<String, ReplicationLatency>>  replicationLatencies = new Setting<>();
   private final Setting<List<Map<String, Object>>>        followerStates       = new Setting<>();
   private final Setting<Long>                             raftLogStartIndex    = new Setting<>();
+  private final Setting<Long>                             quorumTimeout        = new Setting<>();
+  private final Setting<Boolean>                          shutdownRequested    = new Setting<>();
+  private final Setting<Boolean>                          txPreparedAtCapable  = new Setting<>();
   private final Setting<TrustedHttpClientCache>           httpsClients         = new Setting<>();
   private final Setting<Long>                             lastAppliedIndex     = new Setting<>();
   private final Setting<RaftTransactionBroker>            transactionBroker    = new Setting<>();
@@ -246,6 +249,27 @@ public class FakeRaftHAServer extends RaftHAServer {
 
   public FakeRaftHAServer followerStates(final List<Map<String, Object>> followerStates) {
     this.followerStates.set(followerStates);
+    return this;
+  }
+
+  /** How long a replication waits for its quorum; unset, the configured {@code arcadedb.ha.quorumTimeout}. */
+  public FakeRaftHAServer quorumTimeout(final long quorumTimeoutMs) {
+    this.quorumTimeout.set(quorumTimeoutMs);
+    return this;
+  }
+
+  /** A server that is shutting down: the commit path stops waiting for the local apply. Unset, it is not. */
+  public FakeRaftHAServer shutdownRequested(final boolean shutdownRequested) {
+    this.shutdownRequested.set(shutdownRequested);
+    return this;
+  }
+
+  /**
+   * Whether every peer can read the {@code tx-prepared-at-index} section, so a commit may state it. Unset, the real
+   * answer, which on a detached server asks a registry that has heard from no peer.
+   */
+  public FakeRaftHAServer txPreparedAtCapable(final boolean capable) {
+    this.txPreparedAtCapable.set(capable);
     return this;
   }
 
@@ -507,6 +531,21 @@ public class FakeRaftHAServer extends RaftHAServer {
   @Override
   public List<Map<String, Object>> getFollowerStates() {
     return followerStates.orElse(super::getFollowerStates);
+  }
+
+  @Override
+  public long getQuorumTimeout() {
+    return quorumTimeout.orElse(super::getQuorumTimeout);
+  }
+
+  @Override
+  public boolean isShutdownRequested() {
+    return shutdownRequested.orElse(super::isShutdownRequested);
+  }
+
+  @Override
+  public boolean canStateTxPreparedAt() {
+    return txPreparedAtCapable.orElse(super::canStateTxPreparedAt);
   }
 
   @Override
