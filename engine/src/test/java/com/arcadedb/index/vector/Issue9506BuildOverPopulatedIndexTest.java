@@ -46,13 +46,18 @@ class Issue9506BuildOverPopulatedIndexTest extends TestHelper {
     final List<RID> rids = populate();
     final LSMVectorIndex index = bucketIndex();
     assertThat(index.countEntries()).isEqualTo(RECORDS);
+    final Set<Integer> beforeBuild = liveIds(index, rids);
 
     assertThat(index.build(null, null)).isEqualTo(RECORDS);
-    assertOneLiveEntryPerRecord(index, rids);
+    final Set<Integer> afterFirstBuild = assertOneLiveEntryPerRecord(index, rids);
+    // REPLACED, not kept: every record got a fresh id and the ids it had before the build are tombstoned
+    assertThat(afterFirstBuild).doesNotContainAnyElementsOf(beforeBuild);
+    for (final int id : beforeBuild)
+      assertThat(index.getVectorIndex().isLive(id)).as("vector id %d held before the build", id).isFalse();
 
     // A second build is no different: the count does not grow with the number of builds
     index.build(null, null);
-    assertOneLiveEntryPerRecord(index, rids);
+    assertThat(assertOneLiveEntryPerRecord(index, rids)).doesNotContainAnyElementsOf(afterFirstBuild);
   }
 
   /**
@@ -119,14 +124,20 @@ class Issue9506BuildOverPopulatedIndexTest extends TestHelper {
     return (LSMVectorIndex) ((TypeIndex) database.getSchema().getIndexByName(TYPE + "[vector]")).getIndexesOnBuckets()[0];
   }
 
-  private static void assertOneLiveEntryPerRecord(final LSMVectorIndex index, final List<RID> rids) {
+  private static Set<Integer> assertOneLiveEntryPerRecord(final LSMVectorIndex index, final List<RID> rids) {
     assertThat(index.countEntries()).as("live entries after a build over a populated index").isEqualTo(RECORDS);
-    final Set<Integer> ids = new HashSet<>();
-    for (final RID rid : rids) {
-      final int[] live = index.getVectorIndex().getVectorIdsForRid(rid);
-      assertThat(live).as("live vector ids of %s", rid).hasSize(1);
-      ids.add(live[0]);
-    }
+    for (final RID rid : rids)
+      assertThat(index.getVectorIndex().getVectorIdsForRid(rid)).as("live vector ids of %s", rid).hasSize(1);
+    final Set<Integer> ids = liveIds(index, rids);
     assertThat(ids).hasSize(RECORDS);
+    return ids;
+  }
+
+  private static Set<Integer> liveIds(final LSMVectorIndex index, final List<RID> rids) {
+    final Set<Integer> ids = new HashSet<>();
+    for (final RID rid : rids)
+      for (final int id : index.getVectorIndex().getVectorIdsForRid(rid))
+        ids.add(id);
+    return ids;
   }
 }
