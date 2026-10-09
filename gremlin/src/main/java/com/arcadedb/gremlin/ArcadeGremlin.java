@@ -210,13 +210,14 @@ public class ArcadeGremlin extends ArcadeQuery {
    * everywhere else, so a property called {@code id} or {@code label} can never overwrite them (#9141)</li>
    * <li>any other key is its printed form (a null key is named "null")</li>
    * <li>keys that still print alike (the Integer 1 and the Long 1 of a {@code groupCount()}) are told apart by the simple name of
-   * their type, {@code 1:Integer} and {@code 1:Long} (whatever the order of the entries), so no entry is lost</li>
+   * their type, {@code 1:Integer} and {@code 1:Long} (whatever the order of the entries), so no entry is lost. These names are labels
+   * that keep the entries apart: a numeric suffix ({@code 1:Long2}) is added only when a real key already uses the generated name</li>
    * </ul>
    */
   // PACKAGE-PRIVATE FOR THE UNIT TESTS
   static ResultInternal mapToResult(final Map<Object, Object> originalMap) {
     // FAST PATH, THE COMMON CASE: NO TWO KEYS SHARE A NAME, SO ONE PASS AND NO EXTRA ALLOCATION
-    final Map<String, Object> flat = new LinkedHashMap<>(originalMap.size());
+    final Map<String, Object> flat = new LinkedHashMap<>(originalMap.size() * 4 / 3 + 1);
     int processed = 0;
     for (final Map.Entry<Object, Object> entry : originalMap.entrySet()) {
       final Object originalKey = entry.getKey();
@@ -224,7 +225,7 @@ public class ArcadeGremlin extends ArcadeQuery {
       if (flat.size() != ++processed)
         break;
     }
-    if (flat.size() == originalMap.size() && processed == originalMap.size())
+    if (processed == originalMap.size() && flat.size() == processed)
       return new ResultInternal(flat);
 
     final Map<String, Object> result = new LinkedHashMap<>(originalMap.size());
