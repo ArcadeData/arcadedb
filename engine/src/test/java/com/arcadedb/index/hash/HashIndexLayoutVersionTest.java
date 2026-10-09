@@ -46,8 +46,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #5712: the buckets of a hash index are no longer kept sorted (version 2: append + 1-byte slot tags), while the
- * indexes created before keep the sorted layout (version 1) and must still open and work. Every scenario runs on both
- * layouts, with a tiny page so that splits and overflow chains are exercised.
+ * indexes created before keep the sorted layout (version 1) and must still open and work. Every scenario runs on all the
+ * layouts, with a tiny page so that splits and overflow chains are exercised. Version 3 (issue #9228) adds RID lists to the
+ * bucket pages of version 2, and every scenario runs on it too.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -66,7 +67,7 @@ class HashIndexLayoutVersionTest extends TestHelper {
   }
 
   @ParameterizedTest
-  @ValueSource(ints = { HashIndexBucket.LEGACY_SORTED_VERSION, HashIndexBucket.CURRENT_VERSION })
+  @ValueSource(ints = { HashIndexBucket.LEGACY_SORTED_VERSION, HashIndexBucket.INLINE_RIDS_VERSION, HashIndexBucket.CURRENT_VERSION })
   void uniqueIndexInsertLookupRemove(final int layout) {
     final Map<String, Integer> expected = createAndFill("UNIQUE_HASH", layout, 4_000, 4_000);
     assertThat(layoutOf("U")).isEqualTo(layout);
@@ -96,7 +97,7 @@ class HashIndexLayoutVersionTest extends TestHelper {
   }
 
   @ParameterizedTest
-  @ValueSource(ints = { HashIndexBucket.LEGACY_SORTED_VERSION, HashIndexBucket.CURRENT_VERSION })
+  @ValueSource(ints = { HashIndexBucket.LEGACY_SORTED_VERSION, HashIndexBucket.INLINE_RIDS_VERSION, HashIndexBucket.CURRENT_VERSION })
   void notUniqueIndexKeepsEveryRidAndRemovesOne(final int layout) {
     // 40 keys with 150 records each: the entries outgrow the page and spill into extra entries and overflow pages
     createAndFill("NOTUNIQUE_HASH", layout, 6_000, 40);
@@ -113,7 +114,7 @@ class HashIndexLayoutVersionTest extends TestHelper {
   }
 
   @ParameterizedTest
-  @ValueSource(ints = { HashIndexBucket.LEGACY_SORTED_VERSION, HashIndexBucket.CURRENT_VERSION })
+  @ValueSource(ints = { HashIndexBucket.LEGACY_SORTED_VERSION, HashIndexBucket.INLINE_RIDS_VERSION, HashIndexBucket.CURRENT_VERSION })
   void indexSurvivesReopen(final int layout) {
     final Map<String, Integer> expected = createAndFill("UNIQUE_HASH", layout, 3_000, 3_000);
     HashIndex.HashIndexFactoryHandler.layoutVersion = HashIndexBucket.CURRENT_VERSION;
@@ -192,10 +193,10 @@ class HashIndexLayoutVersionTest extends TestHelper {
     final File[] files = new File(databasePath).listFiles((dir, name) -> name.endsWith(".uhashidx"));
     assertThat(files).hasSize(1);
     final File original = files[0];
-    final File future = new File(original.getParentFile(), original.getName().replace(".v2.", ".v3."));
+    final File future = new File(original.getParentFile(), original.getName().replace(".v3.", ".v4."));
     assertThat(original.renameTo(future)).isTrue();
 
-    assertThatThrownBy(() -> new DatabaseFactory(databasePath).open()).hasStackTraceContaining("page layout version 3");
+    assertThatThrownBy(() -> new DatabaseFactory(databasePath).open()).hasStackTraceContaining("page layout version 4");
 
     // put the file back so the fixture can close and drop the database
     assertThat(future.renameTo(original)).isTrue();
@@ -204,7 +205,7 @@ class HashIndexLayoutVersionTest extends TestHelper {
 
   /** Two different keys filed under the same tag must be told apart by the full key comparison. */
   @ParameterizedTest
-  @ValueSource(ints = { HashIndexBucket.LEGACY_SORTED_VERSION, HashIndexBucket.CURRENT_VERSION })
+  @ValueSource(ints = { HashIndexBucket.LEGACY_SORTED_VERSION, HashIndexBucket.INLINE_RIDS_VERSION, HashIndexBucket.CURRENT_VERSION })
   void keysSharingATagAreNotConfused(final int layout) {
     HashIndex.HashIndexFactoryHandler.layoutVersion = layout;
     database.transaction(() -> {
@@ -239,7 +240,7 @@ class HashIndexLayoutVersionTest extends TestHelper {
 
   /** Delete and re-insert on the same pages again and again: the last slot keeps swapping into the freed ones. */
   @ParameterizedTest
-  @ValueSource(ints = { HashIndexBucket.LEGACY_SORTED_VERSION, HashIndexBucket.CURRENT_VERSION })
+  @ValueSource(ints = { HashIndexBucket.LEGACY_SORTED_VERSION, HashIndexBucket.INLINE_RIDS_VERSION, HashIndexBucket.CURRENT_VERSION })
   void deleteAndReinsertChurn(final int layout) {
     final Map<String, Integer> expected = createAndFill("UNIQUE_HASH", layout, 1_500, 1_500);
     final Random random = new Random(11);
@@ -296,7 +297,7 @@ class HashIndexLayoutVersionTest extends TestHelper {
 
   /** Slots of different keys sharing a tag must not be mistaken for each other. */
   @ParameterizedTest
-  @ValueSource(ints = { HashIndexBucket.LEGACY_SORTED_VERSION, HashIndexBucket.CURRENT_VERSION })
+  @ValueSource(ints = { HashIndexBucket.LEGACY_SORTED_VERSION, HashIndexBucket.INLINE_RIDS_VERSION, HashIndexBucket.CURRENT_VERSION })
   void aMissNeverMatches(final int layout) {
     createAndFill("UNIQUE_HASH", layout, 5_000, 5_000);
     for (int i = 0; i < 5_000; i++)
