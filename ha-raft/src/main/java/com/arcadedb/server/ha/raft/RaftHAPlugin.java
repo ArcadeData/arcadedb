@@ -547,6 +547,8 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
     routes.addPrefixPath(PostAcceptCopyHandler.ROUTE, new PostAcceptCopyHandler(httpServer, this));
     // Issue #9449: the operator's audited override of a quarantine a sole voter can never resync away.
     routes.addPrefixPath(PostAcceptDivergedHandler.ROUTE, new PostAcceptDivergedHandler(httpServer, this));
+    // Issue #9498: the same override for the node-wide stale-snapshot read floor (issue #6111).
+    routes.addExactPath(PostAcceptStaleSnapshotHandler.ROUTE, new PostAcceptStaleSnapshotHandler(httpServer, this));
     // Issue #4147: pre-bootstrap state RPC, used by the bootstrap leader at first cluster
     // formation to collect each peer's (fingerprint, lastTxId) per database.
     routes.addExactPath("/api/v1/cluster/bootstrap-state", new PostBootstrapStateHandler(httpServer, this));
@@ -674,6 +676,65 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
   private static String notQuarantined(final String databaseName) {
     return "Database '" + databaseName + "' is not quarantined on this server and carries no read floor: there is "
         + "nothing to accept";
+  }
+
+  /**
+   * Lifts the node-wide stale-snapshot read floor a sole voter can never resync away (issue #9498); see
+   * {@link #acceptStaleSnapshot(ArcadeStateMachine, boolean, String, String)}.
+   */
+  @Override
+  public JSONObject acceptStaleSnapshot(final String acceptedBy) throws IOException {
+    final RaftHAServer s = raftHAServer;
+    final ArcadeStateMachine sm = s != null ? s.getStateMachine() : null;
+    if (sm == null)
+      throw new ServerControlPlane.OperationNotAvailableException("The HA layer of this server has not started yet");
+    return acceptStaleSnapshot(sm, s.isSoleVoter(), server.getServerName(), acceptedBy);
+  }
+
+  /**
+   * The override of issue #9498 past the HA lookup, so it can be driven with a real state machine and a chosen voter
+   * count. Package-private for tests.
+   * <p>
+   * Refused unless this node is the sole voter of its cluster. With a peer, the floor is lifted by a full resync from it:
+   * a follower retries on every health tick, and a leader hands the leadership to a peer that holds the entries first
+   * (issue #8529). Accepting the gap by hand there would leave this node's databases silently short of entries every
+   * other server applied. The voter count is read before the lift, not atomically with it, for the reason
+   * {@link #acceptDivergedDatabase(ArcadeStateMachine, boolean, String, String, String)} gives.
+   */
+  static JSONObject acceptStaleSnapshot(final ArcadeStateMachine sm, final boolean soleVoter, final String localServer,
+      final String acceptedBy) throws IOException {
+    if (sm.getStaleSnapshotAppliedFloor() < 0)
+      throw new ServerControlPlane.NotFoundException(noStaleSnapshotFloor());
+
+    if (!soleVoter)
+      throw new ServerControlPlane.OperationNotAvailableException("This node holds a stale-snapshot read floor, but it "
+          + "is not the only voter of its cluster, so the floor is lifted by a resync from a peer: a follower retries it "
+          + "on every health tick, and a leader hands the leadership to a peer first (POST /api/v1/cluster/leader to move "
+          + "it by hand). Accepting the gap by hand is only allowed where no peer can serve a resync, on a sole voter: "
+          + "anywhere else it would leave this node's databases silently short of entries the other servers applied");
+
+    final ArcadeStateMachine.StaleSnapshotAcceptance acceptance;
+    try {
+      acceptance = sm.acceptStaleSnapshotFloor(acceptedBy);
+    } catch (final IllegalStateException e) {
+      throw new ServerControlPlane.OperationNotAvailableException("Nothing was lifted: " + e.getMessage());
+    }
+    if (acceptance == null)
+      // Filled between the check above and here, by a resync
+      throw new ServerControlPlane.NotFoundException(noStaleSnapshotFloor());
+
+    return new JSONObject()
+        .put("result", "The stale-snapshot read floor is lifted and this node's databases are accepted as they are. The "
+            + "entries between the floor and the snapshot marker are not replayed; check the databases (CHECK DATABASE) "
+            + "and restore any damaged one from a backup")
+        .put("localServer", localServer)
+        .put("readFloor", acceptance.readFloor())
+        .put("snapshotIndex", acceptance.snapshotIndex())
+        .put("appliedIndex", acceptance.acceptedIndex());
+  }
+
+  private static String noStaleSnapshotFloor() {
+    return "This server holds no stale-snapshot read floor: there is nothing to accept";
   }
 
   /** Someone wants the database now: the next health tick re-verifies the copy (issue #8606). */

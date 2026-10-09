@@ -37,6 +37,7 @@ import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
 
 import java.io.File;
 import java.io.IOException;
+import java.lang.reflect.Field;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.Socket;
@@ -45,6 +46,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
 import java.util.function.IntPredicate;
 import java.util.function.LongSupplier;
@@ -747,6 +749,27 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
   /** Whether {@code databaseName} is quarantined on a server; see {@link #quarantineDatabase(int, String)}. */
   protected boolean isDatabaseQuarantined(final int serverIndex, final String databaseName) {
     return getRaftPlugin(serverIndex).getRaftHAServer().getStateMachine().isDatabaseDiverged(databaseName);
+  }
+
+  /**
+   * Publishes the node-wide stale-snapshot read floor of issue #6111 on a server, as {@code reinitialize()} does when the
+   * snapshot marker runs ahead of the persisted applied index, for a test outside this package that needs one standing
+   * (issue #9498, the gRPC override). Only {@code reinitialize()} raises it in production, and a live server cannot be
+   * made to restart onto a stale marker from a test, so the field is set directly.
+   */
+  protected void raiseStaleSnapshotFloor(final int serverIndex, final long floor) {
+    try {
+      final Field field = ArcadeStateMachine.class.getDeclaredField("staleSnapshotAppliedFloor");
+      field.setAccessible(true);
+      ((AtomicLong) field.get(getRaftPlugin(serverIndex).getRaftHAServer().getStateMachine())).set(floor);
+    } catch (final ReflectiveOperationException e) {
+      throw new IllegalStateException("Cannot raise the stale-snapshot read floor", e);
+    }
+  }
+
+  /** The node-wide stale-snapshot read floor of a server, {@code -1} when none stands; see {@link #raiseStaleSnapshotFloor}. */
+  protected long getStaleSnapshotFloor(final int serverIndex) {
+    return getRaftPlugin(serverIndex).getRaftHAServer().getStateMachine().getStaleSnapshotAppliedFloor();
   }
 
   /**

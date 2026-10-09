@@ -285,6 +285,18 @@ public class RemoteServer extends RemoteHttpComponent {
   }
 
   /**
+   * Lifts the node-wide stale-snapshot read floor of a server that is the sole voter of its cluster, accepting its
+   * databases as they are WITHOUT a resync, through {@code POST /api/v1/cluster/accept-stale-snapshot} (root only, issue
+   * #9498). The entries between the floor and the snapshot marker are not replayed. The server refuses with 404 when no
+   * floor stands and with 409 when it is not the sole voter, where a resync from a peer is the way out.
+   *
+   * @return {@code {result, localServer, readFloor, snapshotIndex, appliedIndex}}
+   */
+  public JSONObject acceptStaleSnapshot() {
+    return controlPlaneRequest("POST", "cluster/accept-stale-snapshot", new JSONObject(), "accept stale snapshot", null);
+  }
+
+  /**
    * Starts "connect this server to the ArcadeDB customer portal" through {@code POST /server/support/connect} (root only): the
    * server asks the portal for a code, a person who administers a workspace approves it in the portal, and the server then
    * receives and stores the workspace key itself. This is the console and curl twin of Studio's button.

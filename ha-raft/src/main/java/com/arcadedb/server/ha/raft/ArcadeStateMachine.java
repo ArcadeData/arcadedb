@@ -8739,6 +8739,96 @@ public class ArcadeStateMachine extends BaseStateMachine {
   }
 
   /**
+   * What {@link #acceptStaleSnapshotFloor} lifted: the node-wide read floor that stood, the snapshot marker index it was
+   * short of ({@code -1} when no marker is on disk any more) and the applied position now recorded for the node.
+   */
+  record StaleSnapshotAcceptance(long readFloor, long snapshotIndex, long acceptedIndex) {
+  }
+
+  /**
+   * The operator's override of issue #9498: lifts the node-wide stale-snapshot read floor (issue #6111) WITHOUT a resync,
+   * accepting that the entries between the floor and the snapshot marker are not on this node, and persists the marker
+   * index as the applied position so the next {@link #reinitialize()} does not detect the same gap again.
+   * <p>
+   * Every other way out of that floor is a full resync from a peer ({@link #resolveStaleSnapshotFloorAfterResync}), and
+   * a leader refuses to resync from itself. On a sole voter no peer can take the leadership, so the floor keeps the node
+   * not-ready and every LINEARIZABLE read clamped for good. Lifting it gives up the entries the marker claims and the
+   * databases never received - the Raft log no longer holds them - which is why it is an operator decision, logged at
+   * WARNING with who made it, the floor and the marker index.
+   * <p>
+   * A database with its own quarantine or its own read floor keeps both, and its per-database applied position: those
+   * are lifted by {@link #acceptDivergedDatabase}, one database at a time. Every other present database is recorded at
+   * the accepted position, never moved backwards.
+   * <p>
+   * The persistence is NOT best-effort, as in {@link #acceptDivergedDatabase}: an override that does not reach the disk
+   * would be undone at the next restart, so on a failed write the in-memory positions are put back, the floor stays and
+   * the caller is told.
+   *
+   * @return what was lifted, or {@code null} when no node-wide read floor stood
+   *
+   * @throws IllegalStateException when a snapshot download is running; it either fills the gap or leaves the floor
+   * @throws IOException           when the change could not be written to the applied-index file; nothing is lifted then
+   */
+  StaleSnapshotAcceptance acceptStaleSnapshotFloor(final String acceptedBy) throws IOException {
+    if (staleSnapshotAppliedFloor.get() < 0)
+      return null;
+    // A download that is running owns the floor: it clears it when it lands, or re-arms it when it fails. Lifting the
+    // floor under it would let the download's own completion record positions this override did not decide.
+    if (snapshotDownloadInProgress.get() || !snapshotDownloadLock.tryLock())
+      throw new IllegalStateException("a snapshot download is running on this node, and it either fills the gap or "
+          + "leaves the read floor in place: retry once it has finished");
+    final StaleSnapshotAcceptance acceptance;
+    try {
+      synchronized (appliedIndexFileLock) {
+        ensureAppliedIndexLoaded();
+        final long floor = staleSnapshotAppliedFloor.get();
+        if (floor < 0)
+          return null; // filled between the check above and here
+        final var snapshotInfo = storage.getLatestSnapshot();
+        final long snapshotIndex = snapshotInfo != null ? snapshotInfo.getIndex() : -1L;
+        // The apply thread keeps advancing the global position past the marker while the floor stands: never regress it
+        final long accepted = Math.max(snapshotIndex, globalAppliedIndex);
+
+        final long previousGlobal = globalAppliedIndex;
+        final Map<String, Long> previousByDb = new HashMap<>(appliedIndexByDb);
+        globalAppliedIndex = accepted;
+        if (server != null)
+          for (final String dbName : server.getDatabaseNames())
+            if (!divergedDatabases.containsKey(dbName) && !staleDatabaseAppliedFloors.containsKey(dbName))
+              appliedIndexByDb.merge(dbName, accepted, Math::max);
+        if (!persistAppliedIndexFile()) {
+          globalAppliedIndex = previousGlobal;
+          appliedIndexByDb.clear();
+          appliedIndexByDb.putAll(previousByDb);
+          throw new IOException("the change could not be written to " + getAppliedIndexFile()
+              + ", so the read floor would come back at the next restart: check that the .raft directory is writable "
+              + "and has free space");
+        }
+        // Accumulate rather than set, as the resync does: the apply thread may already have gone past the marker
+        lastAppliedIndex.accumulateAndGet(accepted, Math::max);
+        // The queued download the gap armed has nothing left to fill: dropped, or the node stays "resync queued"
+        needsSnapshotDownload.set(false);
+        clearStaleSnapshotFloor();
+        acceptance = new StaleSnapshotAcceptance(floor, snapshotIndex, accepted);
+      }
+    } finally {
+      snapshotDownloadLock.unlock();
+    }
+
+    final RaftHAServer raftHA = this.raftHAServer;
+    if (raftHA != null)
+      raftHA.notifyApplied();
+
+    LogManager.instance().log(this, Level.WARNING,
+        "%s lifted the node-wide stale-snapshot read floor WITHOUT a resync (read floor %d, snapshot marker %d, applied "
+            + "position now %d). The entries between the floor and the marker are not replayed: if a database is missing "
+            + "them, it stays missing. Check the databases (CHECK DATABASE) and restore any damaged one from a backup "
+            + "(issue #9498)",
+        acceptedBy, acceptance.readFloor(), acceptance.snapshotIndex(), acceptance.acceptedIndex());
+    return acceptance;
+  }
+
+  /**
    * Returns {@code true} at most once per {@link #DIVERGED_RESYNC_LOG_THROTTLE_MS} window per database.
    * Used to rate-limit the "snapshot resync in progress" notice that would otherwise be emitted once per
    * committed entry while a database is quarantined after a WAL version gap, flooding the log and
