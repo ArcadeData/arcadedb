@@ -226,6 +226,7 @@ public final class VertexPredicate {
       try {
         record = database.lookupByRID(rid, true);
       } catch (final RecordNotFoundException e) {
+        // a vertex deleted since the adjacency was read binds no row in the pipeline either
         return false;
       }
       return record instanceof Document document && test(document);
