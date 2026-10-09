@@ -28,9 +28,10 @@ import com.arcadedb.query.opencypher.parser.CypherExpressionWalker;
  * {@code shortestPath()} all re-enter the executor for every row, and the work grows with the neighbourhood of that
  * row: one node with 400,000 relationships turns a {@code WHERE} into a 400,000-record scan. A property comparison costs
  * a lookup. The two are not interchangeable operands of {@code AND}/{@code OR}, so the logical operators ask this class
- * which one to evaluate first (issues #9579, #9580). The answer is a coarse two-way split, deliberately: function and procedure calls count as cheap, the safe default for what cannot be seen into; a finer ranking
- * would have to guess at selectivity, and the only claim made is the one that always holds - never run a traversal to
- * find out what an inexpensive operand would already have told you.
+ * which one to evaluate first (issues #9579, #9580). The answer is a coarse two-way split, deliberately: function and
+ * procedure calls count as cheap, the safe default for what cannot be seen into. A finer ranking would have to guess at
+ * selectivity, and the only claim made is the one that always holds - never run a traversal to find out what an
+ * inexpensive operand would already have told you.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
