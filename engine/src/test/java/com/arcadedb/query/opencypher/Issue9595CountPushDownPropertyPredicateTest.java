@@ -27,6 +27,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
@@ -186,6 +187,30 @@ class Issue9595CountPushDownPropertyPredicateTest extends TestHelper {
     // a non-deterministic predicate is evaluated per row, not per vertex
     final String random = "MATCH (p:Message)<-[:REPLY_OF]-(c:Message) WHERE rand() < 2";
     assertThat(plan(random + " RETURN count(*) AS n", Map.of())).doesNotContain(PUSH_DOWN);
+
+    // so is a function that may resolve to a DEFINE FUNCTION body, which can read anything on every call
+    database.command("sql", "DEFINE FUNCTION kinds.twice \"SELECT :x * 2\" PARAMETERS [x] LANGUAGE sql");
+    final String custom = "MATCH (p:Message)<-[:REPLY_OF]-(c:Message) WHERE kinds.twice(p.cid) > 40";
+    // run as commands: a call that may reach a DEFINE FUNCTION body is not a read-only query
+    try (final ResultSet pushed = database.command("opencypher", "EXPLAIN " + custom + " RETURN count(*) AS n")) {
+      assertThat(pushed.getExecutionPlan().map(p -> p.prettyPrint(0, 2)).orElse("")).doesNotContain(PUSH_DOWN);
+    }
+    try (final ResultSet counted = database.command("opencypher", custom + " RETURN count(*) AS n");
+        final ResultSet summed = database.command("opencypher", custom + " RETURN sum(1) AS n")) {
+      assertThat(((Number) counted.next().getProperty("n")).longValue())
+          .isEqualTo(((Number) summed.next().getProperty("n")).longValue());
+    }
+  }
+
+  @Test
+  void anInlineNullMatchesNothing() {
+    // {kind: null} means kind = null, which is never true, not "kind is missing"
+    assertPushedDownAndExact("MATCH (:Tag)<-[:HAS_TAG]-(m:Message {kind: null})");
+    assertThat(count("MATCH (:Tag)<-[:HAS_TAG]-(m:Message {kind: null}) RETURN count(*) AS n", Map.of())).isZero();
+    final String parameter = "MATCH (:Tag)<-[:HAS_TAG]-(m:Message {kind: $kind}) RETURN count(*) AS n";
+    final Map<String, Object> nullKind = new HashMap<>();
+    nullKind.put("kind", null);
+    assertThat(count(parameter, nullKind)).isZero();
   }
 
   @Test

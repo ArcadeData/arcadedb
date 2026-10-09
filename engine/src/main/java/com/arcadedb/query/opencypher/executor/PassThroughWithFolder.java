@@ -203,12 +203,12 @@ final class PassThroughWithFolder {
     }
     for (final PathPattern pattern : match.getPathPatterns()) {
       for (final NodePattern node : pattern.getNodes())
-        if (!valuesReadOnlyUnrenamed(node.getProperties(), node.getPropertiesParameterName(), scope)
+        if (!valuesReadOnlyUnrenamed(node.getProperties(), scope)
             || (node.hasDynamicLabels() && !expressionsReadOnlyUnrenamed(node.getDynamicLabels(), scope))
             || (node.hasWhereExpression() && !readsOnlyUnrenamed(CypherReferencedVariables.of(node.getWhereExpression()), scope)))
           return null;
       for (final RelationshipPattern relationship : pattern.getRelationships())
-        if (!valuesReadOnlyUnrenamed(relationship.getProperties(), relationship.getPropertiesParameterName(), scope))
+        if (!valuesReadOnlyUnrenamed(relationship.getProperties(), scope))
           return null;
     }
 
@@ -241,7 +241,7 @@ final class PassThroughWithFolder {
     return true;
   }
 
-  private static boolean valuesReadOnlyUnrenamed(final Map<String, Object> properties, final String parameterName,
+  private static boolean valuesReadOnlyUnrenamed(final Map<String, Object> properties,
       final Map<String, String> scope) {
     if (properties == null)
       return true;

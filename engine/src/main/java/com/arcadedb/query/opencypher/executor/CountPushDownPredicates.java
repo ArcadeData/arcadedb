@@ -31,6 +31,7 @@ import com.arcadedb.query.opencypher.ast.NodePattern;
 import com.arcadedb.query.opencypher.ast.PatternComprehensionExpression;
 import com.arcadedb.query.opencypher.ast.PatternPredicateExpression;
 import com.arcadedb.query.opencypher.ast.ShortestPathExpression;
+import com.arcadedb.query.opencypher.ast.SimpleCypherStatement;
 import com.arcadedb.query.opencypher.executor.steps.VertexPredicate;
 import com.arcadedb.query.opencypher.parser.CypherExpressionWalker;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -165,7 +166,11 @@ final class CountPushDownPredicates {
     public void visit(final Expression expression) {
       switch (expression) {
       case FunctionCallExpression call -> {
-        if (NON_DETERMINISTIC_FUNCTIONS.contains(call.getFunctionName().toLowerCase(Locale.ROOT)))
+        // A built-in is a function of its arguments, but for the two random ones. A name that may resolve to a
+        // DEFINE FUNCTION body or a polyglot function is not known to be: it can read anything and answer
+        // differently on every call, so it is left to the row pipeline, which calls it once per row
+        if (NON_DETERMINISTIC_FUNCTIONS.contains(call.getFunctionName().toLowerCase(Locale.ROOT))
+            || !SimpleCypherStatement.isConfirmedPureFunctionName(call.getFunctionName()))
           perVertex = false;
       }
       case ExistsExpression ignored -> perVertex = false;
