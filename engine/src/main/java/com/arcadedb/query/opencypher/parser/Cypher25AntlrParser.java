@@ -173,7 +173,8 @@ public class Cypher25AntlrParser {
 
       CypherSemanticValidator.validate(statement);
 
-      return new ParsedQuery(statement, collectParameterNames(statementContext, query));
+      // After validation, so that an error names the query as written (issue #9598)
+      return new ParsedQuery(OptionalMatchAntiJoinRewriter.rewrite(statement), collectParameterNames(statementContext, query));
 
     } catch (final CommandParsingException e) {
       // semantic-validation and explicit parse errors already carry a clear, actionable message

@@ -105,9 +105,10 @@ class CypherCountPushDownUnlabelledAnchorIssue5757Test extends TestHelper {
    */
   @Test
   void anUnlabelledAnchorIsClaimedByTheChainPushDown() {
-    assertThat(explainOf("MATCH (a)-[:LINKS]->(b) RETURN count(*) AS c")).contains("COUNT CHAIN");
+    // with no label on either end it is the number of LINKS edges, which the edge count reads off the totals (issue #9600)
+    assertThat(explainOf("MATCH (a)-[:LINKS]->(b) RETURN count(*) AS c")).contains("COUNT EDGES");
     assertThat(explainOf("MATCH (a)-[:LINKS]->(b:Leaf) RETURN count(*) AS c")).contains("COUNT CHAIN");
-    assertThat(explainOf("MATCH ()-[:LINKS]->() RETURN count(*) AS c")).contains("COUNT CHAIN");
+    assertThat(explainOf("MATCH ()-[:LINKS]->() RETURN count(*) AS c")).contains("COUNT EDGES");
   }
 
   /** One hop, in every direction, with the label on neither end, on one end, or on both. */
