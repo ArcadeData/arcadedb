@@ -25,6 +25,8 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.ErrorConcealment;
 import com.arcadedb.server.http.ws.WebSocketEventBus;
 import com.arcadedb.server.http.ws.WebSocketFrameSender;
 import com.arcadedb.server.security.ServerSecurityException;
@@ -297,16 +299,23 @@ public class WebSocketInsertProtocol {
       }
     } catch (final SecurityException e) {
       send(channel, error("Security error", e.getMessage(), message.getString("sessionId", null), e));
-    } catch (final JSONException | IllegalArgumentException | IllegalStateException | DuplicatedKeyException e) {
+    } catch (final DuplicatedKeyException e) {
+      // The per_stream commit refusing a key the client sent twice (issue #7404): the client's data, not the server's
+      // fault. Its message carries the key VALUES, stored data, so production mode conceals it (issue #8749)
+      send(channel, error("Insert session error",
+          ErrorConcealment.clientMessage(ArcadeDBServer.isProductionMode(configuration), this, "/ws insert", e.getMessage(), e),
+          message.getString("sessionId", null), e));
+    } catch (final JSONException | IllegalArgumentException | IllegalStateException e) {
       // JSONException joins them because a frame whose 'options' carries a value of the wrong JSON TYPE is the
       // same class of mistake as one carrying a value of the wrong content, and answering the first with
       // "Internal error" and the second with "Insert session error" told a client the server had broken when it
-      // had not. DuplicatedKeyException is the per_stream commit refusing a key the client sent twice (issue
-      // #7404): the client's data, not the server's fault.
+      // had not. Text this protocol wrote about the request, which the client needs to fix it: kept in every mode
       send(channel, error("Insert session error", e.getMessage(), message.getString("sessionId", null), e));
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.FINE, "Error on /ws insert session action '%s'", e, action);
-      send(channel, error("Internal error", e.getMessage(), message.getString("sessionId", null), e));
+      send(channel, error("Internal error",
+          ErrorConcealment.clientMessage(ArcadeDBServer.isProductionMode(configuration), this, "/ws insert", e.getMessage(), e),
+          message.getString("sessionId", null), e));
     }
   }
 

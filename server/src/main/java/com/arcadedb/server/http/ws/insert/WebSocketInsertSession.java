@@ -37,6 +37,7 @@ import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.ErrorConcealment;
 import com.arcadedb.server.http.HttpSession;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.websockets.core.WebSocketChannel;
@@ -46,6 +47,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.logging.Level;
 
@@ -106,6 +108,8 @@ public class WebSocketInsertSession {
    * separate guards.
    */
   private final HttpSession                   externalSession;
+  /** Whether the server runs in production mode, read per chunk: the per-row errors then conceal the engine text (issue #8749). */
+  private final BooleanSupplier               concealErrors;
   private final String                        externalTransactionId;
   private final ReentrantLock                 lock       = new ReentrantLock();
   private final long                          startedAt  = System.currentTimeMillis();
@@ -142,8 +146,9 @@ public class WebSocketInsertSession {
 
   WebSocketInsertSession(final String id, final DatabaseInternal database, final ServerSecurityUser user,
       final UUID channelId, final InsertSessionOptions options, final String externalTransactionId,
-      final HttpSession externalSession) {
+      final HttpSession externalSession, final BooleanSupplier concealErrors) {
     this.id = id;
+    this.concealErrors = concealErrors;
     this.database = database;
     this.databaseName = database.getName();
     this.user = user;
@@ -271,7 +276,7 @@ public class WebSocketInsertSession {
         return ack;
       }
 
-      final ChunkCounts counts = new ChunkCounts();
+      final ChunkCounts counts = new ChunkCounts(concealErrors.getAsBoolean());
       final int rows = records == null ? 0 : records.length();
 
       if (externalSession != null)
@@ -566,7 +571,7 @@ public class WebSocketInsertSession {
   private ChunkCounts inOwnTransaction(final Consumer<ChunkCounts> work) {
     final ChunkCounts[] committed = new ChunkCounts[1];
     database.transaction(() -> {
-      final ChunkCounts attempt = new ChunkCounts();
+      final ChunkCounts attempt = new ChunkCounts(concealErrors.getAsBoolean());
       committed[0] = attempt;
       work.accept(attempt);
     });
@@ -806,12 +811,17 @@ public class WebSocketInsertSession {
 
   /** Per-chunk tallies, the shape of the gRPC {@code BatchAck} counters. */
   private static final class ChunkCounts {
+    private final boolean   concealErrors;
     private       JSONArray errors = new JSONArray();
     private       long      inserted;
     private       long      updated;
     private       long      ignored;
     private       long      failed;
     private       boolean   wholeChunkFailed;
+
+    private ChunkCounts(final boolean concealErrors) {
+      this.concealErrors = concealErrors;
+    }
 
     /** Adds the tallies of a committed attempt to the chunk's running totals. */
     private void absorb(final ChunkCounts other) {
@@ -854,11 +864,17 @@ public class WebSocketInsertSession {
       errors.put(error(-1, codeOf(e), e));
     }
 
-    private static JSONObject error(final int rowIndex, final String code, final Exception e) {
+    /**
+     * One {@code errors} entry. The code and the exception class are what a client branches on and stay; the message is
+     * the engine's text - for a conflict, the key VALUES the row carried - and production mode conceals it, logging it at
+     * {@code FINE} when the client caused it, as a bulk load can refuse thousands of rows by design (issue #8749).
+     */
+    private JSONObject error(final int rowIndex, final String code, final Exception e) {
       final JSONObject error = new JSONObject();
       error.put("rowIndex", rowIndex);
       error.put("code", code);
-      error.put("message", e.getMessage() != null ? e.getMessage() : e.toString());
+      error.put("message", ErrorConcealment.clientMessage(concealErrors, WebSocketInsertSession.class, "/ws insert row " + rowIndex,
+          e.getMessage() != null ? e.getMessage() : e.toString(), e, Level.FINE));
       error.put("exception", e.getClass().getName());
       return error;
     }
