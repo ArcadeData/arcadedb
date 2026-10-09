@@ -42,8 +42,8 @@ import java.util.Iterator;
  * light edges exist in types that never declared {@code LIGHTWEIGHT} too (issue #9389), so that counter is the number of
  * edge <i>records</i>, not of relationships. Off a provider a directed count is the total its slices hold, in O(types), and
  * an undirected one the size of its merged view with each self loop kept once; while it serves committed changes from an
- * overlay both are summed per node. Off the records it is one walk of every vertex's lists, counting entries without
- * loading an edge or a neighbour.
+ * overlay both are summed per node. Off the records it reads every vertex once, O(V), and counts the entries of its lists
+ * without loading an edge or a neighbour.
  * <p>
  * A directed edge is counted at its source, so the written direction does not matter, and an edge type declared
  * unidirectional, whose edges are stored on the outgoing side only, is counted like any other. An undirected hop over such
