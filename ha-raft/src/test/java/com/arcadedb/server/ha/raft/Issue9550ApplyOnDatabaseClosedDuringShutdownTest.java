@@ -33,6 +33,7 @@ import org.apache.ratis.protocol.RaftGroupId;
 import org.apache.ratis.protocol.RaftPeerId;
 import org.apache.ratis.server.RaftServer;
 import org.apache.ratis.server.protocol.TermIndex;
+import org.apache.ratis.server.raftlog.RaftLog;
 import org.apache.ratis.server.storage.RaftStorage;
 import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
 import org.junit.jupiter.api.AfterEach;
@@ -272,6 +273,51 @@ class Issue9550ApplyOnDatabaseClosedDuringShutdownTest {
   @Test
   void aRunningJvmIsNotShuttingDown() {
     assertThat(ArcadeStateMachine.isJvmShuttingDown()).isFalse();
+  }
+
+  /** The production wiring of one of the three signals: the Raft HA service having been asked to stop. */
+  @Test
+  void aRequestedRaftStopIsAShutdown() {
+    final ArcadeStateMachine plain = new ArcadeStateMachine();
+    plain.setServer(server);
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached(server);
+    plain.setRaftHAServer(raft);
+
+    raft.shutdownRequested(false);
+    assertThat(plain.isNodeShuttingDown()).as("an unstarted server with Raft running").isFalse();
+
+    raft.shutdownRequested(true);
+    assertThat(plain.isNodeShuttingDown()).isTrue();
+  }
+
+  /** A second entry left for replay keeps the floor at the lowest one: the checkpoint still stops before the first. */
+  @Test
+  void theFloorIsTheLowestEntryLeftForReplay() throws Exception {
+    closeUnderTheApplyThread();
+
+    final ByteString schemaEntry = RaftLogEntryCodec.encodeSchemaEntry(DB_NAME, "", Collections.emptyMap(),
+        Collections.emptyMap(), Collections.emptyList(), Collections.emptyList());
+    assertThatThrownBy(() -> sm.applyTransaction(ratisContext(logEntry(schemaEntry, ENTRY_INDEX))).get())
+        .hasCauseInstanceOf(EntryLeftForReplayException.class);
+    assertThatThrownBy(() -> sm.applyTransaction(ratisContext(logEntry(schemaEntry, ENTRY_INDEX + 2))).get())
+        .hasCauseInstanceOf(EntryLeftForReplayException.class);
+
+    sm.applyTransaction(ratisContext(dropEntry("ghost", ENTRY_INDEX + 3))).get();
+    assertThat(sm.takeSnapshot()).isEqualTo(ENTRY_INDEX - 1);
+  }
+
+  /** An entry left for replay at the very first index leaves nothing to checkpoint. */
+  @Test
+  void aFloorAtTheFirstIndexAuthorisesNoCheckpoint() throws Exception {
+    closeUnderTheApplyThread();
+
+    final ByteString schemaEntry = RaftLogEntryCodec.encodeSchemaEntry(DB_NAME, "", Collections.emptyMap(),
+        Collections.emptyMap(), Collections.emptyList(), Collections.emptyList());
+    assertThatThrownBy(() -> sm.applyTransaction(ratisContext(logEntry(schemaEntry, 0L))).get())
+        .hasCauseInstanceOf(EntryLeftForReplayException.class);
+    sm.applyTransaction(ratisContext(dropEntry("ghost", 1L))).get();
+
+    assertThat(sm.takeSnapshot()).isEqualTo(RaftLog.INVALID_LOG_INDEX);
   }
 
   private void assertLeftForReplayNotQuarantined() throws Exception {

@@ -3602,6 +3602,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
   private boolean isClosedUnderShutdown(final String databaseName, final Throwable failure) {
     if (databaseName == null || databaseName.isEmpty() || !isNodeShuttingDown())
       return false;
+    // Deliberately broad on the second arm: once the database is closed under a shutting-down node, whatever the apply
+    // raised is taken as caused by the close, since the entry's pages cannot be written either way. A genuine fault that
+    // happens to coincide with the close is therefore deferred, not quarantined, and meets the same fault again when the
+    // entry is replayed on restart, where the quarantine still applies.
     return causedByClosedDatabase(failure, 0) || !isDatabaseOpenHere(databaseName);
   }
 
@@ -3638,8 +3642,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * does not move over the entry, since the apply fails.
    */
   private EntryLeftForReplayException leaveForReplay(final long index, final String databaseName, final Throwable failure) {
-    replayFloor.accumulateAndGet(index, Math::min);
-    LogManager.instance().log(this, Level.WARNING,
+    // WARNING once, for the first entry left: every entry still in flight for a closed database follows it, and the
+    // first one is the one that says why. The rest are FINE, so a burst at shutdown does not flood the log.
+    final boolean first = replayFloor.getAndAccumulate(index, Math::min) == Long.MAX_VALUE;
+    LogManager.instance().log(this, first ? Level.WARNING : Level.FINE,
         "Raft entry at index %d for database '%s' was not applied: the database was closed while this node is shutting "
             + "down. It is left in the Raft log for the replay on restart, and no snapshot checkpoint will cover it "
             + "(issue #9550): %s", index, databaseName, failure.getMessage());
