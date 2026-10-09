@@ -109,6 +109,8 @@ public class EdgeIdentitySet {
 
     private boolean add(final RID edgeRID) {
       if (occurrences == null) {
+        // AN EDGE NOT READ OFF A LIST HAS OCCURRENCE 0, SO IT IS THE FIRST ENTRY OF ITS TRIPLE: THE IDENTITY IT HAD BEFORE
+        // OCCURRENCES EXISTED. IF THE LIST CHANGED UNDER THE QUERY THAT CAN UNDER-COUNT, NEVER OVER-COUNT
         if (LightEdgeRID.isSameEdge(first, edgeRID))
           return false;
         occurrences = new HashSet<>();

@@ -2287,7 +2287,7 @@ public class CypherSemanticValidator {
       if (declaringPatterns.contains(path))
         return;
       if (path.isSingleNode())
-        checkSingleNodePredicate(path.getFirstNode().getVariable());
+        checkSingleNodePredicate(path.getFirstNode());
       for (final NodePattern node : path.getNodes())
         checkUsedAs(node.getVariable(), VarType.NODE);
       for (final RelationshipPattern rel : path.getRelationships())
@@ -2300,7 +2300,11 @@ public class CypherSemanticValidator {
      * a relationship or a path is no Boolean, and a lone node pattern is no predicate. A name of unknown kind (a
      * {@code WITH}, an {@code UNWIND}, a parameter) is left to the runtime check, which sees the value (issue #9542).
      */
-    private void checkSingleNodePredicate(final String name) {
+    private void checkSingleNodePredicate(final NodePattern node) {
+      // a label or a property map makes it a node pattern whatever the variable holds
+      if (node.hasLabels() || node.hasProperties())
+        throw new CommandParsingException("InvalidArgumentType: Single node pattern is not a valid predicate in WHERE");
+      final String name = node.getVariable();
       if (name == null)
         return;
       final VarType declared = scope.get(name);

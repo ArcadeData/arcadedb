@@ -34,16 +34,16 @@ public abstract class IteratorFilterBase<T> extends ResettableIteratorBase<T> {
   protected final EdgeBucketMask validBuckets;
   protected       int            fullStackTracePrinted = 0;
 
+  protected IteratorFilterBase(final DatabaseInternal database, final EdgeSegment current, final String[] edgeTypes) {
+    super(database, current);
+    validBuckets = EdgeBucketMask.of(database, edgeTypes);
+  }
+
   /**
    * The byte position in {@link #currentContainer} of the entry the last {@code hasNext()} stopped on.
    */
   protected int getEntryPosition() {
     return lastElementPosition;
-  }
-
-  protected IteratorFilterBase(final DatabaseInternal database, final EdgeSegment current, final String[] edgeTypes) {
-    super(database, current);
-    validBuckets = EdgeBucketMask.of(database, edgeTypes);
   }
 
   protected boolean hasNext(final boolean edge) {

@@ -235,6 +235,8 @@ public class LightEdgeRID extends DatabaseRID {
       before = 0;
       found = 0;
     }
+    // TWO THREADS RESOLVING THE SAME RID BOTH WALK THE LIST AND STORE THE SAME ANSWER: HARMLESS. twins GOES FIRST, SO
+    // WHOEVER SEES THE VOLATILE occurrence SEES ITS twins
     twins = found;
     occurrence = before;
   }
