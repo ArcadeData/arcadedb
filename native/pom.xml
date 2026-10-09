@@ -394,6 +394,20 @@
                             Netty's own native-image.properties does the same for CleanerJava25 only.
                         -->
                         <buildArg>--initialize-at-build-time=io.grpc.netty.shaded.io.netty.util.internal.CleanerJava24Linker</buildArg>
+                        <!--
+                            grpc-netty-shaded's own native-image.properties initializes the whole shaded Netty at build
+                            time, exempting ScheduledFutureTask: the class that held the scheduler clock in Netty 4.1.
+                            Netty 4.2 keeps it in SystemTicker (START_TIME = System.nanoTime() in its static
+                            initializer), which the exemption misses, so the image carries the uptime of the machine
+                            that BUILT it. Every timer of the gRPC server then runs on System.nanoTime() minus that
+                            value: on a host up for less time than the builder was, keepalive fires at once and each
+                            connection is closed with GOAWAY before its first call, so every gRPC request fails while
+                            HTTP, Postgres and Bolt (unshaded Netty, initialized at run time above) are unaffected.
+                            Which hosts break depends on uptimes alone, which is why it showed up only in the docker
+                            job, on a freshly booted runner, and never on the runner that built the binary.
+                            SelfSignedCertificate freezes its validity window the same way, at build time.
+                        -->
+                        <buildArg>--initialize-at-run-time=io.grpc.netty.shaded.io.netty.util.concurrent.SystemTicker,io.grpc.netty.shaded.io.netty.handler.ssl.util.SelfSignedCertificate</buildArg>
                         <!-- Embed all classpath resources (Studio assets, config templates, Lucene codecs). Tighten later. -->
                         <buildArg>-H:IncludeResources=.*</buildArg>
                         <!--
