@@ -1102,6 +1102,7 @@ public class TransactionContext implements Transaction {
    * and found it torn by a concurrent commit (#9070). The transaction's own modified and new pages are never released.
    */
   public void unpinPage(final PageId pageId) {
+    // Only the immutable pin: a modified or new copy of the same page is what getPage answers first anyway, and stays
     immutablePages.remove(pageId);
   }
 
