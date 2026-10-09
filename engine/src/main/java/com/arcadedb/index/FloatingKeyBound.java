@@ -69,6 +69,7 @@ public final class FloatingKeyBound {
     if (bound instanceof Integer value)
       return !isDouble && (value > limit || value < -limit);
     if (bound instanceof BigInteger value)
+      // longValue() keeps only the low 64 bits, so it is read only once the value is known to fit a long
       return value.bitLength() > 63 || value.longValue() > limit || value.longValue() < -limit;
     if (bound instanceof BigDecimal value) {
       final double rounded = isDouble ? value.doubleValue() : value.floatValue();

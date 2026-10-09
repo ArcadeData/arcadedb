@@ -68,6 +68,8 @@ import java.util.logging.Level;
  * Created by luigidellaquila on 23/07/16.
  */
 public class FetchFromIndexStep extends AbstractExecutionStep {
+  private static final byte FLOATING_KEYS_UNKNOWN = 0, FLOATING_KEYS_VERIFIABLE = 1, FLOATING_KEYS_NOT_APPLICABLE = 2;
+
   protected final String                                         indexName;
   /** Package-private so a test can observe that a restart released them instead of only dropping the references. */
   final           List<IndexCursor>                              nextCursors = new ArrayList<>();
@@ -92,8 +94,11 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
    * against the condition, as a scan evaluates it, before they are handed on.
    */
   private         boolean                                        verifyKeys  = false;
-  /** Whether {@link #widenLossyFloatingBounds} can apply to this index, null until it is asked. */
-  private         Boolean                                        verifiableFloatingKeys;
+  /** Whether {@link #widenLossyFloatingBounds} can apply to this index, see {@link #FLOATING_KEYS_UNKNOWN}. */
+  private         byte                                           floatingKeys = FLOATING_KEYS_UNKNOWN;
+  /** The row {@link #keysSatisfyCondition} fills for each entry, one per run, and the property names it is filled with. */
+  private         ResultInternal                                 keyRow;
+  private         List<String>                                   keyPropertyNames;
   /** Package-private for the same reason as {@link #nextCursors}. */
   IndexCursor                                                    cursor;
   private         MultiIterator<Map.Entry<Object, Identifiable>> customIterator;
@@ -754,9 +759,9 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     if (keyTypes == null)
       return false;
     // Answered once per run: the seeks of an IN list of thousands of values all ask it
-    if (verifiableFloatingKeys == null)
-      verifiableFloatingKeys = hasFloatingKeyType(keyTypes) && canVerifyKeys();
-    if (!verifiableFloatingKeys)
+    if (floatingKeys == FLOATING_KEYS_UNKNOWN)
+      floatingKeys = hasFloatingKeyType(keyTypes) && canVerifyKeys() ? FLOATING_KEYS_VERIFIABLE : FLOATING_KEYS_NOT_APPLICABLE;
+    if (floatingKeys != FLOATING_KEYS_VERIFIABLE)
       return false;
     final boolean ordered = index.supportsOrderedIterations();
     boolean lossy = false;
@@ -797,6 +802,8 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
    * holds the original.
    */
   private boolean canVerifyKeys() {
+    // The AndBlock is the shape the SQL planner builds for a property index. The other shapes (a lone condition on the pseudo
+    // field `key`, for a query on the index itself) are not about the values of a type's property and keep the index's rounding
     if (!(condition instanceof AndBlock))
       return false;
     final IndexMetadata metadata = index instanceof IndexInternal internalIndex ? internalIndex.getMetadata() : null;
@@ -815,13 +822,16 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
    * (issue #8970). Only for the entries of a seek widened by {@link #widenLossyFloatingBounds}.
    */
   private boolean keysSatisfyCondition(final Object[] keys) {
-    final List<String> propertyNames = index.getPropertyNames();
-    final ResultInternal row = new ResultInternal(context.getDatabase());
-    for (int i = 0; i < keys.length && i < propertyNames.size(); i++)
-      row.setProperty(propertyNames.get(i), keys[i]);
-    if (!Boolean.TRUE.equals(condition.evaluate((Result) row, context)))
+    if (keyRow == null) {
+      keyPropertyNames = index.getPropertyNames();
+      keyRow = new ResultInternal(context.getDatabase());
+    }
+    // One row for the whole run: a key shorter than the index (a prefix) must not leave the values of the previous entry behind
+    for (int i = 0; i < keyPropertyNames.size(); i++)
+      keyRow.setProperty(keyPropertyNames.get(i), i < keys.length ? keys[i] : null);
+    if (!Boolean.TRUE.equals(condition.evaluate((Result) keyRow, context)))
       return false;
-    return additionalRangeCondition == null || Boolean.TRUE.equals(additionalRangeCondition.evaluate((Result) row, context));
+    return additionalRangeCondition == null || Boolean.TRUE.equals(additionalRangeCondition.evaluate((Result) keyRow, context));
   }
 
   /**
@@ -1454,7 +1464,9 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
 
     inited = false;
     verifyKeys = false;
-    verifiableFloatingKeys = null;
+    floatingKeys = FLOATING_KEYS_UNKNOWN;
+    keyRow = null;
+    keyPropertyNames = null;
     pointLookup = null;
     customIterator = null;
     nextEntry = null;

@@ -199,6 +199,7 @@ public class GraphTraversalProviderRegistry {
     // Shared by every provider this call waits for, set by the first wait (issue #9240)
     long deadlineNanos = 0;
     boolean deadlineSet = false;
+    boolean mayWait = awaitRestore;
     final Iterator<GraphTraversalProvider> iterator = list.iterator();
     while (found == null && iterator.hasNext()) {
       final GraphTraversalProvider provider = iterator.next();
@@ -210,14 +211,16 @@ public class GraphTraversalProviderRegistry {
         continue;
       if (provider.isReady())
         found = provider;
-      else if (awaitRestore && provider.isRestoring()) {
+      else if (mayWait && provider.isRestoring()) {
         // isReady() just dispatched the deferred restore of this view, or found it already in flight: the view is ready a
         // fraction of a second later, which is cheaper to wait for than the record-by-record path the caller falls back to
         if (!deadlineSet) {
           final long awaitMs = database.getConfiguration().getValueAsLong(GlobalConfiguration.GAV_QUERY_RESTORE_AWAIT_TIMEOUT);
-          if (awaitMs <= 0)
-            // a call that does not wait does not start now for the providers that follow
-            break;
+          if (awaitMs <= 0) {
+            // not waiting: this view is skipped as before the setting existed, and a later ready view can still be selected
+            mayWait = false;
+            continue;
+          }
           deadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(awaitMs);
           deadlineSet = true;
         }
