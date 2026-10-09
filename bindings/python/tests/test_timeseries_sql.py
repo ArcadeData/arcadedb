@@ -3,19 +3,13 @@
 from datetime import datetime, timezone
 
 import arcadedb_embedded as arcadedb
-import pytest
 
 
-def _create_timeseries_or_skip(db):
-    try:
-        db.command(
-            "sql",
-            "CREATE TIMESERIES TYPE TempData TIMESTAMP ts TAGS (sensor_id STRING) FIELDS (value DOUBLE)",
-        )
-    except arcadedb.ArcadeDBError as e:
-        if "CREATE TIMESERIES" in str(e) or "no viable alternative" in str(e):
-            pytest.skip("TIMESERIES SQL is not available in this packaged runtime")
-        raise
+def _create_timeseries(db):
+    db.command(
+        "sql",
+        "CREATE TIMESERIES TYPE TempData TIMESTAMP ts TAGS (sensor_id STRING) FIELDS (value DOUBLE)",
+    )
 
 
 def _to_epoch_millis(value):
@@ -44,7 +38,7 @@ def _assert_epoch_set(actual_values, expected_values):
 def test_timeseries_sql_insert_between_and_bucket(temp_db_path):
     """Create timeseries type, insert records, query by range, and aggregate by bucket."""
     with arcadedb.create_database(temp_db_path) as db:
-        _create_timeseries_or_skip(db)
+        _create_timeseries(db)
 
         with db.transaction():
             db.command(
@@ -92,7 +86,7 @@ def test_timeseries_sql_insert_between_and_bucket(temp_db_path):
 def test_timeseries_sql_tag_filter_and_empty_range(temp_db_path):
     """Timeseries supports tag filtering and returns no rows for non-overlapping ranges."""
     with arcadedb.create_database(temp_db_path) as db:
-        _create_timeseries_or_skip(db)
+        _create_timeseries(db)
 
         with db.transaction():
             db.command(
@@ -119,3 +113,31 @@ def test_timeseries_sql_tag_filter_and_empty_range(temp_db_path):
             db.query("sql", "SELECT FROM TempData WHERE ts BETWEEN 9000 AND 10000")
         )
         assert empty_rows == []
+
+
+def test_compact_timeseries_type_seals_the_tail(temp_db_path):
+    # 26.10.1 (ArcadeData/arcadedb#8574): after a bulk load, COMPACT TIMESERIES
+    # TYPE seals what is still in the mutable tail and says how much is left,
+    # instead of waiting for the 60-second background pass.
+    import numpy as np
+
+    with arcadedb.create_database(temp_db_path) as db:
+        _create_timeseries(db)
+        n = 5_000
+        ex = db.async_executor()
+        ex.append_samples(
+            "TempData",
+            1_700_000_000_000 + np.arange(n, dtype=np.int64) * 1_000,
+            [f"s{i % 10}" for i in range(n)],
+            np.arange(n, dtype=np.float64),
+        )
+        ex.wait_completion()
+
+        row = db.command("sql", "COMPACT TIMESERIES TYPE TempData").first()
+        assert row.get("typeName") == "TempData"
+        assert row.get("mutableSamples") == 0
+        # The background pass may already have sealed part of it.
+        assert 0 <= row.get("mutableSamplesBefore") <= n
+        assert (
+            db.query("sql", "SELECT count(*) AS n FROM TempData").first().get("n") == n
+        )

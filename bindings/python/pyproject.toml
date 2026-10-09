@@ -52,6 +52,7 @@ test = [
     # reaches an end user's install, and without them three shipped protocols
     # are covered by nothing but the jars being present in the archive.
     "psycopg[binary]>=3.1",  # Postgres wire
+    "adbc-driver-postgresql>=1.12",  # Postgres wire, Arrow ADBC (26.10.1+)
     "redis>=5.0",            # Redis wire
     "neo4j>=5.0",            # Bolt
     "pyarrow>=23.0.1",       # ResultSet.to_arrow(); <23.0.1 has PYSEC-2026-113
@@ -126,6 +127,11 @@ python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 addopts = "-v --tb=short"
+# A test still running after 10 minutes dumps every thread's stack, so a hang
+# explains itself instead of ending as a silent CI step timeout (one Windows
+# job sat 25 minutes in test_per_index_cache_params on 2026-09-27; its rerun
+# passed). The whole suite takes about four minutes.
+faulthandler_timeout = 600
 markers = [
     "server: tests that require server/studio support",
     "server_wire: speaks a bundled wire protocol with its real client",

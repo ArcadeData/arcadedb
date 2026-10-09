@@ -23,3 +23,6 @@ examples-ran.txt
 
 # scratch logs (e.g. `... | tee foo`)
 /foo
+
+# Output of examples/scripts/summarize_*.sh (dated matrix summaries); the benchmark page is the published record
+benchmark_results/

@@ -32,6 +32,49 @@ def test_set_wal_flush_invalid_mode(temp_db):
         temp_db.set_wal_flush("YES_FULL")  # Must be lowercase
 
 
+def test_set_wal_flush_is_database_wide(temp_db):
+    """set_wal_flush() reaches the transactions of every thread on the database.
+
+    ArcadeData/arcadedb#8352: until #8397 (26.10.1) the setter changed only the
+    calling thread, and this test pinned that so the docs would change with it.
+    It now pins the fix: a thread that never called set_wal_flush() commits with
+    the mode another thread set. If it starts failing with the new thread still
+    at the process default, the setter went back to per-thread scope and
+    guide/core/transactions.md ("Durability") is wrong.
+
+    ORDER-INDEPENDENT ON PURPOSE. The process default is not always "NO": a
+    server started in production mode anywhere in the process sets it to 1 for
+    every database opened afterwards (test_server.py does, and CI runs it
+    first). So the default is read from a fresh thread first, and the mode set
+    is one that differs from it.
+    """
+    import threading
+
+    to_python = {"NO": "no", "YES_NOMETADATA": "yes_nometadata", "YES_FULL": "yes_full"}
+
+    def flush_of_this_thread():
+        with temp_db.transaction():
+            return str(temp_db._java_db.getTransaction().getWALFlush())
+
+    def flush_of_a_new_thread():
+        seen = {}
+        t = threading.Thread(
+            target=lambda: seen.setdefault("flush", flush_of_this_thread())
+        )
+        t.start()
+        t.join()
+        return seen["flush"]
+
+    default = flush_of_a_new_thread()
+    chosen = "YES_FULL" if default != "YES_FULL" else "NO"
+    temp_db.set_wal_flush(to_python[chosen])
+    try:
+        assert flush_of_this_thread() == chosen
+        assert flush_of_a_new_thread() == chosen
+    finally:
+        temp_db.set_wal_flush(to_python[default])
+
+
 def test_set_read_your_writes(temp_db):
     """Test read-your-writes configuration."""
     # Default is True
@@ -46,7 +89,7 @@ def test_set_read_your_writes(temp_db):
 
 def test_set_auto_transaction(temp_db):
     """Test auto-transaction configuration."""
-    # Default is True
+    # The default is off (a bare write raises); turn it on
     temp_db.set_auto_transaction(True)
 
     # Disable for manual control

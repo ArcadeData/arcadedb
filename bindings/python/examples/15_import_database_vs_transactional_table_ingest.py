@@ -10,11 +10,15 @@ and column counts, then loads them into separate ArcadeDB databases using:
 4) Python `db.import_documents(...)` wrapper over the Java importer
 
 Goal: provide a more realistic ingest-speed comparison than a single tiny table.
-This benchmark includes importer-based paths because they are possible, but the
-repository recommendation for Python-managed document preload remains async SQL insert.
-In practice, both `IMPORT DATABASE` and `db.import_documents(...)` have shown
-reliability issues on larger real workloads, including memory pressure and possible OoM
-failures.
+This benchmark includes importer-based paths because they are possible. The
+repository recommendation for Python-managed document preload is `db.insert_many(...)`,
+which is not one of the arms here: it crosses the FFI boundary once per batch and loops
+Java-side.
+
+The async SQL arm is pinned to one worker and is not a recommendation. The pin was
+for wheels before 26.10.1, where the async executor silently discarded a share of the
+commands submitted to it above parallel level 1 (ArcadeData/arcadedb#7615, fixed in
+#7625). `--async-parallel` still defaults to, and accepts only, 1.
 
 Observed benchmark result (2026-03-19, before `db.import_documents(...)` was added):
 For:
@@ -29,12 +33,10 @@ Measured ingest times:
 - Transactional INSERT: 189.921s
 - Async SQL INSERT: 146.670s
 - IMPORT DATABASE (`parallel=1`): 58.281s
-- IMPORT DATABASE (`parallel=4`): 48.580s
 
-In this synthetic shape, increasing SQL import parallelism from 1 to 4 did not improve
-throughput materially. IMPORT DATABASE was faster than both Async SQL and Transactional
-INSERT, but that does not make the importer-based paths the default recommendation for
-the rest of the examples.
+IMPORT DATABASE was faster than both Async SQL and Transactional INSERT, but that does
+not make the importer-based paths the default recommendation for the rest of the
+examples.
 
 Known limitation:
 On some ArcadeDB import code paths, `IMPORT DATABASE` with CSV documents may not apply
@@ -152,7 +154,7 @@ def collect_table_sample(
     row_id: int,
     columns: List[ColumnDef],
 ) -> dict:
-    row = db.query("sql", f"SELECT FROM {table_name} WHERE id = {row_id}").one()
+    row = db.query("sql", f"SELECT FROM {table_name} WHERE id = ?", row_id).one()
     sample: dict = {}
 
     for column_name, column_type in columns:
@@ -396,6 +398,21 @@ def run_async_sql_load(
     async_parallel: int,
     heap_size: str,
 ) -> dict:
+    """Comparison arm: async SQL INSERT through the async executor.
+
+    This arm exists to measure the async executor, so it keeps using it. It is
+    pinned to one worker. The pin was for wheels before 26.10.1: above parallel
+    level 1 the executor silently discarded a share of the commands submitted
+    to it (ArcadeData/arcadedb#7615, fixed in #7625), and a benchmark that
+    reports the time for work it did not do is worse than no number. The
+    submitted-versus-stored check below catches such a loss on any wheel.
+    """
+    if async_parallel != 1:
+        raise ValueError(
+            "run_async_sql_load only runs at --async-parallel 1; "
+            "see ArcadeData/arcadedb#7615"
+        )
+
     recreate_dir(db_path)
 
     db = arcadedb.create_database(
@@ -405,7 +422,7 @@ def run_async_sql_load(
 
     db.set_read_your_writes(False)
     async_exec = db.async_executor()
-    async_exec.set_parallel_level(max(1, async_parallel))
+    async_exec.set_parallel_level(1)
     async_exec.set_commit_every(batch_size)
     async_exec.set_transaction_use_wal(False)
 
@@ -458,6 +475,11 @@ def run_async_sql_load(
                 .get("c")
                 or 0
             )
+            if int(loaded) != rows_per_table:
+                raise RuntimeError(
+                    f"Async SQL ingest stored {int(loaded)} of {rows_per_table} "
+                    f"rows for {table_name}; see ArcadeData/arcadedb#7615"
+                )
             total_loaded += int(loaded)
 
         elapsed = time.perf_counter() - start
@@ -636,6 +658,17 @@ def run_import_documents_load(
                             staging_dir / f"{table_name}_chunk_{chunk_index:05d}.csv"
                         )
                         chunk_index += 1
+                        # newline="" so the terminators are written EXACTLY as
+                        # they were read. The source above is opened with
+                        # newline="" too, so each line still carries its own
+                        # ending; writing it back in text mode translates the
+                        # "\n" a second time, which on Windows turns "\r\n"
+                        # into "\r\r\n". The stray "\r" lands inside the last
+                        # field, so the header's final column reads "name\r",
+                        # the importer stops recognising the header, and counts
+                        # it as data -- one extra row per chunk. CI runs two
+                        # tables, so the parity check failed with exactly two
+                        # (expected 4,000, got 4,002), on Windows only.
                         chunk_handle = chunk_path.open(
                             "w", encoding="utf-8", newline=""
                         )
@@ -744,7 +777,10 @@ def main() -> None:
         "--async-parallel",
         type=int,
         default=1,
-        help="Parallel workers for async SQL path (default 1 for stability)",
+        help=(
+            "Async SQL workers; only 1 is accepted (a pin for wheels before "
+            "26.10.1, ArcadeData/arcadedb#7615)"
+        ),
     )
     parser.add_argument(
         "--parallel",

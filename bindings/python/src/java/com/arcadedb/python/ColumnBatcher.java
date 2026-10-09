@@ -4,7 +4,8 @@
  * Encodes up to `max` rows of a ResultSet into ONE byte[]: a JSON header
  * (column names/types/sizes) followed by per-column buffers — fixed-width
  * little-endian for numerics/bools/temporals (epoch millis), offset+UTF-8
- * for strings, plus a null bitmap per column. Columns whose values don't
+ * for strings, plus a null bitmap per column. A DECIMAL column ("dec" type) uses the string layout with each
+ * BigDecimal written in full, so no digit is lost to a double. Columns whose values don't
  * fit those encodings are serialized as one JSON array ("json" type). Python decodes with numpy.frombuffer
  * (ResultSet.to_columns / the fast to_dataframe path). Measured ~1.2x of
  * Java-native iteration on 100k-row scans (vs 3.4x for the JSON row path).
@@ -22,8 +23,10 @@ import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 public final class ColumnBatcher {
 
@@ -49,16 +52,35 @@ public final class ColumnBatcher {
   }
 
   public static byte[] nextColumnBatch(final ResultSet rs, final int max, final String joinedColumns) {
-    // empty column spec: derive the column set from the first row
+    // empty column spec: the column set is the union of every row's property names, in order of first appearance.
+    // A document is schemaless, so the first row says nothing about the others: taking its names alone dropped every
+    // property it lacked (humemai/arcadedb-embedded-python#113). Each batch reports its own set in its header.
     String[] columns = parseColumnSpec(joinedColumns);
     final List<Result> results = new ArrayList<>(Math.min(max, 1 << 16));
     while (results.size() < max && rs.hasNext())
       results.add(rs.next());
     if (columns == null) {
-      if (results.isEmpty())
-        columns = new String[0];
-      else
-        columns = results.get(0).getPropertyNames().toArray(new String[0]);
+      final Set<String> names = new LinkedHashSet<>();
+      // Rows of one type almost always list the same names in the same order, so a row is compared with the one
+      // before it name by name (String.equals answers an identical instance at once) and only a row that differs
+      // is hashed into the set.
+      String[] previous = null;
+      for (final Result row : results) {
+        final Set<String> rowNames = row.getPropertyNames();
+        if (previous != null && rowNames.size() == previous.length) {
+          int i = 0;
+          for (final String name : rowNames)
+            if (!name.equals(previous[i++])) {
+              i = -1;
+              break;
+            }
+          if (i >= 0)
+            continue;
+        }
+        names.addAll(rowNames);
+        previous = rowNames.toArray(new String[0]);
+      }
+      columns = names.toArray(new String[0]);
     }
     final int n = columns.length;
     final List<Object[]> rows = new ArrayList<>(results.size());
@@ -99,6 +121,8 @@ public final class ColumnBatcher {
           t = "dt";
         else if (v instanceof String || v instanceof Character)
           t = "str";
+        else if (v instanceof java.math.BigDecimal)
+          t = "dec";
         else if (v instanceof float[])
           t = "f4v";
         else if (v instanceof double[])
@@ -210,7 +234,7 @@ public final class ColumnBatcher {
           arr.put(v);
         }
         colBuf = arr.toString().getBytes(StandardCharsets.UTF_8);
-      } else { // strings: int32 offsets (count+1) then utf8 bytes
+      } else { // strings and decimals: int32 offsets (count+1) then utf8 bytes
         final ByteArrayOutputStream chars = new ByteArrayOutputStream(count * 16);
         final ByteBuffer offs = ByteBuffer.allocate((count + 1) * 4).order(ByteOrder.LITTLE_ENDIAN);
         int pos = 0;
@@ -220,7 +244,9 @@ public final class ColumnBatcher {
           if (v == null)
             nulls[r >> 3] |= (1 << (r & 7));
           else {
-            final byte[] b = v.toString().getBytes(StandardCharsets.UTF_8);
+            // toPlainString: a BigDecimal's toString may use an exponent ("1E+3"), which is exact but needless here
+            final String text = v instanceof java.math.BigDecimal d ? d.toPlainString() : v.toString();
+            final byte[] b = text.getBytes(StandardCharsets.UTF_8);
             chars.write(b, 0, b.length);
             pos += b.length;
           }

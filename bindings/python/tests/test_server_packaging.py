@@ -3,12 +3,13 @@
 This file exists because of a specific failure. On 2026-07-05 commit cfcde0c2
 excluded the server JARs and deleted ``server.py`` to save ~7 MB, that shipped
 in stable 26.7.2 on 2026-07-09, and nobody noticed for three weeks until a
-downstream user said so on the commit itself. Every other server test in this
-suite is guarded by ``has_server_support()``, so when the JARs vanished those
-tests did not fail. **They skipped, silently, and the suite stayed green.**
+downstream user said so on the commit itself. The other server tests were
+guarded by a helper that skipped them when the JARs were missing, so they did
+not fail: **they skipped, silently, and the suite stayed green.** That guard is
+gone, and CI now fails any skip it does not list (scripts/check_test_skips.py),
+so a wheel without the server stack fails the server tests as well as these.
 
-A guard that skips when the thing it guards is missing cannot detect the thing
-going missing. So these tests deliberately do NOT skip: if the server stack is
+These tests state the packaging requirement directly: if the server stack is
 absent, they fail.
 
 If a future build genuinely wants a slim wheel, that is a decision to make on
@@ -54,8 +55,8 @@ def test_server_jars_are_bundled():
     assert not missing, (
         f"server JARs missing from the wheel: {missing}\n"
         f"This is how server mode was lost in 26.7.2. If the removal is "
-        f"deliberate, delete this test explicitly rather than leaving the "
-        f"server tests to skip themselves into a green suite.\n"
+        f"deliberate, delete this test explicitly rather than letting the "
+        f"suite go quiet.\n"
         f"jars present: {names}"
     )
 
@@ -73,25 +74,6 @@ def test_server_api_is_importable_and_exported():
     assert hasattr(adb, "create_server"), "create_server not importable"
     assert "ArcadeDBServer" in adb.__all__, "ArcadeDBServer missing from __all__"
     assert "create_server" in adb.__all__, "create_server missing from __all__"
-
-
-def test_has_server_support_agrees_with_reality():
-    """The skip-guard other server tests rely on must not lie.
-
-    If ``has_server_support()`` returned False while the JARs are present,
-    every server test would skip and the suite would look fine while covering
-    nothing. That is precisely the failure mode this file exists to close, so
-    the guard itself is checked against the JARs it claims to detect.
-    """
-    from tests.conftest import has_server_support
-
-    names = _jar_names()
-    jars_present = any(n.startswith("arcadedb-studio") for n in names)
-    assert has_server_support() == jars_present, (
-        f"has_server_support() returned {has_server_support()} but studio JAR "
-        f"present={jars_present}. The guard and the wheel disagree, so server "
-        f"tests are skipping or running for the wrong reason."
-    )
 
 
 def test_studio_jar_carries_no_classes():
@@ -135,7 +117,7 @@ def test_server_starts_and_serves_http(temp_server_root):
         assert server.is_started()
         port = server.get_http_port()
         r = requests.get(
-            f"http://localhost:{port}/api/v1/server",
+            f"http://localhost:{port}/api/v1/server?mode=basic",
             auth=("root", TEST_PASSWORD),
             timeout=30,
         )

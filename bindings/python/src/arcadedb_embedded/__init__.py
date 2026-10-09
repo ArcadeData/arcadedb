@@ -72,6 +72,7 @@ from .vector import (
     VectorIndex,
     to_java_byte_array,
     to_java_float_array,
+    to_java_int_array,
     to_python_array,
 )
 
@@ -111,6 +112,7 @@ __all__ = [
     "VectorIndex",
     "to_java_byte_array",
     "to_java_float_array",
+    "to_java_int_array",
     "to_python_array",
     # Server classes
     "ArcadeDBServer",

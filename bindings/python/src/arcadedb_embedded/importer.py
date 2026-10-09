@@ -82,7 +82,12 @@ def normalize_import_source(source: str | PathLike[str]) -> str:
     parsed = urlparse(source_text)
     if parsed.scheme and not (len(parsed.scheme) == 1 and source_text[1:3] == ":\\"):
         return source_text
-    return Path(source_text).expanduser().resolve(strict=False).as_uri()
+    posix = Path(source_text).expanduser().resolve(strict=False).as_posix()
+    # Path.as_uri() percent-encodes (a space becomes %20), and the engine opens
+    # what follows `file://` as a plain path without decoding it.
+    if posix.startswith("//"):  # a UNC path: file://server/share/name
+        return f"file:{posix}"
+    return f"file://{posix}" if posix.startswith("/") else f"file:///{posix}"
 
 
 def _build_import_settings(

@@ -8,8 +8,8 @@
 #   1) Build ArcadeDB JARs in Docker:
 #        docker run --rm -v "$PWD":/src -w /src maven:3.9-amazoncorretto-25 \
 #          sh -c "git config --global --add safe.directory /src && ./mvnw -DskipTests -pl package -am package"
-#   2) Point the build at your JAR directory:
-#        cd bindings/python && ./scripts/build.sh linux/amd64 3.12 package/target/arcadedb-*/lib
+#   2) Point the build at the full assembly's lib directory:
+#        cd bindings/python && ./scripts/build.sh linux/amd64 3.12 ../../package/target/arcadedb-<version>.dir/arcadedb-<version>/lib
 
 set -euo pipefail
 
@@ -59,7 +59,7 @@ print_usage() {
     echo "  windows/amd64  Windows x86_64 (native build on Windows)"
     echo ""
     echo "PYTHON_VERSION:"
-    echo "  Python version for wheel (default: 3.12)"
+    echo "  Python version for wheel (default: 3.12); used by Linux (Docker) builds only"
     echo "  Examples: 3.10, 3.11, 3.12, 3.13, 3.14"
     echo ""
     echo "JAR_LIB_DIR (optional):"
@@ -75,7 +75,7 @@ print_usage() {
     echo "  $0 linux/amd64                        # Build for Linux x86_64 with Python 3.12 (Docker)"
     echo "  $0 linux/amd64 3.11                   # Build for Linux x86_64 with Python 3.11 (Docker)"
     echo "  $0 linux/amd64 3.12 /path/to/jars     # Build using JARs from /path/to/jars"
-    echo "  $0 darwin/arm64 3.12                  # Build for macOS ARM64 with Python 3.12 (native)"
+    echo "  $0 darwin/arm64                       # Build for macOS ARM64 (native; uses the first Python with a working build module)"
     echo ""
     echo "Package features:"
     echo "  ✅ Bundled platform-specific JRE (no Java required)"
@@ -401,15 +401,45 @@ else
 
     if [[ -n "$JAR_LIB_DIR" ]]; then
         echo -e "${CYAN}🔎 Verifying embedded local integration JAR...${NC}"
-        ARCADEDB_VERSION="$DOCKER_TAG" python3 - << 'PY'
+        ARCADEDB_VERSION="$DOCKER_TAG" BUILD_VERSION="${BUILD_VERSION:-}" NEW_WHEELS="${NEW_WHEELS:-}" python3 - << 'PY'
 import hashlib
 import os
+import re
 import sys
 import zipfile
 from pathlib import Path
 
 ARCADEDB_VERSION = os.environ["ARCADEDB_VERSION"]
-wheel = sorted(Path("dist").glob("arcadedb_embedded-*.whl"))[-1]
+# NOT sorted()[-1]: that is a LEXICOGRAPHIC sort over filenames, where
+# "26.9.1" ranks above "26.10.1" because '9' > '1'. On 2026-09-19 that made
+# this check open September's 26.9.1 wheel, look for October's
+# arcadedb-integration-26.10.1-SNAPSHOT.jar inside it, and fail a wheel that
+# was in fact correct and complete. Nor the newest by mtime: `docker cp` keeps
+# the timestamp from inside the container, so a fully cached run's wheel can be
+# older than one left in dist/ by another build. Take the wheel this run added
+# (NEW_WHEELS), else the newest wheel of the version this run asked for
+# (BUILD_VERSION when set, as the wheel's own version follows it), and assert
+# the version, so picking the wrong file fails loudly.
+_want = (os.environ.get("BUILD_VERSION") or ARCADEDB_VERSION).replace("-SNAPSHOT", "").replace("-", ".")
+
+
+def _is_wanted(wheel_path):
+    # The wheel's version field, matched whole: 26.10.1 is 26.10.1 or its dev, post, or pre-release, never 26.10.10.
+    parts = wheel_path.name.split("-")
+    return len(parts) > 1 and re.fullmatch(re.escape(_want) + r"(\.dev\d+|\.post\d+|(a|b|rc)\d+)?", parts[1]) is not None
+
+
+_new = [Path(p) for p in os.environ.get("NEW_WHEELS", "").split() if p.endswith(".whl")]
+wheels = _new or sorted((p for p in Path("dist").glob("arcadedb_embedded-*.whl") if _is_wanted(p)),
+                        key=lambda p: p.stat().st_mtime)
+if not wheels:
+    print(f"❌ no arcadedb_embedded-{_want} wheel in dist/", file=sys.stderr)
+    sys.exit(1)
+wheel = wheels[-1]
+if not _is_wanted(wheel):
+    print(f"❌ newest wheel is {wheel.name}, which is not the "
+          f"{ARCADEDB_VERSION} build this run produced", file=sys.stderr)
+    sys.exit(1)
 local_jar_name = f"arcadedb-integration-{ARCADEDB_VERSION}.jar"
 local_jar = Path(f"local-jars/lib/{local_jar_name}")
 
@@ -443,6 +473,38 @@ fi
 echo ""
 
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+# SUPERSEDED WHEELS ARE DELETED, NOT KEPT. A wheel left in dist/ from an
+# earlier build was read as evidence of the engine inside a newer one
+# (2026-09-15: a 26.10.1.dev0 label beside a 26.6.1 jar, from a build days
+# apart), which is exactly the confusion a stale artifact produces. Only the
+# wheel this build wrote survives for its python/platform tag; wheels for
+# other tags are someone else's build and are left alone.
+# Which wheel is "this build's": the one this run added (NEW_WHEELS, Docker path), not the newest by mtime. `docker cp`
+# keeps the container's timestamp, so after a fully cached run `ls -t` can rank an older build's wheel of ANOTHER
+# version first, and this loop would then delete the wheel just produced as "superseded" (CodeRabbit on upstream #9294).
+if [[ -n "${NEW_WHEELS:-}" ]]; then
+    NEWEST_WHEEL=$(echo "$NEW_WHEELS" | head -n1)
+else
+    NEWEST_WHEEL=$(ls -t dist/*.whl | head -n1)
+fi
+NEWEST_TAG=$(basename "$NEWEST_WHEEL" | sed -E 's/^[^-]+-[^-]+-//')
+for old in dist/*.whl; do
+    if [[ "$old" != "$NEWEST_WHEEL" && "$(basename "$old" | sed -E 's/^[^-]+-[^-]+-//')" == "$NEWEST_TAG" ]]; then
+        rm -f "$old"
+        echo -e "${YELLOW}🗑  Removed superseded wheel $(basename "$old")${NC}"
+    fi
+done
+
+# THE WHEEL SIZE POLICY: a wheel at or over 100 MB means a mistake (a whole distribution in JAR_LIB_DIR, an optional jar,
+# a stale artifact), and an embedded database should not ship a huge wheel anyway. Fail it here, before anything tests
+# or publishes it. The release workflow checks the same limit again before the upload.
+SIZE_PY=$(command -v python3 || command -v python || true)
+if [[ -z "$SIZE_PY" ]]; then
+    echo -e "${YELLOW}⚠️  No python found: the wheel size check was skipped${NC}"
+else
+    "$SIZE_PY" "$SCRIPT_DIR/verify_wheel_size.py" "$NEWEST_WHEEL" || exit 1
+fi
+
 echo -e "${GREEN}🎉 Build completed successfully!${NC}"
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
@@ -469,9 +531,9 @@ fi
 
 echo ""
 echo -e "${BLUE}💡 Next steps:${NC}"
-echo -e "   🧪 Run tests (from anywhere in the repo):"
+echo -e "   🧪 Run tests (from the repository root or bindings/python):"
 echo -e "      ${YELLOW}uv run pytest${NC}"
 echo ""
-echo -e "   📤 Publish to PyPI:"
-echo -e "      ${YELLOW}twine upload dist/*.whl${NC}"
+echo -e "   📤 Releases publish through the release workflow (docs/development/release.md);"
+echo -e "      do not upload wheels by hand"
 echo ""

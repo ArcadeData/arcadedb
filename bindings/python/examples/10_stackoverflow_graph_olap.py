@@ -118,7 +118,7 @@ def graph_olap_acceleration_mode(
     *,
     use_gav: bool = False,
 ) -> str:
-    if db in ("arcadedb_sql", "arcadedb_cypher"):
+    if db == "arcadedb_cypher":
         return "gav" if use_gav else "off"
     return "off"
 
@@ -208,7 +208,7 @@ def budget_allocation_report(args) -> dict:
 
 BENCHMARK_SCOPE_NOTE = (
     "Scope: OLAP query fairness on a common query suite. "
-    "Ingestion paths differ by engine (ArcadeDB uses Cypher inserts, Ladybug uses staged CSV + COPY), "
+    "Ingestion paths differ by engine (ArcadeDB loads through GraphBatch, Ladybug uses staged CSV + COPY), "
     "so load/index timings are not a same-path ingest comparison."
 )
 
@@ -1143,10 +1143,13 @@ def arcadedb_insert_vertices(db, vertex_type: str, rows: List[Dict[str, Any]]):
     if not rows:
         return
     parallel_flush = db.async_executor().get_parallel_level() > 1
+    # WAL off (use_wal=False, GraphBatch's default): this example rebuilds its database from
+    # the source files, so a crash mid-import costs a re-run. An import that must survive a
+    # crash passes use_wal=True (ArcadeDB's recommendation, ArcadeData/arcadedb#8287).
     with db.graph_batch(
         batch_size=max(1, len(rows)),
         expected_edge_count=0,
-        bidirectional=False,
+        bidirectional=True,
         commit_every=max(1, len(rows)),
         use_wal=False,
         parallel_flush=parallel_flush,
@@ -1184,9 +1187,15 @@ def arcadedb_insert_edges(
     if not rows:
         return
     parallel_flush = db.async_executor().get_parallel_level() > 1
+    # WAL off (use_wal=False, GraphBatch's default): this example rebuilds its database from
+    # the source files, so a crash mid-import costs a re-run. An import that must survive a
+    # crash passes use_wal=True (ArcadeDB's recommendation, ArcadeData/arcadedb#8287).
     with db.graph_batch(
         batch_size=max(1, len(rows)),
         expected_edge_count=max(1, len(rows)),
+        # Two-way edges, as the schema declares them: a query the planner walks
+        # from the target end reads the incoming pointers, and a one-way load
+        # returned 0 rows there with no error (ArcadeData/arcadedb#8625).
         bidirectional=True,
         commit_every=max(1, len(rows)),
         use_wal=False,
@@ -1211,7 +1220,7 @@ def arcadedb_insert_edges(
 
 
 def build_arcadedb_rid_lookup(db, vertex_type: str) -> Dict[int, str]:
-    rows = db.query("sql", f"SELECT Id, @rid as rid FROM {vertex_type}").to_json_list()
+    rows = db.query("sql", f"SELECT Id, @rid as rid FROM {vertex_type}").to_list()
     rid_lookup: Dict[int, str] = {}
     for row in rows:
         row_id = row.get("Id")
@@ -4081,7 +4090,7 @@ def execute_arcadedb_fast_asker_answerer_pairs(db) -> List[Dict[str, Any]]:
     for row in db.query(
         "sql",
         "SELECT @out.Id AS asker_id, @in.Id AS question_id FROM ASKED",
-    ).to_json_list():
+    ).to_list():
         asker_id = row.get("asker_id")
         question_id = row.get("question_id")
         if asker_id is None or question_id is None:
@@ -4094,7 +4103,7 @@ def execute_arcadedb_fast_asker_answerer_pairs(db) -> List[Dict[str, Any]]:
     for row in db.query(
         "sql",
         "SELECT @out.Id AS answerer_id, @in.Id AS answer_id FROM ANSWERED",
-    ).to_json_list():
+    ).to_list():
         answerer_id = row.get("answerer_id")
         answer_id = row.get("answer_id")
         if answerer_id is None or answer_id is None:
@@ -4107,7 +4116,7 @@ def execute_arcadedb_fast_asker_answerer_pairs(db) -> List[Dict[str, Any]]:
     for row in db.query(
         "sql",
         "SELECT @out.Id AS question_id, @in.Id AS answer_id FROM HAS_ANSWER",
-    ).to_json_list():
+    ).to_list():
         question_id = row.get("question_id")
         answer_id = row.get("answer_id")
         if question_id is None or answer_id is None:
@@ -4143,7 +4152,7 @@ def execute_arcadedb_fast_asker_answerer_pairs(db) -> List[Dict[str, Any]]:
 
 def execute_arcadedb_fast_top_questions_by_total_comments(db) -> List[Dict[str, Any]]:
     question_ids: List[int] = []
-    for row in db.query("sql", "SELECT Id AS question_id FROM Question").to_json_list():
+    for row in db.query("sql", "SELECT Id AS question_id FROM Question").to_list():
         qid = row.get("question_id")
         if qid is None:
             continue
@@ -4175,7 +4184,7 @@ def execute_arcadedb_fast_top_questions_by_total_comments(db) -> List[Dict[str, 
     for row in db.query(
         "sql",
         "SELECT @out.Id AS question_id, @in.Id AS answer_id FROM HAS_ANSWER",
-    ).to_json_list():
+    ).to_list():
         qid = row.get("question_id")
         aid = row.get("answer_id")
         if qid is None or aid is None:
@@ -4206,7 +4215,6 @@ def run_olap_arcadedb(
     threads: int,
     jvm_kwargs: dict,
     dataset_name: str,
-    olap_language: str = "cypher",
     only_query: Optional[str] = None,
     manual_checks: bool = False,
     query_runs: int = 1,
@@ -4259,12 +4267,6 @@ def run_olap_arcadedb(
         gav_ready_wait_time_s = time.perf_counter() - gav_wait_start
 
     print("Running OLAP queries...")
-    query_language = (olap_language or "cypher").strip().lower()
-    if query_language != "cypher":
-        raise ValueError(
-            "ArcadeDB SQL mode is disabled for Example 10. Use cypher mode only."
-        )
-
     query_results, query_time = run_queries(
         lambda cypher: execute_arcadedb_cypher_olap_query(db, cypher),
         only_query=only_query,
@@ -4310,7 +4312,7 @@ def run_olap_arcadedb(
         "disk_after_load_bytes": disk_after_load,
         "disk_after_index_bytes": disk_after_index,
         "disk_after_queries_bytes": disk_after_queries,
-        "arcadedb_olap_language": query_language,
+        "arcadedb_olap_language": "cypher",
         "gav_enabled": use_gav,
         "graph_olap_acceleration_mode": "gav" if use_gav else "off",
         "graph_olap_acceleration_enabled": use_gav,
@@ -6288,11 +6290,7 @@ def write_results(db_path: Path, args: argparse.Namespace, summary: dict):
         ),
         "arcadedb_olap_language": summary.get(
             "arcadedb_olap_language",
-            (
-                args.arcadedb_olap_language
-                if args.db in ("arcadedb_sql", "arcadedb_cypher")
-                else None
-            ),
+            (args.arcadedb_olap_language if args.db == "arcadedb_cypher" else None),
         ),
         "ladybug_version": (
             getattr(ladybug_module, "__version__", None)
@@ -6351,7 +6349,7 @@ def write_results(db_path: Path, args: argparse.Namespace, summary: dict):
         "graph_olap_setup_time_s": summary.get("graph_olap_setup_time_s"),
         "gav_enabled": summary.get(
             "gav_enabled",
-            args.use_gav if args.db in ("arcadedb_sql", "arcadedb_cypher") else False,
+            args.use_gav if args.db == "arcadedb_cypher" else False,
         ),
         "gav_name": summary.get("gav_name"),
         "gav_status": summary.get("gav_status"),
@@ -6521,7 +6519,7 @@ def run_in_docker(args) -> bool:
         filtered_args.append(arg)
 
     arcadedb_wheel_mount_path = None
-    if args.db in ("arcadedb_sql", "arcadedb_cypher"):
+    if args.db == "arcadedb_cypher":
         wheel_candidates = sorted(
             (repo_root / "bindings/python/dist").glob("*embed*.whl")
         )
@@ -6640,7 +6638,6 @@ def main():
     parser.add_argument(
         "--db",
         choices=[
-            "arcadedb_sql",
             "arcadedb_cypher",
             "ladybug",
             "ladybugdb",
@@ -6744,9 +6741,7 @@ def main():
     if args.server_fraction <= 0 or args.server_fraction >= 1:
         parser.error("--server-fraction must be > 0 and < 1")
 
-    args.arcadedb_olap_language = None
-    if args.db.startswith("arcadedb_"):
-        args.arcadedb_olap_language = args.db.removeprefix("arcadedb_")
+    args.arcadedb_olap_language = "cypher" if args.db == "arcadedb_cypher" else None
     args.graph_olap_acceleration_mode = graph_olap_acceleration_mode(
         args.db,
         use_gav=args.use_gav,
@@ -6761,7 +6756,7 @@ def main():
             args.mem_limit,
             args.jvm_heap_fraction,
         )
-        if args.db in ("arcadedb_sql", "arcadedb_cypher")
+        if args.db == "arcadedb_cypher"
         else args.mem_limit
     )
     args.heap_size_effective = heap_size
@@ -6787,7 +6782,7 @@ def main():
     print("=" * 80)
     print(f"Dataset: {args.dataset}")
     print(f"DB: {args.db}")
-    if args.db in ("arcadedb_sql", "arcadedb_cypher"):
+    if args.db == "arcadedb_cypher":
         print(f"ArcadeDB OLAP language: {args.arcadedb_olap_language}")
         print(f"GAV enabled: {args.use_gav}")
     elif args.db == "neo4j":
@@ -6825,7 +6820,7 @@ def main():
     stop_event, rss_state, rss_thread = start_rss_sampler()
     start_time = time.perf_counter()
 
-    if args.db in ("arcadedb_sql", "arcadedb_cypher"):
+    if args.db == "arcadedb_cypher":
         summary = run_olap_arcadedb(
             db_path=db_path,
             data_dir=data_dir,
@@ -6833,7 +6828,6 @@ def main():
             threads=args.threads,
             jvm_kwargs=jvm_kwargs,
             dataset_name=args.dataset,
-            olap_language=args.arcadedb_olap_language,
             only_query=args.only_query,
             manual_checks=args.manual_checks,
             query_runs=args.query_runs,

@@ -11,13 +11,21 @@ import jpype
 from ._logging import get_logger, log_swallowed_exception
 from .exceptions import ArcadeDBError
 from .graph import Document, Vertex
-from .type_conversion import convert_python_to_java
+from .type_conversion import convert_python_to_java, json_bulk_scalar_ok
 
 _LOGGER = get_logger(__name__)
 
 
 class GraphBatch:
-    """Wrapper for Java GraphBatch with builder-backed configuration."""
+    """Wrapper for Java GraphBatch with builder-backed configuration.
+
+    create_vertices(), flush() and close(), and new_edge()/new_edges() when the
+    buffer fills, manage their own transactions. From engine 26.10.1 they refuse
+    to run inside a transaction you opened (an ArcadeDBError) and leave it
+    untouched; on 26.9.1 and earlier they commit it (ArcadeData/arcadedb#9242).
+    Call them outside your own transactions either way; see
+    docs/api/graph_batch.md.
+    """
 
     _VALID_WAL_FLUSH_MODES = {
         "no": "NO",
@@ -163,6 +171,11 @@ class GraphBatch:
         """
         Create multiple vertices efficiently and return their RIDs.
 
+        Call it outside your own transactions: from engine 26.10.1 it raises
+        ArcadeDBError inside one and leaves it untouched; on 26.9.1 and earlier
+        it commits the transaction open on this thread, yours included
+        (ArcadeData/arcadedb#9242).
+
         Args:
             type_name: Vertex type name.
             count_or_properties: Either an integer vertex count or an iterable of
@@ -170,6 +183,13 @@ class GraphBatch:
                 without properties when passing an iterable.
         """
         self._check_not_closed()
+        # From engine 26.10.1 the engine refuses to run inside a transaction the
+        # caller opened and leaves it untouched, so the rollback below is only
+        # ever for a transaction this call began. On 26.9.1 and earlier it
+        # joined the caller's transaction, committed it with the vertices, and
+        # on a retryable error rolled it back before retrying in one of its own
+        # (ArcadeData/arcadedb#9242).
+        owns_transaction = not self._java_db.isTransactionActive()
         try:
             if isinstance(count_or_properties, int):
                 java_rids = self._java_graph_batch.createVertices(
@@ -187,12 +207,23 @@ class GraphBatch:
                 self._to_java_property_matrix(rows),
             )
             return [str(rid) for rid in java_rids]
-        except Exception as e:
+        except BaseException as e:
+            # As in create_vertex: a failure other than a retryable one (a
+            # duplicate key, a KeyboardInterrupt) leaves the engine's
+            # transaction open, so a later write outside any transaction is
+            # accepted and lost at close (#121).
+            if owns_transaction:
+                try:
+                    if self._java_db.isTransactionActive():
+                        self._java_db.rollback()
+                except Exception:
+                    log_swallowed_exception(_LOGGER, "during batch vertices rollback")
+            if not isinstance(e, Exception):
+                raise
             raise ArcadeDBError(
                 f"Failed to create batch vertices for type '{type_name}': {e}"
             ) from e
 
-    _JSON_SAFE_TYPES = (str, int, float, bool, type(None))
     _BULK_CHUNK = 100_000  # rows per boundary crossing in bulk paths
 
     def _create_vertices_json_bulk(self, type_name, rows):
@@ -205,12 +236,14 @@ class GraphBatch:
         except Exception:
             return None
 
-        json_safe = self._JSON_SAFE_TYPES
         for row in rows:
             if row:
                 for value in row.values():
-                    if not isinstance(value, json_safe):
-                        return None  # e.g. datetime/bytes: matrix path preserves types
+                    if not json_bulk_scalar_ok(value):
+                        # e.g. datetime/bytes (the matrix path preserves types), or a
+                        # value JSON would change: an integer beyond 64 bits, NaN or
+                        # Infinity, a lone surrogate
+                        return None
 
         import json
 
@@ -308,14 +341,14 @@ class GraphBatch:
                     )
                 return self
 
-            json_safe = self._JSON_SAFE_TYPES
             rows = []
             for src, dst, p in zip(source_rids, destination_rids, properties):
                 row = {"_src": str(src), "_dst": str(dst)}
                 for key, value in (p or {}).items():
-                    if key in ("_src", "_dst") or not isinstance(value, json_safe):
-                        # non-JSON value (datetime/bytes): per-edge fallback
-                        # preserves types exactly
+                    if key in ("_src", "_dst") or not json_bulk_scalar_ok(value):
+                        # non-JSON value (datetime/bytes), or one JSON would change
+                        # (an integer beyond 64 bits, NaN or Infinity, a lone
+                        # surrogate): per-edge fallback preserves types exactly
                         props_iter = properties
                         for s2, d2, p2 in zip(
                             source_rids, destination_rids, props_iter
@@ -340,7 +373,15 @@ class GraphBatch:
             ) from e
 
     def flush(self) -> "GraphBatch":
-        """Flush buffered edges to disk."""
+        """Flush buffered edges to disk.
+
+        Call it outside your own transactions: from engine 26.10.1 it raises
+        ArcadeDBError inside one when edges are buffered, leaving the
+        transaction and the buffer as they were, and so do new_edge() and
+        new_edges() when the buffer fills and flushes. On 26.9.1 and earlier
+        they commit the transaction open on this thread, yours included
+        (ArcadeData/arcadedb#9242).
+        """
         self._check_not_closed()
         try:
             self._java_graph_batch.flush()
@@ -349,15 +390,37 @@ class GraphBatch:
             raise ArcadeDBError(f"Failed to flush GraphBatch: {e}") from e
 
     def close(self):
-        """Flush remaining work and finalize deferred incoming edges."""
+        """Flush remaining work and finalize deferred incoming edges.
+
+        Leaving a ``with`` block calls this. Call it outside your own
+        transactions: from engine 26.10.1, inside one with work still pending,
+        it raises ArcadeDBError and the batch stays open, so a later close()
+        after your transaction ends writes that work. On 26.9.1 and earlier it
+        commits the transaction open on this thread, yours included
+        (ArcadeData/arcadedb#9242).
+        """
         if self._closed:
             return
+        refused = False
         try:
             self._java_graph_batch.close()
         except Exception as e:
+            # A close the engine refused because of the caller's transaction
+            # released nothing: the batch is still open with its work pending,
+            # and marking the wrapper closed would make the retry a no-op that
+            # drops that work and keeps the database's batch guard held.
+            refused = self._is_callers_transaction_refusal(e)
             raise ArcadeDBError(f"Failed to close GraphBatch: {e}") from e
         finally:
-            self._closed = True
+            if not refused:
+                self._closed = True
+
+    def _is_callers_transaction_refusal(self, error: Exception) -> bool:
+        """True when the engine refused a call because the caller has a
+        transaction open (IllegalStateException, ArcadeData/arcadedb#9242)."""
+        return isinstance(
+            error, jpype.JClass("java.lang.IllegalStateException")
+        ) and bool(self._java_db.isTransactionActive())
 
     def get_total_edges_created(self) -> int:
         self._check_not_closed()

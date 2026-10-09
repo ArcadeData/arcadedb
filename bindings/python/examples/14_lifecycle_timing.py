@@ -29,6 +29,62 @@ import arcadedb_embedded as arcadedb
 from arcadedb_embedded.jvm import start_jvm
 
 
+def server_open_close_timing(root: str, rounds: int = 3) -> None:
+    """The same question on the bundled server: what does closing and reopening
+    a database cost when it lives in a running server? Timed over HTTP with the
+    server's own commands (`close database` / `open database`), standard-library
+    HTTP only. There is no JVM start to pay here; the server is already up."""
+    import base64
+    import json
+    import shutil
+    import socket
+    import urllib.request
+
+    shutil.rmtree(root, ignore_errors=True)
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = int(sock.getsockname()[1])
+    password = "password123"  # nosec B105 - example-only local server
+    server = arcadedb.create_server(
+        root_path=root,
+        root_password=password,
+        config={"host": "127.0.0.1", "http_port": port, "mode": "development"},
+    )
+    server.start()
+    time.sleep(1)
+    base = f"http://127.0.0.1:{server.get_http_port()}"
+    auth = "Basic " + base64.b64encode(f"root:{password}".encode()).decode()
+
+    def cmd(command: str) -> float:
+        req = urllib.request.Request(
+            f"{base}/api/v1/server",
+            data=json.dumps({"command": command}).encode(),
+            method="POST",
+        )
+        req.add_header("Authorization", auth)
+        req.add_header("Content-Type", "application/json")
+        t0 = time.perf_counter()
+        with urllib.request.urlopen(
+            req, timeout=60
+        ) as resp:  # nosec B310 - local URL built above
+            resp.read()
+        return time.perf_counter() - t0
+
+    try:
+        server.create_database("lifecycle")
+        opens, closes = [], []
+        for _ in range(rounds):
+            closes.append(cmd("close database lifecycle"))
+            opens.append(cmd("open database lifecycle"))
+        print()
+        print("Server mode, the same database closed and reopened on a running server:")
+        print(f"  close database: {_avg(closes):.6f}s avg over {rounds}")
+        print(f"  open database:  {_avg(opens):.6f}s avg over {rounds}")
+    finally:
+        server.stop()
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def _avg(values: List[float]) -> float:
     return sum(values) / len(values) if values else 0.0
 
@@ -329,6 +385,7 @@ def main() -> None:
                 f"reopen_close: {timings['reopen_close_time_s']:.6f}s"
             )
 
+        server_open_close_timing(str(db_path) + "_server")
         summary = {
             "jvm_start_time_s": jvm_start_time_s,
             "create_time_s_avg": _avg([row["create_time_s"] for row in runs]),

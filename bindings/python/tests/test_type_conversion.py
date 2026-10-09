@@ -2,7 +2,7 @@
 Tests for type conversion between Java and Python types.
 """
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
 import arcadedb_embedded as arcadedb
@@ -189,6 +189,29 @@ def test_collection_conversion(temp_db_path):
         assert metadata["name"] == "test"
 
 
+def test_a_python_set_is_a_set_only_until_the_commit(temp_db_path):
+    """The engine has no set type, so a HashSet is serialized as a list when the
+    transaction commits (#122). The documented behavior: a set inside the
+    transaction, a list from every read after it. If the engine ever keeps sets,
+    this fails and api/type_conversion.md needs to change with it."""
+    with arcadedb.create_database(temp_db_path) as db:
+        db.command("sql", "CREATE VERTEX TYPE User")
+
+        with db.transaction():
+            vertex = db.new_vertex("User")
+            vertex.set("roles", {"admin", "user", "admin"})
+            vertex.save()
+            assert vertex.get("roles") == {"admin", "user"}
+            rid = vertex.get_rid()
+
+        by_rid = db.lookup_by_rid(rid).get("roles")
+        by_query = db.query("sql", "SELECT roles FROM User").first().get("roles")
+        rows = db.query("sql", "SELECT roles FROM User").to_list()
+        for value in (by_rid, by_query, rows[0]["roles"]):
+            assert isinstance(value, list)
+            assert sorted(value) == ["admin", "user"]
+
+
 def test_nested_collection_conversion(temp_db_path):
     """Test conversion of nested collections."""
     with arcadedb.create_database(temp_db_path) as db:
@@ -365,6 +388,157 @@ def test_python_to_java_conversion(temp_db_path):
         # Set may be converted to list or remain as set/collection
         unique_items = record.get("unique_items")
         assert unique_items is not None
+
+
+def test_decimal_parameter_keeps_every_digit(temp_db_path):
+    """A Decimal bound to a SQL parameter is stored and matched exactly (#58).
+
+    Left to JPype it reached the engine as a Double: 38 digits were stored as
+    1.2345678901234567E+19, and a lookup by the same Decimal missed the rows
+    that held it exactly.
+    """
+    value = Decimal("12345678901234567890.123456789012345678")
+    with arcadedb.create_database(temp_db_path) as db:
+        db.command("sql", "CREATE DOCUMENT TYPE Money")
+        db.command("sql", "CREATE PROPERTY Money.amount DECIMAL")
+        with db.transaction():
+            db.command("sql", "INSERT INTO Money SET k = 'param', amount = ?", value)
+            db.new_document("Money").set("k", "set").set("amount", value).save()
+
+        for key in ("param", "set"):
+            got = db.query("sql", "SELECT amount FROM Money WHERE k = ?", key).first()
+            assert got.get("amount") == value, key
+        found = db.query("sql", "SELECT k FROM Money WHERE amount = ?", value).to_list()
+        assert sorted(r["k"] for r in found) == ["param", "set"]
+
+
+def test_datetime_and_date_parameters(temp_db_path):
+    """datetime and date bind to SQL parameters, and keep microseconds (#58).
+
+    Both used to be refused ("No matching overloads"), and a datetime crossed as
+    a java.util.Date, which keeps milliseconds: DATETIME_MICROS stored
+    ...56.789000 for ...56.789123 and a lookup by the same value found nothing.
+    The engine stores DATETIME as a UTC wall clock: a naive value is that wall
+    clock as it stands and reads back unchanged on any host, and an aware one
+    is converted to UTC, so 21:34+09:00 is the same value as a naive 12:34.
+    """
+    naive = datetime(2026, 10, 1, 12, 34, 56, 789123)
+    aware = datetime(
+        2026, 10, 1, 21, 34, 56, 789123, tzinfo=timezone(timedelta(hours=9))
+    )
+    epoch_ms = 1790858096789  # 2026-10-01T12:34:56.789Z
+    on_day = date(2026, 10, 1)
+    with arcadedb.create_database(temp_db_path) as db:
+        db.command("sql", "CREATE DOCUMENT TYPE Event")
+        db.command("sql", "CREATE PROPERTY Event.at DATETIME_MICROS")
+        db.command("sql", "CREATE PROPERTY Event.on_day DATE")
+        with db.transaction():
+            for label, value in (("naive", naive), ("aware", aware)):
+                db.command(
+                    "sql",
+                    "INSERT INTO Event SET k = ?, at = ?, on_day = ?",
+                    label + " param",
+                    value,
+                    on_day,
+                )
+                db.new_document("Event").set("k", label + " set").set(
+                    "at", value
+                ).save()
+
+        every = ["aware param", "aware set", "naive param", "naive set"]
+        for key in every:
+            got = db.query(
+                "sql", "SELECT at, at.asLong() AS ms FROM Event WHERE k = ?", key
+            ).first()
+            assert got.get("at") == naive, key
+            assert got.get("ms") == epoch_ms, key
+        for value in (naive, aware):
+            found = db.query("sql", "SELECT k FROM Event WHERE at = ?", value).to_list()
+            assert sorted(r["k"] for r in found) == every
+
+        found = db.query(
+            "sql", "SELECT k FROM Event WHERE on_day = ?", on_day
+        ).to_list()
+        assert sorted(r["k"] for r in found) == ["aware param", "naive param"]
+
+
+def test_bytes_keep_every_byte(temp_db_path):
+    """Python bytes are stored as byte[], through set() and a bound parameter.
+
+    They used to reach Java as a String: b"Hello" came back as "Hello" and
+    non-UTF-8 bytes as "", with no error. A byte[] reads back as signed ints.
+    """
+    payload = b"\xff\x00\xfe\x80Hello"
+    with arcadedb.create_database(temp_db_path) as db:
+        db.command("sql", "CREATE DOCUMENT TYPE Blob")
+        with db.transaction():
+            doc = db.new_document("Blob")
+            doc.set("k", "set").set("data", payload).save()
+            db.command(
+                "sql", "INSERT INTO Blob SET k = 'param', data = ?", bytearray(payload)
+            )
+
+        for key in ("set", "param"):
+            got = db.query("sql", "SELECT data FROM Blob WHERE k = ?", key).first()
+            data = got.get("data")
+            assert isinstance(data, list), (key, data)
+            assert bytes(b & 0xFF for b in data) == payload, key
+
+
+def test_scalar_list_crosses_as_one_array_with_the_same_types(temp_db_path):
+    """A list of plain scalars converts in one JVM call, element types unchanged.
+
+    The per-element path boxes int as Long, float as Double, bool as Boolean;
+    the one-array path must give exactly those, raise the same OverflowError
+    past 64 bits, and leave anything else (here a nested list) to the loop.
+    """
+    import jpype
+    import pytest
+    from arcadedb_embedded.type_conversion import convert_python_to_java
+
+    with arcadedb.create_database(temp_db_path) as db:
+        values = [1, -(2**63), 2**63 - 1, 1.5, float("inf"), "x", "", True, None]
+        for seq in (values, tuple(values)):
+            got = convert_python_to_java(seq)
+            assert str(got.getClass().getName()) == "java.util.ArrayList"
+            classes = [
+                (
+                    None
+                    if got.get(i) is None
+                    else str(got.get(i).getClass().getSimpleName())
+                )
+                for i in range(got.size())
+            ]
+            assert classes == [
+                "Long",
+                "Long",
+                "Long",
+                "Double",
+                "Double",
+                "String",
+                "String",
+                "Boolean",
+                None,
+            ]
+            got.add(jpype.JObject(0))  # still a growable ArrayList
+        with pytest.raises(OverflowError):
+            convert_python_to_java([1, 2**63])
+
+        nested = convert_python_to_java([1, [2, 3], {"k": 4}])
+        assert str(nested.get(1).getClass().getName()) == "java.util.ArrayList"
+        assert str(nested.get(2).getClass().getName()) == "java.util.HashMap"
+
+        db.command("sql", "CREATE DOCUMENT TYPE Item")
+        db.command("sql", "CREATE PROPERTY Item.k LONG")
+        db.command("sql", "CREATE INDEX ON Item (k) UNIQUE")
+        with db.transaction():
+            for k in range(100):
+                db.command("sql", "INSERT INTO Item SET k = ?", k)
+        ids = list(range(0, 100, 7))
+        rows = db.query(
+            "sql", "SELECT k FROM Item WHERE k IN :ids ORDER BY k", {"ids": ids}
+        ).to_list()
+        assert [r["k"] for r in rows] == ids
 
 
 def test_array_conversion(temp_db_path):

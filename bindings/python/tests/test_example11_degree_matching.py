@@ -17,11 +17,6 @@ EXAMPLE_PATH = (
     Path(__file__).resolve().parents[1] / "examples" / "11_vector_index_build.py"
 )
 
-pytestmark = pytest.mark.skipif(
-    not EXAMPLE_PATH.exists(),
-    reason="bindings/python/examples/11_vector_index_build.py is not present",
-)
-
 
 @pytest.fixture(scope="module")
 def example11():

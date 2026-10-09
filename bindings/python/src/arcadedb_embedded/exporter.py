@@ -33,7 +33,9 @@ def export_database(
     Args:
         db: Database instance
         file_path: Output file path (will auto-add exports/ prefix if not absolute)
-        export_format: Export format - "jsonl", "graphml", or "graphson"
+        export_format: "jsonl". "graphml" and "graphson" need the engine's
+            optional arcadedb-gremlin module, which this package does not
+            bundle, so they raise ArcadeDBError here
         overwrite: Overwrite existing file if True
         include_types: List of types to export (None = all)
         exclude_types: List of types to exclude (None = none)
@@ -48,18 +50,14 @@ def export_database(
         - elapsedInSecs: Export duration
 
     Raises:
-        ArcadeDBError: If export fails or format is invalid
+        ArcadeDBError: If export fails, the format is invalid, or the format
+            needs a module this package does not bundle
 
     Example:
         >>> # Export entire database to JSONL (recommended for backup)
         >>> stats = db.export_database("backup.jsonl.tgz", overwrite=True)
         >>> print(
         ...     f"Exported {stats['totalRecords']} records in {stats['elapsedInSecs']}s"
-        ... )
-
-        >>> # Export to GraphML for visualization tools (Gephi, Cytoscape)
-        >>> db.export_database(
-        ...     "graph.graphml.tgz", export_format="graphml", overwrite=True
         ... )
 
         >>> # Export specific types only
@@ -140,10 +138,17 @@ def export_database(
     except Exception as e:
         # Check for specific error messages
         error_msg = str(e)
-        if "Format not supported" in error_msg or "not found" in error_msg:
+        # Only GraphML and GraphSON come from arcadedb-gremlin; "not found" also matches a missing type or file.
+        if export_format.lower() in ("graphml", "graphson") and (
+            "arcadedb-gremlin" in error_msg
+            or "Format not supported" in error_msg
+            or "not found" in error_msg
+        ):
             raise ArcadeDBError(
-                f"Export format '{export_format}' requires additional modules. "
-                f"GraphML and GraphSON support is unavailable. Error: {error_msg}"
+                f"Export format '{export_format}' requires additional modules: "
+                f"GraphML and GraphSON come from the engine's optional "
+                f"arcadedb-gremlin module, which this package does not bundle. "
+                f"Use export_format='jsonl'. Error: {error_msg}"
             ) from e
         elif (
             "already exists" in error_msg
@@ -158,6 +163,16 @@ def export_database(
             raise ArcadeDBError(f"Database export failed: {error_msg}") from e
 
 
+def _column_union(rows) -> List[str]:
+    """The keys of every row, in order of first appearance. A document is
+    schemaless, so the first row's keys say nothing about the others."""
+    names: Dict[str, None] = {}
+    for row in rows:
+        for key in row:
+            names.setdefault(key)
+    return list(names)
+
+
 def export_to_csv(
     results: Union[ResultSet, List[Dict[str, Any]]],
     file_path: str,
@@ -169,7 +184,11 @@ def export_to_csv(
     Args:
         results: ResultSet or list of dicts to export
         file_path: Output CSV file path
-        fieldnames: Column names (auto-detected if None)
+        fieldnames: Header and column order (auto-detected if None: the keys of
+            every row, in order of first appearance; for a ResultSet, of the
+            first batch of rows). It cannot rename: it must name every key of
+            every row, or the export raises (for a ResultSet, after writing the
+            header).
 
     Raises:
         ArcadeDBError: If CSV export fails
@@ -179,11 +198,12 @@ def export_to_csv(
         >>> results = db.query("sql", "SELECT * FROM Movie LIMIT 100")
         >>> export_to_csv(results, "movies.csv")
 
-        >>> # Or with explicit columns
+        >>> # Or with the columns in a chosen order
+        >>> results = db.query("sql", "SELECT movieId, title, genres FROM Movie")
         >>> export_to_csv(
         ...     results,
         ...     "movies.csv",
-        ...     fieldnames=["movieId", "title", "genres"]
+        ...     fieldnames=["title", "movieId", "genres"]
         ... )
 
         >>> # Export list of dicts
@@ -201,8 +221,8 @@ def export_to_csv(
         if isinstance(results, ResultSet):
             # Stream rows via batched Java-side JSON serialization (one JPype
             # crossing per batch instead of several per row — measured ~5x on
-            # 100k-row exports). Values carry JSON-native types, so temporal
-            # columns are written as ISO strings.
+            # 100k-row exports). Values carry JSON-native types, so DATE and
+            # DATETIME columns are written as epoch-millisecond integers.
             with open(file_path, "w", newline="", encoding="utf-8") as f:
                 writer = None
                 wrote_header = False
@@ -212,12 +232,29 @@ def export_to_csv(
                     writer.writeheader()
                     wrote_header = True
 
+                detected = False
                 for batch in results.iter_json_batches():
                     if not batch:
                         continue
                     if writer is None:
-                        fieldnames = list(batch[0].keys())
+                        # every row of the first batch, not only its first row
+                        # (#113): a row that carried a property the first row
+                        # lacked raised after the header was written
+                        fieldnames = _column_union(batch)
+                        detected = True
                         writer = csv.DictWriter(f, fieldnames=fieldnames)
+                    elif detected:
+                        # The header is already written, so a column that first
+                        # appears now cannot be added; say so rather than let the
+                        # writer's generic ValueError stand.
+                        known = set(fieldnames)
+                        for key in _column_union(batch):
+                            if key not in known:
+                                raise ArcadeDBError(
+                                    f"CSV export failed: column {key!r} first appears "
+                                    "after the header was written. Pass fieldnames "
+                                    "naming every column the query can return."
+                                )
                     if not wrote_header:
                         writer.writeheader()
                         wrote_header = True
@@ -239,7 +276,7 @@ def export_to_csv(
             return
 
         if fieldnames is None:
-            fieldnames = list(data[0].keys())
+            fieldnames = _column_union(data)
 
         with open(file_path, "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)

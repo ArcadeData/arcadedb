@@ -4,16 +4,34 @@ Shared pytest fixtures and configuration for ArcadeDB tests.
 
 import os
 import shutil
+import sys
 import tempfile
+import threading
 
 import pytest
 
+# A test file that cannot run here is not collected, so nothing is reported as skipped: a skip means
+# a test that should have run, and scripts/check_test_skips.py fails the CI job on any skip.
+collect_ignore = []
+if sys.platform == "win32":
+    # test_sigint.py sends SIGINT to a child process, which Windows cannot deliver
+    collect_ignore.append("test_sigint.py")
+if not os.path.isdir(os.path.join(os.path.dirname(os.path.dirname(__file__)), "docs")):
+    # the upstream pull request branch has no docs/ directory
+    collect_ignore.append("test_docs_examples.py")
 
+
+@pytest.hookimpl(trylast=True)
 def pytest_configure(config):
     # HotSpot routinely raises access violations it handles itself
     # (safepoints, implicit null checks). On Windows, pytest's faulthandler
     # prints a fatal-looking Python stack for each one even though nothing
-    # crashed. Disable it there; real crashes still fail the run.
+    # crashed. Disable it there; real crashes still fail the run, and
+    # faulthandler_timeout's hang dump does not depend on it.
+    # trylast: pytest's own faulthandler plugin enables it in its
+    # pytest_configure, and a conftest hook otherwise runs before that.
+    # This hook was dead from 2026-07-25 to 2026-09-29: a second
+    # pytest_configure further down replaced it (test_jvm_args pins it now).
     import sys
 
     if sys.platform == "win32":
@@ -21,6 +39,65 @@ def pytest_configure(config):
 
         if faulthandler.is_enabled():
             faulthandler.disable()
+
+
+# A test still running this long gets every Java thread's stack on stderr,
+# shortly before faulthandler_timeout (600 s in pyproject.toml) dumps the
+# Python threads. The Python dump alone shows a test waiting inside a Java
+# call and nothing about why, which is all a Windows vector-search hang left
+# behind twice (humemai/arcadedb-embedded-python#10).
+JAVA_DUMP_AFTER_S = float(os.environ.get("ARCADEDB_TEST_JAVA_DUMP_AFTER_S", "540"))
+
+
+def dump_java_threads(reason, out=None):
+    """Write every Java thread's name, state, and stack to `out` (stderr).
+
+    Returns False when the JVM is not running, so there is nothing to dump.
+    """
+    import jpype
+
+    out = out or sys.stderr
+    if not jpype.isJVMStarted():
+        return False
+    traces = jpype.JClass("java.lang.Thread").getAllStackTraces()
+    lines = [f"=== Java threads: {reason} ==="]
+    for thread in traces.keySet():
+        lines.append(
+            f'"{thread.getName()}" daemon={thread.isDaemon()} state={thread.getState()}'
+        )
+        lines.extend(f"    at {frame}" for frame in traces.get(thread))
+    out.write("\n".join(lines) + "\n")
+    out.flush()
+    return True
+
+
+def _dump_java_threads_for(nodeid, capman):
+    # Captured output of a test that never finishes is lost when the job is
+    # killed, so the dump goes past pytest's capture, as a debugger's would.
+    try:
+        if capman is not None:
+            with capman.global_and_fixture_disabled():
+                dump_java_threads(
+                    f"{nodeid} still running after {JAVA_DUMP_AFTER_S:.0f} s"
+                )
+        else:
+            dump_java_threads(f"{nodeid} still running after {JAVA_DUMP_AFTER_S:.0f} s")
+    except Exception as exc:  # the dump is evidence; it must not fail the run
+        sys.stderr.write(f"Java thread dump failed: {exc!r}\n")
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_call(item):
+    capman = item.config.pluginmanager.getplugin("capturemanager")
+    timer = threading.Timer(
+        JAVA_DUMP_AFTER_S, _dump_java_threads_for, args=(item.nodeid, capman)
+    )
+    timer.daemon = True
+    timer.start()
+    try:
+        return (yield)
+    finally:
+        timer.cancel()
 
 
 # Shared test password used by server-mode tests. ArcadeDB requires >= 8 chars.
@@ -35,25 +112,6 @@ def temp_server_root():
     yield temp_dir
     if os.path.exists(temp_dir):
         shutil.rmtree(temp_dir)
-
-
-def has_server_support():
-    """Is the server stack bundled in this wheel?
-
-    The server JARs (arcadedb-server, studio, undertow, xnio, wildfly, jboss,
-    micrometer) are shipped by default, but a slim build can exclude them via
-    scripts/jar_exclusions.txt. Probing for the studio JAR keeps the suite
-    honest either way: server tests skip rather than fail on a slim wheel.
-    """
-    try:
-        from arcadedb_embedded.jvm import get_jar_path
-
-        jar_dir = get_jar_path()
-        if not os.path.exists(jar_dir):
-            return False
-        return any("studio" in j.lower() for j in os.listdir(jar_dir))
-    except Exception:
-        return False
 
 
 @pytest.fixture
@@ -96,11 +154,21 @@ def temp_db():
     yield db
 
     # Cleanup
+    # Database has is_open(), not is_closed(): the old call raised
+    # AttributeError, the bare except swallowed it, and the directory was
+    # removed under a still-open database, which the engine then failed to
+    # flush at JVM shutdown ("Failed to allocate sparse segment component ...
+    # No such file or directory", 2026-09-07). No fixture test ever closed.
     try:
-        if not db.is_closed():
+        if db.is_open():
             db.close()
-    except Exception:
-        pass  # nosec B110
+    except Exception as exc:  # noqa: BLE001
+        # Never silent: a swallowed teardown is how the is_closed() bug hid for
+        # ten months. Warn so it shows in the summary, but do not fail the test
+        # that just passed for a close-time problem it did not cause.
+        import warnings
+
+        warnings.warn(f"temp_db teardown: close failed: {exc!r}", stacklevel=1)
 
     # Force garbage collection to release file handles (Windows fix)
     import gc
@@ -138,34 +206,6 @@ def temp_dir_factory():
     for temp_dir in temp_dirs:
         if os.path.exists(temp_dir):
             shutil.rmtree(temp_dir, ignore_errors=True)
-
-
-def has_graph_export_support():
-    """Check if GraphML/GraphSON export support is available."""
-    try:
-        # Detect graph export-related modules in bundled JARs
-        from arcadedb_embedded.jvm import get_jar_path
-
-        jar_dir = get_jar_path()
-        jar_files = os.listdir(jar_dir) if os.path.exists(jar_dir) else []
-        return any(
-            "graphson" in jar.lower() or "graphml" in jar.lower() for jar in jar_files
-        )
-    except Exception:
-        return False
-
-
-# Pytest markers for conditional test execution
-def pytest_configure(config):
-    """Register custom markers."""
-    config.addinivalue_line(
-        "markers",
-        "graph_export: tests that require GraphML/GraphSON support",
-    )
-    config.addinivalue_line(
-        "markers",
-        "server: tests that require server support (available in base package)",
-    )
 
 
 def pytest_unconfigure(config):

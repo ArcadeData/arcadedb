@@ -5,12 +5,7 @@ import pytest
 
 
 def _ensure_opencypher(db) -> None:
-    try:
-        _ = list(db.query("opencypher", "RETURN 1 AS one"))
-    except arcadedb.ArcadeDBError as e:
-        if "Query engine 'opencypher' was not found" in str(e):
-            pytest.skip("OpenCypher not available")
-        raise
+    _ = list(db.query("opencypher", "RETURN 1 AS one"))
 
 
 def _seed_graph(db) -> None:
@@ -267,12 +262,7 @@ def test_opencypher_case_and_coalesce(temp_db_path):
             "ELSE coalesce(c.name,'n/a') END AS status "
             "ORDER BY name",
         )
-        try:
-            rows = [(record.get("name"), record.get("status")) for record in result]
-        except Exception as e:
-            if "StatelessFunction" in str(e):
-                pytest.skip("OpenCypher CASE/coalesce not supported")
-            raise
+        rows = [(record.get("name"), record.get("status")) for record in result]
 
         assert rows == [
             ("Alice", "Acme"),
@@ -313,9 +303,6 @@ def test_opencypher_collect_and_unwind(temp_db_path):
         )
         rows = [(record.get("company"), record.get("employee")) for record in result]
 
-        if not rows:
-            pytest.skip("OpenCypher collect/UNWIND not supported")
-
         assert rows == [("Acme", "Alice"), ("Acme", "Bob")]
 
 
@@ -351,9 +338,7 @@ def test_opencypher_pattern_comprehension(temp_db_path):
         row = next(result)
         years = row.get("since_years")
 
-        if years is None:
-            pytest.skip("OpenCypher pattern comprehension not supported")
-
+        assert years is not None
         assert sorted(list(years)) == [2020]
 
 

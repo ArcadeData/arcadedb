@@ -13,7 +13,7 @@ assert against `to_columns` directly so the difference cannot quietly go away.
 import arcadedb_embedded as arcadedb
 import pytest
 
-pa = pytest.importorskip("pyarrow", reason="to_arrow() requires pyarrow")
+pa = pytest.importorskip("pyarrow")
 
 
 def test_to_arrow_basic_types(temp_db_path):

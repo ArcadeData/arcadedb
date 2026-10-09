@@ -10,6 +10,9 @@ These tests demonstrate:
 
 import os
 import shutil
+import subprocess  # nosec B404
+import sys
+import textwrap
 import time
 from concurrent.futures import ThreadPoolExecutor
 from statistics import mean
@@ -40,6 +43,31 @@ def cleanup_db():
             shutil.rmtree(db_path, ignore_errors=True)
 
 
+def _open_in_child_process(db_path):
+    """Open ``db_path`` from a separate Python process (its own JVM).
+
+    Returns "OPENED", or "LOCKED: <message>" when the engine refuses because
+    another process holds the database's file lock.
+    """
+    code = textwrap.dedent(f"""
+        import arcadedb_embedded as arcadedb
+        try:
+            arcadedb.open_database({db_path!r}).close()
+            print("RESULT OPENED")
+        except Exception as exc:
+            print("RESULT LOCKED:", exc)
+        """)
+    proc = subprocess.run(  # nosec B603
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+    lines = [ln for ln in proc.stdout.splitlines() if ln.startswith("RESULT ")]
+    assert lines, f"child produced no result:\n{proc.stdout}\n{proc.stderr}"
+    return lines[-1][len("RESULT ") :]
+
+
 def test_file_lock_mechanism(cleanup_db):
     """Demonstrate file locking with multiple DB instances."""
     print("\n" + "=" * 70)
@@ -54,15 +82,18 @@ def test_file_lock_mechanism(cleanup_db):
     db = arcadedb.create_database(db_path)
     print("   ✅ Database opened")
 
-    # Check for lock file
     lock_file = os.path.join(db_path, "database.lck")
-    if os.path.exists(lock_file):
-        print(f"\n2. Lock file created: {lock_file}")
-        print(f"   📝 Size: {os.path.getsize(lock_file)} bytes")
-        print("   🔒 This prevents other processes from opening the database")
+    assert os.path.exists(lock_file), "an open database holds database.lck"
+    print(f"\n2. Lock file created: {lock_file}")
 
     print("\n3. Closing database...")
     db.close()
+
+    # A clean close deletes the file: one left on disk marks an unclean
+    # shutdown, and the next open replays the write-ahead log because of it.
+    assert not os.path.exists(lock_file)
+    # Released, not merely closed: another process can open it now.
+    assert _open_in_child_process(db_path) == "OPENED"
     print("   ✅ Database closed, lock released")
 
 
@@ -80,31 +111,34 @@ def test_thread_safety(cleanup_db):
 
     with db.transaction():
         for i in range(20):
-            db.command("sql", f"INSERT INTO Person SET name = 'Person{i}', id = {i}")
+            db.command(
+                "sql", "INSERT INTO Person SET name = ?, id = ?", f"Person{i}", i
+            )
     print("   ✅ Created 20 Person records")
 
     print("\n2. Running 4 threads concurrently...")
 
     def query_thread(thread_id):
         start = time.time()
-        query = (
-            f"SELECT FROM Person WHERE id >= {thread_id * 5} "  # nosec B608
-            f"AND id < {(thread_id + 1) * 5}"
+        result = db.query(
+            "sql",
+            "SELECT id FROM Person WHERE id >= :lo AND id < :hi",
+            {"lo": thread_id * 5, "hi": (thread_id + 1) * 5},
         )
-        result = db.query("sql", query)
-        count = len(list(result))
+        ids = sorted(row.get("id") for row in result)
         elapsed = time.time() - start
-        return f"   Thread {thread_id}: Found {count} records in {elapsed:.3f}s"
+        print(f"   Thread {thread_id}: Found {len(ids)} records in {elapsed:.3f}s")
+        return ids
 
     with ThreadPoolExecutor(max_workers=4) as executor:
         futures = [executor.submit(query_thread, i) for i in range(4)]
-        for future in futures:
-            print(future.result())
+        found = [future.result() for future in futures]
 
+    # Each thread sees exactly its own five rows.
+    assert found == [list(range(i * 5, (i + 1) * 5)) for i in range(4)]
     print("\n   ✅ All threads completed successfully!")
 
     db.close()
-    cleanup_db(db_path)
 
 
 def test_sequential_access(cleanup_db):
@@ -128,6 +162,7 @@ def test_sequential_access(cleanup_db):
     db2 = arcadedb.open_database(db_path)
     result = db2.query("sql", "SELECT FROM Message")
     count = len(list(result))
+    assert count == 1
     print(f"   📊 Found {count} message(s)")
     print("   ✅ Database reopened successfully!")
     db2.close()
@@ -137,13 +172,13 @@ def test_sequential_access(cleanup_db):
     db3 = arcadedb.open_database(db_path)
     with db3.transaction():
         db3.command("sql", "INSERT INTO Message SET text = 'Third access'")
-    result = db3.query("sql", "SELECT FROM Message")
-    count = len(list(result))
+    result = db3.query("sql", "SELECT text FROM Message ORDER BY text")
+    texts = [row.get("text") for row in result]
+    assert texts == ["First access", "Third access"]
+    count = len(texts)
     print(f"   📊 Total messages: {count}")
     print("   ✅ Sequential access works perfectly!")
     db3.close()
-
-    cleanup_db(db_path)
 
 
 def test_concurrent_access_limitation(cleanup_db):
@@ -158,12 +193,15 @@ def test_concurrent_access_limitation(cleanup_db):
     db = arcadedb.create_database(db_path)
     print("   ✅ Database opened and locked")
 
-    print("\n2. What happens if another process tries to open it?")
-    print("   ❌ It would get: LockException")
-    print("   ❌ Error: 'Database is locked by another process'")
+    print("\n2. Another process tries to open it...")
+    try:
+        outcome = _open_in_child_process(db_path)
+    finally:
+        db.close()
+    assert outcome.startswith("LOCKED:"), outcome
+    assert "is locked by another process" in outcome, outcome
+    print(f"   ❌ {outcome}")
     print("   💡 This is BY DESIGN to prevent data corruption!")
-
-    db.close()
 
 
 def test_oltp_mixed_workload_threads(cleanup_db):
@@ -184,7 +222,8 @@ def test_oltp_mixed_workload_threads(cleanup_db):
         for i in range(initial_accounts):
             db.command(
                 "sql",
-                f"INSERT INTO Account SET account_id = {i}, balance = 1000",
+                "INSERT INTO Account SET account_id = ?, balance = 1000",
+                i,
             )
     print("   ✅ Seed complete")
 
@@ -204,6 +243,7 @@ def test_oltp_mixed_workload_threads(cleanup_db):
         reads = 0
         writes = 0
         retries = 0
+        delta_sum = 0
 
         for _ in range(ops_per_worker):
             account_id = rng.randrange(initial_accounts)
@@ -212,9 +252,10 @@ def test_oltp_mixed_workload_threads(cleanup_db):
             if op == "read":
                 result = db.query(
                     "sql",
-                    f"SELECT balance FROM Account WHERE account_id = {account_id}",  # nosec B608
+                    "SELECT balance FROM Account WHERE account_id = ?",
+                    account_id,
                 )
-                _ = list(result)
+                assert len(list(result)) == 1
                 reads += 1
             else:
                 delta = rng.choice([-5, -1, 1, 5])
@@ -230,6 +271,7 @@ def test_oltp_mixed_workload_threads(cleanup_db):
                                 account_id,
                             )
                         writes += 1
+                        delta_sum += delta
                         break
                     except ArcadeDBError as exc:
                         if "ConcurrentModificationException" not in str(exc):
@@ -246,6 +288,7 @@ def test_oltp_mixed_workload_threads(cleanup_db):
             "reads": reads,
             "writes": writes,
             "retries": retries,
+            "delta_sum": delta_sum,
             "latencies_ms": latencies_ms,
         }
 
@@ -270,5 +313,12 @@ def test_oltp_mixed_workload_threads(cleanup_db):
     print(f"   Throughput: {throughput:,.0f} ops/sec")
     print(f"   Avg latency: {mean(all_lat):.2f} ms")
     print(f"   p95 latency: {sorted(all_lat)[int(len(all_lat)*0.95)-1]:.2f} ms")
+
+    # Every operation completed, and no committed update was lost: the
+    # balances sum to the seed plus exactly the deltas that committed.
+    assert total_reads + total_writes == worker_count * ops_per_worker
+    expected = initial_accounts * 1000 + sum(r["delta_sum"] for r in results)
+    row = next(iter(db.query("sql", "SELECT sum(balance) AS total FROM Account")))
+    assert row.get("total") == expected
 
     db.close()

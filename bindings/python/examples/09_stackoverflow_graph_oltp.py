@@ -673,7 +673,7 @@ def arcadedb_insert_vertices(db, vertex_type: str, rows: List[Dict[str, Any]]):
     with db.graph_batch(
         batch_size=max(1, len(rows)),
         expected_edge_count=0,
-        bidirectional=False,
+        bidirectional=True,
         commit_every=max(1, len(rows)),
         use_wal=False,
         parallel_flush=parallel_flush,
@@ -1141,6 +1141,9 @@ def arcadedb_insert_edges(
     with db.graph_batch(
         batch_size=max(1, len(rows)),
         expected_edge_count=max(1, len(rows)),
+        # Two-way edges, as the schema declares them: a query the planner walks
+        # from the target end reads the incoming pointers, and a one-way load
+        # returned 0 rows there with no error (ArcadeData/arcadedb#8625).
         bidirectional=True,
         commit_every=max(1, len(rows)),
         use_wal=False,
@@ -1164,7 +1167,7 @@ def arcadedb_insert_edges(
 
 
 def build_arcadedb_rid_lookup(db, vertex_type: str) -> Dict[int, str]:
-    rows = db.query("sql", f"SELECT Id, @rid as rid FROM {vertex_type}").to_json_list()
+    rows = db.query("sql", f"SELECT Id, @rid as rid FROM {vertex_type}").to_list()
     rid_lookup: Dict[int, str] = {}
     for row in rows:
         row_id = row.get("Id")
@@ -4591,10 +4594,11 @@ def run_graph_oltp_arcadedb(
                             db.query(
                                 "opencypher",
                                 """
-                                MATCH (u:User {Id: %d})-[:ASKED|ANSWERED]->(p)
+                                MATCH (u:User {Id: $target_id})-[:ASKED|ANSWERED]->(p)
                                 RETURN p.Id
                                 LIMIT 1
-                                """ % target_id,
+                                """,
+                                {"target_id": target_id},
                             ).to_list()
                     elif read_kind == "question":
                         with id_lock:
@@ -4605,10 +4609,11 @@ def run_graph_oltp_arcadedb(
                             db.query(
                                 "opencypher",
                                 """
-                                MATCH (q:Question {Id: %d})-[:TAGGED_WITH]->(t:Tag)
+                                MATCH (q:Question {Id: $target_id})-[:TAGGED_WITH]->(t:Tag)
                                 RETURN t.Id
                                 LIMIT 1
-                                """ % target_id,
+                                """,
+                                {"target_id": target_id},
                             ).to_list()
                     elif read_kind == "answer":
                         with id_lock:
@@ -4617,10 +4622,11 @@ def run_graph_oltp_arcadedb(
                             db.query(
                                 "opencypher",
                                 """
-                                MATCH (a:Answer {Id: %d})<-[:COMMENTED_ON_ANSWER]-(c:Comment)
+                                MATCH (a:Answer {Id: $target_id})<-[:COMMENTED_ON_ANSWER]-(c:Comment)
                                 RETURN c.Id
                                 LIMIT 1
-                                """ % target_id,
+                                """,
+                                {"target_id": target_id},
                             ).to_list()
                     elif read_kind == "tag":
                         with id_lock:
@@ -4629,10 +4635,11 @@ def run_graph_oltp_arcadedb(
                             db.query(
                                 "opencypher",
                                 """
-                                MATCH (q:Question)-[:TAGGED_WITH]->(t:Tag {Id: %d})
+                                MATCH (q:Question)-[:TAGGED_WITH]->(t:Tag {Id: $target_id})
                                 RETURN q.Id
                                 LIMIT 1
-                                """ % target_id,
+                                """,
+                                {"target_id": target_id},
                             ).to_list()
                     elif read_kind == "comment":
                         with id_lock:
@@ -4641,10 +4648,11 @@ def run_graph_oltp_arcadedb(
                             db.query(
                                 "opencypher",
                                 """
-                                MATCH (c:Comment {Id: %d})-[r:COMMENTED_ON|COMMENTED_ON_ANSWER]->(p)
+                                MATCH (c:Comment {Id: $target_id})-[r:COMMENTED_ON|COMMENTED_ON_ANSWER]->(p)
                                 RETURN p.Id
                                 LIMIT 1
-                                """ % target_id,
+                                """,
+                                {"target_id": target_id},
                             ).to_list()
                     elif read_kind == "edge_sample":
                         db.query(
@@ -4662,10 +4670,11 @@ def run_graph_oltp_arcadedb(
                             db.query(
                                 "opencypher",
                                 """
-                                MATCH (u:User)-[:EARNED]->(b:Badge {Id: %d})
+                                MATCH (u:User)-[:EARNED]->(b:Badge {Id: $target_id})
                                 RETURN u.Id
                                 LIMIT 1
-                                """ % target_id,
+                                """,
+                                {"target_id": target_id},
                             ).to_list()
                 except Exception as exc:
                     if not is_transient_record_not_found_error(exc):
@@ -4695,41 +4704,46 @@ def run_graph_oltp_arcadedb(
                                     db.command(
                                         "opencypher",
                                         """
-                                        MATCH (q:Question {Id: %d})
+                                        MATCH (q:Question {Id: $target_id})
                                         SET q.Score = coalesce(q.Score, 0) + 1
-                                        """ % target_id,
+                                        """,
+                                        {"target_id": target_id},
                                     )
                                 elif update_kind == "answer":
                                     db.command(
                                         "opencypher",
                                         """
-                                        MATCH (a:Answer {Id: %d})
+                                        MATCH (a:Answer {Id: $target_id})
                                         SET a.Score = coalesce(a.Score, 0) + 1
-                                        """ % target_id,
+                                        """,
+                                        {"target_id": target_id},
                                     )
                                 elif update_kind == "comment":
                                     db.command(
                                         "opencypher",
                                         """
-                                        MATCH (c:Comment {Id: %d})
+                                        MATCH (c:Comment {Id: $target_id})
                                         SET c.Score = coalesce(c.Score, 0) + 1
-                                        """ % target_id,
+                                        """,
+                                        {"target_id": target_id},
                                     )
                                 elif update_kind == "tag":
                                     db.command(
                                         "opencypher",
                                         """
-                                        MATCH (t:Tag {Id: %d})
+                                        MATCH (t:Tag {Id: $target_id})
                                         SET t.Count = coalesce(t.Count, 0) + 1
-                                        """ % target_id,
+                                        """,
+                                        {"target_id": target_id},
                                     )
                                 else:
                                     db.command(
                                         "opencypher",
                                         """
-                                        MATCH (u:User {Id: %d})
+                                        MATCH (u:User {Id: $target_id})
                                         SET u.Reputation = coalesce(u.Reputation, 0) + 1
-                                        """ % target_id,
+                                        """,
+                                        {"target_id": target_id},
                                     )
 
                         try:
@@ -4749,9 +4763,13 @@ def run_graph_oltp_arcadedb(
                                     lambda: db.command(
                                         "opencypher",
                                         """
-                                        MATCH (u:User {Id: %d})-[r:ASKED]->(q:Question {Id: %d})
+                                        MATCH (u:User {Id: $user_id})-[r:ASKED]->(q:Question {Id: $question_id})
                                         SET r.CreationDate = coalesce(r.CreationDate, 0) + 1
-                                        """ % (user_id, question_id),
+                                        """,
+                                        {
+                                            "user_id": user_id,
+                                            "question_id": question_id,
+                                        },
                                     ),
                                     arcade_error,
                                 )
@@ -4768,9 +4786,10 @@ def run_graph_oltp_arcadedb(
                                     lambda: db.command(
                                         "opencypher",
                                         """
-                                        MATCH (u:User {Id: %d})-[r:ANSWERED]->(a:Answer {Id: %d})
+                                        MATCH (u:User {Id: $user_id})-[r:ANSWERED]->(a:Answer {Id: $answer_id})
                                         SET r.CreationDate = coalesce(r.CreationDate, 0) + 1
-                                        """ % (user_id, answer_id),
+                                        """,
+                                        {"user_id": user_id, "answer_id": answer_id},
                                     ),
                                     arcade_error,
                                 )
@@ -4791,9 +4810,13 @@ def run_graph_oltp_arcadedb(
                                     lambda: db.command(
                                         "opencypher",
                                         """
-                                        MATCH (c:Comment {Id: %d})-[r:COMMENTED_ON]->(q:Question {Id: %d})
+                                        MATCH (c:Comment {Id: $comment_id})-[r:COMMENTED_ON]->(q:Question {Id: $question_id})
                                         SET r.Score = coalesce(r.Score, 0) + 1
-                                        """ % (comment_id, question_id),
+                                        """,
+                                        {
+                                            "comment_id": comment_id,
+                                            "question_id": question_id,
+                                        },
                                     ),
                                     arcade_error,
                                 )
@@ -4812,9 +4835,13 @@ def run_graph_oltp_arcadedb(
                                     lambda: db.command(
                                         "opencypher",
                                         """
-                                        MATCH (c:Comment {Id: %d})-[r:COMMENTED_ON_ANSWER]->(a:Answer {Id: %d})
+                                        MATCH (c:Comment {Id: $comment_id})-[r:COMMENTED_ON_ANSWER]->(a:Answer {Id: $answer_id})
                                         SET r.Score = coalesce(r.Score, 0) + 1
-                                        """ % (comment_id, answer_id),
+                                        """,
+                                        {
+                                            "comment_id": comment_id,
+                                            "answer_id": answer_id,
+                                        },
                                     ),
                                     arcade_error,
                                 )
@@ -4831,9 +4858,10 @@ def run_graph_oltp_arcadedb(
                                     lambda: db.command(
                                         "opencypher",
                                         """
-                                        MATCH (u:User {Id: %d})-[r:EARNED]->(b:Badge {Id: %d})
+                                        MATCH (u:User {Id: $user_id})-[r:EARNED]->(b:Badge {Id: $badge_id})
                                         SET r.Class = coalesce(r.Class, 0) + 1
-                                        """ % (user_id, badge_id),
+                                        """,
+                                        {"user_id": user_id, "badge_id": badge_id},
                                     ),
                                     arcade_error,
                                 )
@@ -4852,9 +4880,10 @@ def run_graph_oltp_arcadedb(
                                     lambda: db.command(
                                         "opencypher",
                                         """
-                                        MATCH (q1:Question {Id: %d})-[r:LINKED_TO]->(q2:Question {Id: %d})
+                                        MATCH (q1:Question {Id: $post_id})-[r:LINKED_TO]->(q2:Question {Id: $related_id})
                                         SET r.LinkTypeId = coalesce(r.LinkTypeId, 0) + 1
-                                        """ % (post_id, related_id),
+                                        """,
+                                        {"post_id": post_id, "related_id": related_id},
                                     ),
                                     arcade_error,
                                 )
@@ -4936,27 +4965,25 @@ def run_graph_oltp_arcadedb(
                                     "opencypher",
                                     """
                                     CREATE (u:User {
-                                        Id: %d,
+                                        Id: $new_user_id,
                                         DisplayName: 'Synthetic',
                                         Reputation: 0,
-                                        CreationDate: %d
+                                        CreationDate: $now_ms
                                     })
                                     CREATE (q:Question {
-                                        Id: %d,
+                                        Id: $new_question_id,
                                         Title: 'Synthetic',
                                         Body: 'Synthetic body',
                                         Score: 0,
-                                        CreationDate: %d
+                                        CreationDate: $now_ms
                                     })
-                                    CREATE (u)-[:ASKED {CreationDate: %d}]->(q)
-                                    """
-                                    % (
-                                        new_user_id,
-                                        now_ms,
-                                        new_question_id,
-                                        now_ms,
-                                        now_ms,
-                                    ),
+                                    CREATE (u)-[:ASKED {CreationDate: $now_ms}]->(q)
+                                    """,
+                                    {
+                                        "new_user_id": new_user_id,
+                                        "now_ms": now_ms,
+                                        "new_question_id": new_question_id,
+                                    },
                                 )
                             elif (
                                 insert_kind == "answer"
@@ -4967,24 +4994,23 @@ def run_graph_oltp_arcadedb(
                                 db.command(
                                     "opencypher",
                                     """
-                                    MATCH (u:User {Id: %d}), (q:Question {Id: %d})
+                                    MATCH (u:User {Id: $user_id}), (q:Question {Id: $question_id})
                                     CREATE (a:Answer {
-                                        Id: %d,
+                                        Id: $new_answer_id,
                                         Body: 'Synthetic answer',
                                         Score: 0,
-                                        CreationDate: %d,
+                                        CreationDate: $now_ms,
                                         CommentCount: 0
                                     })
-                                    CREATE (u)-[:ANSWERED {CreationDate: %d}]->(a)
+                                    CREATE (u)-[:ANSWERED {CreationDate: $now_ms}]->(a)
                                     CREATE (q)-[:HAS_ANSWER]->(a)
-                                    """
-                                    % (
-                                        user_id,
-                                        question_id,
-                                        new_answer_id,
-                                        now_ms,
-                                        now_ms,
-                                    ),
+                                    """,
+                                    {
+                                        "user_id": user_id,
+                                        "question_id": question_id,
+                                        "new_answer_id": new_answer_id,
+                                        "now_ms": now_ms,
+                                    },
                                 )
                             elif (
                                 insert_kind == "comment"
@@ -4996,31 +5022,39 @@ def run_graph_oltp_arcadedb(
                                     db.command(
                                         "opencypher",
                                         """
-                                        MATCH (q:Question {Id: %d})
+                                        MATCH (q:Question {Id: $target_id})
                                         CREATE (c:Comment {
-                                            Id: %d,
+                                            Id: $new_comment_id,
                                             Text: 'Synthetic comment',
                                             Score: 0,
-                                            CreationDate: %d
+                                            CreationDate: $now_ms
                                         })
-                                        CREATE (c)-[:COMMENTED_ON {CreationDate: %d, Score: 0}]->(q)
-                                        """
-                                        % (target_id, new_comment_id, now_ms, now_ms),
+                                        CREATE (c)-[:COMMENTED_ON {CreationDate: $now_ms, Score: 0}]->(q)
+                                        """,
+                                        {
+                                            "target_id": target_id,
+                                            "new_comment_id": new_comment_id,
+                                            "now_ms": now_ms,
+                                        },
                                     )
                                 else:
                                     db.command(
                                         "opencypher",
                                         """
-                                        MATCH (a:Answer {Id: %d})
+                                        MATCH (a:Answer {Id: $target_id})
                                         CREATE (c:Comment {
-                                            Id: %d,
+                                            Id: $new_comment_id,
                                             Text: 'Synthetic comment',
                                             Score: 0,
-                                            CreationDate: %d
+                                            CreationDate: $now_ms
                                         })
-                                        CREATE (c)-[:COMMENTED_ON_ANSWER {CreationDate: %d, Score: 0}]->(a)
-                                        """
-                                        % (target_id, new_comment_id, now_ms, now_ms),
+                                        CREATE (c)-[:COMMENTED_ON_ANSWER {CreationDate: $now_ms, Score: 0}]->(a)
+                                        """,
+                                        {
+                                            "target_id": target_id,
+                                            "new_comment_id": new_comment_id,
+                                            "now_ms": now_ms,
+                                        },
                                     )
                             elif (
                                 insert_kind == "tag_link"
@@ -5030,9 +5064,10 @@ def run_graph_oltp_arcadedb(
                                 db.command(
                                     "opencypher",
                                     """
-                                    MATCH (q:Question {Id: %d}), (t:Tag {Id: %d})
+                                    MATCH (q:Question {Id: $question_id}), (t:Tag {Id: $tag_id})
                                     CREATE (q)-[:TAGGED_WITH]->(t)
-                                    """ % (question_id, tag_id),
+                                    """,
+                                    {"question_id": question_id, "tag_id": tag_id},
                                 )
                             elif (
                                 insert_kind == "post_link"
@@ -5042,9 +5077,14 @@ def run_graph_oltp_arcadedb(
                                 db.command(
                                     "opencypher",
                                     """
-                                    MATCH (q1:Question {Id: %d}), (q2:Question {Id: %d})
-                                    CREATE (q1)-[:LINKED_TO {LinkTypeId: 1, CreationDate: %d}]->(q2)
-                                    """ % (question_id, second_question_id, now_ms),
+                                    MATCH (q1:Question {Id: $question_id}), (q2:Question {Id: $second_question_id})
+                                    CREATE (q1)-[:LINKED_TO {LinkTypeId: 1, CreationDate: $now_ms}]->(q2)
+                                    """,
+                                    {
+                                        "question_id": question_id,
+                                        "second_question_id": second_question_id,
+                                        "now_ms": now_ms,
+                                    },
                                 )
                             elif (
                                 insert_kind == "accepted_answer"
@@ -5054,9 +5094,13 @@ def run_graph_oltp_arcadedb(
                                 db.command(
                                     "opencypher",
                                     """
-                                    MATCH (q:Question {Id: %d}), (a:Answer {Id: %d})
+                                    MATCH (q:Question {Id: $question_id}), (a:Answer {Id: $answer_id})
                                     CREATE (q)-[:ACCEPTED_ANSWER]->(a)
-                                    """ % (question_id, answer_id),
+                                    """,
+                                    {
+                                        "question_id": question_id,
+                                        "answer_id": answer_id,
+                                    },
                                 )
                             elif (
                                 insert_kind == "badge"
@@ -5066,15 +5110,20 @@ def run_graph_oltp_arcadedb(
                                 db.command(
                                     "opencypher",
                                     """
-                                    MATCH (u:User {Id: %d})
+                                    MATCH (u:User {Id: $user_id})
                                     CREATE (b:Badge {
-                                        Id: %d,
+                                        Id: $new_badge_id,
                                         Name: 'SyntheticBadge',
-                                        Date: %d,
+                                        Date: $now_ms,
                                         Class: 1
                                     })
-                                    CREATE (u)-[:EARNED {Date: %d, Class: 1}]->(b)
-                                    """ % (user_id, new_badge_id, now_ms, now_ms),
+                                    CREATE (u)-[:EARNED {Date: $now_ms, Class: 1}]->(b)
+                                    """,
+                                    {
+                                        "user_id": user_id,
+                                        "new_badge_id": new_badge_id,
+                                        "now_ms": now_ms,
+                                    },
                                 )
 
                     try:
@@ -5126,8 +5175,8 @@ def run_graph_oltp_arcadedb(
                                 with db.transaction():
                                     db.command(
                                         "opencypher",
-                                        "MATCH (n:%s {Id: %d}) DETACH DELETE n"
-                                        % (node_label, target_id),
+                                        f"MATCH (n:{node_label} {{Id: $target_id}}) DETACH DELETE n",
+                                        {"target_id": target_id},
                                     )
 
                             try:
@@ -5152,8 +5201,11 @@ def run_graph_oltp_arcadedb(
                                 run_with_retry(
                                     lambda: db.command(
                                         "opencypher",
-                                        "MATCH (u:User {Id: %d})-[r:ASKED]->(q:Question {Id: %d}) DELETE r"
-                                        % (user_id, question_id),
+                                        "MATCH (u:User {Id: $user_id})-[r:ASKED]->(q:Question {Id: $question_id}) DELETE r",
+                                        {
+                                            "user_id": user_id,
+                                            "question_id": question_id,
+                                        },
                                     ),
                                     arcade_error,
                                 )
@@ -5169,8 +5221,8 @@ def run_graph_oltp_arcadedb(
                                 run_with_retry(
                                     lambda: db.command(
                                         "opencypher",
-                                        "MATCH (u:User {Id: %d})-[r:ANSWERED]->(a:Answer {Id: %d}) DELETE r"
-                                        % (user_id, answer_id),
+                                        "MATCH (u:User {Id: $user_id})-[r:ANSWERED]->(a:Answer {Id: $answer_id}) DELETE r",
+                                        {"user_id": user_id, "answer_id": answer_id},
                                     ),
                                     arcade_error,
                                 )
@@ -5188,8 +5240,11 @@ def run_graph_oltp_arcadedb(
                                 run_with_retry(
                                     lambda: db.command(
                                         "opencypher",
-                                        "MATCH (q:Question {Id: %d})-[r:HAS_ANSWER]->(a:Answer {Id: %d}) DELETE r"
-                                        % (question_id, answer_id),
+                                        "MATCH (q:Question {Id: $question_id})-[r:HAS_ANSWER]->(a:Answer {Id: $answer_id}) DELETE r",
+                                        {
+                                            "question_id": question_id,
+                                            "answer_id": answer_id,
+                                        },
                                     ),
                                     arcade_error,
                                 )
@@ -5207,8 +5262,11 @@ def run_graph_oltp_arcadedb(
                                 run_with_retry(
                                     lambda: db.command(
                                         "opencypher",
-                                        "MATCH (q:Question {Id: %d})-[r:ACCEPTED_ANSWER]->(a:Answer {Id: %d}) DELETE r"
-                                        % (question_id, answer_id),
+                                        "MATCH (q:Question {Id: $question_id})-[r:ACCEPTED_ANSWER]->(a:Answer {Id: $answer_id}) DELETE r",
+                                        {
+                                            "question_id": question_id,
+                                            "answer_id": answer_id,
+                                        },
                                     ),
                                     arcade_error,
                                 )
@@ -5226,8 +5284,8 @@ def run_graph_oltp_arcadedb(
                                 run_with_retry(
                                     lambda: db.command(
                                         "opencypher",
-                                        "MATCH (q:Question {Id: %d})-[r:TAGGED_WITH]->(t:Tag {Id: %d}) DELETE r"
-                                        % (question_id, tag_id),
+                                        "MATCH (q:Question {Id: $question_id})-[r:TAGGED_WITH]->(t:Tag {Id: $tag_id}) DELETE r",
+                                        {"question_id": question_id, "tag_id": tag_id},
                                     ),
                                     arcade_error,
                                 )
@@ -5247,8 +5305,11 @@ def run_graph_oltp_arcadedb(
                                 run_with_retry(
                                     lambda: db.command(
                                         "opencypher",
-                                        "MATCH (c:Comment {Id: %d})-[r:COMMENTED_ON]->(q:Question {Id: %d}) DELETE r"
-                                        % (comment_id, question_id),
+                                        "MATCH (c:Comment {Id: $comment_id})-[r:COMMENTED_ON]->(q:Question {Id: $question_id}) DELETE r",
+                                        {
+                                            "comment_id": comment_id,
+                                            "question_id": question_id,
+                                        },
                                     ),
                                     arcade_error,
                                 )
@@ -5266,8 +5327,11 @@ def run_graph_oltp_arcadedb(
                                 run_with_retry(
                                     lambda: db.command(
                                         "opencypher",
-                                        "MATCH (c:Comment {Id: %d})-[r:COMMENTED_ON_ANSWER]->(a:Answer {Id: %d}) DELETE r"
-                                        % (comment_id, answer_id),
+                                        "MATCH (c:Comment {Id: $comment_id})-[r:COMMENTED_ON_ANSWER]->(a:Answer {Id: $answer_id}) DELETE r",
+                                        {
+                                            "comment_id": comment_id,
+                                            "answer_id": answer_id,
+                                        },
                                     ),
                                     arcade_error,
                                 )
@@ -5283,8 +5347,8 @@ def run_graph_oltp_arcadedb(
                                 run_with_retry(
                                     lambda: db.command(
                                         "opencypher",
-                                        "MATCH (u:User {Id: %d})-[r:EARNED]->(b:Badge {Id: %d}) DELETE r"
-                                        % (user_id, badge_id),
+                                        "MATCH (u:User {Id: $user_id})-[r:EARNED]->(b:Badge {Id: $badge_id}) DELETE r",
+                                        {"user_id": user_id, "badge_id": badge_id},
                                     ),
                                     arcade_error,
                                 )
@@ -5304,8 +5368,11 @@ def run_graph_oltp_arcadedb(
                                 run_with_retry(
                                     lambda: db.command(
                                         "opencypher",
-                                        "MATCH (q1:Question {Id: %d})-[r:LINKED_TO]->(q2:Question {Id: %d}) DELETE r"
-                                        % (question_id, related_id),
+                                        "MATCH (q1:Question {Id: $question_id})-[r:LINKED_TO]->(q2:Question {Id: $related_id}) DELETE r",
+                                        {
+                                            "question_id": question_id,
+                                            "related_id": related_id,
+                                        },
                                     ),
                                     arcade_error,
                                 )

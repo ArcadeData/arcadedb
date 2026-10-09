@@ -20,7 +20,7 @@ def test_database_creation(temp_db_path):
 def test_database_operations(temp_db_path):
     """Test basic database operations."""
     with arcadedb.create_database(temp_db_path) as db:
-        # Create a document type (schema ops auto-transactional)
+        # Create a document type (schema statements apply immediately)
         db.command("sql", "CREATE DOCUMENT TYPE TestDoc")
 
         # Insert data
@@ -59,7 +59,7 @@ def test_rich_data_types(temp_db_path):
     - Aggregation queries and filtering
     """
     with arcadedb.create_database(temp_db_path) as db:
-        # Create document type with rich data types (schema ops auto-transactional)
+        # Create document type with rich data types (schema statements apply immediately)
         db.command("sql", "CREATE DOCUMENT TYPE Task")
 
         # Define properties with various ArcadeDB data types
@@ -468,8 +468,8 @@ def test_transactions(temp_db_path):
             with db.transaction():
                 db.command("sql", "INSERT INTO TransactionTest SET id = 3")
                 raise Exception("Intentional error")
-        except Exception:
-            pass  # nosec B110
+        except Exception as exc:  # noqa: BLE001
+            assert "Intentional error" in str(exc), exc
 
         # Verify rollback worked
         result = db.query("sql", "SELECT count(*) as count FROM TransactionTest")
@@ -620,26 +620,21 @@ def test_opencypher_queries(temp_db_path):
         db.command("sql", "CREATE VERTEX TYPE Person")
         db.command("sql", "CREATE EDGE TYPE FRIEND_OF")
 
-        # Insert data using OpenCypher (if available)
-        try:
-            with db.transaction():
-                db.command("opencypher", "CREATE (p:Person {name: 'Alice', age: 30})")
-                db.command("opencypher", "CREATE (p:Person {name: 'Bob', age: 25})")
+        # Insert data using OpenCypher
+        with db.transaction():
+            db.command("opencypher", "CREATE (p:Person {name: 'Alice', age: 30})")
+            db.command("opencypher", "CREATE (p:Person {name: 'Bob', age: 25})")
 
-            # Query using OpenCypher
-            result = db.query(
-                "opencypher",
-                "MATCH (p:Person) WHERE p.age > 20 RETURN p.name as name",
-            )
-            names = [record.get("name") for record in result]
+        # Query using OpenCypher
+        result = db.query(
+            "opencypher",
+            "MATCH (p:Person) WHERE p.age > 20 RETURN p.name as name",
+        )
+        names = [record.get("name") for record in result]
 
-            assert len(names) == 2
-            assert "Alice" in names
-            assert "Bob" in names
-        except arcadedb.ArcadeDBError as e:
-            if "Query engine 'opencypher' was not found" in str(e):
-                pytest.skip("OpenCypher not available (unexpected in base package)")
-            raise
+        assert len(names) == 2
+        assert "Alice" in names
+        assert "Bob" in names
 
 
 def test_unicode_support(temp_db_path):
@@ -790,7 +785,7 @@ def test_large_result_set_handling(temp_db_path):
 def test_property_type_conversions(temp_db_path):
     """Test that property types are correctly converted between Python/Java."""
     with arcadedb.create_database(temp_db_path) as db:
-        # Schema operations are auto-transactional
+        # Schema statements apply immediately (no transaction needed)
         db.command("sql", "CREATE DOCUMENT TYPE TypeTest")
 
         with db.transaction():
@@ -988,13 +983,48 @@ def test_to_json_list_empty_result(temp_db_path):
         assert db.query("sql", "SELECT FROM Empty").to_json_list() == []
 
 
+def test_json_batches_end_on_a_short_batch_and_on_an_exact_multiple(temp_db_path):
+    """The JSON batch path stops after a short batch (no extra call to see "[]"),
+    still ends cleanly when the row count is an exact multiple of the batch size,
+    and leaves the result set drained either way."""
+    with arcadedb.create_database(temp_db_path) as db:
+        db.command("sql", "CREATE DOCUMENT TYPE B")
+        with db.transaction():
+            for i in range(5):
+                db.command("sql", "INSERT INTO B SET n = ?", i)
+
+        def sizes(limit, batch_size):
+            rs = db.query(
+                "sql",
+                f"SELECT n FROM B ORDER BY n LIMIT {limit}",  # nosec B608 - an int
+            )
+            out = [len(b) for b in rs.iter_json_batches(batch_size=batch_size)]
+            assert list(rs.iter_json_batches(batch_size=batch_size)) == []
+            return out
+
+        assert sizes(5, 2) == [2, 2, 1]
+        assert sizes(4, 2) == [2, 2]
+        assert sizes(1, 10_000) == [1]
+        assert db.query("sql", "SELECT n FROM B WHERE n = 3").to_json_list() == [
+            {"n": 3}
+        ]
+
+
+def test_json_batch_size_must_be_at_least_one(temp_db_path):
+    """A batch size below one used to return no rows at all; it is refused."""
+    with arcadedb.create_database(temp_db_path) as db:
+        db.command("sql", "CREATE DOCUMENT TYPE B")
+        with pytest.raises(ValueError):
+            db.query("sql", "SELECT FROM B").to_json_list(batch_size=0)
+
+
 def test_resultset_close_and_context_manager(temp_db_path):
     """ResultSet supports close() and the context-manager protocol."""
     with arcadedb.create_database(temp_db_path) as db:
         db.command("sql", "CREATE DOCUMENT TYPE C")
         with db.transaction():
             for i in range(5):
-                db.command("sql", f"INSERT INTO C SET n = {i}")
+                db.command("sql", "INSERT INTO C SET n = ?", i)
 
         with db.query("sql", "SELECT FROM C") as rs:
             first = rs.first()

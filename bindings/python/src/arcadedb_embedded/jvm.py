@@ -8,6 +8,7 @@ import glob
 import os
 import platform
 import shlex
+import shutil
 import sys
 import zipfile
 from pathlib import Path
@@ -19,6 +20,7 @@ import jpype.imports
 from .exceptions import ArcadeDBError
 
 _JVM_CONFIG = None
+_JVM_INTERRUPT = None  # the `interrupt` the running JVM was started with
 
 
 def _project_dir() -> Path:
@@ -26,6 +28,31 @@ def _project_dir() -> Path:
 
 
 def _extract_runtime_resource(resource_name: str) -> Path:
+    """Locate a packaged runtime resource (``jars`` or ``jre``).
+
+    An installed wheel ships the resource next to this file and returns
+    immediately. Running from a source checkout, it does not exist there, so it
+    is extracted from the most recently built wheel in ``dist/`` into
+    ``.runtime-cache/`` -- and that cache is the reason this function is
+    careful.
+
+    IT USED TO BE EXTRACTED ONCE AND TRUSTED FOREVER (2026-09-23). A cache
+    extracted on 2026-06-04 from that day's 26.6.1 wheel was still being
+    served three months later, beside a 26.10.1 wheel built that morning.
+    Every source-tree run in between -- tests included -- executed against
+    June's engine without the python bridge jar: strings came back as lists of
+    characters, and twelve vector tests failed for reasons that had nothing to
+    do with the code under test. Nothing said so; the only symptom was wrong
+    answers.
+
+    So the cache is now stamped with the wheel it came from (name, size and
+    mtime) and re-extracted whenever that stamp no longer matches the wheel
+    this call would pick.
+
+    "Most recently built" is by modification time, NOT by filename. A reverse
+    string sort ranks ``26.9.1`` above ``26.10.1`` because ``"9" > "1"``, so
+    with both wheels in ``dist/`` it picked the older engine.
+    """
     package_dir = Path(__file__).resolve().parent
     resource_dir = package_dir / resource_name
     if resource_dir.exists():
@@ -33,25 +60,46 @@ def _extract_runtime_resource(resource_name: str) -> Path:
 
     project_dir = _project_dir()
     dist_dir = project_dir / "dist"
-    wheels = sorted(dist_dir.glob("arcadedb_embedded-*.whl"), reverse=True)
+    wheels = sorted(
+        dist_dir.glob("arcadedb_embedded-*.whl"),
+        key=lambda p: p.stat().st_mtime_ns,
+        reverse=True,
+    )
     if not wheels:
         return resource_dir
+    wheel = wheels[0]
+    st = wheel.stat()
+    stamp = f"{wheel.name} {st.st_size} {st.st_mtime_ns}"
 
     cache_root = project_dir / ".runtime-cache"
     extracted_root = cache_root / "arcadedb_embedded"
     extracted_resource_dir = extracted_root / resource_name
+    stamp_file = cache_root / f".extracted-from-{resource_name}"
+
     if extracted_resource_dir.exists():
-        return extracted_resource_dir
+        try:
+            if stamp_file.read_text(encoding="utf-8") == stamp:
+                return extracted_resource_dir
+        except OSError:
+            pass  # no stamp: a cache from before stamping, which is exactly the stale case
+        # NOT ignore_errors. A wipe that half-fails and is followed by an
+        # extraction overlays the new wheel on the old one, and a classpath
+        # carrying two engines is worse than an error.
+        shutil.rmtree(extracted_resource_dir)
+        stamp_file.unlink(missing_ok=True)
 
     cache_root.mkdir(parents=True, exist_ok=True)
     prefix = f"arcadedb_embedded/{resource_name}/"
 
-    with zipfile.ZipFile(wheels[0]) as wheel_zip:
+    with zipfile.ZipFile(wheel) as wheel_zip:
         members = [name for name in wheel_zip.namelist() if name.startswith(prefix)]
         if not members:
             return resource_dir
         wheel_zip.extractall(cache_root, members)
 
+    # Written only after a complete extraction, so an interrupted one is
+    # retried on the next start rather than trusted.
+    stamp_file.write_text(stamp, encoding="utf-8")
     return extracted_resource_dir
 
 
@@ -221,6 +269,7 @@ def start_jvm(
     disable_xml_limits: bool = True,
     jvm_args: Optional[Union[Iterable[str], str]] = None,
     common_pool_parallelism: Optional[int] = None,
+    interrupt: Optional[bool] = None,
 ):
     """
     Start the JVM with ArcadeDB JARs if not already started.
@@ -229,8 +278,10 @@ def start_jvm(
     -------------------------------------------
     heap_size (optional)
         Max heap size (e.g. "8g", "4096m"). Defaults to "4g".
-        Sets -Xmx and overrides any existing -Xmx from jvm_args or env.
-        To honor ARCADEDB_JVM_ARGS -Xmx, pass heap_size=None.
+        A value other than "4g" replaces every -Xmx from jvm_args or the
+        environment. With "4g" or None, an -Xmx given there is kept (the
+        largest wins if there are several), and -Xmx4g is added only when
+        none is given.
 
     disable_xml_limits (optional)
         If True, relaxes JDK XML entity limits to support large XML
@@ -239,7 +290,7 @@ def start_jvm(
     jvm_args (optional)
         Additional JVM flags to pass through (e.g. "-XX:MaxDirectMemorySize=8g",
         "-Dfoo=bar"). Can be a space-separated string or an iterable of strings.
-        Note: -Xmx is managed by heap_size when provided.
+        Note: see heap_size for how an -Xmx here combines with it.
 
     common_pool_parallelism (optional)
         Sets `-Djava.util.concurrent.ForkJoinPool.common.parallelism=<count>`.
@@ -249,12 +300,29 @@ def start_jvm(
         Example:
             start_jvm(heap_size="8g", common_pool_parallelism=8)
 
-    JVM Configuration (environment fallback):
-    -----------------------------------------
+    interrupt (optional)
+        What Ctrl-C (SIGINT) does. The default, False, leaves it to Python: a
+        KeyboardInterrupt is raised, so ``finally`` blocks, ``atexit`` hooks and
+        the rollback of a ``with db.transaction():`` run. A Java call in
+        progress (a slow query) is not interrupted: the KeyboardInterrupt
+        arrives when it returns (``kill -TERM`` from another terminal still
+        ends the process at once, through the JVM's shutdown hooks). A Java call
+        that waits in an interruptible way (``Thread.sleep``, ``Object.wait``,
+        the engine's async ``wait_completion()``) is woken by Ctrl-C, and JPype
+        1.7.1 can then raise ``java.lang.InterruptedException`` or
+        ``RuntimeError`` and deliver the ``KeyboardInterrupt`` late; "Known
+        Engine Issues" in the documentation has the workaround.
+        Pass True for JPype's script default, where the JVM handles SIGINT and
+        ends the whole process at once with exit status 130, with no Python
+        cleanup.
+
+    JVM Configuration (environment):
+    --------------------------------
     ARCADEDB_JVM_ARGS (optional)
         JVM arguments for memory and JVM-wide options (space-separated).
-        Used as a fallback when no explicit args are provided to start_jvm().
-        If not specified, defaults to: "-Xmx4g -Djava.awt.headless=true".
+        Always read, and merged before jvm_args (so jvm_args come later on
+        the command line); the package's own defaults are added only where
+        neither sets them.
 
         Common options to set here (JVM-wide only):
             -Xmx<size> / -Xms<size>   Heap sizing (must be set before JVM start)
@@ -284,7 +352,7 @@ def start_jvm(
     Note: JVM options must be set BEFORE the first JVM start, as the JVM
           can only be configured once per Python process.
     """
-    global _JVM_CONFIG
+    global _JVM_CONFIG, _JVM_INTERRUPT
     if jpype.isJVMStarted():
         candidate_args = tuple(
             _build_jvm_args(
@@ -300,6 +368,15 @@ def start_jvm(
             or (disable_xml_limits is not True)
             or (common_pool_parallelism is not None)
         )
+        if (
+            interrupt is not None
+            and _JVM_INTERRUPT is not None
+            and interrupt != _JVM_INTERRUPT
+        ):
+            raise ArcadeDBError(
+                "JVM is already started with a different interrupt setting. "
+                "Pass interrupt to the first start_jvm() call."
+            )
         if not has_overrides:
             # No explicit configuration requested: join the running JVM
             # (e.g. open_database() after create_database(jvm_kwargs=...)).
@@ -337,7 +414,13 @@ def start_jvm(
 
     try:
         # Always use bundled JRE
-        jpype.startJVM(jvm_path, *jvm_args, classpath=classpath)
+        # JPype's own default is `not interactive()`: in a script the JVM then
+        # handles SIGINT and ends the process with status 130, bypassing Python's
+        # signal handler, KeyboardInterrupt, `finally` and `atexit` (#118).
+        _JVM_INTERRUPT = bool(interrupt)
+        jpype.startJVM(
+            jvm_path, *jvm_args, classpath=classpath, interrupt=_JVM_INTERRUPT
+        )
         _JVM_CONFIG = tuple(jvm_args)
     except Exception as e:
         raise ArcadeDBError(f"Failed to start JVM: {e}") from e

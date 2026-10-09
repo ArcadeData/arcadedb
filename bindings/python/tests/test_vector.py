@@ -70,6 +70,51 @@ def test_to_java_float_array_accepts_numpy_directly(jvm):
     ) == pytest.approx([1.0, 2.0, 3.0])
 
 
+def test_to_java_int_array(jvm):
+    """to_java_int_array should take lists, iterables and NumPy of any int dtype."""
+    assert list(arcadedb.to_java_int_array([3, 17, 4096])) == [3, 17, 4096]
+    assert list(arcadedb.to_java_int_array((1, 2, 3))) == [1, 2, 3]
+    assert list(arcadedb.to_java_int_array(range(4))) == [0, 1, 2, 3]
+    assert list(arcadedb.to_java_int_array([])) == []
+    assert list(arcadedb.to_java_int_array([-5, 0, 2147483647])) == [-5, 0, 2147483647]
+
+
+def test_to_java_int_array_accepts_numpy_directly(jvm):
+    """NumPy arrays convert in one crossing, whatever their integer dtype."""
+    np = pytest.importorskip("numpy")
+
+    for dtype in (np.int8, np.int16, np.int32, np.int64, np.uint8, np.uint16):
+        assert list(arcadedb.to_java_int_array(np.array([1, 2, 3], dtype=dtype))) == [
+            1,
+            2,
+            3,
+        ]
+
+
+def test_to_java_int_array_round_trips_through_a_sparse_vector(test_db):
+    """The token side of a sparse vector: store from NumPy, read the values back."""
+    np = pytest.importorskip("numpy")
+
+    test_db.command("sql", "CREATE DOCUMENT TYPE SparseDoc")
+    test_db.command("sql", "CREATE PROPERTY SparseDoc.tokens ARRAY_OF_INTEGERS")
+    test_db.command("sql", "CREATE PROPERTY SparseDoc.weights ARRAY_OF_FLOATS")
+
+    tokens = np.array([7, 91, 4096], dtype=np.int32)
+    weights = np.array([0.5, 0.25, 0.125], dtype=np.float32)
+
+    with test_db.transaction():
+        test_db.command(
+            "sql",
+            "INSERT INTO SparseDoc SET tokens = ?, weights = ?",
+            arcadedb.to_java_int_array(tokens),
+            arcadedb.to_java_float_array(weights),
+        )
+
+    row = test_db.query("sql", "SELECT tokens, weights FROM SparseDoc").first()
+    assert list(row.get("tokens")) == [7, 91, 4096]
+    assert list(row.get("weights")) == pytest.approx([0.5, 0.25, 0.125])
+
+
 class TestLSMVectorIndex:
     """Test LSM Vector Index functionality."""
 
@@ -391,8 +436,7 @@ class TestLSMVectorIndex:
             pq_clusters=2,
         )
 
-        if "TypeIndex" not in index._java_index.getClass().getName():
-            pytest.skip("TypeIndex wrapper not returned by this build")
+        assert "TypeIndex" in index._java_index.getClass().getName()
 
         vectors = [
             [1.0, 0.0, 0.0],
@@ -416,7 +460,8 @@ class TestLSMVectorIndex:
         assert abs(res_embedding[0] - 1.0) < 0.001
 
     def test_lsm_vector_search_approximate_fallback(self, test_db):
-        """Approximate search should gracefully fall back when PQ is unavailable."""
+        """Approximate search on an index built without PRODUCT quantization raises
+        ArcadeDBError rather than silently answering some other way."""
         test_db.command("sql", "CREATE VERTEX TYPE Doc")
         test_db.command("sql", "CREATE PROPERTY Doc.embedding ARRAY_OF_FLOATS")
 
@@ -659,8 +704,10 @@ class TestLSMVectorIndex:
         assert len(results) == 1
         assert str(results[0][0].get_identity()) == rids[3]
 
-    def test_lsm_vector_search_uses_database_lookup_by_rid(self, test_db, monkeypatch):
-        """Result materialization should go through the Database wrapper."""
+    def test_lsm_vector_search_looks_up_all_hits_in_one_bridge_call(
+        self, test_db, monkeypatch
+    ):
+        """Result materialization looks every hit up in one GraphCalls.hits call."""
 
         test_db.command("sql", "CREATE VERTEX TYPE Doc")
         test_db.command("sql", "CREATE PROPERTY Doc.name STRING")
@@ -682,21 +729,23 @@ class TestLSMVectorIndex:
                 arcadedb.to_java_float_array([0.9, 0.1, 0.0]),
             )
 
-        lookup_calls = {"count": 0}
-        # Result materialization uses the Java-RID fast path (no string
-        # round-trip), still delegated to the Database wrapper.
-        original_lookup = test_db._lookup_by_java_rid
+        from arcadedb_embedded import graph
 
-        def wrapped_lookup(rid):
-            lookup_calls["count"] += 1
-            return original_lookup(rid)
+        calls = graph._graph_calls()
+        assert calls is not None
+        hit_calls = {"count": 0}
 
-        monkeypatch.setattr(test_db, "_lookup_by_java_rid", wrapped_lookup)
+        class CountingCalls:
+            def hits(self, java_db, pairs):
+                hit_calls["count"] += 1
+                return calls.hits(java_db, pairs)
+
+        monkeypatch.setattr(graph, "_GRAPH_CALLS", CountingCalls())
 
         results = index.find_nearest([1.0, 0.0, 0.0], k=2)
 
         assert len(results) == 2
-        assert lookup_calls["count"] == 2
+        assert hit_calls["count"] == 1
 
     def test_lsm_vector_search_uses_database_rid_conversion(self, test_db, monkeypatch):
         """RID whitelist conversion should go through the Database wrapper."""
@@ -1378,10 +1427,7 @@ class TestLSMVectorIndex:
 
     def test_lsm_cosine_distance_high_dimensional(self, test_db):
         """Test cosine distance in high dimensions (128D)."""
-        try:
-            import numpy as np
-        except ImportError:
-            pytest.skip("NumPy required for high-dimensional test")
+        np = pytest.importorskip("numpy")
 
         test_db.command("sql", "CREATE VERTEX TYPE VectorTestHD")
         test_db.command("sql", "CREATE PROPERTY VectorTestHD.name STRING")
@@ -1656,7 +1702,7 @@ class TestLSMVectorIndex:
         query = [0.9, 0.1] + [-1.0] * (dims - 2)
         results = index.find_nearest(query, k=1)
 
-        # BINARY quantization currently drops data or returns 0 results
+        # BINARY quantization returns exactly one result for k=1
         assert len(results) == 1
         vertex, distance = results[0]
         vec_data = arcadedb.to_python_array(vertex.get("embedding"))
@@ -1765,3 +1811,42 @@ class TestLSMVectorIndex:
             pytest.fail(
                 f"Failed to create index with graph storage and quantization: {e}"
             )
+
+
+def test_warm_up_loads_the_persisted_graph_before_the_first_search(tmp_path):
+    """After a reopen the index loads its persisted graph on the first search,
+    which pays for it (ArcadeData/arcadedb#8852). `warm_up()` loads it now, so
+    the first query does not: asserted on the engine's own counters rather than
+    on a time, which is noisy at test size. On engines before 26.10.1 there is
+    no warmUp() and the call raises."""
+    import random
+
+    db_path = str(tmp_path / "warm_up")
+    rnd = random.Random(3)  # nosec B311 - deterministic test corpus, not security
+    vecs = [[rnd.random() for _ in range(16)] for _ in range(2000)]
+    with arcadedb.create_database(db_path) as db:
+        db.command("sql", "CREATE VERTEX TYPE Doc")
+        db.command("sql", "CREATE PROPERTY Doc.embedding ARRAY_OF_FLOATS")
+        with db.transaction():
+            for i, v in enumerate(vecs):
+                # Two parameters: a lone list argument is read as the
+                # parameter list itself, binding its first float.
+                db.command("sql", "INSERT INTO Doc SET k = ?, embedding = ?", i, v)
+        db.create_vector_index("Doc", "embedding", dimensions=16, quantization="NONE")
+
+    with arcadedb.open_database(db_path) as db:
+        index = db.schema.get_vector_index("Doc", "embedding")
+        before = index.get_stats()
+        # Opened, not yet loaded: graphState LOADING (0) and nothing resident.
+        assert before["graphState"] == 0, before["graphState"]
+        assert before["graphNodeCount"] == 0, before["graphNodeCount"]
+
+        index.warm_up()
+        after = index.get_stats()
+        assert after["graphState"] != 0, after["graphState"]
+        assert after["graphNodeCount"] == len(vecs), after["graphNodeCount"]
+
+        index.warm_up()  # a no-op once loaded
+        nearest = index.find_nearest(vecs[7], k=1)
+        assert nearest[0][1] == 0.0, nearest
+        assert index.get_stats()["graphNodeCount"] == len(vecs)

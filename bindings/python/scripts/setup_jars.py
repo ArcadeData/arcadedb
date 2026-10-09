@@ -5,9 +5,9 @@ Setup script to copy ArcadeDB JAR files and bundled JRE to the Python package.
 This script should be run as part of the build process to ensure
 all necessary JAR files and the bundled JRE are included in the wheel.
 
-Note: JAR filtering is done upstream:
-  - Docker builds: Filtered in Dockerfile.build (jre-builder stage)
-  - Native builds: Filtered in download-jars GitHub Actions job
+Note: JAR filtering is done before this runs, from scripts/jar_exclusions.txt:
+  - Docker builds: Dockerfile.build (jre-builder stage)
+  - Native builds: build-native.sh (apply_jar_exclusions)
 """
 
 import shutil
