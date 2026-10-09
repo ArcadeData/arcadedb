@@ -1,17 +1,4 @@
 # Test files that still mock a concrete server/HA type (issue #9464). This list only shrinks: remove a file once it
 # no longer mocks one of the guarded types. Format: <path> <Type>[,<Type>...]. Never add to it - use a real server/database or a fake.
-ha-raft/src/test/java/com/arcadedb/server/ha/raft/Issue6760PartialSnapshotInstallTest.java RaftHAServer
 ha-raft/src/test/java/com/arcadedb/server/ha/raft/Issue6965LocalCommitHandshakeTest.java RaftHAServer,RaftTransactionBroker
-ha-raft/src/test/java/com/arcadedb/server/ha/raft/Issue7134StepDownRetryStopsOnRefusalTest.java RaftHAServer
-ha-raft/src/test/java/com/arcadedb/server/ha/raft/Issue7134TargetedTransferRequiresLeaderTest.java RaftHAServer
-ha-raft/src/test/java/com/arcadedb/server/ha/raft/Issue8182StateMachineCloseAwaitsLifecycleTasksTest.java RaftHAServer
-ha-raft/src/test/java/com/arcadedb/server/ha/raft/Issue8356NullTransactionBrokerAfterHaStopTest.java RaftHAServer
-ha-raft/src/test/java/com/arcadedb/server/ha/raft/Issue8363DirectoryReplacementClientGateTest.java ArcadeStateMachine,RaftHAServer
-ha-raft/src/test/java/com/arcadedb/server/ha/raft/Issue8364StateMachineCloseAwaitsHelperExecutorsTest.java RaftHAServer
-ha-raft/src/test/java/com/arcadedb/server/ha/raft/Issue8368BootstrapPassWindowTest.java RaftHAServer,RaftTransactionBroker
-ha-raft/src/test/java/com/arcadedb/server/ha/raft/Issue8490StaleForcedResyncTest.java ArcadeStateMachine,RaftHAServer
-ha-raft/src/test/java/com/arcadedb/server/ha/raft/Issue8529LeaderServiceGapHandOffTest.java RaftHAServer
-ha-raft/src/test/java/com/arcadedb/server/ha/raft/Issue8557ConcurrentLeadershipHandOffsTest.java ArcadeStateMachine,RaftHAServer
-ha-raft/src/test/java/com/arcadedb/server/ha/raft/Issue8606UnverifiedClosedCopyReverifyTest.java RaftHAServer
 ha-raft/src/test/java/com/arcadedb/server/ha/raft/Issue8784ReplicatedCommitFiresAfterCommitCallbacksTest.java RaftHAServer,RaftTransactionBroker
-ha-raft/src/test/java/com/arcadedb/server/ha/raft/Issue8856HAExecutorPoolStatsTest.java ArcadeStateMachine

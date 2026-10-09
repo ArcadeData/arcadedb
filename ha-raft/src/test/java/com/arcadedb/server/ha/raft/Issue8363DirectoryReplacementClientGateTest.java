@@ -48,8 +48,6 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatNoException;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 /**
  * Regression tests for issue #8363 (consolidating #7959 and #7960 part 2): a client already connected to a node, or
@@ -74,7 +72,7 @@ class Issue8363DirectoryReplacementClientGateTest {
 
   private LocalDatabase          localDb;
   private RaftReplicatedDatabase replicated;
-  private ArcadeStateMachine     stateMachine;
+  private FakeArcadeStateMachine     stateMachine;
   private RID                    seedRid;
 
   @BeforeEach
@@ -87,12 +85,12 @@ class Issue8363DirectoryReplacementClientGateTest {
 
     final FakeArcadeDBServer server = FakeArcadeDBServer.create();
     server.returns("getConfiguration", configuration());
-    stateMachine = mock(ArcadeStateMachine.class);
-    final RaftHAServer raft = mock(RaftHAServer.class);
+    stateMachine = new FakeArcadeStateMachine();
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
     // The leader, so a read-only command executes here rather than being forwarded: the gate must hold on the
     // local path, which is the one that reads the copy on disk.
-    when(raft.isLeader()).thenReturn(true);
-    when(raft.getStateMachine()).thenReturn(stateMachine);
+    raft.leader(true);
+    raft.stateMachine(stateMachine);
     replicated = new RaftReplicatedDatabase(server, localDb, raft);
     // As a server database runs: a scan with no transaction open begins one, through the wrapper.
     localDb.setAutoTransaction(true);
@@ -204,10 +202,10 @@ class Issue8363DirectoryReplacementClientGateTest {
   /** Between a failed bootstrap download and its retry no install is registered, but the holder still is. */
   @Test
   void everyClientEntryPointIsRefusedWhileTheBootstrapHoldsTheDatabase() {
-    when(stateMachine.isBootstrapInstallInFlight(DB_NAME)).thenReturn(true);
+    stateMachine.on("isBootstrapInstallInFlight", args -> DB_NAME.equals(args[0]));
     assertEveryClientEntryPointIsRefused("bolt");
 
-    when(stateMachine.isBootstrapInstallInFlight(DB_NAME)).thenReturn(false);
+    stateMachine.on("isBootstrapInstallInFlight", args -> false);
     assertEveryClientEntryPointIsServed("bolt");
   }
 
@@ -215,7 +213,7 @@ class Issue8363DirectoryReplacementClientGateTest {
   @Test
   void theEngineIsNeverRefused() {
     SnapshotInstaller.markInstallInFlightForTesting(Path.of(DB_PATH));
-    when(stateMachine.isBootstrapInstallInFlight(DB_NAME)).thenReturn(true);
+    stateMachine.on("isBootstrapInstallInFlight", args -> DB_NAME.equals(args[0]));
 
     assertThat(ProtocolContext.get()).isEqualTo(ProtocolContext.INTERNAL);
     assertEveryClientEntryPointIsServed(ProtocolContext.INTERNAL);
@@ -226,7 +224,7 @@ class Issue8363DirectoryReplacementClientGateTest {
   void anotherDatabaseBeingReplacedDoesNotRefuseThisOne() {
     final Path other = Path.of(DB_DIR, "another-database-8363");
     SnapshotInstaller.markInstallInFlightForTesting(other);
-    when(stateMachine.isBootstrapInstallInFlight("another-database-8363")).thenReturn(true);
+    stateMachine.on("isBootstrapInstallInFlight", args -> "another-database-8363".equals(args[0]));
     try {
       assertEveryClientEntryPointIsServed("http");
     } finally {
@@ -296,9 +294,9 @@ class Issue8363DirectoryReplacementClientGateTest {
   @Test
   void aClientReadingDuringARealBootstrapReinstallIsRefusedAndTheInstallIsNot() throws Exception {
     final ArcadeStateMachine realStateMachine = new ArcadeStateMachine();
-    final RaftHAServer raft = mock(RaftHAServer.class);
-    when(raft.isLeader()).thenReturn(true);
-    when(raft.getStateMachine()).thenReturn(realStateMachine);
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+    raft.leader(true);
+    raft.stateMachine(realStateMachine);
     final FakeArcadeDBServer server = FakeArcadeDBServer.create();
     server.returns("getConfiguration", configuration());
     server.on("existsDatabase", args -> Objects.equals(args[0], DB_NAME));

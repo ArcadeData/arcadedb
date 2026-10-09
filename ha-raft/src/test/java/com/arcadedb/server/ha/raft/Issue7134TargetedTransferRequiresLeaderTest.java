@@ -39,9 +39,7 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
-import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -71,9 +69,9 @@ class Issue7134TargetedTransferRequiresLeaderTest {
    */
   @Test
   void aTargetedTransferOnAFollowerIsRefusedWithoutReachingRatis() {
-    final RaftHAServer raft = mock(RaftHAServer.class);
-    when(raft.isLeader()).thenReturn(false);
-    when(raft.getLeaderId()).thenReturn(RaftPeerId.valueOf(REAL_LEADER));
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+    raft.leader(false);
+    raft.leaderId(RaftPeerId.valueOf(REAL_LEADER));
 
     final RaftClusterManager manager = new RaftClusterManager(raft);
 
@@ -84,29 +82,29 @@ class Issue7134TargetedTransferRequiresLeaderTest {
         .hasMessageContaining(REAL_LEADER);
 
     // Nothing may be submitted: a request that reaches Ratis is a request the leader acts on.
-    verify(raft, never()).getClient();
+    assertThat(raft.calls("getClient")).isEmpty();
   }
 
   /** The same refusal when no leader is known at all: still nothing to transfer from here. */
   @Test
   void aTargetedTransferOnAFollowerWithNoKnownLeaderIsAlsoRefused() {
-    final RaftHAServer raft = mock(RaftHAServer.class);
-    when(raft.isLeader()).thenReturn(false);
-    when(raft.getLeaderId()).thenReturn(null);
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+    raft.leader(false);
+    raft.leaderId(null);
 
     final RaftClusterManager manager = new RaftClusterManager(raft);
 
     assertThatThrownBy(() -> manager.transferLeadership(TARGET_PEER, 10_000))
         .isInstanceOf(NotTheLeaderRefusalException.class)
         .hasMessageContaining("not the leader");
-    verify(raft, never()).getClient();
+    assertThat(raft.calls("getClient")).isEmpty();
   }
 
   /** Control: the leader still transfers, or the guard above would have broken the endpoint outright. */
   @Test
   void theLeaderStillTransfersToTheRequestedTarget() throws Exception {
-    final RaftHAServer raft = mock(RaftHAServer.class);
-    when(raft.isLeader()).thenReturn(true);
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+    raft.leader(true);
 
     final RaftClientReply reply = mock(RaftClientReply.class);
     when(reply.isSuccess()).thenReturn(true);
@@ -114,7 +112,7 @@ class Issue7134TargetedTransferRequiresLeaderTest {
     when(admin.transferLeadership(any(RaftPeerId.class), anyLong())).thenReturn(reply);
     final RaftClient client = mock(RaftClient.class);
     when(client.admin()).thenReturn(admin);
-    when(raft.getClient()).thenReturn(client);
+    raft.returns("getClient", client);
 
     final RaftClusterManager manager = new RaftClusterManager(raft);
 
@@ -143,9 +141,9 @@ class Issue7134TargetedTransferRequiresLeaderTest {
    */
   @Test
   void theNoTargetTransferKeepsItsBooleanContractOnAFollower() {
-    final RaftHAServer raft = mock(RaftHAServer.class);
-    when(raft.isLeader()).thenReturn(false);
-    when(raft.getClient()).thenReturn(mock(RaftClient.class));
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+    raft.leader(false);
+    raft.returns("getClient", mock(RaftClient.class));
 
     final RaftClusterManager manager = new RaftClusterManager(raft);
 
@@ -159,9 +157,8 @@ class Issue7134TargetedTransferRequiresLeaderTest {
    */
   @Test
   void aLeaderSideTransferFailureIsNotReportedAsAFollowerRefusal() throws Exception {
-    final RaftHAServer raft = mock(RaftHAServer.class);
-    doThrow(new ConfigurationException("Failed to transfer leadership to " + TARGET_PEER + ": timeout"))
-        .when(raft).transferLeadership(any(String.class), anyLong());
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+    raft.fails("transferLeadership", new ConfigurationException("Failed to transfer leadership to " + TARGET_PEER + ": timeout"));
 
     final PostTransferLeaderHandler handler = new PostTransferLeaderHandler(HTTP_SERVERS.of(TestServerHelper.unstartedServer()), pluginFor(raft));
 
@@ -173,7 +170,7 @@ class Issue7134TargetedTransferRequiresLeaderTest {
   /** The HTTP contract: a follower answers 409 naming the leader, not 200 for an effect that landed elsewhere. */
   @Test
   void theStepDownEndpointAnswers409OnAFollower() throws Exception {
-    final RaftHAServer raft = mock(RaftHAServer.class);
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
     doThrowNotLeader(raft);
 
     final ExecutionResponse response = new PostStepDownHandler(HTTP_SERVERS.of(TestServerHelper.unstartedServer()), pluginFor(raft))
@@ -189,21 +186,21 @@ class Issue7134TargetedTransferRequiresLeaderTest {
    */
   @Test
   void theNoTargetTransferEndpointAnswers409OnAFollower() throws Exception {
-    final RaftHAServer raft = mock(RaftHAServer.class);
-    when(raft.isLeader()).thenReturn(false);
-    when(raft.getLeaderId()).thenReturn(RaftPeerId.valueOf(REAL_LEADER));
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+    raft.leader(false);
+    raft.leaderId(RaftPeerId.valueOf(REAL_LEADER));
 
     final ExecutionResponse response = new PostTransferLeaderHandler(HTTP_SERVERS.of(TestServerHelper.unstartedServer()), pluginFor(raft))
         .execute(null, rootUser(), new JSONObject());
 
     assertThat(response.getCode()).isEqualTo(409);
     assertThat(response.getResponse()).contains(REAL_LEADER);
-    verify(raft, never()).transferLeadership(anyLong());
+    assertThat(raft.calls("transferLeadership")).isEmpty();
   }
 
   @Test
   void theTargetedTransferEndpointAnswers409OnAFollower() throws Exception {
-    final RaftHAServer raft = mock(RaftHAServer.class);
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
     doThrowNotLeaderOnTransfer(raft);
 
     final ExecutionResponse response = new PostTransferLeaderHandler(HTTP_SERVERS.of(TestServerHelper.unstartedServer()), pluginFor(raft))
@@ -217,12 +214,12 @@ class Issue7134TargetedTransferRequiresLeaderTest {
     return new NotTheLeaderRefusalException("Refusing", RaftPeerId.valueOf(REAL_LEADER));
   }
 
-  private static void doThrowNotLeader(final RaftHAServer raft) {
-    doThrow(refusal()).when(raft).stepDown();
+  private static void doThrowNotLeader(final FakeRaftHAServer raft) {
+    raft.fails("stepDown", refusal());
   }
 
-  private static void doThrowNotLeaderOnTransfer(final RaftHAServer raft) {
-    doThrow(refusal()).when(raft).transferLeadership(any(String.class), anyLong());
+  private static void doThrowNotLeaderOnTransfer(final FakeRaftHAServer raft) {
+    raft.fails("transferLeadership", refusal());
   }
 
   private static RaftHAPlugin pluginFor(final RaftHAServer raft) {

@@ -99,7 +99,9 @@ public class FakeRaftHAServer extends RaftHAServer {
       // Getters a test answers from a function of the moment (a leader that changes once a transfer is asked for);
       // each still answers the value set with its setter when no function is set
       "getLeaderId", "isLeader", "getLivePeers", "getCommittedPeersOrNull", "getUnambiguousPeerHttpAddress",
-      "isSoleVoter", "getClient", "followerContactPeers", "handoffReachablePeers", "getClusterMonitor");
+      "isSoleVoter", "getClient", "followerContactPeers", "handoffReachablePeers", "getClusterMonitor",
+      // What a read guarantee waits on: Ratis's applied index, clamped by any per-database floor
+      "getTrustedAppliedIndex");
   private volatile CallLog         log     = new CallLog();
   private final    CallLog.Answers answers = new CallLog.Answers(RECORDED);
 
@@ -418,6 +420,12 @@ public class FakeRaftHAServer extends RaftHAServer {
       return null;
     final Answers<String> answers = peerHttpAddresses.get(peerId);
     return answers != null ? answers.next() : null;
+  }
+
+  /** Recorded; unanswered, the real clamp of the (detached, so unreadable) Ratis applied index. */
+  @Override
+  public long getTrustedAppliedIndex(final String databaseName) {
+    return (Long) call("getTrustedAppliedIndex", () -> super.getTrustedAppliedIndex(databaseName), databaseName);
   }
 
   @Override
