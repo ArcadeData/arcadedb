@@ -25,6 +25,7 @@ import com.arcadedb.database.ProtocolContext;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.exception.DuplicatedKeyException;
+import com.arcadedb.exception.ErrorCategory;
 import com.arcadedb.exception.LockTimeoutException;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
@@ -812,6 +813,8 @@ public class WebSocketInsertSession {
   /** Per-chunk tallies, the shape of the gRPC {@code BatchAck} counters. */
   private static final class ChunkCounts {
     private final boolean   concealErrors;
+    // WHETHER A SERVER FAULT OF THIS CHUNK WAS LOGGED WITH ITS STACK TRACE ALREADY: THE NEXT ONES ARE LOGGED WITHOUT
+    private       boolean   serverFaultTraced;
     private       JSONArray errors = new JSONArray();
     private       long      inserted;
     private       long      updated;
@@ -867,14 +870,19 @@ public class WebSocketInsertSession {
     /**
      * One {@code errors} entry. The code and the exception class are what a client branches on and stay; the message is
      * the engine's text - for a conflict, the key VALUES the row carried - and production mode conceals it, logging it at
-     * {@code FINE} when the client caused it, as a bulk load can refuse thousands of rows by design (issue #8749).
+     * {@code FINE} when the client caused it, as a bulk load can refuse thousands of rows by design (issue #8749). A
+     * server fault is logged with its stack trace once per chunk: a chunk whose every row fails for the same server-side
+     * reason must not write a trace per row.
      */
     private JSONObject error(final int rowIndex, final String code, final Exception e) {
       final JSONObject error = new JSONObject();
       error.put("rowIndex", rowIndex);
       error.put("code", code);
+      final boolean traceServerFault = !serverFaultTraced;
+      if (concealErrors && ErrorCategory.of(e) == ErrorCategory.SERVER)
+        serverFaultTraced = true;
       error.put("message", ErrorConcealment.clientMessage(concealErrors, WebSocketInsertSession.class, "/ws insert row " + rowIndex,
-          e.getMessage() != null ? e.getMessage() : e.toString(), e, Level.FINE));
+          e.getMessage() != null ? e.getMessage() : e.toString(), e, Level.FINE, traceServerFault));
       error.put("exception", e.getClass().getName());
       return error;
     }
