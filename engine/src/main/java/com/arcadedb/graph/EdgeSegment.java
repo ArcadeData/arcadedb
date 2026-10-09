@@ -128,7 +128,7 @@ public interface EdgeSegment extends Record {
    * @param neighborMasks one mask per filter, null for none
    * @param skipSelfLoops one flag per filter, true to leave out the entries reaching {@code owner} itself, null for none:
    *                      a self loop sits in both lists of its vertex, and an undirected count must take it from one
-   * @param owner         the vertex the list belongs to, read only for {@code skipSelfLoops}
+   * @param owner         the vertex the list belongs to, read only for {@code skipSelfLoops} and required with it
    * @param counts        one counter per filter, incremented in place
    */
   void countInto(EdgeBucketMask[] edgeMasks, EdgeBucketMask[] neighborMasks, boolean[] skipSelfLoops, RID owner, long[] counts);

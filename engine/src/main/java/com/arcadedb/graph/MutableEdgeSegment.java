@@ -464,9 +464,13 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
     if (used <= CONTENT_START_POSITION)
       return;
 
+    // A FLAG WITHOUT ITS OWNER WOULD SILENTLY COUNT THE SELF LOOPS IT ASKS TO LEAVE OUT
+    if (skipSelfLoops != null && owner == null)
+      throw new IllegalArgumentException("Self loops cannot be left out of the count without the vertex owning the list");
+
     final int filters = edgeMasks.length;
     // THE POSITION OF THE FAR END IS DECODED ONLY WHEN A FILTER HAS TO TELL A SELF LOOP APART
-    final boolean checkSelfLoops = skipSelfLoops != null && owner != null;
+    final boolean checkSelfLoops = skipSelfLoops != null;
     final long ownerBucketId = checkSelfLoops ? owner.getBucketId() : -1;
     final long ownerPosition = checkSelfLoops ? owner.getPosition() : -1;
     buffer.position(CONTENT_START_POSITION);

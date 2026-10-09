@@ -41,6 +41,7 @@ import java.util.Iterator;
  * OPTIONAL MATCH arms use {@code max(1, degree)}.
  */
 public final class DegreeProductOp implements CountOp {
+  /** The one-filter self-loop flag of an undirected last hop read off the IN list. Shared, so never written. */
   private static final boolean[] SKIP_SELF_LOOP = { true };
 
   private final String centralLabel;
