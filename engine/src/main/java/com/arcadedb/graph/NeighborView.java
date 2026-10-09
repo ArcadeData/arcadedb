@@ -18,8 +18,6 @@
  */
 package com.arcadedb.graph;
 
-import java.util.Arrays;
-
 /**
  * Zero-allocation view over a packed CSR adjacency structure.
  * <p>
@@ -46,7 +44,8 @@ public class NeighborView {
   private final int   nodeCount;
   private final int[] offsets;   // length = nodeCount + 1
   private final int[] neighbors; // packed neighbor IDs
-  // THE VIEW WITH EACH SELF LOOP LISTED ONCE, BUILT ON FIRST USE: A CACHED VIEW IS SHARED BY EVERY QUERY ON ITS SNAPSHOT
+  // THE VIEW WITH EACH SELF LOOP LISTED ONCE, BUILT ON FIRST USE: A CACHED VIEW IS SHARED BY EVERY QUERY ON ITS SNAPSHOT.
+  // TWO THREADS MAY BOTH BUILD IT, AND EITHER COPY IS THE SAME VIEW
   private volatile NeighborView selfLoopsOnce;
 
   public NeighborView(final int nodeCount, final int[] offsets, final int[] neighbors) {
@@ -99,7 +98,8 @@ public class NeighborView {
    * view of one direction, where a self loop is listed once already.
    * <p>
    * Built once per view and kept with it, so the merged views a provider caches pay for it once per snapshot rather than
-   * once per query. A view without self loops - the common case - answers itself after one scan of its entries.
+   * once per query. A view without self loops - the common case - answers itself after one scan of its entries; one
+   * with self loops keeps a second CSR alive for as long as the view itself.
    */
   public NeighborView withSelfLoopsOnce() {
     NeighborView once = selfLoopsOnce;
@@ -112,7 +112,8 @@ public class NeighborView {
 
   /**
    * Copies the neighbors of {@code node} into {@code target} from {@code pos}, keeping one entry of the two each self
-   * loop has in the merged range of an undirected view.
+   * loop has in the merged range of an undirected view: of {@code n} entries of the node itself, {@code n - n / 2} are
+   * kept, which is every one of them less a copy per pair.
    *
    * @return the position after the last entry copied
    */
@@ -131,29 +132,31 @@ public class NeighborView {
   }
 
   private NeighborView buildWithSelfLoopsOnce() {
-    int selfEntries = 0;
+    // THE COPIES DROPPED ARE COUNTED PER NODE: AN ODD COUNT ON TWO NODES DROPS NONE, WHERE HALF THEIR SUM WOULD DROP ONE
+    int dropped = 0;
     int entries = 0;
     for (int v = 0; v < nodeCount; v++) {
       final int end = offsets[v + 1];
       entries += end - offsets[v];
+      int selfEntries = 0;
       for (int j = offsets[v]; j < end; j++)
         if (neighbors[j] == v)
           ++selfEntries;
+      dropped += selfEntries / 2;
     }
-    if (selfEntries == 0)
+    if (dropped == 0)
       return this;
 
     // SIZED ON THE RANGES, NOT ON THE ARRAY: A ZERO-COPY VIEW MAY BE BACKED BY A LARGER BUFFER
     final int[] onceOffsets = new int[nodeCount + 1];
-    final int[] onceNeighbors = new int[entries - selfEntries / 2];
+    final int[] onceNeighbors = new int[entries - dropped];
     int pos = 0;
     for (int v = 0; v < nodeCount; v++) {
       onceOffsets[v] = pos;
       pos = copyNeighborsWithSelfLoopsOnce(v, onceNeighbors, pos);
     }
     onceOffsets[nodeCount] = pos;
-    final NeighborView once = new NeighborView(nodeCount, onceOffsets,
-        pos == onceNeighbors.length ? onceNeighbors : Arrays.copyOf(onceNeighbors, pos));
+    final NeighborView once = new NeighborView(nodeCount, onceOffsets, onceNeighbors);
     once.selfLoopsOnce = once;
     return once;
   }

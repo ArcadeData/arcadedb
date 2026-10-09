@@ -150,7 +150,7 @@ public final class DegreeProductOp implements CountOp {
     boolean needsPerNode = false;
     for (int a = 0; a < arms.length && !needsPerNode; a++)
       if (armBuckets[a] != null
-          && (arms[a].edgeTypes.length != 1 || CSRCountUtils.patternView(provider, arms[a].directions[0], arms[a].edgeTypes[0]) == null))
+          && (arms[a].edgeTypes.length != 1 || provider.getNeighborView(arms[a].directions[0], arms[a].edgeTypes[0]) == null))
         needsPerNode = true;
 
     final int[] bucketIds = anyLabelled ? precomputeBucketIds(provider, nodeIdUpperBound, guard) : null;
