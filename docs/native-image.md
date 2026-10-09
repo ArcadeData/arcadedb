@@ -270,9 +270,13 @@ so the Dockerfiles can be validated end to end from any branch without publishin
 ### Building the images locally
 
 ```bash
-./native/scripts/build-native-docker.sh                    # host arch, build + smoke, no push
-./native/scripts/build-native-docker.sh --port 2481        # ... if something already holds 2480
+./native/scripts/build-native-docker.sh                    # host arch, build + e2e battery, no push
+./native/scripts/build-native-docker.sh --no-e2e           # build the image only
 ./native/scripts/build-native-docker.sh --skip-binary-build  # iterate on the Dockerfiles only
+
+# the Java e2e battery against any image, JVM or native
+./mvnw install -DskipTests -pl e2e -am
+./mvnw verify -Pintegration -pl e2e -Darcadedb.test.image=arcadedb:26.11.1-SNAPSHOT-native-arm64-local
 ```
 
 `native/scripts/build-native-docker.sh` produces the same per-arch image the workflow publishes,
@@ -282,8 +286,8 @@ and `docker` jobs: build a throwaway builder image
 for amd64 - the musl toolchain with its musl-built static zlib; run the ordinary Maven native
 build **inside** it with the repository bind-mounted, so the Linux binary lands in `native/target`
 on the host; stage the build context the way the workflow's "Stage build context" step does; build
-the runtime image with `buildx --load`; then run `exercise.sh` against the container and scan its
-startup log, the same two assertions the workflow's "Smoke the container" step makes.
+the runtime image with `buildx --load`; then run the Java e2e battery against it, as the workflow's
+`docker` job does.
 
 The container step is what makes this work on a machine that is not Linux at all. Native Image
 cannot cross-compile, so a macOS host has no other way to produce the Linux binary these images
@@ -413,14 +417,35 @@ allots).
 
 ### What CI verifies
 
-The single-node smoke (including Prometheus, OTLP metrics and tracing) and the three-node HA smoke
-run on the two required Linux legs; macOS and Windows run the base smoke only. The tracing and OTLP
+The packaged image is held to the same Java e2e battery as the JVM image (`e2e` module,
+Testcontainers; see "The e2e battery" below). On top of that the bare binaries are smoke-tested:
+the single-node smoke (`smoke.sh`/`exercise.sh`, including Prometheus, OTLP metrics and tracing)
+and the three-node HA smoke run on the two required Linux legs; macOS and Windows run the base smoke only. The tracing and OTLP
 metrics checks assert both that the plugin started (its SDK was built) and that an export reached a
 collector: `smoke.sh` starts `otlp_sink.py`, a stdlib-only stand-in collector (OTLP/HTTP protobuf for
 metrics, a minimal cleartext HTTP/2 gRPC endpoint for traces), points both exporters at it with a 2 s
 metrics push interval (`arcadedb.serverMetrics.otlp.step`), and `exercise.sh` waits for a metrics push
 and a span batch carrying the `service.name` resource attribute. `trace.sh` runs the same sink in its
 first phase, so the exporters' run-time metadata is recorded too.
+
+### The e2e battery
+
+`e2e` (run with `-Pintegration`) starts one container for all its tests. The image is the only
+parameter: `-Darcadedb.test.image=<name:tag>`, else the `ARCADEDB_DOCKER_IMAGE` environment variable
+(what CI and the other e2e suites already use), else `arcadedata/arcadedb:latest`. The server is
+configured through environment variables named after the settings (`arcadedb.server.rootPassword`,
+`arcadedb.server.plugins`, ...), which `GlobalConfiguration` reads in both images; `JAVA_OPTS` would
+not reach the native binary, whose entrypoint is the binary itself with no shell script around it.
+
+A tag containing `-native` (or `-Darcadedb.test.native=true`) marks the image as native: Gremlin is
+not bundled there, so the Gremlin tests are skipped and the Gremlin plugin is not configured, and
+`ThaiAnalyzer` is skipped (see above). Everything else runs unchanged on both images, including the
+native-specific regressions of #9495 (`SqlStatementsIT`, `FullTextIT` over every bundled analyzer),
+and the battery ends with `ServerLogIT`, which fails on a `ClassNotFoundException`,
+`MissingReflectionRegistrationError` or log-handler failure anywhere in the server log.
+
+The bare-binary smoke scripts stay for what a container cannot cover: the macOS and Windows
+binaries, the OTLP exporters (`smoke.sh`'s stand-in collector) and the Raft cluster (`ha-smoke.sh`).
 
 ### JVector and SIMD
 

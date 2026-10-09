@@ -302,6 +302,8 @@ These dependencies are used only for testing and are not included in production 
 | org.testcontainers | testcontainers | 2.0.3 | MIT | https://testcontainers.com/ |
 | org.testcontainers | testcontainers-junit-jupiter | 2.0.3 | MIT | https://testcontainers.com/ |
 | org.testcontainers | testcontainers-toxiproxy | 2.0.3 | MIT | https://testcontainers.com/ |
+| redis.clients | jedis | 8.0.1 | MIT | https://github.com/redis/jedis |
+| org.mongodb | mongo-java-driver | 3.12.14 | Apache 2.0 | https://github.com/mongodb/mongo-java-driver |
 | org.awaitility | awaitility | 4.3.0 | Apache 2.0 | https://github.com/awaitility/awaitility |
 | com.jayway.jsonpath | json-path | 2.10.0 | Apache 2.0 | https://github.com/json-path/JsonPath |
 | com.github.docker-java | docker-java-api | 3.7.0 | Apache 2.0 | https://github.com/docker-java/docker-java |

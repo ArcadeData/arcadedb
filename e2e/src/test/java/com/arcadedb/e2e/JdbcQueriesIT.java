@@ -108,6 +108,7 @@ class JdbcQueriesIT extends ArcadeContainerTemplate {
 
   @Test
   void simpleGremlinQuery() throws Exception {
+    assumeGremlin();
     try (final Statement st = conn.createStatement()) {
 
       try (final ResultSet rs = st.executeQuery("{gremlin}g.V().hasLabel('Beer').limit(1)")) {
