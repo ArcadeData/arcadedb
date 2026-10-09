@@ -81,7 +81,8 @@ import java.util.logging.Level;
  * cache ({@code arcadedb.maxPageRAM}, a quarter of the heap by default). Size the heap for the peak, not for
  * that: a table that grows holds its old copy and its new one, half as large again, while it copies,
  * which at 200M vertices is another 3 to 5 GB for a moment, once per identity map and once per edge
- * batch. A pass logs how far it has got
+ * batch, and an edge batch that closes sorts the keys of the vertices it touched in an array of its
+ * own, 1.6 GB more at that scale. A pass logs how far it has got
  * every {@value #PROGRESS_INTERVAL_MS} ms, and warns when the JVM spends most of its time collecting
  * garbage, which is what a heap too small for the load looks like (issue #9575).
  * <p>
