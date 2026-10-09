@@ -214,31 +214,29 @@ public class ArcadeGremlin extends ArcadeQuery {
    * </ul>
    */
   private static ResultInternal mapToResult(final Map<Object, Object> originalMap) {
-    final Map<String, Object> stringMap = new LinkedHashMap<>(originalMap.size());
+    final Map<String, Object> result = new LinkedHashMap<>(originalMap.size());
 
     // THE TOKENS TAKE THEIR RESERVED NAMES FIRST, SO NOTHING ELSE CAN DISPLACE THEM
     for (final Map.Entry<Object, Object> entry : originalMap.entrySet()) {
       if (entry.getKey() == T.id)
-        stringMap.put(RID_KEY, entry.getValue());
+        result.put(RID_KEY, entry.getValue());
       else if (entry.getKey() == T.label)
-        stringMap.put(TYPE_KEY, entry.getValue());
+        result.put(TYPE_KEY, entry.getValue());
     }
-    final Map<String, Object> result = new LinkedHashMap<>(originalMap.size());
+
     for (final Map.Entry<Object, Object> entry : originalMap.entrySet()) {
       final Object originalKey = entry.getKey();
-      if (originalKey == T.id)
-        result.put(RID_KEY, entry.getValue());
-      else if (originalKey == T.label)
-        result.put(TYPE_KEY, entry.getValue());
-      else {
-        String key = String.valueOf(originalKey);
-        if (stringMap.containsKey(key) || result.containsKey(key)) {
-          key = key + ":" + (originalKey == null ? "null" : originalKey.getClass().getSimpleName());
-          for (int i = 2; stringMap.containsKey(key) || result.containsKey(key); i++)
-            key = key + i;
-        }
-        result.put(key, entry.getValue());
+      if (originalKey == T.id || originalKey == T.label)
+        continue;
+
+      String key = String.valueOf(originalKey);
+      if (result.containsKey(key)) {
+        final String base = key + ":" + (originalKey == null ? "null" : originalKey.getClass().getSimpleName());
+        key = base;
+        for (int i = 2; result.containsKey(key); i++)
+          key = base + i;
       }
+      result.put(key, entry.getValue());
     }
     return new ResultInternal(result);
   }
