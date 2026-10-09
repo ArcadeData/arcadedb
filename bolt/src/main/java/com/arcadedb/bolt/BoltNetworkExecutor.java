@@ -69,6 +69,7 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityHelper;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.ErrorConcealment;
 import com.arcadedb.server.ServerControlPlane;
 import com.arcadedb.server.network.PreAuthConnectionGate;
 import com.arcadedb.server.HAServerPlugin;
@@ -277,7 +278,7 @@ public class BoltNetworkExecutor extends Thread {
           // query-execution handlers - so this fallback intentionally keeps the generic DATABASE_ERROR.
           LogManager.instance().log(this, Level.WARNING, "BOLT error processing message", e);
           try {
-            sendFailure(BoltException.DATABASE_ERROR, e.getMessage());
+            sendFailure(BoltException.DATABASE_ERROR, loggedClientMessage(e.getMessage()));
             state = State.FAILED;
           } catch (final IOException ioe) {
             break;
@@ -838,14 +839,14 @@ public class BoltNetworkExecutor extends Thread {
         applySystemQueryTail(query, params, stream);
       } catch (final CommandParsingException e) {
         stream.close(this, "RUN failure");
-        sendFailure(classifyParsingError(e), e.getMessage() != null ? e.getMessage() : "Query parsing error");
+        sendFailure(classifyParsingError(e), clientMessage(e.getMessage() != null ? e.getMessage() : "Query parsing error", e));
         state = State.FAILED;
         return;
       } catch (final Exception e) {
         stream.close(this, "RUN failure");
         LogManager.instance().log(this, Level.WARNING, "BOLT system query error", e);
         sendFailure(classifyExecutionError(e, BoltErrorCodes.DATABASE_ERROR),
-            e.getMessage() != null ? e.getMessage() : "Database error");
+            loggedClientMessage(e.getMessage() != null ? e.getMessage() : "Database error"));
         state = State.FAILED;
         return;
       }
@@ -933,7 +934,7 @@ public class BoltNetworkExecutor extends Thread {
     } catch (final CommandParsingException e) {
       stream.close(this, "RUN failure");
       final String parseMsg = e.getMessage() != null ? e.getMessage() : "Query parsing error";
-      sendFailure(classifyParsingError(e), parseMsg);
+      sendFailure(classifyParsingError(e), clientMessage(parseMsg, e));
       state = State.FAILED;
     } catch (final Exception e) {
       // MVCC conflicts (NeedRetryException) are expected under contention and auto-retried by the driver,
@@ -941,7 +942,7 @@ public class BoltNetworkExecutor extends Thread {
       stream.close(this, "RUN failure");
       LogManager.instance().log(this, isRetryableConflict(e) ? Level.FINE : Level.WARNING, "BOLT query error", e);
       final String errorMsg = e.getMessage() != null ? e.getMessage() : "Database error";
-      sendFailure(classifyExecutionError(e, BoltErrorCodes.DATABASE_ERROR), errorMsg);
+      sendFailure(classifyExecutionError(e, BoltErrorCodes.DATABASE_ERROR), loggedClientMessage(errorMsg));
       state = State.FAILED;
     }
   }
@@ -1035,7 +1036,7 @@ public class BoltNetworkExecutor extends Thread {
       // by the driver, so log at FINE to avoid flooding WARNING with recoverable flow; real errors stay WARNING.
       LogManager.instance().log(this, isRetryableConflict(e) ? Level.FINE : Level.WARNING, "BOLT PULL error", e);
       final String errorMsg = e.getMessage() != null ? e.getMessage() : "Error fetching records";
-      sendFailure(classifyExecutionError(e, BoltErrorCodes.DATABASE_ERROR), errorMsg);
+      sendFailure(classifyExecutionError(e, BoltErrorCodes.DATABASE_ERROR), loggedClientMessage(errorMsg));
       // The failed stream can neither be pulled nor discarded any more: released now, with its admission slot (issue #9518),
       // rather than held until the client RESETs or disconnects
       closeStream(stream, "PULL failure");
@@ -1141,7 +1142,7 @@ public class BoltNetworkExecutor extends Thread {
       // fallback: opening a transaction can fail on an MVCC conflict, a lock timeout, a deadline or a security
       // refusal, and hand-coding TransactionNotFound for all of them told a driver's retry predicate that a
       // retryable conflict was a permanent client error (issue #7915).
-      sendFailure(classifyExecutionError(e, BoltErrorCodes.TRANSACTION_ERROR), errorMsg);
+      sendFailure(classifyExecutionError(e, BoltErrorCodes.TRANSACTION_ERROR), clientMessage(errorMsg, e));
       state = State.FAILED;
     }
   }
@@ -1183,7 +1184,7 @@ public class BoltNetworkExecutor extends Thread {
 
     } catch (final Exception e) {
       final String message = e.getMessage() != null ? e.getMessage() : "Commit error";
-      sendFailure(classifyExecutionError(e, BoltErrorCodes.TRANSACTION_ERROR), message);
+      sendFailure(classifyExecutionError(e, BoltErrorCodes.TRANSACTION_ERROR), clientMessage(message, e));
       state = State.FAILED;
     }
   }
@@ -1218,7 +1219,7 @@ public class BoltNetworkExecutor extends Thread {
       // The third of the three transaction handlers, routed through the one classifier for the same reason the
       // other two are (issue #7915): closeAllStreams() and rollback() both raise engine exceptions, and a
       // timeout or a security refusal reported as TransactionNotFound is a diagnosis the caller cannot act on.
-      sendFailure(classifyExecutionError(e, BoltErrorCodes.TRANSACTION_ERROR), message);
+      sendFailure(classifyExecutionError(e, BoltErrorCodes.TRANSACTION_ERROR), clientMessage(message, e));
       state = State.FAILED;
     }
   }
@@ -1413,7 +1414,7 @@ public class BoltNetworkExecutor extends Thread {
       // request on this connection take ensureDatabase()'s already-open fast path.
       database = null;
       final String message = e.getMessage() != null ? e.getMessage() : "Unknown error";
-      sendFailure(classifyDatabaseSelectionError(e), "Cannot open database: " + targetName + " - " + message);
+      sendFailure(classifyDatabaseSelectionError(e), "Cannot open database: " + targetName + " - " + clientMessage(message, e));
       state = State.FAILED;
       return false;
     }
@@ -2108,6 +2109,22 @@ public class BoltNetworkExecutor extends Thread {
   private void sendSuccess(final Map<String, Object> metadata) throws IOException {
     final SuccessMessage success = new SuccessMessage(metadata);
     sendMessage(success);
+  }
+
+  /**
+   * The text a FAILURE carries for a failure the ENGINE raised: the message, or, in production mode, the placeholder
+   * every surface uses ({@link ArcadeDBServer#CONCEALED_ERROR_MESSAGE}), with the detail written to the server log. The
+   * Neo4j status code beside it is what a driver acts on and stays. A duplicated key's message carries the stored key
+   * values, and before issue #8749 Bolt sent it in every mode. Text this executor words itself (a protocol state, a
+   * refused credential, a database name) does not go through here.
+   */
+  private String clientMessage(final String message, final Throwable cause) {
+    return ErrorConcealment.clientMessage(ErrorConcealment.isConcealing(server), this, "BOLT", message, cause);
+  }
+
+  /** {@link #clientMessage} for a failure the handler has already logged with its stack trace: nothing is logged twice. */
+  private String loggedClientMessage(final String message) {
+    return ErrorConcealment.loggedClientMessage(ErrorConcealment.isConcealing(server), message);
   }
 
   /**

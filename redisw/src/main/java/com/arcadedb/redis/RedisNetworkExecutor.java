@@ -36,6 +36,7 @@ import com.arcadedb.schema.LocalEdgeType;
 import com.arcadedb.schema.LocalVertexType;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.ErrorConcealment;
 import com.arcadedb.server.network.PreAuthConnectionGate;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
@@ -412,7 +413,7 @@ public class RedisNetworkExecutor extends Thread {
         value.append('-');
         value.append(respErrorPrefix(e));
         value.append(' ');
-        value.append(respErrorMessage(e));
+        value.append(respClientMessage(e));
       } finally {
         if (admission != null)
           admission.close();
@@ -448,6 +449,22 @@ public class RedisNetworkExecutor extends Thread {
       case SECURITY -> "NOPERM";
       default -> "ERR";
     };
+  }
+
+  /**
+   * The text of the error reply for {@code error}. A {@link RedisException} is RESP text this executor words itself
+   * ("wrong number of arguments", "value is not an integer or out of range", WRONGPASS...), and a
+   * {@link ServerSecurityException} is the server's refusal of the principal: both are bounded, carry no stored data
+   * and are what the client needs, so they go out in every mode. Anything else is the ENGINE's text - for a duplicated
+   * key, the stored key values - and production mode conceals it behind {@link ArcadeDBServer#CONCEALED_ERROR_MESSAGE},
+   * writing the detail to the server log instead, as every other surface does (issue #8749). The kind word before it
+   * ({@link #respErrorPrefix}) is what a client branches on and stays.
+   */
+  private String respClientMessage(final Exception error) {
+    final String message = respErrorMessage(error);
+    if (error instanceof RedisException || error instanceof ServerSecurityException)
+      return message;
+    return ErrorConcealment.clientMessage(ErrorConcealment.isConcealing(server), this, "Redis", message, error);
   }
 
   /**

@@ -384,7 +384,7 @@ public class EdgeLinkedList {
 
   /**
    * Counts the entries of the list against several filters in one walk of the chain: {@code counts[i]} is incremented
-   * for every entry whose edge bucket {@code edgeMasks[i]} accepts and whose far-end vertex bucket
+   * for every entry whose edge bucket {@code edgeMasks[i]} accepts (null for any) and whose far-end vertex bucket
    * {@code neighborMasks[i]} accepts (null for any), leaving out the self loops of the filters {@code skipSelfLoops}
    * flags (null for none). Neither the edge nor the neighbor record is loaded, so a light edge counts like a regular
    * one and a label on the far end is checked on the bucket the entry already carries (issue #9539). See

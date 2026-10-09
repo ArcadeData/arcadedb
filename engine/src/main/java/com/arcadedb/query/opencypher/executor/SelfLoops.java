@@ -118,6 +118,47 @@ public final class SelfLoops {
   }
 
   /**
+   * The vertices one pattern hop reaches from {@code vertex}, as identities: {@link Vertex#getConnectedVertexRIDs}, with
+   * a self loop reached once on an undirected hop rather than once per list it sits in (issues #8750, #9540). Same
+   * parity rule as {@link #deduplicating(Iterator, RID)}.
+   */
+  public static Iterable<RID> connectedVertexRIDs(final Vertex vertex, final Vertex.DIRECTION direction,
+      final String... edgeTypes) {
+    final Iterable<RID> connected = vertex.getConnectedVertexRIDs(direction, edgeTypes);
+    if (direction != Vertex.DIRECTION.BOTH)
+      return connected;
+    final RID self = vertex.getIdentity();
+    return () -> new Iterator<>() {
+      private final Iterator<RID> rids         = connected.iterator();
+      private       RID           nextRid      = null;
+      private       int           selfLoopSeen = 0;
+
+      @Override
+      public boolean hasNext() {
+        if (nextRid != null)
+          return true;
+        while (rids.hasNext()) {
+          final RID candidate = rids.next();
+          if (candidate.equals(self) && (++selfLoopSeen & 1) == 0)
+            continue; // the same self-loop already yielded this vertex from the other list
+          nextRid = candidate;
+          return true;
+        }
+        return false;
+      }
+
+      @Override
+      public RID next() {
+        if (!hasNext())
+          throw new NoSuchElementException();
+        final RID result = nextRid;
+        nextRid = null;
+        return result;
+      }
+    };
+  }
+
+  /**
    * Wraps a BOTH-direction edge iterator so a self-loop is yielded once per relationship instead of
    * once per adjacency list.
    * <p>

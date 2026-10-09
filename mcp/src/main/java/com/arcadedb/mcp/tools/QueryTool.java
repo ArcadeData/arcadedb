@@ -19,6 +19,7 @@
 package com.arcadedb.mcp.tools;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.mcp.MCPToolArgumentException;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -80,7 +81,7 @@ public class QueryTool {
     final String query = args.getString("query");
     final int limit = args.getInt("limit", DEFAULT_LIMIT);
     if (limit < 1 || limit > MAX_LIMIT)
-      throw new IllegalArgumentException("'limit' must be between 1 and " + MAX_LIMIT);
+      throw new MCPToolArgumentException("'limit' must be between 1 and " + MAX_LIMIT);
 
     final MCPToolUtils.DatabaseAccess access = MCPToolUtils.resolveDatabase(
         server, user, databaseName, config, MCPToolUtils.RequiredAccess.READ);

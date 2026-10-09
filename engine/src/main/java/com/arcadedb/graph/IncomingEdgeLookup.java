@@ -196,8 +196,60 @@ public final class IncomingEdgeLookup {
           involved.schema); it.hasNext(); it.next())
         ++count;
     for (final Snapshot snapshot : involved.snapshots)
-      count += snapshot.count(vertex.getIdentity());
+      count += snapshot.count(vertex.getIdentity(), false);
     return count;
+  }
+
+  /**
+   * The edges a relationship pattern matches from {@code vertex}: {@link #countEdges}, except that under
+   * {@link Vertex.DIRECTION#BOTH} a self loop is counted once. It sits in the outgoing and in the incoming list of its
+   * vertex, so the vertex API counts it twice, as a graph degree does; an undirected pattern {@code (n)-[:T]-(m)}
+   * matches the relationship once, as the row pipeline, Neo4j and the openCypher TCK do (issues #8750, #9540). The
+   * self loops are told apart on the far end the incoming entries carry, so no record is loaded for it.
+   */
+  public static long countPatternEdges(final CommandContext context, final Vertex vertex, final Vertex.DIRECTION direction,
+      final String... edgeTypes) {
+    if (direction != Vertex.DIRECTION.BOTH)
+      return countEdges(context, vertex, direction, edgeTypes);
+
+    final Involved involved = involved(context, vertex, direction, edgeTypes);
+    if (involved == null)
+      return countUndirectedEdges(vertex, edgeTypes);
+
+    final RID identity = vertex.getIdentity();
+    long count = vertex.countEdges(Vertex.DIRECTION.OUT, edgeTypes);
+    if (involved.closure.anyBidirectional) {
+      // THE SELF LOOPS ARE TOLD APART ON THE FAR END THE LIST ENTRY CARRIES: NO EDGE RECORD IS LOADED FOR IT, AND A GHOST
+      // ENTRY DOES NOT FAIL THE COUNT
+      final Iterator<Edge> stored = vertex instanceof VertexInternal internal ?
+          ((DatabaseInternal) vertex.getDatabase()).getGraphEngine().getEdgesKnowingEndpoints(internal, Vertex.DIRECTION.IN, edgeTypes) :
+          vertex.getEdges(Vertex.DIRECTION.IN, edgeTypes).iterator();
+      for (final Iterator<Edge> it = new StoredIncomingEdges(stored, involved.schema); it.hasNext(); )
+        if (!identity.equals(it.next().getOut()))
+          ++count;
+    }
+    // A SELF LOOP OF A UNIDIRECTIONAL TYPE IS IN THE OUTGOING LIST, COUNTED ABOVE: THE SCAN ANSWERS THE OTHER EDGES ONLY
+    for (final Snapshot snapshot : involved.snapshots)
+      count += snapshot.count(identity, true);
+    return count;
+  }
+
+  /**
+   * {@link Vertex#countEdges} in both directions, a self loop counted once. Every vertex the engine hands a query is a
+   * {@link VertexInternal}, answered off its edge lists in one walk each; another implementation of the interface is
+   * answered through the API alone, its self loops told apart on the identities of its outgoing neighbors (no
+   * neighbor record is loaded).
+   */
+  private static long countUndirectedEdges(final Vertex vertex, final String[] edgeTypes) {
+    if (vertex instanceof VertexInternal internal)
+      return ((DatabaseInternal) vertex.getDatabase()).getGraphEngine().countUndirectedEdges(internal, edgeTypes);
+
+    final RID identity = vertex.getIdentity();
+    long selfLoops = 0;
+    for (final RID neighbor : vertex.getConnectedVertexRIDs(Vertex.DIRECTION.OUT, edgeTypes))
+      if (identity.equals(neighbor))
+        ++selfLoops;
+    return vertex.countEdges(Vertex.DIRECTION.BOTH, edgeTypes) - selfLoops;
   }
 
   /**
@@ -331,6 +383,15 @@ public final class IncomingEdgeLookup {
   }
 
   /**
+   * The edge types declared unidirectional among {@code edgeTypes} (all when empty) and their subtypes, sorted; empty
+   * when there is none. A caller that builds the adjacency of a whole vertex set reads them to answer their incoming
+   * side from the outgoing lists of that same set, with no scan (issue #8629). The array is shared: do not modify it.
+   */
+  static String[] getUnidirectionalTypes(final Schema schema, final String... edgeTypes) {
+    return schema.hasUnidirectionalEdgeTypes() ? cachedClosure(schema, edgeTypes).unidirectional : Closure.NONE.unidirectional;
+  }
+
+  /**
    * Runs {@code walk} as the evaluation of a pattern (on the calling thread: the SQL MATCH traversers and Cypher's
    * shortestPath() run the SQL graph functions there, never on a parallel worker): the SQL graph functions it calls ({@code in()}, {@code inE()},
    * {@code both()}, {@code bothE()}, {@code shortestPath()}) answer the incoming side of the unidirectional types.
@@ -341,6 +402,11 @@ public final class IncomingEdgeLookup {
    * {@code GraphTraversalProvider} (an analytical view) only accelerates them: its reverse index holds the incoming
    * side, so a function called on its own does not use it for that side and answers the same rows with and without a
    * view (issue #8939), while a pattern walk answers the incoming side either way.
+   * <p>
+   * The rule is the move functions' and {@code shortestPath()}'s, which name a hop of a vertex. A graph algorithm, a
+   * path-finding function ({@code dijkstra()}, {@code astar()}, {@code bellmanFord()}, {@code cchShortestPath()},
+   * {@code duanSSSP()}) and the {@code algo.*}, {@code path.*}, {@code node.*} and {@code refactor.*} procedures ask about
+   * the graph, as an analytical view answers them, and always answer the incoming side (issue #8629).
    */
   public static <T> T walkingPattern(final Supplier<T> walk) {
     final int[] depth = PATTERN_WALKS.get();
@@ -763,24 +829,19 @@ public final class IncomingEdgeLookup {
         throw new DatabaseOperationException("Cannot scan bucket '" + bucket.getName() + "'", failure[0]);
     }
 
-    long count(final RID target) {
+    /** The edges into {@code target}, less the ones it is the source of too when {@code skipSelfLoops}. */
+    long count(final RID target, final boolean skipSelfLoops) {
       final UnidirectionalEdgeChanges changes = overlay();
-      if (changes == null) {
-        final int from = firstIndex(target);
-        int to = from;
-        while (to < size && isTarget(to, target))
-          ++to;
-        return to - from;
-      }
+      final boolean deletions = changes != null && changes.hasDeletions();
       // COUNTED ON THE ARRAYS AND THE CHANGES ALONE: NO EDGE IS MATERIALIZED
       long count = 0;
-      final boolean deletions = changes.hasDeletions();
       for (int i = firstIndex(target); i < size && isTarget(i, target); i++)
-        if (!deletions || !changes.isDeletedAfter(edgeIdentityAt(i), builtAt))
+        if ((!skipSelfLoops || !isSource(i, target)) && (!deletions || !changes.isDeletedAfter(edgeIdentityAt(i), builtAt)))
           ++count;
-      for (final UnidirectionalEdgeChanges.Created created : changes.createdInto(typeName, target))
-        if (isLive(created, changes))
-          ++count;
+      if (changes != null)
+        for (final UnidirectionalEdgeChanges.Created created : changes.createdInto(typeName, target))
+          if (isLive(created, changes) && (!skipSelfLoops || !target.equals(created.edge().getOut())))
+            ++count;
       return count;
     }
 
@@ -882,6 +943,10 @@ public final class IncomingEdgeLookup {
 
     private boolean isTarget(final int i, final RID target) {
       return targetBuckets[i] == target.getBucketId() && targetPositions[i] == target.getPosition();
+    }
+
+    private boolean isSource(final int i, final RID source) {
+      return sourceBuckets[i] == source.getBucketId() && sourcePositions[i] == source.getPosition();
     }
 
     /** The first index whose target is not below {@code target}. */

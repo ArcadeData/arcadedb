@@ -19,8 +19,10 @@
 package com.arcadedb.query.opencypher.procedures.refactor;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
@@ -31,6 +33,8 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
 import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -141,7 +145,7 @@ public class RefactorMergeNodes implements CypherProcedure {
       mergeProperties(survivorMutable, absorbed, globalPolicy);
       survivorMutable.save();
 
-      rewireEdges(absorbed, survivorMutable);
+      rewireEdges(absorbed, survivorMutable, context);
 
       absorbed.modify().delete();
     }
@@ -231,10 +235,19 @@ public class RefactorMergeNodes implements CypherProcedure {
       combined.add(value);
   }
 
-  private void rewireEdges(final Vertex absorbed, final MutableVertex survivor) {
+  private void rewireEdges(final Vertex absorbed, final MutableVertex survivor, final CommandContext context) {
+    // Read through the query's lookup, which completes the edges with the incoming ones of the unidirectional types:
+    // those are stored on their source only, and the delete of the absorbed node would otherwise drop them rather than
+    // leave them rewired (issue #8629)
+    // A self loop is met twice, from the outgoing and from the incoming side, and rewiring it rewrites its record: it is
+    // rewired once, both ends at a time, or the second copy points at the record the first one replaced
     final List<Edge> edgesToRewire = new ArrayList<>();
-    for (final Edge edge : absorbed.getEdges())
-      edgesToRewire.add(edge);
+    final Set<RID> seen = new HashSet<>();
+    for (final Iterator<Edge> it = IncomingEdgeLookup.getEdges(context, absorbed, Vertex.DIRECTION.BOTH); it.hasNext(); ) {
+      final Edge edge = it.next();
+      if (seen.add(edge.getIdentity()))
+        edgesToRewire.add(edge);
+    }
 
     for (final Edge edge : edgesToRewire) {
       final MutableEdge mutableEdge = edge.modify();

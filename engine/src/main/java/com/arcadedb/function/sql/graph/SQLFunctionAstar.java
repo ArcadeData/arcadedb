@@ -30,6 +30,7 @@ import com.arcadedb.graph.EdgeWeight;
 import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
+import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.graph.NodeEdgeWeights;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.function.sql.FunctionOptions;
@@ -41,6 +42,7 @@ import com.arcadedb.utility.FileUtils;
 
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.Locale;
 import java.util.Map;
@@ -61,6 +63,9 @@ import java.util.Set;
  */
 public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
   public static final String NAME = "astar";
+
+  // NO EDGE TYPE NAMED: EVERY TYPE. SHARED, AS THE OLTP EXPANSION ASKS FOR IT ONCE PER NODE
+  private static final String[] ANY_EDGE_TYPE = new String[0];
 
   private static final Set<String> OPTIONS = Set.of(PARAM_DIRECTION, PARAM_EDGE_TYPE_NAMES, PARAM_VERTEX_AXIS_NAMES,
       PARAM_PARALLEL, PARAM_MAX_DEPTH, PARAM_EMPTY_IF_MAX_DEPTH, PARAM_TIE_BREAKER, PARAM_D_FACTOR, PARAM_HEURISTIC_FORMULA,
@@ -302,8 +307,11 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
       }
     }
 
-    // OLTP fallback
-    for (final Edge edge : node.getEdges(paramDirection, paramEdgeTypeNames)) {
+    // OLTP fallback. A path search asks about the graph, not about what a vertex stores: the incoming side of a
+    // unidirectional edge type comes from the edges that end in the node, as the view above answers it (issue #8629)
+    for (final Iterator<Edge> edges = IncomingEdgeLookup.getEdges(ctx, node, paramDirection,
+        paramEdgeTypeNames != null ? paramEdgeTypeNames : ANY_EDGE_TYPE); edges.hasNext(); ) {
+      final Edge edge = edges.next();
       try {
         final double weight = getDistance(edge);
         if (!EdgeWeight.isWalkable(weight))
