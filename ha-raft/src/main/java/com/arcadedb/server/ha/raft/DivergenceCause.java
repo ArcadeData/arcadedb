@@ -58,7 +58,15 @@ public enum DivergenceCause {
    * it knows is behind and clamps its reads at an honest floor until a resync refreshes it (issue #6760). Nothing
    * failed while applying anything: the install is what did not finish the job (CodeRabbit on PR #7747).
    */
-  SNAPSHOT_INSTALL_INCOMPLETE("a snapshot install that did not bring this database up to the snapshot's index");
+  SNAPSHOT_INSTALL_INCOMPLETE("a snapshot install that did not bring this database up to the snapshot's index"),
+
+  /**
+   * A schema change or compaction this node ran locally whose publishing entry the leader refused before appending it
+   * (issue #9555), so the local file ids and layout are ones no other node has. Nothing failed to apply: the change
+   * simply never entered the log.
+   */
+  UNPUBLISHED_SCHEMA_CHANGE("a schema change or compaction this node ran locally whose replication was refused, so no "
+      + "other node holds it");
 
   private final String description;
 

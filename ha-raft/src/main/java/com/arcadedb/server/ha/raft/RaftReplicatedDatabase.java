@@ -332,6 +332,22 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
      * describe every session since the database opened.
      */
     private long                       elapsedMs;
+    /**
+     * The definite refusal of one of this session's entries (issue #9555): the leader turned it away before appending
+     * it, so the change the callback already made here will never reach another node. Recorded where the entry is
+     * submitted, because the exception itself may reach the session wrapped by the engine code it unwinds through.
+     * Never an indeterminate failure ({@link ReplicationDispatchedTimeoutException}), whose entry may still commit.
+     * <p>
+     * Why a {@code NeedRetryException} from the broker is definite: {@code RaftGroupCommitter} raises one only for an
+     * entry the leader refused before appending ({@code refusedBeforeAppend}), one that never left its queue
+     * ({@code QuorumNotReachedException} from {@code dispatchAware} on a PENDING or CANCELLED entry, from {@code stop()}
+     * draining the queue, or from a send Ratis rejected synchronously) and one it never queued
+     * ({@code ReplicationQueueFullException}). A dispatched entry with no answer is a {@code ReplicationDispatchedTimeoutException}.
+     * <p>
+     * Sticky: once set, the session cannot publish any more (see {@code recordFileChanges}), even if the callback
+     * swallowed the exception. A plain field, because a session and its instalments run on the one thread that owns it.
+     */
+    private NeedRetryException         refusal;
   }
 
   /**
@@ -2439,6 +2455,13 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       exclusiveOn = beginLeaderExclusive();
       final RET result = proxied.recordFileChanges(callback);
 
+      // Issue #9555: an instalment of this session was definitely refused, and the callback went on as if it had not (it
+      // swallowed the exception, or a caller between it and the instalment did). That instalment's files were already
+      // folded into shippedFiles, so the final entry below would leave them out and publish a change the followers
+      // cannot apply. The session is failed instead, which sends the finally block into the quarantine.
+      if (instalmentState.refusal != null)
+        throw instalmentState.refusal;
+
       // Capture file changes
       final List<FileManager.FileChange> fileChanges = proxied.getFileManager().getRecordedChanges();
       final boolean schemaChanged = proxied.getSchema().getEmbedded().isDirty() ||
@@ -2485,9 +2508,17 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       final int shippedInstalments = instalmentState.instalments;
       if (!addFiles.isEmpty() || !removeFiles.isEmpty() || schemaChanged || !walEntries.isEmpty()
           || shippedInstalments > 0) {
-        final RaftHAServer raft = requireRaftServer();
-        RaftHAServer.requireTransactionBroker(raft).replicateSchema(getName(), serializedSchema, addFiles, removeFiles, walEntries,
-            bucketDeltas, Collections.emptyList(), Collections.emptyList(), schemaDelta);
+        try {
+          final RaftHAServer raft = requireRaftServer();
+          RaftHAServer.requireTransactionBroker(raft).replicateSchema(getName(), serializedSchema, addFiles, removeFiles,
+              walEntries, bucketDeltas, Collections.emptyList(), Collections.emptyList(), schemaDelta);
+        } catch (final NeedRetryException e) {
+          // Definite: the entry is not in the log, and the callback's change is already on this node (issue #9555). The
+          // finally block quarantines the database once the session is wound down. A ReplicationDispatchedTimeoutException
+          // is not a NeedRetryException and passes through untouched: that entry may still commit.
+          instalmentState.refusal = e;
+          throw e;
+        }
         // Set HERE, not after the logging below: the change is published the moment that call returns, and a
         // diagnostic that threw would otherwise send the finally block into retireAbandonedInstalments to report a
         // divergence that does not exist. Harmless for on-disk state - the compensation only ever targets files
@@ -2552,6 +2583,12 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       try {
         if (!published)
           retireAbandonedInstalments(instalmentState);
+        // After the retirement, which still needs the session bound to submit its own entry, and before the session is
+        // released, so no other session on this database can start from the diverged state first (issue #9555). Cheap
+        // to do while the session is held: the quarantine is an in-memory mark plus one small file write, and the resync
+        // and the leadership hand-off it requests are both submitted to executors rather than run here.
+        if (!published && instalmentState.refusal != null)
+          quarantineUnpublishedChange("schema change", instalmentState.refusal);
         if (outerSchemaCommitThread == null)
           isSchemaCommitThread.remove();
         else
@@ -2655,6 +2692,29 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     if (stateMachine != null)
       stateMachine.bindSchemaSession(getName(), term);
     return term;
+  }
+
+  /**
+   * Quarantines this database and starts its resync because a schema session's entry was definitely refused after the
+   * session had already changed it locally (issue #9555), see
+   * {@link ArcadeStateMachine#quarantineUnpublishedSchemaChange}. Never throws: it runs on the failure path of the
+   * session, whose own exception is the one the caller must see.
+   */
+  private void quarantineUnpublishedChange(final String session, final NeedRetryException refusal) {
+    try {
+      final ArcadeStateMachine stateMachine = stateMachineOrNull();
+      if (stateMachine != null)
+        stateMachine.quarantineUnpublishedSchemaChange(getName(), session, refusal);
+      else
+        LogManager.instance().log(this, Level.SEVERE,
+            "The %s on database '%s' was applied locally but its replication was refused (%s), and there is no Raft "
+                + "state machine to quarantine the database on: this node holds a change no other node has (issue #9555)",
+            session, getName(), refusal.getClass().getSimpleName() + ": " + refusal.getMessage());
+    } catch (final RuntimeException e) {
+      LogManager.instance().log(this, Level.SEVERE,
+          "Could not quarantine database '%s' after its %s was refused by the leader: this node may hold a change no "
+              + "other node has (issue #9555)", e, getName(), session);
+    }
   }
 
   /** Ends the binding {@link #bindSchemaSessionToTerm} took, if it took one. */
@@ -2957,6 +3017,10 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     final long startedAtNanos = System.nanoTime();
     try {
       broker.replicateSchemaInstalment(getName(), newFiles, walEntries, bucketDeltas);
+    } catch (final NeedRetryException e) {
+      // The pages this instalment carried are already committed here (issue #9555): see SchemaInstalmentState.refusal.
+      state.refusal = e;
+      throw e;
     } finally {
       // In a finally so a failed instalment is counted too: an instalment that timed out against a slow quorum
       // member held the write lock for the whole timeout, which is exactly the event an operator is looking for.
@@ -3443,8 +3507,10 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       // this node advanced past theirs. The recovery is the one that already existed for a failed whole-file
       // compaction, not a new one: the next entry touching those pages hits a version gap on the followers and
       // escalates to a snapshot resync, and a follower's part-written staging file is truncated by the first
-      // slice of the next sequence. Deliberately not retried here - a retry would re-ship a sealed image the next
-      // compaction is about to rewrite anyway.
+      // slice of the next sequence. Since issue #9555 a DEFINITE refusal of any of these entries (the leader turned it
+      // away before appending it) quarantines and resyncs this node at once instead - see the try below; what this
+      // paragraph describes remains the outcome of every other failure. Deliberately not retried here - a retry
+      // would re-ship a sealed image the next compaction is about to rewrite anyway.
       // #6933: the whole session is planned BEFORE anything ships, because the publishing entry has to carry the
       // final slice of EVERY sliced store plus every whole blob, and a plan that cannot fit has to be refused
       // here rather than by the splitter after the delivery-only slices are already in the Raft log. The schema
@@ -3460,30 +3526,41 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       final List<RaftLogEntryCodec.TsSealedBlob> sealedBlobs = new ArrayList<>(recordedSealed.size());
       final List<RaftLogEntryCodec.TsSealedChunk> finalSealedChunks = new ArrayList<>();
       int sealedSlicesShipped = 0;
-      for (int store = 0; store < recordedSealed.size(); store++) {
-        final RaftLogEntryCodec.TsSealedBlob blob = recordedSealed.get(store);
-        final SealedSlicePlan plan = sealedPlans.get(store);
-        if (!plan.sliced()) {
-          sealedBlobs.add(blob);
-          continue;
+      // Issue #9555: from here on every entry this session submits carries a compaction that has ALREADY run on this
+      // node - the file id is allocated, the compacted file written and the index's sub-indexes swapped. A definite
+      // refusal of any of them leaves this node with a layout no other node has, so the database is quarantined and
+      // resynced now. An indeterminate failure (ReplicationDispatchedTimeoutException) is not a NeedRetryException and
+      // passes through: its entry may still commit, and then this node's layout is the committed one. Why every
+      // NeedRetryException the broker raises is definite is listed on SchemaInstalmentState.refusal.
+      try {
+        for (int store = 0; store < recordedSealed.size(); store++) {
+          final RaftLogEntryCodec.TsSealedBlob blob = recordedSealed.get(store);
+          final SealedSlicePlan plan = sealedPlans.get(store);
+          if (!plan.sliced()) {
+            sealedBlobs.add(blob);
+            continue;
+          }
+          // One slice materialized at a time (#6933): the source image is already one whole-file array on this
+          // thread, and cutting the sequence up front made it two.
+          for (int i = 0; i < plan.count() - 1; i++)
+            broker.replicateSealedChunk(getName(), plan.slice(blob, i));
+          finalSealedChunks.add(plan.slice(blob, plan.count() - 1));
+          sealedSlicesShipped += plan.count();
+          // Nothing needs this store's image any more - only its final slice publishes - so let an N-shard session
+          // stop holding N whole-file arrays at once.
+          recordedSealed.set(store, null);
+          // Per-STORE, not per-session: the burst that costs latency is one store's sequence of round trips, and
+          // summing across stores would hide a single pathological shard behind a busy-but-healthy cycle.
+          sealedChunksMaxSequence.accumulateAndGet(plan.count(), Math::max);
         }
-        // One slice materialized at a time (#6933): the source image is already one whole-file array on this
-        // thread, and cutting the sequence up front made it two.
-        for (int i = 0; i < plan.count() - 1; i++)
-          broker.replicateSealedChunk(getName(), plan.slice(blob, i));
-        finalSealedChunks.add(plan.slice(blob, plan.count() - 1));
-        sealedSlicesShipped += plan.count();
-        // Nothing needs this store's image any more - only its final slice publishes - so let an N-shard session
-        // stop holding N whole-file arrays at once.
-        recordedSealed.set(store, null);
-        // Per-STORE, not per-session: the burst that costs latency is one store's sequence of round trips, and
-        // summing across stores would hide a single pathological shard behind a busy-but-healthy cycle.
-        sealedChunksMaxSequence.accumulateAndGet(plan.count(), Math::max);
-      }
-      sealedChunksShipped.addAndGet(sealedSlicesShipped);
+        sealedChunksShipped.addAndGet(sealedSlicesShipped);
 
-      broker.replicateSchema(getName(), serializedSchema, addFiles, removeFiles, walEntries, bucketDeltas,
-          sealedBlobs, finalSealedChunks);
+        broker.replicateSchema(getName(), serializedSchema, addFiles, removeFiles, walEntries, bucketDeltas,
+            sealedBlobs, finalSealedChunks);
+      } catch (final NeedRetryException e) {
+        quarantineUnpublishedChange("compaction", e);
+        throw e;
+      }
 
       // A compaction entry always carries the whole document - its size is what the sealed payload was budgeted
       // against, so there is nothing to gain from a delta here - but it still MOVES the followers, so the base a
