@@ -4510,7 +4510,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * quantization, the quantized vector with 8 to 12 bytes of metadata (see {@code persistVectorWithLocation}); the
    * float vector itself stays in the document. Measured, 60,000 vectors of 2 dimensions - 2.3MB estimated - made a
    * 538KB entry. The other half of the cap is headroom for what the estimate does not see: the per-page WAL framing,
-   * and a chunk boundary checked only after each record.
+   * a chunk boundary checked only after each record, and the tombstone a build over a populated index writes beside
+   * each record's fresh vector (issue #9506, not charged to the estimate on its own - see bulkLoadVectorData). Shrinking
+   * that headroom means charging the tombstones there.
    * <p>
    * The graph persists are not bounded here: they commit on the inner instance and never replicate (see the PHASE 3
    * guard in {@link #build(BuildIndexCallback, GraphBuildCallback, boolean)}).

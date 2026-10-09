@@ -18,7 +18,9 @@
  */
 package com.arcadedb.index.vector;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.utility.Pair;
@@ -27,6 +29,7 @@ import org.junit.jupiter.api.Test;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Random;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -58,6 +61,41 @@ class Issue9506BuildOverPopulatedIndexTest extends TestHelper {
     // A second build is no different: the count does not grow with the number of builds
     index.build(null, null);
     assertThat(assertOneLiveEntryPerRecord(index, rids)).doesNotContainAnyElementsOf(afterFirstBuild);
+  }
+
+  /**
+   * A build that commits in several chunks: each record's {@code REMOVE} and {@code ADD} are queued in the same chunk,
+   * so no chunk commit can leave a record with its old id tombstoned and no new one, or with both live.
+   */
+  @Test
+  void aBuildOverAPopulatedIndexAcrossSeveralChunksKeepsOneEntryPerRecord() {
+    // 512 DIMENSIONS ARE ESTIMATED AT 512 * 4 + 32 = 2_080 BYTES A RECORD, SO 1_500 RECORDS ARE ~3MB: THREE CHUNKS OF 1MB
+    final int dimensions = 512;
+    final int records = 1_500;
+    ((DatabaseInternal) database).getConfiguration().setValue(GlobalConfiguration.INDEX_BUILD_CHUNK_SIZE_MB, 1L);
+
+    database.command("sql", "CREATE DOCUMENT TYPE Wide BUCKETS 1");
+    database.command("sql", "CREATE PROPERTY Wide.vector ARRAY_OF_FLOATS");
+    database.command("sql", "CREATE INDEX ON Wide (vector) LSM_VECTOR METADATA { \"dimensions\": " + dimensions + " }");
+
+    final Random random = new Random(9506L);
+    final List<RID> rids = new ArrayList<>();
+    database.transaction(() -> {
+      for (int i = 0; i < records; i++) {
+        final float[] vector = new float[dimensions];
+        for (int j = 0; j < dimensions; j++)
+          vector[j] = (float) random.nextGaussian();
+        rids.add(database.newDocument("Wide").set("vector", vector).save().getIdentity());
+      }
+    });
+
+    final LSMVectorIndex index =
+        (LSMVectorIndex) ((TypeIndex) database.getSchema().getIndexByName("Wide[vector]")).getIndexesOnBuckets()[0];
+    assertThat(index.build(null, null)).isEqualTo(records);
+
+    assertThat(index.countEntries()).isEqualTo(records);
+    for (final RID rid : rids)
+      assertThat(index.getVectorIndex().getVectorIdsForRid(rid)).as("live vector ids of %s", rid).hasSize(1);
   }
 
   /**
