@@ -990,6 +990,8 @@ public class TransactionContext implements Transaction {
    */
   public boolean addUpdatedRecord(final Record record) throws IOException {
     final RID rid = record.getIdentity();
+    // #9070: the transaction's own write is what it reads from now on, never the snapshot of the chain it read before
+    forgetSnapshotChunkChain(rid);
 
     // #7149: the delete wins. A record this transaction already deleted cannot exist at commit, so a write to it
     // can never be observed - exactly as the symmetric order already behaves, where removeRecordFromCache() drops
@@ -1120,6 +1122,12 @@ public class TransactionContext implements Transaction {
     if (snapshotChunkChains == null)
       snapshotChunkChains = new HashMap<>();
     snapshotChunkChains.put(rid, pagesAndVersions);
+  }
+
+  /** Drops the snapshot of a multi-page record this transaction writes or deletes (#9070). */
+  private void forgetSnapshotChunkChain(final RID rid) {
+    if (snapshotChunkChains != null && rid != null)
+      snapshotChunkChains.remove(rid);
   }
 
   /**
@@ -3395,6 +3403,7 @@ public class TransactionContext implements Transaction {
    */
   public void addDeletedRecord(final RID rid) {
     deletedRecordsInTx.add(rid);
+    forgetSnapshotChunkChain(rid);
     // A record deleted after an in-tx update no longer needs its indexed-state snapshot (#4935): the delete
     // removes the index entries through its own path, so drop the retained memory right away.
     if (updatedRecordsIndexSnapshot != null)

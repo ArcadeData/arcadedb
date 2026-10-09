@@ -22,7 +22,9 @@ import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.PageId;
 import com.arcadedb.exception.ConcurrentModificationException;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -119,10 +121,37 @@ class Issue9070RepeatableReadNeighbourPinnedHeadTest extends BucketPageLayoutTes
   }
 
   /**
+   * The transaction's own update of a record it read before is what it reads afterwards, not the snapshot of the chain.
+   */
+  @Test
+  void ownUpdateAfterASnapshotReadIsReadBack() {
+    final RID[] rids = createSmallAndLarge();
+
+    database.begin(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
+    try {
+      assertThat(readLarge(rids[1])).isEqualTo("v=0 s=" + OLD_SIZE + "x");
+      database.lookupByRID(rids[1], true).asDocument().modify().set("v", 7).set("s", "z".repeat(NEW_SIZE)).save();
+      assertThat(readLarge(rids[1])).isEqualTo("v=7 s=" + NEW_SIZE + "z");
+      database.commit();
+    } finally {
+      if (database.isTransactionActive())
+        database.rollback();
+    }
+
+    database.begin(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
+    try {
+      assertThat(readLarge(rids[1])).isEqualTo("v=7 s=" + NEW_SIZE + "z");
+    } finally {
+      database.rollback();
+    }
+  }
+
+  /**
    * Reads under REPEATABLE_READ while another thread keeps rewriting the record: whatever the first read of a transaction
    * returns, a second read in the same transaction returns it again, never a mix and never a different version.
    */
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES) // hang detector for the writer join, not a latency bound
   void everyReadOfATransactionAgreesUnderConcurrentRewrites() throws Exception {
     final RID[] rids = createSmallAndLarge();
 
