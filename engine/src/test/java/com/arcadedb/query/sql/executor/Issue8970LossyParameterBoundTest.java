@@ -95,6 +95,25 @@ class Issue8970LossyParameterBoundTest extends TestHelper {
   }
 
   @Test
+  void aDescendingOrderOverAnIndexAgreesWithTheUnindexedType() {
+    for (final Object bound : new Object[] { TWO_53 + 1, TWO_53 + 3, new BigDecimal("0.1") })
+      for (final String operator : new String[] { "<", "<=", ">", ">=" }) {
+        final String statement = "SELECT id FROM %s WHERE d " + operator + " ? ORDER BY d DESC";
+        assertThat(ids(String.format(statement, "I"), bound)).as("d %s %s DESC", operator, bound)
+            .isEqualTo(ids(String.format(statement, "N"), bound));
+      }
+  }
+
+  private List<Integer> ids(final String statement, final Object... parameters) {
+    final List<Integer> ids = new ArrayList<>();
+    try (final ResultSet rs = database.query("sql", statement, parameters)) {
+      while (rs.hasNext())
+        ids.add(rs.next().<Integer>getProperty("id"));
+    }
+    return ids;
+  }
+
+  @Test
   void aBoundOnAHashIndexAgreesWithTheUnindexedType() {
     // a hash index cannot be widened: the rounded key is read and the entries are checked against the exact bound
     for (final Object bound : new Object[] { TWO_53 + 1, TWO_53, new BigDecimal("0.1"), new BigDecimal("0.100000000000000006") }) {
