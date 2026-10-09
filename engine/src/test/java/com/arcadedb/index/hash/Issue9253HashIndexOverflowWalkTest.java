@@ -30,6 +30,8 @@ import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.sql.executor.ResultSet;
 
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -44,11 +46,25 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Regression for issue #9253: an insert into a NOTUNIQUE_HASH index decoded the size of every entry of every full
  * overflow page it walked past, so a load got slower with every record already indexed. A page now remembers, in the
  * header, that it holds no dead space, and the walk moves past it with one free-space check.
+ * <p>
+ * The scenario needs the RIDs of a key spread over the overflow chain, which is the inline layout of version 2: from
+ * version 3 they move to a RID list instead (issue #9228), and the chain never forms. The test pins version 2, whose indexes
+ * keep working until they are rebuilt.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class Issue9253HashIndexOverflowWalkTest extends TestHelper {
   private static final int KEYS = 100;
+
+  @BeforeEach
+  void useTheInlineLayout() {
+    HashIndex.HashIndexFactoryHandler.layoutVersion = HashIndexBucket.INLINE_RIDS_VERSION;
+  }
+
+  @AfterEach
+  void restoreLayout() {
+    HashIndex.HashIndexFactoryHandler.layoutVersion = HashIndexBucket.CURRENT_VERSION;
+  }
 
   @Test
   void fullOverflowPagesAreMarkedAsHavingNoDeadSpace() throws IOException {

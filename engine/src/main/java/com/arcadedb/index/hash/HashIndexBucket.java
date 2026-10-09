@@ -38,6 +38,7 @@ import com.arcadedb.serializer.BinaryTypes;
 import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.logging.Level;
 
@@ -48,20 +49,27 @@ import java.util.logging.Level;
  * <pre>
  *   Page 0:   Metadata page (global depth, key types, bucket/directory start pages, etc.)
  *   Page 1+:  Directory pages (array of int bucket page numbers)
- *   Page D+:  Bucket pages (entries of compressed key + compressed RID)
+ *   Page D+:  Bucket pages (entries of compressed key + compressed RID) and RID list pages (version 3, non-unique only)
  * </pre>
  * <p>
- * Two bucket page layouts exist, told apart by the file version (issue #5712):
+ * Three layouts exist, told apart by the file version:
  * <ul>
- *   <li>{@link #CURRENT_VERSION} (2): entries are NOT ordered. A new entry is appended at the end of the data area and
- *   its slot at the end of the slot directory, so an insert dirties the entry, one slot and the page header instead of
- *   the whole run of slots after a sorted insertion point. Each slot carries a 1-byte tag (the low byte of the key
- *   hash): a lookup scans the slots comparing the tag, and compares full keys only on a tag hit.</li>
+ *   <li>{@link #CURRENT_VERSION} (3): the bucket pages of version 2, plus RID lists (issue #9228). The RIDs of a non-unique
+ *   key are kept inline in its entry while they take up to a quarter of a page. Past that they move to pages of their own,
+ *   chained from the entry, which keeps only the first and the last page of the chain. Adding a RID to such a key writes
+ *   the last page and nothing else, where an inline entry is copied whole on every insert and, once wider than a page,
+ *   spreads over the overflow chain of the bucket, where every other key of the bucket has to walk past it.</li>
+ *   <li>{@link #INLINE_RIDS_VERSION} (2): entries are NOT ordered (issue #5712). A new entry is appended at the end of the
+ *   data area and its slot at the end of the slot directory, so an insert dirties the entry, one slot and the page header
+ *   instead of the whole run of slots after a sorted insertion point. Each slot carries a 1-byte tag (the low byte of the
+ *   key hash): a lookup scans the slots comparing the tag, and compares full keys only on a tag hit. Every RID of a key
+ *   stays inline.</li>
  *   <li>{@link #LEGACY_SORTED_VERSION} (1): the layout of the indexes created before #5712. Entries are kept sorted by
- *   serialized key and binary-searched. Such an index keeps working as it is and moves to the new layout on
- *   REBUILD INDEX (or DROP and recreate), which always creates the current version.</li>
+ *   serialized key and binary-searched.</li>
  * </ul>
- * Overflow pages are chained when a bucket is full and cannot split (same hash prefix collision).
+ * An index of an older version keeps working as it is and moves to the current layout on REBUILD INDEX (or DROP and
+ * recreate), which always creates the current version. Overflow pages are chained when a bucket is full and cannot split
+ * (same hash prefix collision).
  */
 public class HashIndexBucket extends PaginatedComponent {
   public static final String UNIQUE_INDEX_EXT    = "uhashidx";
@@ -78,7 +86,9 @@ public class HashIndexBucket extends PaginatedComponent {
   public static final int DEF_VARIABLE_KEY_PAGE_SIZE = 16_384;
   // The default of the indexes created before #5712. A rebuild of a sorted-layout index of this size moves it to DEF_PAGE_SIZE.
   static final int LEGACY_DEF_PAGE_SIZE     = 65_536;
-  public static final int CURRENT_VERSION   = 2;
+  public static final int CURRENT_VERSION   = 3;
+  // Version of the files created between #5712 and #9228: unordered tagged bucket pages, every RID of a key inline
+  public static final int INLINE_RIDS_VERSION   = 2;
   // Version of the files created before #5712: sorted bucket pages, no slot tags
   public static final int LEGACY_SORTED_VERSION = 1;
   public static final int NO_OVERFLOW_PAGE  = -1;
@@ -102,9 +112,9 @@ public class HashIndexBucket extends PaginatedComponent {
    * Smallest page size a hash index can be created with.
    * <p>
    * What this floor guarantees is that the index is DESCRIBABLE: the metadata page needs {@code PAGE_HEADER_SIZE +
-   * META_KEY_TYPES_START + numberOfKeys + 2 + 3 * INT_SERIALIZED_SIZE} bytes - 95 at the {@link #MAX_SANE_KEY_COUNT}
+   * META_KEY_TYPES_START + numberOfKeys + 2 + 4 * INT_SERIALIZED_SIZE} bytes - 99 at the {@link #MAX_SANE_KEY_COUNT}
    * ceiling - so a page size that cannot even hold page 0 is refused up front instead of writing metadata past the end
-   * of it.
+   * of it. A RID list page needs {@link #RID_PAGE_CONTENT_START} bytes of header plus one RID, far below it too.
    * <p>
    * It does NOT guarantee that any given key fits a bucket page. Key width is not known at creation for
    * {@code STRING}/{@code BINARY}/{@code DECIMAL} columns, so no static floor could promise that; an entry too large
@@ -118,7 +128,8 @@ public class HashIndexBucket extends PaginatedComponent {
   static final int META_TOTAL_ENTRIES      = 4;                      // int (4)
   static final int META_NUMBER_OF_KEYS     = 8;                      // byte (1)
   static final int META_KEY_TYPES_START    = 9;                      // byte[] (variable)
-  // After key types: nullStrategy(1), unique(1), dirStartPage(4), bucketsStartPage(4), bucketCount(4)
+  // After key types: nullStrategy(1), unique(1), dirStartPage(4), bucketsStartPage(4), bucketCount(4) and, from version 3,
+  // the first page of the free RID list pages (4, NO_OVERFLOW_PAGE when there is none)
 
   // Upper bound on the number of key components used to sanity-check the (possibly corrupt) count read
   // from the metadata page before it is trusted to size arrays and walk the page. Composite indexes have
@@ -159,6 +170,24 @@ public class HashIndexBucket extends PaginatedComponent {
   static final int SLOT_SIZE        = 2;
   static final int TAGGED_SLOT_SIZE = 3;
 
+  // RID list pages (version 3, issue #9228). The header shares two offsets with a bucket page: the first short tells the
+  // two kinds apart (a bucket page keeps its local depth there, at most 30 plus NO_DEAD_SPACE_FLAG, never the marker), and
+  // the next page sits where a bucket page keeps its overflow page. The owner is the hash of the key the list belongs to:
+  // a freed page is reused by another key, so a lookup, which runs outside the commit lock, can follow a pointer read just
+  // before the page changed hands, and the owner is how it finds out and starts again instead of returning the RIDs of
+  // another key.
+  static final int RID_LIST_PAGE_MARKER   = 0x4000;
+  static final int RID_PAGE_MARKER        = 0;                       // short (2)
+  static final int RID_PAGE_COUNT         = 2;                       // short (2): RIDs on this page
+  static final int RID_PAGE_NEXT          = 4;                       // int (4): next page of the list, or of the free list
+  static final int RID_PAGE_DATA_END      = 8;                       // short (2): offset past the last RID
+  static final int RID_PAGE_OWNER         = 10;                      // long (8): hash of the key
+  static final int RID_PAGE_CONTENT_START = 18;                      // compressed RIDs, packed
+
+  // Value of an entry whose RIDs live in a RID list: a header of 0, which an inline entry never has (its last RID going
+  // away removes it), then the first and the last page of the list
+  static final int RID_LIST_VALUE_SIZE = 1 + 2 * Binary.INT_SERIALIZED_SIZE;
+
   final HashIndex mainIndex;
   final BinarySerializer serializer;
   final BinaryComparator comparator;
@@ -166,6 +195,10 @@ public class HashIndexBucket extends PaginatedComponent {
   // True for the current layout (unordered entries + slot tags), false for the legacy sorted one (#5712)
   final boolean tagged;
   final int     slotSize;
+  // True when the RIDs of a key may move to a RID list (version 3, non-unique)
+  final boolean ridLists;
+  // Largest value (header + RIDs) an entry keeps inline when RID lists are on: a quarter of the data area of a page
+  final int     inlineValueLimit;
 
   Type[]  keyTypes;
   // Binary type declared by the schema for each key column: this is what is persisted on the metadata page and
@@ -221,6 +254,8 @@ public class HashIndexBucket extends PaginatedComponent {
     this.unique = unique;
     this.tagged = isTaggedLayout(name, layoutVersion);
     this.slotSize = tagged ? TAGGED_SLOT_SIZE : SLOT_SIZE;
+    this.ridLists = !unique && layoutVersion >= CURRENT_VERSION;
+    this.inlineValueLimit = inlineValueLimit(pageSize);
     this.keyTypes = checkSupportedKeyTypes(name, keyTypes);
     this.declaredKeyTypes = new byte[keyTypes.length];
     this.binaryKeyTypes = new byte[keyTypes.length];
@@ -248,6 +283,8 @@ public class HashIndexBucket extends PaginatedComponent {
     this.unique = unique;
     this.tagged = isTaggedLayout(name, version);
     this.slotSize = tagged ? TAGGED_SLOT_SIZE : SLOT_SIZE;
+    this.ridLists = !unique && version >= CURRENT_VERSION;
+    this.inlineValueLimit = inlineValueLimit(pageSize);
 
     // Read metadata from page 0 (called during construction, like LSMTreeIndexMutable.onAfterLoad)
     onAfterLoad();
@@ -362,16 +399,23 @@ public class HashIndexBucket extends PaginatedComponent {
     // A lookup issued outside the commit path holds no file lock. The global depth and the directory start page
     // are read from the same page 0 snapshot, and a doubling publishes a brand new directory region (see
     // doubleDirectory), so the pair is always consistent. An entry can still be read while a split is switching
-    // it in place, hence the bounded retry before declaring the index corrupted (#4743).
+    // it in place, and a RID list page can be freed and given to another key while it is read, hence the bounded
+    // retry before declaring the index corrupted (#4743, #9228).
     for (int attempt = 0; ; attempt++) {
       final BasePage metaPage = metaPage();
       final int dirIndex = directoryIndex(hash, metaPage.readInt(META_GLOBAL_DEPTH));
       final int bucketPageNum = readDirectoryEntry(metaPage.readInt(metaTailOffset), dirIndex);
 
-      if (isValidBucketPage(bucketPageNum))
-        return searchBucket(bucketPageNum, serializedKey, tagOf(hash), limit);
+      if (isValidBucketPage(bucketPageNum)) {
+        final List<RID> result = searchBucket(bucketPageNum, serializedKey, hash, limit);
+        if (result != null)
+          return result;
 
-      if (attempt >= MAX_LOOKUP_RETRIES)
+        if (attempt >= MAX_LOOKUP_RETRIES)
+          throw new IndexException("The RID list of a key of hash index '" + getName() + "' (fileId=" + fileId
+              + ") reaches a page that does not belong to it. The index is corrupted, please rebuild it (DROP and recreate it).");
+
+      } else if (attempt >= MAX_LOOKUP_RETRIES)
         throw new IndexException(
             "Invalid entry " + bucketPageNum + " at position " + dirIndex + " in the directory of hash index '" + getName()
                 + "' (fileId=" + fileId + ", totalPages=" + getTotalPages()
@@ -380,10 +424,12 @@ public class HashIndexBucket extends PaginatedComponent {
   }
 
   /**
-   * Searches a bucket page (and its overflow chain) for entries matching the given keys.
+   * Searches a bucket page (and its overflow chain) for entries matching the given keys. Returns null when a RID list
+   * reaches a page that does not belong to the key, which the caller retries (see {@link #readRidList}).
    */
-  private List<RID> searchBucket(final int bucketPageNum, final byte[] searchKey, final int tag,
+  private List<RID> searchBucket(final int bucketPageNum, final byte[] searchKey, final long hash,
       final int limit) throws IOException {
+    final int tag = tagOf(hash);
     final List<RID> result = new ArrayList<>();
     int currentPage = bucketPageNum;
 
@@ -399,8 +445,8 @@ public class HashIndexBucket extends PaginatedComponent {
       final int entryCount = page.readShort(BUCKET_ENTRY_COUNT) & 0xFFFF;
       final int overflowPage = page.readInt(BUCKET_OVERFLOW_PAGE);
 
-      if (entryCount > 0)
-        searchInPage(page, entryCount, searchKey, tag, result, limit);
+      if (entryCount > 0 && !searchInPage(page, entryCount, searchKey, tag, hash, result, limit))
+        return null;
 
       if (limit > 0 && result.size() >= limit)
         break;
@@ -411,10 +457,11 @@ public class HashIndexBucket extends PaginatedComponent {
   }
 
   /**
-   * Looks within a single bucket page for the entries matching the given key.
+   * Looks within a single bucket page for the entries matching the given key. Returns false when a RID list reaches a page
+   * that does not belong to the key.
    */
-  private void searchInPage(final BasePage page, final int entryCount, final byte[] searchKey, final int tag,
-      final List<RID> result, final int limit) {
+  private boolean searchInPage(final BasePage page, final int entryCount, final byte[] searchKey, final int tag, final long hash,
+      final List<RID> result, final int limit) throws IOException {
     int pos = findNextEntry(page, entryCount, searchKey, tag, 0);
 
     while (pos >= 0) {
@@ -428,20 +475,61 @@ public class HashIndexBucket extends PaginatedComponent {
         // a unique key holds one entry and callers pass limit 1 for it (HashIndex.getDiskResult), but an all-null key is exempt
         // from uniqueness (issue #9237): the caller asks for all of its entries
         if (limit > 0 && result.size() >= limit)
-          return;
+          return true;
       } else {
-        final int ridCount = readVarIntFromPage(page, offset);
-        offset += varIntSize(ridCount);
-        for (int r = 0; r < ridCount; r++) {
-          final RID rid = readCompressedRID(page, offset);
-          offset += compressedRIDSize(rid);
-          result.add(rid);
-          if (limit > 0 && result.size() >= limit)
-            return;
+        final int header = readVarIntFromPage(page, offset);
+        if (header == 0 && ridLists) {
+          if (!readRidList(page.readInt(offset + 1), hash, result, limit))
+            return false;
+        } else {
+          offset += varIntSize(header);
+          // the header counts the RIDs up to version 2, and the bytes they take from version 3
+          final int end = ridLists ? offset + header : Integer.MAX_VALUE;
+          for (int r = 0; ridLists ? offset < end : r < header; r++) {
+            result.add(readCompressedRID(page, offset));
+            offset += compressedRIDSizeFromPage(page, offset);
+            if (limit > 0 && result.size() >= limit)
+              return true;
+          }
         }
+        if (limit > 0 && result.size() >= limit)
+          return true;
       }
       pos = findNextEntry(page, entryCount, searchKey, tag, pos + 1);
     }
+    return true;
+  }
+
+  /**
+   * Adds the RIDs of a RID list to the result. Returns false, having added nothing, when the list reaches a page that is not
+   * a RID list page of this key: a lookup holds no lock, so a page it was pointed to can have been freed and given to another
+   * key in between, and the caller starts again from the directory. A page of the same key read in a newer version is not
+   * told apart, exactly as for the entries of an overflow chain, which are no more atomic across pages.
+   */
+  private boolean readRidList(final int headPage, final long hash, final List<RID> result, final int limit) throws IOException {
+    final int sizeBefore = result.size();
+    final int maxChainPages = getTotalPages();
+    int chainSteps = 0;
+    for (int current = headPage; current != NO_OVERFLOW_PAGE; ) {
+      if (++chainSteps > maxChainPages || !isValidBucketPage(current)) {
+        result.subList(sizeBefore, result.size()).clear();
+        return false;
+      }
+      final BasePage page = database.getTransaction().getPage(new PageId(database, fileId, current), pageSize);
+      if (!isRidListPageOf(page, hash)) {
+        result.subList(sizeBefore, result.size()).clear();
+        return false;
+      }
+      final int dataEnd = page.readShort(RID_PAGE_DATA_END) & 0xFFFF;
+      for (int offset = RID_PAGE_CONTENT_START; offset < dataEnd; ) {
+        result.add(readCompressedRID(page, offset));
+        if (limit > 0 && result.size() >= limit)
+          return true;
+        offset += compressedRIDSizeFromPage(page, offset);
+      }
+      current = page.readInt(RID_PAGE_NEXT);
+    }
+    return true;
   }
 
   // ─── PUT ─────────────────────────────────────────────────
@@ -468,63 +556,81 @@ public class HashIndexBucket extends PaginatedComponent {
               + "' (fileId=" + fileId + ", totalPages=" + getTotalPages()
               + "). The index is corrupted, please rebuild it (DROP and recreate it).");
 
-    final MutablePage bucketPage = database.getTransaction()
-        .getPageToModify(new PageId(database, fileId, bucketPageNum), pageSize, false);
-    final int entryCount = bucketPage.readShort(BUCKET_ENTRY_COUNT) & 0xFFFF;
-    final int localDepth = bucketPage.readShort(BUCKET_LOCAL_DEPTH) & LOCAL_DEPTH_MASK;
-
+    final TransactionContext tx = database.getTransaction();
     final byte[] serializedRID = serializeCompressedRID(rid);
 
-    // For non-unique indexes, check if key already exists (on primary page or overflow chain) and append RID
+    // Page and slot of the entry of the key when it is there but cannot grow on its page
+    int blockedPageNum = NO_OVERFLOW_PAGE;
+    int blockedPos = -1;
+
+    // For non-unique indexes, check if key already exists (on primary page or overflow chain) and append RID. The walk only
+    // reads: the page holding the key is the one taken for modification, not every page walked past (#9228)
     if (!unique) {
+      final int tag = tagOf(hash);
       int currentPageNum = bucketPageNum;
       final int maxChainPages = getTotalPages();
       int chainSteps = 0;
       while (currentPageNum != NO_OVERFLOW_PAGE) {
         if (++chainSteps > maxChainPages || !isValidBucketPage(currentPageNum))
           throw corruptedOverflowChain(currentPageNum);
-        final MutablePage currentPage = database.getTransaction()
-            .getPageToModify(new PageId(database, fileId, currentPageNum), pageSize, false);
+        final BasePage currentPage = tx.getPage(new PageId(database, fileId, currentPageNum), pageSize);
         final int currentEntryCount = currentPage.readShort(BUCKET_ENTRY_COUNT) & 0xFFFF;
-        final int existingPos = findNextEntry(currentPage, currentEntryCount, serializedKey, tagOf(hash), 0);
+        final int existingPos = findNextEntry(currentPage, currentEntryCount, serializedKey, tag, 0);
         if (existingPos >= 0) {
-          addRIDToExistingEntry(currentPageNum, currentPage, currentEntryCount, existingPos, serializedKey, serializedRID, hash);
-          updateTotalEntries(1);
-          return;
+          if (addRIDToExistingEntry(currentPageNum, currentPage, currentEntryCount, existingPos, serializedRID, hash)) {
+            updateTotalEntries(1);
+            return;
+          }
+          blockedPageNum = currentPageNum;
+          blockedPos = existingPos;
+          break;
         }
         currentPageNum = currentPage.readInt(BUCKET_OVERFLOW_PAGE);
       }
     }
 
-    // Calculate entry size (data + slot)
-    final int entryDataSize = unique ?
-        serializedKey.length + serializedRID.length :
-        serializedKey.length + varIntSize(1) + serializedRID.length;
-    final int totalNeeded = entryDataSize + slotSize;
+    final MutablePage bucketPage = tx.getPageToModify(new PageId(database, fileId, bucketPageNum), pageSize, false);
+    final int entryCount = bucketPage.readShort(BUCKET_ENTRY_COUNT) & 0xFFFF;
+    final int localDepth = bucketPage.readShort(BUCKET_LOCAL_DEPTH) & LOCAL_DEPTH_MASK;
 
-    // Try to insert into the bucket
-    final int available = freeSpace(bucketPage, entryCount);
+    if (blockedPageNum == NO_OVERFLOW_PAGE) {
+      // Calculate entry size (data + slot)
+      final int entryDataSize = unique ?
+          serializedKey.length + serializedRID.length :
+          serializedKey.length + varIntSize(singleRidHeader(serializedRID)) + serializedRID.length;
+      final int totalNeeded = entryDataSize + slotSize;
 
-    if (totalNeeded <= available) {
-      insertEntryInSlottedPage(bucketPage, entryCount, serializedKey, serializedRID, hash);
-      updateTotalEntries(1);
-    } else {
-      // Bucket is full — try to split if it would help
-      if (localDepth < globalDepth || localDepth < 30) {
-        final boolean splitWillHelp = canSplitHelp(bucketPageNum, entryCount, localDepth);
-
-        if (splitWillHelp) {
-          splitBucket(bucketPageNum, localDepth, dirIndex, hash);
-          putInternal(serializedKey, rid, hash);
-        } else {
-          insertIntoOverflow(bucketPage, bucketPageNum, serializedKey, serializedRID, hash);
-          updateTotalEntries(1);
-        }
-      } else {
-        insertIntoOverflow(bucketPage, bucketPageNum, serializedKey, serializedRID, hash);
+      // Try to insert into the bucket
+      if (totalNeeded <= freeSpace(bucketPage, entryCount)) {
+        insertEntryInSlottedPage(bucketPage, entryCount, serializedKey, serializedRID, hash);
         updateTotalEntries(1);
+        return;
       }
+    } else if (!ridLists) {
+      // Layouts without RID lists: the RID goes to a separate entry of the same key further down the chain, as it always did
+      final MutablePage blockedPage = tx.getPageToModify(new PageId(database, fileId, blockedPageNum), pageSize, false);
+      insertIntoOverflow(blockedPage, blockedPageNum, serializedKey, serializedRID, hash);
+      updateTotalEntries(1);
+      return;
     }
+
+    // Bucket is full (or, with RID lists, the entry of the key cannot grow on its page): split if it would help
+    if ((localDepth < globalDepth || localDepth < 30) && canSplitHelp(bucketPageNum, entryCount, localDepth)) {
+      splitBucket(bucketPageNum, localDepth, dirIndex, hash);
+      putInternal(serializedKey, rid, hash);
+      return;
+    }
+
+    if (blockedPageNum == NO_OVERFLOW_PAGE)
+      insertIntoOverflow(bucketPage, bucketPageNum, serializedKey, serializedRID, hash);
+    else {
+      // A RID list takes the RIDs out of the page, instead of a second entry of the key that every later insert of it would
+      // find blocked again
+      final MutablePage blockedPage = tx.getPageToModify(new PageId(database, fileId, blockedPageNum), pageSize, false);
+      moveRIDsToRidList(blockedPageNum, blockedPage, blockedPage.readShort(BUCKET_ENTRY_COUNT) & 0xFFFF, blockedPos,
+          serializedRID, hash);
+    }
+    updateTotalEntries(1);
   }
 
   // ─── REMOVE ──────────────────────────────────────────────
@@ -540,7 +646,7 @@ public class HashIndexBucket extends PaginatedComponent {
     final int dirIndex = directoryIndex(hash, metaPage.readInt(META_GLOBAL_DEPTH));
     final int bucketPageNum = readDirectoryEntry(metaPage.readInt(metaTailOffset), dirIndex);
 
-    removeFromBucket(bucketPageNum, serializedKey, tagOf(hash), null, LSMTreeIndexAbstract.isKeyNull(keys));
+    removeFromBucket(bucketPageNum, serializedKey, hash, null, LSMTreeIndexAbstract.isKeyNull(keys));
   }
 
   /**
@@ -553,11 +659,12 @@ public class HashIndexBucket extends PaginatedComponent {
     final int dirIndex = directoryIndex(hash, metaPage.readInt(META_GLOBAL_DEPTH));
     final int bucketPageNum = readDirectoryEntry(metaPage.readInt(metaTailOffset), dirIndex);
 
-    removeFromBucket(bucketPageNum, serializedKey, tagOf(hash), rid, LSMTreeIndexAbstract.isKeyNull(keys));
+    removeFromBucket(bucketPageNum, serializedKey, hash, rid, LSMTreeIndexAbstract.isKeyNull(keys));
   }
 
-  private void removeFromBucket(final int bucketPageNum, final byte[] serializedKey, final int tag, final RID specificRID,
+  private void removeFromBucket(final int bucketPageNum, final byte[] serializedKey, final long hash, final RID specificRID,
       final boolean nullKey) throws IOException {
+    final int tag = tagOf(hash);
     int currentPageNum = bucketPageNum;
     int totalRemoved = 0;
     final int maxChainPages = getTotalPages();
@@ -566,13 +673,15 @@ public class HashIndexBucket extends PaginatedComponent {
     while (currentPageNum != NO_OVERFLOW_PAGE) {
       if (++chainSteps > maxChainPages || !isValidBucketPage(currentPageNum))
         throw corruptedOverflowChain(currentPageNum);
-      final MutablePage page = database.getTransaction()
-          .getPageToModify(new PageId(database, fileId, currentPageNum), pageSize, false);
-      int entryCount = page.readShort(BUCKET_ENTRY_COUNT) & 0xFFFF;
-      final int overflowPage = page.readInt(BUCKET_OVERFLOW_PAGE);
+      final PageId pageId = new PageId(database, fileId, currentPageNum);
+      // read first: only a page holding the key is taken for modification
+      final BasePage readPage = database.getTransaction().getPage(pageId, pageSize);
+      int entryCount = readPage.readShort(BUCKET_ENTRY_COUNT) & 0xFFFF;
+      final int overflowPage = readPage.readInt(BUCKET_OVERFLOW_PAGE);
 
-      final int pos = findNextEntry(page, entryCount, serializedKey, tag, 0);
+      final int pos = findNextEntry(readPage, entryCount, serializedKey, tag, 0);
       if (pos >= 0) {
+        final MutablePage page = database.getTransaction().getPageToModify(pageId, pageSize, false);
         if (specificRID != null && unique && nullKey) {
           // the entries of an all-null key belong to different records: only the one of this RID goes away
           for (int p = pos; p >= 0; p = findNextEntry(page, entryCount, serializedKey, tag, p + 1)) {
@@ -587,7 +696,7 @@ public class HashIndexBucket extends PaginatedComponent {
           // Search all matching entries on this page (entries for the same key may be split). No re-scan is needed after a
           // removal: the loop returns on the first one.
           for (int p = pos; p >= 0; p = findNextEntry(page, entryCount, serializedKey, tag, p + 1)) {
-            final int removed = removeRIDFromEntry(page, entryCount, p, specificRID);
+            final int removed = removeRIDFromEntry(page, entryCount, p, specificRID, hash);
             if (removed > 0) {
               updateTotalEntries(-removed);
               return;
@@ -769,7 +878,7 @@ public class HashIndexBucket extends PaginatedComponent {
       final byte[] serializedKey, final byte[] serializedRID, final long hash) throws IOException {
     final int entryDataSize = unique ?
         serializedKey.length + serializedRID.length :
-        serializedKey.length + varIntSize(1) + serializedRID.length;
+        serializedKey.length + varIntSize(singleRidHeader(serializedRID)) + serializedRID.length;
     final int totalNeeded = entryDataSize + slotSize;
 
     // Defensive cycle detection: a corrupted overflow chain that loops back to a previously-seen page would
@@ -886,6 +995,10 @@ public class HashIndexBucket extends PaginatedComponent {
     pos += Binary.INT_SERIALIZED_SIZE;
 
     metaPage.writeInt(pos, 0); // bucketCount = 0
+    pos += Binary.INT_SERIALIZED_SIZE;
+
+    if (version >= CURRENT_VERSION)
+      metaPage.writeInt(pos, NO_OVERFLOW_PAGE); // no free RID list page
 
     // Page 1: directory (initially 1 entry pointing to bucket at page 2)
     final MutablePage dirPage = database.getTransaction().addPage(new PageId(database, fileId, 1), pageSize);
@@ -1018,13 +1131,22 @@ public class HashIndexBucket extends PaginatedComponent {
    * later version as the current one would misread its pages without any sign of it.
    */
   static boolean isTaggedLayout(final String indexName, final int version) {
-    if (version == CURRENT_VERSION)
+    if (version == CURRENT_VERSION || version == INLINE_RIDS_VERSION)
       return true;
     if (version == LEGACY_SORTED_VERSION)
       return false;
     throw new IndexException("Hash index '" + indexName + "' has the page layout version " + version + ", which this server does not "
-        + "support (it knows " + LEGACY_SORTED_VERSION + " and " + CURRENT_VERSION + "). It was created by a newer version: open "
+        + "support (it knows " + LEGACY_SORTED_VERSION + " to " + CURRENT_VERSION + "). It was created by a newer version: open "
         + "the database with that version, or drop and recreate the index.");
+  }
+
+  /**
+   * Largest value (header + RIDs) an entry keeps inline when RID lists are on: a quarter of the data area of a bucket page.
+   * Below it a key with few RIDs costs no page of its own, above it the copy an inline entry takes on every insert stops
+   * growing. The RIDs of an entry at the limit always fit in one RID list page, whose data area is larger.
+   */
+  static int inlineValueLimit(final int pageSize) {
+    return (pageSize - BasePage.PAGE_HEADER_SIZE - BUCKET_CONTENT_START) / 4;
   }
 
   /**
@@ -1308,6 +1430,9 @@ public class HashIndexBucket extends PaginatedComponent {
           current = readPage(current).readInt(BUCKET_OVERFLOW_PAGE);
         }
       }
+
+      if (ridLists && problems.size() < MAX_REPORTED_PROBLEMS)
+        checkRidLists(chainOwner, problems);
     } catch (final Exception e) {
       problems.add("error while walking the index structure: " + e.getMessage());
     }
@@ -1318,6 +1443,97 @@ public class HashIndexBucket extends PaginatedComponent {
               + "(DROP and recreate it).", null, getName(), fileId, problems);
 
     return problems;
+  }
+
+  /**
+   * Walks the RID list of every entry that has one, then the free list, after {@link #checkStructuralIntegrity} has marked the
+   * pages of the bucket chains in {@code chainOwner}. A page must belong to one structure only, a list must be acyclic, end at
+   * the page its entry names as the last one and hold, on every page, the RIDs its header counts, and its pages must be RID
+   * list pages of the key.
+   */
+  private void checkRidLists(final int[] chainOwner, final List<String> problems) throws IOException {
+    final int totalPages = chainOwner.length;
+    final int ridListMark = -1;
+    final int freeMark = -2;
+
+    for (int bucketPageNum = 0; bucketPageNum < totalPages && problems.size() < MAX_REPORTED_PROBLEMS; bucketPageNum++) {
+      if (chainOwner[bucketPageNum] <= 0)
+        continue;
+      final BasePage page = readPage(bucketPageNum);
+      final int entryCount = page.readShort(BUCKET_ENTRY_COUNT) & 0xFFFF;
+      for (int i = 0; i < entryCount && problems.size() < MAX_REPORTED_PROBLEMS; i++) {
+        final int entryOffset = readSlot(page, i);
+        final int keyLen = computeKeyLengthFromPage(page, entryOffset);
+        final int valueOffset = entryOffset + keyLen;
+        if (readVarIntFromPage(page, valueOffset) != 0)
+          continue;
+
+        final long hash = hashKeyAt(page, entryOffset, keyLen);
+        final int tailPage = page.readInt(valueOffset + 1 + Binary.INT_SERIALIZED_SIZE);
+        final String owner = "the RID list of entry " + i + " of page " + bucketPageNum;
+        int last = NO_OVERFLOW_PAGE;
+        for (int current = page.readInt(valueOffset + 1); current != NO_OVERFLOW_PAGE; ) {
+          if (!isValidBucketPage(current)) {
+            problems.add(owner + " reaches the invalid page " + current + " (totalPages=" + totalPages + ")");
+            break;
+          }
+          if (chainOwner[current] != 0) {
+            problems.add(owner + " reaches page " + current + ", which is " + (chainOwner[current] == ridListMark ?
+                "already part of a RID list" : "part of the chain of bucket " + (chainOwner[current] - 1)));
+            break;
+          }
+          chainOwner[current] = ridListMark;
+          final BasePage listPage = readPage(current);
+          if (!isRidListPageOf(listPage, hash)) {
+            problems.add(owner + " reaches page " + current + ", which is not a RID list page of its key");
+            break;
+          }
+          final String pageProblem = checkRidListPageContent(listPage);
+          if (pageProblem != null) {
+            problems.add(owner + ": page " + current + " " + pageProblem);
+            break;
+          }
+          last = current;
+          current = listPage.readInt(RID_PAGE_NEXT);
+        }
+        if (last != NO_OVERFLOW_PAGE && last != tailPage)
+          problems.add(owner + " ends at page " + last + " but the entry names page " + tailPage + " as its last one");
+      }
+    }
+
+    for (int current = readFreeRidListPage(); current != NO_OVERFLOW_PAGE && problems.size() < MAX_REPORTED_PROBLEMS; ) {
+      if (!isValidBucketPage(current)) {
+        problems.add("the free list of RID list pages reaches the invalid page " + current + " (totalPages=" + totalPages + ")");
+        break;
+      }
+      if (chainOwner[current] != 0) {
+        problems.add("the free list of RID list pages reaches page " + current + ", which is " + (chainOwner[current] == freeMark ?
+            "already in the free list (cycle)" : "in use"));
+        break;
+      }
+      chainOwner[current] = freeMark;
+      final BasePage freePage = readPage(current);
+      if (!isRidListPage(freePage)) {
+        problems.add("the free list of RID list pages reaches page " + current + ", which is not a RID list page");
+        break;
+      }
+      current = freePage.readInt(RID_PAGE_NEXT);
+    }
+  }
+
+  /** Returns what is wrong with the RIDs of a RID list page, or null: they must fill the data area and match the count. */
+  private String checkRidListPageContent(final BasePage page) {
+    final int dataEnd = page.readShort(RID_PAGE_DATA_END) & 0xFFFF;
+    final int count = page.readShort(RID_PAGE_COUNT) & 0xFFFF;
+    if (count == 0)
+      return "holds no RID";
+    int offset = RID_PAGE_CONTENT_START;
+    for (int r = 0; r < count; r++) {
+      if (offset >= dataEnd)
+        return "counts " + count + " RIDs but holds " + r;
+      offset += compressedRIDSizeFromPage(page, offset);
+    }
+    return offset == dataEnd ? null : "has RID bytes that do not match its count of " + count;
   }
 
   /**
@@ -1611,19 +1827,33 @@ public class HashIndexBucket extends PaginatedComponent {
   /**
    * Removes an entire entry at the given position. Returns the number of RIDs removed.
    */
-  private int removeEntryFromPage(final MutablePage page, final int entryCount, final int pos) {
+  private int removeEntryFromPage(final MutablePage page, final int entryCount, final int pos) throws IOException {
     final int entryOffset = readSlot(page, pos);
-    final int entrySize = getEntrySize(page, entryOffset);
 
     // Count RIDs being removed
     int removedCount;
     if (unique) {
       removedCount = 1;
     } else {
-      final int keyLen = computeKeyLengthFromPage(page, entryOffset);
-      removedCount = readVarIntFromPage(page, entryOffset + keyLen);
+      final int valueOffset = entryOffset + computeKeyLengthFromPage(page, entryOffset);
+      final int header = readVarIntFromPage(page, valueOffset);
+      if (!ridLists)
+        removedCount = header;
+      else if (header == 0)
+        removedCount = releaseRidList(page.readInt(valueOffset + 1), page.readInt(valueOffset + 1 + Binary.INT_SERIALIZED_SIZE),
+            hashKeyAt(page, entryOffset, valueOffset - entryOffset));
+      else
+        removedCount = countRids(page, valueOffset + varIntSize(header), header);
     }
 
+    dropSlot(page, entryCount, pos);
+    return removedCount;
+  }
+
+  /**
+   * Removes the slot of an entry, whose data becomes dead space.
+   */
+  private void dropSlot(final MutablePage page, final int entryCount, final int pos) {
     // For slotted pages, we don't need to shift entry data (it becomes a hole): only the slot goes away. The hole is
     // reclaimed on the next page rebuild (during split/compaction).
     if (tagged) {
@@ -1641,7 +1871,6 @@ public class HashIndexBucket extends PaginatedComponent {
     // Note: dataEnd stays the same (dead space). We'll recover it during splits.
     setNoDeadSpace(page, false);
     page.writeShort(BUCKET_ENTRY_COUNT, (short) (entryCount - 1));
-    return removedCount;
   }
 
   private boolean hasNoDeadSpace(final BasePage page) {
@@ -1665,172 +1894,466 @@ public class HashIndexBucket extends PaginatedComponent {
   }
 
   /**
-   * Compacts a bucket page by rebuilding the data area without dead space (holes).
-   * Reads all live entries (referenced by slots), rewrites them contiguously starting
-   * at BUCKET_CONTENT_START, and updates all slot pointers.
+   * Compacts a bucket page by rebuilding the data area without dead space (holes): the live entries (referenced by slots)
+   * slide down to BUCKET_CONTENT_START in the order they sit on the page, which never overwrites an entry not moved yet, and
+   * the slots are updated. The slot order does not change. Nothing is copied out of the page (#9228).
    *
-   * @return the entry count after compaction (unchanged, but returned for convenience)
+   * @return true if any dead space was reclaimed
    */
-  private int compactPage(final MutablePage page, final int entryCount) {
+  private boolean compactPage(final MutablePage page, final int entryCount) {
+    final int oldDataEnd = page.readShort(BUCKET_DATA_END) & 0xFFFF;
     if (entryCount == 0) {
       // Nothing live, so nothing to move, but the data area still ends where the last removed or grown entry left it: a page
       // that emptied that way offered almost no space and could not take any entry (issue #9034 follow-up)
       page.writeShort(BUCKET_DATA_END, (short) BUCKET_CONTENT_START);
       setNoDeadSpace(page, true);
-      return 0;
+      return oldDataEnd > BUCKET_CONTENT_START;
     }
 
-    // Collect all live entries with their slot positions
-    final byte[][] entries = new byte[entryCount][];
-    for (int i = 0; i < entryCount; i++) {
-      final int offset = readSlot(page, i);
-      final int size = getEntrySize(page, offset);
-      entries[i] = new byte[size];
-      page.readByteArray(offset, entries[i]);
-    }
+    // Slots sorted by the offset of their entry: offset in the high bits, slot in the low 16 (at most 65535 slots per page)
+    final long[] byOffset = new long[entryCount];
+    for (int i = 0; i < entryCount; i++)
+      byOffset[i] = ((long) readSlot(page, i) << 16) | i;
+    Arrays.sort(byOffset);
 
-    // Rewrite entries contiguously starting at BUCKET_CONTENT_START
     int dataEnd = BUCKET_CONTENT_START;
-    for (int i = 0; i < entryCount; i++) {
-      page.writeByteArray(dataEnd, entries[i]);
-      writeSlot(page, i, dataEnd);
-      dataEnd += entries[i].length;
+    for (final long offsetAndSlot : byOffset) {
+      final int offset = (int) (offsetAndSlot >>> 16);
+      final int size = getEntrySize(page, offset);
+      if (offset != dataEnd) {
+        page.move(offset, dataEnd, size);
+        writeSlot(page, (int) (offsetAndSlot & 0xFFFF), dataEnd);
+      }
+      dataEnd += size;
     }
 
     page.writeShort(BUCKET_DATA_END, (short) dataEnd);
     setNoDeadSpace(page, true);
-    return entryCount;
+    return dataEnd < oldDataEnd;
   }
 
   /**
-   * For non-unique index: adds a RID to an existing entry for the same key.
+   * For non-unique index: adds a RID to the existing entry of the key, at slot {@code pos} of the page {@code pageNum}, read
+   * but not yet taken for modification. Returns false, having changed nothing, when an inline entry cannot grow on its page:
+   * the caller then splits the bucket or, with RID lists, moves the RIDs to one (see {@link #moveRIDsToRidList}).
+   * <p>
+   * The cost of an insert does not depend on the RIDs the key already has (#9228): a RID list takes it at its last page, an
+   * inline entry that ends the data area grows where it is, and only an inline entry followed by others is moved to the end
+   * of the data area, which RID lists bound to a quarter of a page.
    */
-  private void addRIDToExistingEntry(final int bucketPageNum, final MutablePage page, int entryCount,
-      final int pos, final byte[] serializedKey, final byte[] serializedRID, final long hash) throws IOException {
-    int entryStart = readSlot(page, pos);
-    final int oldEntrySize = getEntrySize(page, entryStart);
+  private boolean addRIDToExistingEntry(final int pageNum, final BasePage readPage, final int entryCount, final int pos,
+      final byte[] serializedRID, final long hash) throws IOException {
+    final int entryStart = readSlot(readPage, pos);
+    final int keyLen = computeKeyLengthFromPage(readPage, entryStart);
+    final int headerOffset = entryStart + keyLen;
+    final int header = readVarIntFromPage(readPage, headerOffset);
 
-    // Skip the key
-    final int keyLen = computeKeyLengthFromPage(page, entryStart);
-    final int ridCountOffset = entryStart + keyLen;
-
-    // Read current RID count
-    final int currentRidCount = readVarIntFromPage(page, ridCountOffset);
-    final int oldRidCountSize = varIntSize(currentRidCount);
-    final int newRidCount = currentRidCount + 1;
-    final int newRidCountSize = varIntSize(newRidCount);
-
-    final int ridCountDiff = newRidCountSize - oldRidCountSize;
-
-    // Read old entry data and build new entry with extra RID
-    final byte[] oldEntryBytes = new byte[oldEntrySize];
-    page.readByteArray(entryStart, oldEntryBytes);
-
-    final int oldRidsStart = keyLen + oldRidCountSize;
-    final int oldRidsLen = oldEntrySize - oldRidsStart;
-    final byte[] newRidCountBytes = encodeVarInt(newRidCount);
-
-    final int newEntrySize = keyLen + newRidCountBytes.length + oldRidsLen + serializedRID.length;
-    final byte[] newEntry = new byte[newEntrySize];
-    System.arraycopy(oldEntryBytes, 0, newEntry, 0, keyLen);
-    System.arraycopy(newRidCountBytes, 0, newEntry, keyLen, newRidCountBytes.length);
-    System.arraycopy(oldEntryBytes, oldRidsStart, newEntry, keyLen + newRidCountBytes.length, oldRidsLen);
-    System.arraycopy(serializedRID, 0, newEntry, keyLen + newRidCountBytes.length + oldRidsLen, serializedRID.length);
-
-    // Check if there's space for the new entry (the ENTIRE new entry is appended at dataEnd,
-    // the old entry becomes dead space - so we need newEntrySize bytes of free space)
-    int availableSpace = freeSpace(page, entryCount);
-    if (newEntrySize > availableSpace) {
-      // Try compaction to reclaim dead space from previous updates
-      entryCount = compactPage(page, entryCount);
-      availableSpace = freeSpace(page, entryCount);
-
-      if (newEntrySize > availableSpace) {
-        // Still not enough space even after compaction. Instead of trying to move the
-        // oversized entry, keep the existing entry in place and insert a separate entry
-        // for just the new RID (key + ridCount=1 + RID). The search handles multiple
-        // entries for the same key correctly by scanning the entire overflow chain.
-        insertIntoOverflow(page, bucketPageNum, serializedKey, serializedRID, hash);
-        return;
-      }
-
-      // After compaction, the slot positions may have changed - find the entry again
-      final int newPos = findNextEntry(page, entryCount, serializedKey, tagOf(hash), 0);
-      if (newPos >= 0)
-        entryStart = readSlot(page, newPos);
+    if (header == 0 && ridLists) {
+      appendToRidList(pageNum, readPage, headerOffset, serializedRID, hash);
+      return true;
     }
 
-    // Write new entry at dataEnd
-    final int dataEnd = page.readShort(BUCKET_DATA_END) & 0xFFFF;
-    page.writeByteArray(dataEnd, newEntry);
-    page.writeShort(BUCKET_DATA_END, (short) (dataEnd + newEntrySize));
+    final int oldHeaderSize = varIntSize(header);
+    final int ridsLength = inlineRidsLength(readPage, headerOffset + oldHeaderSize, header);
+    final int newHeader = ridLists ? header + serializedRID.length : header + 1;
+    final int newHeaderSize = varIntSize(newHeader);
+    final int oldEntrySize = keyLen + oldHeaderSize + ridsLength;
+    final int newEntrySize = keyLen + newHeaderSize + ridsLength + serializedRID.length;
 
-    // Update slot to point to the new location (old entry data becomes a hole)
-    writeSlot(page, pos, dataEnd);
+    final MutablePage page = database.getTransaction().getPageToModify(new PageId(database, fileId, pageNum), pageSize, false);
+
+    if (ridLists && newEntrySize - keyLen > inlineValueLimit) {
+      moveRIDsToRidList(pageNum, page, entryCount, pos, serializedRID, hash);
+      return true;
+    }
+
+    final int dataEnd = page.readShort(BUCKET_DATA_END) & 0xFFFF;
+    final int growth = newEntrySize - oldEntrySize;
+    if (entryStart + oldEntrySize == dataEnd && growth <= freeSpace(page, entryCount)) {
+      // The entry ends the data area: it grows where it is, nothing is copied but the RIDs a longer header pushes by a byte
+      final int ridsStart = headerOffset + newHeaderSize;
+      if (newHeaderSize != oldHeaderSize)
+        page.move(headerOffset + oldHeaderSize, ridsStart, ridsLength);
+      page.writeNumber(headerOffset, newHeader);
+      page.writeByteArray(ridsStart + ridsLength, serializedRID);
+      page.writeShort(BUCKET_DATA_END, (short) (dataEnd + growth));
+      return true;
+    }
+
+    int oldStart = entryStart;
+    if (newEntrySize > freeSpace(page, entryCount)) {
+      // Reclaim the dead space of removed and moved entries, if there is any: the flag spares the work on a page known to have none
+      if (hasNoDeadSpace(page) || !compactPage(page, entryCount) || newEntrySize > freeSpace(page, entryCount))
+        return false;
+      // the compaction keeps the slots where they are, only the data moves
+      oldStart = readSlot(page, pos);
+    }
+
+    // Move the entry to the end of the data area, one RID longer: the old bytes become dead space
+    final int newStart = page.readShort(BUCKET_DATA_END) & 0xFFFF;
+    page.move(oldStart, newStart, keyLen);
+    page.writeNumber(newStart + keyLen, newHeader);
+    page.move(oldStart + keyLen + oldHeaderSize, newStart + keyLen + newHeaderSize, ridsLength);
+    page.writeByteArray(newStart + keyLen + newHeaderSize + ridsLength, serializedRID);
+    page.writeShort(BUCKET_DATA_END, (short) (newStart + newEntrySize));
+    writeSlot(page, pos, newStart);
     setNoDeadSpace(page, false);
+    return true;
   }
 
   /**
    * For non-unique index: removes a specific RID from an entry. Returns 1 if removed, 0 otherwise.
    * If the entry has only one RID left, removes the entire entry.
    */
-  private int removeRIDFromEntry(final MutablePage page, final int entryCount, final int pos, final RID targetRID) {
+  private int removeRIDFromEntry(final MutablePage page, final int entryCount, final int pos, final RID targetRID, final long hash)
+      throws IOException {
     final int entryStart = readSlot(page, pos);
     final int keyLen = computeKeyLengthFromPage(page, entryStart);
-    final int offset = entryStart + keyLen;
+    final int headerOffset = entryStart + keyLen;
 
-    final int ridCount = readVarIntFromPage(page, offset);
+    final int header = readVarIntFromPage(page, headerOffset);
+    final byte[] target = serializeCompressedRID(targetRID);
 
-    if (ridCount <= 1) {
-      // Verify the single RID matches the target before removing the entire entry
-      final int ridOffset = offset + varIntSize(ridCount);
-      final RID rid = readCompressedRID(page, ridOffset);
-      if (!rid.equals(targetRID))
-        return 0;
-      removeEntryFromPage(page, entryCount, pos);
-      return 1;
-    }
+    if (header == 0 && ridLists)
+      return removeRIDFromRidList(page, entryCount, pos, headerOffset, target, hash);
 
-    // Read old entry, rebuild without the target RID
-    final int oldEntrySize = getEntrySize(page, entryStart);
-    final byte[] oldEntry = new byte[oldEntrySize];
-    page.readByteArray(entryStart, oldEntry);
+    final int headerSize = varIntSize(header);
+    final int ridsStart = headerOffset + headerSize;
+    final int ridsLength = inlineRidsLength(page, ridsStart, header);
+    final int entryEnd = ridsStart + ridsLength;
+    for (int ridOffset = ridsStart; ridOffset < entryEnd; ) {
+      final int ridSize = compressedRIDSizeFromPage(page, ridOffset);
+      if (!sameBytes(page, ridOffset, target, ridSize)) {
+        ridOffset += ridSize;
+        continue;
+      }
 
-    final int ridCountSize = varIntSize(ridCount);
-    int ridOffset = keyLen + ridCountSize;
-    for (int r = 0; r < ridCount; r++) {
-      final RID rid = readCompressedRID(page, entryStart + ridOffset);
-      final int ridSize = compressedRIDSize(rid);
-      if (rid.equals(targetRID)) {
-        final int newRidCount = ridCount - 1;
-        final byte[] newRidCountBytes = encodeVarInt(newRidCount);
-        final int newEntrySize = oldEntrySize - ridSize - (ridCountSize - newRidCountBytes.length);
-        final byte[] newEntry = new byte[newEntrySize];
-
-        // Copy key
-        System.arraycopy(oldEntry, 0, newEntry, 0, keyLen);
-        // Write new rid count
-        System.arraycopy(newRidCountBytes, 0, newEntry, keyLen, newRidCountBytes.length);
-        // Copy RIDs before the removed one
-        final int ridsBeforeLen = ridOffset - keyLen - ridCountSize;
-        if (ridsBeforeLen > 0)
-          System.arraycopy(oldEntry, keyLen + ridCountSize, newEntry, keyLen + newRidCountBytes.length, ridsBeforeLen);
-        // Copy RIDs after the removed one
-        final int ridsAfterStart = ridOffset + ridSize;
-        final int ridsAfterLen = oldEntrySize - ridsAfterStart;
-        if (ridsAfterLen > 0)
-          System.arraycopy(oldEntry, ridsAfterStart, newEntry,
-              keyLen + newRidCountBytes.length + ridsBeforeLen, ridsAfterLen);
-
-        // Shorter than the old entry, so it fits in place; the tail is dead space reclaimed by the next compaction
-        page.writeByteArray(entryStart, newEntry);
-        setNoDeadSpace(page, false);
-
+      if (ridSize == ridsLength) {
+        // the last RID of the entry
+        dropSlot(page, entryCount, pos);
         return 1;
       }
-      ridOffset += ridSize;
+
+      // Rewritten in place, shorter: key, the header, the RIDs before the removed one and the ones after it
+      final int newHeader = ridLists ? header - ridSize : header - 1;
+      final int newHeaderSize = varIntSize(newHeader);
+      final int beforeLength = ridOffset - ridsStart;
+      if (newHeaderSize != headerSize)
+        page.move(ridsStart, headerOffset + newHeaderSize, beforeLength);
+      page.move(ridOffset + ridSize, headerOffset + newHeaderSize + beforeLength, entryEnd - ridOffset - ridSize);
+      page.writeNumber(headerOffset, newHeader);
+
+      final int removedBytes = ridSize + headerSize - newHeaderSize;
+      final int dataEnd = page.readShort(BUCKET_DATA_END) & 0xFFFF;
+      if (entryEnd == dataEnd)
+        // the entry ends the data area: the bytes it no longer uses go back to the free space
+        page.writeShort(BUCKET_DATA_END, (short) (dataEnd - removedBytes));
+      else
+        // the tail is dead space reclaimed by the next compaction
+        setNoDeadSpace(page, false);
+      return 1;
     }
     return 0;
+  }
+
+  /**
+   * The value of an inline entry of a non-unique index starts with a header: the number of its RIDs up to version 2, the
+   * bytes they take from version 3, so the size of an entry is known without decoding its RIDs (#9228). It is never 0 (the
+   * last RID going away removes the entry): from version 3, 0 marks the entry whose RIDs live in a RID list.
+   */
+  private int singleRidHeader(final byte[] serializedRID) {
+    return ridLists ? serializedRID.length : 1;
+  }
+
+  /** Bytes taken by the inline RIDs starting at {@code offset}, whose entry has the given header. */
+  private int inlineRidsLength(final BasePage page, final int offset, final int header) {
+    return ridLists ? header : ridsLength(page, offset, header);
+  }
+
+  /** Number of compressed RIDs in the {@code length} bytes from {@code offset}. */
+  private static int countRids(final BasePage page, final int offset, final int length) {
+    int count = 0;
+    for (int end = offset + length, current = offset; current < end; current += compressedRIDSizeFromPage(page, current))
+      count++;
+    return count;
+  }
+
+  /** Bytes taken by {@code ridCount} compressed RIDs starting at {@code offset}. */
+  private int ridsLength(final BasePage page, final int offset, final int ridCount) {
+    int end = offset;
+    for (int r = 0; r < ridCount; r++)
+      end += compressedRIDSizeFromPage(page, end);
+    return end - offset;
+  }
+
+  private static byte[] readBytes(final BasePage page, final int offset, final int length) {
+    final byte[] bytes = new byte[length];
+    page.readByteArray(offset, bytes);
+    return bytes;
+  }
+
+  private static boolean sameBytes(final BasePage page, final int offset, final byte[] value, final int length) {
+    if (length != value.length)
+      return false;
+    for (int i = 0; i < length; i++)
+      if (page.readByte(offset + i) != value[i])
+        return false;
+    return true;
+  }
+
+  // ─── RID LISTS (VERSION 3, ISSUE #9228) ──────────────────
+
+  /**
+   * Moves the RIDs of the inline entry at {@code pos}, plus a new one, to a new RID list, and rewrites the entry as the
+   * pointer to it.
+   */
+  private void moveRIDsToRidList(final int pageNum, final MutablePage page, final int entryCount, final int pos,
+      final byte[] serializedRID, final long hash) throws IOException {
+    final int entryStart = readSlot(page, pos);
+    final int keyLen = computeKeyLengthFromPage(page, entryStart);
+    final int headerOffset = entryStart + keyLen;
+    final int header = readVarIntFromPage(page, headerOffset);
+    final int headerSize = varIntSize(header);
+    final int ridsStart = headerOffset + headerSize;
+    final int ridsLength = inlineRidsLength(page, ridsStart, header);
+
+    // The inline RIDs are at most a quarter of a bucket page plus the RID that did not fit, always less than a RID list page
+    final MutablePage listPage = allocateRidListPage(hash);
+    listPage.writeByteArray(RID_PAGE_CONTENT_START, readBytes(page, ridsStart, ridsLength));
+    listPage.writeByteArray(RID_PAGE_CONTENT_START + ridsLength, serializedRID);
+    listPage.writeShort(RID_PAGE_DATA_END, (short) (RID_PAGE_CONTENT_START + ridsLength + serializedRID.length));
+    listPage.writeShort(RID_PAGE_COUNT, (short) (countRids(page, ridsStart, ridsLength) + 1));
+    final int listPageNum = listPage.getPageId().getPageNumber();
+
+    if (headerSize + ridsLength >= RID_LIST_VALUE_SIZE) {
+      // The pointer replaces the value in place: what is left of the old value is dead space
+      writeRidListValue(page, headerOffset, listPageNum, listPageNum);
+      if (headerSize + ridsLength > RID_LIST_VALUE_SIZE)
+        setNoDeadSpace(page, false);
+      return;
+    }
+
+    // A value shorter than the pointer (a page too full to grow an entry of few RIDs): the entry is written again elsewhere
+    final byte[] entry = new byte[keyLen + RID_LIST_VALUE_SIZE];
+    page.readByteArray(entryStart, entry, 0, keyLen);
+    entry[keyLen] = 0;
+    final Binary pointers = new Binary(entry);
+    pointers.putInt(keyLen + 1, listPageNum);
+    pointers.putInt(keyLen + 1 + Binary.INT_SERIALIZED_SIZE, listPageNum);
+    dropSlot(page, entryCount, pos);
+    insertRawEntry(pageNum, entry, hash);
+  }
+
+  private void writeRidListValue(final MutablePage page, final int valueOffset, final int headPage, final int tailPage) {
+    page.writeNumber(valueOffset, 0);
+    page.writeInt(valueOffset + 1, headPage);
+    page.writeInt(valueOffset + 1 + Binary.INT_SERIALIZED_SIZE, tailPage);
+  }
+
+  /**
+   * Appends a RID to the RID list of the entry whose value starts at {@code valueOffset} of the page {@code pageNum}: the last
+   * page of the list is written, and the entry only when a new last page is chained.
+   */
+  private void appendToRidList(final int pageNum, final BasePage entryPage, final int valueOffset, final byte[] serializedRID,
+      final long hash) throws IOException {
+    final int tailPageNum = entryPage.readInt(valueOffset + 1 + Binary.INT_SERIALIZED_SIZE);
+    final MutablePage tail = ridListPageToModify(tailPageNum, hash);
+    final int dataEnd = tail.readShort(RID_PAGE_DATA_END) & 0xFFFF;
+
+    if (dataEnd + serializedRID.length <= ridListPageEnd()) {
+      tail.writeByteArray(dataEnd, serializedRID);
+      tail.writeShort(RID_PAGE_DATA_END, (short) (dataEnd + serializedRID.length));
+      tail.writeShort(RID_PAGE_COUNT, (short) ((tail.readShort(RID_PAGE_COUNT) & 0xFFFF) + 1));
+      return;
+    }
+
+    final MutablePage newTail = allocateRidListPage(hash);
+    newTail.writeByteArray(RID_PAGE_CONTENT_START, serializedRID);
+    newTail.writeShort(RID_PAGE_DATA_END, (short) (RID_PAGE_CONTENT_START + serializedRID.length));
+    newTail.writeShort(RID_PAGE_COUNT, (short) 1);
+    final int newTailNum = newTail.getPageId().getPageNumber();
+    tail.writeInt(RID_PAGE_NEXT, newTailNum);
+    database.getTransaction().getPageToModify(new PageId(database, fileId, pageNum), pageSize, false)
+        .writeInt(valueOffset + 1 + Binary.INT_SERIALIZED_SIZE, newTailNum);
+  }
+
+  /**
+   * Removes a RID from the RID list of the entry at {@code pos}. The list stays dense: the bytes after the RID on its page
+   * close the gap, a page left empty is unlinked and freed, and a page whose next one now fits in it takes its RIDs and frees
+   * it. The entry goes away with the last RID of the list. Returns 1 if the RID was found.
+   */
+  private int removeRIDFromRidList(final MutablePage entryPage, final int entryCount, final int pos, final int valueOffset,
+      final byte[] target, final long hash) throws IOException {
+    final TransactionContext tx = database.getTransaction();
+    final int tailPageNum = entryPage.readInt(valueOffset + 1 + Binary.INT_SERIALIZED_SIZE);
+    final int maxChainPages = getTotalPages();
+    int chainSteps = 0;
+    int previous = NO_OVERFLOW_PAGE;
+
+    for (int current = entryPage.readInt(valueOffset + 1); current != NO_OVERFLOW_PAGE; ) {
+      if (++chainSteps > maxChainPages)
+        throw corruptedRidList(current, "the list is cyclic");
+      final BasePage readPage = ridListPage(current, hash);
+      final int dataEnd = readPage.readShort(RID_PAGE_DATA_END) & 0xFFFF;
+      final int next = readPage.readInt(RID_PAGE_NEXT);
+
+      for (int offset = RID_PAGE_CONTENT_START; offset < dataEnd; ) {
+        final int ridSize = compressedRIDSizeFromPage(readPage, offset);
+        if (!sameBytes(readPage, offset, target, ridSize)) {
+          offset += ridSize;
+          continue;
+        }
+
+        final MutablePage page = tx.getPageToModify(new PageId(database, fileId, current), pageSize, false);
+        page.move(offset + ridSize, offset, dataEnd - offset - ridSize);
+        final int newDataEnd = dataEnd - ridSize;
+        final int newCount = (page.readShort(RID_PAGE_COUNT) & 0xFFFF) - 1;
+        page.writeShort(RID_PAGE_DATA_END, (short) newDataEnd);
+        page.writeShort(RID_PAGE_COUNT, (short) newCount);
+
+        if (newCount == 0) {
+          // Unlink the empty page
+          if (previous == NO_OVERFLOW_PAGE && next == NO_OVERFLOW_PAGE)
+            // it was the only one: the key has no RID left
+            dropSlot(entryPage, entryCount, pos);
+          else if (previous == NO_OVERFLOW_PAGE)
+            entryPage.writeInt(valueOffset + 1, next);
+          else {
+            ridListPageToModify(previous, hash).writeInt(RID_PAGE_NEXT, next);
+            if (current == tailPageNum)
+              entryPage.writeInt(valueOffset + 1 + Binary.INT_SERIALIZED_SIZE, previous);
+          }
+          freeRidListPages(current, page);
+        } else if (next != NO_OVERFLOW_PAGE) {
+          // Merge the next page in this one when its RIDs fit, so deletions do not leave a chain of half empty pages
+          final BasePage nextPage = ridListPage(next, hash);
+          final int nextLength = (nextPage.readShort(RID_PAGE_DATA_END) & 0xFFFF) - RID_PAGE_CONTENT_START;
+          if (nextLength <= ridListPageEnd() - newDataEnd) {
+            final byte[] rids = new byte[nextLength];
+            nextPage.readByteArray(RID_PAGE_CONTENT_START, rids);
+            page.writeByteArray(newDataEnd, rids);
+            page.writeShort(RID_PAGE_DATA_END, (short) (newDataEnd + nextLength));
+            page.writeShort(RID_PAGE_COUNT, (short) (newCount + (nextPage.readShort(RID_PAGE_COUNT) & 0xFFFF)));
+            page.writeInt(RID_PAGE_NEXT, nextPage.readInt(RID_PAGE_NEXT));
+            if (next == tailPageNum)
+              entryPage.writeInt(valueOffset + 1 + Binary.INT_SERIALIZED_SIZE, current);
+            freeRidListPages(next, tx.getPageToModify(new PageId(database, fileId, next), pageSize, false));
+          }
+        }
+        return 1;
+      }
+
+      previous = current;
+      current = next;
+    }
+    return 0;
+  }
+
+  /**
+   * Frees the whole RID list of a key whose entry is removed and returns the number of RIDs it held.
+   */
+  private int releaseRidList(final int headPage, final int tailPage, final long hash) throws IOException {
+    int ridCount = 0;
+    final int maxChainPages = getTotalPages();
+    int chainSteps = 0;
+    int last = NO_OVERFLOW_PAGE;
+    for (int current = headPage; current != NO_OVERFLOW_PAGE; ) {
+      if (++chainSteps > maxChainPages)
+        throw corruptedRidList(current, "the list is cyclic");
+      final BasePage page = ridListPage(current, hash);
+      ridCount += page.readShort(RID_PAGE_COUNT) & 0xFFFF;
+      last = current;
+      current = page.readInt(RID_PAGE_NEXT);
+    }
+    if (last != tailPage)
+      // freeing from the head to a wrong last page would put on the free list pages still in use, or lose some
+      throw corruptedRidList(tailPage, "the entry names it as the last page of the list, which ends at page " + last);
+    // the pages of the list are already chained: the whole list goes on top of the free list at once
+    freeRidListPages(headPage, ridListPageToModify(tailPage, hash));
+    return ridCount;
+  }
+
+  /**
+   * Puts the chain of RID list pages from {@code firstPage} to {@code lastPage} (already taken for modification) on top of the
+   * free list. The pages keep their owner: a lookup that still reaches one reads RIDs of the key it is looking for, as a read
+   * of a page an instant earlier would have, until the page is given to another key.
+   */
+  private void freeRidListPages(final int firstPage, final MutablePage lastPage) throws IOException {
+    lastPage.writeInt(RID_PAGE_NEXT, readFreeRidListPage());
+    writeFreeRidListPage(firstPage);
+  }
+
+  /**
+   * Returns an empty RID list page owned by the key of the given hash: the first free one if any, a new one otherwise.
+   */
+  private MutablePage allocateRidListPage(final long hash) throws IOException {
+    final TransactionContext tx = database.getTransaction();
+    final int free = readFreeRidListPage();
+    final MutablePage page;
+    if (free != NO_OVERFLOW_PAGE) {
+      if (!isValidBucketPage(free))
+        throw corruptedRidList(free, "the free list reaches an invalid page");
+      page = tx.getPageToModify(new PageId(database, fileId, free), pageSize, false);
+      if (!isRidListPage(page))
+        throw corruptedRidList(free, "the free list reaches a page that is not a RID list page");
+      writeFreeRidListPage(page.readInt(RID_PAGE_NEXT));
+    } else {
+      final int newPageNum = getTotalPages();
+      page = tx.addPage(new PageId(database, fileId, newPageNum), pageSize);
+      updatePageCount(newPageNum + 1);
+    }
+    page.writeShort(RID_PAGE_MARKER, (short) RID_LIST_PAGE_MARKER);
+    page.writeShort(RID_PAGE_COUNT, (short) 0);
+    page.writeInt(RID_PAGE_NEXT, NO_OVERFLOW_PAGE);
+    page.writeShort(RID_PAGE_DATA_END, (short) RID_PAGE_CONTENT_START);
+    page.writeLong(RID_PAGE_OWNER, hash);
+    return page;
+  }
+
+  /** A page of a RID list of the key of the given hash, read for a change: anything else means the index is corrupted. */
+  private BasePage ridListPage(final int pageNum, final long hash) throws IOException {
+    if (!isValidBucketPage(pageNum))
+      throw corruptedRidList(pageNum, "the page does not exist");
+    final BasePage page = database.getTransaction().getPage(new PageId(database, fileId, pageNum), pageSize);
+    if (!isRidListPageOf(page, hash))
+      throw corruptedRidList(pageNum, "the page is not a RID list page of the key");
+    return page;
+  }
+
+  private MutablePage ridListPageToModify(final int pageNum, final long hash) throws IOException {
+    ridListPage(pageNum, hash);
+    return database.getTransaction().getPageToModify(new PageId(database, fileId, pageNum), pageSize, false);
+  }
+
+  static boolean isRidListPage(final BasePage page) {
+    return (page.readShort(RID_PAGE_MARKER) & 0xFFFF) == RID_LIST_PAGE_MARKER;
+  }
+
+  private boolean isRidListPageOf(final BasePage page, final long hash) {
+    if (!isRidListPage(page) || page.readLong(RID_PAGE_OWNER) != hash)
+      return false;
+    final int dataEnd = page.readShort(RID_PAGE_DATA_END) & 0xFFFF;
+    return dataEnd >= RID_PAGE_CONTENT_START && dataEnd <= ridListPageEnd();
+  }
+
+  /** Offset past the last byte a RID list page can hold. */
+  private int ridListPageEnd() {
+    return pageSize - BasePage.PAGE_HEADER_SIZE;
+  }
+
+  private int readFreeRidListPage() throws IOException {
+    return metaPage().readInt(metaTailOffset + 3 * Binary.INT_SERIALIZED_SIZE);
+  }
+
+  private void writeFreeRidListPage(final int pageNum) throws IOException {
+    database.getTransaction().getPageToModify(new PageId(database, fileId, 0), pageSize, false)
+        .writeInt(metaTailOffset + 3 * Binary.INT_SERIALIZED_SIZE, pageNum);
+  }
+
+  private IndexException corruptedRidList(final int page, final String reason) {
+    return new IndexException(
+        "Invalid RID list page " + page + " in hash index '" + getName() + "' (fileId=" + fileId + ", totalPages=" + getTotalPages()
+            + "): " + reason + ". The index is corrupted, please rebuild it (DROP and recreate it).");
   }
 
   // ─── SLOTTED PAGE ACCESS ────────────────────────────────
@@ -1966,7 +2489,7 @@ public class HashIndexBucket extends PaginatedComponent {
       System.arraycopy(serializedKey, 0, entryBytes, 0, serializedKey.length);
       System.arraycopy(serializedRID, 0, entryBytes, serializedKey.length, serializedRID.length);
     } else {
-      final byte[] ridCountBytes = encodeVarInt(1);
+      final byte[] ridCountBytes = encodeVarInt(singleRidHeader(serializedRID));
       entryBytes = new byte[serializedKey.length + ridCountBytes.length + serializedRID.length];
       System.arraycopy(serializedKey, 0, entryBytes, 0, serializedKey.length);
       System.arraycopy(ridCountBytes, 0, entryBytes, serializedKey.length, ridCountBytes.length);
@@ -2016,38 +2539,21 @@ public class HashIndexBucket extends PaginatedComponent {
     if (unique) {
       total += compressedRIDSizeFromPage(page, offset + keyLen);
     } else {
-      final int ridCount = readVarIntFromPage(page, offset + keyLen);
-      total += varIntSize(ridCount);
-      int ridOffset = offset + keyLen + varIntSize(ridCount);
-      for (int r = 0; r < ridCount; r++) {
-        final int ridSize = compressedRIDSizeFromPage(page, ridOffset);
-        total += ridSize;
-        ridOffset += ridSize;
-      }
+      final int header = readVarIntFromPage(page, offset + keyLen);
+      final int headerSize = varIntSize(header);
+      if (ridLists)
+        // O(1): the header is the byte length of the RIDs, or 0 for the pointer to a RID list
+        return total + (header == 0 ? RID_LIST_VALUE_SIZE : headerSize + header);
+      total += headerSize + ridsLength(page, offset + keyLen + headerSize, header);
     }
     return total;
   }
 
-  /**
-   * Same as getEntrySize but for raw byte array.
-   */
-  private int getEntrySizeFromBytes(final byte[] data, final int offset) {
-    final int keyLen = computeKeyLengthFromBytes(data, offset);
-    int total = keyLen;
-
-    if (unique) {
-      total += compressedRIDSizeFromBytes(data, offset + keyLen);
-    } else {
-      final int ridCount = readVarIntFromBytes(data, offset + keyLen);
-      total += varIntSize(ridCount);
-      int ridOffset = offset + keyLen + varIntSize(ridCount);
-      for (int r = 0; r < ridCount; r++) {
-        final int ridSize = compressedRIDSizeFromBytes(data, ridOffset);
-        total += ridSize;
-        ridOffset += ridSize;
-      }
-    }
-    return total;
+  /** Hash of the key of the entry at {@code offset}, the same {@link #serializeKeys} + {@link #murmurHash64} give. */
+  private static long hashKeyAt(final BasePage page, final int offset, final int keyLen) {
+    final byte[] key = new byte[keyLen];
+    page.readByteArray(offset, key);
+    return murmurHash64(key);
   }
 
   /**
@@ -2102,18 +2608,15 @@ public class HashIndexBucket extends PaginatedComponent {
     case BinaryTypes.TYPE_DATETIME_SECOND:
       return getVarNumberSize(page, offset);
     case BinaryTypes.TYPE_STRING:
-    case BinaryTypes.TYPE_BINARY: {
+    case BinaryTypes.TYPE_BINARY:
       // Length-prefixed: read the varint length, then the bytes
-      final int[] lenAndSize = readVarIntAndSize(page, offset);
-      return lenAndSize[1] + lenAndSize[0]; // varIntSize + dataLength
-    }
+      return lengthPrefixedSize(page, offset);
     case BinaryTypes.TYPE_COMPRESSED_RID:
       return compressedRIDSizeFromPage(page, offset);
     case BinaryTypes.TYPE_DECIMAL: {
       // scale (varInt) + unscaledValue bytes (length-prefixed)
       final int scaleSize = getVarNumberSize(page, offset);
-      final int[] lenAndSize = readVarIntAndSize(page, offset + scaleSize);
-      return scaleSize + lenAndSize[1] + lenAndSize[0];
+      return scaleSize + lengthPrefixedSize(page, offset + scaleSize);
     }
     case BinaryTypes.TYPE_UUID:
       return 16; // Two longs
@@ -2128,8 +2631,7 @@ public class HashIndexBucket extends PaginatedComponent {
       final int head = getVarNumbersSize(page, offset, 2);
       if (page.readByte(offset + head) == 0)
         return head + 1 + getVarNumberSize(page, offset + head + 1);
-      final int[] lenAndSize = readVarIntAndSize(page, offset + head + 1);
-      return head + 1 + lenAndSize[1] + lenAndSize[0];
+      return head + 1 + lengthPrefixedSize(page, offset + head + 1);
     }
     default:
       throw unsupportedKeyType(declaredKeyTypes[column], column, offset);
@@ -2203,7 +2705,7 @@ public class HashIndexBucket extends PaginatedComponent {
    * Checks if the key at the given page offset matches the search key exactly.
    */
   private boolean keysMatch(final BasePage page, final int offset, final byte[] searchKey) {
-    return compareKeyBytes(page, offset, searchKey) == 0;
+    return sameBytes(page, offset, searchKey, computeKeyLengthFromPage(page, offset));
   }
 
   // ─── COLLECTING ENTRIES ──────────────────────────────────
@@ -2242,36 +2744,17 @@ public class HashIndexBucket extends PaginatedComponent {
 
   /** A varInt takes up to 10 bytes. */
   private static final int MAX_VARINT_SIZE = 10;
-  /** Two varInts. */
-  private static final int MAX_COMPRESSED_RID_SIZE = 2 * MAX_VARINT_SIZE;
 
   private RID readCompressedRID(final BasePage page, final int offset) {
     // Compressed RID: bucketId (varInt) + position (varInt)
-    final Binary view = ridView(page, offset);
-    final long bucketId = view.getNumber();
-    final long position = view.getNumber();
+    final long bucketId = readVarLong(page, offset);
+    final long position = readVarLong(page, offset + varIntLength(page, offset));
     return new RID((int) bucketId, position);
   }
 
-  private int compressedRIDSize(final RID rid) {
-    return Binary.getNumberSpace(rid.getBucketId()) + Binary.getNumberSpace(rid.getPosition());
-  }
-
-  /**
-   * A view over the compressed RID at {@code offset}: at most 20 bytes (two varInts), but never more than the page has left after
-   * the offset. A grown entry is written at the end of the used area, so a RID can end a few bytes before the slot directory at
-   * the end of the page, where a fixed 20 byte window overruns the page buffer (issue #9034).
-   */
-  private static Binary ridView(final BasePage page, final int offset) {
-    return page.getImmutableView(offset, Math.min(MAX_COMPRESSED_RID_SIZE, page.getMaxContentSize() - offset));
-  }
-
-  private int compressedRIDSizeFromPage(final BasePage page, final int offset) {
-    final Binary view = ridView(page, offset);
-    final int startPos = view.position();
-    view.getNumber(); // bucketId
-    view.getNumber(); // position
-    return view.position() - startPos;
+  private static int compressedRIDSizeFromPage(final BasePage page, final int offset) {
+    final int bucketIdLength = varIntLength(page, offset);
+    return bucketIdLength + varIntLength(page, offset + bucketIdLength);
   }
 
   private int compressedRIDSizeFromBytes(final byte[] data, final int offset) {
@@ -2283,15 +2766,40 @@ public class HashIndexBucket extends PaginatedComponent {
   }
 
   // ─── VARINT HELPERS ──────────────────────────────────────
+  // The page is read in place, one byte at a time and never past the last byte of the number: a copied window of a fixed
+  // size overran the page buffer at its end (#9034), and its allocation was most of the cost of an insert into a key with
+  // many RIDs, whose size is the sum of the sizes of its RIDs (#9228).
 
-  /** A view over the varInt at {@code offset}: at most 10 bytes, never more than the page has left (issue #9034). */
-  private static Binary varIntView(final BasePage page, final int offset) {
-    return page.getImmutableView(offset, Math.min(MAX_VARINT_SIZE, page.getMaxContentSize() - offset));
+  /** Bytes taken by the varInt at {@code offset}. */
+  private static int varIntLength(final BasePage page, final int offset) {
+    int length = 1;
+    while ((page.readByte(offset + length - 1) & 0x80) != 0)
+      if (++length > MAX_VARINT_SIZE)
+        throw new IndexException("Invalid variable length number at offset " + offset + " of page " + page.getPageId());
+    return length;
+  }
+
+  /** Reads the unsigned varInt at {@code offset}, the encoding of {@link Binary#getUnsignedNumber()}. */
+  private static long readUnsignedVarLong(final BasePage page, final int offset) {
+    long value = 0;
+    for (int i = offset, shift = 0; ; i++, shift += 7) {
+      if (shift > 63)
+        throw new IndexException("Invalid variable length number at offset " + offset + " of page " + page.getPageId());
+      final byte b = page.readByte(i);
+      value |= (long) (b & 0x7F) << shift;
+      if ((b & 0x80) == 0)
+        return value;
+    }
+  }
+
+  /** Reads the signed (zigzag) varInt at {@code offset}, the encoding of {@link Binary#getNumber()}. */
+  private static long readVarLong(final BasePage page, final int offset) {
+    final long raw = readUnsignedVarLong(page, offset);
+    return (raw >>> 1) ^ -(raw & 1);
   }
 
   private int readVarIntFromPage(final BasePage page, final int offset) {
-    final Binary view = varIntView(page, offset);
-    return (int) view.getNumber();
+    return (int) readVarLong(page, offset);
   }
 
   private int readVarIntFromBytes(final byte[] data, final int offset) {
@@ -2300,14 +2808,9 @@ public class HashIndexBucket extends PaginatedComponent {
     return (int) view.getNumber();
   }
 
-  /**
-   * Returns [dataLength, varIntByteSize].
-   */
-  private int[] readVarIntAndSize(final BasePage page, final int offset) {
-    final Binary view = varIntView(page, offset);
-    final int startPos = view.position();
-    final long value = view.getUnsignedNumber();
-    return new int[] { (int) value, view.position() - startPos };
+  /** Bytes taken by a length-prefixed value (STRING, BINARY): the unsigned varInt length, then the bytes. */
+  private static int lengthPrefixedSize(final BasePage page, final int offset) {
+    return varIntLength(page, offset) + (int) readUnsignedVarLong(page, offset);
   }
 
   private int[] readVarIntAndSizeFromBytes(final byte[] data, final int offset) {
@@ -2318,19 +2821,15 @@ public class HashIndexBucket extends PaginatedComponent {
     return new int[] { (int) value, view.position() - startPos };
   }
 
-  private int getVarNumberSize(final BasePage page, final int offset) {
-    final Binary view = varIntView(page, offset);
-    final int startPos = view.position();
-    view.getNumber();
-    return view.position() - startPos;
+  private static int getVarNumberSize(final BasePage page, final int offset) {
+    return varIntLength(page, offset);
   }
 
-  private int getVarNumbersSize(final BasePage page, final int offset, final int count) {
-    final Binary view = varIntView(page, offset);
-    final int startPos = view.position();
+  private static int getVarNumbersSize(final BasePage page, final int offset, final int count) {
+    int end = offset;
     for (int i = 0; i < count; i++)
-      view.getNumber();
-    return view.position() - startPos;
+      end += varIntLength(page, end);
+    return end - offset;
   }
 
   private int getVarNumbersSizeFromBytes(final byte[] data, final int offset, final int count) {
