@@ -41,10 +41,20 @@ public class TernaryLogicalExpression implements Expression {
   private final Expression left;
   private final Expression right; // null for NOT
 
+  /** Whether an operand runs a subquery or pattern match per row; see {@link ExpressionCost}. Fixed at construction. */
+  private final boolean leftCostly;
+  private final boolean rightCostly;
+
   public TernaryLogicalExpression(final Operator operator, final Expression left, final Expression right) {
     this.operator = operator;
     this.left = left;
     this.right = right;
+    this.leftCostly = ExpressionCost.isCostly(left);
+    this.rightCostly = ExpressionCost.isCostly(right);
+  }
+
+  boolean isCostly() {
+    return leftCostly || rightCostly;
   }
 
   public TernaryLogicalExpression(final Operator operator, final Expression operand) {
@@ -62,13 +72,16 @@ public class TernaryLogicalExpression implements Expression {
   }
 
   private Object evaluateAnd(final Result result, final CommandContext context) {
-    final Boolean leftBool = toBoolean(left.evaluate(result, context));
+    // AND and OR are commutative, nulls included: evaluate the operand that cannot run a subquery first, so it can make
+    // the other unnecessary (issue #9579).
+    final boolean swap = leftCostly && !rightCostly;
+    final Boolean leftBool = toBoolean((swap ? right : left).evaluate(result, context));
 
-    // false AND anything = false: the right operand is result-irrelevant, do not evaluate it.
+    // false AND anything = false: the other operand is result-irrelevant, do not evaluate it.
     if (Boolean.FALSE.equals(leftBool))
       return false;
 
-    final Boolean rightBool = toBoolean(right.evaluate(result, context));
+    final Boolean rightBool = toBoolean((swap ? left : right).evaluate(result, context));
 
     // false AND anything = false
     if (Boolean.FALSE.equals(rightBool))
@@ -83,13 +96,14 @@ public class TernaryLogicalExpression implements Expression {
   }
 
   private Object evaluateOr(final Result result, final CommandContext context) {
-    final Boolean leftBool = toBoolean(left.evaluate(result, context));
+    final boolean swap = leftCostly && !rightCostly;
+    final Boolean leftBool = toBoolean((swap ? right : left).evaluate(result, context));
 
-    // true OR anything = true: the right operand is result-irrelevant, do not evaluate it.
+    // true OR anything = true: the other operand is result-irrelevant, do not evaluate it.
     if (Boolean.TRUE.equals(leftBool))
       return true;
 
-    final Boolean rightBool = toBoolean(right.evaluate(result, context));
+    final Boolean rightBool = toBoolean((swap ? left : right).evaluate(result, context));
 
     // true OR anything = true
     if (Boolean.TRUE.equals(rightBool))
