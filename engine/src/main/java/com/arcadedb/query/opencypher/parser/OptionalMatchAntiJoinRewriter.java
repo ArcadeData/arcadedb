@@ -107,7 +107,8 @@ public final class OptionalMatchAntiJoinRewriter {
       return statement;
 
     SimpleCypherStatement current = simple;
-    // every rewrite removes one OPTIONAL MATCH, so this ends
+    // every rewrite removes one OPTIONAL MATCH, so this ends; each pass rescans the clauses, quadratic in the OPTIONAL MATCH
+    // clauses of one query, which is a handful, and paid once per parse
     for (SimpleCypherStatement next = rewriteFirst(current); next != null; next = rewriteFirst(current))
       current = next;
     return current;
