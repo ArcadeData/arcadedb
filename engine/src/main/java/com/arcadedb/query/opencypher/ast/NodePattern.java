@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher.ast;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 /**
  * Represents a node pattern in a Cypher query.
@@ -171,6 +172,20 @@ public class NodePattern implements PatternElement {
    */
   public NodePattern withLabels(final List<String> newLabels) {
     return new NodePattern(variable, newLabels, dynamicLabels, explicitProperties ? properties : null,
+        propertiesParameterName, labelDisjunction, whereExpression);
+  }
+
+  /**
+   * Returns a copy of this node pattern bound to another variable, preserving every other attribute. Used when a
+   * pass-through {@code WITH x AS y} is folded away and the {@code y} written after it is the {@code x} written before
+   * (issue #9597).
+   *
+   * @return a new node pattern, or {@code this} when the variable is already the one asked for
+   */
+  public NodePattern withVariable(final String newVariable) {
+    if (Objects.equals(variable, newVariable))
+      return this;
+    return new NodePattern(newVariable, labels, dynamicLabels, explicitProperties ? properties : null,
         propertiesParameterName, labelDisjunction, whereExpression);
   }
 

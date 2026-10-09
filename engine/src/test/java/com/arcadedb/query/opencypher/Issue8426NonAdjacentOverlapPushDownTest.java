@@ -227,8 +227,8 @@ class Issue8426NonAdjacentOverlapPushDownTest extends TestHelper {
   }
 
   private long enumerated(final String query) {
-    // WITH * forces row-by-row matching, which has no push-down: this is the oracle
-    return count(query.replace(" RETURN count(*) AS n", " WITH * RETURN count(*) AS n"));
+    // sum(1) forces row-by-row matching, which has no push-down: this is the oracle
+    return count(query.replace(" RETURN count(*) AS n", " RETURN sum(1) AS n"));
   }
 
   private long count(final String query) {

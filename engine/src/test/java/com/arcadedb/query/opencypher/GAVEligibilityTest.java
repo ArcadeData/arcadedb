@@ -361,9 +361,9 @@ class GAVEligibilityTest {
 
   @Test
   void countPushDownNotUsedWithComplexWhere() {
-    // Complex WHERE (not a simple inequality) prevents count-push-down
+    // A WHERE comparing two nodes (not a simple inequality) prevents count-push-down
     final ResultSet result = database.query("opencypher",
-        "PROFILE MATCH (p1:Person)-[:KNOWS]-(p2:Person) WHERE p1.name = 'Alice' RETURN count(*) AS count");
+        "PROFILE MATCH (p1:Person)-[:KNOWS]-(p2:Person) WHERE p1.name < p2.name RETURN count(*) AS count");
 
     while (result.hasNext())
       result.next();
@@ -371,6 +371,20 @@ class GAVEligibilityTest {
     final String planString = result.getExecutionPlan().get().prettyPrint(0, 2);
     assertThat(planString).doesNotContain("COUNT CHAIN PATHS");
     result.close();
+  }
+
+  @Test
+  void countPushDownAppliesAWhereOnOneNodePerVertex() {
+    // A WHERE that reads one node is a per-vertex filter the chain count applies (issue #9595)
+    final String match = "MATCH (p1:Person)-[:KNOWS]-(p2:Person) WHERE p1.name = 'Alice'";
+    final ResultSet result = database.query("opencypher", "PROFILE " + match + " RETURN count(*) AS count");
+    final long count = ((Number) result.next().getProperty("count")).longValue();
+    assertThat(result.getExecutionPlan().get().prettyPrint(0, 2)).contains("COUNT CHAIN PATHS");
+    result.close();
+
+    try (final ResultSet pipeline = database.query("opencypher", match + " RETURN sum(1) AS count")) {
+      assertThat(count).isEqualTo(((Number) pipeline.next().getProperty("count")).longValue());
+    }
   }
 
   @Test
