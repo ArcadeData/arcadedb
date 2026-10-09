@@ -47,6 +47,7 @@ import org.apache.tinkerpop.gremlin.process.traversal.step.map.MergeStepContract
 import org.apache.tinkerpop.gremlin.process.traversal.step.sideEffect.AddPropertyStepContract;
 import org.apache.tinkerpop.gremlin.process.traversal.step.sideEffect.IoStep;
 import org.apache.tinkerpop.gremlin.process.traversal.util.TraversalHelper;
+import org.apache.tinkerpop.gremlin.structure.T;
 
 import javax.script.ScriptException;
 import javax.script.SimpleBindings;
@@ -61,6 +62,8 @@ import java.util.logging.Level;
  */
 
 public class ArcadeGremlin extends ArcadeQuery {
+  private static final String RID_KEY  = "@rid";
+  private static final String TYPE_KEY = "@type";
 
   protected ArcadeGremlin(final ArcadeGraph graph, final String query) {
     super(graph, query);
@@ -200,40 +203,44 @@ public class ArcadeGremlin extends ArcadeQuery {
   }
 
   /**
-   * A result {@link Map} as one {@link ResultInternal}, whose properties are named by strings. When the keys cannot be told
-   * apart once printed (T.id and a property called "id", the Integer 1 and the Long 1 of a {@code groupCount()}), flattening
-   * would keep only the last of them and silently lose the others (#9141), so the entries are returned as a list of
-   * {@code {key, value}} maps under {@code result} instead, the shape a non-map value has.
+   * A result {@link Map} as one {@link ResultInternal} whose properties are named by strings. The answer is always a flat map,
+   * whatever the data (#9584, #9576): the shape is decided by the query, never by the keys that happen to collide.
+   * <ul>
+   * <li>{@code T.id} is named {@code @rid} and {@code T.label} {@code @type}, the names ArcadeDB uses for the record id and type
+   * everywhere else, so a property called {@code id} or {@code label} can never overwrite them (#9141)</li>
+   * <li>any other key is its printed form (a null key is named "null")</li>
+   * <li>keys that still print alike (the Integer 1 and the Long 1 of a {@code groupCount()}) are told apart by the simple name of
+   * their type, {@code 1} and {@code 1:Long}, so no entry is lost</li>
+   * </ul>
    */
   private static ResultInternal mapToResult(final Map<Object, Object> originalMap) {
-    final Map<String, Object> stringMap = getStringObjectMap(originalMap);
-    if (stringMap != null)
-      return new ResultInternal(stringMap);
-
-    final List<Map<String, Object>> entries = new ArrayList<>(originalMap.size());
-    for (final Map.Entry<Object, Object> entry : originalMap.entrySet()) {
-      final Map<String, Object> pair = new LinkedHashMap<>(2);
-      pair.put("key", entry.getKey());
-      pair.put("value", entry.getValue());
-      entries.add(pair);
-    }
-    return new ResultInternal(CollectionUtils.singletonMap("result", entries));
-  }
-
-  /**
-   * Transforms a map to one with strings as keys (a null key is named "null"), or returns null when two keys print alike
-   * and the transformation would lose an entry.
-   */
-  private static Map<String, Object> getStringObjectMap(final Map<Object, Object> originalMap) {
     final Map<String, Object> stringMap = new LinkedHashMap<>(originalMap.size());
 
+    // THE TOKENS TAKE THEIR RESERVED NAMES FIRST, SO NOTHING ELSE CAN DISPLACE THEM
     for (final Map.Entry<Object, Object> entry : originalMap.entrySet()) {
-      final String key = String.valueOf(entry.getKey());
-      if (stringMap.containsKey(key))
-        return null;
-      stringMap.put(key, entry.getValue());
+      if (entry.getKey() == T.id)
+        stringMap.put(RID_KEY, entry.getValue());
+      else if (entry.getKey() == T.label)
+        stringMap.put(TYPE_KEY, entry.getValue());
     }
-    return stringMap;
+    final Map<String, Object> result = new LinkedHashMap<>(originalMap.size());
+    for (final Map.Entry<Object, Object> entry : originalMap.entrySet()) {
+      final Object originalKey = entry.getKey();
+      if (originalKey == T.id)
+        result.put(RID_KEY, entry.getValue());
+      else if (originalKey == T.label)
+        result.put(TYPE_KEY, entry.getValue());
+      else {
+        String key = String.valueOf(originalKey);
+        if (stringMap.containsKey(key) || result.containsKey(key)) {
+          key = key + ":" + (originalKey == null ? "null" : originalKey.getClass().getSimpleName());
+          for (int i = 2; stringMap.containsKey(key) || result.containsKey(key); i++)
+            key = key + i;
+        }
+        result.put(key, entry.getValue());
+      }
+    }
+    return new ResultInternal(result);
   }
 
   public QueryEngine.AnalyzedQuery parse() {

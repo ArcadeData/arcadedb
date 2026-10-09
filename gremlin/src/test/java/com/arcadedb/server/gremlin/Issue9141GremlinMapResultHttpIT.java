@@ -47,23 +47,14 @@ class Issue9141GremlinMapResultHttpIT extends BaseGraphServerTest {
     testEachServer(serverIndex -> {
       executeGremlin(serverIndex, "g.addV('Map9141').property('name','a').property('id','user-42').property('label','VIP').iterate()");
       final JSONObject json = executeGremlin(serverIndex, "g.V().hasLabel('Map9141').elementMap()");
-      final String result = json.getJSONArray("result").toString();
-      assertThat(result).contains("user-42").contains("VIP").contains("Map9141");
+      final JSONObject row = json.getJSONArray("result").getJSONObject(0);
 
-      // THE T.id AND T.label TOKENS ARE SERIALIZED AS TEXT, NEXT TO THE PROPERTIES NAMED THE SAME
-      final JSONArray entries = json.getJSONArray("result").getJSONObject(0).getJSONArray("result");
-      int idKeys = 0;
-      int labelKeys = 0;
-      for (int i = 0; i < entries.length(); i++) {
-        final Object key = entries.getJSONObject(i).get("key");
-        assertThat(key).isInstanceOf(String.class);
-        if ("id".equals(key))
-          ++idKeys;
-        else if ("label".equals(key))
-          ++labelKeys;
-      }
-      assertThat(idKeys).isEqualTo(2);
-      assertThat(labelKeys).isEqualTo(2);
+      // A FLAT MAP: THE TOKENS ARE @rid / @type, THE PROPERTIES NAMED id / label ARE LEFT ALONE (#9584, #9576)
+      assertThat(row.has("result")).isFalse();
+      assertThat(row.getString("@type")).isEqualTo("Map9141");
+      assertThat(row.getString("@rid")).startsWith("#");
+      assertThat(row.getString("id")).isEqualTo("user-42");
+      assertThat(row.getString("label")).isEqualTo("VIP");
     });
   }
 
@@ -74,8 +65,25 @@ class Issue9141GremlinMapResultHttpIT extends BaseGraphServerTest {
       executeGremlin(serverIndex, "g.addV('Cnt9141').property('val', 1L).iterate()");
       executeGremlin(serverIndex, "g.addV('Cnt9141').property('val', '1').iterate()");
       final JSONArray rows = executeGremlin(serverIndex, "g.V().hasLabel('Cnt9141').groupCount().by('val')").getJSONArray("result");
-      final JSONArray entries = rows.getJSONObject(0).getJSONArray("result");
-      assertThat(entries.length()).isEqualTo(3);
+      assertThat(rows.length()).isEqualTo(1);
+      assertThat(rows.getJSONObject(0).has("result")).isFalse();
+      assertThat(rows.getJSONObject(0).keySet()).hasSize(3);
+    });
+  }
+
+  // #9576: ONE QUERY, TWO ROWS, ONE SHAPE
+  @Test
+  void rowsOfOneResponseShareTheShape() throws Exception {
+    testEachServer(serverIndex -> {
+      executeGremlin(serverIndex, "g.addV('Mix9576').property('name','a').property('id','user-42').iterate()");
+      executeGremlin(serverIndex, "g.addV('Mix9576').property('name','b').iterate()");
+      final JSONArray rows = executeGremlin(serverIndex, "g.V().hasLabel('Mix9576').elementMap()").getJSONArray("result");
+      assertThat(rows.length()).isEqualTo(2);
+      for (int i = 0; i < rows.length(); i++) {
+        assertThat(rows.getJSONObject(i).has("result")).isFalse();
+        assertThat(rows.getJSONObject(i).getString("@type")).isEqualTo("Mix9576");
+        assertThat(rows.getJSONObject(i).getString("@rid")).startsWith("#");
+      }
     });
   }
 
