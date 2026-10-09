@@ -346,7 +346,7 @@ class RaftPropertiesBuilder {
               + "cache still keeps the open segment and one closed segment on the heap, %d bytes in all. Lower "
               + "arcadedb.ha.logSegmentSize to at most half of arcadedb.ha.logCacheSize to keep it within budget",
           logCacheBytes, segmentSize.getSize(), cachedBytesFloor);
-    else if (logCacheBytes > maxHeapBytes / 2 && WARNED_LOG_CACHE_SHAPES.add("heap:" + logCacheBytes + ":" + maxHeapBytes))
+    if (logCacheBytes > maxHeapBytes / 2 && WARNED_LOG_CACHE_SHAPES.add("heap:" + logCacheBytes + ":" + maxHeapBytes))
       LogManager.instance().log(RaftPropertiesBuilder.class, Level.WARNING,
           "arcadedb.ha.logCacheSize=%d bytes is more than half of the maximum heap (%d bytes): the Raft log cache "
               + "competes with the page cache and the catch-up itself for the heap (issue #9549)",
