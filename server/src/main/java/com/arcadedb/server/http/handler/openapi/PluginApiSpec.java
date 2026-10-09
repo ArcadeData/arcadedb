@@ -932,8 +932,11 @@ public class PluginApiSpec implements OpenApiContributor {
         Why this database was quarantined. 'WAL_VERSION_GAP' means an intermediate transaction never reached \
         this node; 'UNDECODABLE_LOG_ENTRY' a corrupt local log segment or an entry written by a newer node, \
         which is not a replication fault; 'APPLY_ERROR' an unexpected error while applying a committed entry; \
-        'SNAPSHOT_INSTALL_INCOMPLETE' an install that did not reach the snapshot's index.""");
-    cause.setEnum(List.of("WAL_VERSION_GAP", "UNDECODABLE_LOG_ENTRY", "APPLY_ERROR", "SNAPSHOT_INSTALL_INCOMPLETE"));
+        'SNAPSHOT_INSTALL_INCOMPLETE' an install that did not reach the snapshot's index; \
+        'UNPUBLISHED_SCHEMA_CHANGE' a schema change or compaction this node ran locally whose replication was \
+        refused, so no other node holds it.""");
+    cause.setEnum(List.of("WAL_VERSION_GAP", "UNDECODABLE_LOG_ENTRY", "APPLY_ERROR", "SNAPSHOT_INSTALL_INCOMPLETE",
+        "UNPUBLISHED_SCHEMA_CHANGE"));
     // Declared since issue #7741 added it to the response. The vocabulary is written out here rather than read
     // from DivergenceCause for the same reason the alert severities are - this module cannot see ha-raft - and
     // Issue7577ClusterStatusSchemaMatchesTheHandlerTest over there is what keeps the two the same set.
@@ -1001,7 +1004,7 @@ public class PluginApiSpec implements OpenApiContributor {
         "Why the leader had refused to reopen the copy, when a refusal was standing. Present on accept-copy."));
     schema.addProperty("divergenceCause", SpecBuilders.string(
         "Why the lifted quarantine had been raised (WAL_VERSION_GAP, UNDECODABLE_LOG_ENTRY, APPLY_ERROR, "
-            + "SNAPSHOT_INSTALL_INCOMPLETE), when one stood. Present on accept-diverged."));
+            + "SNAPSHOT_INSTALL_INCOMPLETE, UNPUBLISHED_SCHEMA_CHANGE), when one stood. Present on accept-diverged."));
     schema.addProperty("readFloor", SpecBuilders.integer(
         "The read floor that was lifted with the quarantine, when one stood. Present on accept-diverged."));
     // 'result' is the one member every one of these routes writes; the others say in their own

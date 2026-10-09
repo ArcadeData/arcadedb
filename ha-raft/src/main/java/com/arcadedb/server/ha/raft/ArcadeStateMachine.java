@@ -2275,7 +2275,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // the two refusals above already do for the conditions they name.
     //
     // The cost is a log that keeps growing while a database is quarantined. That is the intended trade: a
-    // quarantine always needs a resync to clear (none of the four DivergenceCause values heals by itself), the
+    // quarantine always needs a resync to clear (none of the DivergenceCause values heals by itself), the
     // resync is triggered at the mark and re-driven by retryUnfilledSnapshotGap() on every HealthMonitor tick,
     // and the node is out of the ready set the whole time. Purging a log this node still needs is not cheaper
     // than the disk it saves.
@@ -8148,7 +8148,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // A quarantine with no floor beside it is the third case (issue #7735). It used to be re-driven only by the
     // triggerDatabaseResync() at the mark, which is a single attempt in this JVM - so a quarantine RESTORED from
     // disk after a restart had nothing driving it at all, and the node would have stayed out of the ready set
-    // for good. None of the four DivergenceCause values heals by itself, so a quarantine that is still recorded
+    // for good. None of the DivergenceCause values heals by itself, so a quarantine that is still recorded
     // on a tick is always a resync waiting to be retried.
     ensureAppliedIndexLoaded();
     final Set<String> quarantined = divergedDatabases.isEmpty() ? Set.of() : new HashSet<>(divergedDatabases.keySet());
@@ -8580,6 +8580,57 @@ public class ArcadeStateMachine extends BaseStateMachine {
       return false;
     lastDivergedResyncLogByDb.put(dbName, now);
     return true;
+  }
+
+  /**
+   * Quarantines {@code dbName} on this node because a schema session changed it locally and the entry that was to
+   * publish the change was definitely refused (issue #9555), and starts the targeted resync that replaces the local copy
+   * with the committed one.
+   * <p>
+   * A DDL ({@code recordFileChanges}) or a compaction ({@code runWithCompactionReplication}) runs on the proposer FIRST
+   * and ships afterwards: the file ids are allocated, the files written and the schema or index layout swapped before
+   * the entry goes out. When the leader refuses that entry before appending it - a stale session (#9547), a group
+   * commit that never dispatched it - no other node will ever hold the change, while this one does. Nothing else
+   * marked that: the node was caught only when a later committed entry reused one of the file ids (the #6063 collision
+   * check) or a replicated page write found a file in another role. Quarantining here does the same thing those
+   * checks end up doing, without waiting for one of them to trip.
+   * <p>
+   * Only for a DEFINITE refusal. An indeterminate one ({@link ReplicationDispatchedTimeoutException}) may still commit,
+   * and then the local change is exactly what the log says; the caller must not get here for it.
+   * <p>
+   * The same three steps as {@link #handleUnexpectedApplyError}: quarantine, targeted resync, and - when this node is
+   * the leader, which a resync cannot use as its own source - a leadership hand-off. And the same exception: a node that
+   * is the only voter has no peer to resync from, so the quarantine could never be lifted; it is reported instead.
+   *
+   * @return {@code true} when this call quarantined the database
+   */
+  boolean quarantineUnpublishedSchemaChange(final String dbName, final String session, final Throwable refusal) {
+    final RaftHAServer raftHA = this.raftHAServer;
+    if (raftHA != null && !isDatabaseDiverged(dbName) && raftHA.isSoleVoter()) {
+      LogManager.instance().log(this, Level.SEVERE,
+          "The %s on database '%s' was applied locally but the entry publishing it was refused (%s). This node is the "
+              + "only voter, so there is no peer to resync it from and it is NOT quarantined: the database now holds a "
+              + "change the Raft log does not (issue #9555)",
+          session, dbName, describe(refusal));
+      return false;
+    }
+
+    if (!quarantineDatabase(dbName, DivergenceCause.UNPUBLISHED_SCHEMA_CHANGE))
+      return false;
+
+    LogManager.instance().log(this, Level.SEVERE,
+        "The %s on database '%s' was applied locally but the entry publishing it was refused (%s), so no other node "
+            + "holds it: quarantining the database and resyncing it from the leader now rather than waiting for a "
+            + "later entry to collide with it (issue #9555)",
+        session, dbName, describe(refusal));
+    triggerDatabaseResync(dbName);
+    handOffLeadershipIfLeader(dbName);
+    return true;
+  }
+
+  /** The refusal's class and message, so an operator can tell a stale-session refusal from a lost quorum. */
+  private static String describe(final Throwable refusal) {
+    return refusal == null ? "no detail" : refusal.getClass().getSimpleName() + ": " + refusal.getMessage();
   }
 
   /**
