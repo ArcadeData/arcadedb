@@ -824,6 +824,10 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         preDispatchHook.accept(getName());
 
       final RaftHAServer raft = requireRaftServer();
+      // Issue #9510: here rather than before phase 1 with the closed-state-machine refusal, so a read-only transaction -
+      // what every HTTP query is wrapped in - still commits on a removed node: only a payload is ever submitted. Thrown
+      // before the dispatch, it is the definite refusal the ArcadeDBException arm below rolls back.
+      refuseWhileRemovedFromConfiguration("commit");
       final RaftTransactionBroker broker = RaftHAServer.requireTransactionBroker(raft);
       final long preparedAt = preparedAtIndexToState(raft, payload);
       committedLogIndex = preparedAt >= 0 ?
@@ -1100,6 +1104,25 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       throw new NeedRetryException("Database '" + getName() + "' cannot commit on this server: its Raft state machine is "
           + "closed and has not been restarted yet, so a committed entry could not be applied here. Retry shortly, or send "
           + "the request to another server of the cluster");
+  }
+
+  /**
+   * Refuses an operation that submits an entry, retryably, while this node is no longer a member of the Raft
+   * configuration (issue #9510).
+   * <p>
+   * A removed node's division stays open, so {@link #refuseCommitWhileStateMachineIsClosed()} lets it through, and it
+   * is not the leader any more, so a commit takes the replica path. Its Raft client still reaches the cluster's leader,
+   * which accepts a request from a non-member: the entry committed cluster-wide, then this node waited the whole quorum
+   * timeout for a local apply its division never receives, and released the transaction unapplied. A drop went further:
+   * it dropped the database on every member and then failed here. Refused before the entry is submitted, the caller
+   * retries on a member of the cluster, or here once the node has been added back.
+   */
+  private void refuseWhileRemovedFromConfiguration(final String operation) {
+    final RaftHAServer raft = raftHAServer;
+    if (raft != null && raft.isRemovedFromConfiguration())
+      throw new NeedRetryException("Database '" + getName() + "' cannot " + operation + " on this server: it is not a "
+          + "member of the Raft cluster's configuration any more (it left or was removed), so it receives no entries and "
+          + "could not apply this one. Send the request to a server of the cluster, or add this server back to it");
   }
 
   /** Upper bound on the wait for a refused page to catch up locally: a committed entry is a heartbeat away, not more. */
@@ -4366,6 +4389,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
   @Override
   public void createInReplicas() {
+    refuseWhileRemovedFromConfiguration("install the database cluster-wide");
     final ArcadeStateMachine exclusiveOn = beginLeaderExclusive();
     try {
       final RaftHAServer raft = requireRaftServer();
@@ -4382,6 +4406,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
   @Override
   public void createInReplicas(final boolean forceSnapshot) {
+    refuseWhileRemovedFromConfiguration("install the database cluster-wide");
     final ArcadeStateMachine exclusiveOn = beginLeaderExclusive();
     try {
       final RaftHAServer raft = requireRaftServer();
@@ -4423,6 +4448,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    */
   @Override
   public void dropInReplicas() {
+    // Issue #9510: before the entry is submitted. A removed node's drop was committed by the leader, dropped the
+    // database on every member, and then timed out here waiting for an apply this node never receives.
+    refuseWhileRemovedFromConfiguration("drop the database");
     final long committedLogIndex;
     // Exclusive until this node has applied the drop (issue #7438): an entry of another node that wins the append race
     // against the drop would otherwise be published on a database the drop has just closed, and surface as a
