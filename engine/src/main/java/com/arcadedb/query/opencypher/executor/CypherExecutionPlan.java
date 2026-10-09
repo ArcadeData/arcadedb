@@ -24,6 +24,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.Record;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.function.graph.IdFunction;
@@ -117,6 +118,7 @@ import com.arcadedb.query.opencypher.executor.steps.CreateStep;
 import com.arcadedb.query.opencypher.executor.steps.DegreeProductOp;
 import com.arcadedb.query.opencypher.executor.steps.DeleteStep;
 import com.arcadedb.query.opencypher.executor.steps.EagerStep;
+import com.arcadedb.query.opencypher.executor.steps.EdgeCountOp;
 import com.arcadedb.query.opencypher.executor.steps.ExpandPathStep;
 import com.arcadedb.query.opencypher.executor.steps.FilterPropertiesStep;
 import com.arcadedb.query.opencypher.executor.steps.FinalProjectionStep;
@@ -187,6 +189,7 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -5346,8 +5349,9 @@ public class CypherExecutionPlan {
 
     final NodePattern nodePattern = pathPattern.getFirstNode();
 
-    // Node must have at least one label
-    if (!nodePattern.hasLabels())
+    // A node with no label at all is every vertex, the sum of the vertex types' counters (issue #9600). A dynamic label is
+    // not "no label": it names a type only at run time.
+    if (nodePattern.hasDynamicLabels())
       return null;
 
     // Only a single label can be counted with the O(1) countType() shortcut. A multi-label
@@ -5356,7 +5360,7 @@ public class CypherExecutionPlan {
     // labels the node was created with), so counting by the first label alone would over-count
     // (issue #5084). Multi-label (and label-disjunction) patterns fall back to the regular
     // materialization path, which filters on every label correctly.
-    if (nodePattern.getLabels().size() != 1 || nodePattern.isLabelDisjunction())
+    if (nodePattern.hasLabels() && (nodePattern.getLabels().size() != 1 || nodePattern.isLabelDisjunction()))
       return null;
 
     // Node must not have property constraints
@@ -5364,14 +5368,14 @@ public class CypherExecutionPlan {
       return null;
 
     final String variable = nodePattern.getVariable();
-    final String typeName = nodePattern.getLabels().get(0);
+    final String typeName = nodePattern.hasLabels() ? nodePattern.getLabels().get(0) : null;
 
     // MATCH (n:Label) matches only vertices. If the label collides with an existing edge or
     // document type (labels and relationship types are separate namespaces in Cypher), the O(1)
     // countType() shortcut would wrongly count those edges/documents. Fall back to the regular
     // path (MatchNodeStep), which yields 0 rows for a non-vertex label. A non-existent type is
     // left to TypeCountStep, which already returns 0 for it (issue #5226, consistent with #5194).
-    if (context.getDatabase().getSchema().existsType(typeName)
+    if (typeName != null && context.getDatabase().getSchema().existsType(typeName)
         && !(context.getDatabase().getSchema().getType(typeName) instanceof VertexType))
       return null;
 
@@ -6464,9 +6468,60 @@ public class CypherExecutionPlan {
     final FunctionCallExpression func = (FunctionCallExpression) item.getExpression();
     if (!"count".equals(func.getFunctionName()))
       return null;
-    if (func.getArguments().size() != 1 || !(func.getArguments().get(0) instanceof StarExpression))
+    if (func.getArguments().size() != 1)
       return null;
-    return item.getAlias() != null ? item.getAlias() : "count(*)";
+    final Expression argument = func.getArguments().get(0);
+    if (argument instanceof StarExpression)
+      return item.getAlias() != null ? item.getAlias() : "count(*)";
+    // count(e) skips only the rows where e is null, and a variable a non-optional MATCH binds is never null there: it counts
+    // the rows count(*) does (issue #9600). DISTINCT is a different question.
+    if (argument instanceof VariableExpression variable && !func.isDistinct() && isBoundByEveryRow(variable.getVariableName()))
+      return item.getOutputName();
+    return null;
+  }
+
+  /** Whether a node or relationship position of a non-optional MATCH binds the name, so no matched row carries it as null. */
+  private boolean isBoundByEveryRow(final String name) {
+    if (statement.getMatchClauses() == null)
+      return false;
+    for (final MatchClause match : statement.getMatchClauses()) {
+      if (match.isOptional() || !match.hasPathPatterns())
+        continue;
+      for (final PathPattern path : match.getPathPatterns()) {
+        for (int i = 0; i <= path.getRelationshipCount(); i++)
+          if (name.equals(path.getNode(i).getVariable()))
+            return true;
+        for (int i = 0; i < path.getRelationshipCount(); i++)
+          if (name.equals(path.getRelationship(i).getVariable()))
+            return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Whether a relationship's variable is named nowhere else in the MATCH clauses, the case where naming it constrains
+   * nothing. A count push-down reads the statement only once {@link #isMatchReturnOnlyStatement()} and a count-only RETURN
+   * have settled that nothing else reads it, so a variable written once is as good as anonymous; one written twice is the
+   * same relationship at two positions, a join the operators do not express.
+   */
+  private boolean isNamedOnce(final String name) {
+    int occurrences = 0;
+    for (final MatchClause match : statement.getMatchClauses()) {
+      if (!match.hasPathPatterns())
+        continue;
+      for (final PathPattern path : match.getPathPatterns()) {
+        if (name.equals(path.getPathVariable()))
+          ++occurrences;
+        for (int i = 0; i <= path.getRelationshipCount(); i++)
+          if (name.equals(path.getNode(i).getVariable()))
+            ++occurrences;
+        for (int i = 0; i < path.getRelationshipCount(); i++)
+          if (name.equals(path.getRelationship(i).getVariable()))
+            ++occurrences;
+      }
+    }
+    return occurrences == 1;
   }
 
   /**
@@ -6680,7 +6735,10 @@ public class CypherExecutionPlan {
     if (unidirectional && (correlation.isCorrelated() || !allRelationshipsOutgoing()))
       return null;
 
-    CountOp op = tryDetectChainCountStar(context.getDatabase(), correlation);
+    // The edge count reads totals rather than walking from an anchor, so it has nothing to seed from a bound name
+    CountOp op = correlation.isCorrelated() ? null : tryDetectEdgeCountStar(context.getDatabase());
+    if (op == null)
+      op = tryDetectChainCountStar(context.getDatabase(), correlation);
     // Only the chain operator can start its walk from an anchor the outer row bound. The star, triangle, pair-join
     // and anti-join ones all derive their anchor set from a label, so a correlated body is left to the ordinary
     // pipeline rather than answered over every vertex carrying that label (issue #5758).
@@ -6693,6 +6751,8 @@ public class CypherExecutionPlan {
       if (op == null)
         op = tryDetectPairJoinCountStar();
     }
+    if (op == null)
+      op = tryDetectJoinedChainCountStar(context.getDatabase(), correlation, unidirectional);
     if (op == null)
       return null;
 
@@ -6831,11 +6891,135 @@ public class CypherExecutionPlan {
     return false;
   }
 
+  /**
+   * {@code MATCH ()-[e:T]->() RETURN count(e)}: one hop between two nodes that nothing constrains, whose count is the number
+   * of relationships of the types, every edge type when none is written, matched once from each end when the hop is
+   * undirected (issue #9600). {@link EdgeCountOp} reads it off a provider's totals or one walk of the edge lists, where the
+   * row pipeline loads every edge.
+   * <p>
+   * A labelled or filtered end is left to the chain operator, and a node named at both ends, which keeps only the self loops,
+   * to the row pipeline.
+   *
+   * @return the operator, or null when the statement is not that shape
+   */
+  private CountOp tryDetectEdgeCountStar(final Database db) {
+    if (statement.getMatchClauses() == null || statement.getMatchClauses().size() != 1)
+      return null;
+    final MatchClause matchClause = statement.getMatchClauses().get(0);
+    if (matchClause.isOptional() || matchClause.hasWhereClause() || statement.getWhereClause() != null)
+      return null;
+    if (!matchClause.hasPathPatterns() || matchClause.getPathPatterns().size() != 1)
+      return null;
+
+    final PathPattern pathPattern = matchClause.getPathPatterns().get(0);
+    if (pathPattern.getRelationshipCount() != 1 || pathPattern.hasPathVariable())
+      return null;
+
+    final RelationshipPattern rel = pathPattern.getRelationship(0);
+    if (rel instanceof QuantifiedPathPattern || rel.isVariableLength() || rel.hasProperties()
+        || rel.getPropertiesParameterName() != null || rel.hasWhereExpression())
+      return null;
+    if (rel.getVariable() != null && !rel.getVariable().isEmpty() && !isNamedOnce(rel.getVariable()))
+      return null;
+
+    final NodePattern source = pathPattern.getFirstNode();
+    final NodePattern target = pathPattern.getLastNode();
+    if (!isUnconstrainedNode(source) || !isUnconstrainedNode(target))
+      return null;
+    if (source.getVariable() != null && !source.getVariable().isEmpty() && source.getVariable().equals(target.getVariable()))
+      return null;
+
+    final Schema schema = db.getSchema();
+    // With several super-types an edge type belongs to two families at once, and a sum over families would count it twice
+    for (final DocumentType type : schema.getTypes())
+      if (type instanceof EdgeType && type.getSuperTypes().size() > 1)
+        return null;
+
+    // An undirected hop over a unidirectional type never gets here: tryOptimizeCountStar declines it, its incoming side is
+    // not stored
+    final boolean undirected = rel.getDirection() == Direction.BOTH;
+    if (!rel.hasTypes())
+      return new EdgeCountOp(null, undirected);
+
+    // The edge types of the alternatives, each family once: a type whose super-type is listed too is already counted by it
+    final List<String> types = new ArrayList<>(rel.getTypes().size());
+    for (final String name : rel.getTypes())
+      if (schema.getTypeOrNull(name) instanceof EdgeType && !types.contains(name))
+        types.add(name);
+    types.removeIf(name -> {
+      for (final String other : types)
+        if (!other.equals(name) && schema.getType(name).isSubTypeOf(other))
+          return true;
+      return false;
+    });
+    // A name that is no edge type matches nothing; with none left the row pipeline answers its 0
+    if (types.isEmpty())
+      return null;
+    return new EdgeCountOp(types.toArray(new String[0]), undirected);
+  }
+
+  /** A node position that admits every vertex: no label, no property map, no dynamic label, no inline predicate. */
+  private static boolean isUnconstrainedNode(final NodePattern node) {
+    return !node.hasLabels() && !node.hasProperties() && !node.hasDynamicLabels() && !node.hasWhereExpression();
+  }
+
   private CountOp tryDetectChainCountStar(final Database db, final SeedCorrelation correlation) {
     // Exactly one MATCH clause
     if (statement.getMatchClauses() == null || statement.getMatchClauses().size() != 1)
       return null;
+    return tryDetectChainCountStar(db, correlation, statement.getMatchClauses().get(0));
+  }
+
+  /**
+   * The chain and anti-join chain operators read one path pattern, so a chain cut into comma-separated parts -
+   * {@code (t:Tag)<-[:HAS_TAG]-(m:Message), (m)<-[:REPLY_OF]-(c:Comment)} - reached neither, however it was ordered
+   * (issue #9599). Asked only once every detector has declined the statement as written, so a plan that works today is not
+   * changed: the parts are joined into the one chain they describe, read from either end, and the operator with the
+   * smaller description is kept so that the order the parts were written in does not decide between two that both apply.
+   */
+  private CountOp tryDetectJoinedChainCountStar(final Database db, final SeedCorrelation correlation,
+      final boolean unidirectional) {
+    if (statement.getMatchClauses() == null || statement.getMatchClauses().size() != 1)
+      return null;
     final MatchClause matchClause = statement.getMatchClauses().get(0);
+    if (matchClause.isOptional() || !matchClause.hasPathPatterns() || matchClause.getPathPatterns().size() < 2)
+      return null;
+    final PatternGraph graph = PatternGraph.of(matchClause.getPathPatterns());
+    if (graph == null)
+      return null;
+
+    CountOp best = null;
+    String bestDescription = null;
+    for (final PathPattern chain : graph.pathOrientations()) {
+      // the gate in tryOptimizeCountStar let a unidirectional type through only for outgoing hops, as written: read from
+      // the other end they would walk the incoming side, which is not stored
+      if (unidirectional && !allOutgoing(chain))
+        continue;
+      final MatchClause joined = new MatchClause(List.of(chain), false, matchClause.getWhereClause());
+      CountOp op = tryDetectChainCountStar(db, correlation, joined);
+      // the anti-join walks from a label's anchors, never from a bound name, as in tryOptimizeCountStar
+      if (op == null && !correlation.isCorrelated() && !unidirectional)
+        op = tryDetectAntiJoinChainCountStar(joined);
+      if (op == null)
+        continue;
+      final String description = op.describe(0, 0);
+      if (best == null || description.compareTo(bestDescription) < 0) {
+        best = op;
+        bestDescription = description;
+      }
+    }
+    return best;
+  }
+
+  private static boolean allOutgoing(final PathPattern path) {
+    for (int i = 0; i < path.getRelationshipCount(); i++)
+      if (path.getRelationship(i).getDirection() != Direction.OUT)
+        return false;
+    return true;
+  }
+
+  /** The chain over one MATCH clause: the statement's own, or its patterns joined into one chain (issue #9599). */
+  private CountOp tryDetectChainCountStar(final Database db, final SeedCorrelation correlation, final MatchClause matchClause) {
     if (matchClause.isOptional())
       return null;
 
@@ -6883,9 +7067,11 @@ public class CypherExecutionPlan {
       final RelationshipPattern rel = pathPattern.getRelationship(i);
       if (rel.isVariableLength())
         return null;
-      if (rel.getVariable() != null && !rel.getVariable().isEmpty())
+      // count(r) of a relationship named nowhere else is count(*) (issue #9600). Naming it is also what lets an inline
+      // predicate read it, -[r:T WHERE r.x = 1]->, which the operator cannot apply
+      if (rel.getVariable() != null && !rel.getVariable().isEmpty() && !isNamedOnce(rel.getVariable()))
         return null;
-      if (rel.hasProperties())
+      if (rel.hasProperties() || rel.getPropertiesParameterName() != null || rel.hasWhereExpression())
         return null;
       if (!rel.hasTypes() || rel.getTypes().size() != 1)
         return null;
@@ -7491,23 +7677,118 @@ public class CypherExecutionPlan {
    * </pre>
    */
   private CountOp tryDetectPairJoinCountStar() {
-    // Exactly one non-optional MATCH with exactly 2 path patterns
+    // Exactly one non-optional MATCH, of two path patterns or more
     if (statement.getMatchClauses() == null || statement.getMatchClauses().size() != 1)
       return null;
     final MatchClause matchClause = statement.getMatchClauses().get(0);
     if (matchClause.isOptional() || matchClause.hasWhereClause())
       return null;
-    if (!matchClause.hasPathPatterns() || matchClause.getPathPatterns().size() != 2)
+    if (!matchClause.hasPathPatterns() || matchClause.getPathPatterns().size() < 2)
       return null;
     if (statement.getWhereClause() != null)
       return null;
-    // The join counts adjacency paths, so it cannot stand in for the one-relationship-per-hop rule (issue #9485)
-    if (clauseHopsMayShareAnEdge(matchClause))
+
+    // A MATCH is a pattern graph, and the order and cuts it is written in are no plan (issue #9599): LSQB Q2 written from
+    // the post, as four one-hop patterns, is the same cycle as a KNOWS hop and the three-hop chain closing it. Every way the
+    // cycle splits into a probe hop and that chain is a candidate, and the statistics pick the one whose build phase makes
+    // the fewest pairs, so every spelling of the cycle gets the same operator
+    final PatternGraph graph = PatternGraph.of(matchClause.getPathPatterns());
+    final List<PathPattern[]> splits = graph != null ? graph.cycleSplits() : List.of();
+    if (splits.isEmpty()) {
+      if (matchClause.getPathPatterns().size() != 2 || clauseHopsMayShareAnEdge(matchClause))
+        return null;
+      return pairJoinOf(matchClause.getPathPatterns().get(0), matchClause.getPathPatterns().get(1));
+    }
+
+    // The join counts adjacency paths, so it cannot stand in for the one-relationship-per-hop rule (issue #9485). Every split
+    // holds the same hops between the same nodes, each written with all of its variable's labels, so one answers for all
+    if (clauseHopsMayShareAnEdge(new MatchClause(List.of(splits.get(0)), false)))
       return null;
 
-    // Identify probe (single-hop) and build (multi-hop) patterns
-    final PathPattern pp0 = matchClause.getPathPatterns().get(0);
-    final PathPattern pp1 = matchClause.getPathPatterns().get(1);
+    PairHashJoinOp best = null;
+    double bestPairs = 0;
+    String bestDescription = null;
+    final PairJoinStatistics statistics = new PairJoinStatistics(database);
+    for (final PathPattern[] split : splits) {
+      final PairHashJoinOp op = pairJoinOf(split[0], split[1]);
+      if (op == null)
+        continue;
+      final double pairs = op.estimatedBuildPairs(statistics::vertices, statistics::fanOut);
+      // a tie is broken on the operator itself, so it does not fall to the order the cycle was written in
+      final String description = op.describe(0, 0);
+      if (best == null || pairs < bestPairs || (pairs == bestPairs && description.compareTo(bestDescription) < 0)) {
+        best = op;
+        bestPairs = pairs;
+        bestDescription = description;
+      }
+    }
+    return best;
+  }
+
+  /**
+   * The statistics a pair join's cost is estimated from, each read once per planning: the vertices of a label, from its
+   * counter, and the fan-out of a hop from the label it leaves.
+   * <p>
+   * The fan-out is measured on a sample of the label's vertices rather than derived from the edge type's size: a type's
+   * edges leave several labels, and LSQB's HAS_CREATOR divided by the posts makes a post look like it has two creators
+   * because the comments have one each too. Reading the edge lists of a few vertices is the price of telling the splits of a
+   * cycle apart by what they cost, and it is bounded by the sample. An unlabelled position, which has no set to sample from,
+   * falls back to the type's edges over every vertex, off a ready provider when one holds the type (it counts light edges,
+   * which keep no record) and off the type's record counter otherwise.
+   */
+  private static final class PairJoinStatistics {
+    private static final int SAMPLE = 32;
+
+    private final Database            database;
+    private final Map<String, Long>   vertices = new HashMap<>();
+    private final Map<String, Double> fanOuts  = new HashMap<>();
+
+    PairJoinStatistics(final Database database) {
+      this.database = database;
+    }
+
+    long vertices(final String label) {
+      return vertices.computeIfAbsent(label == null ? "" : label, key -> {
+        final Schema schema = database.getSchema();
+        if (!key.isEmpty())
+          return schema.getTypeOrNull(key) instanceof VertexType ? database.countType(key, true) : 0L;
+        long total = 0;
+        for (final DocumentType type : schema.getTypes())
+          if (type instanceof VertexType)
+            total += database.countType(type.getName(), false);
+        return total;
+      });
+    }
+
+    double fanOut(final String fromLabel, final String edgeType, final Vertex.DIRECTION direction) {
+      return fanOuts.computeIfAbsent(fromLabel + '\u0000' + edgeType + '\u0000' + direction, key -> {
+        if (fromLabel != null && database.getSchema().getTypeOrNull(fromLabel) instanceof VertexType) {
+          long sampled = 0;
+          long degrees = 0;
+          for (final Iterator<Record> it = database.iterateType(fromLabel, true); it.hasNext() && sampled < SAMPLE; ++sampled)
+            degrees += it.next().asVertex().countEdges(direction, edgeType);
+          return sampled == 0 ? 0D : (double) degrees / sampled;
+        }
+        final long sources = vertices(null);
+        final double perVertex = sources == 0 ? 0D : (double) edges(edgeType) / sources;
+        return direction == Vertex.DIRECTION.BOTH ? 2 * perVertex : perVertex;
+      });
+    }
+
+    private long edges(final String type) {
+      final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProviderWithoutWaiting(database, type);
+      final long total = provider != null ? provider.countAllEdges(type) : -1;
+      if (total >= 0)
+        return total;
+      return database.getSchema().getTypeOrNull(type) instanceof EdgeType ? database.countType(type, true) : 0L;
+    }
+  }
+
+  /**
+   * The pair join of two path patterns, one a single-hop probe and the other the multi-hop build chain between the probe's
+   * ends, or null when they are not that shape.
+   */
+  private PairHashJoinOp pairJoinOf(final PathPattern pp0, final PathPattern pp1) {
 
     PathPattern probePattern, buildPattern;
     if (pp0.getRelationshipCount() == 1 && pp1.getRelationshipCount() >= 2) {
@@ -7734,7 +8015,11 @@ public class CypherExecutionPlan {
     // Exactly one MATCH clause
     if (statement.getMatchClauses() == null || statement.getMatchClauses().size() != 1)
       return null;
-    final MatchClause matchClause = statement.getMatchClauses().get(0);
+    return tryDetectAntiJoinChainCountStar(statement.getMatchClauses().get(0));
+  }
+
+  /** The anti-join chain over one MATCH clause: the statement's own, or its patterns joined into one chain (issue #9599). */
+  private CountOp tryDetectAntiJoinChainCountStar(final MatchClause matchClause) {
     if (matchClause.isOptional())
       return null;
 

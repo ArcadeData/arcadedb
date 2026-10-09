@@ -151,6 +151,32 @@ public final class CypherReferencedVariables {
     return new CypherReferencedVariables(Collections.unmodifiableSet(collector.names), true);
   }
 
+  /** {@link #of(Expression)}, for a predicate: a {@code WHERE} condition. */
+  public static CypherReferencedVariables of(final BooleanExpression predicate) {
+    if (predicate == null)
+      return UNKNOWN;
+
+    final Collector collector = new Collector();
+    CypherExpressionWalker.walk(predicate, collector);
+    if (!collector.complete)
+      return UNKNOWN;
+
+    return new CypherReferencedVariables(Collections.unmodifiableSet(collector.names), true);
+  }
+
+  /** {@link #of(Expression)}, for a graph pattern: the names it binds or joins on, and those its inline expressions read. */
+  public static CypherReferencedVariables of(final PathPattern pattern) {
+    if (pattern == null)
+      return UNKNOWN;
+
+    final Collector collector = new Collector();
+    CypherExpressionWalker.walk(pattern, collector);
+    if (!collector.complete)
+      return UNKNOWN;
+
+    return new CypherReferencedVariables(Collections.unmodifiableSet(collector.names), true);
+  }
+
   /** The answer to use when there is no statement to inspect. */
   public static CypherReferencedVariables unknown() {
     return UNKNOWN;

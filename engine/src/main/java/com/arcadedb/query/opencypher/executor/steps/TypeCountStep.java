@@ -18,8 +18,11 @@
  */
 package com.arcadedb.query.opencypher.executor.steps;
 
+import com.arcadedb.database.Database;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.executor.*;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.VertexType;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -30,6 +33,9 @@ import java.util.List;
  *
  * This optimization applies to simple Cypher queries like:
  * MATCH (a:Account) RETURN COUNT(a) as count
+ * <p>
+ * With no type name it counts every vertex, {@code MATCH (n) RETURN count(n)}: the sum of the vertex types' own counters,
+ * each read non-polymorphically so that a subtype's vertices are counted once (issue #9600).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -38,6 +44,9 @@ public final class TypeCountStep extends AbstractExecutionStep {
   private final String outputAlias;
   private boolean executed = false;
 
+  /**
+   * @param typeName the label to count, subtypes included, or null for every vertex
+   */
   public TypeCountStep(final String typeName, final String outputAlias, final CommandContext context) {
     super(context);
     this.typeName = typeName;
@@ -58,8 +67,11 @@ public final class TypeCountStep extends AbstractExecutionStep {
         rowCount++;
 
       // Use O(1) count operation instead of iterating through all records
-      if (context.getDatabase().getSchema().existsType(typeName))
-        count = context.getDatabase().countType(typeName, true);
+      final Database database = context.getDatabase();
+      if (typeName == null)
+        count = countAllVertices(database);
+      else if (database.getSchema().existsType(typeName))
+        count = database.countType(typeName, true);
       else
         count = 0;
     } finally {
@@ -94,12 +106,21 @@ public final class TypeCountStep extends AbstractExecutionStep {
     };
   }
 
+  /** Every vertex: each vertex type counted on its own buckets, so the sum holds every vertex exactly once. */
+  private static long countAllVertices(final Database database) {
+    long total = 0;
+    for (final DocumentType type : database.getSchema().getTypes())
+      if (type instanceof VertexType)
+        total += database.countType(type.getName(), false);
+    return total;
+  }
+
   @Override
   public String prettyPrint(final int depth, final int indent) {
     final String ind = "  ".repeat(Math.max(0, depth * indent));
     final StringBuilder builder = new StringBuilder();
     builder.append(ind);
-    builder.append("+ TYPE COUNT OPTIMIZATION (").append(typeName).append(")");
+    builder.append("+ TYPE COUNT OPTIMIZATION (").append(typeName != null ? typeName : "all vertex types").append(")");
     if (context.isProfiling()) {
       builder.append(" (").append(getCostFormatted());
       if (rowCount > 0)
