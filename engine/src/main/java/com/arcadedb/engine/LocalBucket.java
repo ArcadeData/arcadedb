@@ -5299,6 +5299,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           final boolean nextRefreshable = isPageReadAfreshByARetry(walkTransaction, repeatableRead, nextPageId, chainTrace,
                   chunks, refreshableChunks);
 
+          // A getPage that throws pins nothing: the transaction caches a page only once it has loaded it
           final BasePage nextPage = database.getTransaction().getPage(nextPageId, pageSize);
           brokenHopPage = chunkPageId;
           brokenHopRefreshable = nextRefreshable;
