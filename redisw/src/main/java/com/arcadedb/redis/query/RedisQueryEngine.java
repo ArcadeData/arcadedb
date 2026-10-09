@@ -42,9 +42,11 @@ import com.arcadedb.query.sql.executor.IteratorResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.redis.RedisCommandArity;
 import com.arcadedb.redis.RedisCounterOperations;
 import com.arcadedb.redis.RedisException;
 import com.arcadedb.redis.RedisIndexKeys;
+import com.arcadedb.redis.RedisRecords;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalEdgeType;
 import com.arcadedb.schema.LocalVertexType;
@@ -488,6 +490,8 @@ public class RedisQueryEngine implements QueryEngine {
     }
 
     final String cmd = parts.getFirst().toUpperCase(Locale.ENGLISH);
+    // the table the RESP wire path uses (#9161): a surplus argument is no longer an amount, a missing one no longer defaults
+    RedisCommandArity.checkRam(cmd, parts.size());
     return switch (cmd) {
       case "PING" -> ping(parts);
       case "SET" -> set(parts);
@@ -597,9 +601,6 @@ public class RedisQueryEngine implements QueryEngine {
   }
 
   private String set(final List<String> parts) {
-    if (parts.size() < 3) {
-      throw new CommandParsingException("SET requires key and value: SET <key> <value>");
-    }
     final String key = normalizeRamKey(parts.get(1));
     final String value = parts.get(2);
     final RamOverlay overlay = ramOverlay();
@@ -611,17 +612,11 @@ public class RedisQueryEngine implements QueryEngine {
   }
 
   private Object get(final List<String> parts) {
-    if (parts.size() < 2) {
-      throw new CommandParsingException("GET requires a key: GET <key>");
-    }
     return readRamVariable(normalizeRamReadKey(parts.get(1)), ramOverlay());
   }
 
   /** See {@link #computeRamVariable} for when GETDEL stays in the transaction and when it claims from the shared map. */
   private Object getDel(final List<String> parts, final RamSlot slot) {
-    if (parts.size() < 2) {
-      throw new CommandParsingException("GETDEL requires a key: GETDEL <key>");
-    }
     final String key = normalizeRamKey(parts.get(1));
     if (slot != null && slot.reserved)
       return slot.value;
@@ -638,9 +633,6 @@ public class RedisQueryEngine implements QueryEngine {
   }
 
   private int exists(final List<String> parts) {
-    if (parts.size() < 2) {
-      throw new CommandParsingException("EXISTS requires at least one key: EXISTS <key> [key ...]");
-    }
     final RamOverlay overlay = ramOverlay();
     int count = 0;
     for (int i = 1; i < parts.size(); i++) {
@@ -658,9 +650,6 @@ public class RedisQueryEngine implements QueryEngine {
    * atomicity.
    */
   private Object incrBy(final List<String> parts, final boolean decimal, final RamSlot slot) {
-    if (parts.size() < 2) {
-      throw new CommandParsingException("INCR/INCRBY requires a key: INCR <key> [increment]");
-    }
     final String key = normalizeRamKey(parts.get(1));
 
     if (decimal) {
@@ -674,9 +663,6 @@ public class RedisQueryEngine implements QueryEngine {
 
   /** See {@link #incrBy}. */
   private Number decrBy(final List<String> parts, final RamSlot slot) {
-    if (parts.size() < 2) {
-      throw new CommandParsingException("DECR/DECRBY requires a key: DECR <key> [decrement]");
-    }
     final String key = normalizeRamKey(parts.get(1));
     final long decrement = parts.size() > 2 ? RedisCounterOperations.parseInteger(parts.get(2)) : 1L;
 
@@ -829,57 +815,53 @@ public class RedisQueryEngine implements QueryEngine {
   }
 
   /**
-   * HDEL command: Deletes documents from the database.
+   * HDEL command: Deletes documents from the database, answering like the RESP wire path (#9161).
    * Syntax: HDEL <index> <key> [key ...]
    *         HDEL <rid> [rid ...]
+   * Every RID is parsed before anything is deleted, a record that is not there is skipped and not counted, and any other
+   * failure of a delete (a vetoing listener, a permission, a conflict) reaches the caller instead of being read as "not found".
    */
   private int hDel(final List<String> parts) {
-    if (parts.size() < 2) {
-      throw new CommandParsingException("HDEL requires index and keys: HDEL <index> <key> [key ...] or HDEL <rid> [rid ...]");
-    }
+    if (parts.size() < 2)
+      throw RedisCommandArity.wrongArity("HDEL");
 
     final String firstArg = parts.get(1);
     // Same reasoning as hSet() above: counted into a local inside the block, published only once the block has
     // returned (issue #8037).
     final int[] deleted = {0};
 
-    database.transaction(() -> {
-      int removed = 0;
-      // Check if it's RID mode
-      if (firstArg.startsWith("#")) {
-        for (int i = 1; i < parts.size(); i++) {
-          final String rid = parts.get(i);
-          if (!rid.startsWith("#")) {
-            throw new CommandParsingException("All arguments must be RIDs when first argument is a RID");
-          }
-          try {
-            database.lookupByRID(new RID(rid), true).delete();
-            removed++;
-          } catch (Exception e) {
-            // Record not found, ignore
-          }
-        }
-      } else {
-        // It's an index lookup
-        if (parts.size() < 3) {
-          throw new CommandParsingException("HDEL requires index and keys: HDEL <index> <key> [key ...]");
-        }
+    if (firstArg.startsWith("#")) {
+      final Set<RID> rids = new LinkedHashSet<>();
+      for (int i = 1; i < parts.size(); i++) {
+        final String rid = parts.get(i);
+        if (!rid.startsWith("#"))
+          throw new CommandParsingException("All arguments must be RIDs when first argument is a RID");
+        rids.add(RedisRecords.parseRid(rid));
+      }
+      database.transaction(() -> {
+        int removed = 0;
+        for (final RID rid : rids)
+          removed += RedisRecords.deleteByRid(database, rid) ? 1 : 0;
+        deleted[0] = removed;
+      });
+    } else {
+      // It's an index lookup
+      if (parts.size() < 3)
+        throw RedisCommandArity.wrongArity("HDEL");
 
-        final String indexName = firstArg;
-        final Index index = database.getSchema().getIndexByName(indexName);
-
+      final Index index = database.getSchema().getIndexByName(firstArg);
+      database.transaction(() -> {
+        int removed = 0;
         for (int i = 2; i < parts.size(); i++) {
-          final String key = parts.get(i);
-          final Object[] keys = RedisIndexKeys.parse(key);
-          final IndexCursor cursor = index.get(keys);
+          final IndexCursor cursor = index.get(RedisIndexKeys.parse(parts.get(i)));
           if (cursor.hasNext()) {
             cursor.next().getRecord().delete();
             removed++;
           }
         }
-      }
-      deleted[0] = removed;
-    });
+        deleted[0] = removed;
+      });
+    }
 
     return deleted[0];
   }

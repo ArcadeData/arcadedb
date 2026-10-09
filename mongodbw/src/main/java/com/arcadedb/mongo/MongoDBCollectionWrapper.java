@@ -590,10 +590,10 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
       final Map<String, Object> params = new HashMap<>();
       final StringBuilder sql = new StringBuilder("select from ").append(Identifier.quote(collectionName));
 
-      filter.appendCandidateWhere(sql, params);
+      filter.appendCandidateWhere(sql, params, database.getSchema().getTypeOrNull(collectionName));
 
-      // known cost: with a filter the SQL cannot answer and no _id to narrow it, every row of the type is sorted before the filter
-      // discards most of them
+      // known cost: with a filter that narrows by neither the _id nor a declared scalar field (see MongoFilter), every row of the
+      // type is sorted before the filter discards most of them
       if (hasOrderBy) {
         sql.append(" order by ");
         int i = 0;
