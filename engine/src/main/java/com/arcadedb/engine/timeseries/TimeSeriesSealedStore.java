@@ -1902,8 +1902,9 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     // Pre-allocate decode buffers reused across all blocks in this call
     final long[] reusableTsBuf = new long[MAX_BLOCK_SIZE];
     final double[] reusableValBuf = new double[MAX_BLOCK_SIZE];
-    // The rows of a block that pass a row-level filter, when one has to be applied
-    final int[] selected = tagFilter != null || fieldFilter != null ? new int[MAX_BLOCK_SIZE] : null;
+    // The rows of a block that pass a row-level filter, allocated by the first block that needs one: a tag filter alone usually
+    // meets only homogeneous blocks, which need none
+    int[] selected = null;
     final List<FieldFilter.Condition> fieldConditions = fieldFilter != null ? fieldFilter.getConditions() : null;
 
     final boolean bucketed = bucketIntervalMs > 0;
@@ -2027,6 +2028,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         final boolean needRowFieldFilter = fieldMatch == FieldFilter.BlockMatch.SOME;
         if (needRowTagFilter || needRowFieldFilter) {
           // Row-level filtering: the passing rows are selected first, on the primitive columns, and only those are folded
+          if (selected == null)
+            selected = new int[MAX_BLOCK_SIZE];
           int count;
           if (needRowFieldFilter)
             count = FieldFilter.select(fieldConditions, fieldFilterColumns(blockData, entry, fieldConditions, decompressedCols), rangeStart,
