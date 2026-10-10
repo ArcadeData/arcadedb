@@ -77,6 +77,9 @@ public final class RunningQuery implements AutoCloseable {
     TERMINATED
   }
 
+  /** The registration of a listener that already ran: there is nothing to withdraw. */
+  private static final Registration              NO_REGISTRATION = () -> {
+  };
   private static final ThreadLocal<RunningQuery> CURRENT    = new ThreadLocal<>();
   // The keyword, the closing quote of a JSON key, a separator and an authentication scheme (Authorization: Bearer x),
   // then the value: quoted, or up to the next delimiter. The
@@ -242,9 +245,6 @@ public final class RunningQuery implements AutoCloseable {
     void close();
   }
 
-  /** The registration of a listener that already ran: there is nothing to withdraw. */
-  private static final Registration NO_REGISTRATION = () -> {
-  };
 
   private void notifyTermination(final Runnable listener) {
     try {
