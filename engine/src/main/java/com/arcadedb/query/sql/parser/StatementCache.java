@@ -69,8 +69,10 @@ public class StatementCache {
    * @throws CommandSQLParsingException if the input parameter is not a valid SQL statement
    */
   public Lookup<Statement> getParameterized(final String statement) {
-    return cache.lookup(statement,
-        db != null && db.getConfiguration().getValueAsBoolean(GlobalConfiguration.QUERY_LITERAL_PARAMETERIZATION));
+    // a cache with no database (a syntax-only use) follows the JVM-wide default, like the Cypher one
+    return cache.lookup(statement, db == null ?
+        GlobalConfiguration.QUERY_LITERAL_PARAMETERIZATION.getValueAsBoolean() :
+        db.getConfiguration().getValueAsBoolean(GlobalConfiguration.QUERY_LITERAL_PARAMETERIZATION));
   }
 
   /**

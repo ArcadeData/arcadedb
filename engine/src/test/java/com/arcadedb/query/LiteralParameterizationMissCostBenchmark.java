@@ -21,6 +21,7 @@ package com.arcadedb.query;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
@@ -35,7 +36,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 @Tag("benchmark")
 class LiteralParameterizationMissCostBenchmark extends TestHelper {
-  private static final int QUERIES = 3_000;
+  private static final int QUERIES = 10_000;
   private static final int ROUNDS  = 5;
 
   @Override
@@ -72,15 +73,16 @@ class LiteralParameterizationMissCostBenchmark extends TestHelper {
     return (double) bestOn / bestOff;
   }
 
+  /** The time of one run, without the JVM-wide stalls observed while it ran (see {@link StallAwareStopwatch}). */
   private long run(final String language, final String format, final boolean parameterize, final int salt) {
     database.getConfiguration().setValue(GlobalConfiguration.QUERY_LITERAL_PARAMETERIZATION, parameterize);
-    final long start = System.nanoTime();
+    final StallAwareStopwatch watch = StallAwareStopwatch.start();
     for (int i = 0; i < QUERIES; i++) {
       final int n = salt + i;
       try (final ResultSet rs = database.query(language, String.format(format, n, n % 1_000, n))) {
         rs.next();
       }
     }
-    return System.nanoTime() - start;
+    return Math.max(1, watch.effectiveMs());
   }
 }
