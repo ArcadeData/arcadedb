@@ -140,7 +140,14 @@ public abstract class LiteralParameterizer<S> {
       if (!stripsAny(policy))
         policy = KEEP_ALL;
       synchronized (policies) {
-        policies.put(shape, policy);
+        // Two threads can meet a new shape at once and both classify it, to the same policy. One that arrives after the shape
+        // was demoted to KEEP_ALL (its parameterized text failed to parse) must not undo the demotion, or every later text
+        // would try that parse again.
+        final byte[] existing = policies.get(shape);
+        if (existing == null)
+          policies.put(shape, policy);
+        else
+          policy = existing;
       }
       if (policy == KEEP_ALL)
         return cache(text, classified.statement());

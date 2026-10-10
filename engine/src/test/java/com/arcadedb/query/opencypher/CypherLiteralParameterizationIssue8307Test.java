@@ -402,6 +402,19 @@ class CypherLiteralParameterizationIssue8307Test extends TestHelper {
   }
 
   @Test
+  void aCallerTextIdenticalToAGeneratedKeyBindsItsOwnValue() {
+    // the cache holds the statement of the generated key; a caller sending that very text gets it, and binds the name itself
+    final Lookup<ParsedQuery> generated = lookup("MATCH (p:Person) WHERE p.id = 3 RETURN p.name AS n");
+    assertThat(generated.cacheKey()).isEqualTo("MATCH (p:Person) WHERE p.id = $__lit_i0 RETURN p.name AS n");
+    try (final ResultSet rs = database.query("opencypher", generated.cacheKey(), Map.of("__lit_i0", 8))) {
+      assertThat(rs.next().<String>getProperty("n")).isEqualTo("p8");
+      assertThat(rs.hasNext()).isFalse();
+    }
+    // and without the binding it fails like any unbound parameter
+    assertThatThrownBy(() -> query(generated.cacheKey())).hasMessageContaining("__lit_i0");
+  }
+
+  @Test
   void aTextThatAlreadyUsesTheGeneratedNamespaceIsLeftAlone() {
     try (final ResultSet rs = database.query("opencypher", "MATCH (p:Person) WHERE p.id = $__lit_i0 RETURN p.name AS n",
         Map.of("__lit_i0", 9))) {
