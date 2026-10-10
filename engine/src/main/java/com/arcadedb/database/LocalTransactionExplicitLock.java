@@ -24,6 +24,7 @@ import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.utility.IntHashSet;
 
 import java.util.ArrayList;
@@ -101,6 +102,7 @@ public class LocalTransactionExplicitLock implements TransactionExplicitLock {
     final Bucket bucket = transactionContext.getDatabase().getSchema().getBucketByName(bucketName);
     addNonNegative(bucket.getFileId());
     final DocumentType associatedType = transactionContext.getDatabase().getSchema().getInvolvedTypeByBucketId(bucket.getFileId());
+    addExternalBucketOf(associatedType, bucket.getFileId());
     if (associatedType != null)
       for (final var typeIndex : associatedType.getAllIndexes(true))
         for (final IndexInternal idx : typeIndex.getIndexesOnBuckets())
@@ -121,12 +123,27 @@ public class LocalTransactionExplicitLock implements TransactionExplicitLock {
 
     // COMPREHENSIVE BUCKET LOCKING: Also lock all polymorphic buckets (includes subtypes)
     // This helps handle cases where records might be created in buckets not initially involved
-    for (final Bucket b : type.getBuckets(true))
+    for (final Bucket b : type.getBuckets(true)) {
       addNonNegative(b.getFileId());
+      // A SUBTYPE'S PRIMARY BUCKET HAS ITS OWN PAIRED EXTERNAL BUCKET, OWNED BY THE SUBTYPE
+      addExternalBucketOf(transactionContext.getDatabase().getSchema().getTypeByBucketId(b.getFileId()), b.getFileId());
+    }
 
     LogManager.instance().log(this, Level.FINE,
       "Explicit lock for type '%s' will lock %d bucket files (threadId=%d)",
       typeName, filesToLock.size(), Thread.currentThread().threadId());
+  }
+
+  /**
+   * A write into a primary bucket also writes the values of its EXTERNAL properties into the paired {@code _ext} bucket,
+   * so locking the primary bucket without it fails the commit-time lock coverage check (issue #9637).
+   */
+  private void addExternalBucketOf(final DocumentType owner, final int primaryBucketId) {
+    if (owner instanceof LocalDocumentType localType) {
+      final Integer externalBucketId = localType.getExternalBucketIdFor(primaryBucketId);
+      if (externalBucketId != null)
+        addNonNegative(externalBucketId);
+    }
   }
 
   private void addNonNegative(final int fileId) {

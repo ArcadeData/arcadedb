@@ -22,6 +22,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityManager;
 import com.arcadedb.serializer.json.JSONArray;
@@ -299,7 +300,10 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
       if (type == null)
         continue;
 
-      newFileAccessMap[i] = resolveTypeAccess(type.getName(), configuredGroups, defaultGroupTypes, defaultType);
+      final boolean[] typeAccess = resolveTypeAccess(type.getName(), configuredGroups, defaultGroupTypes, defaultType);
+      newFileAccessMap[i] = type instanceof LocalDocumentType localType && localType.isExternalBucket(i) ?
+          externalBucketAccess(typeAccess) :
+          typeAccess;
     }
 
     // #5269: the refreshed map may now cover files previously reported as missing; reset the throttle so a genuinely
@@ -370,6 +374,24 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
       updateAccessArray(access, t.getJSONArray("access"));
     }
 
+    return access;
+  }
+
+  /**
+   * The access array of a type's paired {@code _ext} bucket, which holds the values of its EXTERNAL properties (issue #9637).
+   * The engine writes that bucket on behalf of an operation on the type's primary record, and an UPDATE of the record is
+   * one of them in all three write shapes: it updates an existing value in place, CREATES the external record of a value
+   * that had none, and DELETES the one a value set to null or dropped leaves behind. Charging those two against the type's
+   * own create/delete grants would refuse an update-only role the update it is entitled to, so each write on the paired
+   * bucket is allowed by the grant of its own kind OR by updateRecord. That widens nothing: whoever may update a record may
+   * already replace or remove any of its external values through it, and a direct create into the paired bucket is
+   * refused for everyone ({@code LocalDatabase.createRecordNoLock} rejects a bucket whose purpose is not PRIMARY).
+   */
+  private static boolean[] externalBucketAccess(final boolean[] typeAccess) {
+    final boolean update = typeAccess[ACCESS.UPDATE_RECORD.ordinal()];
+    final boolean[] access = typeAccess.clone();
+    access[ACCESS.CREATE_RECORD.ordinal()] |= update;
+    access[ACCESS.DELETE_RECORD.ordinal()] |= update;
     return access;
   }
 
