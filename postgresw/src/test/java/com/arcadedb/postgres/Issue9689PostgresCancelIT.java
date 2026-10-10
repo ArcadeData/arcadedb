@@ -281,6 +281,25 @@ class Issue9689PostgresCancelIT extends PostgresWireProtocolTestBase {
   }
 
   @Test
+  void aConnectionCanTerminateItself() throws Exception {
+    try (final Connection conn = connect("root", DEFAULT_PASSWORD_FOR_TESTS, "simple"); final Statement st = conn.createStatement()) {
+      final int pid = backendPid(conn);
+      // The connection being answered on is the one closed: the client sees it go, and the server forgets it
+      assertThatThrownBy(() -> {
+        try (final ResultSet rs = st.executeQuery("SELECT pg_terminate_backend(pg_backend_pid()) AS terminated")) {
+          rs.next();
+        }
+        st.executeQuery("SELECT 1").close();
+      }).isInstanceOf(SQLException.class);
+      await().atMost(Duration.ofSeconds(30)).until(() -> PostgresNetworkExecutor.getBackend(pid) == null);
+    }
+    // The server serves the next connection
+    try (final Connection next = connect("root", DEFAULT_PASSWORD_FOR_TESTS, "simple")) {
+      assertThat(backendPid(next)).isPositive();
+    }
+  }
+
+  @Test
   void anIdleConnectionIsNotDisturbedByACancel() throws Exception {
     try (final Connection conn = connect("root", DEFAULT_PASSWORD_FOR_TESTS, "simple"); final Statement st = conn.createStatement()) {
       final int pid = backendPid(conn);
