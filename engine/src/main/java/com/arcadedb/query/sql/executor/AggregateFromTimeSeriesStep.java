@@ -31,6 +31,7 @@ import com.arcadedb.engine.timeseries.TimeSeriesNaN;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.schema.LocalTimeSeriesType;
+import com.arcadedb.schema.Type;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.utility.DateUtils;
 
@@ -214,9 +215,13 @@ public class AggregateFromTimeSeriesStep extends AbstractExecutionStep {
             // absent marker for every other request, which aggregateValue turns into the NULL the generic plan answers
             final List<Long> buckets = aggResult.getBucketTimestamps();
             final long bucketTs = buckets.isEmpty() ? Long.MIN_VALUE : buckets.getFirst();
+            final Object[] values = new Object[requests.size()];
+            for (int i = 0; i < values.length; i++)
+              values[i] = aggregateValue(aggResult, requests.get(i), bucketTs, i);
+            replaceRoundedLongExtremes(engine, values);
             final ResultInternal row = new ResultInternal(context.getDatabase());
             for (final OutputColumn output : outputs)
-              row.setProperty(output.name(), aggregateValue(aggResult, requests.get(output.index()), bucketTs, output.index()));
+              row.setProperty(output.name(), values[output.index()]);
             rowCount++;
             resultIterator = List.of(row).iterator();
             fetched = true;
@@ -353,6 +358,61 @@ public class AggregateFromTimeSeriesStep extends AbstractExecutionStep {
     if (preferInt && value >= Integer.MIN_VALUE && value <= Integer.MAX_VALUE)
       return (int) value;
     return (long) value;
+  }
+
+  /**
+   * Replaces, in the answer of an ungrouped aggregate, every {@code min}/{@code max} of a LONG column the engine's double may have
+   * rounded with the stored long (issue #9710). The generic plan answers a sample of the column, exactly, and an ungrouped
+   * aggregate ran the generic plan before #9612, so that is what it must still answer.
+   * <p>
+   * Rounding to a double is monotonic and 2^53 is a double, so a stored long of magnitude at least 2^53 never rounds below it:
+   * an engine extreme under 2^53 in magnitude is the stored long, exactly, and only one at or past it needs the stored value.
+   * That is the rare case, so the common one keeps the push-down's cost, and the rare one pays a single row scan over the same
+   * range and filters the engine aggregated, which folds the exact extremes of every such request at once. A LONG column is a
+   * SIMPLE8B column, whose samples come back as {@code Long}s.
+   */
+  private void replaceRoundedLongExtremes(final TimeSeriesEngine engine, final Object[] values) throws IOException {
+    boolean[] exact = null;
+    for (int i = 0; i < values.length; i++) {
+      final MultiColumnAggregationRequest req = requests.get(i);
+      if ((req.type() != AggregationType.MIN && req.type() != AggregationType.MAX) || !(values[i] instanceof Number n)
+          || !(Math.abs(n.doubleValue()) >= MAX_EXACT_INTEGRAL_DOUBLE))
+        continue;
+      final ColumnDefinition column = requestColumn(req);
+      if (column == null || column.getDataType() != Type.LONG)
+        continue;
+      if (exact == null)
+        exact = new boolean[values.length];
+      exact[i] = true;
+    }
+    if (exact == null)
+      return;
+
+    final boolean[] recount = exact;
+    final long[] extremes = new long[values.length];
+    final boolean[] seen = new boolean[values.length];
+    engine.forEachRow(fromTs, toTs, null, tagFilter, aggregationMetrics, row -> {
+      if (fieldFilter != null && !fieldFilter.matches(row))
+        return true;
+      for (int i = 0; i < recount.length; i++) {
+        if (!recount[i])
+          continue;
+        final int position = requests.get(i).columnIndex();
+        if (position >= row.length || !(row[position] instanceof Long sample))
+          continue;
+        final long value = sample;
+        if (!seen[i]) {
+          extremes[i] = value;
+          seen[i] = true;
+        } else if (requests.get(i).type() == AggregationType.MIN ? value < extremes[i] : value > extremes[i])
+          extremes[i] = value;
+      }
+      return true;
+    });
+    // a request the scan found no sample for keeps the engine's answer: only a retention pass racing the two reads can do that
+    for (int i = 0; i < values.length; i++)
+      if (seen[i])
+        values[i] = extremes[i];
   }
 
   /** The column a request aggregates: its index is a position in the engine row, where 0 is the timestamp. */
