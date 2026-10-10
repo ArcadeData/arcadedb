@@ -912,7 +912,7 @@ generate_dockerfile() {
 
   if [[ "$DRY_RUN" != true ]]; then
     cat >"$dockerfile" <<'EOF'
-FROM eclipse-temurin:21-jre-alpine
+FROM eclipse-temurin:25-jre-alpine
 
 ARG ARCADEDB_USER=arcadedb
 ARG ARCADEDB_HOME=/home/arcadedb
@@ -921,7 +921,8 @@ ARG ARCADEDB_HOME=/home/arcadedb
 # container memory limit kills the container at startup, one below it wastes what the operator
 # granted), and never park the GC choice in JAVA_OPTS, which a caller overrides to add its own flags
 # and thereby replaces. bin/server.sh expands both of these alongside JAVA_OPTS and ARCADEDB_SETTINGS.
-ENV ARCADEDB_OPTS_GC="-XX:+UseZGC -XX:+ZGenerational"
+# Java 25 as in that Dockerfile, so server.sh enables compact object headers; ZGC is generational-only there.
+ENV ARCADEDB_OPTS_GC="-XX:+UseZGC"
 ENV ARCADEDB_OPTS_MEMORY="-XX:MaxRAMPercentage=75"
 
 RUN addgroup -S ${ARCADEDB_USER} && adduser -S ${ARCADEDB_USER} -G ${ARCADEDB_USER}

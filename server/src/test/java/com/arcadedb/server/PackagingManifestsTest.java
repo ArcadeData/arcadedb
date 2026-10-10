@@ -59,6 +59,9 @@ class PackagingManifestsTest {
   private static final String SERVER_BAT  = "package/src/main/scripts/server.bat";
   private static final String COMPOSE     = "docker-compose.yml";
   private static final String README      = "README.md";
+  private static final String DEPENDABOT  = ".github/dependabot.yml";
+
+  private static final Pattern BASE_IMAGE  = Pattern.compile("^FROM eclipse-temurin:(\\d+)-", Pattern.MULTILINE);
 
   private static final Pattern SETTING     = Pattern.compile("-D(arcadedb\\.[A-Za-z0-9.]+)=");
   private static final Pattern EXPANSION   = Pattern.compile("\\$\\(([A-Za-z_][A-Za-z0-9_]*)\\)");
@@ -181,6 +184,39 @@ class PackagingManifestsTest {
   }
 
   @Test
+  void dockerImagesRunOnAJvmThatAcceptsCompactObjectHeaders() {
+    // bin/server.sh enables compact object headers (JEP 519) only when the JVM accepts the flag: Java 21 rejects it
+    // and Java 24 gates it behind UnlockExperimentalVMOptions, so on an older base the probe fails and every
+    // container silently runs without them (issue #9602).
+    jvmDockerfiles().forEach((name, dockerfile) -> assertThat(baseJavaMajor(dockerfile)).as(
+        "%s runs on a JVM where server.sh never enables compact object headers", name).isGreaterThanOrEqualTo(25));
+    assertThat(read(SERVER_SH)).contains("$ARCADEDB_OPTS_HEADERS");
+  }
+
+  @Test
+  void dockerImagesPassNoGcFlagTheirJvmRemoved() {
+    // Generational ZGC is the only ZGC mode from Java 24: -XX:+ZGenerational is obsolete there and the JVM prints
+    // "Ignoring option ZGenerational; support was removed in 24.0" on every start.
+    jvmDockerfiles().forEach((name, dockerfile) -> {
+      if (baseJavaMajor(dockerfile) >= 24)
+        assertThat(envValue(dockerfile, "ARCADEDB_OPTS_GC")).as("%s", name).doesNotContain("ZGenerational");
+    });
+  }
+
+  @Test
+  void dependabotKeepsTrackingTheDockerBaseMajor() {
+    // The ignore rule holds the base image on its major (a JDK major is a deliberate move, not a weekly bump). Left
+    // below the major the Dockerfile uses, it ignores every tag of that major too, digest refreshes included, so
+    // the base never receives a security update again. A future major bump of the Dockerfile therefore has to move
+    // this rule in the same change, which is the point.
+    final Matcher m = Pattern.compile(
+        "dependency-name:\\s*[\"']?eclipse-temurin[\"']?\\s*\\n\\s*versions:\\s*\\[\\s*[\"']>\\s*(\\d+)[\"']\\s*]")
+        .matcher(read(DEPENDABOT));
+    assertThat(m.find()).as("%s no longer pins the eclipse-temurin major", DEPENDABOT).isTrue();
+    assertThat(Integer.parseInt(m.group(1))).isEqualTo(baseJavaMajor(read(DOCKERFILE)));
+  }
+
+  @Test
   void dockerImagesExposeTheRaftPort() {
     final String raftPort = String.valueOf(GlobalConfiguration.HA_RAFT_PORT.getDefValue());
     // The native images ship the same port surface, so they drift the same way.
@@ -286,6 +322,15 @@ class PackagingManifestsTest {
     final int to = builder.indexOf("\nEOF\n", from);
     assertThat(to).as("unterminated Dockerfile heredoc in %s", BUILDER).isNotNegative();
     return builder.substring(from, to + 1);
+  }
+
+  /**
+   * Java major version of the {@code eclipse-temurin} image a Dockerfile starts from.
+   */
+  private static int baseJavaMajor(final String dockerfile) {
+    final Matcher m = BASE_IMAGE.matcher(dockerfile);
+    assertThat(m.find()).as("the Dockerfile no longer starts from an eclipse-temurin image").isTrue();
+    return Integer.parseInt(m.group(1));
   }
 
   /**
