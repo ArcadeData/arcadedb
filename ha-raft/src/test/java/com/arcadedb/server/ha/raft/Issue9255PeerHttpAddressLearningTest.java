@@ -150,6 +150,20 @@ class Issue9255PeerHttpAddressLearningTest {
     assertThat(raft.getPeerHttpAddressCandidates(PEER_B)).isEmpty();
   }
 
+  /** On a cluster that asked for SSL no candidate is probed: the probe would carry the cluster token over plain HTTP. */
+  @Test
+  void aClusterWithSslProbesNoCandidateOverPlainHttp() {
+    final RaftHAServer raft = newDetachedServer(SERVER_LIST, true);
+    final ListeningPeers peers = new ListeningPeers().listen("hostB:2490", PEER_B);
+    raft.setCapabilityProber(peers);
+
+    raft.offerCallerHttpAddress(PEER_B, null, 2490);
+    raft.refreshPeerCapabilities();
+
+    assertThat(peers.calls).doesNotContain(PEER_B + "@hostB:2490");
+    assertThat(raft.getHttpAddresses()).doesNotContainKey(RaftPeerId.valueOf(PEER_B));
+  }
+
   /** What this node says about itself in every capability request. */
   @Test
   void theCapabilityRequestCarriesThisNodesOwnEndpoint() {
@@ -205,8 +219,13 @@ class Issue9255PeerHttpAddressLearningTest {
   }
 
   private static RaftHAServer newDetachedServer(final String serverList) {
+    return newDetachedServer(serverList, false);
+  }
+
+  private static RaftHAServer newDetachedServer(final String serverList, final boolean ssl) {
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.HA_SERVER_LIST, serverList);
+    config.setValue(GlobalConfiguration.NETWORK_USE_SSL, ssl);
     final FakeArcadeDBServer arcadeServer = FakeArcadeDBServer.create("ArcadeDB_0", new ContextConfiguration());
     final HttpServer httpServer = HTTP_SERVERS.listeningOn(arcadeServer, 2480);
     arcadeServer.httpServer(httpServer);
