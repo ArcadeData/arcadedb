@@ -393,6 +393,7 @@ public final class RunningQuery implements AutoCloseable {
           raw = supplier.get();
         } catch (final RuntimeException e) {
           // A request read while it is served: what cannot be described is listed without its text
+          LogManager.instance().log(this, Level.FINE, "Cannot describe query %s for the listing", e, getId());
           return null;
         }
     }
