@@ -574,9 +574,14 @@ public class FakeRaftHAServer extends RaftHAServer {
     return shutdownRequested.orElse(super::isShutdownRequested);
   }
 
+  /**
+   * Recorded; answered by {@link #returns}, else by {@link #removedFromConfiguration(boolean)}, else by the real check,
+   * which a detached server answers false (never refuses on missing information).
+   */
   @Override
   public boolean isRemovedFromConfiguration() {
-    return removedFromConfig.orElse(super::isRemovedFromConfiguration);
+    return bool("isRemovedFromConfiguration",
+        call("isRemovedFromConfiguration", () -> removedFromConfig.orElse(super::isRemovedFromConfiguration)));
   }
 
   @Override
@@ -631,12 +636,6 @@ public class FakeRaftHAServer extends RaftHAServer {
   public void waitForAppliedIndexForRead(final String databaseName, final long targetIndex,
       final Database.READ_CONSISTENCY consistency) {
     call("waitForAppliedIndexForRead", () -> null, databaseName, targetIndex, consistency);
-  }
-
-  /** Recorded; unanswered, the real check, which a detached server answers false (never refuses on missing information). */
-  @Override
-  public boolean isRemovedFromConfiguration() {
-    return bool("isRemovedFromConfiguration", call("isRemovedFromConfiguration", super::isRemovedFromConfiguration));
   }
 
   @Override
