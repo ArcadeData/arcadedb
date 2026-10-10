@@ -122,7 +122,8 @@ public class ArcadeGremlin extends ArcadeQuery {
       throw e;
     } catch (final ScriptException e) {
       // An eager terminal step stopped by a terminate: the termination, not a gremlin failure (issue #9689)
-      for (Throwable t = e.getCause(); t != null && t != t.getCause(); t = t.getCause())
+      int depth = 0;
+      for (Throwable t = e.getCause(); t != null && depth++ < 16; t = t.getCause())
         if (t instanceof QueryTerminatedException terminated)
           throw terminated;
       // eval() both builds the traversal and, for eager terminal steps such as .next()/.value(), iterates it.

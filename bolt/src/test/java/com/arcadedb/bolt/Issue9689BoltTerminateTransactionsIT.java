@@ -19,6 +19,7 @@
 package com.arcadedb.bolt;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.bolt.message.BoltMessage;
 import com.arcadedb.query.RunningQuery;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
@@ -161,6 +162,22 @@ public class Issue9689BoltTerminateTransactionsIT extends BaseBoltServerTest {
       admin.run("TERMINATE TRANSACTIONS $id", Map.of("id", id)).consume();
       assertThatThrownBy(() -> running.get(30, TimeUnit.SECONDS)).isNotNull();
     }
+  }
+
+  @Test
+  void aConnectionDroppedBetweenRunAndPullLeavesNoEntryBehind() throws Exception {
+    // RUN opens the entry, the stream stays open with rows still to pull, and the client vanishes without RESET or GOODBYE
+    final BoltWireConnection wire = new BoltWireConnection(getServerBoltPort(), getDatabaseName());
+    wire.run("UNWIND range(1, 100000) AS x RETURN x");
+    assertThat(wire.readSummary().signature()).isEqualTo(BoltMessage.SUCCESS);
+    wire.pull(10, -1);
+    assertThat(wire.readSummary().records()).hasSize(10);
+    assertThat(getServer(0).getRunningQueries().getRunning()).as("the open stream is listed")
+        .anyMatch(q -> "bolt".equals(q.getProtocol()));
+
+    wire.close();
+    await().atMost(Duration.ofSeconds(30)).until(() -> getServer(0).getRunningQueries().getRunning().stream()
+        .noneMatch(q -> "bolt".equals(q.getProtocol())));
   }
 
   /** The id of the long statement once SHOW TRANSACTIONS lists it. */

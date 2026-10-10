@@ -91,8 +91,8 @@ import java.io.EOFException;
 import java.io.IOException;
 import java.math.BigDecimal;
 import java.net.Socket;
-import java.security.SecureRandom;
 import java.net.SocketException;
+import java.security.SecureRandom;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -4035,12 +4035,19 @@ public class PostgresNetworkExecutor extends Thread {
         final int secret = (int) channel.readUnsignedInt();
 
         final PostgresNetworkExecutor session = ACTIVE_SESSIONS.get(pid);
-        if (session != null && session.cancelSecret == secret) {
+        if (session == null)
+          // A connection that just closed, in a race with its own cancel: routine
+          LogManager.instance().log(this, Level.FINE, "PSQL: cancel request for backend %d ignored: no such backend", pid);
+        else if (session.cancelSecret != secret)
+          // An open connection's pid with the wrong secret is no client's race: somebody guessing keys
+          LogManager.instance().log(this, Level.WARNING,
+              "PSQL: cancel request for backend %d from %s refused: the secret key does not match", pid,
+              channel.socket.getRemoteSocketAddress());
+        else {
           final boolean cancelled = session.cancelRunningStatement(session.userName);
           LogManager.instance().log(this, Level.FINE, "PSQL: cancel request for backend %d: %s", pid,
               cancelled ? "statement cancelled" : "no statement running");
-        } else
-          LogManager.instance().log(this, Level.FINE, "PSQL: cancel request for backend %d ignored: unknown key", pid);
+        }
 
         close();
         return false;
