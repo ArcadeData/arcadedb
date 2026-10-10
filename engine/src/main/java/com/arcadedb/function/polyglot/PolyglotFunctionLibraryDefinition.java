@@ -19,6 +19,7 @@ package com.arcadedb.function.polyglot;/*
 
 import com.arcadedb.database.Database;
 import com.arcadedb.function.FunctionLibraryDefinition;
+import com.arcadedb.query.RunningQuery;
 import com.arcadedb.query.polyglot.GraalPolyglotEngine;
 import com.arcadedb.query.polyglot.PolyglotEngineManager;
 import com.arcadedb.serializer.json.JSONArray;
@@ -151,7 +152,10 @@ public abstract class PolyglotFunctionLibraryDefinition<T extends PolyglotFuncti
 
   public Object execute(final Callback callback) {
     synchronized (engineLock) {
-      return callback.execute(polyglotEngine);
+      final GraalPolyglotEngine engine = polyglotEngine;
+      // A function looping in the guest language never returns to the statement's checks: a terminate interrupts it
+      // (issue #9689)
+      return engine.runTerminable(RunningQuery.current(), "the function", () -> callback.execute(engine));
     }
   }
 }

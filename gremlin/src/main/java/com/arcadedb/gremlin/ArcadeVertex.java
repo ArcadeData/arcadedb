@@ -219,17 +219,25 @@ public class ArcadeVertex extends ArcadeElement<com.arcadedb.graph.Vertex> imple
 
   @Override
   public Iterator<Edge> edges(final Direction direction, final String... edgeLabels) {
+    // A terminated statement stops here, at every step of a traversal, and every so often inside a supernode (#9689)
+    ArcadeGraph.checkNotTerminated();
     final List<Edge> result = new ArrayList<>();
 
+    int walked = 0;
     if (edgeLabels.length == 0) {
       for (final com.arcadedb.graph.Edge edge : this.baseElement.getEdges(ArcadeGraph.mapDirection(direction))) {
+        if (++walked % ArcadeGraph.TERMINATION_CHECK_INTERVAL == 0)
+          ArcadeGraph.checkNotTerminated();
         if (exists(edge))
           result.add(new ArcadeEdge(this.graph, edge));
       }
     } else {
-      for (final com.arcadedb.graph.Edge edge : this.baseElement.getEdges(ArcadeGraph.mapDirection(direction), edgeLabels))
+      for (final com.arcadedb.graph.Edge edge : this.baseElement.getEdges(ArcadeGraph.mapDirection(direction), edgeLabels)) {
+        if (++walked % ArcadeGraph.TERMINATION_CHECK_INTERVAL == 0)
+          ArcadeGraph.checkNotTerminated();
         if (exists(edge))
           result.add(new ArcadeEdge(this.graph, edge));
+      }
     }
 
     return result.iterator();
@@ -242,6 +250,8 @@ public class ArcadeVertex extends ArcadeElement<com.arcadedb.graph.Vertex> imple
 
   @Override
   public Iterator<Vertex> vertices(final Direction direction, final String... edgeLabels) {
+    // A terminated statement stops here, at every step of a traversal, and every so often inside a supernode (#9689)
+    ArcadeGraph.checkNotTerminated();
     // CSR fast path: use GAV provider when available for O(1) neighbor lookup
     final GraphTraversalProvider provider = graph.getDatabase() instanceof Database db
         ? (edgeLabels.length == 0
@@ -273,14 +283,21 @@ public class ArcadeVertex extends ArcadeElement<com.arcadedb.graph.Vertex> imple
 
     // OLTP fallback
     final List<Vertex> result = new ArrayList<>();
+    int walked = 0;
     if (edgeLabels.length == 0) {
-      for (final com.arcadedb.graph.Vertex vertex : this.baseElement.getVertices(ArcadeGraph.mapDirection(direction)))
+      for (final com.arcadedb.graph.Vertex vertex : this.baseElement.getVertices(ArcadeGraph.mapDirection(direction))) {
+        if (++walked % ArcadeGraph.TERMINATION_CHECK_INTERVAL == 0)
+          ArcadeGraph.checkNotTerminated();
         if (graph.getDatabase().existsRecord(vertex.getIdentity()))
           result.add(new ArcadeVertex(this.graph, vertex));
+      }
     } else {
-      for (final com.arcadedb.graph.Vertex vertex : this.baseElement.getVertices(ArcadeGraph.mapDirection(direction), edgeLabels))
+      for (final com.arcadedb.graph.Vertex vertex : this.baseElement.getVertices(ArcadeGraph.mapDirection(direction), edgeLabels)) {
+        if (++walked % ArcadeGraph.TERMINATION_CHECK_INTERVAL == 0)
+          ArcadeGraph.checkNotTerminated();
         if (graph.getDatabase().existsRecord(vertex.getIdentity()))
           result.add(new ArcadeVertex(this.graph, vertex));
+      }
     }
     return result.iterator();
   }

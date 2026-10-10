@@ -80,6 +80,10 @@ public final class BoltErrorCodes {
   // generic DatabaseError a driver reads as an unexplained server fault.
   public static final String TRANSACTION_TIMED_OUT_ERROR = "Neo.ClientError.Transaction.TransactionTimedOut";
 
+  // The statement was stopped on request (TERMINATE TRANSACTIONS, "terminate query", issue #9689): what Neo4j answers
+  // for a transaction a user killed. A ClientError since Neo4j 5, precisely so that no driver retries it.
+  public static final String TRANSACTION_TERMINATED_ERROR = "Neo.ClientError.Transaction.Terminated";
+
   // Request errors
   public static final String PROTOCOL_ERROR = "Neo.ClientError.Request.Invalid";
 

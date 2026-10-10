@@ -71,9 +71,12 @@ public class GremlinPrincipalPropagatingExecutorService extends AbstractExecutor
       // engine by this tag, so an untagged traversal read as engine work and was served from the discarded copy.
       // Cleared afterwards because the pool's threads are reused.
       ProtocolContext.set(GREMLIN_PROTOCOL);
+      // Who the registry entry of the request belongs to, for its listing and its visibility (issue #9689)
+      ArcadeGraphManager.setRequestUser(user != null ? user.getName() : null);
       try {
         command.run();
       } finally {
+        ArcadeGraphManager.setRequestUser(null);
         // A request whose evaluation ended without reporting its end to ArcadeGraphManager must not keep its admission
         // slot (issue #9518): the pool's threads are reused, and a slot left on one would also be taken for the slot of an
         // enclosing query by the next request it runs

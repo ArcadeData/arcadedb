@@ -60,6 +60,7 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
+import com.arcadedb.query.RunningQuery;
 import com.arcadedb.query.sql.executor.QueryStatistics;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -568,6 +569,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     // nothing left to replay and must not be described as half-published.
     final GrpcSessionPartialCommitInterceptor.Verdict partialCommit =
         GrpcSessionPartialCommitInterceptor.currentVerdict();
+    // The RPC's registry entry, published on the gRPC thread by GrpcAdmissionInterceptor: the statement runs on the
+    // transaction's thread, so the entry goes with it there, where its checks and its commits read it (issue #9689)
+    final RunningQuery runningQuery = RunningQuery.current();
     try {
       return txCtx.executor.submit(() -> {
         requireTransactionStillActive(txCtx);
@@ -577,9 +581,14 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         // where GrpcProtocolContextInterceptor tags the work, and RaftReplicatedDatabase tells a client from the
         // engine by the tag when it refuses requests on a database being replaced from the leader's snapshot.
         ProtocolContext.set(GRPC_PROTOCOL);
+        final RunningQuery.Binding binding = runningQuery != null ? runningQuery.bind() : null;
         try {
           return task.call();
         } finally {
+          if (binding != null)
+            binding.close();
+          if (runningQuery != null && runningQuery.isTerminated())
+            endTerminatedTransaction(txCtx, runningQuery);
           ProtocolContext.clear();
           // In a finally, because the statement that publishes half the block is often the same one that then
           // fails: a verdict only reported on the success path would miss the case the guard exists for.
@@ -650,6 +659,28 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             reaped);
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.WARNING, "Error while reaping idle gRPC transactions", e);
+    }
+  }
+
+  /**
+   * Ends the client transaction a terminated statement ran in, on the transaction's own thread (issue #9689): its
+   * transaction is rolled back and the transaction removed, so a later commit is told it does not exist instead of
+   * publishing what the stopped statement left in it. The client that stops a statement wants none of it to stand,
+   * whether or not the statement reached a check before it ended - the same rule as for an HTTP transaction session.
+   */
+  private void endTerminatedTransaction(final TransactionContext txCtx, final RunningQuery runningQuery) {
+    if (!activeTransactions.remove(txCtx.txId, txCtx))
+      return;
+    try {
+      if (txCtx.db != null && txCtx.db.isTransactionActive())
+        txCtx.db.rollback();
+      runningQuery.setRolledBack();
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.WARNING, "Error rolling back the transaction of a terminated statement txId=%s", e,
+          txCtx.txId);
+    } finally {
+      releaseTransactionSlot(txCtx.owner);
+      txCtx.shutdown();
     }
   }
 

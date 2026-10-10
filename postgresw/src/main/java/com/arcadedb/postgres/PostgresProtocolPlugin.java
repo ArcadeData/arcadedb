@@ -40,6 +40,8 @@ public class PostgresProtocolPlugin implements ServerPlugin {
 
   @Override
   public void startService() {
+    // pg_backend_pid(), pg_cancel_backend(pid), pg_terminate_backend(pid) (issue #9689)
+    PostgresBackendFunctions.register();
     listener = new PostgresNetworkListener(server, new DefaultServerSocketFactory(), new PostgresSslHelper(server.getConfiguration()), host,
         portRange);
   }

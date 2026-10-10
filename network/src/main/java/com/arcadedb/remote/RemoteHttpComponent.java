@@ -26,6 +26,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
+import com.arcadedb.exception.QueryTerminatedException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TimeoutException;
@@ -1239,6 +1240,9 @@ public class RemoteHttpComponent extends RWLockContext {
         return new TransactionException(detail);
       } else if (exception.equals(TimeoutException.class.getName())) {
         return new TimeoutException(detail);
+      } else if (exception.equals(QueryTerminatedException.class.getName())) {
+        // STOPPED ON REQUEST (issue #9689): ITS OWN TYPE, SO NO RETRY LOOP MISTAKES IT FOR A FAILURE WORTH REPEATING
+        return new QueryTerminatedException(detail);
       } else if (exception.equals(SchemaException.class.getName())) {
         return new SchemaException(detail);
       } else if (exception.equals(NoSuchElementException.class.getName())) {

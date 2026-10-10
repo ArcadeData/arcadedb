@@ -81,6 +81,7 @@ import com.arcadedb.network.binary.ReplicatedEntryTooLargeException;
 import com.arcadedb.network.binary.ReplicationQueueFullException;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.query.QueryEngine;
+import com.arcadedb.query.RunningQuery;
 import com.arcadedb.query.opencypher.optimizer.statistics.GraphStatisticsCache;
 import com.arcadedb.query.opencypher.query.CypherPlanCache;
 import com.arcadedb.query.opencypher.query.CypherStatementCache;
@@ -103,6 +104,7 @@ import com.arcadedb.server.ForwardedRequestIdContext;
 import com.arcadedb.server.HAReplicatedDatabase;
 import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.LeaderForwardContext;
+import com.arcadedb.server.http.handler.AbstractServerHttpHandler;
 import com.arcadedb.server.http.IdempotencyCache;
 import com.arcadedb.server.http.RequestStillInFlightException;
 import com.arcadedb.server.http.RetryLaterException;
@@ -4813,6 +4815,21 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       }
     }
 
+    // The statement this forward is the work of, on this node (issue #9689). The leader records this node's id for it,
+    // so a terminate here reaches the work there: relayed as "terminate query <this id>", which the leader resolves to
+    // its own entry. Listed meanwhile as forwarded to the leader, and the client's tag travels with it. Under the cluster
+    // token only, the one form in which the leader honours the id
+    final RunningQuery runningQuery = RunningQuery.current();
+    AutoCloseable terminationRelay = null;
+    if (runningQuery != null && ordinalTrusted && !postsToItself) {
+      builder.header(LeaderForwardContext.FORWARDED_QUERY_HEADER, runningQuery.getId());
+      if (runningQuery.getTag() != null)
+        builder.header(AbstractServerHttpHandler.QUERY_TAG_HEADER, runningQuery.getTag());
+      runningQuery.setForwardedTo(raft.getLeaderName());
+      final String leaderServerUrl = leaderUrl.substring(0, leaderUrl.indexOf("/api/v1/command/")) + "/api/v1/server";
+      terminationRelay = runningQuery.onTerminate(() -> relayTermination(dialClient, leaderServerUrl, clusterToken, runningQuery));
+    }
+
     try {
       // Bounded over the whole exchange, body included, on every JDK (issue #8325): the request timeout above stops at
       // the response headers on JDK 21-25, so a leader that stalled inside its body parked this thread unbounded. The
@@ -4829,6 +4846,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         // until the view moves, bounded by the same wait a leaderless forward gets, so the retry dials the new one.
         if (refusedByTheLeaderItNamedNoOther(refusal, holdLeaderId))
           awaitLeaderViewMovedFrom(raft::getLeaderId, holdLeaderId, leaderWaitMs, LEADER_WAIT_POLL_INTERVAL_MS);
+        // Stopped on the leader because it was terminated here: the termination, whatever shape the answer took
+        if (runningQuery != null)
+          runningQuery.checkNotTerminated("the command forwarded to the leader");
         throw refusal;
       }
 
@@ -4884,6 +4904,43 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
               + "ms; whether the command reached the leader is unknown - it must not be blindly retried", e);
     } catch (final Exception e) {
       throw new TransactionException("Error forwarding command to leader at " + leaderUrl, e);
+    } finally {
+      if (terminationRelay != null) {
+        try {
+          terminationRelay.close();
+        } catch (final Exception ignore) {
+          // Unregistering a listener does not fail
+        }
+        runningQuery.setForwardedTo(null);
+      }
+    }
+  }
+
+  /**
+   * Asks the leader to terminate the statement this node forwarded to it as its statement {@code runningQuery}
+   * (issue #9689). Runs on the thread that terminated it here and does not wait: this node's own wait for the leader's
+   * answer is what reports the outcome - the leader answers the forward with the termination once its statement has
+   * stopped. A relay that fails is logged; the statement then runs to its end on the leader, as it did before.
+   */
+  private void relayTermination(final HttpClient client, final String leaderServerUrl, final String clusterToken,
+      final RunningQuery runningQuery) {
+    try {
+      final String body = new JSONObject().put("command", "terminate query " + runningQuery.getId()).put("wait", 0).toString();
+      final HttpRequest request = HttpRequest.newBuilder().uri(URI.create(leaderServerUrl)).timeout(Duration.ofSeconds(10))
+          .header("Content-Type", "application/json")//
+          .header("X-ArcadeDB-Cluster-Token", clusterToken)//
+          // The statement's own user: who may stop it there as here. The authority of whoever terminated it was
+          // checked on this node, against the same entry
+          .header("X-ArcadeDB-Forwarded-User", runningQuery.getUser() != null ? runningQuery.getUser() : "root")//
+          .POST(HttpRequest.BodyPublishers.ofString(body)).build();
+      client.sendAsync(request, HttpResponse.BodyHandlers.discarding()).whenComplete((response, error) -> {
+        if (error != null || response.statusCode() != 200)
+          LogManager.instance().log(this, Level.WARNING, "Cannot relay the termination of query %s to the leader at %s: %s",
+              runningQuery.getId(), leaderServerUrl, error != null ? error.toString() : "HTTP " + response.statusCode());
+      });
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.WARNING, "Cannot relay the termination of query %s to the leader at %s", e,
+          runningQuery.getId(), leaderServerUrl);
     }
   }
 

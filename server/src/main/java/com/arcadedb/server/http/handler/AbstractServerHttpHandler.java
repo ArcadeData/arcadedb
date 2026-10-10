@@ -110,6 +110,11 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   // parsed from it: the request body is consumed once and cannot be read again from the exchange.
   public static final AttachmentKey<String> RAW_PAYLOAD = AttachmentKey.create(String.class);
   /**
+   * The id the statement of this request has on the cluster peer that forwarded it here, from
+   * {@link LeaderForwardContext#FORWARDED_QUERY_HEADER} under a valid cluster token (issue #9689).
+   */
+  private static final AttachmentKey<String> FORWARDED_QUERY_ID = AttachmentKey.create(String.class);
+  /**
    * Key under which the HTTP request's {@link Observation.Context} carries the raw request path (issue #7295), so an
    * attached tracer can decide - before any span exists - to leave a request untraced, e.g. the readiness and health
    * probes. It is a plain context entry, never a key value: key values become span attributes and meter tags, and the
@@ -567,6 +572,11 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
             exchange.getRequestHeaders().getFirst(ForwardedRequestIdContext.FORWARD_ORDINAL_HEADER));
         trustedClientKey = ForwardedRequestIdContext.parseClientKey(
             exchange.getRequestHeaders().getFirst(ForwardedRequestIdContext.CLIENT_KEY_HEADER));
+        // Which statement of the peer's this request is, so a terminate there reaches the work here (issue #9689). Under
+        // the same gate: from a client it would let a request pass itself off as another node's statement
+        final String forwardedQuery = exchange.getRequestHeaders().getFirst(LeaderForwardContext.FORWARDED_QUERY_HEADER);
+        if (forwardedQuery != null && !forwardedQuery.isBlank() && forwardedQuery.length() <= MAX_QUERY_TAG_LENGTH)
+          exchange.putAttachment(FORWARDED_QUERY_ID, forwardedQuery.strip());
 
         final HeaderValues forwardedUserValues = exchange.getRequestHeaders().get("X-ArcadeDB-Forwarded-User");
         if (forwardedUserValues != null && !forwardedUserValues.isEmpty()) {
@@ -1983,6 +1993,10 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
         .register(databaseName, user != null ? user.getName() : null, "http", sessionId, requestTag != null ? requestTag : sessionTag);
     // What the request is until the handler says which statement it runs: a commit, a batch load or a search has none
     runningQuery.setStatement(null, exchange.getRequestMethod() + " " + exchange.getRequestPath());
+    runningQuery.setConnection(null, String.valueOf(exchange.getSourceAddress()));
+    final String forwardedFrom = exchange.getAttachment(FORWARDED_QUERY_ID);
+    if (forwardedFrom != null)
+      runningQuery.setForwardedFrom(forwardedFrom);
     return runningQuery;
   }
 

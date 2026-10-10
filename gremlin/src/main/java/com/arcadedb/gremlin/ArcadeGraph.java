@@ -31,6 +31,7 @@ import com.arcadedb.gremlin.service.ArcadeServiceRegistry;
 import com.arcadedb.gremlin.service.VectorNeighborsFactory;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.HostUtil;
+import com.arcadedb.query.RunningQuery;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.schema.DocumentType;
@@ -701,6 +702,22 @@ public class ArcadeGraph implements Graph, Closeable {
   @Override
   public String toString() {
     return StringFactory.graphString(this, database.getName());
+  }
+
+  /** How many neighbours an adjacency step walks between two checks of the statement's termination. */
+  static final int TERMINATION_CHECK_INTERVAL = 4096;
+
+  /**
+   * Fails the traversal if the statement it runs for was terminated (issue #9689). The traversal's scans already check
+   * through the SQL steps that feed {@code g.V()} and {@code g.E()}; this is for the work they do not see, the adjacency
+   * steps ({@code out()}, {@code bothE()}, ...) and the iteration of the result, which a deep or repeated traversal
+   * spends all its time in. Cooperative, like every other check: {@code Thread.interrupt()} would close the database
+   * files of a thread caught doing I/O.
+   */
+  static void checkNotTerminated() {
+    final RunningQuery runningQuery = RunningQuery.current();
+    if (runningQuery != null)
+      runningQuery.checkNotTerminated("the gremlin traversal");
   }
 
   public static com.arcadedb.graph.Vertex.DIRECTION mapDirection(final Direction direction) {

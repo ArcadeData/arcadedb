@@ -22,6 +22,7 @@ import com.arcadedb.exception.DatabaseOperationInProgressException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.ErrorCategory;
 import com.arcadedb.exception.NeedRetryException;
+import com.arcadedb.exception.QueryTerminatedException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.server.ArcadeDBServer;
@@ -167,7 +168,10 @@ public final class GrpcErrorMapper {
       return new StatusRuntimeException(se.getStatus(), se.getTrailers());
 
     final Metadata trailers = new Metadata();
-    trailers.put(EXCEPTION_CLASS_KEY, cause.getClass().getName());
+    // A termination is named as one whatever wraps it, so the driver rebuilds the type that tells it not to retry (#9689)
+    trailers.put(EXCEPTION_CLASS_KEY, ErrorCategory.of(cause) == ErrorCategory.TERMINATED ?
+        QueryTerminatedException.class.getName() :
+        cause.getClass().getName());
 
     final Status.Code code;
     String redirect = null;
@@ -232,6 +236,8 @@ public final class GrpcErrorMapper {
       case SECURITY -> Status.Code.PERMISSION_DENIED;
       case VALIDATION, PARSING -> Status.Code.INVALID_ARGUMENT;
       case TIMEOUT -> Status.Code.DEADLINE_EXCEEDED;
+      // Stopped on request (issue #9689): gRPC's own word for an operation somebody cancelled, never retried by a client
+      case TERMINATED -> Status.Code.CANCELLED;
       case SERVER -> Status.Code.INTERNAL;
     };
   }

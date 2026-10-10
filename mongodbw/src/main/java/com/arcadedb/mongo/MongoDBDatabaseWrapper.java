@@ -256,6 +256,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       case SECURITY -> new MongoServerError(13, "Unauthorized", message, e);
       case PARSING -> new MongoServerError(ErrorCode.FailedToParse.getValue(), ErrorCode.FailedToParse.getName(), message, e);
       case TIMEOUT -> new MongoServerError(50, "MaxTimeMSExpired", message, e);
+      // Stopped on request (issue #9689): what MongoDB answers for an operation a killOp interrupted
+      case TERMINATED -> new MongoServerError(11601, "Interrupted", message, e);
       case NOT_FOUND, SERVER -> new MongoServerException(message, e);
     };
   }

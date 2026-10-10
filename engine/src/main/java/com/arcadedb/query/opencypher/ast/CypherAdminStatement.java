@@ -18,14 +18,17 @@
  */
 package com.arcadedb.query.opencypher.ast;
 
+import java.util.List;
+
 /**
- * AST node for Cypher admin statements (user management commands).
- * These bypass the normal query execution pipeline and are executed directly against the security manager.
+ * AST node for Cypher admin statements: user management, executed directly against the security manager, and
+ * {@code SHOW TRANSACTIONS} / {@code TERMINATE TRANSACTIONS} (issue #9689), executed against the server's registry of
+ * running statements. Both bypass the normal query execution pipeline.
  */
 public class CypherAdminStatement implements CypherStatement {
 
   public enum Kind {
-    SHOW_USERS, SHOW_CURRENT_USER, CREATE_USER, DROP_USER, ALTER_USER
+    SHOW_USERS, SHOW_CURRENT_USER, CREATE_USER, DROP_USER, ALTER_USER, SHOW_TRANSACTIONS, TERMINATE_TRANSACTIONS
   }
 
   private final Kind kind;
@@ -33,6 +36,12 @@ public class CypherAdminStatement implements CypherStatement {
   private final String password;
   private final boolean ifNotExists;
   private final boolean ifExists;
+  // SHOW/TERMINATE TRANSACTIONS: the ids named as string literals, or the expression that yields them (a parameter, a
+  // list, a column of the SHOW a TERMINATE is composed with); neither for a SHOW of every transaction
+  private final List<String>         transactionIds;
+  private final Expression           transactionIdsExpression;
+  // SHOW TRANSACTIONS ... TERMINATE TRANSACTIONS ...: the TERMINATE that consumes the rows of the SHOW
+  private final CypherAdminStatement composedTerminate;
 
   public CypherAdminStatement(final Kind kind, final String userName, final String password,
       final boolean ifNotExists, final boolean ifExists) {
@@ -41,6 +50,22 @@ public class CypherAdminStatement implements CypherStatement {
     this.password = password;
     this.ifNotExists = ifNotExists;
     this.ifExists = ifExists;
+    this.transactionIds = null;
+    this.transactionIdsExpression = null;
+    this.composedTerminate = null;
+  }
+
+  /** {@code SHOW TRANSACTIONS} or {@code TERMINATE TRANSACTIONS} (issue #9689). */
+  public CypherAdminStatement(final Kind kind, final List<String> transactionIds, final Expression transactionIdsExpression,
+      final CypherAdminStatement composedTerminate) {
+    this.kind = kind;
+    this.userName = null;
+    this.password = null;
+    this.ifNotExists = false;
+    this.ifExists = false;
+    this.transactionIds = transactionIds;
+    this.transactionIdsExpression = transactionIdsExpression;
+    this.composedTerminate = composedTerminate;
   }
 
   public Kind getKind() {
@@ -63,9 +88,30 @@ public class CypherAdminStatement implements CypherStatement {
     return ifExists;
   }
 
+  public List<String> getTransactionIds() {
+    return transactionIds;
+  }
+
+  public Expression getTransactionIdsExpression() {
+    return transactionIdsExpression;
+  }
+
+  public CypherAdminStatement getComposedTerminate() {
+    return composedTerminate;
+  }
+
+  public boolean isTransactionsCommand() {
+    return kind == Kind.SHOW_TRANSACTIONS || kind == Kind.TERMINATE_TRANSACTIONS;
+  }
+
+  /**
+   * True for {@code SHOW/TERMINATE TRANSACTIONS}: they read and write no data, and each server lists and stops its own
+   * statements, so an HA replica runs them itself rather than forwarding them to the leader - the same rule the HTTP
+   * {@code list queries} / {@code terminate query} commands follow.
+   */
   @Override
   public boolean isReadOnly() {
-    return false;
+    return isTransactionsCommand();
   }
 
   // All structural query accessors (getMatchClauses, getReturnClause, hasCreate, ...) inherit the
