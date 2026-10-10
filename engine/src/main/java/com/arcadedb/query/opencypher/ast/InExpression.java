@@ -171,6 +171,13 @@ public class InExpression implements BooleanExpression {
    * stored as; or the text itself, which no long equals, when it is not one.
    */
   private static Object canonicalLong(final String text) {
+    // Only digits after an optional sign are parsed, so an ordinary text never costs a thrown exception
+    final int start = text.startsWith("-") ? 1 : 0;
+    if (start == text.length() || text.length() - start > 19)
+      return text;
+    for (int i = start; i < text.length(); i++)
+      if (text.charAt(i) < '0' || text.charAt(i) > '9')
+        return text;
     try {
       final long parsed = Long.parseLong(text);
       return Long.toString(parsed).equals(text) ? parsed : text;

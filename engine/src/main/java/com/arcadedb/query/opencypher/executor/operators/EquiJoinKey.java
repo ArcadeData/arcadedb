@@ -130,22 +130,49 @@ public record EquiJoinKey(Expression left, Expression right, boolean viaEvaluato
     return UNHASHABLE;
   }
 
-  /** The key of a text: the key of the number or boolean it spells, or the text itself. */
+  /**
+   * The key of a text: the key of the number or boolean it spells, or the text itself. A text is only parsed when its
+   * characters are all those of a number's text, so an ordinary text (a zip code with a dash, an id with letters) costs a
+   * character scan and never a thrown exception, and an integer's digits are read as a long without one either.
+   */
   private static Object textKey(final String text) {
-    if (text.isEmpty())
+    final int length = text.length();
+    if (length == 0)
       return text;
     final char first = text.charAt(0);
     if (first == 't' && text.equals("true") || first == 'f' && text.equals("false"))
       return Boolean.valueOf(text);
-    // Only what a number's text starts with is parsed: an ordinary text pays one character test
-    if (first >= '0' && first <= '9' || first == '-' || first == 'I') {
-      try {
-        final double d = Double.parseDouble(text);
-        return Double.isNaN(d) ? text : d == 0.0 ? 0.0 : d;
-      } catch (final NumberFormatException e) {
-        return text;
+    if (text.equals("Infinity") || text.equals("-Infinity"))
+      return Double.parseDouble(text);
+
+    final int start = first == '-' ? 1 : 0;
+    if (start == length)
+      return text;
+    boolean integral = true;
+    for (int i = start; i < length; i++) {
+      final char c = text.charAt(i);
+      if (c >= '0' && c <= '9')
+        continue;
+      if (c != '.' && c != 'E' && c != '-')
+        return text; // not the text of a number: no parse at all
+      integral = false;
+    }
+
+    if (integral) {
+      // Up to 18 digits always fit a long; the key of a number is its double, like canonicalValue's
+      if (length - start <= 18) {
+        long value = 0;
+        for (int i = start; i < length; i++)
+          value = value * 10 + (text.charAt(i) - '0');
+        final double d = start == 1 ? -(double) value : (double) value;
+        return d == 0.0 ? 0.0 : d;
       }
     }
-    return text;
+    try {
+      final double d = Double.parseDouble(text);
+      return d == 0.0 ? 0.0 : d;
+    } catch (final NumberFormatException e) {
+      return text; // the characters of a number in no number's order ("1-2", "1..2")
+    }
   }
 }
