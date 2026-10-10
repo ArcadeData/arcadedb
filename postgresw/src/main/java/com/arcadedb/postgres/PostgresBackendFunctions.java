@@ -118,6 +118,9 @@ public final class PostgresBackendFunctions {
     @Override
     public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
         final CommandContext context) {
+      if (params == null || params.length != 1 || params[0] == null)
+        // NULL in, NULL out: as PostgreSQL answers a strict function called with NULL
+        return null;
       final String caller = caller(context);
       final PostgresNetworkExecutor backend = signalled(params, caller, context);
       if (backend == null)
@@ -153,6 +156,9 @@ public final class PostgresBackendFunctions {
     @Override
     public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
         final CommandContext context) {
+      if (params == null || params.length != 1 || params[0] == null)
+        // NULL in, NULL out: as PostgreSQL answers a strict function called with NULL
+        return null;
       final String caller = caller(context);
       final PostgresNetworkExecutor backend = signalled(params, caller, context);
       if (backend == null)

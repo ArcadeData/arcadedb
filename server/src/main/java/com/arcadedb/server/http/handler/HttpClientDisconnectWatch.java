@@ -144,7 +144,9 @@ final class HttpClientDisconnectWatch implements ChannelListener<ConduitStreamSo
     stopWatching();
     LogManager.instance()
         .log(this, Level.FINE, "HTTP client of query %s went away (%s): terminating it", runningQuery.getId(), reason);
-    runningQuery.terminate("client disconnected");
+    // Off the I/O thread: a termination runs the statement's listeners, which may take a while (a guest language
+    // unwinding), and this thread serves every other connection assigned to it
+    connection.getWorker().execute(() -> runningQuery.terminate("client disconnected"));
   }
 
   private void stopWatching() {

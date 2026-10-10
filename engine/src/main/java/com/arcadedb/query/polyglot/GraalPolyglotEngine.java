@@ -373,8 +373,16 @@ public class GraalPolyglotEngine implements AutoCloseable {
   private final class TerminationInterrupt implements Runnable {
     private boolean armed = true;
 
+    /**
+     * Never on the terminating thread: it may be a network I/O thread, and the interrupt waits for the guest to unwind.
+     * A termination is rare, so a short-lived thread costs less than a pool kept for it.
+     */
     @Override
-    public synchronized void run() {
+    public void run() {
+      Thread.ofPlatform().daemon().name("ArcadeDB-ScriptTermination").start(this::interruptIfArmed);
+    }
+
+    private synchronized void interruptIfArmed() {
       if (armed && !interrupt(TERMINATION_INTERRUPT_GRACE))
         LogManager.instance().log(this, Level.WARNING,
             "A terminated script did not unwind within %s: it is blocked in a host call that cannot be interrupted",
