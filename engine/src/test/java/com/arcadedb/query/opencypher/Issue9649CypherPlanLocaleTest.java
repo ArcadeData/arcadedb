@@ -44,8 +44,8 @@ import static org.assertj.core.api.Assertions.catchThrowableOfType;
  * digits are not ASCII - the second also catches an integer {@code %d}, which carries no decimal separator at all.
  */
 class Issue9649CypherPlanLocaleTest extends TestHelper {
-  private static final Locale GERMAN    = Locale.GERMANY;
-  private static final Locale THAI_DIGS = Locale.forLanguageTag("th-TH-u-nu-thai");
+  private static final Locale GERMAN      = Locale.GERMANY;
+  private static final Locale THAI_DIGITS = Locale.forLanguageTag("th-TH-u-nu-thai");
 
   /**
    * A decimal written with a comma and one or two fractional digits: a cost, a percentage or a CREATE phase time under a
@@ -75,7 +75,7 @@ class Issue9649CypherPlanLocaleTest extends TestHelper {
         .containsPattern("Total Estimated Cost: \\d+\\.\\d\\d\n").doesNotMatch(COMMA_DECIMAL);
     assertThat(german).isEqualTo(root);
 
-    final String thai = underLocale(THAI_DIGS, () -> planOf("EXPLAIN MATCH (a:Person)-[:KNOWS]->(b:Person) RETURN a, b"));
+    final String thai = underLocale(THAI_DIGITS, () -> planOf("EXPLAIN MATCH (a:Person)-[:KNOWS]->(b:Person) RETURN a, b"));
     assertThat(thai).as("the plan's digits must be ASCII whatever the server's numbering system: %s", thai)
         .doesNotMatch(THAI_DIGIT);
     assertThat(thai).isEqualTo(root);
@@ -83,7 +83,7 @@ class Issue9649CypherPlanLocaleTest extends TestHelper {
 
   @Test
   void profileOfAnOptimizedMatchRendersTimeAndCostWithAPeriod() {
-    for (final Locale locale : new Locale[] { GERMAN, THAI_DIGS }) {
+    for (final Locale locale : new Locale[] { GERMAN, THAI_DIGITS }) {
       final String profile = underLocale(locale, () -> planOf("PROFILE MATCH (a:Person)-[:KNOWS]->(b:Person) RETURN a, b"));
       assertThat(profile).as("under %s: %s", locale, profile)
           .containsPattern("Execution Time: \\d+\\.\\d{3} ms\n")
@@ -97,7 +97,7 @@ class Issue9649CypherPlanLocaleTest extends TestHelper {
   /** PROFILE of a CREATE adds its own breakdown: per-phase times and the share of each phase, as percentages. */
   @Test
   void profileOfACreateRendersItsBreakdownWithAPeriod() {
-    for (final Locale locale : new Locale[] { GERMAN, THAI_DIGS }) {
+    for (final Locale locale : new Locale[] { GERMAN, THAI_DIGITS }) {
       final String profile = underLocale(locale, () -> {
         database.begin();
         try {
@@ -121,7 +121,7 @@ class Issue9649CypherPlanLocaleTest extends TestHelper {
     final AnchorSelection anchor = new AnchorSelection("n", null, 1234.567, 10L);
     final PhysicalPlan plan = new PhysicalPlan(null, anchor, 1234.567, 10L);
 
-    for (final Locale locale : new Locale[] { Locale.ROOT, GERMAN, THAI_DIGS }) {
+    for (final Locale locale : new Locale[] { Locale.ROOT, GERMAN, THAI_DIGITS }) {
       underLocale(locale, () -> {
         assertThat(anchor.toString()).as("anchor under %s", locale).contains("cost=1234.57");
         assertThat(plan.toString()).as("plan under %s", locale).contains("cost=1234.57");
@@ -140,7 +140,7 @@ class Issue9649CypherPlanLocaleTest extends TestHelper {
     final ExpandIntoStep step = new ExpandIntoStep("a", "b", "r", Direction.OUT, new String[] { "KNOWS" }, 1234.567, 10L,
         new BasicCommandContext());
 
-    for (final Locale locale : new Locale[] { Locale.ROOT, GERMAN, THAI_DIGS })
+    for (final Locale locale : new Locale[] { Locale.ROOT, GERMAN, THAI_DIGITS })
       assertThat(underLocale(locale, () -> step.prettyPrint(0, 2))).as("under %s", locale).contains("[cost=1234.57, rows=10]");
   }
 
@@ -148,7 +148,7 @@ class Issue9649CypherPlanLocaleTest extends TestHelper {
   @Test
   void syntaxErrorPositionsAreAsciiDigits() {
     for (final String query : new String[] { "MATCH (n RETURN n", "RETURN 1 )" }) {
-      final CommandParsingException e = underLocale(THAI_DIGS,
+      final CommandParsingException e = underLocale(THAI_DIGITS,
           () -> catchThrowableOfType(CommandParsingException.class, () -> database.query("opencypher", query)));
       assertThat(e).as("query %s", query).isNotNull();
       assertThat(e.getMessage()).as("query %s", query).containsPattern("line 1").doesNotMatch(THAI_DIGIT);
