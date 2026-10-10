@@ -90,6 +90,7 @@ import com.arcadedb.query.sql.parser.ValueExpression;
 import com.arcadedb.query.sql.parser.WhereClause;
 import com.arcadedb.engine.timeseries.AggregationType;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
+import com.arcadedb.engine.timeseries.FieldFilter;
 import com.arcadedb.engine.timeseries.MultiColumnAggregationRequest;
 import com.arcadedb.engine.timeseries.TagFilter;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
@@ -2168,8 +2169,12 @@ public class SelectExecutionPlanner {
       final TagFilter tagFilter = extractTagFilter(info.flattenedWhereClause, tsType.getTsColumns(),
           tsType.getTimestampColumn(), context);
 
+      // Issue #9612: range predicates on numeric FIELD columns, which the engine judges on block statistics and on the
+      // primitive columns instead of building a row for every sample
+      final FieldFilter fieldFilter = extractFieldFilter(info.flattenedWhereClause, tsType.getTsColumns(), context);
+
       // Try push-down aggregation before falling back to full row fetch
-      if (tryTimeSeriesAggregationPushDown(plan, tsType, fromTs, toTs, info, context))
+      if (tryTimeSeriesAggregationPushDown(plan, tsType, fromTs, toTs, fieldFilter, info, context))
         return;
 
       // Issue #5414: last-point queries scan the series newest-first so they can stop after the
@@ -2183,8 +2188,13 @@ public class SelectExecutionPlanner {
       // Issue #7663: the ascending read carries a cap too. ORDER BY ts ASC LIMIT n, and a bare LIMIT n, used to
       // walk the whole range and let LimitExecutionStep drop the surplus - after it had been decompressed, boxed
       // and held.
-      plan.chain(new FetchFromTimeSeriesStep(tsType, fromTs, toTs, tagFilter, false,
-          timeSeriesAscendingScanLimit(tsType, info, context), context));
+      //
+      // The field filter goes to the unbounded read only: a capped read stops at the first n rows the engine returns, and
+      // takes a cap only when isTimeSeriesWhereFullyPushedDown proved the engine returns no row the WHERE drops - which a
+      // field predicate never lets it prove. The residual FilterStep still runs over the rows the field filter kept.
+      final int ascendingLimit = timeSeriesAscendingScanLimit(tsType, info, context);
+      plan.chain(new FetchFromTimeSeriesStep(tsType, fromTs, toTs, tagFilter, ascendingLimit > 0 ? null : fieldFilter, false,
+          ascendingLimit, context));
       return;
     }
 
@@ -3206,6 +3216,99 @@ public class SelectExecutionPlanner {
     return filter;
   }
 
+  /**
+   * Issue #9612: the range predicates of the WHERE clause on numeric FIELD columns ({@code uu > 90}, {@code ui BETWEEN 1 AND
+   * 5}, {@code uu = 5}) as a {@link FieldFilter}, or {@code null} when there is none. Only for a WHERE of one AND block: the
+   * predicates of an OR are not a conjunction, and a union of ranges is not what the engine evaluates.
+   * <p>
+   * Every predicate {@link #fieldFilterOf} accepts becomes a condition and the rest are ignored here: a scan returns a
+   * superset, and whether the WHERE is reproduced EXACTLY - which an aggregation needs - is
+   * {@link #isTimeSeriesWhereFullyPushedDown(LocalTimeSeriesType, QueryPlanningInfo, CommandContext, boolean)}'s question.
+   */
+  private static FieldFilter extractFieldFilter(final List<AndBlock> flattenedWhere, final List<ColumnDefinition> columns,
+      final CommandContext context) {
+    if (flattenedWhere == null || flattenedWhere.size() != 1)
+      return null;
+    FieldFilter filter = null;
+    for (final BooleanExpression expr : flattenedWhere.getFirst().getSubBlocks()) {
+      final FieldFilter one = fieldFilterOf(expr, columns, context);
+      if (one != null)
+        filter = filter == null ? one : filter.and(one);
+    }
+    return filter;
+  }
+
+  /**
+   * The {@link FieldFilter} of one predicate, or {@code null} when it is not a range predicate the engine evaluates exactly
+   * as SQL does: {@code <field> op <operand>} or {@code <operand> op <field>} with {@code op} one of {@code > >= < <= =}, or
+   * {@code <field> BETWEEN <operand> AND <operand>}, where the field is a numeric FIELD column and each operand is known at
+   * planning time (a literal or a parameter) and of a type {@link FieldFilter#supports} accepts for the column. A null operand
+   * matches no row in SQL and is refused here, as is any operand that reads the record ({@code uu > us}).
+   */
+  private static FieldFilter fieldFilterOf(final BooleanExpression expr, final List<ColumnDefinition> columns, final CommandContext context) {
+    try {
+      if (expr instanceof BetweenCondition between) {
+        final int columnIndex = fieldColumnIndex(between.getFirst(), columns);
+        if (columnIndex < 0)
+          return null;
+        final Object low = plannedOperand(between.getSecond(), context);
+        final Object high = plannedOperand(between.getThird(), context);
+        final ColumnDefinition column = columns.get(columnIndex);
+        if (!FieldFilter.supports(column, low) || !FieldFilter.supports(column, high))
+          return null;
+        return FieldFilter.range(nonTsIndexOf(columns, columnIndex), column, (Number) low, true, (Number) high, true);
+      }
+      if (!(expr instanceof BinaryCondition binary))
+        return null;
+      final BinaryCompareOperator op = binary.operator;
+      if (!(op instanceof GtOperator || op instanceof GeOperator || op instanceof LtOperator || op instanceof LeOperator
+          || op instanceof EqualsCompareOperator))
+        return null;
+      int columnIndex = fieldColumnIndex(binary.left, columns);
+      final boolean fieldOnLeft = columnIndex >= 0;
+      if (!fieldOnLeft)
+        columnIndex = fieldColumnIndex(binary.right, columns);
+      if (columnIndex < 0)
+        return null;
+      final Object operand = plannedOperand(fieldOnLeft ? binary.right : binary.left, context);
+      final ColumnDefinition column = columns.get(columnIndex);
+      if (!FieldFilter.supports(column, operand))
+        return null;
+      final Number value = (Number) operand;
+      final int nonTsIdx = nonTsIndexOf(columns, columnIndex);
+      // "operand > field" is "field < operand": the comparison is read from the field's side
+      final boolean greater = fieldOnLeft ? op instanceof GtOperator || op instanceof GeOperator : op instanceof LtOperator || op instanceof LeOperator;
+      final boolean inclusive = op instanceof GeOperator || op instanceof LeOperator;
+      if (op instanceof EqualsCompareOperator)
+        return FieldFilter.range(nonTsIdx, column, value, true, value, true);
+      return greater ? FieldFilter.range(nonTsIdx, column, value, inclusive, null, false) : FieldFilter.range(nonTsIdx, column, null, false, value, inclusive);
+    } catch (final RuntimeException e) {
+      // an operand that cannot be evaluated at planning time is the generic filter's to evaluate; logged, so a planner bug
+      // that lands here is not mistaken for a predicate the push-down was never meant to take
+      LogManager.instance().log(SelectExecutionPlanner.class, Level.FINE, "TimeSeries field predicate '%s' left to the SQL filter: %s", null,
+          expr, e.toString());
+      return null;
+    }
+  }
+
+  /** The schema index of the FIELD column {@code expr} names as a bare identifier, or -1. */
+  private static int fieldColumnIndex(final Expression expr, final List<ColumnDefinition> columns) {
+    if (expr == null || !expr.isBaseIdentifier())
+      return -1;
+    final String name = expr.toString().trim();
+    for (int i = 0; i < columns.size(); i++)
+      if (columns.get(i).getRole() == ColumnDefinition.ColumnRole.FIELD && columns.get(i).getName().equals(name))
+        return i;
+    return -1;
+  }
+
+  /** The value of an operand that does not read the record, or {@code null} when it does (or evaluates to null). */
+  private static Object plannedOperand(final Expression expr, final CommandContext context) {
+    if (expr == null || !expr.isEarlyCalculated(context))
+      return null;
+    return expr.execute((Result) null, context);
+  }
+
   private static int nonTsIndexOf(final List<ColumnDefinition> columns, final int columnIndex) {
     int nonTsIdx = -1;
     for (int j = 0; j <= columnIndex; j++)
@@ -3458,6 +3561,16 @@ public class SelectExecutionPlanner {
    */
   private boolean isTimeSeriesWhereFullyPushedDown(final LocalTimeSeriesType tsType, final QueryPlanningInfo info,
       final CommandContext context) {
+    return isTimeSeriesWhereFullyPushedDown(tsType, info, context, false);
+  }
+
+  /**
+   * Same as above, also counting as consumed the range predicates on numeric FIELD columns that {@link #extractFieldFilter}
+   * turns into a {@link FieldFilter} when {@code withFieldFilter} is set (issue #9612): only for a consumer that hands that
+   * filter to the engine.
+   */
+  private boolean isTimeSeriesWhereFullyPushedDown(final LocalTimeSeriesType tsType, final QueryPlanningInfo info,
+      final CommandContext context, final boolean withFieldFilter) {
     if (info.flattenedWhereClause == null || info.flattenedWhereClause.isEmpty())
       return true;
     // An OR pushes the union of the per-block tag values, a superset that relies on the residual
@@ -3471,6 +3584,9 @@ public class SelectExecutionPlanner {
 
     for (final BooleanExpression expr : info.flattenedWhereClause.getFirst().getSubBlocks()) {
       if (extractTimeRange(expr, timestampColumn, context) != null)
+        continue;
+
+      if (withFieldFilter && fieldFilterOf(expr, columns, context) != null)
         continue;
 
       if (!(expr instanceof BinaryCondition binary) || !(binary.operator instanceof EqualsCompareOperator))
@@ -3568,11 +3684,13 @@ public class SelectExecutionPlanner {
 
   /**
    * Attempts to push down aggregation into the TimeSeries engine.
-   * Eligible queries have: ts.timeBucket GROUP BY, simple aggregate functions (avg, max, min, sum, count),
-   * no DISTINCT, no HAVING, no UNWIND, no LET.
+   * Eligible queries have: simple aggregate functions (avg, max, min, sum, count), grouped by the ts.timeBucket, by TAG
+   * columns, or not grouped at all (issue #9612: one row over the whole range, answered from the block statistics of every
+   * block wholly inside it), no DISTINCT, no UNWIND, no LET, and a WHERE the engine reproduces exactly: a time range, tag
+   * equalities and range predicates on numeric FIELD columns (issue #9612).
    */
   private boolean tryTimeSeriesAggregationPushDown(final SelectExecutionPlan plan, final LocalTimeSeriesType tsType,
-      final long fromTs, final long toTs, final QueryPlanningInfo info, final CommandContext context) {
+      final long fromTs, final long toTs, final FieldFilter fieldFilter, final QueryPlanningInfo info, final CommandContext context) {
     // Must have aggregate projection (set by splitProjectionsForGroupBy)
     if (info.aggregateProjection == null)
       return false;
@@ -3585,9 +3703,10 @@ public class SelectExecutionPlanner {
     if (info.distinct)
       return false;
 
-    // Must group by the time bucket, by TAG columns, or by both (issue #9489): at most one bucket and as many tags as the engine groups by
-    if (info.groupBy == null || info.groupBy.getItems() == null || info.groupBy.getItems().isEmpty()
-        || info.groupBy.getItems().size() > 1 + TimeSeriesEngine.MAX_GROUP_COLUMNS)
+    // Group by the time bucket, by TAG columns, or by both (issue #9489): at most one bucket and as many tags as the engine groups
+    // by. Or by nothing at all (issue #9612): the answer is then one row over the whole range
+    final boolean ungrouped = info.groupBy == null || info.groupBy.getItems() == null || info.groupBy.getItems().isEmpty();
+    if (!ungrouped && info.groupBy.getItems().size() > 1 + TimeSeriesEngine.MAX_GROUP_COLUMNS)
       return false;
 
     // No unsupported clauses
@@ -3712,13 +3831,17 @@ public class SelectExecutionPlanner {
     if (requests.isEmpty())
       return false;
 
+    // Without a GROUP BY every projected column must be an aggregate: a bucket or a bare tag would be one arbitrary value
+    if (ungrouped && (timeBucketAlias != null || !projectedTags.isEmpty()))
+      return false;
+
     // Every GROUP BY key is the time bucket (by its alias) or a TAG column (by its projected name, or its own name when it is not projected)
     boolean groupsByBucket = false;
     final List<String> groupTags = new ArrayList<>();
     // The keys as the query wrote them: info.groupBy has already swapped a key the projection does not show for a generated alias
-    final GroupBy writtenGroupBy = statement.getGroupBy() != null && statement.getGroupBy().getItems() != null
+    final GroupBy writtenGroupBy = ungrouped ? null : statement.getGroupBy() != null && statement.getGroupBy().getItems() != null
         && statement.getGroupBy().getItems().size() == info.groupBy.getItems().size() ? statement.getGroupBy() : info.groupBy;
-    for (final Object groupByItem : writtenGroupBy.getItems()) {
+    for (final Object groupByItem : ungrouped ? List.of() : writtenGroupBy.getItems()) {
       final String key = groupByItem.toString().trim();
       final String tagName;
       if (timeBucketAlias != null && key.equals(timeBucketAlias)) {
@@ -3745,7 +3868,7 @@ public class SelectExecutionPlanner {
       if (!groupTags.contains(projectedTag))
         return false;
     // Without a bucket the query groups by tags alone, which is answered as one bucket per group
-    if (timeBucketAlias == null && groupTags.isEmpty())
+    if (!ungrouped && timeBucketAlias == null && groupTags.isEmpty())
       return false;
     if (groupTags.size() > TimeSeriesEngine.MAX_GROUP_COLUMNS)
       return false;
@@ -3801,18 +3924,22 @@ public class SelectExecutionPlanner {
     // Extract tag filter from WHERE clause for push-down
     final TagFilter tagFilter = extractTagFilter(info.flattenedWhereClause, columns, tsType.getTimestampColumn(), context);
 
-    // Verify all WHERE conditions are consumed by push-down (time-range or tag equality).
-    // If any field-value predicate remains (e.g., WHERE value > 100), bail out to avoid
-    // silently dropping it — the standard filter step will handle it instead.
-    final boolean whereFullyConsumed = isTimeSeriesWhereFullyPushedDown(tsType, info, context)
+    // Verify all WHERE conditions are consumed by push-down (time range, tag equality, or a range predicate on a numeric
+    // field the field filter carries, issue #9612). If any other predicate remains (e.g., WHERE value > other), bail out to
+    // avoid silently dropping it — the standard filter step will handle it instead.
+    final boolean whereFullyConsumed = isTimeSeriesWhereFullyPushedDown(tsType, info, context, true)
         || isOrOfEqualitiesOnOneTag(tsType, info, context);
     if (info.flattenedWhereClause != null && !whereFullyConsumed)
       return false;
+    // isOrOfEqualitiesOnOneTag consumes no field predicate, and extractFieldFilter builds none for an OR
+    final FieldFilter pushedFieldFilter = info.flattenedWhereClause != null && info.flattenedWhereClause.size() == 1 ? fieldFilter : null;
 
     // Chain the push-down step
-    if (groupTags.isEmpty())
+    if (ungrouped)
+      plan.chain(new AggregateFromTimeSeriesStep(tsType, fromTs, toTs, requests, tagFilter, pushedFieldFilter, outputs, context));
+    else if (groupTags.isEmpty())
       plan.chain(new AggregateFromTimeSeriesStep(tsType, fromTs, toTs, requests, bucketIntervalMs, bucketOffsetMs,
-          timeBucketAlias, requestAliasToOutputAlias, tagFilter, context));
+          timeBucketAlias, requestAliasToOutputAlias, tagFilter, pushedFieldFilter, null, null, null, context));
     else {
       // A projected tag points at its position among the grouping keys
       final List<AggregateFromTimeSeriesStep.OutputColumn> groupedOutputs = new ArrayList<>(outputs.size());
@@ -3821,7 +3948,7 @@ public class SelectExecutionPlanner {
             new AggregateFromTimeSeriesStep.OutputColumn(output.name(), output.kind(), groupTags.indexOf(projectedTags.get(output.name()))) :
             output);
       plan.chain(new AggregateFromTimeSeriesStep(tsType, fromTs, toTs, requests, bucketIntervalMs, bucketOffsetMs, timeBucketAlias,
-          requestAliasToOutputAlias, tagFilter, groupColumns, groupTags.toArray(new String[0]), groupedOutputs, context));
+          requestAliasToOutputAlias, tagFilter, pushedFieldFilter, groupColumns, groupTags.toArray(new String[0]), groupedOutputs, context));
     }
 
     // Null out the aggregate projections so handleProjections doesn't add duplicate steps

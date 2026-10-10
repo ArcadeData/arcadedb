@@ -422,6 +422,21 @@ public class TimeSeriesShard implements AutoCloseable {
   public Iterator<Object[]> iterateRange(final long fromTs, final long toTs, final int[] columnIndices,
                                          final TagFilter tagFilter, final AggregationMetrics metrics)
       throws IOException {
+    return iterateRange(fromTs, toTs, columnIndices, tagFilter, null, metrics);
+  }
+
+  /**
+   * Same as above, handing over only the rows that also pass {@code fieldFilter} (issue #9612): the sealed layer judges it
+   * on the block statistics and on the primitive columns, the mutable bucket on its rows.
+   *
+   * @param columnIndices must be {@code null} (every column) when a field filter is given: the mutable rows are filtered
+   *                      after they are read, so they must carry the filtered columns
+   */
+  public Iterator<Object[]> iterateRange(final long fromTs, final long toTs, final int[] columnIndices,
+                                         final TagFilter tagFilter, final FieldFilter fieldFilter, final AggregationMetrics metrics)
+      throws IOException {
+    if (fieldFilter != null && columnIndices != null)
+      throw new IllegalArgumentException("A field filter needs the rows of every column, not a projection");
     final BlockDirectorySnapshot sealedBlocks;
     final Iterator<Object[]> mutableIter;
     compactionLock.readLock().lock();
@@ -431,12 +446,14 @@ public class TimeSeriesShard implements AutoCloseable {
       // A lazy iterator would risk reading stale (cleared) pages if compaction
       // acquires the write lock and clears the bucket before next() is called.
       final List<Object[]> mutableRows = mutableBucket.scanRange(fromTs, toTs, columnIndices, tagFilter, metrics);
+      if (fieldFilter != null)
+        mutableRows.removeIf(row -> !fieldFilter.matches(row));
       mutableIter = mutableRows.iterator();
     } finally {
       compactionLock.readLock().unlock();
     }
     final Iterator<Object[]> sealedIter = sealedStore.iterateRange(sealedBlocks, fromTs, toTs, columnIndices, tagFilter,
-        metrics);
+        fieldFilter, metrics);
 
     // Chain sealed then mutable, with inline tag filtering.
     // The sealed iterator reads one block at a time from the snapshot taken above; the mutable rows were
