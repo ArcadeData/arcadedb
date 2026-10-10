@@ -234,12 +234,12 @@ public class PostgresNetworkExecutor extends Thread {
   private ServerSecurityUser authenticatedUser;
   private int      consecutiveErrors          = 0;
   /**
-   * BackendKeyData of this connection: its process id and the secret a CancelRequest must quote to reach it. Plain fields:
-   * both are written once, before {@link #ACTIVE_SESSIONS} publishes the connection, and every other thread reaches the
-   * connection through that map, whose insertion happens-before its lookups.
+   * BackendKeyData of this connection: its process id and the secret a CancelRequest must quote to reach it. Volatile:
+   * the connection thread writes them while {@link #ACTIVE_SESSIONS} publishes the connection, and a CancelRequest or a
+   * {@code pg_*_backend} call on another thread reads them.
    */
-  private int      processId;
-  private int      cancelSecret;
+  private volatile int processId;
+  private volatile int cancelSecret;
   /** The statement this connection is running, which a CancelRequest stops; null between statements (issue #9689). */
   private volatile RunningQuery runningStatement;
   private boolean  explicitTransactionStarted = false;
