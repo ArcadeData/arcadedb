@@ -24,6 +24,7 @@ import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.DeferredExistenceChecks;
+import com.arcadedb.database.DocumentValidator;
 import com.arcadedb.database.ExistingRecordsCheck;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandExecutionException;
@@ -625,15 +626,28 @@ public class OpenCypherQueryEngine implements QueryEngine {
   }
 
   /**
-   * Changes the declared type of a property, keeping every other attribute of its declaration (MANDATORY, NOTNULL, READONLY,
-   * REGEXP, MIN, MAX, DEFAULT, HIDDEN, custom values) and refusing the change when a stored record violates the new
-   * declaration (#9304). The schema has no in-place type change, so the property is recreated from its own JSON; a refusal
-   * (or any failure, an Error included) puts the previous declaration back before rethrowing. The check scans the whole type, as
-   * CREATE PROPERTY does.
+   * Changes the declared type of a property, keeping every other attribute of its declaration and refusing the change when a
+   * stored record violates the new declaration (#9304). The schema has no in-place type change, so the property is recreated
+   * from its own JSON; a refusal (or any failure, an Error included) puts the previous declaration back before rethrowing. The
+   * check scans the whole type, as CREATE PROPERTY does.
+   * <p>
+   * The attributes that mean the same thing whatever the type (MANDATORY, NOTNULL, READONLY, HIDDEN, custom values, ...) are
+   * carried over as they are. The ones expressed in the old type's terms - OF, REGEXP, MIN, MAX and DEFAULT - are carried over
+   * only when the new type reads them the same way, and otherwise the statement is refused naming them (#9645): copied blindly
+   * they left a property no value could be written through, and the scan of the stored records cannot notice it on a type that
+   * holds none.
    */
   private void retypeProperty(final Schema schema, final String typeName, final Property existing, final Type newType) {
     final DocumentType type = schema.getType(typeName);
     final String propName = existing.getName();
+    final Database database = schema.getEmbedded().getDatabase();
+
+    final List<String> notCarried = typeDependentAttributesNotCarried(database, existing, newType);
+    if (!notCarried.isEmpty())
+      throw refuseRetype(typeName, existing, newType, notCarried);
+
+    final Object previousDefault = evaluateDefaultOrNull(existing);
+
     final JSONObject previous = existing.toJSON();
     final JSONObject retyped = new JSONObject(previous.toMap());
     retyped.put("type", newType.name());
@@ -641,7 +655,8 @@ public class OpenCypherQueryEngine implements QueryEngine {
     type.dropProperty(propName);
     try {
       final Property created = type.createProperty(propName, retyped);
-      ExistingRecordsCheck.requireDeclaration(schema.getEmbedded().getDatabase(), type, created);
+      requireDefaultReadableAs(database, typeName, existing, created, newType, previousDefault);
+      ExistingRecordsCheck.requireDeclaration(database, type, created);
     } catch (final Throwable e) {
       // the schema is not transactional: until the declaration is back, a concurrent write is not validated against it
       try {
@@ -653,6 +668,117 @@ public class OpenCypherQueryEngine implements QueryEngine {
       }
       throw e;
     }
+  }
+
+  /**
+   * The OF, REGEXP, MIN and MAX of {@code existing} that {@code newType} cannot hold with the meaning they have now, each
+   * described with the reason. An empty list means every one of them, if set, carries over unchanged.
+   */
+  private static List<String> typeDependentAttributesNotCarried(final Database database, final Property existing,
+      final Type newType) {
+    final Type oldType = existing.getType();
+    final List<String> notCarried = new ArrayList<>(4);
+
+    // the element type of a LIST is the value type of a MAP and nothing else: no other type has elements to constrain
+    if (existing.getOfType() != null && !(hasElementType(oldType) && hasElementType(newType)))
+      notCarried.add("OF '" + existing.getOfType() + "' (" + newType + " has no element type)");
+
+    // a pattern describes text: on any other type it is matched against the value's string form, which is not what it
+    // was written for, and a pattern such as '[A-Z]+' refuses every value of a numeric type
+    if (existing.getRegexp() != null && newType != Type.STRING)
+      notCarried.add("REGEXP '" + existing.getRegexp() + "' (" + newType + " values are not text)");
+
+    final String minReason = boundNotCarried(database, oldType, newType, existing.getMin());
+    if (minReason != null)
+      notCarried.add("MIN '" + existing.getMin() + "' (" + minReason + ")");
+    final String maxReason = boundNotCarried(database, oldType, newType, existing.getMax());
+    if (maxReason != null)
+      notCarried.add("MAX '" + existing.getMax() + "' (" + maxReason + ")");
+
+    return notCarried;
+  }
+
+  private static boolean hasElementType(final Type type) {
+    return type == Type.LIST || type == Type.MAP;
+  }
+
+  /**
+   * Why a MIN or MAX of a property of {@code oldType} cannot serve the same purpose on {@code newType}, or null when it can:
+   * the bound is a length on a STRING, a size on a collection and a value on a number or a date, so it carries over only
+   * between two types that measure the same thing and when the new type can read it.
+   */
+  private static String boundNotCarried(final Database database, final Type oldType, final Type newType, final String bound) {
+    if (bound == null)
+      return null;
+    final String oldMeasure = boundMeasure(oldType);
+    final String newMeasure = boundMeasure(newType);
+    if (newMeasure == null)
+      return newType + " has no order and no size";
+    if (!newMeasure.equals(oldMeasure))
+      return "a " + oldMeasure + " on " + oldType + ", a " + newMeasure + " on " + newType;
+    return DocumentValidator.unreadableBound(database, newType, bound);
+  }
+
+  /**
+   * What a MIN or MAX measures on a property of {@code type}, following {@link DocumentValidator#unreadableBound}, or null
+   * for a type that takes no bound.
+   */
+  private static String boundMeasure(final Type type) {
+    if (!DocumentValidator.isBoundApplicable(type))
+      return null;
+    return switch (type) {
+      case STRING -> "number of characters";
+      case BINARY -> "number of bytes";
+      case LIST, MAP, ARRAY_OF_SHORTS, ARRAY_OF_INTEGERS, ARRAY_OF_LONGS, ARRAY_OF_FLOATS, ARRAY_OF_DOUBLES -> "number of items";
+      case BYTE, SHORT, INTEGER, LONG, FLOAT, DOUBLE, DECIMAL -> "numeric value";
+      case DATE, DATETIME, DATETIME_SECOND, DATETIME_MICROS, DATETIME_NANOS -> "date";
+      default -> type.name();
+    };
+  }
+
+  private static Object evaluateDefaultOrNull(final Property property) {
+    if (property.getDefaultValueDefinition() == null)
+      return null;
+    try {
+      return property.getDefaultValue();
+    } catch (final RuntimeException e) {
+      return null;
+    }
+  }
+
+  /**
+   * Refuses the retype when the DEFAULT of the previous declaration does not produce a value of {@code newType}: it would be
+   * stored, and every record created without the property would then fail on it (#9645). A default that produced a value
+   * before and produces none now lost it in the conversion, which is the same failure without the exception.
+   */
+  private static void requireDefaultReadableAs(final Database database, final String typeName, final Property existing,
+      final Property created, final Type newType, final Object previousDefault) {
+    final Object definition = created.getDefaultValueDefinition();
+    if (definition == null)
+      return;
+
+    final String notCarried = "DEFAULT `" + definition + "` (it does not evaluate to a " + newType + ")";
+    Object value;
+    try {
+      value = created.getDefaultValue();
+      if (value != null)
+        // a default set through the API as a non-String is returned verbatim: whether the new type can take it is asked here
+        value = Type.convert(database, value, newType.getDefaultJavaType());
+    } catch (final RuntimeException e) {
+      final CommandExecutionException refusal = refuseRetype(typeName, existing, newType, List.of(notCarried));
+      refusal.initCause(e);
+      throw refusal;
+    }
+    if (value == null && previousDefault != null)
+      throw refuseRetype(typeName, existing, newType, List.of(notCarried));
+  }
+
+  private static CommandExecutionException refuseRetype(final String typeName, final Property existing, final Type newType,
+      final List<String> notCarried) {
+    return new CommandExecutionException(
+        "Cannot change the type of property '" + typeName + "." + existing.getName() + "' from "
+            + existing.getType() + " to " + newType + ": " + String.join(", ", notCarried)
+            + " cannot be carried over to the new type. Change or remove them with ALTER PROPERTY first");
   }
 
   private void executeCreateConstraint(final CypherDDLStatement ddl, final Schema schema, final QueryStatistics stats) {
