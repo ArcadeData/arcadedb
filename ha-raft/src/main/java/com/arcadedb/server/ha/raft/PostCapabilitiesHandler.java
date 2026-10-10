@@ -102,6 +102,15 @@ public class PostCapabilitiesHandler extends AbstractServerHttpHandler {
     this.plugin = plugin;
   }
 
+  /**
+   * On a worker thread so the request body - the caller's self-description (issue #9255) - is read at all: the shared
+   * pipeline parses a payload only for a handler that runs there, and on the IO thread {@code payload} is always null.
+   */
+  @Override
+  protected boolean mustExecuteOnWorkerThread() {
+    return true;
+  }
+
   @Override
   public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user,
       final JSONObject payload) {
