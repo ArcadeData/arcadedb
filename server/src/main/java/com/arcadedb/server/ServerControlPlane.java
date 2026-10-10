@@ -1017,7 +1017,13 @@ public class ServerControlPlane {
     return waitMs < 0 ? DEFAULT_TERMINATE_WAIT_MS : Math.min(waitMs, MAX_TERMINATE_WAIT_MS);
   }
 
-  /** Whether {@code user} may see and stop the work of {@code owner}: the server administrator any, others their own. */
+  /**
+   * Whether {@code user} may see and stop the work of {@code owner}: the server administrator any, others their own.
+   * <p>
+   * A {@code null} user sees nothing, unlike in {@link #filterAuthorizedDatabases}: every HTTP request reaches the server
+   * commands authenticated, so a {@code null} here can only be a caller that forgot to pass one, and stopping somebody's
+   * work is the one place where failing closed is the safe answer to that.
+   */
   private static boolean isVisible(final ServerSecurityUser user, final String owner) {
     return user != null && (ServerSecurityUser.isServerAdministrator(user.getName()) || user.getName().equals(owner));
   }
