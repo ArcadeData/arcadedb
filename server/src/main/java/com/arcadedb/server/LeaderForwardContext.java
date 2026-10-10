@@ -90,6 +90,14 @@ public final class LeaderForwardContext {
   public static final String FORWARDED_COMMAND_TIMEOUT_HEADER = "X-ArcadeDB-Command-Timeout";
 
   /**
+   * Request header carrying the id the forwarded statement has on the forwarding node, in its running-statement
+   * registry (issue #9689). The receiving node records it on its own entry ({@code forwardedFrom}), so the statement is
+   * found by either id, and a terminate on the forwarding node reaches the work by it. Honoured under the same
+   * cluster-token gate as the headers above.
+   */
+  public static final String FORWARDED_QUERY_HEADER = "X-ArcadeDB-Forwarded-Query";
+
+  /**
    * Why a request that arrived already forwarded to the leader landed on a node that is not the leader
    * (issue #7603). The one-hop refusal used to answer both causes the same way - HTTP 400 blaming
    * {@code arcadedb.ha.serverList} - which told every client not to retry a routine election.

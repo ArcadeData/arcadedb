@@ -20,6 +20,7 @@ package com.arcadedb.server.gremlin;
 
 import com.arcadedb.gremlin.ArcadeGraph;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.RunningQuery;
 import com.arcadedb.query.sql.executor.QueryAdmissionGate;
 import com.arcadedb.server.ArcadeDBServer;
 import org.apache.tinkerpop.gremlin.groovy.engine.GremlinExecutor;
@@ -30,6 +31,7 @@ import org.apache.tinkerpop.gremlin.server.GraphManager;
 import org.apache.tinkerpop.gremlin.server.Settings;
 import org.apache.tinkerpop.gremlin.structure.Graph;
 import org.apache.tinkerpop.gremlin.structure.Transaction;
+import org.apache.tinkerpop.gremlin.util.Tokens;
 import org.apache.tinkerpop.gremlin.util.message.RequestMessage;
 
 import javax.script.Bindings;
@@ -60,6 +62,10 @@ public class ArcadeGraphManager implements GraphManager {
   // THE QUERY ADMISSION SLOT (ISSUE #9518) OF THE REQUEST THE CURRENT gremlinPool THREAD EVALUATES. TINKERPOP CALLS
   // beforeQueryStart, onQuerySuccess AND onQueryError ON THAT THREAD, AROUND THE EVALUATION
   private static final ThreadLocal<QueryAdmissionGate.Ticket> ADMISSION = new ThreadLocal<>();
+  /** The registry entry of the request this thread evaluates (issue #9689). */
+  private static final ThreadLocal<RunningQuery>              RUNNING   = new ThreadLocal<>();
+  /** Who sent the request this thread evaluates, published by {@link GremlinPrincipalPropagatingExecutorService}. */
+  private static final ThreadLocal<String>                    USER      = new ThreadLocal<>();
 
   // THE GLOBAL BINDINGS OF THE GREMLIN EXECUTOR, ONCE THE SERVER HAS BUILT THEM (#9147)
   private volatile    Bindings               scriptGlobals;
@@ -439,6 +445,31 @@ public class ArcadeGraphManager implements GraphManager {
   public void beforeQueryStart(final RequestMessage msg) {
     releaseAdmission();
     ADMISSION.set(QueryAdmissionGate.getInstance().admit());
+    // Once admitted, listed by "list queries" / SHOW TRANSACTIONS and stopped by a terminate (issue #9689): the traversal's
+    // scans and its adjacency steps check the entry. The script or bytecode is described only if somebody lists it
+    final ArcadeDBServer server = serverInstance;
+    if (server != null) {
+      final RunningQuery runningQuery = server.getRunningQueries().register(databaseOf(msg), USER.get(), "gremlin", null, null);
+      runningQuery.setStatement("gremlin", () -> String.valueOf(msg.getArgs().get(Tokens.ARGS_GREMLIN)));
+      RUNNING.set(runningQuery);
+    }
+  }
+
+  /** The graph a request addresses: the target of its traversal-source alias, when it names one. */
+  private static String databaseOf(final RequestMessage msg) {
+    if (msg.getArgs().get(Tokens.ARGS_ALIASES) instanceof Map<?, ?> aliases && !aliases.isEmpty()) {
+      final Object target = aliases.values().iterator().next();
+      return target != null ? target.toString() : null;
+    }
+    return null;
+  }
+
+  /** Publishes, for the evaluation about to run on this thread, who sent the request; {@code null} clears it. */
+  static void setRequestUser(final String user) {
+    if (user != null)
+      USER.set(user);
+    else
+      USER.remove();
   }
 
   @Override
@@ -456,10 +487,19 @@ public class ArcadeGraphManager implements GraphManager {
    * task that evaluated a request ends, so a slot cannot outlive its request whatever path the evaluation took.
    */
   static void releaseAdmission() {
-    final QueryAdmissionGate.Ticket admission = ADMISSION.get();
-    if (admission != null) {
-      ADMISSION.remove();
-      admission.close();
+    try {
+      final QueryAdmissionGate.Ticket admission = ADMISSION.get();
+      if (admission != null) {
+        ADMISSION.remove();
+        admission.close();
+      }
+    } finally {
+      // LAST: THE ENTRY LEAVING THE LIST IS THE PROOF THE WORK IS OVER (issue #9689)
+      final RunningQuery runningQuery = RUNNING.get();
+      if (runningQuery != null) {
+        RUNNING.remove();
+        runningQuery.close();
+      }
     }
   }
 

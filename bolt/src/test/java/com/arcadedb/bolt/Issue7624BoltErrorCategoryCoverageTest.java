@@ -30,6 +30,7 @@ import com.arcadedb.exception.InvalidPropertyTypeException;
 import com.arcadedb.exception.QueryNotIdempotentException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SchemaException;
+import com.arcadedb.exception.QueryTerminatedException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.exception.ValidationException;
 import org.junit.jupiter.api.Test;
@@ -159,6 +160,7 @@ class Issue7624BoltErrorCategoryCoverageTest {
         new ValidationException("nope"),
         new CommandParsingException("unexpected token"),
         new TimeoutException("deadline"),
+        new QueryTerminatedException("stopped on request"),
         new IllegalStateException("something else") }) {
       final ErrorCategory category = ErrorCategory.of(sample);
       covered.add(category);

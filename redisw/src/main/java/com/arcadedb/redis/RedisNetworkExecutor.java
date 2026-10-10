@@ -30,6 +30,7 @@ import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ChannelBinaryServer;
+import com.arcadedb.query.RunningQuery;
 import com.arcadedb.query.sql.executor.QueryAdmissionGate;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalEdgeType;
@@ -297,6 +298,7 @@ public class RedisNetworkExecutor extends Thread {
       // run()). No query language applies to a native Redis command, so language is null. No-op
       // unless the tracing plugin is active.
       QueryAdmissionGate.Ticket admission = null;
+      RunningQuery runningQuery = null;
       try (final QueryTracer.Span span = QueryTracer.Holder.begin(
           selectedDatabaseName, null, "command", cmdString)) {
 
@@ -336,8 +338,14 @@ public class RedisNetworkExecutor extends Thread {
 
         // Waits for the query admission gate (issue #9518) like the requests of every other protocol. PING and SELECT touch no
         // data and must stay answerable on a server busy with queries
-        if (!"PING".equals(cmdString) && !"SELECT".equals(cmdString))
+        if (!"PING".equals(cmdString) && !"SELECT".equals(cmdString)) {
           admission = QueryAdmissionGate.getInstance().admit();
+          // Listed by "list queries" / SHOW TRANSACTIONS and stopped by a terminate, over the same window as the slot
+          // (issue #9689). The command line is put together only if somebody lists it
+          runningQuery = server.getRunningQueries().register(selectedDatabaseName, authenticatedUser.getName(), "redis", null, null);
+          runningQuery.setStatement("redis", () -> describe(list));
+          runningQuery.setConnection(getName(), String.valueOf(channel.socket.getRemoteSocketAddress()));
+        }
 
         switch (cmdString) {
           case "DECR":
@@ -415,14 +423,34 @@ public class RedisNetworkExecutor extends Thread {
         value.append(' ');
         value.append(respClientMessage(e));
       } finally {
-        if (admission != null)
-          admission.close();
+        try {
+          if (admission != null)
+            admission.close();
+        } finally {
+          // LAST: THE ENTRY LEAVING THE LIST IS THE PROOF THE WORK IS OVER
+          if (runningQuery != null)
+            runningQuery.close();
+        }
       }
 
       appendCrLf();
 
     } else
       LogManager.instance().log(this, Level.SEVERE, "Redis wrapper: Invalid command %s", command);
+  }
+
+  /** The command line as a client would type it, for the listing of running statements (issue #9689). */
+  private static String describe(final List<Object> command) {
+    final StringBuilder text = new StringBuilder();
+    for (final Object part : command) {
+      if (!text.isEmpty())
+        text.append(' ');
+      text.append(part instanceof String ? (String) part : String.valueOf(part));
+      // The listing shows a bounded prefix anyway: a command carrying a large value is not copied whole
+      if (text.length() > RunningQuery.MAX_TEXT_LENGTH * 2)
+        break;
+    }
+    return text.toString();
   }
 
   /**

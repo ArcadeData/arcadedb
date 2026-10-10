@@ -221,6 +221,7 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
     final AtomicReference<ExecutionResponse> response = new AtomicReference<>();
     QueryAdmissionGate.Ticket admission = null;
     RunningQuery runningQuery = null;
+    HttpClientDisconnectWatch disconnectWatch = null;
     try {
       // Set read consistency context for HA follower reads.
       // Must be inside the try block so the finally always clears the ThreadLocal.
@@ -262,6 +263,10 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
       if (registersRunningQuery())
         runningQuery = registerRunningQuery(exchange, user, database != null ? database.getName() : null,
             activeSession != null ? activeSession.id : null, activeSession != null ? activeSession.getTag() : null);
+      if (runningQuery != null && httpServer.getServer().getConfiguration()
+          .getValueAsBoolean(GlobalConfiguration.SERVER_HTTP_TERMINATE_ON_CLIENT_DISCONNECT))
+        // A client that goes away while the statement runs terminates it: nobody is left to read the answer (issue #9689)
+        disconnectWatch = HttpClientDisconnectWatch.arm(exchange, runningQuery);
       if (activeSession != null) {
         // EXECUTE THE CODE LOCKING THE CURRENT SESSION. THIS AVOIDS USING THE SAME SESSION FROM MULTIPLE THREADS AT THE SAME TIME
         activeSession.execute(user, () -> {
@@ -312,7 +317,7 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
         } finally {
           // AFTER EVERYTHING ELSE: THE ENTRY LEAVING THE LIST IS THE PROOF THE WORK IS OVER (issue #9680)
           if (runningQuery != null)
-            endRunningQuery(exchange, runningQuery, activeSession);
+            endRunningQuery(exchange, runningQuery, activeSession, disconnectWatch);
         }
       }
     }
@@ -339,8 +344,11 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
    * landed, and a later {@code /commit} is told the session is gone instead of committing what is left of it.
    */
   private void endRunningQuery(final HttpServerExchange exchange, final RunningQuery runningQuery,
-      final HttpSession activeSession) {
+      final HttpSession activeSession, final HttpClientDisconnectWatch disconnectWatch) {
     try {
+      // First: the connection is Undertow's again, and a client going away from here on no longer reaches the statement
+      if (disconnectWatch != null)
+        disconnectWatch.disarm();
       if (activeSession != null && runningQuery.isTerminated()
           && httpServer.getSessionManager().removeSession(activeSession.id) != null) {
         activeSession.cancel();

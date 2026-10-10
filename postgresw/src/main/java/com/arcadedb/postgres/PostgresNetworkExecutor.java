@@ -40,6 +40,7 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ChannelBinaryServer;
+import com.arcadedb.query.RunningQuery;
 import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -84,7 +85,6 @@ import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.micrometer.core.instrument.Metrics;
 import com.arcadedb.utility.FileUtils;
-import com.arcadedb.utility.Pair;
 import com.arcadedb.utility.StringUtils;
 
 import java.io.EOFException;
@@ -108,12 +108,13 @@ import java.nio.CharBuffer;
 import java.nio.charset.CharsetEncoder;
 import java.nio.charset.CoderResult;
 import java.nio.charset.CodingErrorAction;
+import java.security.SecureRandom;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -139,7 +140,15 @@ public class PostgresNetworkExecutor extends Thread {
    * The cap PostgreSQL itself puts on a startup packet ({@code PQ_STARTUP_MSG_LIMIT} in {@code pqcomm.c}).
    */
   private static final int                                            MAX_STARTUP_MESSAGE_LENGTH = 10000;
-  private static final Map<Long, Pair<Long, PostgresNetworkExecutor>> ACTIVE_SESSIONS  = new ConcurrentHashMap<>();
+  /**
+   * The authenticated connections by backend process id, what a {@code CancelRequest} and {@code pg_cancel_backend} name a
+   * connection by. One id space for the JVM: it used to be a counter per connection, so every connection got pid 0, each
+   * registration replaced the last, and a cancel quoting one connection's key reached whichever registered last (#9689).
+   */
+  private static final Map<Integer, PostgresNetworkExecutor>         ACTIVE_SESSIONS  = new ConcurrentHashMap<>();
+  private static final AtomicInteger                                  LAST_PROCESS_ID  = new AtomicInteger();
+  /** The secret a CancelRequest has to quote: it is the request's only credential, so it must not be guessable. */
+  private static final SecureRandom                                   CANCEL_SECRETS   = new SecureRandom();
   /** Bind-message parameter length denoting a NULL value (wire value -1, read unsigned). */
   private static final long                                           NULL_PARAM_LENGTH = 0xFFFFFFFFL;
   private static final Object[]                                       NO_PARAMETERS     = new Object[0];
@@ -224,7 +233,11 @@ public class PostgresNetworkExecutor extends Thread {
   private String   userPassword               = null;
   private ServerSecurityUser authenticatedUser;
   private int      consecutiveErrors          = 0;
-  private long     processIdSequence          = 0;
+  /** BackendKeyData of this connection: its process id and the secret a CancelRequest must quote to reach it. */
+  private int      processId;
+  private int      cancelSecret;
+  /** The statement this connection is running, which a CancelRequest stops; null between statements (issue #9689). */
+  private volatile RunningQuery runningStatement;
   private boolean  explicitTransactionStarted = false;
   private boolean  errorInTransaction         = false;
   /**
@@ -292,6 +305,84 @@ public class PostgresNetworkExecutor extends Thread {
     }
   }
 
+  /**
+   * Gives the connection a process id no other open connection holds. The counter wraps, and an id still held by a
+   * connection that outlived a whole lap is skipped rather than shared.
+   */
+  private void registerProcessId() {
+    while (true) {
+      final int candidate = LAST_PROCESS_ID.updateAndGet(i -> i == Integer.MAX_VALUE ? 1 : i + 1);
+      if (ACTIVE_SESSIONS.putIfAbsent(candidate, this) == null) {
+        processId = candidate;
+        return;
+      }
+    }
+  }
+
+  /** The connection with this backend process id, or {@code null}: for {@code pg_cancel_backend} / {@code pg_terminate_backend}. */
+  static PostgresNetworkExecutor getBackend(final int processId) {
+    return ACTIVE_SESSIONS.get(processId);
+  }
+
+  int getProcessId() {
+    return processId;
+  }
+
+  String getUserName() {
+    return userName;
+  }
+
+  ArcadeDBServer getServer() {
+    return server;
+  }
+
+  /**
+   * Stops the statement this connection is running, if it runs one (issue #9689): it fails at its next check with
+   * {@code 57014 query_canceled} and its transaction rolls back as after any other failure. The connection stays open.
+   *
+   * @return whether a statement was running and has been asked to stop
+   */
+  boolean cancelRunningStatement(final String by) {
+    final RunningQuery statement = runningStatement;
+    return statement != null && statement.terminate(by);
+  }
+
+  /**
+   * Opens the registry entry of a statement this connection runs (issue #9689): it is listed by {@code list queries} and
+   * {@code SHOW TRANSACTIONS} with this connection's process id, and a {@code CancelRequest} stops it. Close it once the
+   * statement's work - its commit included - is over.
+   */
+  private RunningStatement startStatement(final String language, final String text) {
+    final RunningQuery entry = server.getRunningQueries()
+        .register(database != null ? database.getName() : databaseName, userName, "postgres", null, null);
+    entry.setStatement(language, text);
+    entry.setConnection(String.valueOf(processId), clientAddress());
+    runningStatement = entry;
+    return new RunningStatement(entry);
+  }
+
+  private String clientAddress() {
+    final ChannelBinaryServer current = channel;
+    return current != null && current.socket != null && current.socket.getRemoteSocketAddress() != null ?
+        current.socket.getRemoteSocketAddress().toString() : null;
+  }
+
+  /** The entry of the statement running on this connection, closed once its work is over. Closing twice is harmless. */
+  private final class RunningStatement implements AutoCloseable {
+    private final RunningQuery entry;
+
+    private RunningStatement(final RunningQuery entry) {
+      this.entry = entry;
+    }
+
+    @Override
+    public void close() {
+      if (runningStatement == entry)
+        runningStatement = null;
+      entry.close();
+    }
+  }
+
   public void close() {
     shutdown = true;
     releasePreAuthTicket();
@@ -339,15 +430,13 @@ public class PostgresNetworkExecutor extends Thread {
 
       writeMessage("authentication ok", () -> channel.writeUnsignedInt(0), 'R', 8);
 
-      // BackendKeyData
-      final long pid = processIdSequence++;
-      final long secret = Math.abs(ThreadLocalRandom.current().nextInt(10000000));
+      // BackendKeyData: registered before it is sent, so a client cancelling as soon as it has the key is not refused
+      cancelSecret = CANCEL_SECRETS.nextInt();
+      registerProcessId();
       writeMessage("backend key data", () -> {
-        channel.writeUnsignedInt((int) pid);
-        channel.writeUnsignedInt((int) secret);
+        channel.writeUnsignedInt(processId);
+        channel.writeUnsignedInt(cancelSecret);
       }, 'K', 12);
-
-      ACTIVE_SESSIONS.put(pid, new Pair<>(secret, this));
 
       // Every reported parameter, the ones the startup packet set included, goes out as a ParameterStatus ahead of
       // the first ReadyForQuery: writeReadyForQueryMessage() reports them (issue #8241).
@@ -417,7 +506,7 @@ public class PostgresNetworkExecutor extends Thread {
           }
         }
       } finally {
-        ACTIVE_SESSIONS.remove(pid);
+        ACTIVE_SESSIONS.remove(processId, this);
         rollbackPendingTransaction();
       }
 
@@ -582,7 +671,8 @@ public class PostgresNetworkExecutor extends Thread {
           // looking like a drained one.
           // The query admission slot (issue #9518) covers the query and its column resolution, which may replay the query for an
           // empty result, and goes back before anything is written to the client
-          try (final QueryAdmissionGate.Ticket ignored = QueryAdmissionGate.getInstance().admit()) {
+          try (final QueryAdmissionGate.Ticket ignored = QueryAdmissionGate.getInstance().admit();
+              final RunningStatement ignoredStatement = startStatement(portal.language, portal.query)) {
             portal.fullResultSet = browseAndCacheBoundedResultSet(runPortalQuery(portal));
             portal.executed = true;
             resolvePortalColumns(portal, true);
@@ -876,7 +966,8 @@ public class PostgresNetworkExecutor extends Thread {
             // simple-query path (issue #7034): the Execute's own row limit bounds what is SENT, not what is
             // held here.
             // The query admission slot (issue #9518) covers the query and its column resolution, as in Describe
-            try (final QueryAdmissionGate.Ticket ignored = QueryAdmissionGate.getInstance().admit()) {
+            try (final QueryAdmissionGate.Ticket ignored = QueryAdmissionGate.getInstance().admit();
+                final RunningStatement ignoredStatement = startStatement(portal.language, portal.query)) {
               portal.fullResultSet = browseAndCacheBoundedResultSet(runPortalQuery(portal));
               portal.executed = true;
               profile.addEngineNanos(System.nanoTime() - engineStart);
@@ -895,7 +986,8 @@ public class PostgresNetworkExecutor extends Thread {
               }
             }
           } else {
-            try (final QueryAdmissionGate.Ticket ignored = QueryAdmissionGate.getInstance().admit()) {
+            try (final QueryAdmissionGate.Ticket ignored = QueryAdmissionGate.getInstance().admit();
+                final RunningStatement ignoredStatement = startStatement(portal.language, portal.query)) {
               runPortalQuery(portal);
             }
             portal.executed = true;
@@ -1080,6 +1172,8 @@ public class PostgresNetworkExecutor extends Thread {
     CatalogAnswer catalogAnswer = null;
     // HELD FROM THE MOMENT THE STATEMENT STARTS UNTIL ITS ROWS AND COLUMNS ARE RESOLVED, NOT WHILE THEY ARE WRITTEN (ISSUE #9518)
     QueryAdmissionGate.Ticket admission = null;
+    // The registry entry a CancelRequest stops, over the same window as the slot (issue #9689)
+    RunningStatement statement = null;
     try {
       final long deserStart = System.nanoTime();
       queryText = normalizeStatementText(readString());
@@ -1220,6 +1314,7 @@ public class PostgresNetworkExecutor extends Thread {
             resultSet = new IteratorResultSet(Collections.emptyIterator());
           } else {
             admission = QueryAdmissionGate.getInstance().admit();
+            statement = startStatement(query.language, query.query);
             resultSet = database.command(query.language, query.query, server.getConfiguration());
           }
         }
@@ -1243,6 +1338,8 @@ public class PostgresNetworkExecutor extends Thread {
         // THE SLOT GOES BACK ONCE THE COLUMNS ARE RESOLVED - THEIR PROBE MAY REPLAY THE QUERY - AND BEFORE ANY ROW IS WRITTEN
         if (admission != null)
           admission.close();
+        if (statement != null)
+          statement.close();
         writeRowDescription(columns);
         writeDataRows(cachedResultSet, columns);
       }
@@ -1264,6 +1361,8 @@ public class PostgresNetworkExecutor extends Thread {
     } finally {
       if (admission != null)
         admission.close();
+      if (statement != null)
+        statement.close();
       CommandTimeoutOverride.clear();
       if (!explicitTransactionStarted)
         // A simple Query outside an explicit block is a transaction of its own, and the portals bound before it
@@ -2674,7 +2773,8 @@ public class PostgresNetworkExecutor extends Thread {
   private int copyOut(final PostgresCopyStatement copy, final String language, final Object[] parameters,
       final Statement parsed, final QueryProfile profile) throws IOException {
     // THE ROWS ARE STREAMED AS THE QUERY PRODUCES THEM, SO THE ADMISSION SLOT (ISSUE #9518) IS HELD UNTIL THE LAST ONE IS WRITTEN
-    try (final QueryAdmissionGate.Ticket ignored = QueryAdmissionGate.getInstance().admit()) {
+    try (final QueryAdmissionGate.Ticket ignored = QueryAdmissionGate.getInstance().admit();
+        final RunningStatement ignoredStatement = startStatement(language, copy.getQuery())) {
       return copyOutAdmitted(copy, language, parameters, parsed, profile);
     }
   }
@@ -3928,21 +4028,26 @@ public class PostgresNetworkExecutor extends Thread {
         channel.flush();
         return readStartupMessage(firstPacket);
       } else if (protocolVersion == 80877102) {
-        // CANCEL REQUEST, IGNORE IT
-        final long pid = channel.readUnsignedInt();
-        final long secret = channel.readUnsignedInt();
+        // CANCEL REQUEST: stops the statement the named connection is running, as PostgreSQL does - not the connection,
+        // which is what Statement.cancel() and pgjdbc's query timeout send it for (issue #9689). The secret is the
+        // request's only credential, and the request gets no answer either way
+        final int pid = (int) channel.readUnsignedInt();
+        final int secret = (int) channel.readUnsignedInt();
 
-        LogManager.instance().log(this, Level.INFO, "PSQL: Received cancel request pid %d", pid);
-
-        final Pair<Long, PostgresNetworkExecutor> session = ACTIVE_SESSIONS.get(pid);
-        if (session != null) {
-          if (session.getFirst() == secret) {
-            LogManager.instance().log(this, Level.INFO, "PSQL: Canceling session " + pid);
-            session.getSecond().close();
-          } else
-            LogManager.instance().log(this, Level.INFO, "PSQL: Blocked unauthorized canceling session " + pid);
-        } else
-          LogManager.instance().log(this, Level.INFO, "PSQL: Session " + pid + " not found");
+        final PostgresNetworkExecutor session = ACTIVE_SESSIONS.get(pid);
+        if (session == null)
+          // A connection that just closed, in a race with its own cancel: routine
+          LogManager.instance().log(this, Level.FINE, "PSQL: cancel request for backend %d ignored: no such backend", pid);
+        else if (session.cancelSecret != secret)
+          // An open connection's pid with the wrong secret is no client's race: somebody guessing keys
+          LogManager.instance().log(this, Level.WARNING,
+              "PSQL: cancel request for backend %d from %s refused: the secret key does not match", pid,
+              channel.socket.getRemoteSocketAddress());
+        else {
+          final boolean cancelled = session.cancelRunningStatement(session.userName);
+          LogManager.instance().log(this, Level.FINE, "PSQL: cancel request for backend %d: %s", pid,
+              cancelled ? "statement cancelled" : "no statement running");
+        }
 
         close();
         return false;
@@ -4040,6 +4145,7 @@ public class PostgresNetworkExecutor extends Thread {
       case VALIDATION -> "22023";     // invalid_parameter_value
       case PARSING -> "42601";        // syntax_error
       case TIMEOUT -> "57014";        // query_canceled
+      case TERMINATED -> "57014";     // query_canceled - what a CancelRequest or pg_cancel_backend ends a statement with
       case SERVER -> "XX000";         // internal_error
     };
   }

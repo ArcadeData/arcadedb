@@ -21,6 +21,7 @@ package com.arcadedb.query.polyglot;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.RunningQuery;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityUser;
 import org.graalvm.polyglot.Context;
@@ -85,6 +86,8 @@ public class GraalPolyglotEngine implements AutoCloseable {
    * these objects to a script ends at the same wall, and at no cost to the Java callers that authorize every request
    * through them: a {@link HostAccess} only governs what a guest language can reach.
    */
+  /** How long a termination waits for a guest program to unwind before giving up on it (issue #9689). */
+  private static final Duration   TERMINATION_INTERRUPT_GRACE = Duration.ofSeconds(5);
   private static final HostAccess SANDBOXED_HOST_ACCESS = HostAccess.newBuilder(HostAccess.ALL)//
       .denyAccess(Class.class)//
       .denyAccess(ClassLoader.class)//
@@ -327,6 +330,63 @@ public class GraalPolyglotEngine implements AutoCloseable {
     } catch (final IllegalStateException e) {
       // Called from a thread that is itself inside the context: nothing to interrupt from here.
       return true;
+    }
+  }
+
+  /**
+   * Runs {@code work} on this context, interrupting it if {@code query} is terminated meanwhile (issue #9689). A guest
+   * loop never reaches a {@code WorkGuard}, so the termination flag alone cannot stop it: {@code Context.interrupt}
+   * unwinds the guest stack at its next safepoint, and the failure the work then raises is reported as the termination.
+   * {@link Thread#interrupt()} is not an option, an interrupted thread doing I/O closes the database file channels.
+   * <p>
+   * The interrupt only ever hits this work: it is refused once the work has returned, and the return waits for an
+   * interrupt in progress to finish, so the next caller of this shared context is never the one it lands on.
+   *
+   * @param query the statement the work belongs to, or {@code null} for work no statement owns, which then just runs
+   */
+  public <T, E extends Exception> T runTerminable(final RunningQuery query, final String what, final Work<T, E> work) throws E {
+    if (query == null)
+      return work.run();
+    query.checkNotTerminated(what);
+
+    final TerminationInterrupt interrupt = new TerminationInterrupt();
+    final AutoCloseable registration = query.onTerminate(interrupt);
+    try {
+      return work.run();
+    } catch (final Exception e) {
+      // Whatever the interrupted guest raised, the reason it stopped is the termination
+      query.checkNotTerminated(what);
+      throw e;
+    } finally {
+      interrupt.disarm();
+      try {
+        registration.close();
+      } catch (final Exception ignore) {
+        // Unregistering a listener does not fail
+      }
+    }
+  }
+
+  /** Work run on the context, see {@link #runTerminable}. */
+  @FunctionalInterface
+  public interface Work<T, E extends Exception> {
+    T run() throws E;
+  }
+
+  /** Interrupts the context while the work it was armed for runs, never after. */
+  private final class TerminationInterrupt implements Runnable {
+    private boolean armed = true;
+
+    @Override
+    public synchronized void run() {
+      if (armed && !interrupt(TERMINATION_INTERRUPT_GRACE))
+        LogManager.instance().log(this, Level.WARNING,
+            "A terminated script did not unwind within %s: it is blocked in a host call that cannot be interrupted",
+            TERMINATION_INTERRUPT_GRACE);
+    }
+
+    synchronized void disarm() {
+      armed = false;
     }
   }
 

@@ -128,6 +128,8 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       return handleDropCommand(ctx.dropCommand());
     if (ctx.showCommand() != null)
       return handleShowCommand(ctx.showCommand());
+    if (ctx.terminateCommand() != null)
+      return handleTerminateTransactions(ctx.terminateCommand().terminateTransactions());
     if (ctx.alterCommand() != null)
       return handleAlterCommand(ctx.alterCommand());
     if (ctx.transactionCommand() != null)
@@ -188,7 +190,49 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       return new CypherAdminStatement(CypherAdminStatement.Kind.SHOW_USERS, null, null, false, false);
     if (ctx.showCurrentUser() != null)
       return new CypherAdminStatement(CypherAdminStatement.Kind.SHOW_CURRENT_USER, null, null, false, false);
-    throw new CommandParsingException("Only SHOW USERS and SHOW CURRENT USER are currently supported");
+    if (ctx.showTransactions() != null)
+      return handleShowTransactions(ctx.showTransactions());
+    throw new CommandParsingException("Only SHOW USERS, SHOW CURRENT USER and SHOW TRANSACTIONS are currently supported");
+  }
+
+  /**
+   * {@code SHOW TRANSACTIONS [ids] [YIELD ...|WHERE ...] [TERMINATE TRANSACTIONS ...]} (issue #9689). The tail is applied
+   * to the rows at execution, from the statement text, as on every other {@code SHOW}.
+   */
+  private CypherAdminStatement handleShowTransactions(final Cypher25Parser.ShowTransactionsContext ctx) {
+    final Cypher25Parser.NamesAndClausesContext clauses = ctx.namesAndClauses();
+    CypherAdminStatement composedTerminate = null;
+    if (clauses.composableCommandClauses() != null) {
+      if (clauses.composableCommandClauses().terminateCommand() == null)
+        throw new CommandParsingException("SHOW TRANSACTIONS can only be followed by TERMINATE TRANSACTIONS");
+      composedTerminate = handleTerminateTransactions(clauses.composableCommandClauses().terminateCommand().terminateTransactions());
+    }
+    final Cypher25Parser.StringsOrExpressionContext ids = clauses.stringsOrExpression();
+    return new CypherAdminStatement(CypherAdminStatement.Kind.SHOW_TRANSACTIONS, ids != null ? transactionIdLiterals(ids) : null,
+        ids != null ? transactionIdExpression(ids) : null, composedTerminate);
+  }
+
+  /** {@code TERMINATE TRANSACTIONS ids [YIELD ...|WHERE ...]} (issue #9689). */
+  private CypherAdminStatement handleTerminateTransactions(final Cypher25Parser.TerminateTransactionsContext ctx) {
+    if (ctx.composableCommandClauses() != null)
+      throw new CommandParsingException("TERMINATE TRANSACTIONS cannot be followed by another command");
+    return new CypherAdminStatement(CypherAdminStatement.Kind.TERMINATE_TRANSACTIONS, transactionIdLiterals(ctx.stringsOrExpression()),
+        transactionIdExpression(ctx.stringsOrExpression()), null);
+  }
+
+  private List<String> transactionIdLiterals(final Cypher25Parser.StringsOrExpressionContext ctx) {
+    if (ctx.stringList() == null)
+      return null;
+    final List<String> ids = new ArrayList<>();
+    for (final Cypher25Parser.StringLiteralContext literal : ctx.stringList().stringLiteral()) {
+      final String raw = literal.getText();
+      ids.add(decodeStringLiteral(raw.substring(1, raw.length() - 1)));
+    }
+    return ids;
+  }
+
+  private Expression transactionIdExpression(final Cypher25Parser.StringsOrExpressionContext ctx) {
+    return ctx.expression() != null ? expressionBuilder.parseExpression(ctx.expression()) : null;
   }
 
   private CypherAdminStatement handleAlterCommand(final Cypher25Parser.AlterCommandContext ctx) {

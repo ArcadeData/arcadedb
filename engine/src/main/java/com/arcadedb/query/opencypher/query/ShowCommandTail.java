@@ -281,6 +281,20 @@ public final class ShowCommandTail {
     return null;
   }
 
+  /**
+   * Where a command composed after the first one starts in {@code query} - the {@code TERMINATE TRANSACTIONS} of
+   * {@code SHOW TRANSACTIONS ... TERMINATE TRANSACTIONS ...} (issue #9689) - as a character offset, or -1 when there is
+   * none. Each part's tail is the part's own: the text before the offset carries the first command's, the text from it
+   * the second's.
+   */
+  public static int composedCommandStart(final String query) {
+    if (query == null)
+      return -1;
+    final List<Token> tokens = tokenize(query);
+    final int at = indexOfTopLevel(tokens, Cypher25Lexer.TERMINATE, 1);
+    return at < 0 ? -1 : tokens.get(at).getStartIndex();
+  }
+
   /** The first token of that type sitting outside any bracket, at or after {@code from}, or -1. */
   private static int indexOfTopLevel(final List<Token> tokens, final int type, final int from) {
     int depth = 0;

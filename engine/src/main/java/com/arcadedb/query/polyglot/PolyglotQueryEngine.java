@@ -24,8 +24,10 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.QueryTerminatedException;
 import com.arcadedb.function.polyglot.JavascriptFunctionDefinition;
 import com.arcadedb.query.QueryEngine;
+import com.arcadedb.query.RunningQuery;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -161,7 +163,8 @@ public class PolyglotQueryEngine implements QueryEngine {
           final Map<String, Value> displaced =
               parameters == null || parameters.isEmpty() ? null : engine.setAttributes(parameters);
           try {
-            final Value result = engine.eval(query);
+            // A terminate interrupts the guest program, which no WorkGuard check is ever reached by (issue #9689)
+            final Value result = engine.runTerminable(RunningQuery.current(), "the script", () -> engine.eval(query));
 
             if (result.isHostObject()) {
               final Object host = result.asHostObject();
@@ -194,9 +197,11 @@ public class PolyglotQueryEngine implements QueryEngine {
 
       }, running, timeout);
 
-    } catch (final CommandExecutionException e) {
+    } catch (final CommandExecutionException | QueryTerminatedException e) {
       throw e;
     } catch (final ExecutionException e) {
+      if (e.getCause() instanceof QueryTerminatedException terminated)
+        throw terminated;
       // USE THE UNDERLYING CAUSE BYPASSING THE NOT RELEVANT EXECUTION EXCEPTION
       throw new CommandExecutionException("Error on executing user code", e.getCause());
     } catch (final Exception e) {
@@ -244,16 +249,18 @@ public class PolyglotQueryEngine implements QueryEngine {
           final GraalPolyglotEngine engine = polyglotEngine;
           running.set(engine);
           try {
-            engine.eval(query);
+            engine.runTerminable(RunningQuery.current(), "the script", () -> engine.eval(query));
           } finally {
             running.compareAndSet(engine, null);
           }
         }
         return null;
       }, running, timeout);
-    } catch (final CommandExecutionException e) {
+    } catch (final CommandExecutionException | QueryTerminatedException e) {
       throw e;
     } catch (final ExecutionException e) {
+      if (e.getCause() instanceof QueryTerminatedException terminated)
+        throw terminated;
       // USE THE UNDERLYING CAUSE BYPASSING THE NOT RELEVANT EXECUTION EXCEPTION
       throw new CommandExecutionException("Error on executing user code", e.getCause());
     } catch (final Exception e) {
@@ -284,8 +291,16 @@ public class PolyglotQueryEngine implements QueryEngine {
 
   private ResultSet executeUserCode(final Callable task, final AtomicReference<GraalPolyglotEngine> running,
       final long executionTimeoutMs) throws Exception {
+    // The statement's entry travels with the script to the pool thread, so what the script runs there - its SQL, its
+    // commits - is stopped by a terminate as it would be on the request's own thread (issue #9689)
+    final RunningQuery runningQuery = RunningQuery.current();
+    final Callable bound = runningQuery == null ? task : () -> {
+      try (final RunningQuery.Binding ignored = runningQuery.bind()) {
+        return task.call();
+      }
+    };
     // IF NOT INITIALIZED, EXECUTE AS SOON AS THE SERVICE STARTS
-    final Future future = userCodeExecutor.submit(task);
+    final Future future = userCodeExecutor.submit(bound);
     if (future == null)
       return null;
 

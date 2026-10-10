@@ -55,6 +55,7 @@ import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.RunningQuery;
 import com.arcadedb.query.opencypher.query.ShowCommandTail;
 import com.arcadedb.query.sql.executor.ExecutionPlan;
 import com.arcadedb.query.sql.executor.ExecutionStep;
@@ -102,6 +103,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 
 import static com.arcadedb.query.opencypher.executor.steps.FinalProjectionStep.PROJECTION_NAME_METADATA;
@@ -183,6 +185,9 @@ public class BoltNetworkExecutor extends Thread {
    * rather than quietly act on whichever stream happens to be current.
    */
   private static final long OMITTED_QID = -1;
+  private static final AtomicLong LAST_CONNECTION_ID = new AtomicLong();
+  /** How {@code SHOW TRANSACTIONS} and {@code list queries} name this connection (issue #9689). */
+  private final String connectionId = "bolt-" + LAST_CONNECTION_ID.incrementAndGet();
 
   public BoltNetworkExecutor(final ArcadeDBServer server, final Socket socket, final BoltNetworkListener listener) {
     this(server, socket, listener, null);
@@ -862,6 +867,7 @@ public class BoltNetworkExecutor extends Thread {
       return;
     }
 
+    RunningQuery.Binding binding = null;
     try {
       // Determine if this is a write query using the query analyzer
       stream.writeOperation = isWriteQuery(query);
@@ -880,6 +886,15 @@ public class BoltNetworkExecutor extends Thread {
       // drained by PULL, discarded, reset or dropped with the connection - so the rows still to send keep it, as they keep the
       // heap their buffers reserved. A second stream of the same transaction runs on this connection's thread and shares it
       stream.admission = QueryAdmissionGate.getInstance().admit();
+
+      // Listed and terminable from now until the stream is closed, after the last PULL (issue #9689). Bound to this
+      // thread only while RUN, PULL or DISCARD do its work: between messages the thread serves the other streams of the
+      // transaction, and what they run must not carry this entry
+      stream.runningQuery = server.getRunningQueries().open(database.getName(), user != null ? user.getName() : null, "bolt",
+          null, null);
+      stream.runningQuery.setStatement("opencypher", query);
+      stream.runningQuery.setConnection(connectionId, String.valueOf(socket.getRemoteSocketAddress()));
+      binding = stream.runningQuery.bind();
 
       // Use command() for writes, query() for reads
       if (stream.writeOperation) {
@@ -944,6 +959,9 @@ public class BoltNetworkExecutor extends Thread {
       final String errorMsg = e.getMessage() != null ? e.getMessage() : "Database error";
       sendFailure(classifyExecutionError(e, BoltErrorCodes.DATABASE_ERROR), loggedClientMessage(errorMsg));
       state = State.FAILED;
+    } finally {
+      if (binding != null)
+        binding.close();
     }
   }
 
@@ -975,7 +993,8 @@ public class BoltNetworkExecutor extends Thread {
     if (stream == null)
       return;
 
-    try {
+    // The statement's work goes on while its rows are pulled: its entry is this thread's meanwhile (issue #9689)
+    try (final RunningQuery.Binding ignored = stream.bind()) {
       final long n = message.getN();
       long count = 0;
 
@@ -1069,7 +1088,7 @@ public class BoltNetworkExecutor extends Thread {
       // Statistics are computed eagerly when the write is materialized in the query plan, so they
       // are valid to read before draining/closing the result set.
       stats = stream.resultSet.getStatistics();
-      try {
+      try (final RunningQuery.Binding ignored = stream.bind()) {
         while (stream.resultSet.hasNext())
           stream.resultSet.next();
       } catch (final RuntimeException e) {
@@ -2187,6 +2206,8 @@ public class BoltNetworkExecutor extends Thread {
       // Transaction.Terminated, which means "explicitly killed by the user" and is excluded from driver retry
       // predicates for exactly that reason (issue #7123).
       case TIMEOUT -> BoltErrorCodes.TRANSACTION_TIMED_OUT_ERROR;
+      // Stopped on request (issue #9689): the one Transaction.* title meaning "killed on purpose", which drivers never retry
+      case TERMINATED -> BoltErrorCodes.TRANSACTION_TERMINATED_ERROR;
       case SERVER -> defaultCode;
     };
   }

@@ -135,16 +135,14 @@ class Issue6410IdleConnectionIT extends PostgresWireProtocolTestBase {
 
       final Thread executor = newExecutorThread(before);
 
-      // The cancel request arrives on a second connection and closes the executor of the session it names -
-      // this is the server closing a connection from underneath a client that is not talking to it at that
-      // moment, and the only thing that has to break a blocked read.
-      try (final Socket cancelSocket = openSocket()) {
-        final DataOutputStream cancel = new DataOutputStream(cancelSocket.getOutputStream());
-        cancel.writeInt(16);
-        cancel.writeInt(80877102); // CancelRequest
-        cancel.writeInt((int) key[0]);
-        cancel.writeInt((int) key[1]);
-        cancel.flush();
+      // pg_terminate_backend, run on a second connection, closes the executor of the session it names - this is the
+      // server closing a connection from underneath a client that is not talking to it at that moment, and the only
+      // thing that has to break a blocked read. (A CancelRequest used to do it, but a CancelRequest stops the running
+      // statement and leaves the connection alone, as on PostgreSQL - issue #9689.)
+      try (final Connection admin = openJdbcConnection(); final Statement st = admin.createStatement();
+          final ResultSet rs = st.executeQuery("SELECT pg_terminate_backend(" + key[0] + ") AS terminated")) {
+        assertThat(rs.next()).isTrue();
+        assertThat(rs.getBoolean("terminated")).isTrue();
       }
 
       assertRetires(executor);
