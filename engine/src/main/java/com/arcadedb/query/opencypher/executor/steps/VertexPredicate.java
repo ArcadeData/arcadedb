@@ -190,6 +190,25 @@ public final class VertexPredicate {
       return vertex instanceof Document document ? test(document) : acceptsRid(vertex.getIdentity());
     }
 
+    /**
+     * The nodes of a frontier that pass, in their order and with their repetitions (one per path that reached them): the
+     * array itself when every node passes, a shorter copy otherwise.
+     */
+    public int[] retain(final int[] nodeIds) {
+      int kept = 0;
+      for (final int nodeId : nodeIds)
+        if (acceptsNode(nodeId))
+          ++kept;
+      if (kept == nodeIds.length)
+        return nodeIds;
+      final int[] result = new int[kept];
+      int pos = 0;
+      for (final int nodeId : nodeIds)
+        if (acceptsNode(nodeId))
+          result[pos++] = nodeId;
+      return result;
+    }
+
     /** Zeroes the path counts of the nodes that fail, asking only about the nodes some path reached. */
     public void filter(final long[] counts) {
       filter(counts, null);

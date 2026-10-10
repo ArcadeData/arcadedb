@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.executor;
 
+import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.NodePattern;
 import com.arcadedb.query.opencypher.ast.PathPattern;
 import com.arcadedb.query.opencypher.ast.QuantifiedPathPattern;
@@ -26,8 +27,10 @@ import com.arcadedb.query.opencypher.ast.RelationshipPattern;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 /**
  * The comma-separated path patterns of one MATCH clause read as the graph they describe: a node per variable, wherever it
@@ -46,8 +49,12 @@ import java.util.Map;
  * graph where both {@code c} are {@code Comment}. Writing them at every position changes no answer and lets a proof that
  * reads one position at a time (that two hops cannot bind the same edge) see what the variable is.
  * <p>
+ * The inline property maps of a variable's positions are merged the same way, so a predicate written at any of them holds at
+ * all of them (issue #9608).
+ * <p>
  * Only plain shapes are modelled: fixed-length relationships, no path variable or mode, no quantified group, and a variable
- * written with one set of labels at most. Anything else answers "no shape" and the detectors read the text as written.
+ * written with one set of labels at most and no two values for one property. Anything else answers "no shape" and the
+ * detectors read the text as written.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -133,14 +140,59 @@ final class PatternGraph {
       return nodes.size() - 1;
     }
 
-    final NodePattern known = nodes.get(existing);
-    if (node.hasLabels()) {
-      if (!known.hasLabels())
-        nodes.set(existing, node);
-      else if (!known.getLabels().equals(node.getLabels()) || known.isLabelDisjunction() != node.isLabelDisjunction())
-        return -1;
-    }
+    final NodePattern merged = merged(nodes.get(existing), node);
+    if (merged == null)
+      return -1;
+    nodes.set(existing, merged);
     return existing;
+  }
+
+  /**
+   * One node pattern holding every constraint two positions of a variable write: the labels of whichever writes them and the
+   * entries of both property maps (issue #9608). Keeping one position alone dropped what the other wrote, so a predicate
+   * written at the unlabelled position of a variable was lost and the count included the vertices it excludes. Null when the
+   * two cannot be said as one pattern: different labels, a parameter map, the same key with two different values, or two
+   * inline {@code WHERE} predicates.
+   */
+  static NodePattern merged(final NodePattern known, final NodePattern node) {
+    if (known == node)
+      return known;
+    if (known.hasDynamicLabels() || node.hasDynamicLabels())
+      return null;
+    if (known.hasLabels() && node.hasLabels()
+        && (!known.getLabels().equals(node.getLabels()) || known.isLabelDisjunction() != node.isLabelDisjunction()))
+      return null;
+    if (known.hasWhereExpression() && node.hasWhereExpression())
+      return null;
+    if (!node.hasProperties() && !node.hasWhereExpression() && (known.hasLabels() || !node.hasLabels()))
+      return known;
+
+    final NodePattern labelled = known.hasLabels() ? known : node;
+    final Map<String, Object> properties;
+    if (!node.hasProperties())
+      properties = known.hasProperties() ? known.getProperties() : null;
+    else if (!known.hasProperties())
+      properties = node.getProperties();
+    else {
+      if (known.getPropertiesParameterName() != null || node.getPropertiesParameterName() != null)
+        return null;
+      properties = new LinkedHashMap<>(known.getProperties());
+      for (final Map.Entry<String, Object> entry : node.getProperties().entrySet()) {
+        final Object previous = properties.putIfAbsent(entry.getKey(), entry.getValue());
+        if (previous != null && !sameValue(previous, entry.getValue()))
+          return null;
+      }
+    }
+    final String parameter = known.hasProperties() ? known.getPropertiesParameterName() : node.getPropertiesParameterName();
+    return new NodePattern(known.getVariable(), labelled.hasLabels() ? labelled.getLabels() : null, null, properties, parameter,
+        labelled.isLabelDisjunction(), known.hasWhereExpression() ? known.getWhereExpression() : node.getWhereExpression());
+  }
+
+  /** Whether two values of an inline property map say the same thing: equal constants, or expressions written alike. */
+  private static boolean sameValue(final Object a, final Object b) {
+    if (a instanceof Expression ea && b instanceof Expression eb)
+      return ea.getText() != null && ea.getText().equals(eb.getText());
+    return Objects.equals(a, b);
   }
 
   /**

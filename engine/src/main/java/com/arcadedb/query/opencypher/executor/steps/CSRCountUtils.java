@@ -211,6 +211,17 @@ public final class CSRCountUtils {
   public static int[] walkArm(final GraphTraversalProvider provider, final int startId,
       final String[] edgeTypes, final Vertex.DIRECTION[] directions,
       final IntHashSet[] intermediateValidBuckets) {
+    return walkArm(provider, startId, edgeTypes, directions, intermediateValidBuckets, null);
+  }
+
+  /**
+   * {@link #walkArm(GraphTraversalProvider, int, String[], Vertex.DIRECTION[], IntHashSet[])} that also keeps, at each hop,
+   * only the nodes the property predicate of the position reached accepts (issue #9608). A null array, or a null entry, is no
+   * predicate.
+   */
+  public static int[] walkArm(final GraphTraversalProvider provider, final int startId,
+      final String[] edgeTypes, final Vertex.DIRECTION[] directions,
+      final IntHashSet[] intermediateValidBuckets, final VertexPredicate.Evaluation[] filters) {
     int[] current = new int[]{startId};
     for (int hop = 0; hop < edgeTypes.length; hop++) {
       int totalNext = 0;
@@ -239,6 +250,8 @@ public final class CSRCountUtils {
       } else {
         current = pos < next.length ? Arrays.copyOf(next, pos) : next;
       }
+      if (filters != null && filters[hop] != null)
+        current = filters[hop].retain(current);
     }
     return current;
   }
