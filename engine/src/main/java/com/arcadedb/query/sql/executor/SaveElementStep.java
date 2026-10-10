@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
@@ -41,6 +42,7 @@ import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.schema.Type;
 import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.utility.DateUtils;
 
 import java.io.IOException;
 import java.time.Instant;
@@ -279,7 +281,7 @@ public class SaveElementStep extends AbstractExecutionStep {
       if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP) {
         timestamps[0] = toEpochMs(value, zoneId);
       } else {
-        columnValues[colIdx][0] = convertValue(value, col.getDataType());
+        columnValues[colIdx][0] = convertValue(context.getDatabase(), value, col.getDataType());
         colIdx++;
       }
     }
@@ -343,7 +345,7 @@ public class SaveElementStep extends AbstractExecutionStep {
     throw new CommandExecutionException("Cannot convert to timestamp: " + (value != null ? value.getClass().getName() : "null"));
   }
 
-  private static Object convertValue(final Object value, final Type targetType) {
+  private static Object convertValue(final Database database, final Object value, final Type targetType) {
     if (value == null)
       return null;
     return switch (targetType) {
@@ -356,6 +358,21 @@ public class SaveElementStep extends AbstractExecutionStep {
       case INTEGER -> value instanceof Number n ? n.intValue() : Integer.parseInt(value.toString());
       case FLOAT -> value instanceof Number n ? n.floatValue() : Float.parseFloat(value.toString());
       case SHORT -> value instanceof Number n ? n.shortValue() : Short.parseShort(value.toString());
+      // The engine stores a datetime column as an epoch count in the column's own unit and casts it to Number, while
+      // the document layer has already turned the property into the temporal object its declared type calls for
+      // (issue #9643). Encode it exactly as the binary serializer encodes the same value on a document property:
+      // DATE as epoch days, the DATETIME family in the precision the type names. The same literal therefore means the
+      // same instant on a TimeSeries column as on a document property, numbers included: those are epoch MILLIS for
+      // every DATETIME precision and epoch DAYS for a DATE, as Type.convert reads them (issue #9324).
+      case DATETIME, DATETIME_SECOND, DATETIME_MICROS, DATETIME_NANOS -> {
+        final Long epoch = DateUtils.dateTimeToTimestamp(database, value, DateUtils.getPrecisionFromType(targetType));
+        // dateTimeToTimestamp answers null for a type it cannot read: refuse it rather than store the absent marker
+        if (epoch == null)
+          throw new CommandExecutionException(
+              "Cannot convert a value of type " + value.getClass().getName() + " to a " + targetType + " TimeSeries column");
+        yield epoch;
+      }
+      case DATE -> DateUtils.dateToEpochDays(value instanceof String ? Type.convert(database, value, LocalDate.class) : value);
       // DECIMAL needs no branch of its own: Type.convert()'s BigDecimal case already builds it with
       // new BigDecimal(value.toString()), so it reads the float's decimal rather than its bits and never
       // carried the error this DOUBLE case had to be fixed for (issue #7609).
