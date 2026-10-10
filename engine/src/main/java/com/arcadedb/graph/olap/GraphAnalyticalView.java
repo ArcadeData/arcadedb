@@ -318,6 +318,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   private final AtomicBoolean    compacting = new AtomicBoolean(false);
   private final AtomicBoolean    buildQueued = new AtomicBoolean(false);
   private volatile boolean       asyncRebuildNeeded;  // true when a commit arrived during an async rebuild
+  // SYNCHRONOUS only: a GraphBatch load ended that no build dispatched since has scanned (issue #9572)
+  private volatile boolean       bulkRebuildPending;
   // true when an edge property update (which cannot be represented in the overlay) was buffered
   // during a compaction rebuild and needs a follow-up rebuild to become visible. See issue #4513.
   private volatile boolean       edgePropRebuildNeeded;
@@ -645,6 +647,9 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       }
     } else if (updateMode == UpdateMode.OFF && watch.hadRelevantCommit())
       newStatus = Status.STALE;
+    // A bulk load that ended during the scan is only partly in it, and in no delta: the rebuild it asked for follows
+    if (updateMode == UpdateMode.SYNCHRONOUS && bulkRebuildPending)
+      newStatus = Status.STALE;
     final boolean rebuildNeeded = updateMode == UpdateMode.ASYNCHRONOUS && watch.hadRelevantCommit();
 
     this.snapshot = fresh;
@@ -698,6 +703,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     readyLatch = latch;
     status = Status.BUILDING;
     buildError = null;
+    // This scan starts after the bulk load that asked for it ended, so it reads all of it
+    bulkRebuildPending = false;
     // Opened at dispatch, with the listeners armed, so no commit between now and publication escapes (issue #8378)
     final BuildWatch watch;
     try {
@@ -777,6 +784,9 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
           buildQueued.set(false);
           latch.countDown();
           taskCompleted();
+          // A bulk load ended while this build was scanning: it published STALE, the next one reads the whole load
+          if (bulkRebuildPending)
+            rebuildAfterBulkLoad();
         }
       });
     } catch (final RejectedExecutionException e) {
@@ -2311,12 +2321,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     this.updateMode = newMode;
     if (snapshot != null || buildWatch != null)
       registerChangeListeners();
-    if (oldCollector != null) {
-      database.getEvents().unregisterListener((AfterRecordCreateListener) oldCollector);
-      database.getEvents().unregisterListener((AfterRecordUpdateListener) oldCollector);
-      database.getEvents().unregisterListener((AfterRecordDeleteListener) oldCollector);
-      oldCollector.close();
-    }
+    if (oldCollector != null)
+      detach(oldCollector);
   }
 
   public String[] getVertexTypes() {
@@ -3221,15 +3227,49 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     database.getEvents().registerListener((AfterRecordCreateListener) deltaCollector);
     database.getEvents().registerListener((AfterRecordUpdateListener) deltaCollector);
     database.getEvents().registerListener((AfterRecordDeleteListener) deltaCollector);
+    // A lightweight edge has no record, so its creation reaches no record listener, and GraphBatch writes edges in
+    // bulk without record events (issue #9572)
+    ((DatabaseInternal) database).getGraphEngine().registerEdgeWriteListener(deltaCollector);
   }
 
   private void unregisterChangeListeners() {
     if (deltaCollector != null) {
-      database.getEvents().unregisterListener((AfterRecordCreateListener) deltaCollector);
-      database.getEvents().unregisterListener((AfterRecordUpdateListener) deltaCollector);
-      database.getEvents().unregisterListener((AfterRecordDeleteListener) deltaCollector);
-      deltaCollector.close();
+      detach(deltaCollector);
       deltaCollector = null;
+    }
+  }
+
+  private void detach(final DeltaCollector collector) {
+    database.getEvents().unregisterListener((AfterRecordCreateListener) collector);
+    database.getEvents().unregisterListener((AfterRecordUpdateListener) collector);
+    database.getEvents().unregisterListener((AfterRecordDeleteListener) collector);
+    ((DatabaseInternal) database).getGraphEngine().unregisterEdgeWriteListener(collector);
+    collector.close();
+  }
+
+  /**
+   * A {@code GraphBatch} wrote edges of a covered type in bulk, with no record event to report them one by one (issue
+   * #9572). {@code OFF} and {@code ASYNCHRONOUS} react as to any relevant commit. {@code SYNCHRONOUS} cannot reconcile
+   * edges it holds no delta for, so it rebuilds; while it does, the view is not READY and queries take the ordinary
+   * path, so none is answered without the load.
+   */
+  void onEdgesWrittenInBulk() {
+    if (updateMode != UpdateMode.SYNCHRONOUS) {
+      onRelevantCommitCallback();
+      return;
+    }
+    // Set before asking for the build: a build already queued or scanning ignores the request, and then publishes STALE
+    // and asks for the next one itself
+    bulkRebuildPending = true;
+    rebuildAfterBulkLoad();
+  }
+
+  private void rebuildAfterBulkLoad() {
+    try {
+      buildAsync();
+    } catch (final RuntimeException e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "GraphAnalyticalView '%s': cannot rebuild after a bulk load, the view stays STALE", e, name);
     }
   }
 

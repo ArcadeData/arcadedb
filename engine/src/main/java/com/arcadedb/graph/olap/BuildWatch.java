@@ -84,6 +84,13 @@ final class BuildWatch implements CSRBuilder.ScanObserver, DeltaOverlay.ExactSca
   // are written by the scan thread, then read and trimmed by account() under the view's monitor, which the build's
   // publication also takes: that hand-off is what orders the two, not the concurrency of the outer map.
   private final Map<RID, Map<RID, RID>>      observedSources = new ConcurrentHashMap<>();
+  // The lightweight out-edges of the same observed sources, which have no identity to be told apart by (issue #9572):
+  // per (edge type bucket, target), how many copies the scan put into the CSR, how many buffered additions were taken
+  // as among them, and how many were not and so sit in the overlay. Written and read exactly as observedSources is.
+  private final Map<RID, Map<LightEndpoint, int[]>> observedLightEdges = new ConcurrentHashMap<>();
+  private static final int                   SEEN           = 0;
+  private static final int                   CAPTURED       = 1;
+  private static final int                   NOT_CAPTURED   = 2;
 
   // Guarded by this
   private boolean                            open           = true;
@@ -147,15 +154,23 @@ final class BuildWatch implements CSRBuilder.ScanObserver, DeltaOverlay.ExactSca
 
   @Override
   public void observed(final RID source, final List<RID> edges, final List<RID> targets) {
-    final Map<RID, RID> seen;
-    if (edges.isEmpty())
-      seen = NOTHING_SEEN;
-    else {
-      seen = new HashMap<>(edges.size() * 2);
-      for (int i = 0; i < edges.size(); i++)
-        seen.put(edges.get(i), targets.get(i));
+    Map<RID, RID> seen = NOTHING_SEEN;
+    Map<LightEndpoint, int[]> light = null;
+    for (int i = 0; i < edges.size(); i++) {
+      final RID edge = edges.get(i);
+      if (edge.getPosition() < 0) {
+        // A lightweight edge: every one of a type reads back as the same bucket marker, so it is counted per far end
+        if (light == null)
+          light = new HashMap<>();
+        light.computeIfAbsent(new LightEndpoint(edge.getBucketId(), targets.get(i)), k -> new int[3])[SEEN]++;
+      } else {
+        if (seen == NOTHING_SEEN)
+          seen = new HashMap<>(edges.size() * 2);
+        seen.put(edge, targets.get(i));
+      }
     }
-    observedSources.putIfAbsent(source, seen);
+    if (observedSources.putIfAbsent(source, seen) == null && light != null)
+      observedLightEdges.put(source, light);
   }
 
   /**
@@ -238,12 +253,17 @@ final class BuildWatch implements CSRBuilder.ScanObserver, DeltaOverlay.ExactSca
     for (final TxDelta.EdgeDelta ed : delta.addedEdges) {
       if (!watchedSources.contains(ed.source))
         continue;
-      if (sawEdge(ed))
+      if (ed.isLightweight() ? sawLightEdge(ed) : sawEdge(ed))
         answers.put(ed, Boolean.TRUE);
     }
     for (final TxDelta.EdgeDelta ed : delta.deletedEdges) {
       if (!watchedSources.contains(ed.source))
         continue;
+      if (ed.isLightweight()) {
+        if (lightEdgeAlreadyMissing(ed))
+          answers.put(ed, Boolean.TRUE);
+        continue;
+      }
       // An edge added after the scan and deleted again never reaches this answer: the merge withdraws its overlay
       // addition by identity first. One the scan captured is in what it saw, so its deletion is news to the base.
       final Map<RID, RID> seen = observedSources.get(ed.source);
@@ -256,6 +276,53 @@ final class BuildWatch implements CSRBuilder.ScanObserver, DeltaOverlay.ExactSca
       if (seen != null && seen != NOTHING_SEEN)
         seen.remove(ed.rid);
     }
+  }
+
+  /**
+   * Whether the scan read this lightweight addition. Copies of one triple have no identity to tell them apart, so this
+   * counts them instead: the addition is taken as read while the scan saw more copies than the additions already taken.
+   * That is exact whenever a triple has at most one copy at a time - always, on a {@code UNIQUE} type - since a copy the
+   * scan saw is then either this addition or one an earlier buffered deletion removed. With duplicated copies a copy the
+   * scan saw may have preceded the addition, which nothing recorded can tell, and the answer then errs towards "read".
+   */
+  private boolean sawLightEdge(final TxDelta.EdgeDelta ed) {
+    // Read before the source was registered, so before this addition committed
+    if (!observedSources.containsKey(ed.source))
+      return false;
+    final int[] copies = lightCopies(ed);
+    if (copies[CAPTURED] < copies[SEEN]) {
+      copies[CAPTURED]++;
+      return true;
+    }
+    copies[NOT_CAPTURED]++;
+    return false;
+  }
+
+  /** Whether the copy this lightweight deletion removed was already missing when the scan read its source. */
+  private boolean lightEdgeAlreadyMissing(final TxDelta.EdgeDelta ed) {
+    if (!observedSources.containsKey(ed.source))
+      return false;
+    final int[] copies = lightCopies(ed);
+    // The merge withdraws an overlay addition of the pair first, without asking: one the scan did not read
+    if (copies[NOT_CAPTURED] > 0) {
+      copies[NOT_CAPTURED]--;
+      return false;
+    }
+    if (copies[SEEN] > 0) {
+      copies[SEEN]--;
+      copies[CAPTURED] = Math.min(copies[CAPTURED], copies[SEEN]);
+      return false;
+    }
+    return true;
+  }
+
+  private int[] lightCopies(final TxDelta.EdgeDelta ed) {
+    return observedLightEdges.computeIfAbsent(ed.source, k -> new HashMap<>())
+        .computeIfAbsent(new LightEndpoint(ed.rid.getBucketId(), ed.target), k -> new int[3]);
+  }
+
+  /** A lightweight out-edge as the scan reads it: the bucket of its type, and its far end. */
+  private record LightEndpoint(int edgeTypeBucketId, RID target) {
   }
 
   @Override
