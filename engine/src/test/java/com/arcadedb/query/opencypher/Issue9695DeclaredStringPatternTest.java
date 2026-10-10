@@ -283,6 +283,11 @@ class Issue9695DeclaredStringPatternTest extends TestHelper {
       database.command("opencypher", "CREATE (:JP {id: 1, num: 5}), (:JP {id: 2, num: true}), (:JP {id: 3, num: 5.5}), (:JP {id: 4, num: '7'})")
           .close();
       database.command("opencypher", "CREATE (:JP {id: 5, num: 9007199254740993}), (:JP {id: 6, num: 2134}), (:JP {id: 7, num: 0.0})").close();
+      // Either side of the 18-digit long fast path, and the longest long text there is
+      database.command("opencypher", "CREATE (:JC {id: 112, code: 123456789012345678}), (:JC {id: 113, code: 1234567890123456789}), "
+          + "(:JC {id: 114, code: -9223372036854775808})").close();
+      database.command("opencypher", "CREATE (:JP {id: 8, num: 123456789012345678}), (:JP {id: 9, num: 1234567890123456789}), "
+          + "(:JP {id: 10, num: -9223372036854775808})").close();
     });
 
     final String query = "MATCH (p:JP), (c:JC) WHERE c.code = p.num RETURN p.id AS a, c.id AS b ORDER BY a, b";
@@ -292,7 +297,7 @@ class Issue9695DeclaredStringPatternTest extends TestHelper {
       assertThat(plan).contains(indexed ? "IndexNestedLoopJoin" : "ValueHashJoin");
     }
     final List<String> joined = pairs(query);
-    assertThat(joined).containsExactly("1/5", "2/100", "4/7", "5/103");
+    assertThat(joined).containsExactly("1/5", "2/100", "4/7", "5/103", "8/112", "9/113", "10/114");
     assertThat(joined).isEqualTo(pairs(product));
   }
 

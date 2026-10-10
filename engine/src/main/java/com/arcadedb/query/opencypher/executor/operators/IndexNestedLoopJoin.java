@@ -212,7 +212,10 @@ public class IndexNestedLoopJoin extends AbstractPhysicalOperator {
         KeyUse use = KeyUse.SEEK;
         for (int i = 0; i < keys.length; i++) {
           key[i] = keys[i].evaluateLeft(currentLeft, context);
-          final KeyUse keyUse = keyUse(key[i], keyTypes[i], declaredText[i]);
+          // A boolean is stored in a property declared STRING as "true" or "false": that text is the key (issue #9695)
+          if (declaredText[i] && key[i] instanceof Boolean b)
+            key[i] = b.toString();
+          final KeyUse keyUse = keyUse(key[i], keyTypes[i]);
           if (keyUse == KeyUse.NONE)
             // The WHERE cannot hold for this left row
             return;
@@ -273,7 +276,7 @@ public class IndexNestedLoopJoin extends AbstractPhysicalOperator {
    * How a key value can be looked up in an index of the given key type: sought, never equal to what the property
    * holds, or only found by reading every record, when the index conversion cannot follow the Cypher equality.
    */
-  private static KeyUse keyUse(final Object value, final Type keyType, final boolean declaredText) {
+  private static KeyUse keyUse(final Object value, final Type keyType) {
     if (value == null)
       return KeyUse.NONE;
 
@@ -281,10 +284,11 @@ public class IndexNestedLoopJoin extends AbstractPhysicalOperator {
     case STRING:
       if (value instanceof String)
         return KeyUse.SEEK;
-      // A boolean equals the text it was stored as in a property declared STRING (issue #9695), and no text otherwise
+      // No text equals a boolean where nothing is declared; a declared one arrives here as its stored text
       if (value instanceof Boolean)
-        return declaredText ? KeyUse.SCAN : KeyUse.NONE;
-      // A number equals a string spelling the RID it encodes, and the text it was stored as in a property declared STRING
+        return KeyUse.NONE;
+      // A number equals a string spelling the RID it encodes as well as the text it was stored as in a property declared
+      // STRING (issue #9695): no single text key covers both, so the label is read and the comparison decides
       return KeyUse.SCAN;
     case BYTE:
     case SHORT:
