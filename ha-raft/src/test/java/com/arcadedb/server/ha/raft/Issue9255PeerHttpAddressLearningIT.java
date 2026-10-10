@@ -96,8 +96,8 @@ class Issue9255PeerHttpAddressLearningIT extends BaseRaftHATest {
     // is dropped, as a removal does: while it equals this node's server-list declaration no offer is taken at all, which
     // would make the refusals below pass for the wrong reason
     final RaftPeerId memberPeer = RaftPeerId.valueOf(memberId);
-    final String recorded = node.getHttpAddresses().remove(memberPeer);
     node.stopCapabilityMonitor();
+    final String recorded = node.getHttpAddresses().remove(memberPeer);
     try {
       assertThat(capabilities(leader, memberId, b -> b.header("Authorization", basicRoot())).statusCode()).isEqualTo(200);
       assertThat(node.getPeerHttpAddressCandidates(memberId)).as("a Basic-auth root request plants nothing").isEmpty();

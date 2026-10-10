@@ -7387,6 +7387,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    */
   private boolean probeCandidateAddresses(final long generation, final List<RaftPeer> peers,
       final Map<String, PeerCapabilityRegistry.Unknown> unanswered, final String clusterToken) {
+    // A candidate is an HTTP address, and the probe carries the cluster token: on a cluster that asked for SSL the token
+    // must not go over plain HTTP to an address nobody has confirmed yet. There the HTTPS endpoints are what the peers
+    // dial each other on, and an HTTP address is learnt only from an answer on it, never by probing a candidate
+    if (configuration.getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL))
+      return true;
     for (final RaftPeer peer : peers) {
       final String peerId = peer.getId().toString();
       if (!unanswered.containsKey(peerId))
