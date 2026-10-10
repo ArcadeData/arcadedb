@@ -170,6 +170,28 @@ class Issue9710LongMinMaxPastTwoPow53Test extends TestHelper {
   }
 
   @Test
+  void twoLongColumnsRecountedTogetherUnderAFilterOnAThird() {
+    database.command("sql", "CREATE TIMESERIES TYPE T TIMESTAMP ts TAGS (host STRING) FIELDS (a LONG, b LONG, f LONG) SHARDS 2");
+    database.command("sql", "CREATE DOCUMENT TYPE D");
+    database.transaction(() -> {
+      for (int i = 0; i < 80; i++)
+        for (final String type : new String[] { "T", "D" })
+          database.command("sql", "INSERT INTO " + type + " SET ts = ?, host = ?, a = ?, b = ?, f = ?", T0 + i * 1_000L, "h" + (i % 2),
+              BASE + i % 9, -BASE - i % 7, (long) i);
+    });
+    final String[] queries = { "SELECT min(a) AS na, max(a) AS xa, min(b) AS nb, max(b) AS xb FROM X WHERE f >= 20 AND f < 60",
+        "SELECT max(a) AS xa, min(a) AS na, max(a) AS xa2, min(b) AS nb, count(*) AS c FROM X WHERE f BETWEEN 3 AND 41 AND host = 'h0'",
+        "SELECT min(a) AS na, max(a) AS xa, min(b) AS nb, max(b) AS xb FROM X" };
+    for (int pass = 0; pass < 2; pass++) {
+      for (final String sql : queries) {
+        assertThat(plan(sql.replace("FROM X", "FROM T"))).as(sql).contains("ungrouped");
+        assertThat(row(sql.replace("FROM X", "FROM T"))).as(sql).isEqualTo(row(sql.replace("FROM X", "FROM D")));
+      }
+      database.command("sql", "COMPACT TIMESERIES TYPE T");
+    }
+  }
+
+  @Test
   void anEmptyRangeStillAnswersNull() {
     createAndLoad(1, BASE, 0, 90, true);
     final String sql = "SELECT min(bg) AS mn, max(bg) AS mx, count(*) AS c FROM X WHERE bg > 9007199254741000";
