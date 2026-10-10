@@ -167,8 +167,9 @@ public class InExpression implements BooleanExpression {
   }
 
   /**
-   * The long a text is the canonical spelling of ({@code "12"}, not {@code "012"} or {@code "+12"}), as the text an integer is
-   * stored as; or the text itself, which no long equals, when it is not one.
+   * The long a text is the canonical spelling of ({@code "12"}, not {@code "012"}, {@code "+12"} or {@code "-0"}), as the text an
+   * integer is stored as; or the text itself, which no long equals, when it is not one. The stored text of an integer is
+   * {@code Long.toString} because {@code Type.convert} to {@code String} is {@code toString()} for a number: this inverts it.
    */
   private static Object canonicalLong(final String text) {
     // Only digits after an optional sign are parsed, so an ordinary text never costs a thrown exception
