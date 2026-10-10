@@ -95,13 +95,9 @@ public final class InlineProperties {
   }
 
   /**
-   * Compares a stored property value against an already resolved expected value, for the traversal
-   * components that resolve the whole map once per row instead of once per candidate edge.
-   * <p>
-   * An inline entry means {@code n.k = v}, so it follows the comparison semantics of {@code =}: a null on
-   * either side never matches, not even against another null. Numbers compare by value across types, so a
-   * stored {@code Integer} matches an inline literal parsed as {@code Long} and a stored {@code Float}
-   * matches a {@code Double} parameter (issue #5146).
+   * Whether the property {@code key} of {@code record} satisfies an already resolved inline value. Unlike
+   * {@link #matchesResolvedValue(Object, Object)} it knows the declared type of the property, so a DATE that
+   * {@code arcadedb.dateImplementation} read back as an instant still compares as a date (issue #9647).
    */
   public static boolean matchesResolvedProperty(final Document record, final String key, final Object expected) {
     final Object actual = record.get(key);
@@ -113,9 +109,16 @@ public final class InlineProperties {
   }
 
   /**
-   * Compares a stored property value against an already resolved expected value. Prefer
-   * {@link #matchesResolvedProperty(Document, String, Object)} when the record is at hand: only that one knows the declared
-   * type of the property.
+   * Compares a stored property value against an already resolved expected value, for the traversal
+   * components that resolve the whole map once per row instead of once per candidate edge.
+   * <p>
+   * An inline entry means {@code n.k = v}, so it follows the comparison semantics of {@code =}: a null on
+   * either side never matches, not even against another null. Numbers compare by value across types, so a
+   * stored {@code Integer} matches an inline literal parsed as {@code Long} and a stored {@code Float}
+   * matches a {@code Double} parameter (issue #5146).
+   * <p>
+   * Prefer {@link #matchesResolvedProperty(Document, String, Object)} when the record is at hand: only that one knows the
+   * declared type of the property.
    */
   public static boolean matchesResolvedValue(final Object actual, final Object expected) {
     if (actual == null || expected == null)

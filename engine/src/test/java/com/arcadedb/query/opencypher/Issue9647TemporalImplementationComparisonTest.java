@@ -34,6 +34,7 @@ import java.time.LocalDateTime;
 import java.time.ZonedDateTime;
 import java.util.Calendar;
 import java.util.Date;
+import java.util.TimeZone;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -161,6 +162,25 @@ class Issue9647TemporalImplementationComparisonTest extends TestHelper {
   }
 
   @ParameterizedTest
+  @ValueSource(classes = { Date.class, Calendar.class })
+  void preEpochDateKeepsItsDay(final Class<?> implementation) {
+    final BinarySerializer serializer = ((DatabaseInternal) database).getSerializer();
+    final Object previous = serializer.getDateImplementation();
+    try {
+      serializer.setDateImplementation(implementation);
+      database.transaction(() -> {
+        database.getSchema().createVertexType("D").createProperty("d", Type.DATE);
+        database.newVertex("D").set("d", LocalDate.of(1960, 5, 1)).save();
+      });
+      // a negative epoch is floored to its own day, not rounded to the next one
+      assertThat(cypherCount("MATCH (n:D) WHERE n.d = date('1960-05-01') RETURN count(n) AS c")).isEqualTo(1L);
+      assertThat(cypherCount("MATCH (n:D {d: date('1960-05-01')}) RETURN count(n) AS c")).isEqualTo(1L);
+    } finally {
+      serializer.setDateImplementation(previous);
+    }
+  }
+
+  @ParameterizedTest
   @ValueSource(classes = { ZonedDateTime.class, Calendar.class })
   void calendarParameterComparesByItsInstant(final Class<?> implementation) {
     final BinarySerializer serializer = ((DatabaseInternal) database).getSerializer();
@@ -173,7 +193,8 @@ class Issue9647TemporalImplementationComparisonTest extends TestHelper {
       });
 
       // a java.util.Calendar parameter (an embedded or Java client) carries an instant, as a java.util.Date one does
-      final Calendar parameter = Calendar.getInstance();
+      // in a zone other than UTC, where the local day differs from the UTC one: it still compares by its instant
+      final Calendar parameter = Calendar.getInstance(TimeZone.getTimeZone("Pacific/Kiritimati"));
       parameter.setTimeInMillis(Instant.parse("2026-01-01T11:00:00Z").toEpochMilli());
       try (final ResultSet rs = database.query("opencypher", "MATCH (e:E) WHERE e.ts = $p RETURN count(e) AS c", "p", parameter)) {
         assertThat(((Number) rs.next().getProperty("c")).longValue()).isEqualTo(1L);

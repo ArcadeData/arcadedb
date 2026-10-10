@@ -37,6 +37,15 @@ public class QueryOperatorEquals {
     if (left == right)
       return true;
 
+    // A java.util.Calendar (a supported arcadedb.dateImplementation / dateTimeImplementation, or a parameter) is its
+    // instant on either side, as the index key and BinaryComparator.compareTo read it. Its runtime class GregorianCalendar
+    // is no conversion target, so a scan of a DATE column answered nothing where the index answered the row, and
+    // Calendar.equals() also compares the zone, so two Calendars at one instant were not equal (issue #9647)
+    if (left instanceof Calendar calendar)
+      left = calendar.getTime();
+    if (right instanceof Calendar calendar)
+      right = calendar.getTime();
+
     if (left.getClass().equals(right.getClass()))
       // SAME TYPE, NO CONVERSION
       return BinaryComparator.equals(left, right);
@@ -75,21 +84,16 @@ public class QueryOperatorEquals {
     }
 
     // ALL OTHER CASES
-    // A java.util.Calendar (a supported arcadedb.dateImplementation / dateTimeImplementation, or a parameter) is its
-    // instant on either side, as the index key and BinaryComparator.compareTo read it: its runtime class GregorianCalendar
-    // is no conversion target, so a scan of a DATE column answered nothing where the index answered the row (issue #9647)
-    final Object leftValue = left instanceof Calendar calendar ? calendar.getTime() : left;
-    final Object rightValue = right instanceof Calendar calendar ? calendar.getTime() : right;
     try {
       // convertOrNull(): comparing a value against a literal of an incompatible shape is an ordinary "not equal",
       // not a query to refuse, so this stays on the lenient side of the strict/lenient split issue #8090 drew.
-      final Object converted = Type.convertOrNull(null, rightValue, leftValue.getClass());
-      if (converted == null)
+      right = Type.convertOrNull(null, right, left.getClass());
+      if (right == null)
         return false;
-      if (leftValue instanceof byte[] bytes && converted instanceof byte[] bytes1) {
+      if (left instanceof byte[] bytes && right instanceof byte[] bytes1) {
         return Arrays.equals(bytes, bytes1);
       }
-      return BinaryComparator.equals(leftValue, converted);
+      return BinaryComparator.equals(left, right);
     } catch (final Exception ignore) {
       return false;
     }
