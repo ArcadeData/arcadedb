@@ -22,6 +22,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.ConcurrentModificationException;
+import com.arcadedb.query.sql.executor.ResultSet;
 
 import org.junit.jupiter.api.Test;
 
@@ -119,7 +120,12 @@ class Issue9694InFlightNewPageAllocationTest extends TestHelper {
     for (final RID rid : otherRids)
       assertThat(rid.getPosition() / maxRecordsInPage).as("record %s must not be on the creator's page", rid).isNotEqualTo(creatorPage);
 
-    database.transaction(() -> assertThat(database.countType(TYPE, true)).isEqualTo(3));
+    database.transaction(() -> {
+      assertThat(scanCount()).isEqualTo(3);
+      assertThat(database.lookupByRID(creatorRid.get(), true).asDocument().getString("owner")).isEqualTo("creator");
+      for (final RID rid : otherRids)
+        assertThat(database.lookupByRID(rid, true).asDocument().getString("owner")).isEqualTo("other");
+    });
   }
 
   /**
@@ -160,7 +166,7 @@ class Issue9694InFlightNewPageAllocationTest extends TestHelper {
     assertThat(bucket.getInFlightNewPagesForTesting()).isZero();
 
     database.transaction(() -> {
-      assertThat(database.countType(TYPE, true)).isEqualTo(1);
+      assertThat(scanCount()).isEqualTo(1);
       assertThat(database.lookupByRID(rid, true).asDocument().getString("owner")).isEqualTo("committed");
     });
   }
@@ -244,8 +250,17 @@ class Issue9694InFlightNewPageAllocationTest extends TestHelper {
 
     assertThat(firstFailure.get()).as("the transaction merged into the full record table").isNull();
     database.transaction(() -> {
-      assertThat(database.countType(TYPE, true)).isEqualTo(maxRecordsInPage);
+      assertThat(scanCount()).isEqualTo(maxRecordsInPage);
       assertThat(database.lookupByRID(firstRid.get(), true).asDocument().getString("owner")).isEqualTo("first");
+      for (final RID rid : secondRids)
+        assertThat(database.lookupByRID(rid, true).asDocument().getString("owner")).isEqualTo("second");
     });
+  }
+
+  /** Counts by scanning the records: {@code countType} and {@code count(*)} read the bucket's cached counter. */
+  private long scanCount() {
+    try (final ResultSet rs = database.query("sql", "SELECT count(@rid) AS c FROM " + TYPE)) {
+      return ((Number) rs.next().getProperty("c")).longValue();
+    }
   }
 }
