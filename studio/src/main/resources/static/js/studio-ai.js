@@ -1262,10 +1262,6 @@ function aiRunSequential(commands, index, allBtn) {
 
 var aiMarkdownBlockId = 0;
 
-/** The bounds of an answer: well above a support comment, still finite for a hostile one. */
-var AI_MD_MAX_CHARS = 200000;
-var AI_MD_MAX_ROWS = 1000;
-
 /**
  * The HTML of an assistant answer. The answer is untrusted: the model quotes type names and record values from the database,
  * and the text arrives from a third-party portal (issue #9626). It goes through the escape-first renderer of
@@ -1273,7 +1269,7 @@ var AI_MD_MAX_ROWS = 1000;
  */
 function aiRenderMarkdown(text) {
   if (!text) return "";
-  return supportMarkdownHtml(text, { maxChars: AI_MD_MAX_CHARS, maxRows: AI_MD_MAX_ROWS, codeBlock: aiRenderCodeBlock });
+  return supportMarkdownHtml(text, { maxChars: SUPPORT_MD_AI_MAX_CHARS, maxRows: SUPPORT_MD_AI_MAX_ROWS, codeBlock: aiRenderCodeBlock });
 }
 
 /** A fenced block of an answer, with its language badge and a copy button. Code and language are raw: both are escaped here. */

@@ -38,6 +38,10 @@ var SUPPORT_MD_MAX_INLINE = 4000; // a longer paragraph, cell or list item is sh
 var SUPPORT_MD_MAX_ROWS = 200;
 var SUPPORT_MD_MAX_COLUMNS = 20;
 
+// The bounds of an AI answer (AI Assistant, profiler analysis): well above a support comment, still finite for a hostile one
+var SUPPORT_MD_AI_MAX_CHARS = 200000;
+var SUPPORT_MD_AI_MAX_ROWS = 1000;
+
 function supportMdEsc(value) {
   return String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
 }
@@ -81,6 +85,7 @@ function supportMdFenceLanguage(line) {
 // Each pattern is anchored at the start and has no nested quantifier over the rest of the line, so it is linear; the closing
 // hashes of a heading are stripped by hand (a regex for them backtracks quadratically on a long run of spaces)
 var SUPPORT_MD_HEADING = /^\s{0,3}(#{1,6})\s+(.*)$/;
+// The rule pattern's adjacent \s* groups can backtrack polynomially; supportMdIsBlock bounds the line to SUPPORT_MD_MAX_INLINE first
 var SUPPORT_MD_RULE = /^\s{0,3}([-*_])(\s*\1){2,}\s*$/;
 var SUPPORT_MD_QUOTE = /^\s{0,3}>\s?(.*)$/;
 

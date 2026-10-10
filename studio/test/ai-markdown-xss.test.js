@@ -77,7 +77,11 @@ function assertInert(html, input) {
   // Every attribute written is one Studio owns; none is an inline handler that came from the input
   const tags = html.match(/<[a-zA-Z][^>]*>/g) || [];
   for (const tag of tags) {
-    if (/onclick="(aiCopyCode|aiDeleteMessage|aiExecuteAll|profilerAiExecuteAll)\(/.test(tag)) continue;
+    // The only handlers Studio itself writes in these renderers, matched whole: anything else is a finding
+    if (/\sonclick="(aiCopyCode\(this, 'aiMdCode_\d+'\)|aiDeleteMessage\(\d+\)|aiExecuteAll\(this, \d+, \d+\)|profilerAiExecuteAll\(this\))"/.test(tag)) {
+      assert.equal((tag.match(/\son[a-z]+\s*=/gi) || []).length, 1, "extra handler in " + tag + " for input " + input);
+      continue;
+    }
     assert.doesNotMatch(tag, /\son[a-z]+\s*=/i, "event handler in " + tag + " for input " + input);
   }
   assert.doesNotMatch(html, /href\s*=\s*"?\s*(javascript|data|vbscript):/i, input);
