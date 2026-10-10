@@ -40,11 +40,11 @@
     "datatables.net-select": "^4.1.1",
     "datatables.net-select-bs5": "^4.1.1",
     "jquery": "^4.0.0",
-    "marked": "^18.0.3",
-    "jszip": "^3.10.1",
-    "pdfmake": "^0.3.8",
-    "swagger-ui-dist": "^5.32.5",
-    "sweetalert2": "^11.26.24"
+    "marked": "^18.0.14",
+    "jszip": "^3.10.2",
+    "pdfmake": "^0.3.11",
+    "swagger-ui-dist": "^5.33.1",
+    "sweetalert2": "^11.26.25"
   },
   "devDependencies": {
     "copy-webpack-plugin": "^14.0.0",
