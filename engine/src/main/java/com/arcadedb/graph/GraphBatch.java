@@ -1650,12 +1650,8 @@ public class GraphBatch implements AutoCloseable {
     if (totalEdgesCreated == totalEdgesReported)
       return;
     totalEdgesReported = totalEdgesCreated;
-    try {
-      database.getGraphEngine().edgesWrittenInBulk(Set.copyOf(edgeTypeFirstBucketCache.keySet()));
-    } catch (final RuntimeException e) {
-      // Never replaces the outcome of the batch the caller is handling
-      LogManager.instance().log(this, Level.WARNING, "GraphBatch: cannot notify the graph analytical views of the edges written", e);
-    }
+    // Never throws: the outcome of the batch is the caller's to handle, not a listener's
+    database.getGraphEngine().edgesWrittenInBulk(Set.copyOf(edgeTypeFirstBucketCache.keySet()));
   }
 
   /**
