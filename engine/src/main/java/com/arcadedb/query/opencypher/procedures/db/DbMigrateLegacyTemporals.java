@@ -61,6 +61,9 @@ import java.util.stream.Stream;
  * native only once all of them committed: a conversion that fails part way leaves it legacy, and running the procedure
  * again picks up what is left.
  * <p>
+ * Under HA it runs on the leader like any other write: the batches replicate as transactions, and the setting as part of
+ * the schema; a test covering the followers is tracked by issue #9712.
+ * <p>
  * Run it with writers quiesced: a String written while it runs, with the shape of a temporal, on a property the schema
  * does not declare, is converted too - which is what the legacy reading already made of it. For the same reason a
  * database created by a 26.11.1 development build earlier than this procedure counts as legacy (its schema file has no

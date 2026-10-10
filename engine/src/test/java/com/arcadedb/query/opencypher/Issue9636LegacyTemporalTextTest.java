@@ -41,6 +41,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
 /**
  * Regression test for issue #9636: a release before the native temporal types (#8572) stored an openCypher
@@ -109,6 +110,45 @@ class Issue9636LegacyTemporalTextTest extends TestHelper {
       final Result r = rs.next();
       assertThat(r.<Object>getProperty("code")).isEqualTo("P100D");
       assertThat(r.<Object>getProperty("free")).isEqualTo("Paris");
+    }
+
+    // Nor does MERGE match a declared STRING against a temporal: the text is text (issue #8384)
+    database.command("opencypher", "MERGE (n:S {code: duration('P100D')})");
+    try (final ResultSet rs = database.query("opencypher", "MATCH (n:S) RETURN count(n) AS c")) {
+      assertThat(((Number) rs.next().getProperty("c")).intValue()).isEqualTo(2);
+    }
+  }
+
+  @Test
+  void aMigrationThatFailsLeavesTheDatabaseLegacyAndARerunCompletesIt() throws IOException {
+    writeLegacyRecords();
+    // A record the migration cannot save: it predates a mandatory property
+    database.getSchema().getType("T").createProperty("required", Type.STRING).setMandatory(true);
+    makeLegacy();
+
+    try (final ResultSet rs = database.command("opencypher", "CALL db.migrateLegacyTemporals()")) {
+      rs.next();
+      fail("the migration must fail on a record it cannot save");
+    } catch (final RuntimeException expected) {
+      // the record validation refused the save
+    }
+
+    assertThat(database.getSchema().getEmbedded().isLegacyTemporalText()).isTrue();
+    try (final ResultSet rs = database.query("sql", "SELECT d FROM T WHERE name = 'a'")) {
+      assertThat(rs.next().<Object>getProperty("d")).isEqualTo("P1D");
+    }
+    // Still read as a temporal by openCypher, as before the attempt
+    try (final ResultSet rs = database.query("opencypher", "MATCH (n:T {name: 'a'}) RETURN n.d.days AS days")) {
+      assertThat(((Number) rs.next().getProperty("days")).intValue()).isEqualTo(1);
+    }
+
+    database.getSchema().getType("T").getProperty("required").setMandatory(false);
+    try (final ResultSet rs = database.command("opencypher", "CALL db.migrateLegacyTemporals()")) {
+      assertThat(((Number) rs.next().getProperty("records")).longValue()).isEqualTo(3L);
+    }
+    assertThat(database.getSchema().getEmbedded().isLegacyTemporalText()).isFalse();
+    try (final ResultSet rs = database.query("sql", "SELECT d FROM T WHERE name = 'a'")) {
+      assertThat(rs.next().<Object>getProperty("d")).isEqualTo(new CypherDuration(0, 1, 0, 0));
     }
   }
 
