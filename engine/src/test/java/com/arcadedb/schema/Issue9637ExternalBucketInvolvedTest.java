@@ -22,7 +22,6 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.Bucket;
-import com.arcadedb.engine.LocalBucket;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
