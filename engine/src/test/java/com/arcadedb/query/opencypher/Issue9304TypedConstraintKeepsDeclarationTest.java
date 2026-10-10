@@ -42,7 +42,9 @@ class Issue9304TypedConstraintKeepsDeclarationTest extends TestHelper {
     database.command("sql", "CREATE VERTEX TYPE B");
     database.command("sql", "CREATE PROPERTY B.code STRING");
     final Property declared = database.getSchema().getType("B").getProperty("code");
-    declared.setMandatory(true).setNotNull(true).setReadonly(true).setRegexp("[0-9]+").setMax("4").setDefaultValue("111");
+    // REGEXP and MAX are written in STRING terms and are not carried onto a LONG (#9645): see
+    // Issue9645TypedConstraintTypeDependentAttributesTest for the attributes that depend on the type
+    declared.setMandatory(true).setNotNull(true).setReadonly(true).setDefaultValue("111");
 
     database.command("opencypher", "CREATE CONSTRAINT FOR (n:B) REQUIRE n.code IS :: INTEGER").close();
 
@@ -51,8 +53,6 @@ class Issue9304TypedConstraintKeepsDeclarationTest extends TestHelper {
     assertThat(p.isMandatory()).isTrue();
     assertThat(p.isNotNull()).isTrue();
     assertThat(p.isReadonly()).isTrue();
-    assertThat(p.getRegexp()).isEqualTo("[0-9]+");
-    assertThat(p.getMax()).isEqualTo("4");
     assertThat(p.getDefaultValueDefinition()).isEqualTo("111");
   }
 
