@@ -100,10 +100,10 @@ final class HttpClientDisconnectWatch implements ChannelListener<ConduitStreamSo
   /** Runs on the connection's I/O thread when the client sent something or closed the connection. */
   @Override
   public synchronized void handleEvent(final ConduitStreamSourceChannel ignored) {
-    if (!armed) {
-      socket.suspendReads();
+    // An event dispatched before disarm() and run after it: nothing to do, and nothing to touch - reads were suspended when
+    // the watch stopped, and by now Undertow may have resumed them for the next request
+    if (!armed)
       return;
-    }
 
     final int read;
     try {
