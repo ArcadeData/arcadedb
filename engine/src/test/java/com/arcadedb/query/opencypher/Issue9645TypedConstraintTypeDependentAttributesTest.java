@@ -71,6 +71,7 @@ class Issue9645TypedConstraintTypeDependentAttributesTest extends TestHelper {
     assertThatThrownBy(() -> database.command("opencypher", "CREATE CONSTRAINT FOR (n:D) REQUIRE n.code IS :: INTEGER"))
         .isInstanceOf(CommandExecutionException.class)
         .hasMessageContaining("DEFAULT `'AAA'`")
+        // Cypher's INTEGER is a 64-bit integer, declared as LONG
         .hasMessageContaining("LONG");
 
     final Property p = database.getSchema().getType("D").getProperty("code");

@@ -292,6 +292,25 @@ public class DocumentValidator {
   }
 
   /**
+   * What a MIN or MAX measures on a property of {@code type} (a length, a size, a value), or null for a type that takes no
+   * bound. Kept next to {@link #unreadableBound}, which groups the types the same way, so the two stay in step when a type is
+   * added. Two types with the same measure read a bound with the same meaning (#9645).
+   */
+  public static String boundMeasure(final Type type) {
+    if (!isBoundApplicable(type))
+      return null;
+    return switch (type) {
+      case STRING -> "number of characters";
+      case BINARY -> "number of bytes";
+      case LIST, MAP, ARRAY_OF_SHORTS, ARRAY_OF_INTEGERS, ARRAY_OF_LONGS, ARRAY_OF_FLOATS, ARRAY_OF_DOUBLES -> "number of items";
+      case BYTE, SHORT, INTEGER, LONG, FLOAT, DOUBLE, DECIMAL -> "numeric value";
+      case DATE, DATETIME, DATETIME_SECOND, DATETIME_MICROS, DATETIME_NANOS -> "date";
+      // a type no case above names takes no bound this method knows how to compare: refuse rather than call two of them equal
+      default -> null;
+    };
+  }
+
+  /**
    * Why {@code bound} cannot serve as a MIN or MAX of a property of {@code type}, or null when it can. The bound is parsed
    * exactly the way {@link #validateMinValue}/{@link #validateMaxValue} parse it on every write, so a bound accepted here
    * never makes a later write fail on the bound itself (issue #9026): an INTEGER bound must be an int, not merely
