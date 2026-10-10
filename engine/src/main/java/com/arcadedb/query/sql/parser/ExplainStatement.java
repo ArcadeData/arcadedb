@@ -114,7 +114,12 @@ public class ExplainStatement extends Statement {
     return statement != null ? statement.hashCode() : 0;
   }
 
-  /** Plans the wrapped statement and runs none of it: nested in another statement, it is a read (issue #9628). */
+  /**
+   * Plans the wrapped statement and runs none of it: nested in another statement, it is a read (issue #9628). The public
+   * overrides below are deliberate and are the only ones left in the parser: at top level EXPLAIN stays idempotent but
+   * reports the wrapped statement's DDL flag and operation types (issue #9313), which the generic fold cannot express
+   * because it never looks inside a statement that does not execute what it holds.
+   */
   @Override
   protected boolean isIdempotentItself() {
     return true;
