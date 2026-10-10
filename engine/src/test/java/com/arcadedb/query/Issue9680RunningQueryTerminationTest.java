@@ -229,7 +229,17 @@ class Issue9680RunningQueryTerminationTest {
       q.setStatement("sql", "CREATE USER bob IDENTIFIED BY s3cr3t ROLE admin");
       assertThat(q.getText()).isEqualTo("CREATE USER bob IDENTIFIED BY *** ROLE admin");
       q.setStatement("sql", "ALTER USER bob SET password = 'my pass', token: \"abc\"");
-      assertThat(q.getText()).doesNotContain("my pass").doesNotContain("abc").contains("password ***").contains("token ***");
+      assertThat(q.getText()).isEqualTo("ALTER USER bob SET password = ***, token: ***");
+
+      // JSON form: the closing quote of the key sits between the keyword and the separator
+      q.setStatement("sql", "INSERT INTO Account CONTENT {\"name\": \"bob\", \"password\":\"secret\", \"apiToken\" : \"t-1\"}");
+      assertThat(q.getText()).doesNotContain("secret").contains("\"password\":***").contains("\"name\": \"bob\"");
+
+      // Masked before it is cut: a credential across the length limit does not survive the cut
+      final String padding = "x".repeat(RunningQuery.MAX_TEXT_LENGTH - 20);
+      q.setStatement("sql", "SELECT '" + padding + "' FROM V WHERE password = 'secret-across-the-cut-0123456789'");
+      assertThat(q.getText()).doesNotContain("secret").hasSize(RunningQuery.MAX_TEXT_LENGTH + 3);
+
       q.setStatement("opencypher", "MATCH (n) RETURN n.name");
       assertThat(q.getText()).isEqualTo("MATCH (n) RETURN n.name");
     }

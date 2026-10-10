@@ -220,6 +220,7 @@ class Issue9680ListTerminateQueriesTest extends BaseGraphServerTest {
     assertThat(listQueries(OTHER, "bench-owner")).isEmpty();
     assertThat(serverCommand(OTHER, "terminate query " + entry.getString("id")).getJSONObject("result").getString("status"))
         .isEqualTo("not found");
+    assertThat(serverCommand(OTHER, "terminate queries tag bench-owner").getJSONArray("result")).isEmpty();
     assertThat(listQueries(ROOT, "bench-owner")).hasSize(1);
 
     // Its owner sees it and stops it
