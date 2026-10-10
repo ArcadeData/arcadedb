@@ -19,6 +19,7 @@
 package com.arcadedb.query;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
@@ -84,7 +85,7 @@ public final class RunningQueryRegistry {
   /** A snapshot of the statements running now, oldest first. */
   public List<RunningQuery> getRunning() {
     final List<RunningQuery> list = new ArrayList<>(running.values());
-    list.sort((a, b) -> Long.compare(a.getNumericId(), b.getNumericId()));
+    list.sort(Comparator.comparingLong(RunningQuery::getNumericId));
     return list;
   }
 

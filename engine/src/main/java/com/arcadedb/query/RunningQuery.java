@@ -70,7 +70,7 @@ public final class RunningQuery implements AutoCloseable {
   // The keyword, the closing quote of a JSON key and a separator, then the value: quoted, or up to the next delimiter. The
   // separator's quantifiers are possessive, so a long run of blanks after a keyword is scanned once, never backtracked
   private static final Pattern                   CREDENTIAL =
-      Pattern.compile("(?i)\\b(identified\\s+by|password|token)([\"']?+\\s*+(?:[=:]\\s*+)?)('[^']*'|\"[^\"]*\"|[^\\s,;)}\\]]+)");
+      Pattern.compile("(?i)\\b(identified\\s+by|password|token|secret|api[_-]?key)\\b([\"']?+\\s*+(?:[=:]\\s*+)?)('[^']*'|\"[^\"]*\"|[^\\s,;)}\\]]+)");
 
   private final RunningQueryRegistry registry;
   private final long                 id;
@@ -132,12 +132,13 @@ public final class RunningQuery implements AutoCloseable {
   }
 
   /**
-   * The text with the value after {@code IDENTIFIED BY}, {@code PASSWORD} or {@code TOKEN} replaced by {@code ***}, in
+   * The text with the value after {@code IDENTIFIED BY}, {@code PASSWORD}, {@code TOKEN}, {@code SECRET} or {@code API_KEY}
+   * (also {@code APIKEY}, {@code API-KEY}) replaced by {@code ***}, in
    * statement form ({@code IDENTIFIED BY x}, {@code password = 'x'}) as in JSON form ({@code "password": "x"}), then cut to
    * {@link #MAX_TEXT_LENGTH}. The listing is read by the server administrator for every user's statements, and a credential
    * written in clear in a statement is not something it needs to show.
    * <p>
-   * Best effort: it recognizes those three keywords, not every way a secret can be spelled in a statement. Parameters, the
+   * Best effort: it recognizes those keywords, not every way a secret can be spelled in a statement. Parameters, the
    * proper place for one, are never listed at all.
    */
   static String maskAndTruncate(final String text) {
@@ -205,7 +206,8 @@ public final class RunningQuery implements AutoCloseable {
 
   /**
    * Ends the entry: removes it from the registry and gives the thread back the entry it had before. Must run on the
-   * thread that opened the entry.
+   * thread that opened the entry, and entries opened on one thread close in the reverse order they were opened (a
+   * try-with-resources nesting does that): an entry closed out of turn leaves the thread-local alone rather than guess.
    */
   @Override
   public void close() {
