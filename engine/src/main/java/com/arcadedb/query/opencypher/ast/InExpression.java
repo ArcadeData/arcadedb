@@ -18,12 +18,15 @@
  */
 package com.arcadedb.query.opencypher.ast;
 
+import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
 import com.arcadedb.function.graph.IdFunction;
+import com.arcadedb.query.opencypher.InlineProperties;
 import com.arcadedb.query.opencypher.query.OpenCypherQueryEngine;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.schema.Property;
 import com.arcadedb.utility.LongRangeList;
 
 import java.util.ArrayList;
@@ -118,16 +121,31 @@ public class InExpression implements BooleanExpression {
       // non-empty list makes this uncertain, an empty one leaves nothing to be uncertain about.
       return valuesToCheck.iterator().hasNext() ? null : Boolean.FALSE;
 
+    // A property declared STRING holds the text of what was written into it, so membership compares it with the text each
+    // element would be stored as, like = does (issue #9695)
+    final Property declared = value instanceof String ? declaredStringProperty(result) : null;
+
     if (valuesToCheck instanceof LongRangeList range) {
-      final Boolean found = rangeMembership(range, value);
+      Boolean found = rangeMembership(range, value);
+      // A range holds longs: a declared text is also a member when it is the canonical spelling of one of them
+      if (declared != null && !Boolean.TRUE.equals(found)) {
+        final Object number = canonicalLong((String) value);
+        if (number != value)
+          found = rangeMembership(range, number);
+      }
       if (found != null)
         return found;
     }
 
     // 3VL: null IN [1,2,3] -> null, 5 IN [1,null,3] -> null (if not found otherwise)
     boolean foundNull = false;
-    for (final Object checkValue : valuesToCheck) {
-      final Boolean cmp = valuesCompare(value, checkValue);
+    for (final Object element : valuesToCheck) {
+      Boolean cmp = valuesCompare(value, element);
+      if (declared != null && !Boolean.TRUE.equals(cmp) && element != null && !(element instanceof String)) {
+        final String text = InlineProperties.declaredText(declared, context != null ? context.getDatabase() : null, element);
+        if (text != null)
+          cmp = valuesCompare(value, text);
+      }
       if (cmp == null)
         foundNull = true;
       else if (cmp)
@@ -138,6 +156,27 @@ public class InExpression implements BooleanExpression {
       return null;
 
     return Boolean.FALSE;
+  }
+
+  /** The declared STRING property the left operand reads, when it is a property access on a record; otherwise null. */
+  private Property declaredStringProperty(final Result result) {
+    if (!(expression instanceof PropertyAccessExpression access) || result == null)
+      return null;
+    final Document record = InlineProperties.boundRecord(result.getProperty(access.getVariableName()));
+    return record != null ? InlineProperties.declaredStringProperty(record, access.getPropertyName()) : null;
+  }
+
+  /**
+   * The long a text is the canonical spelling of ({@code "12"}, not {@code "012"} or {@code "+12"}), as the text an integer is
+   * stored as; or the text itself, which no long equals, when it is not one.
+   */
+  private static Object canonicalLong(final String text) {
+    try {
+      final long parsed = Long.parseLong(text);
+      return Long.toString(parsed).equals(text) ? parsed : text;
+    } catch (final NumberFormatException e) {
+      return text;
+    }
   }
 
   /**

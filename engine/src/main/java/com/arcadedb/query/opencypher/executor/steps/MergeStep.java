@@ -1194,11 +1194,16 @@ public class MergeStep extends AbstractExecutionStep {
     for (int i = 0; i < propertyNames.length; i++) {
       final Object value = evaluatedProperties.get(propertyNames[i]);
       // A temporal wrapper is looked up as the java.time value the index key conversion understands. A declared STRING
-      // property holds text, which a temporal never equals in a MATCH (InlineProperties.matchesResolvedValue), so no
-      // candidate can match: nothing to look up, and nothing to scan either (issue #9693)
+      // property holds the text a write of the value stores, which is what a MATCH compares it with
+      // (InlineProperties.matchesProperty), so that text is the key (issue #9695)
       final Property property = type.getPolymorphicPropertyIfExists(propertyNames[i]);
-      if (value instanceof CypherTemporalValue && property != null && property.getType() == Type.STRING)
-        return Collections.emptyIterator();
+      if (property != null && property.getType() == Type.STRING && value != null && !(value instanceof String)) {
+        final String text = InlineProperties.declaredText(property, context.getDatabase(), value);
+        if (text == null)
+          return Collections.emptyIterator(); // no text form: nothing stored can equal it
+        propertyValues[i] = text;
+        continue;
+      }
       propertyValues[i] = TemporalUtil.toIndexKey(value);
     }
 
@@ -1321,8 +1326,9 @@ public class MergeStep extends AbstractExecutionStep {
       final Object expectedValue = entry.getValue();
 
       // MERGE is defined as the MATCH of its pattern: the very comparison a MATCH applies to an inline property, so the
-      // two clauses cannot drift apart on a FLOAT, a signed zero or a temporal against stored text (issue #9693)
-      if (!InlineProperties.matchesResolvedValue(doc.get(key), expectedValue))
+      // two clauses cannot drift apart on a FLOAT, a signed zero or a temporal against stored text (issue #9693), and a
+      // declared STRING property is found by the text the same value was stored as (issue #9695)
+      if (!InlineProperties.matchesProperty(doc, key, expectedValue))
         return false;
     }
     return true;

@@ -106,9 +106,15 @@ public record EquiJoinKey(Expression left, Expression right, boolean viaEvaluato
   public static Object canonicalValue(final Object value) {
     if (value == null)
       return NO_MATCH;
-    if (value instanceof String string)
+    if (value instanceof String string) {
       // A string spelling a RID equals the number id() encodes it to
-      return RID.is(string) ? UNHASHABLE : string;
+      if (RID.is(string))
+        return UNHASHABLE;
+      // A property declared STRING holds the text of a number or a boolean written into it, which = finds again with that
+      // number or boolean (issue #9695): such a text shares their key. Two texts that differ but spell the same number
+      // ('5', '5.0') share it too, which only lets through a pair the comparison above the join then rejects
+      return textKey(string);
+    }
     if (value instanceof Number number) {
       final double d = number instanceof Float f ? Type.widenFloat(f) : number.doubleValue();
       if (Double.isNaN(d))
@@ -122,5 +128,24 @@ public record EquiJoinKey(Expression left, Expression right, boolean viaEvaluato
       return rid != null ? rid : UNHASHABLE;
     }
     return UNHASHABLE;
+  }
+
+  /** The key of a text: the key of the number or boolean it spells, or the text itself. */
+  private static Object textKey(final String text) {
+    if (text.isEmpty())
+      return text;
+    final char first = text.charAt(0);
+    if (first == 't' && text.equals("true") || first == 'f' && text.equals("false"))
+      return Boolean.valueOf(text);
+    // Only what a number's text starts with is parsed: an ordinary text pays one character test
+    if (first >= '0' && first <= '9' || first == '-' || first == 'I') {
+      try {
+        final double d = Double.parseDouble(text);
+        return Double.isNaN(d) ? text : d == 0.0 ? 0.0 : d;
+      } catch (final NumberFormatException e) {
+        return text;
+      }
+    }
+    return text;
   }
 }
