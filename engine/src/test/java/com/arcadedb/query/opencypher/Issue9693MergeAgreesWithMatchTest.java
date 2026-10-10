@@ -155,15 +155,18 @@ class Issue9693MergeAgreesWithMatchTest extends TestHelper {
       database.transaction(() -> database.command("opencypher", "CREATE (:" + type + " {d: " + operand + ", tag: 'orig'})").close());
 
       final String described = type + " " + operand;
-      final long inline = count("MATCH (p:" + type + " {d: " + operand + "}) RETURN count(p) AS c");
-      assertThat(count("MATCH (p:" + type + ") WHERE p.d = " + operand + " RETURN count(p) AS c")).as(described + " WHERE vs inline")
-          .isEqualTo(inline);
+      // Both MATCH spellings: a temporal never equals stored text. Pinned, so a change to MATCH fails here rather than
+      // silently moving MERGE along with it (that decision is #9695)
+      assertThat(count("MATCH (p:" + type + " {d: " + operand + "}) RETURN count(p) AS c")).as(described + " inline MATCH")
+          .isEqualTo(0L);
+      assertThat(count("MATCH (p:" + type + ") WHERE p.d = " + operand + " RETURN count(p) AS c")).as(described + " WHERE MATCH")
+          .isEqualTo(0L);
 
       final String tag = merge("MERGE (p:" + type + " {d: " + operand + "}) ON MATCH SET p.tag = 'MATCHED' ON CREATE SET p.tag = 'CREATED' RETURN p.tag AS tag");
-      assertThat(tag).as(described + " MERGE takes the branch the MATCH implies").isEqualTo(inline == 0 ? "CREATED" : "MATCHED");
-      assertThat(count("MATCH (p:" + type + ") RETURN count(p) AS c")).as(described + " total").isEqualTo(inline == 0 ? 2L : 1L);
+      assertThat(tag).as(described + " MERGE takes the branch the MATCH implies").isEqualTo("CREATED");
+      assertThat(count("MATCH (p:" + type + ") RETURN count(p) AS c")).as(described + " total").isEqualTo(2L);
       assertThat(count("MATCH (p:" + type + " {tag: 'orig'}) RETURN count(p) AS c")).as(described + " original node untouched")
-          .isEqualTo(inline == 0 ? 1L : 0L);
+          .isEqualTo(1L);
     }
   }
 
@@ -185,12 +188,26 @@ class Issue9693MergeAgreesWithMatchTest extends TestHelper {
     database.command("sql", "CREATE INDEX ON SP (d) NOTUNIQUE");
     database.transaction(() -> database.command("opencypher", "CREATE (:SP {d: datetime('2021-06-15T12:30:00Z')})").close());
     final Map<String, Object> params = Map.of("d", ZonedDateTime.parse("2021-06-15T12:30:00Z"));
-    final long matched;
     try (final ResultSet rs = database.query("opencypher", "MATCH (p:SP {d: $d}) RETURN count(p) AS c", params)) {
-      matched = rs.next().<Long>getProperty("c");
+      assertThat(rs.next().<Long>getProperty("c")).isEqualTo(0L);
     }
     database.transaction(() -> database.command("opencypher", "MERGE (p:SP {d: $d})", params).close());
-    assertThat(count("MATCH (p:SP) RETURN count(p) AS c")).isEqualTo(matched == 0 ? 2L : 1L);
+    assertThat(count("MATCH (p:SP) RETURN count(p) AS c")).isEqualTo(2L);
+  }
+
+  @Test
+  void aCompositeIndexWithATemporalOnItsStringKeyAgreesWithMatch() {
+    database.command("sql", "CREATE VERTEX TYPE SX");
+    database.command("sql", "CREATE PROPERTY SX.k INTEGER");
+    database.command("sql", "CREATE PROPERTY SX.d STRING");
+    database.command("sql", "CREATE INDEX ON SX (k, d) NOTUNIQUE");
+    database.transaction(() -> database.command("opencypher", "CREATE (:SX {k: 1, d: date('2021-06-15'), tag: 'orig'})").close());
+    assertThat(count("MATCH (p:SX {k: 1, d: date('2021-06-15')}) RETURN count(p) AS c")).isEqualTo(0L);
+    assertThat(merge("MERGE (p:SX {k: 1, d: date('2021-06-15')}) ON MATCH SET p.tag = 'MATCHED' ON CREATE SET p.tag = 'CREATED' RETURN p.tag AS tag"))
+        .isEqualTo("CREATED");
+    // The text operand still finds the node through the same composite index
+    assertThat(merge("MERGE (p:SX {k: 1, d: '2021-06-15'}) ON MATCH SET p.tag = 'MATCHED' RETURN p.tag AS tag")).isEqualTo("MATCHED");
+    assertThat(count("MATCH (p:SX) RETURN count(p) AS c")).isEqualTo(2L);
   }
 
   @Test
