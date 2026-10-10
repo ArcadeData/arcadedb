@@ -1023,9 +1023,6 @@ public class GraphEngine {
 
     cleanUpBeforePhysicalDelete(edge);
     deleteEdge(edge);
-    // Still the record being replaced: its identity and endpoints change only at the end
-    ((RecordEventsRegistry) database.getEvents()).onAfterDelete(edge);
-    ((RecordEventsRegistry) edge.getType().getEvents()).onAfterDelete(edge);
 
     final EdgeType edgeType = (EdgeType) database.getSchema().getType(typeName);
     final VertexInternal fromVertex = (VertexInternal) database.lookupByRID(newOut, false);
@@ -1039,6 +1036,11 @@ public class GraphEngine {
     connectOutgoingEdge(fromVertex, toVertex, newEdge);
     if (edgeType.isBidirectional())
       connectIncomingEdge(toVertex, newOut, newEdge.getIdentity());
+
+    // Once the replacement exists, so a move that fails half-way has told no listener of a removal. Still the record being
+    // replaced: its identity and endpoints change only on the next line
+    ((RecordEventsRegistry) database.getEvents()).onAfterDelete(edge);
+    ((RecordEventsRegistry) edge.getType().getEvents()).onAfterDelete(edge);
 
     edge.updateIdentity(newEdge.getIdentity(), newOut, newIn);
   }
