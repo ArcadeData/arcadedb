@@ -1081,9 +1081,9 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       boolean vanished = false;
       boolean coarsened = false;
       BitSet rowFilter = null;
-      // Issue #9612: the rows the field filter keeps, and the block's columns left primitive so only those are boxed
-      int[] fieldRows = null;
-      int fieldRowCount = 0;
+      // Issue #9612: the decoded columns the field filter reads, and the block's columns left primitive so only the rows
+      // that pass are boxed
+      Object[] fieldCols = null;
       RawColumn[] rawCols = null;
       directoryLock.readLock().lock();
       try {
@@ -1142,13 +1142,10 @@ public class TimeSeriesSealedStore implements AutoCloseable {
               end = to;
               if (fieldMatch == FieldFilter.BlockMatch.SOME) {
                 final List<FieldFilter.Condition> conditions = fieldFilter.getConditions();
-                final Object[] filterCols = new Object[conditions.size()];
-                for (int c = 0; c < filterCols.length; c++)
-                  filterCols[c] = rawColumnValues(live, findNonTsColumnSchemaIndex(conditions.get(c).columnIndex()));
-                fieldRows = new int[to - from];
-                fieldRowCount = FieldFilter.select(conditions, filterCols, from, to, fieldRows);
-                if (fieldRowCount > 0)
-                  rawCols = decompressColumnsRaw(live, projection.scanIndices(), tsColIdx);
+                fieldCols = new Object[conditions.size()];
+                for (int c = 0; c < fieldCols.length; c++)
+                  fieldCols[c] = rawColumnValues(live, findNonTsColumnSchemaIndex(conditions.get(c).columnIndex()));
+                rawCols = decompressColumnsRaw(live, projection.scanIndices(), tsColIdx);
               } else
                 decompCols = decompressColumns(live, projection.scanIndices(), tsColIdx);
             }
@@ -1188,11 +1185,14 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       }
 
       if (rawCols != null) {
-        // Issue #9612: only the rows the field filter kept are built, from the primitive columns
+        // Issue #9612: only the rows that pass the field filter are built, from the primitive columns, and the test reads the
+        // decoded columns in place so a rejected row allocates nothing
+        final List<FieldFilter.Condition> conditions = fieldFilter.getConditions();
         final int resultCols = rawCols.length + 1;
-        for (int k = 0; k < fieldRowCount; k++) {
-          final int i = fieldRows[k];
+        for (int i = start; i < end; i++) {
           if (rowFilter != null && !rowFilter.get(i))
+            continue;
+          if (!FieldFilter.matchesAt(conditions, fieldCols, i))
             continue;
           final Object[] row = new Object[resultCols];
           row[0] = ts[i];
@@ -1208,8 +1208,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         continue;
       }
 
-      // Null only because the window above declined the block - no row of it was in range, or the field filter kept none of
-      // it. decompressColumns has one return and it is a toArray, so it never hands back null itself.
+      // Null only because the window above declined the block - no row of it was in range.
+      // decompressColumns has one return and it is a toArray, so it never hands back null itself.
       if (decompCols == null)
         continue;
 

@@ -162,6 +162,42 @@ class Issue9612TimeWindowAggregatePushDownTest extends TestHelper {
       assertThat(rows(sql.replace(" X", " T"))).hasSize(1);
       assertSameAsTheTwin("SELECT count(*) AS c, avg(uu) AS a FROM X WHERE uu > 50 AND uu < 10");
       assertSameAsTheTwin("SELECT count(*) AS c, sum(uu) AS s FROM X WHERE host = 'nobody'");
+      // a reversed BETWEEN matches nothing on both plans
+      assertThat(plan("SELECT count(*) AS c FROM T WHERE uu BETWEEN 30 AND 10")).contains("FIELDS uu >= 30.0 AND uu <= 10.0");
+      assertSameAsTheTwin("SELECT count(*) AS c, max(uu) AS m FROM X WHERE uu BETWEEN 30 AND 10");
+      assertSameAsTheTwin("SELECT count(*) AS c, max(ui) AS m FROM X WHERE ui BETWEEN 300 AND 100");
+    });
+  }
+
+  /** The Java type of each column of the only row a query answers. */
+  private List<String> types(final String sql) {
+    final List<String> out = new ArrayList<>();
+    try (final ResultSet rs = database.query("sql", sql)) {
+      final Result r = rs.next();
+      for (final String name : r.getPropertyNames().stream().sorted().toList()) {
+        final Object value = r.getProperty(name);
+        out.add(name + ":" + (value == null ? "null" : value.getClass().getSimpleName()));
+      }
+    }
+    return out;
+  }
+
+  @Test
+  void aPushedDownAggregateAnswersTheJavaTypesOfTheGenericPlan() {
+    forEachState(2, () -> {
+      // min/max hand back a sample of the column, sum keeps an integral total integral and a FLOAT total a FLOAT, avg is a Double
+      final String projection = "count(*) AS c, sum(ui) AS si, sum(us) AS su, sum(uf) AS sf, sum(uu) AS sd, min(us) AS mnu, max(ui) AS mxi, "
+          + "min(uf) AS mnf, max(uu) AS mxd, avg(ui) AS ai";
+      final String ungrouped = "SELECT " + projection + " FROM X WHERE " + RANGE;
+      assertThat(plan(ungrouped.replace(" X", " T"))).contains("ungrouped");
+      assertThat(types(ungrouped.replace(" X", " T"))).isEqualTo(types(ungrouped.replace(" X", " D")));
+
+      final String filtered = "SELECT " + projection + " FROM X WHERE uu > 30 AND " + RANGE;
+      assertThat(types(filtered.replace(" X", " T"))).isEqualTo(types(filtered.replace(" X", " D")));
+
+      final String byHost = "SELECT host, " + projection + " FROM X WHERE host = 'host_1' GROUP BY host";
+      assertThat(plan(byHost.replace(" X", " T"))).contains("group by host");
+      assertThat(types(byHost.replace(" X", " T"))).isEqualTo(types(byHost.replace(" X", " D")));
     });
   }
 
@@ -170,7 +206,7 @@ class Issue9612TimeWindowAggregatePushDownTest extends TestHelper {
     forEachState(3, () -> {
       final String[] predicates = { "uu > 50", "uu >= 50", "uu < 20", "uu <= 20", "uu = 42", "42 < uu", "50 >= uu", "uu > 50.5",
           "uu BETWEEN 10 AND 30", "uu > 10 AND uu < 30", "ui > 300", "ui >= 300 AND ui <= 450", "ui = 77", "us < 7", "us BETWEEN 3 AND 9",
-          "uu > 50 AND ui < 400", "uu > -1" };
+          "uu > 50 AND ui < 400", "uu > -1", "host = 'host_2' AND uu > 50", "host = 'host_0' AND ui BETWEEN 100 AND 400" };
       for (final String predicate : predicates) {
         final String sql = "SELECT " + AGGREGATES + " FROM X WHERE " + predicate + " AND " + RANGE;
         assertThat(plan(sql.replace(" X", " T"))).as(predicate).contains("AGGREGATE FROM TIMESERIES").contains(" FIELDS ")
