@@ -106,7 +106,7 @@ class Issue9612TimeWindowAggregatePushDownTest extends TestHelper {
           else if (value instanceof Date d)
             text = String.format(Locale.ROOT, "%.6f", (double) d.getTime());
           else if (value instanceof Number n)
-            // a SUM of a LONG field is a Double on the push-down and a Long on the generic path
+            // the values, not their Java types, which aPushedDownAggregateAnswersTheJavaTypesOfTheGenericPlan compares
             text = String.format(Locale.ROOT, "%.6f", n.doubleValue());
           else
             text = String.valueOf(value);

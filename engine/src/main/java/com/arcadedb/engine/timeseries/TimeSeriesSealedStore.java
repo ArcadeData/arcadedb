@@ -2032,7 +2032,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
             selected = new int[MAX_BLOCK_SIZE];
           int count;
           if (needRowFieldFilter)
-            count = FieldFilter.select(fieldConditions, fieldFilterColumns(blockData, entry, fieldConditions, decompressedCols), rangeStart,
+            count = FieldFilter.select(fieldConditions, fieldFilterColumns(entry, fieldConditions, decompressedCols), rangeStart,
                 rangeEnd, selected);
           else {
             count = 0;
@@ -2196,22 +2196,17 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   }
 
   /**
-   * The decoded values of the columns {@code conditions} read, one per condition, from a block already read into
-   * {@code blockData}: a {@code long[]} for an integral condition, a {@code double[]} otherwise. A column the requests
-   * already decoded is reused.
+   * The decoded values of the columns {@code conditions} read, one per condition: a {@code long[]} for an integral condition,
+   * a {@code double[]} otherwise. A floating-point column the requests already decoded is reused; every other one goes
+   * through the decoded-column cache, as the row walk's do, so a repeated windowed query decodes it once.
    */
-  private Object[] fieldFilterColumns(final byte[] blockData, final BlockEntry entry, final List<FieldFilter.Condition> conditions,
+  private Object[] fieldFilterColumns(final BlockEntry entry, final List<FieldFilter.Condition> conditions,
       final double[][] decodedBySchema) throws IOException {
     final Object[] values = new Object[conditions.size()];
     for (int c = 0; c < values.length; c++) {
       final FieldFilter.Condition condition = conditions.get(c);
       final int schemaIdx = findNonTsColumnSchemaIndex(condition.columnIndex());
-      if (condition.integral())
-        values[c] = Simple8bCodec.decode(sliceColumn(blockData, entry, schemaIdx));
-      else if (decodedBySchema[schemaIdx] != null)
-        values[c] = decodedBySchema[schemaIdx];
-      else
-        values[c] = GorillaXORCodec.decode(sliceColumn(blockData, entry, schemaIdx));
+      values[c] = !condition.integral() && decodedBySchema[schemaIdx] != null ? decodedBySchema[schemaIdx] : rawColumnValues(entry, schemaIdx);
     }
     return values;
   }
@@ -2391,7 +2386,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         if (fieldMatch == FieldFilter.BlockMatch.SOME) {
           if (selected == null)
             selected = new int[MAX_BLOCK_SIZE];
-          selectedCount = FieldFilter.select(fieldConditions, fieldFilterColumns(blockData, entry, fieldConditions, decompressedCols), rangeStart,
+          selectedCount = FieldFilter.select(fieldConditions, fieldFilterColumns(entry, fieldConditions, decompressedCols), rangeStart,
               rangeEnd, selected);
         }
         final boolean rowFieldFilter = fieldMatch == FieldFilter.BlockMatch.SOME;
