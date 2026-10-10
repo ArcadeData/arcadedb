@@ -394,7 +394,7 @@ jobs:
           echo "[package] archive: $ARCHIVE (+ $ARCHIVE.sha256)"
 
       - name: Upload workflow artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: arcadedb-native-${{ matrix.os_name }}-${{ matrix.arch }}
           if-no-files-found: error
@@ -470,7 +470,7 @@ jobs:
           ref: ${{ inputs.ref }}
 
       - name: Download binary artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: arcadedb-native-linux-${{ matrix.arch }}
           path: dl
@@ -580,7 +580,7 @@ jobs:
 
       - name: Upload native E2E test reports
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: native-e2e-test-reports-${{ matrix.arch }}
           path: e2e/target/failsafe-reports/
