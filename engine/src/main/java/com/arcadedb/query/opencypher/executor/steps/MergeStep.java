@@ -65,6 +65,7 @@ import com.arcadedb.schema.Type;
 
 import java.time.temporal.Temporal;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.Iterator;
@@ -100,10 +101,6 @@ public class MergeStep extends AbstractExecutionStep {
   // The ON CREATE SET (and absorbed SET) items written with a created node, resolved once, on the first creation
   private       boolean             createItemsResolved;
   private       List<SetClause.SetItem> createItems;
-
-  // The storage text of the last temporal operand matchesTemporal compared against (see there); one immutable pair, so the
-  // operand and its text can never be read out of step
-  private WantedText wantedText;
 
   public MergeStep(final MergeClause mergeClause, final CommandContext context,
                    final CypherFunctionFactory functionFactory) {
@@ -1196,12 +1193,13 @@ public class MergeStep extends AbstractExecutionStep {
     final Object[] propertyValues = new Object[propertyNames.length];
     for (int i = 0; i < propertyNames.length; i++) {
       final Object value = evaluatedProperties.get(propertyNames[i]);
-      // A temporal wrapper is looked up as the java.time value the index key conversion understands; an indexed STRING
-      // property holds the storage text instead (issue #9334)
+      // A temporal wrapper is looked up as the java.time value the index key conversion understands. A declared STRING
+      // property holds text, which a temporal never equals in a MATCH (InlineProperties.matchesResolvedValue), so no
+      // candidate can match: nothing to look up, and nothing to scan either (issue #9693)
       final Property property = type.getPolymorphicPropertyIfExists(propertyNames[i]);
-      propertyValues[i] = value instanceof CypherTemporalValue && property != null && property.getType() == Type.STRING ?
-          TemporalUtil.toStorageText(value) :
-          TemporalUtil.toIndexKey(value);
+      if (value instanceof CypherTemporalValue && property != null && property.getType() == Type.STRING)
+        return Collections.emptyIterator();
+      propertyValues[i] = TemporalUtil.toIndexKey(value);
     }
 
     final Iterator<Identifiable> cursor = context.getDatabase().lookupByKey(label, propertyNames, propertyValues);
@@ -1311,29 +1309,6 @@ public class MergeStep extends AbstractExecutionStep {
 
 
   /**
-   * A temporal operand against a stored value: text is compared with the operand's storage form, then restored to its
-   * temporal type and compared by value; any other stored value is compared the way a MATCH compares it (a naive stored
-   * datetime against a zoned operand by instant, issue #9334).
-   */
-  private boolean matchesTemporal(final Document doc, final String propertyName, final Object actual,
-      final CypherTemporalValue wanted) {
-    if (actual instanceof String text) {
-      // The storage text of the operand is the same for every candidate of one MERGE: computed once, not once per row
-      WantedText cached = wantedText;
-      if (cached == null || cached.wanted != wanted) {
-        cached = new WantedText(wanted, TemporalUtil.toStorageText(wanted));
-        wantedText = cached;
-      }
-      final String wantedStorageText = cached.text;
-      // The parse only runs for a text with the shape of a temporal: a scan over plain strings pays a character test
-      // A declared STRING property holds text by contract (issue #8384): it only matches the operand's own text, never a
-      // differently formatted rendering of the same instant, exactly like MATCH
-      return text.equals(wantedStorageText);
-    }
-    return InlineProperties.matchesResolvedValue(actual, wanted);
-  }
-
-  /**
    * Checks if a vertex/edge matches all property filters.
    *
    * @param doc        document to check
@@ -1345,16 +1320,9 @@ public class MergeStep extends AbstractExecutionStep {
       final String key = entry.getKey();
       final Object expectedValue = entry.getValue();
 
-      final Object actualValue = doc.get(key);
-      if (actualValue == null)
-        return false;
-      if (expectedValue instanceof CypherTemporalValue wanted) {
-        if (!matchesTemporal(doc, key, actualValue, wanted))
-          return false;
-        continue;
-      }
-      // Use numeric-safe comparison (Integer vs Long, etc.)
-      if (!CypherValues.equalValues(actualValue, expectedValue))
+      // MERGE is defined as the MATCH of its pattern: the very comparison a MATCH applies to an inline property, so the
+      // two clauses cannot drift apart on a FLOAT, a signed zero or a temporal against stored text (issue #9693)
+      if (!InlineProperties.matchesResolvedValue(doc.get(key), expectedValue))
         return false;
     }
     return true;
@@ -1722,8 +1690,5 @@ public class MergeStep extends AbstractExecutionStep {
 
   private static String getIndent(final int depth, final int indent) {
     return "  ".repeat(Math.max(0, depth * indent));
-  }
-
-  private record WantedText(CypherTemporalValue wanted, String text) {
   }
 }
