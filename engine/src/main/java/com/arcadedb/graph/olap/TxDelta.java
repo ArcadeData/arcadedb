@@ -146,7 +146,8 @@ class TxDelta {
    * triple being indistinguishable, so {@link DeltaOverlay#merge} matches a deletion to an addition by the pair.
    * <p>
    * The bucket stays the edge type's, the one the edge-list entry carries, and the position is below the -1 every
-   * record-less RID uses, so the key equals no edge identity the database hands out.
+   * record-less RID uses, so the key equals no edge identity the database hands out. In memory only: a key is never
+   * persisted (the persisted CSR holds no overlay) nor shown to a query.
    */
   static RID lightEdgeKey(final int edgeTypeBucketId) {
     return new RID(edgeTypeBucketId, -2L - LIGHT_EDGE_CHANGES.getAndIncrement());
