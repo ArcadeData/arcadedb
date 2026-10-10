@@ -111,6 +111,8 @@ class Issue9694InFlightNewPageAllocationTest extends TestHelper {
     other.start();
     creator.join(60_000);
     other.join(60_000);
+    assertThat(creator.isAlive()).as("the creator thread hung").isFalse();
+    assertThat(other.isAlive()).as("the other thread hung").isFalse();
 
     assertThat(otherFailure.get()).as("the other transaction").isNull();
     assertThat(creatorFailure.get()).as("the creator transaction").isNull();
@@ -156,6 +158,7 @@ class Issue9694InFlightNewPageAllocationTest extends TestHelper {
         () -> database.lookupByRID(shared, true).asDocument().modify().set("v", 2).save()));
     concurrent.start();
     concurrent.join(30_000);
+    assertThat(concurrent.isAlive()).as("the concurrent updater hung").isFalse();
     assertThatThrownBy(database::commit).isInstanceOf(ConcurrentModificationException.class);
     assertThat(bucket.getInFlightNewPagesForTesting()).isZero();
 
@@ -241,6 +244,8 @@ class Issue9694InFlightNewPageAllocationTest extends TestHelper {
     second.start();
     first.join(60_000);
     second.join(60_000);
+    assertThat(first.isAlive()).as("the first thread hung").isFalse();
+    assertThat(second.isAlive()).as("the second thread hung").isFalse();
 
     assertThat(secondFailure.get()).as("the transaction that filled the record table").isNull();
     // Not vacuous: both transactions really shared page 0, and the second one took its last slot
