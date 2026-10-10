@@ -44,6 +44,10 @@ import java.util.List;
  * before it. Ownership passes to another named constraint on the same type that still requires the same thing (a NOT
  * NULL and a NODE KEY over one property, a UNIQUE and a NODE KEY over one property set), so dropping one of the two
  * leaves the other enforced and dropping the second removes what neither needs any more.
+ * <p>
+ * An IS TYPED constraint is registered too, so its name is taken and can be dropped, but it owns nothing: the declared
+ * property type IS the restriction and the type it replaced is not recorded, so dropping it leaves the type in place
+ * (#9706).
  */
 final class CypherConstraintRegistry {
   static final String KEY_PREFIX = "cypher.constraint.";
