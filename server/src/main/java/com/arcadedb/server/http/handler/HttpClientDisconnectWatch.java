@@ -66,6 +66,8 @@ final class HttpClientDisconnectWatch implements ChannelListener<ConduitStreamSo
   private final StreamSourceConduit                                    socket;
   private final ChannelListener<? super ConduitStreamSourceChannel> previous;
   private final RunningQuery                                           runningQuery;
+  // One byte is all a probe reads: end-of-stream, or the first byte of a pipelined request, handed to Undertow whole
+  private final ByteBuffer                                             probe = ByteBuffer.allocate(1);
   private       boolean                                              armed = true;
 
   private HttpClientDisconnectWatch(final HttpServerConnection connection, final RunningQuery runningQuery) {
@@ -103,10 +105,9 @@ final class HttpClientDisconnectWatch implements ChannelListener<ConduitStreamSo
       return;
     }
 
-    final ByteBuffer buffer = ByteBuffer.allocate(1);
     final int read;
     try {
-      read = socket.read(buffer);
+      read = socket.read(probe);
     } catch (final IOException e) {
       clientGone("the connection failed: " + e.getMessage());
       return;
@@ -116,8 +117,9 @@ final class HttpClientDisconnectWatch implements ChannelListener<ConduitStreamSo
       clientGone("the client closed the connection");
     else if (read > 0) {
       // The next request of a client that pipelines: it is Undertow's, and the client is alive
-      buffer.flip();
-      connection.ungetRequestBytes(new ImmediatePooledByteBuffer(buffer));
+      probe.flip();
+      // Given away: the watch stops here and never reads into it again
+      connection.ungetRequestBytes(new ImmediatePooledByteBuffer(probe));
       stopWatching();
     }
     // 0: a wakeup with nothing to read, keep watching
@@ -132,6 +134,8 @@ final class HttpClientDisconnectWatch implements ChannelListener<ConduitStreamSo
       if (armed)
         stopWatching();
     }
+    // Outside the monitor, and still exact: nothing but this watch and Undertow sets the listener, and Undertow sets it
+    // only when the exchange completes, after this call
     if (channel.getReadListener() == this)
       channel.setReadListener(previous);
   }

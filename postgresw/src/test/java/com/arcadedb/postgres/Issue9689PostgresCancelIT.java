@@ -202,6 +202,39 @@ class Issue9689PostgresCancelIT extends PostgresWireProtocolTestBase {
   }
 
   @Test
+  void pgTerminateBackendRollsBackTheTransactionItCloses() throws Exception {
+    try (final Connection victim = connect("root", DEFAULT_PASSWORD_FOR_TESTS, "extended");
+        final Connection admin = connect("root", DEFAULT_PASSWORD_FOR_TESTS, "simple");
+        final Statement adminSt = admin.createStatement()) {
+      final int pid = backendPid(victim);
+      adminSt.execute("CREATE DOCUMENT TYPE Written9689 IF NOT EXISTS");
+
+      // A transaction with a write in it, and a statement still running in it
+      victim.setAutoCommit(false);
+      try (final Statement st = victim.createStatement()) {
+        st.execute("INSERT INTO Written9689 SET x = 1");
+      }
+      final Statement st = victim.createStatement();
+      final CompletableFuture<Void> running = runAsync(st);
+      final RunningQuery entry = awaitRunning(pid);
+
+      try (final ResultSet rs = adminSt.executeQuery("SELECT pg_terminate_backend(" + pid + ") AS terminated")) {
+        assertThat(rs.next()).isTrue();
+        assertThat(rs.getBoolean("terminated")).isTrue();
+      }
+      assertThatThrownBy(() -> running.get(30, TimeUnit.SECONDS)).isNotNull();
+      assertThat(entry.awaitEnd(30_000)).isTrue();
+
+      // The connection is gone, and with it the transaction: nothing it wrote was committed, nothing of it is left behind
+      await().atMost(Duration.ofSeconds(30)).until(() -> PostgresNetworkExecutor.getBackend(pid) == null);
+      try (final ResultSet rs = adminSt.executeQuery("SELECT count(*) AS c FROM Written9689")) {
+        assertThat(rs.next()).isTrue();
+        assertThat(rs.getLong("c")).isZero();
+      }
+    }
+  }
+
+  @Test
   void anIdleConnectionIsNotDisturbedByACancel() throws Exception {
     try (final Connection conn = connect("root", DEFAULT_PASSWORD_FOR_TESTS, "simple"); final Statement st = conn.createStatement()) {
       final int pid = backendPid(conn);

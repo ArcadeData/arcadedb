@@ -575,7 +575,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
         // Which statement of the peer's this request is, so a terminate there reaches the work here (issue #9689). Under
         // the same gate: from a client it would let a request pass itself off as another node's statement
         final String forwardedQuery = exchange.getRequestHeaders().getFirst(LeaderForwardContext.FORWARDED_QUERY_HEADER);
-        if (forwardedQuery != null && !forwardedQuery.isBlank() && forwardedQuery.length() <= MAX_QUERY_TAG_LENGTH)
+        if (isForwardedQueryId(forwardedQuery))
           exchange.putAttachment(FORWARDED_QUERY_ID, forwardedQuery.strip());
 
         final HeaderValues forwardedUserValues = exchange.getRequestHeaders().get("X-ArcadeDB-Forwarded-User");
@@ -1977,6 +1977,24 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       if (Character.isISOControl(tag.charAt(i)))
         throw new IllegalArgumentException("Header " + QUERY_TAG_HEADER + " contains a control character");
     return tag;
+  }
+
+  /**
+   * Whether a peer's {@link LeaderForwardContext#FORWARDED_QUERY_HEADER} value can be an id of a running statement: bounded,
+   * one token, nothing a listing would print as something else (issue #9689).
+   */
+  static boolean isForwardedQueryId(final String value) {
+    if (value == null)
+      return false;
+    final String id = value.strip();
+    if (id.isEmpty() || id.length() > MAX_QUERY_TAG_LENGTH)
+      return false;
+    for (int i = 0; i < id.length(); i++) {
+      final char c = id.charAt(i);
+      if (Character.isISOControl(c) || Character.isWhitespace(c))
+        return false;
+    }
+    return true;
   }
 
   /**
