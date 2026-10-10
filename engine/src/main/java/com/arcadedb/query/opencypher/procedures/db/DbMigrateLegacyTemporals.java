@@ -91,8 +91,9 @@ public class DbMigrateLegacyTemporals implements CypherProcedure {
 
   @Override
   public String getDescription() {
-    return "Rewrites the openCypher temporals a release before the native temporal types stored as text into their native types, "
-        + "then marks the database native";
+    return "One-way: rewrites the openCypher temporals a release before the native temporal types stored as text, on undeclared "
+        + "properties, into their native types, then marks the database native. Every String with a temporal shape on an "
+        + "undeclared property is converted, so run it with writers quiesced";
   }
 
   @Override

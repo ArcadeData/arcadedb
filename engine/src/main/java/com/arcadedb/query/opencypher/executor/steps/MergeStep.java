@@ -1322,12 +1322,13 @@ public class MergeStep extends AbstractExecutionStep {
 
       // MERGE is defined as the MATCH of its pattern: the very comparison a MATCH applies to an inline property, so the
       // two clauses cannot drift apart on a FLOAT, a signed zero or a temporal against stored text (issue #9693)
-      Object actual = doc.get(key);
+      final Object stored = doc.get(key);
       // ...except for the text a release before the native temporal types stored a temporal as: on a database that
       // predates them it is that temporal, which MERGE matched before, and must go on matching rather than create a
       // duplicate beside it (issue #9636)
-      if (actual instanceof String text && expectedValue instanceof CypherTemporalValue)
-        actual = TemporalUtil.restoreLegacyText(doc, key, text);
+      final Object actual = stored instanceof String text && expectedValue instanceof CypherTemporalValue ?
+          TemporalUtil.restoreLegacyText(doc, key, text) :
+          stored;
       if (!InlineProperties.matchesResolvedValue(actual, expectedValue))
         return false;
     }
