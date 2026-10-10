@@ -148,6 +148,12 @@ class Issue9680RunningQueryTerminationTest {
     assertThat(causeOfType(failure.get(), QueryTerminatedException.class)).isNotNull();
     assertThat(database.countType("Written", false)).isZero();
     assertThat(database.isTransactionActive()).isFalse();
+
+    // The thread serves the next request clean: nothing of the terminated entry is left on it to obey
+    assertThat(RunningQuery.current()).isNull();
+    database.transaction(() -> database.newDocument("Written").set("x", 2).save());
+    assertThat(database.countType("Written", false)).isEqualTo(1);
+    database.transaction(() -> database.command("sql", "DELETE FROM Written"));
   }
 
   @Test
@@ -239,6 +245,9 @@ class Issue9680RunningQueryTerminationTest {
       final String padding = "x".repeat(RunningQuery.MAX_TEXT_LENGTH - 20);
       q.setStatement("sql", "SELECT '" + padding + "' FROM V WHERE password = 'secret-across-the-cut-0123456789'");
       assertThat(q.getText()).doesNotContain("secret").hasSize(RunningQuery.MAX_TEXT_LENGTH + 3);
+
+      q.setStatement("sql", "INSERT INTO Cfg SET secret = 'x1', api_key = 'x2', apiKey: 'x3', passwordHash = 'kept'");
+      assertThat(q.getText()).isEqualTo("INSERT INTO Cfg SET secret = ***, api_key = ***, apiKey: ***, passwordHash = 'kept'");
 
       q.setStatement("opencypher", "MATCH (n) RETURN n.name");
       assertThat(q.getText()).isEqualTo("MATCH (n) RETURN n.name");

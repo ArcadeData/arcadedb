@@ -22,6 +22,7 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.PartialResultTimeoutException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.RunningQuery;
+import com.arcadedb.query.RunningQueryRegistry;
 
 /**
  * Cooperative abort check for a loop whose length is a property of the data rather than of the statement.
@@ -37,7 +38,7 @@ import com.arcadedb.query.RunningQuery;
  * clock is read only when a deadline is actually configured, so with {@code arcadedb.command.timeout} at its
  * default of 0 a check costs one field load and one comparison, and no syscall.
  * <p>
- * A statement registered in a {@link com.arcadedb.query.RunningQueryRegistry} can also be terminated on request
+ * A statement registered in a {@link RunningQueryRegistry} can also be terminated on request
  * (issue #9680). Unlike the deadline, that flag is read on every check rather than once, because it is set while the
  * guard is already looping; it costs one volatile load, and a statement nobody registered - every embedded call - still
  * gets the shared guard that checks nothing.

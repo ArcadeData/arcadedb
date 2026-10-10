@@ -203,7 +203,7 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
    * <li>{@code list transactions}, {@code terminate transaction <session id>}.</li>
    * </ul>
    * A terminate waits for the work to end before answering, up to the payload's {@code wait} in milliseconds (5 s when
-   * absent, 60 s at most), and says how it ended. Never forwarded to the leader: each node lists and stops its own work.
+   * absent, 10 s at most), and says how it ended. Never forwarded to the leader: each node lists and stops its own work.
    * Never held behind the query admission gate either - this handler does not take it - so a saturated server can still
    * be relieved.
    */

@@ -241,7 +241,7 @@ public class CoreApiSpec implements OpenApiContributor {
         and someone else's is answered 'not found'): 'list queries [database <name>] [tag <label>]' lists the \
         statements this server is running, with the label a client gave them in the X-ArcadeDB-Query-Tag request \
         header; 'terminate query <id>' and 'terminate queries tag <label>' stop them and wait for them to end, up to \
-        the payload's 'wait' in milliseconds (default 5000, at most 60000), answering each with a status: \
+        the payload's 'wait' in milliseconds (default 5000, at most 10000), answering each with a status: \
         'terminated' (it stopped and what it wrote was rolled back), 'completed' (it ended on its own before it \
         noticed: what it did stands), 'terminating' (not stopped yet) or 'not found'; 'list transactions' lists the \
         open transaction sessions and 'terminate transaction <session id>' rolls one back and ends it. A statement \

@@ -114,8 +114,8 @@ public class ServerControlPlane {
   private static final IPAddressBlocklist RESERVED_ADDRESSES = IPAddressBlocklist.defaultReservedRanges();
   /** How long a terminate waits for the statement to end when the caller does not say (issue #9680). */
   public static final  long               DEFAULT_TERMINATE_WAIT_MS = 5_000L;
-  /** The longest a terminate waits, whatever the caller asks: the wait holds a request thread. */
-  public static final  long               MAX_TERMINATE_WAIT_MS     = 60_000L;
+  /** The longest a terminate waits, whatever the caller asks: the wait holds a request thread, and a client that needs longer polls "list queries". */
+  public static final  long               MAX_TERMINATE_WAIT_MS     = 10_000L;
 
   private final ArcadeDBServer server;
 
