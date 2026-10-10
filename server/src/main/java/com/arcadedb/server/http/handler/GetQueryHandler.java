@@ -89,6 +89,7 @@ public class GetQueryHandler extends AbstractQueryHandler {
       ResultSet qResult = null;
       try {
         final long engineStart = System.nanoTime();
+        describeRunningQuery(language, text);
         qResult = database.query(language, text);
 
         // Same precedence as the POST endpoint: the caller's own 'limit' parameter, then the LIMIT the query

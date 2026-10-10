@@ -130,12 +130,16 @@ public class OrderByStep extends AbstractExecutionStep {
       return;
     }
     final long timeoutBegin = System.currentTimeMillis();
+    // The whole input is consumed before the first row is returned: see AggregateProjectionCalculationStep (issue #9680)
+    final WorkGuard guard = WorkGuard.forCommandDeadline(context);
+    int consumed = 0;
     do {
       final ResultSet lastBatch = p.syncPull(context, DEFAULT_FETCH_RECORDS_PER_PULL);
       if (!lastBatch.hasNext())
         break;
 
       while (lastBatch.hasNext()) {
+        guard.checkPeriodically(++consumed);
         if (timeoutMillis > 0 && timeoutBegin + timeoutMillis < System.currentTimeMillis())
           sendTimeout();
 
@@ -179,6 +183,9 @@ public class OrderByStep extends AbstractExecutionStep {
       // nothing can be kept: no need to pull the input
       return;
     final long timeoutBegin = System.currentTimeMillis();
+    // The whole input is consumed before the first row is returned: see AggregateProjectionCalculationStep (issue #9680)
+    final WorkGuard guard = WorkGuard.forCommandDeadline(context);
+    int consumed = 0;
     if (topKInParallel(context, timeoutBegin))
       return;
     final Comparator<Kept> byKeyThenArrival = byKeyThenArrival(orderBy, context);
@@ -190,6 +197,7 @@ public class OrderByStep extends AbstractExecutionStep {
         break;
 
       while (lastBatch.hasNext()) {
+        guard.checkPeriodically(++consumed);
         if (timeoutMillis > 0 && timeoutBegin + timeoutMillis < System.currentTimeMillis())
           sendTimeout();
 

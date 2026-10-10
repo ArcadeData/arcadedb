@@ -372,6 +372,8 @@ public final class LeaderCommandForwarder {
     // The encoding the client negotiated, so the leader streams a restore's or an import's progress when it was
     // asked to rather than answering one buffered object at the end (issue #7603).
     relayHeader(exchange, builder, ACCEPT_HEADER);
+    // The label the client gave the work, so the leader lists the statement it runs under it too (issue #9680)
+    relayHeader(exchange, builder, AbstractServerHttpHandler.QUERY_TAG_HEADER);
 
     if (authHeader != null && authHeader.startsWith("Bearer AU-")) {
       // Per-node session token: the leader cannot resolve it, so this node names the principal instead. The
@@ -455,8 +457,8 @@ public final class LeaderCommandForwarder {
 
   /**
    * Copies one request header onto the forward, as the client sent it. A value the JDK client refuses to put on
-   * the wire is left off rather than failing the whole forward with an unchecked exception: neither header this
-   * relays is needed for the command to run, only for how its answer is delivered.
+   * the wire is left off rather than failing the whole forward with an unchecked exception: none of the headers this
+   * relays is needed for the command to run, only for how its answer is delivered or how the work is labelled.
    */
   private static void relayHeader(final HttpServerExchange exchange, final HttpRequest.Builder builder,
       final String name) {

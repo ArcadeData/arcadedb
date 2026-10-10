@@ -24,6 +24,7 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.query.RunningQuery;
 import com.arcadedb.query.sql.parser.BreakStatement;
 import com.arcadedb.query.sql.parser.DDLStatement;
 import com.arcadedb.query.sql.parser.Limit;
@@ -322,6 +323,12 @@ public class ScriptExecutionPlan implements InternalExecutionPlan {
    * {@code null}
    */
   private ResultSet drainLine(final ScriptLineStep step) {
+    // A script of many short statements never spends long inside any one of them, so no guard in a loop would see a
+    // termination: each line checks it before it starts (issue #9680)
+    final RunningQuery runningQuery = context.getRunningQuery();
+    if (runningQuery != null)
+      runningQuery.checkNotTerminated("the script");
+
     final long deadline = context.getCommandDeadline();
     final String deadlineDescription = context.getCommandDeadlineDescription();
     final boolean deadlinePartial = context.isCommandDeadlinePartial();

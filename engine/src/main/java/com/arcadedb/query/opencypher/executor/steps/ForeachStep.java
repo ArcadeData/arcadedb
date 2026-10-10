@@ -38,6 +38,7 @@ import com.arcadedb.query.sql.executor.IteratorResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.executor.WorkGuard;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -266,7 +267,11 @@ public class ForeachStep extends AbstractExecutionStep {
       if (!wasInTransaction)
         context.getDatabase().begin();
 
+      // Every iteration runs the inner clauses on a plan of its own, so nothing that loops over the list checks the
+      // statement's deadline or termination: checked here, once per element (issue #9680)
+      final WorkGuard guard = WorkGuard.forCommandDeadline(context);
       for (final Object element : iterable) {
+        guard.check();
         final ResultInternal iterationRow = new ResultInternal();
         for (final String prop : inputRow.getPropertyNames())
           iterationRow.setProperty(prop, inputRow.getProperty(prop));

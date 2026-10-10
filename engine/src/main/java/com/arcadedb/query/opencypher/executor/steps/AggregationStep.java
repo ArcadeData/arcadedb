@@ -30,6 +30,7 @@ import com.arcadedb.query.sql.executor.OperationHeapLimit;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.executor.WorkGuard;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -151,8 +152,13 @@ public class AggregationStep extends AbstractExecutionStep {
     // Process all rows, feeding data to aggregators
     final ResultSet prevResults = prev.syncPull(context, CONFIGURED_BATCH_SIZE != null ? CONFIGURED_BATCH_SIZE : nRecords);
     Result representativeRow = null;
+    // The whole input is consumed inside this one pull, and the step below may be one that checks nothing (an UNWIND
+    // over a computed list, a projection): the deadline and the termination are checked here too (issue #9680)
+    final WorkGuard guard = WorkGuard.forCommandDeadline(context);
+    int consumed = 0;
 
     while (prevResults.hasNext()) {
+      guard.checkPeriodically(++consumed);
       final Result inputRow = prevResults.next();
       if (representativeRow == null)
         representativeRow = inputRow;

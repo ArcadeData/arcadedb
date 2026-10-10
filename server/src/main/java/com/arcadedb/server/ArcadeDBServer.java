@@ -26,6 +26,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
+import com.arcadedb.query.RunningQueryRegistry;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.MaintenanceCoordinator;
@@ -244,6 +245,9 @@ public class ArcadeDBServer {
   private             AiConfiguration                       aiConfiguration;
   private             SupportService                        supportService;
   private             ServerQueryProfiler                   queryProfiler;
+  // The statements this server is running, listed and terminated by the "list queries" / "terminate query" commands
+  // (issue #9680). One per server rather than per JVM: each node answers for its own work.
+  private final       RunningQueryRegistry                  runningQueries = new RunningQueryRegistry();
   // Admission for backups of a database, shared by every entry point that can start one on this server: the
   // auto-backup schedule, its immediate trigger, and the HTTP "trigger backup" command (issue #6753). Created with
   // the server rather than with the auto-backup plugin, because the HTTP command backs a database up whether or not
@@ -1895,6 +1899,11 @@ public class ArcadeDBServer {
 
   public HttpServer getHttpServer() {
     return httpServer;
+  }
+
+  /** The statements this server is running (issue #9680). */
+  public RunningQueryRegistry getRunningQueries() {
+    return runningQueries;
   }
 
   @Override

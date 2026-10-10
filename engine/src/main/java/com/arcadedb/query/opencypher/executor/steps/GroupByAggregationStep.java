@@ -32,6 +32,7 @@ import com.arcadedb.query.sql.executor.OperationHeapLimit;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.executor.WorkGuard;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -227,8 +228,12 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
     final int groupOverhead = groupOverheadBytes(aggCount, 1 + aggCount);
 
     final ResultSet prevResults = prev.syncPull(context, CONFIGURED_BATCH_SIZE != null ? CONFIGURED_BATCH_SIZE : nRecords);
+    // The whole input is consumed inside this one pull: see AggregationStep (issue #9680)
+    final WorkGuard guard = WorkGuard.forCommandDeadline(context);
+    int consumed = 0;
 
     while (prevResults.hasNext()) {
+      guard.checkPeriodically(++consumed);
       final Result inputRow = prevResults.next();
 
       final long begin = context.isProfiling() ? System.nanoTime() : 0;
@@ -314,8 +319,12 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
         groupingKeys.size() + aggCount + complexAggregationItems.size());
 
     final ResultSet prevResults = prev.syncPull(context, CONFIGURED_BATCH_SIZE != null ? CONFIGURED_BATCH_SIZE : nRecords);
+    // The whole input is consumed inside this one pull: see AggregationStep (issue #9680)
+    final WorkGuard guard = WorkGuard.forCommandDeadline(context);
+    int consumed = 0;
 
     while (prevResults.hasNext()) {
+      guard.checkPeriodically(++consumed);
       final Result inputRow = prevResults.next();
 
       final long begin = context.isProfiling() ? System.nanoTime() : 0;

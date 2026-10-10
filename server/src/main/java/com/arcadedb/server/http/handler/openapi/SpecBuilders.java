@@ -142,6 +142,17 @@ public final class SpecBuilders {
     return headerParam(SESSION_HEADER, WRITE_SESSION_REQUEST_DESCRIPTION, false);
   }
 
+  /**
+   * The optional {@code X-ArcadeDB-Query-Tag} request header (issue #9680): the label under which the statement is listed
+   * by {@code list queries} and terminated by {@code terminate queries tag}.
+   */
+  public static Parameter queryTagHeaderParam() {
+    return headerParam("X-ArcadeDB-Query-Tag", """
+        Opaque label of at most 256 printable characters for the work this request runs. The statement is listed \
+        under it by the 'list queries' server command and can be stopped with 'terminate queries tag <label>'. Sent \
+        to /begin, it labels every statement of the transaction session that carries no label of its own""", false);
+  }
+
   /** The {@code arcadedb-session-id} echo a session-aware operation puts on its success response. */
   public static Header sessionEchoHeader() {
     return stringHeader(SESSION_RESPONSE_DESCRIPTION);

@@ -31,6 +31,12 @@ import java.util.stream.Collectors;
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */
 public class UnwindStep extends AbstractExecutionStep {
+  /**
+   * Checks the statement's deadline and termination while a long list is expanded: the expansion of one input row reads
+   * no record, so no scan below this step checks anything meanwhile (issue #9680). Created on the first pull.
+   */
+  private WorkGuard guard;
+  private int       produced = 0;
   private final Unwind       unwind;
   private final List<String> unwindFields;
   ResultSet        lastResult      = null;
@@ -84,6 +90,8 @@ public class UnwindStep extends AbstractExecutionStep {
   }
 
   private void fetchNext(final CommandContext context, final int n) {
+    if (guard == null)
+      guard = WorkGuard.forCommandDeadline(context);
     do {
       if (nextSubsequence != null && nextSubsequence.hasNext()) {
         nextElement = nextSubsequence.next();
@@ -145,6 +153,7 @@ public class UnwindStep extends AbstractExecutionStep {
         result.addAll(unwind(unwindedDoc, nextFields, context));
       } else {
         do {
+          guard.checkPeriodically(++produced);
           final Object o = iterator.next();
           final ResultInternal unwindedDoc = new ResultInternal(context.getDatabase());
           copy(doc, unwindedDoc);

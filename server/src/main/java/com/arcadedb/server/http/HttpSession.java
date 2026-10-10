@@ -54,6 +54,9 @@ public class HttpSession implements QuerySession {
   // Set when a failed command rolled the transaction back (issue #9006): what the client wrote before is gone, so the session
   // refuses every request that would run in it, instead of running them in autocommit and letting /commit report success.
   private volatile     boolean             rolledBackByFailure;
+  // The label the client gave the session at /begin (issue #9680): the statements run in it are listed with it, unless a
+  // request carries a label of its own, and "terminate transaction" finds the session by it
+  private volatile     String              tag;
 
   public HttpSession(final ServerSecurityUser user, final String id, final TransactionContext dbTx,
       final HttpSessionManager manager) {
@@ -83,6 +86,19 @@ public class HttpSession implements QuerySession {
     // Invalidate the session so later references to its id fail, then roll back its open transaction.
     manager.removeSession(id);
     cancel();
+  }
+
+  public String getTag() {
+    return tag;
+  }
+
+  public void setTag(final String tag) {
+    this.tag = tag;
+  }
+
+  /** Whether a request is running in the session right now. A snapshot: the answer can change as soon as it is read. */
+  public boolean isBusy() {
+    return lock.isLocked();
   }
 
   public long elapsedFromLastUpdate() {

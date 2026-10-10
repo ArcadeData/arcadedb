@@ -45,6 +45,7 @@ import com.arcadedb.index.IndexReplayConclusion;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.RunningQuery;
 import com.arcadedb.query.sql.executor.QueryAdmissionGate;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.utility.IntHashSet;
@@ -2224,6 +2225,13 @@ public class TransactionContext implements Transaction {
     if (rollbackOnlyReason != null)
       throw new TransactionException("Transaction cannot be committed: " + rollbackOnlyReason
           + ". Roll it back and retry");
+
+    // Issue #9680: a statement terminated on request does not publish what it wrote, even when it reached its commit
+    // without passing a check on the way. Same placement as the refusal above and for the same reason: the status has
+    // not moved yet, so the caller's error handling rolls the transaction back.
+    final RunningQuery runningQuery = RunningQuery.current();
+    if (runningQuery != null)
+      runningQuery.checkNotTerminated("the commit");
 
     // Issue #8270: a database opened by an HA server before it is wrapped for replication refuses anything that
     // would change it, and so does a transaction that BEGAN while it did, whatever has happened since. Same

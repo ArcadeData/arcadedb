@@ -66,6 +66,8 @@ public class PostBeginHandler extends DatabaseAbstractHandler {
     final TransactionContext tx = ((DatabaseInternal) database).getTransaction();
 
     final HttpSession session = httpServer.getSessionManager().createSession(user, tx);
+    // The statements the session runs are listed with this label unless they carry their own (issue #9680)
+    session.setTag(queryTag(exchange));
 
     // USE THE SESSION ID AS REQUESTER TO ALLOW UNLOCK FILES FROM A DIFFERENT THREAD (SAME SESSION ID)
     tx.setRequester(session.id);

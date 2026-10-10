@@ -29,6 +29,7 @@ import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.executor.WorkGuard;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -75,6 +76,10 @@ public class UnwindStep extends AbstractExecutionStep {
       private boolean finished = false;
       private Iterator<?> currentListIterator = null;
       private Result currentInputRow = null;
+      // An UNWIND multiplies rows without reading a record, so no scan below it checks anything while it expands a long
+      // list: the statement's deadline and its termination are checked here, per produced row (issue #9680)
+      private final WorkGuard guard = WorkGuard.forCommandDeadline(context);
+      private int produced = 0;
 
       @Override
       public boolean hasNext() {
@@ -142,6 +147,7 @@ public class UnwindStep extends AbstractExecutionStep {
               if (context.isProfiling())
                 rowCount++;
 
+              guard.checkPeriodically(++produced);
               final Object element = currentListIterator.next();
               final ResultInternal unwoundResult = createUnwoundResult(currentInputRow, element);
               buffer.add(unwoundResult);

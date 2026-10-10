@@ -173,6 +173,11 @@ public class HttpSessionManager extends RWLockContext {
     return removed.size();
   }
 
+  /** A snapshot of the open transaction sessions (issue #9680). */
+  public List<HttpSession> getSessions() {
+    return executeInReadLock(() -> new ArrayList<>(sessions.values()));
+  }
+
   public int getActiveSessions() {
     return executeInReadLock(sessions::size);
   }
