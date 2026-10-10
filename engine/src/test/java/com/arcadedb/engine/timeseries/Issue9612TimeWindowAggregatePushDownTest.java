@@ -440,6 +440,23 @@ class Issue9612TimeWindowAggregatePushDownTest extends TestHelper {
   }
 
   @Test
+  void selectKeepsTheRowsEveryConditionPassesInAscendingOrder() {
+    final ColumnDefinition dbl = new ColumnDefinition("d", Type.DOUBLE, ColumnDefinition.ColumnRole.FIELD);
+    final ColumnDefinition lng = new ColumnDefinition("l", Type.LONG, ColumnDefinition.ColumnRole.FIELD);
+    final FieldFilter filter = FieldFilter.range(0, dbl, 2, false, null, false).and(FieldFilter.range(1, lng, null, false, 40, true));
+    final double[] d = { 1, 3, Double.NaN, 5, 7, 9 };
+    final long[] l = { 10, 20, 30, 40, 50, 30 };
+    final int[] selected = new int[d.length];
+    // rows 1 and 3 pass both; 0 fails d > 2, 2 is absent, 4 fails l <= 40, and 5 is outside the range handed in
+    final int count = FieldFilter.select(filter.getConditions(), new Object[] { d, l }, 0, 5, selected);
+    assertThat(count).isEqualTo(2);
+    assertThat(selected[0]).isEqualTo(1);
+    assertThat(selected[1]).isEqualTo(3);
+    for (int i = 0; i < 5; i++)
+      assertThat(FieldFilter.matchesAt(filter.getConditions(), new Object[] { d, l }, i)).isEqualTo(i == 1 || i == 3);
+  }
+
+  @Test
   void blockStatisticsOfAnIntegerColumnAreReadConservatively() {
     final ColumnDefinition lng = new ColumnDefinition("l", Type.LONG, ColumnDefinition.ColumnRole.FIELD);
     // 2^53 + 1 rounds to 2^53 as a double, so a block whose statistics read [2^53, 2^53] may hold 2^53 + 1

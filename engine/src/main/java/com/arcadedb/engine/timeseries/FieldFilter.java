@@ -206,7 +206,11 @@ public final class FieldFilter {
     }
   }
 
-  /** Whether no row can match, e.g. {@code uu > 5 AND uu < 3} folded into one condition. */
+  /**
+   * Whether one condition can match no row on its own: an empty range such as {@code uu BETWEEN 30 AND 10} or
+   * {@code ui > Long.MAX_VALUE}. Conditions are not merged, so {@code uu > 5 AND uu < 3} is two satisfiable conditions here;
+   * every block still answers it as {@code NONE} from its statistics, and no row passes both.
+   */
   public boolean matchesNothing() {
     for (final Condition condition : conditions)
       if (condition.matchesNothing())
