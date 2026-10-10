@@ -890,7 +890,7 @@ public class ServerControlPlane {
    * </ul>
    */
   public JSONObject terminateQuery(final ServerSecurityUser user, final String id, final long waitMs) {
-    final RunningQuery query = server.getRunningQueries().get(id);
+    final RunningQuery query = user != null ? server.getRunningQueries().get(id) : null;
     if (query == null || !isVisible(user, query.getUser()))
       return new JSONObject().put("id", id).put("status", "not found");
 
@@ -900,6 +900,8 @@ public class ServerControlPlane {
 
   /** Terminates every running statement carrying {@code tag} that {@code user} may see, then waits for them together. */
   public JSONArray terminateQueriesByTag(final ServerSecurityUser user, final String tag, final long waitMs) {
+    if (user == null || tag == null)
+      return new JSONArray();
     final List<RunningQuery> matching = new ArrayList<>();
     for (final RunningQuery query : server.getRunningQueries().getRunning())
       if (tag.equals(query.getTag()) && isVisible(user, query.getUser())) {
@@ -995,8 +997,12 @@ public class ServerControlPlane {
   }
 
   private static boolean awaitEnd(final RunningQuery query, final long deadline) {
+    final long remaining = deadline - System.currentTimeMillis();
+    if (remaining <= 0)
+      // The shared deadline is spent: what has ended has ended, the rest is still terminating
+      return query.isEnded();
     try {
-      return query.awaitEnd(Math.max(1L, deadline - System.currentTimeMillis()));
+      return query.awaitEnd(remaining);
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
       return query.isEnded();

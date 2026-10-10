@@ -65,8 +65,9 @@ public final class RunningQuery implements AutoCloseable {
   }
 
   private static final ThreadLocal<RunningQuery> CURRENT    = new ThreadLocal<>();
+  // The keyword, the closing quote of a JSON key and a separator, then the value: quoted, or up to the next delimiter
   private static final Pattern                   CREDENTIAL =
-      Pattern.compile("(?i)\\b(identified\\s+by|password|token)(\\s*[=:]?\\s*)('[^']*'|\"[^\"]*\"|[^\\s,;)]+)");
+      Pattern.compile("(?i)\\b(identified\\s+by|password|token)([\"']?\\s*[=:]?\\s*)('[^']*'|\"[^\"]*\"|[^\\s,;)}\\]]+)");
 
   private final RunningQueryRegistry registry;
   private final long                 id;
@@ -115,20 +116,28 @@ public final class RunningQuery implements AutoCloseable {
     return CURRENT.get();
   }
 
-  /** Records what the statement is, once the protocol has parsed it out of the request. */
+  /**
+   * Records what the statement is, once the protocol has parsed it out of the request. Kept as it came: it is masked and
+   * truncated only when it is listed ({@link #getText()}), so a request pays nothing for a listing that seldom happens, and
+   * the masking sees the whole text rather than one cut in the middle of a credential.
+   */
   public void setStatement(final String language, final String text) {
     this.language = language;
-    this.text = text == null ? null : maskCredentials(
-        text.length() > MAX_TEXT_LENGTH ? text.substring(0, MAX_TEXT_LENGTH) + "..." : text);
+    this.text = text;
   }
 
   /**
-   * The statement with the value after {@code IDENTIFIED BY}, {@code PASSWORD} or {@code TOKEN} replaced by {@code ***}:
-   * the listing is read by the server administrator for every user's statements, and a credential written in clear in
-   * a statement ({@code CREATE USER ... IDENTIFIED BY ...}) is not something it needs to show.
+   * The text with the value after {@code IDENTIFIED BY}, {@code PASSWORD} or {@code TOKEN} replaced by {@code ***}, in
+   * statement form ({@code IDENTIFIED BY x}, {@code password = 'x'}) as in JSON form ({@code "password": "x"}), then cut to
+   * {@link #MAX_TEXT_LENGTH}. The listing is read by the server administrator for every user's statements, and a credential
+   * written in clear in a statement is not something it needs to show.
+   * <p>
+   * Best effort: it recognizes those three keywords, not every way a secret can be spelled in a statement. Parameters, the
+   * proper place for one, are never listed at all.
    */
-  static String maskCredentials(final String text) {
-    return CREDENTIAL.matcher(text).replaceAll("$1 ***");
+  static String maskAndTruncate(final String text) {
+    final String masked = CREDENTIAL.matcher(text).replaceAll("$1$2***");
+    return masked.length() > MAX_TEXT_LENGTH ? masked.substring(0, MAX_TEXT_LENGTH) + "..." : masked;
   }
 
   /**
@@ -239,8 +248,10 @@ public final class RunningQuery implements AutoCloseable {
     return language;
   }
 
+  /** The statement as it is listed: masked and truncated, see {@link #maskAndTruncate(String)}. */
   public String getText() {
-    return text;
+    final String raw = text;
+    return raw == null ? null : maskAndTruncate(raw);
   }
 
   public String getTerminatedBy() {
@@ -262,7 +273,7 @@ public final class RunningQuery implements AutoCloseable {
         .put("user", user)//
         .put("protocol", protocol)//
         .put("language", language)//
-        .put("text", text)//
+        .put("text", getText())//
         .put("startedAt", startedAt)//
         .put("elapsedMs", getElapsedMillis())//
         .put("terminating", terminatedBy != null);
@@ -277,6 +288,6 @@ public final class RunningQuery implements AutoCloseable {
 
   @Override
   public String toString() {
-    return getId() + " " + language + " '" + text + "'";
+    return getId() + " " + language + " '" + getText() + "'";
   }
 }

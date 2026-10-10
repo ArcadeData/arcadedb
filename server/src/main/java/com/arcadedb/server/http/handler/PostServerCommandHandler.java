@@ -215,13 +215,13 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
       String rest = command.substring(LIST_QUERIES.length()).strip();
       String database = null;
       String tag = null;
-      if (rest.toLowerCase(Locale.ENGLISH).startsWith("database ")) {
+      if (startsWithKeyword(rest, "database ")) {
         rest = rest.substring("database ".length()).strip();
         final int space = rest.indexOf(' ');
         database = space < 0 ? rest : rest.substring(0, space);
         rest = space < 0 ? "" : rest.substring(space + 1).strip();
       }
-      if (rest.toLowerCase(Locale.ENGLISH).startsWith("tag ")) {
+      if (startsWithKeyword(rest, "tag ")) {
         tag = rest.substring("tag ".length()).strip();
         rest = "";
       }
@@ -232,7 +232,7 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
 
     } else if (command_lc.startsWith(TERMINATE_QUERIES)) {
       final String rest = command.substring(TERMINATE_QUERIES.length()).strip();
-      if (!rest.toLowerCase(Locale.ENGLISH).startsWith("tag ") || rest.substring("tag ".length()).isBlank())
+      if (!startsWithKeyword(rest, "tag ") || rest.substring("tag ".length()).isBlank())
         return invalidRunningWorkCommand("terminate queries tag <label>");
       result = controlPlane.terminateQueriesByTag(user, rest.substring("tag ".length()).strip(), waitMs);
       Metrics.counter("http.terminate-query").increment();
@@ -258,6 +258,10 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
       Metrics.counter("http.terminate-transaction").increment();
     }
     return new ExecutionResponse(200, new JSONObject().put("result", result).toString());
+  }
+
+  private static boolean startsWithKeyword(final String text, final String keyword) {
+    return text.regionMatches(true, 0, keyword, 0, keyword.length());
   }
 
   private static ExecutionResponse invalidRunningWorkCommand(final String syntax) {
