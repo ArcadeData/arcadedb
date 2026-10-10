@@ -115,6 +115,26 @@ class Issue9689HttpRunningQueryTest extends BaseGraphServerTest {
     }
   }
 
+  /**
+   * A streamed answer completes the exchange inside the handler, before the statement's entry is closed: Undertow has
+   * already resumed reads for the next request by then, and the watch must leave them alone. It used to suspend them
+   * again, so the next request on the connection was never read (found by the TypeScript client's end-to-end suite).
+   */
+  @Test
+  void aStreamedAnswerLeavesTheConnectionReadyForTheNextRequest() throws Exception {
+    try (final Socket socket = connect()) {
+      for (int i = 0; i < 3; i++) {
+        send(socket, streamingQuery("UNWIND range(1, 50) AS x RETURN x"));
+        final String streamed = readChunkedResponse(socket.getInputStream());
+        assertThat(streamed).startsWith("HTTP/1.1 200").contains("\"stats\"");
+
+        send(socket, command("RETURN " + i + " AS answer"));
+        assertThat(readResponse(socket.getInputStream())).as("the request after a streamed answer, round %s", i)
+            .startsWith("HTTP/1.1 200").contains("\"answer\":" + i);
+      }
+    }
+  }
+
   @Test
   void aRequestPipelinedBehindARunningOneIsNotMistakenForADisconnect() throws Exception {
     try (final Socket socket = connect()) {
@@ -237,6 +257,57 @@ class Issue9689HttpRunningQueryTest extends BaseGraphServerTest {
     return "POST /api/v1/command/" + getDatabaseName() + " HTTP/1.1\r\n" + "Host: localhost\r\n" + "Authorization: Basic " + auth + "\r\n"
         + "Content-Type: application/json\r\n" + "Content-Length: " + body.length + "\r\n\r\n" + new String(body,
         StandardCharsets.UTF_8);
+  }
+
+  private String streamingQuery(final String cypher) {
+    final byte[] body = new JSONObject().put("language", "opencypher").put("command", cypher).toString()
+        .getBytes(StandardCharsets.UTF_8);
+    final String auth = Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes(StandardCharsets.UTF_8));
+    return "POST /api/v1/query/" + getDatabaseName() + " HTTP/1.1\r\n" + "Host: localhost\r\n" + "Authorization: Basic " + auth
+        + "\r\n" + "Accept: application/x-ndjson\r\n" + "Content-Type: application/json\r\n" + "Content-Length: " + body.length
+        + "\r\n\r\n" + new String(body, StandardCharsets.UTF_8);
+  }
+
+  /** Reads one response sent with {@code Transfer-Encoding: chunked}, the encoding a streamed answer uses. */
+  private static String readChunkedResponse(final InputStream in) throws IOException {
+    final String headers = readHead(in);
+    if (!headers.toLowerCase().contains("transfer-encoding: chunked"))
+      throw new IOException("Expected a chunked response, got: " + headers);
+    final StringBuilder body = new StringBuilder(headers);
+    while (true) {
+      final int size = Integer.parseInt(readLine(in).trim(), 16);
+      if (size == 0) {
+        readLine(in);
+        return body.toString();
+      }
+      body.append(new String(in.readNBytes(size), StandardCharsets.UTF_8));
+      readLine(in);
+    }
+  }
+
+  private static String readLine(final InputStream in) throws IOException {
+    final ByteArrayOutputStream line = new ByteArrayOutputStream();
+    int b;
+    while ((b = in.read()) >= 0 && b != '\n')
+      if (b != '\r')
+        line.write(b);
+    if (b < 0)
+      throw new IOException("Connection closed while reading a chunk");
+    return line.toString(StandardCharsets.UTF_8);
+  }
+
+  /** The status line and headers of a response, up to and including the blank line. */
+  private static String readHead(final InputStream in) throws IOException {
+    final ByteArrayOutputStream head = new ByteArrayOutputStream();
+    int matched = 0;
+    while (matched < 4) {
+      final int b = in.read();
+      if (b < 0)
+        throw new IOException("Connection closed while reading the response headers: " + head);
+      head.write(b);
+      matched = (b == '\r' && (matched == 0 || matched == 2)) || (b == '\n' && (matched == 1 || matched == 3)) ? matched + 1 : 0;
+    }
+    return head.toString(StandardCharsets.UTF_8);
   }
 
   private static void send(final Socket socket, final String request) throws IOException {
