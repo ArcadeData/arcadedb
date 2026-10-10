@@ -75,7 +75,7 @@ final class PassThroughWithFolder {
     if (!(statement instanceof SimpleCypherStatement simple) || statement instanceof UnionStatement)
       return statement;
     final List<ClauseEntry> clauses = statement.getClausesInOrder();
-    if (clauses == null || clauses.stream().noneMatch(c -> c.getType() == ClauseEntry.ClauseType.WITH))
+    if (clauses == null || !hasWith(clauses))
       return statement;
 
     // visible name -> the variable of the folded statement it stands for
@@ -117,6 +117,13 @@ final class PassThroughWithFolder {
     return new SimpleCypherStatement(simple.getOriginalQuery(), matches, simple.getWhereClause(), simple.getReturnClause(),
         simple.getOrderByClause(), simple.getSkip(), simple.getLimit(), null, null, null, null, null, null, null, null,
         entries, false, false, false, false);
+  }
+
+  private static boolean hasWith(final List<ClauseEntry> clauses) {
+    for (final ClauseEntry clause : clauses)
+      if (clause.getType() == ClauseEntry.ClauseType.WITH)
+        return true;
+    return false;
   }
 
   /**

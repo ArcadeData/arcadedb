@@ -4884,9 +4884,6 @@ public class CypherExecutionPlan {
   private AbstractExecutionStep tryGAVOneHopScan(final CommandContext context) {
     if (physicalPlan == null || statement.getWhereClause() != null || statement.getClausesInOrder() == null)
       return null;
-    // The sources come in the view's order rather than the label scan's: only where that order cannot show
-    if (!CypherOptimizer.rowOrderIsInvisible(statement))
-      return null;
 
     MatchClause matchClause = null;
     for (final ClauseEntry entry : statement.getClausesInOrder()) {
@@ -4924,6 +4921,12 @@ public class CypherExecutionPlan {
         relationship.getDirection() == Direction.BOTH ? Vertex.DIRECTION.BOTH : Vertex.DIRECTION.OUT;
 
     if (!source.hasLabels())
+      return null;
+
+    // The sources come in the view's order rather than the label scan's: only where that order cannot show. Asked once
+    // the pattern is known to be the one hop this step serves, since it reads the RETURN's text with a regular expression
+    // and every statement the optimizer plans reaches this method on every execution (issue #9652)
+    if (!CypherOptimizer.rowOrderIsInvisible(statement))
       return null;
 
     // The label the optimizer scans must be one of the pattern's two: the step enumerates the view by the pattern's
@@ -6717,12 +6720,29 @@ public class CypherExecutionPlan {
     // here itself, because a statement with no WITH left folds to the very same statement, which ends the recursion
     Optional<CypherExecutionPlan> folded = foldedCountPlan;
     if (folded == null) {
-      final CypherStatement foldedStatement = PassThroughWithFolder.fold(statement);
-      folded = foldedStatement == null || foldedStatement == statement ? Optional.empty() :
+      final CypherStatement foldedStatement = countPushDownForm();
+      folded = foldedStatement == statement ? Optional.empty() :
           Optional.of(new CypherExecutionPlan(database, foldedStatement, parameters, configuration, null, expressionEvaluator));
       foldedCountPlan = folded;
     }
     return folded.orElse(null);
+  }
+
+  /**
+   * The statement the count push-downs read: the folded one, or this plan's own when there is nothing to fold or the fold
+   * is refused. A plan is built for every execution while the statement is cached, so the answer is kept on the statement
+   * (issue #9652): a statement no push-down takes used to fold itself again on every execution only to learn that.
+   */
+  private CypherStatement countPushDownForm() {
+    if (!(statement instanceof SimpleCypherStatement simple))
+      return statement;
+    CypherStatement form = simple.getCountPushDownForm();
+    if (form == null) {
+      final CypherStatement folded = PassThroughWithFolder.fold(statement);
+      form = folded != null ? folded : statement;
+      simple.setCountPushDownForm(form);
+    }
+    return form;
   }
 
   /**
@@ -6882,6 +6902,16 @@ public class CypherExecutionPlan {
     return false;
   }
 
+  /** Whether a path pattern of the MATCH clauses holds a relationship. */
+  private boolean hasRelationship() {
+    for (final MatchClause match : statement.getMatchClauses())
+      if (match.hasPathPatterns())
+        for (final PathPattern path : match.getPathPatterns())
+          if (path.getRelationshipCount() > 0)
+            return true;
+    return false;
+  }
+
   /** Whether every relationship of the MATCH clauses is written as an outgoing hop. */
   private boolean allRelationshipsOutgoing() {
     for (final MatchClause match : statement.getMatchClauses())
@@ -6900,6 +6930,14 @@ public class CypherExecutionPlan {
       final SeedCorrelation correlation) {
     final String alias = countPushDownAlias(countRowsMode);
     if (alias == null || !isMatchReturnOnlyStatement())
+      return null;
+
+    // Every operator below counts walks over edges, and the star one needs at least one arm, so a MATCH with no
+    // relationship is left to what was asked before this - the type count, the index min/max, the product of parts - or
+    // to the pipeline. Answered without reading the WHERE: a count of single nodes filtered on an indexed property is
+    // among the commonest statements there are, no detector below takes it, and each of them used to parse its WHERE
+    // on every execution to find that out (issue #9652)
+    if (!hasRelationship())
       return null;
 
     // A dynamic label is not a name any count operator can filter on, so the query falls back to the normal
@@ -8398,6 +8436,12 @@ public class CypherExecutionPlan {
     if (!matchClause.hasPathPatterns() || matchClause.getPathPatterns().size() != 1)
       return null;
     final PathPattern pathPattern = matchClause.getPathPatterns().get(0);
+    // The shape is checked before the WHERE is parsed, which costs far more and is wasted on a pattern too short for any
+    // anti-join (issue #9652)
+    if (pathPattern.getRelationshipCount() < 2) // need at least 2 hops for anti-join to make sense
+      return null;
+    if (pathPattern.hasPathVariable())
+      return null;
 
     // Parse the WHERE clause: extract anti-join pattern, optional inequality and the per-vertex predicates (issue #9608)
     final CountPushDownPredicates predicates = new CountPushDownPredicates(context);
@@ -8405,10 +8449,6 @@ public class CypherExecutionPlan {
     if (antiJoin == null)
       return null;
 
-    if (pathPattern.getRelationshipCount() < 2) // need at least 2 hops for anti-join to make sense
-      return null;
-    if (pathPattern.hasPathVariable())
-      return null;
     if (antiJoin.inequalityProperty != null
         && !propertyIdentifiesNode(database, pathPattern, antiJoin.inequalityVar1, antiJoin.inequalityVar2, antiJoin.inequalityProperty))
       return null;
