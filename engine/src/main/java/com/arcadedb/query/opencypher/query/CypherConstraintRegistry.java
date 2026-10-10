@@ -94,7 +94,12 @@ final class CypherConstraintRegistry {
       return false;
 
     final String key = KEY_PREFIX + name;
-    final JSONObject entry = new JSONObject((String) type.getCustomValue(key));
+    final JSONObject entry = entry(type, key);
+    if (entry == null) {
+      // unreadable: it can be forgotten, but there is nothing it can be trusted to undo
+      type.setCustomValue(key, null);
+      return true;
+    }
 
     final List<String> properties = toStrings(entry.getJSONArray("properties", new JSONArray()));
 
@@ -141,6 +146,8 @@ final class CypherConstraintRegistry {
       if (!key.startsWith(KEY_PREFIX) || key.equals(droppedKey))
         continue;
       final JSONObject candidate = entry(type, key);
+      if (candidate == null)
+        continue;
       final ConstraintKind kind;
       try {
         kind = ConstraintKind.valueOf(candidate.getString("kind", ""));
@@ -158,8 +165,19 @@ final class CypherConstraintRegistry {
     return null;
   }
 
+  /**
+   * Parses an entry, or returns null when the value is not one this class wrote (edited by hand, corrupted): such an entry
+   * claims nothing, and must not abort the drop of another constraint.
+   */
   private static JSONObject entry(final DocumentType type, final String key) {
-    return new JSONObject((String) type.getCustomValue(key));
+    final Object value = type.getCustomValue(key);
+    if (!(value instanceof String))
+      return null;
+    try {
+      return new JSONObject((String) value);
+    } catch (final RuntimeException e) {
+      return null;
+    }
   }
 
   private static List<String> toStrings(final JSONArray array) {
