@@ -41,9 +41,10 @@ import static org.assertj.core.api.Assertions.catchThrowable;
 /**
  * Issue #9305: {@code DELETE_RECORD} was checked only by {@code LocalBucket.deleteRecord}, the LAST step of a delete, after the
  * index entries, the EXTERNAL values and the vertex/edge links had already been removed. A caller owning its transaction that
- * carried on after the refusal committed a half-applied delete. The user below resolves permissions exactly as the server does:
- * the grant map is keyed on the type's INVOLVED buckets only, so every other file id (the paired {@code _ext} bucket included)
- * is default-allow.
+ * carried on after the refusal committed a half-applied delete. The user below resolves permissions as the server does: the
+ * grant map is keyed on the type's INVOLVED buckets, every other file id is default-allow. Since #9637 the involved buckets
+ * include the paired {@code _ext} bucket too, so the refusal is now raised on the primary bucket before any cleanup starts AND
+ * would be raised again on the paired bucket.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

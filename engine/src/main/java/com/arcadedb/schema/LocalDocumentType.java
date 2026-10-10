@@ -1224,9 +1224,25 @@ public class LocalDocumentType implements DocumentType {
         .withNullStrategy(nullStrategy).withCallback(callback).withIgnoreIfExists(true).create();
   }
 
+  /**
+   * The type's own buckets plus the paired {@code <bucket>_ext} buckets holding the values of its EXTERNAL properties
+   * (issue #9637). Both the per-file permission map ({@link LocalSchema#getInvolvedTypeByBucketId(int)}) and the explicit
+   * type lock are built from this list: leaving the paired buckets out made every access to them default-allow and every
+   * explicitly-locked write of an EXTERNAL value fail the commit-time lock coverage check.
+   */
   @Override
   public List<Bucket> getInvolvedBuckets() {
-    return getBuckets(false);
+    if (externalBucketIdByPrimaryBucketId.isEmpty())
+      return getBuckets(false);
+
+    final List<Bucket> result = new ArrayList<>(buckets.size() + externalBucketIdByPrimaryBucketId.size());
+    result.addAll(buckets);
+    for (final Integer externalBucketId : externalBucketIdByPrimaryBucketId.values()) {
+      final Bucket external = schema.getBucketByIdIfExists(externalBucketId);
+      if (external != null)
+        result.add(external);
+    }
+    return result;
   }
 
   @Override
@@ -2097,6 +2113,11 @@ public class LocalDocumentType implements DocumentType {
 
   public Integer getExternalBucketIdFor(final int primaryBucketId) {
     return externalBucketIdByPrimaryBucketId.get(primaryBucketId);
+  }
+
+  /** True when {@code bucketId} is one of the paired external-property buckets this type owns. O(own buckets). */
+  public boolean isExternalBucket(final int bucketId) {
+    return externalBucketIdByPrimaryBucketId.containsValue(bucketId);
   }
 
   /** True when this type still owns at least one paired external-property bucket. */
