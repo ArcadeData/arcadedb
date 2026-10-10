@@ -23,6 +23,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
 import com.arcadedb.query.opencypher.temporal.CypherTemporalValue;
 import com.arcadedb.query.opencypher.temporal.TemporalUtil;
@@ -36,6 +37,7 @@ import com.arcadedb.security.SecurityDatabaseUser;
 
 import java.util.Iterator;
 import java.util.List;
+import java.util.logging.Level;
 import java.util.stream.Stream;
 
 /**
@@ -108,8 +110,8 @@ public class DbMigrateLegacyTemporals implements CypherProcedure {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_DATABASE_SETTINGS);
 
     final LocalSchema schema = database.getSchema().getEmbedded();
-    long records = 0;
-    long properties = 0;
+    // [0] records rewritten, [1] properties rewritten
+    final long[] totals = new long[2];
     if (schema.isLegacyTemporalText()) {
       // Streamed: the RIDs of at most one batch are held at a time. A record a batch rewrote holds no legacy text any
       // more, so meeting it again further on in the scan converts nothing twice
@@ -121,28 +123,28 @@ public class DbMigrateLegacyTemporals implements CypherProcedure {
         final Iterator<Record> iterator = database.iterateType(type.getName(), false);
         while (iterator.hasNext()) {
           final Record record = iterator.next();
-          if (record instanceof Document document && hasLegacyText(document)) {
+          if (record instanceof Document document && mayHoldLegacyText(document)) {
             batch[size++] = record.getIdentity();
             if (size == BATCH_SIZE) {
-              properties += convertBatch(database, batch, size);
-              records += size;
+              convertBatch(database, batch, size, totals);
               size = 0;
             }
           }
         }
       }
-      if (size > 0) {
-        properties += convertBatch(database, batch, size);
-        records += size;
-      }
+      if (size > 0)
+        convertBatch(database, batch, size, totals);
 
       // Only once every batch committed: a conversion that failed part way leaves the database legacy
       schema.markTemporalStorageNative();
+      LogManager.instance().log(DbMigrateLegacyTemporals.class, Level.INFO,
+          "Database '%s': rewrote %d openCypher temporal text values in %d records into native types, the database is now native",
+          database.getName(), totals[1], totals[0]);
     }
 
     final ResultInternal result = new ResultInternal();
-    result.setProperty("records", records);
-    result.setProperty("properties", properties);
+    result.setProperty("records", totals[0]);
+    result.setProperty("properties", totals[1]);
     return Stream.of(result);
   }
 
@@ -151,24 +153,43 @@ public class DbMigrateLegacyTemporals implements CypherProcedure {
    * for a write procedure, and the HTTP handlers wrap every command in one): a nested transaction commits on its own,
    * so a later rollback of the caller's transaction does not undo a batch that is already written.
    */
-  private static long convertBatch(final DatabaseInternal database, final RID[] batch, final int size) {
-    long converted = 0;
+  private static void convertBatch(final DatabaseInternal database, final RID[] batch, final int size, final long[] totals) {
+    long records = 0;
+    long properties = 0;
     database.begin();
     try {
-      for (int i = 0; i < size; i++)
-        converted += convert(batch[i]);
+      for (int i = 0; i < size; i++) {
+        final int converted = convert(batch[i]);
+        if (converted > 0) {
+          ++records;
+          properties += converted;
+        }
+      }
       database.commit();
     } catch (final RuntimeException e) {
-      if (database.isTransactionActive())
-        database.rollback();
+      // The failure that stopped the batch is the one to report, not one raised while cleaning up after it
+      try {
+        if (database.isTransactionActive())
+          database.rollback();
+      } catch (final RuntimeException rollbackFailure) {
+        e.addSuppressed(rollbackFailure);
+      }
       throw e;
     }
-    return converted;
+    totals[0] += records;
+    totals[1] += properties;
   }
 
-  private static boolean hasLegacyText(final Document document) {
+  /**
+   * The scan's filter: a String with the shape of a temporal on a property the schema does not declare. Only the
+   * character test, so each candidate text is parsed once, by {@link #convert(RID)}, which skips a record whose texts
+   * turn out to be no temporal.
+   */
+  private static boolean mayHoldLegacyText(final Document document) {
+    final DocumentType type = document.getType();
     for (final String name : document.getPropertyNames())
-      if (document.get(name) instanceof String text && TemporalUtil.restoreLegacyText(document, name, text) instanceof CypherTemporalValue)
+      if (document.get(name) instanceof String text && TemporalUtil.mayBeTemporalString(text) && (type == null
+          || type.getPolymorphicPropertyIfExists(name) == null))
         return true;
     return false;
   }
