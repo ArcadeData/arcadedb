@@ -324,6 +324,17 @@ class SQLLiteralParameterizationIssue8307Test extends TestHelper {
   }
 
   @Test
+  void aCallerTextIdenticalToAGeneratedKeyBindsItsOwnValue() {
+    // the cache holds the statement of the generated key; a caller sending that very text gets it, and binds the name itself
+    final Lookup<Statement> generated = parameterized("SELECT name FROM Person WHERE id = 3");
+    assertThat(generated.cacheKey()).isEqualTo("SELECT name FROM Person WHERE id = :__lit_i0");
+    try (final ResultSet rs = database.query("sql", generated.cacheKey(), Map.of("__lit_i0", 8))) {
+      assertThat(rs.next().<String>getProperty("name")).isEqualTo("p8");
+      assertThat(rs.hasNext()).isFalse();
+    }
+  }
+
+  @Test
   void aTextThatAlreadyUsesTheGeneratedNamespaceIsLeftAlone() {
     try (final ResultSet rs = database.query("sql", "SELECT name FROM Person WHERE id = :__lit_i0", Map.of("__lit_i0", 9))) {
       assertThat(rs.next().<String>getProperty("name")).isEqualTo("p9");
