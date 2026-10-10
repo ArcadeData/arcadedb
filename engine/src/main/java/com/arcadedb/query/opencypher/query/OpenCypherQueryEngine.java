@@ -708,31 +708,13 @@ public class OpenCypherQueryEngine implements QueryEngine {
   private static String boundNotCarried(final Database database, final Type oldType, final Type newType, final String bound) {
     if (bound == null)
       return null;
-    final String oldMeasure = boundMeasure(oldType);
-    final String newMeasure = boundMeasure(newType);
+    final String oldMeasure = DocumentValidator.boundMeasure(oldType);
+    final String newMeasure = DocumentValidator.boundMeasure(newType);
     if (newMeasure == null)
       return newType + " has no order and no size";
     if (!newMeasure.equals(oldMeasure))
       return "a " + oldMeasure + " on " + oldType + ", a " + newMeasure + " on " + newType;
     return DocumentValidator.unreadableBound(database, newType, bound);
-  }
-
-  /**
-   * What a MIN or MAX measures on a property of {@code type}, following {@link DocumentValidator#unreadableBound}, or null
-   * for a type that takes no bound.
-   */
-  private static String boundMeasure(final Type type) {
-    if (!DocumentValidator.isBoundApplicable(type))
-      return null;
-    return switch (type) {
-      case STRING -> "number of characters";
-      case BINARY -> "number of bytes";
-      case LIST, MAP, ARRAY_OF_SHORTS, ARRAY_OF_INTEGERS, ARRAY_OF_LONGS, ARRAY_OF_FLOATS, ARRAY_OF_DOUBLES -> "number of items";
-      case BYTE, SHORT, INTEGER, LONG, FLOAT, DOUBLE, DECIMAL -> "numeric value";
-      case DATE, DATETIME, DATETIME_SECOND, DATETIME_MICROS, DATETIME_NANOS -> "date";
-      // a type no case above names takes no bound this method knows how to compare: refuse rather than call two of them equal
-      default -> null;
-    };
   }
 
   /**
@@ -765,8 +747,8 @@ public class OpenCypherQueryEngine implements QueryEngine {
     Object value;
     try {
       value = created.getDefaultValue();
+      // a default set through the API as a non-String is returned verbatim: whether the new type can take it is asked here
       if (value != null)
-        // a default set through the API as a non-String is returned verbatim: whether the new type can take it is asked here
         value = Type.convert(database, value, newType.getDefaultJavaType());
     } catch (final RuntimeException e) {
       throw refuseRetype(typeName, existing, newType, List.of(notCarried), e);
