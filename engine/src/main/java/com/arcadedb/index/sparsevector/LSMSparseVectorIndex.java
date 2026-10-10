@@ -426,7 +426,12 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
       final boolean indexExhausted = raw.size() < fetchK && candidates.size() < keep;
       if (!shortBecauseDropped || indexExhausted)
         break;
-      keep = (int) Math.min((long) keep * STALE_TOP_UP_GROWTH, Math.max(k, MAX_OVERFETCH_ROWS));
+      // The cap bounds what the top-up ADDS, like oversampled() does. A first pass that already asked for more than it
+      // (a k * oversample past MAX_OVERFETCH_ROWS) would otherwise be "widened" into a narrower one (PR #9698 review).
+      final int wider = (int) Math.min((long) keep * STALE_TOP_UP_GROWTH, Math.max(k, MAX_OVERFETCH_ROWS));
+      if (wider <= keep)
+        break;
+      keep = wider;
     }
     return committed;
   }

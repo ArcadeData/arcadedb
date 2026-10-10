@@ -287,6 +287,9 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
     final List<List<RidScore>> perIndex = runAll(searches, serial);
     for (final List<RidScore> partial : perIndex) {
       merged.addAll(partial);
+      // Any sub-index at its budget may hold more, so the answer as a whole can grow. Over several sub-indexes this can
+      // re-run a search whose stale row came from one that was not saturated: wasted work, never a wrong answer, and
+      // bounded by MAX_FETCH_CANDIDATES - the same trade the dense function makes (#9368).
       if (groupBy == null && partial.size() >= fetchK)
         saturated[0] = true;
     }
