@@ -141,6 +141,35 @@ class Issue9710LongMinMaxPastTwoPow53Test extends TestHelper {
   }
 
   @Test
+  void extremesAtTheThresholdAndAtTheLimitsOfALong() {
+    database.command("sql", "CREATE TIMESERIES TYPE T TIMESTAMP ts TAGS (host STRING) FIELDS (bg LONG, sm LONG) SHARDS 2");
+    database.command("sql", "CREATE DOCUMENT TYPE D");
+    // bg: exactly 2^53 and its neighbours, plus both limits of a long; sm: small values, which no recount touches
+    final long[] bg = { (1L << 53) - 1, 1L << 53, (1L << 53) + 1, Long.MAX_VALUE, Long.MIN_VALUE, Long.MAX_VALUE - 1, Long.MIN_VALUE + 1 };
+    database.transaction(() -> {
+      for (int i = 0; i < 70; i++)
+        for (final String type : new String[] { "T", "D" })
+          database.command("sql", "INSERT INTO " + type + " SET ts = ?, host = ?, bg = ?, sm = ?", T0 + i * 1_000L, "h" + (i % 2),
+              bg[i % bg.length], (long) i);
+    });
+    final String[] queries = { "SELECT min(bg) AS mn, max(bg) AS mx, min(sm) AS ms, max(sm) AS xs FROM X",
+        "SELECT min(bg) AS mn, max(bg) AS mx FROM X WHERE bg BETWEEN 9007199254740991 AND 9007199254740993",
+        "SELECT min(bg) AS mn, max(bg) AS mx FROM X WHERE bg >= 9007199254740992 AND bg < 9223372036854775807",
+        "SELECT min(bg) AS mn, max(bg) AS mx FROM X WHERE bg > -9223372036854775808 AND bg <= 9007199254740992",
+        // min under 2^53, max over it: only the max is recounted
+        "SELECT min(bg) AS mn, max(bg) AS mx, max(sm) AS xs FROM X WHERE bg >= 9007199254740991 AND bg <= 9007199254740993",
+        "SELECT min(bg) AS mn, max(bg) AS mx FROM X WHERE host = 'h1'" };
+    for (int pass = 0; pass < 2; pass++) {
+      for (final String sql : queries)
+        assertThat(row(sql.replace("FROM X", "FROM T"))).as(sql).isEqualTo(row(sql.replace("FROM X", "FROM D")));
+      database.command("sql", "COMPACT TIMESERIES TYPE T");
+    }
+    assertThat(row("SELECT min(bg) AS mn, max(bg) AS mx FROM T")).isEqualTo(
+        "[mn=" + Long.MIN_VALUE + "(Long), mx=" + Long.MAX_VALUE + "(Long)]");
+    assertThat(row("SELECT max(bg) AS mx FROM T WHERE bg <= 9007199254740992")).isEqualTo("[mx=9007199254740992(Long)]");
+  }
+
+  @Test
   void anEmptyRangeStillAnswersNull() {
     createAndLoad(1, BASE, 0, 90, true);
     final String sql = "SELECT min(bg) AS mn, max(bg) AS mx, count(*) AS c FROM X WHERE bg > 9007199254741000";
