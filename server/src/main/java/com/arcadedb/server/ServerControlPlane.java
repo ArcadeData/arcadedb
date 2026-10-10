@@ -67,6 +67,7 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -921,15 +922,17 @@ public class ServerControlPlane {
     if (httpServer == null)
       return result;
 
-    final List<RunningQuery> running = server.getRunningQueries().getRunning();
+    // The running statements grouped by session once, rather than scanned again for every session
+    final Map<String, JSONArray> queriesBySession = new HashMap<>();
+    for (final RunningQuery query : server.getRunningQueries().getRunning())
+      if (query.getSessionId() != null)
+        queriesBySession.computeIfAbsent(query.getSessionId(), k -> new JSONArray()).put(query.getId());
+
     for (final HttpSession session : httpServer.getSessionManager().getSessions()) {
       final String owner = session.user != null ? session.user.getName() : null;
       if (!isVisible(user, owner))
         continue;
-      final JSONArray queries = new JSONArray();
-      for (final RunningQuery query : running)
-        if (session.id.equals(query.getSessionId()))
-          queries.put(query.getId());
+      final JSONArray queries = queriesBySession.getOrDefault(session.id, new JSONArray());
       final JSONObject json = new JSONObject()//
           .put("id", session.id)//
           .put("user", owner)//

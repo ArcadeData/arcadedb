@@ -53,6 +53,7 @@ public final class RunningQueryRegistry {
       final String tag) {
     final RunningQuery query = new RunningQuery(this, lastId.incrementAndGet(), database, user, protocol, sessionId, tag);
     running.put(query.getNumericId(), query);
+    query.publish();
     return query;
   }
 
