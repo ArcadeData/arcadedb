@@ -231,6 +231,22 @@ class Issue9619LightweightEdgeWriteGrantsTest {
     assertLWConnected(0);
   }
 
+  /** A grant checked for one user must not carry over to the next user bound to the same batch's thread. */
+  @Test
+  void graphBatchRechecksTheGrantWhenTheUserChanges() {
+    try (final GraphBatch batch = GraphBatch.builder(database).withBatchSize(10).build()) {
+      batch.newEdge(a, "LW", b);
+
+      bindUserRefusing(SecurityDatabaseUser.ACCESS.CREATE_RECORD, "LW");
+      assertThat(catchThrowable(() -> batch.newEdge(b, "LW", a))).isInstanceOf(SecurityException.class);
+      unbindUser();
+    }
+
+    assertThat(countLW()).isEqualTo(1);
+    assertThat(a.asVertex().countEdges(Vertex.DIRECTION.OUT, "LW")).isEqualTo(1);
+    assertThat(b.asVertex().countEdges(Vertex.DIRECTION.OUT, "LW")).isZero();
+  }
+
   @Test
   void grantedLightweightCreateStillWorks() {
     bindUserRefusing(SecurityDatabaseUser.ACCESS.CREATE_RECORD, "HE");
