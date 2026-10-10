@@ -26,6 +26,7 @@ import com.arcadedb.query.RunningQuery;
 import com.arcadedb.query.RunningQueryRegistry;
 import com.arcadedb.query.sql.executor.CommandContext;
 
+import java.math.BigDecimal;
 import java.util.Set;
 
 /**
@@ -188,6 +189,16 @@ public final class PostgresBackendFunctions {
     }
   }
 
+  private static boolean isIntegral(final Number number) {
+    if (number instanceof Double || number instanceof Float) {
+      final double value = number.doubleValue();
+      return !Double.isInfinite(value) && value == Math.rint(value);
+    }
+    if (number instanceof BigDecimal decimal)
+      return decimal.signum() == 0 || decimal.stripTrailingZeros().scale() <= 0;
+    return true;
+  }
+
   private static String caller(final CommandContext context) {
     return context != null && context.getDatabase() != null ? context.getDatabase().getCurrentUserName() : null;
   }
@@ -196,7 +207,8 @@ public final class PostgresBackendFunctions {
   private static PostgresNetworkExecutor signalled(final Object[] params, final String caller, final CommandContext context) {
     if (params == null || params.length != 1 || params[0] == null)
       return null;
-    if (!(params[0] instanceof Number pid))
+    if (!(params[0] instanceof Number pid) || !isIntegral(pid))
+      // A fractional pid is not rounded to some other connection's: refused, as PostgreSQL refuses pg_cancel_backend(1.5)
       throw new CommandExecutionException("The process id must be an integer, found: " + params[0]);
     final long value = pid.longValue();
     // Process ids are positive, as on the wire a CancelRequest quotes them
