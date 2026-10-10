@@ -19,6 +19,7 @@
 package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.Constants;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
@@ -26,9 +27,13 @@ import com.arcadedb.server.http.handler.AbstractServerHttpHandler;
 import com.arcadedb.server.http.handler.ExecutionResponse;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
+import io.undertow.util.HeaderMap;
 
+import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.TreeSet;
+import java.util.logging.Level;
 
 /**
  * {@code POST /api/v1/cluster/capabilities} - peer-to-peer capability advertisement RPC (issue #7219).
@@ -74,6 +79,26 @@ public class PostCapabilitiesHandler extends AbstractServerHttpHandler {
    */
   static final String QUARANTINED = "quarantined";
 
+  /**
+   * The document's map of the HTTP addresses this node holds for the OTHER members of its configuration - declared by an
+   * operator, here or on another node, or confirmed by a probe the member answered - keyed by peer id (issue #9255).
+   * Absent when it holds none. The caller does not believe it: each address is a candidate until the member it names
+   * answers a probe on it.
+   */
+  static final String PEER_HTTP_ADDRESSES = "peerHttpAddresses";
+
+  /**
+   * Request header: the calling node's peer id (issue #9255). The self-description travels in headers rather than in the
+   * body so this handler keeps answering on the IO thread: the shared pipeline reads a body only on a worker thread.
+   */
+  static final String CALLER_PEER_ID_HEADER      = "X-ArcadeDB-Caller-Peer-Id";
+  /** Request header: the HTTP address the calling node resolves for itself (issue #9255). */
+  static final String CALLER_HTTP_ADDRESS_HEADER = "X-ArcadeDB-Caller-Http-Address";
+  /** Request header: the port the calling node's HTTP listener is bound to (issue #9255). */
+  static final String CALLER_HTTP_PORT_HEADER    = "X-ArcadeDB-Caller-Http-Port";
+
+  private static final String CLUSTER_TOKEN_HEADER = "X-ArcadeDB-Cluster-Token";
+
   private final RaftHAPlugin plugin;
 
   public PostCapabilitiesHandler(final HttpServer httpServer, final RaftHAPlugin plugin) {
@@ -90,11 +115,27 @@ public class PostCapabilitiesHandler extends AbstractServerHttpHandler {
     if (raftHAServer == null)
       return new ExecutionResponse(400, new JSONObject().put("error", "Raft HA is not enabled").toString());
 
+    // The caller says where it listens (issue #9255): a candidate this node confirms with a probe of its own before it
+    // dials the caller there for anything else. Only from a peer: that probe carries the cluster token, so an address a
+    // root user could plant through Basic auth would be a way to send the token somewhere. A peer holds it already, and
+    // the header was validated before this method runs (an invalid one is refused with 401)
+    final HeaderMap headers = exchange.getRequestHeaders();
+    if (headers.contains(CLUSTER_TOKEN_HEADER) && headers.contains(CALLER_PEER_ID_HEADER))
+      try {
+        final String port = headers.getFirst(CALLER_HTTP_PORT_HEADER);
+        raftHAServer.offerCallerHttpAddress(headers.getFirst(CALLER_PEER_ID_HEADER), headers.getFirst(CALLER_HTTP_ADDRESS_HEADER),
+            port != null && !port.isBlank() ? Integer.parseInt(port.trim()) : -1);
+      } catch (final RuntimeException e) {
+        // A malformed self-description costs the caller its candidate, never the answer it asked for
+        LogManager.instance().log(this, Level.FINE, "Ignoring the self-description of a capability request: %s", e.getMessage());
+      }
+
     final ArcadeStateMachine stateMachine = raftHAServer.getStateMachine();
     return new ExecutionResponse(200,
         advertisement(raftHAServer.getLocalPeerId().toString(), raftHAServer.getAdvertisedCapabilities(),
             stateMachine != null && stateMachine.hasLeaderServiceGap(),
-            stateMachine != null ? stateMachine.getQuarantinedDatabaseNames() : Set.of()).toString());
+            stateMachine != null ? stateMachine.getQuarantinedDatabaseNames() : Set.of(),
+            raftHAServer.getRelayablePeerHttpAddresses()).toString());
   }
 
   /**
@@ -122,6 +163,16 @@ public class PostCapabilitiesHandler extends AbstractServerHttpHandler {
   // @VisibleForTesting
   static JSONObject advertisement(final String peerId, final Set<String> capabilities, final boolean serviceGap,
       final Set<String> quarantined) {
+    return advertisement(peerId, capabilities, serviceGap, quarantined, Map.of());
+  }
+
+  /**
+   * As {@link #advertisement(String, Set, boolean, Set)}, also carrying {@link #PEER_HTTP_ADDRESSES} when this node holds
+   * an address for another member (issue #9255), sorted by peer id for the same reason the capabilities are.
+   */
+  // @VisibleForTesting
+  static JSONObject advertisement(final String peerId, final Set<String> capabilities, final boolean serviceGap,
+      final Set<String> quarantined, final Map<String, String> peerHttpAddresses) {
     final JSONArray array = new JSONArray();
     for (final String capability : new TreeSet<>(capabilities))
       array.put(capability);
@@ -137,6 +188,12 @@ public class PostCapabilitiesHandler extends AbstractServerHttpHandler {
       for (final String name : new TreeSet<>(quarantined))
         names.put(name);
       json.put(QUARANTINED, names);
+    }
+    if (peerHttpAddresses != null && !peerHttpAddresses.isEmpty()) {
+      final JSONObject addresses = new JSONObject();
+      for (final Map.Entry<String, String> entry : new TreeMap<>(peerHttpAddresses).entrySet())
+        addresses.put(entry.getKey(), entry.getValue());
+      json.put(PEER_HTTP_ADDRESSES, addresses);
     }
     return json;
   }

@@ -20,6 +20,7 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.Database;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.CallLog;
 import com.arcadedb.server.TestServerHelper;
@@ -97,7 +98,7 @@ public class FakeRaftHAServer extends RaftHAServer {
 
   // Calls whose effect is the call itself: recorded, answered by the test, else by what an unstubbed mock answered
   private static final Set<String> RECORDED = Set.of("peersMissingCapability", "peersMissingCapabilityNow",
-      "waitForAppliedIndex",
+      "waitForAppliedIndex", "waitForAppliedIndexForRead",
       // Leadership and lifecycle: the effect is the request itself, which a detached server could not carry out
       "transferLeadership", "stepDown", "handOffLeadershipToResync", "notifyApplied", "leaveCluster", "stop",
       "newMembershipClient",
@@ -608,6 +609,13 @@ public class FakeRaftHAServer extends RaftHAServer {
   @Override
   public void waitForAppliedIndex(final String databaseName, final long targetIndex, final boolean throwOnTimeout) {
     call("waitForAppliedIndex", () -> null, databaseName, targetIndex, throwOnTimeout);
+  }
+
+  /** Recorded as (database, index, consistency). The real wait stays reachable through {@code awaitAppliedIndex}. */
+  @Override
+  public void waitForAppliedIndexForRead(final String databaseName, final long targetIndex,
+      final Database.READ_CONSISTENCY consistency) {
+    call("waitForAppliedIndexForRead", () -> null, databaseName, targetIndex, consistency);
   }
 
   /** Recorded; unanswered, the real check, which a detached server answers false (never refuses on missing information). */

@@ -69,7 +69,7 @@ class Issue9590ReadConsistencyGateOnRemovedNodeTest {
 
     assertThatThrownBy(() -> databaseWith(raft).query("sql", QUERY)).isInstanceOf(NeedRetryException.class)
         .hasMessageContaining("not a member").hasMessageContaining("READ_YOUR_WRITES");
-    assertThat(raft.calls("waitForAppliedIndex")).isEmpty();
+    assertThat(raft.calls("waitForAppliedIndexForRead")).isEmpty();
   }
 
   @Test
@@ -80,14 +80,14 @@ class Issue9590ReadConsistencyGateOnRemovedNodeTest {
     assertThatNoException().isThrownBy(() -> databaseWith(raft).query("sql", QUERY));
     // Already satisfied: neither membership nor the wait is consulted.
     assertThat(raft.calls("isRemovedFromConfiguration")).isEmpty();
-    assertThat(raft.calls("waitForAppliedIndex")).isEmpty();
+    assertThat(raft.calls("waitForAppliedIndexForRead")).isEmpty();
   }
 
   @Test
   void aFollowerRemovedWhileWaitingRefusesInsteadOfServingDataMissingTheWrite() {
     // A member when the read arrives, removed during the wait, which then gives up short of the bookmark.
     final FakeRaftHAServer raft = node(false, false);
-    raft.on("waitForAppliedIndex", args -> {
+    raft.on("waitForAppliedIndexForRead", args -> {
       raft.returns("isRemovedFromConfiguration", true);
       return null;
     });
@@ -95,13 +95,13 @@ class Issue9590ReadConsistencyGateOnRemovedNodeTest {
 
     assertThatThrownBy(() -> databaseWith(raft).query("sql", QUERY)).isInstanceOf(NeedRetryException.class)
         .hasMessageContaining("not a member").hasMessageContaining("READ_YOUR_WRITES");
-    assertThat(raft.calls("waitForAppliedIndex")).containsExactly(List.of(DB_NAME, APPLIED + 1, false));
+    assertThat(raft.calls("waitForAppliedIndexForRead")).containsExactly(List.of(DB_NAME, APPLIED + 1, Database.READ_CONSISTENCY.READ_YOUR_WRITES));
   }
 
   @Test
   void aFollowerRemovedAfterItsWaitReachedTheBookmarkServesTheRead() {
     final FakeRaftHAServer raft = node(false, false);
-    raft.on("waitForAppliedIndex", args -> {
+    raft.on("waitForAppliedIndexForRead", args -> {
       raft.returns("isRemovedFromConfiguration", true).returns("getTrustedAppliedIndex", APPLIED + 1);
       return null;
     });
@@ -116,7 +116,7 @@ class Issue9590ReadConsistencyGateOnRemovedNodeTest {
     RaftReplicatedDatabase.applyReadConsistencyContext(Database.READ_CONSISTENCY.READ_YOUR_WRITES, APPLIED + 1);
 
     assertThatNoException().isThrownBy(() -> databaseWith(raft).query("sql", QUERY));
-    assertThat(raft.calls("waitForAppliedIndex")).containsExactly(List.of(DB_NAME, APPLIED + 1, false));
+    assertThat(raft.calls("waitForAppliedIndexForRead")).containsExactly(List.of(DB_NAME, APPLIED + 1, Database.READ_CONSISTENCY.READ_YOUR_WRITES));
   }
 
   @Test
@@ -126,7 +126,7 @@ class Issue9590ReadConsistencyGateOnRemovedNodeTest {
 
     assertThatNoException().isThrownBy(() -> databaseWith(raft).query("sql", QUERY));
     assertThat(raft.calls("isRemovedFromConfiguration")).isEmpty();
-    assertThat(raft.calls("waitForAppliedIndex")).isEmpty();
+    assertThat(raft.calls("waitForAppliedIndexForRead")).isEmpty();
   }
 
   @Test

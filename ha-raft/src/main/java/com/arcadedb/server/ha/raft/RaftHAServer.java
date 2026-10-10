@@ -21,6 +21,7 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.Database;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
@@ -425,6 +426,12 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   // is not enforced by the compiler. This bound caps the cost of a future missed notification at this
   // interval instead of the full quorumTimeout.
   private static final long                  APPLY_WAIT_RECHECK_INTERVAL_MS = 1000L;
+  // Bumped on every Raft configuration change this node observes (issue #9606): a consistent read waiting in
+  // awaitAppliedIndex() asks whether this node is still a member only when it moved, or once per recheck interval
+  private final    AtomicLong                membershipChanges     = new AtomicLong();
+  // HTTP addresses offered for peers - pushed by the peer itself, relayed by another member - waiting for a probe the peer
+  // answers under its own id before one is recorded in httpAddresses (issue #9255)
+  private final    PeerHttpAddressCandidates peerHttpAddressCandidates = new PeerHttpAddressCandidates();
   private          RaftClusterManager        clusterManager;
   private final    Object                    recoveryLock          = new Object();
   private volatile boolean                   shutdownRequested     = false;
@@ -5628,6 +5635,34 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   /**
+   * Wakes every consistent read blocked in {@link #waitForAppliedIndexForRead} so it asks again whether this node is still a
+   * member of the Raft configuration (issue #9606). Called where this node learns of a configuration change: the state
+   * machine's configuration callback and a removal this node submitted, its own {@code leaveCluster()} included.
+   * <p>
+   * Not the only way a waiting read learns of a removal, and it cannot be: a removed node is usually cut off before it
+   * applies the entry that removes it, so its state machine is never told. The read also asks once per
+   * {@link #APPLY_WAIT_RECHECK_INTERVAL_MS}, which bounds the wait there instead of the quorum timeout.
+   */
+  public void notifyMembershipChanged() {
+    membershipChanges.incrementAndGet();
+    synchronized (applyNotifier) {
+      applyNotifier.notifyAll();
+    }
+  }
+
+  /**
+   * The refusal of a consistent read on a node that is no longer a member of the Raft configuration (issues #9590, #9606):
+   * retryable, because a member of the cluster can serve it.
+   */
+  static NeedRetryException readRefusedWhileRemovedFromConfiguration(final String databaseName,
+      final Database.READ_CONSISTENCY consistency) {
+    return new NeedRetryException("Database '" + databaseName + "' cannot serve a " + consistency + " read on this server: "
+        + "it is not a member of the Raft cluster's configuration any more (it left or was removed), so it receives no "
+        + "entries and cannot reach the index this read needs. Send the request to a server of the cluster, use EVENTUAL "
+        + "consistency, or add this server back to it");
+  }
+
+  /**
    * Waits until the condition holds, re-evaluating it whenever the state machine applies an entry.
    *
    * @return {@code false} when the timeout elapsed first
@@ -5688,12 +5723,66 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * @param databaseName the database the read targets, or {@code null} for a node-wide wait
    */
   public void waitForAppliedIndex(final String databaseName, final long targetIndex, final boolean throwOnTimeout) {
+    awaitAppliedIndex(databaseName, targetIndex, throwOnTimeout, null);
+  }
+
+  /**
+   * The wait of a consistent read: as {@link #waitForAppliedIndex(String, long, boolean)}, strict for
+   * {@code LINEARIZABLE} and lenient for {@code READ_YOUR_WRITES}, but refused retryably as soon as this node is no
+   * longer a member of the Raft configuration (issue #9606).
+   * <p>
+   * A removed node receives no more entries, so the index a read waits for is never applied here: a read that started
+   * waiting while the node was still a member blocked the whole quorum timeout before it was refused (#9590) or failed.
+   * Only a read may give up this way. The commit and drop paths wait on the same index after their entry committed
+   * cluster-wide, and a retryable exception there would invite a duplicate retry of a durable write - they keep
+   * {@link #waitForAppliedIndex(String, long, boolean)}.
+   *
+   * @throws NeedRetryException when this node is, or becomes during the wait, no longer a member of the configuration
+   */
+  public void waitForAppliedIndexForRead(final String databaseName, final long targetIndex,
+      final Database.READ_CONSISTENCY consistency) {
+    awaitAppliedIndex(databaseName, targetIndex, consistency == Database.READ_CONSISTENCY.LINEARIZABLE, consistency);
+  }
+
+  /**
+   * The apply wait behind both public forms.
+   *
+   * @param readConsistency the consistency of the read waiting, which then gives up on a removal from the configuration;
+   *                        {@code null} for any other waiter
+   */
+  void awaitAppliedIndex(final String databaseName, final long targetIndex, final boolean throwOnTimeout,
+      final Database.READ_CONSISTENCY readConsistency) {
     if (targetIndex <= 0)
       return;
     try {
       final long deadline = System.currentTimeMillis() + quorumTimeout;
-      synchronized (applyNotifier) {
-        while (getTrustedAppliedIndex(databaseName) < targetIndex) {
+      // The configuration is read on entry, then whenever it changed, and once per recheck interval: not on every entry
+      // applied, which wakes every waiter
+      long membershipSeen = membershipChanges.get();
+      long nextMembershipCheck = 0L;
+      while (true) {
+        // Outside the monitor: the configuration is read from the Ratis division, and holding applyNotifier across that
+        // read would stall notifyApplied() - the apply thread - and every other waiter behind it. The applied index is
+        // still re-checked under the monitor before each wait, so no notification can be missed between the two
+        if (readConsistency != null && getTrustedAppliedIndex(databaseName) < targetIndex) {
+          final long now = System.currentTimeMillis();
+          final long membership = membershipChanges.get();
+          if (membership != membershipSeen || now >= nextMembershipCheck) {
+            membershipSeen = membership;
+            nextMembershipCheck = now + APPLY_WAIT_RECHECK_INTERVAL_MS;
+            if (isRemovedFromConfiguration()) {
+              LogManager.instance().log(this, Level.INFO,
+                  "%s read on database '%s' refused while waiting for index %d (applied=%d): this server is no longer a "
+                      + "member of the Raft configuration", readConsistency, databaseName, targetIndex,
+                  getTrustedAppliedIndex(databaseName));
+              throw readRefusedWhileRemovedFromConfiguration(databaseName, readConsistency);
+            }
+          }
+        }
+        synchronized (applyNotifier) {
+          // The one normal exit: the index is applied. Every other way out returns or throws below
+          if (getTrustedAppliedIndex(databaseName) >= targetIndex)
+            break;
           if (!throwOnTimeout && (getStaleSnapshotAppliedFloor() >= 0 || getDatabaseAppliedFloor(databaseName) >= 0)) {
             // No explicit "targetIndex > floor" test is needed, and adding one would be dead code:
             // reaching this line means the loop condition held, i.e. getTrustedAppliedIndex() (pinned at
@@ -5989,8 +6078,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     final long readIndex = fetchReadIndex(true);
     if (!isLeader())
       throw new ReplicationException("Lost leadership after ReadIndex confirmation");
-    // LINEARIZABLE: a timeout MUST throw (HTTP 503) - never silently degrade to a stale read.
-    waitForAppliedIndex(databaseName, readIndex, true);
+    // LINEARIZABLE: a timeout MUST throw (HTTP 503) - never silently degrade to a stale read. A removal from the
+    // configuration during the wait refuses the read at once (issue #9606)
+    waitForAppliedIndexForRead(databaseName, readIndex, Database.READ_CONSISTENCY.LINEARIZABLE);
   }
 
   /**
@@ -6008,8 +6098,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   /** As {@link #ensureLinearizableFollowerRead()}, scoped to the database the read targets (issue #6760). */
   public void ensureLinearizableFollowerRead(final String databaseName) {
     final long readIndex = fetchReadIndex(false);
-    // LINEARIZABLE: a timeout MUST throw (HTTP 503) - never silently degrade to a stale read.
-    waitForAppliedIndex(databaseName, readIndex, true);
+    // LINEARIZABLE: a timeout MUST throw (HTTP 503) - never silently degrade to a stale read. A removal from the
+    // configuration during the wait refuses the read at once (issue #9606)
+    waitForAppliedIndexForRead(databaseName, readIndex, Database.READ_CONSISTENCY.LINEARIZABLE);
   }
 
   /**
@@ -6792,6 +6883,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       // peers must not accumulate their advertisements - nor what it last reported about them - for its whole
       // uptime (issue #7301).
       peerCapabilities.retainOnly(generation, peerIds);
+      peerHttpAddressCandidates.retainOnly(peerIds);
 
       final String clusterToken = getClusterToken();
       // Why each peer has no answer yet, and the withheld addresses worth one more question. The belief is
@@ -6827,8 +6919,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         }
 
         try {
-          recordPeerCapabilities(generation, peerId.toString(), capabilityProber.probe(peerId.toString(),
-              dial.httpAddress(), dial.httpsAddress(), clusterToken));
+          final PeerCapabilityQuery.Advertisement advertisement = capabilityProber.probe(peerId.toString(),
+              dial.httpAddress(), dial.httpsAddress(), clusterToken);
+          recordPeerCapabilities(generation, peerId.toString(), advertisement);
+          learnFromAnswer(peerId.toString(), dialsPlainHttp(dial.httpsAddress()) ? dial.httpAddress() : null,
+              advertisement);
         } catch (final InterruptedException e) {
           Thread.currentThread().interrupt();
           suspendPeer(generation, unanswered, peerId.toString(), "the capability query was interrupted",
@@ -6859,6 +6954,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       }
 
       if (!probeSharedEndpoints(generation, sharedEndpoints, peerIds, unanswered, clusterToken))
+        return;
+      if (!probeCandidateAddresses(generation, peers, unanswered, clusterToken))
         return;
       forgetUnanswered(generation, unanswered);
     } catch (final Exception e) {
@@ -6895,6 +6992,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
             answeringPeer, endpoint.httpAddress());
         unanswered.remove(answeringPeer);
         recordPeerCapabilities(generation, answeringPeer, advertisement);
+        // The peer that answered here answers here: an address it no longer shares with any peer it identified (issue #9255)
+        learnFromAnswer(answeringPeer, dialsPlainHttp(endpoint.httpsAddress()) ? endpoint.httpAddress() : null,
+            advertisement);
       } catch (final InterruptedException e) {
         Thread.currentThread().interrupt();
         forgetUnanswered(generation, unanswered);
@@ -7115,11 +7215,225 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   private PeerCapabilityQuery.Advertisement queryPeerCapabilities(final String expectedPeerId,
       final String httpAddress, final String httpsAddress, final String clusterToken)
       throws IOException, InterruptedException {
+    final Map<String, String> caller = capabilityRequestHeaders();
     return expectedPeerId != null
         ? PeerCapabilityQuery.fetch(expectedPeerId, httpAddress, httpsAddress, clusterToken,
-            PeerCapabilityRegistry.PROBE_TIMEOUT_MS, arcadeServer, capabilityHttpsClients)
+            PeerCapabilityRegistry.PROBE_TIMEOUT_MS, arcadeServer, capabilityHttpsClients, caller)
         : PeerCapabilityQuery.fetchFromSharedEndpoint(httpAddress, httpsAddress, clusterToken,
-            PeerCapabilityRegistry.PROBE_TIMEOUT_MS, arcadeServer, capabilityHttpsClients);
+            PeerCapabilityRegistry.PROBE_TIMEOUT_MS, arcadeServer, capabilityHttpsClients, caller);
+  }
+
+  /**
+   * What this node says about itself, in headers, in every capability request (issue #9255): its peer id, the HTTP address it resolves
+   * for itself and the port its HTTP listener is bound to. The port is the one fact about its endpoint only this node knows
+   * for certain; the peer pairs it with the Raft host it already dials this node on, so the two halves of the address come
+   * from where each is known.
+   */
+  // @VisibleForTesting
+  Map<String, String> capabilityRequestHeaders() {
+    final Map<String, String> headers = new LinkedHashMap<>(4);
+    headers.put(PostCapabilitiesHandler.CALLER_PEER_ID_HEADER, localPeerId.toString());
+    final String self = getLocalHttpAddress();
+    if (self != null)
+      headers.put(PostCapabilitiesHandler.CALLER_HTTP_ADDRESS_HEADER, self);
+    final HttpServer httpServer = arcadeServer.getHttpServer();
+    final int httpPort = httpServer != null ? httpServer.getPort() : -1;
+    if (httpPort > 0)
+      headers.put(PostCapabilitiesHandler.CALLER_HTTP_PORT_HEADER, String.valueOf(httpPort));
+    return headers;
+  }
+
+  /**
+   * Offers the HTTP endpoint a peer stated for itself in a capability request (issue #9255): the address it resolves for
+   * itself, and its listener's port on the Raft host this node knows it by. Both are candidates only - see
+   * {@link #offerPeerHttpAddress}.
+   */
+  void offerCallerHttpAddress(final String callerPeerId, final String httpAddress, final int httpPort) {
+    if (callerPeerId == null || callerPeerId.isEmpty())
+      return;
+    if (httpAddress != null && !httpAddress.isEmpty())
+      offerPeerHttpAddress(callerPeerId, httpAddress);
+    if (httpPort > 0 && httpPort <= 65535) {
+      // The derive rule every node now shares: the peer's Raft host as the cluster knows it, and the peer's OWN port
+      final String fromRaftHost = deriveHttpAddress(configuredRaftAddress(RaftPeerId.valueOf(callerPeerId)), httpPort);
+      if (fromRaftHost != null)
+        offerPeerHttpAddress(callerPeerId, fromRaftHost);
+    }
+  }
+
+  /**
+   * Offers {@code address} as a candidate HTTP endpoint of {@code peerId}, to be dialled by the next capability round if
+   * the peer does not answer on the address this node resolves for it (issue #9255). Dropped when it could change nothing
+   * or must not: the peer is this node or not a member of the configuration, the address in force is the one this node's
+   * own server list declares (the operator said it here, and nothing heard from another node outranks that - the same rule
+   * {@link #recordAdmittedPeerHttpAddress} applies), the address is not a {@code host:port}, or it is already the one
+   * recorded.
+   * <p>
+   * And dropped when its host is not the peer's Raft host, the host the cluster already talks to it on (a server list
+   * declares an HTTP port on that same host). A candidate is probed with the cluster token, and the probe is what proves
+   * the address, so without this rule a member could have every node send the token to any {@code host:port} of its
+   * choosing. What is learnt is therefore the PORT; an HTTP listener declared on another host through {@code connect
+   * cluster} still reaches the node it was typed on and the leader, through the admission's seed request (#8689).
+   */
+  void offerPeerHttpAddress(final String peerId, final String address) {
+    if (peerId == null || address == null || peerId.equals(localPeerId.toString()))
+      return;
+    final RaftPeerId id = RaftPeerId.valueOf(peerId);
+    final String current = httpAddresses.get(id);
+    if (address.equals(current) || isServerListAddressInForce(id, current))
+      return;
+    if (!PeerCapabilityQuery.isPeerAddress(address))
+      return;
+    final String raftAddress = configuredRaftAddress(id);
+    if (raftAddress == null || !isSameHost(extractHost(address), extractHost(raftAddress)))
+      return;
+    peerHttpAddressCandidates.offer(peerId, address);
+  }
+
+  /** Host equality as {@link #isSameHttpEndpoint} sees it: case-insensitive, and every loopback name is the same host. */
+  static boolean isSameHost(final String host, final String other) {
+    if (host == null || other == null)
+      return false;
+    return host.equalsIgnoreCase(other) || (LoopbackHosts.isLoopback(host) && LoopbackHosts.isLoopback(other));
+  }
+
+  /**
+   * The HTTP addresses this node relays in its capability reply (issue #9255): every entry it holds for another member of
+   * the configuration. Each one was declared by an operator - in a server list, a {@code connect cluster}, an admission
+   * forwarded here - or confirmed by a probe the member answered: since #9255 nothing else is written there, the
+   * admission-time {@code raftPort + offset} guess included.
+   */
+  Map<String, String> getRelayablePeerHttpAddresses() {
+    Map<String, String> relayable = null;
+    for (final RaftPeer peer : configuredPeers()) {
+      if (peer.getId().equals(localPeerId))
+        continue;
+      final String address = httpAddresses.get(peer.getId());
+      if (address == null)
+        continue;
+      if (relayable == null)
+        relayable = new LinkedHashMap<>();
+      relayable.put(peer.getId().toString(), address);
+    }
+    return relayable != null ? relayable : Map.of();
+  }
+
+  /**
+   * Records that {@code peerId} answered a capability probe dialled on {@code httpAddress} under its own id, the one proof
+   * an address names that peer (issue #9255). From then on this node dials the peer there for everything, exactly as it
+   * would a declared address, and relays it to the other members. The address this node's own server list declares is
+   * kept while it is the one in force: the operator said it here.
+   */
+  private void recordConfirmedPeerHttpAddress(final RaftPeerId peerId, final String httpAddress) {
+    // An answer over HTTPS confirms nothing about the HTTP address, so the candidates offered for it are kept
+    if (httpAddress == null)
+      return;
+    peerHttpAddressCandidates.confirmed(peerId.toString());
+    while (true) {
+      final String current = httpAddresses.get(peerId);
+      if (httpAddress.equals(current) || isServerListAddressInForce(peerId, current))
+        return;
+      if (current == null ? httpAddresses.putIfAbsent(peerId, httpAddress) == null
+          : httpAddresses.replace(peerId, current, httpAddress)) {
+        LogManager.instance().log(this, Level.INFO, "Peer '%s' answered on HTTP address %s%s; dialling it there from now on",
+            peerId, httpAddress, current != null ? " instead of " + current : "");
+        return;
+      }
+    }
+  }
+
+  /**
+   * Whether {@code current}, the entry this node holds for {@code peerId}, is the one its own server list declares. A peer
+   * that left and was admitted again has no entry until something writes one, and then the declaration no longer holds.
+   */
+  private boolean isServerListAddressInForce(final RaftPeerId peerId, final String current) {
+    return current != null && current.equals(serverListHttpAddresses.get(peerId));
+  }
+
+  /** The Raft address of {@code peerId} in the current configuration, or {@code null} when it is not a member. */
+  private String configuredRaftAddress(final RaftPeerId peerId) {
+    for (final RaftPeer peer : configuredPeers())
+      if (peer.getId().equals(peerId))
+        return peer.getAddress();
+    return null;
+  }
+
+  /**
+   * Whether a probe given these two endpoints dials the plain-HTTP one - the only case in which its answer confirms the
+   * HTTP address. The same choice {@link PeerCapabilityQuery#chooseUrl} makes.
+   */
+  private boolean dialsPlainHttp(final String httpsAddress) {
+    return httpsAddress == null || !configuration.getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL);
+  }
+
+  /**
+   * What a capability answer from {@code peerId} teaches this node beyond the capabilities (issue #9255): that it answers on
+   * {@code answeredOnHttp} (null when the probe dialled its HTTPS endpoint, which confirms nothing about the HTTP one), and
+   * the addresses it relays for the other members, each offered as a candidate.
+   */
+  private void learnFromAnswer(final String peerId, final String answeredOnHttp,
+      final PeerCapabilityQuery.Advertisement advertisement) {
+    recordConfirmedPeerHttpAddress(RaftPeerId.valueOf(peerId), answeredOnHttp);
+    for (final Map.Entry<String, String> relayed : advertisement.peerHttpAddresses().entrySet())
+      if (!relayed.getKey().equals(peerId))
+        offerPeerHttpAddress(relayed.getKey(), relayed.getValue());
+  }
+
+  /**
+   * The third pass of a capability round (issue #9255): each peer still unanswered is asked on the candidate addresses
+   * offered for it - its own push, a member's relay, and the derived address when what failed was a recorded one - under
+   * its own id, so only the peer itself can confirm one. The first that answers is recorded as the peer's address.
+   *
+   * @return {@code false} when the round was interrupted and the caller must stand down without settling
+   */
+  private boolean probeCandidateAddresses(final long generation, final List<RaftPeer> peers,
+      final Map<String, PeerCapabilityRegistry.Unknown> unanswered, final String clusterToken) {
+    // A candidate is an HTTP address, and the probe carries the cluster token: on a cluster that asked for SSL the token
+    // must not go over plain HTTP to an address nobody has confirmed yet. There the HTTPS endpoints are what the peers
+    // dial each other on, and an HTTP address is learnt only from an answer on it, never by probing a candidate
+    if (configuration.getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL))
+      return true;
+    for (final RaftPeer peer : peers) {
+      final String peerId = peer.getId().toString();
+      if (!unanswered.containsKey(peerId))
+        continue;
+      // A recorded address that stopped answering may be stale (a peer that moved): the address derived from its Raft host
+      // is worth one more question, as a candidate like any other
+      final String recorded = httpAddresses.get(peer.getId());
+      if (recorded != null && !isServerListAddressInForce(peer.getId(), recorded)) {
+        final String derived = deriveHttpAddress(peer.getAddress(),
+            arcadeServer.getHttpServer() != null ? arcadeServer.getHttpServer().getPort() : -1);
+        if (derived != null && !RaftHAServer.isSameHttpEndpoint(getLocalHttpAddress(), derived))
+          offerPeerHttpAddress(peerId, derived);
+      }
+      for (final String candidate : peerHttpAddressCandidates.due(peerId)) {
+        try {
+          // No HTTPS endpoint is handed over, so the probe dials the candidate over plain HTTP whatever the SSL setting
+          // (PeerCapabilityQuery.chooseUrl): its answer confirms the HTTP address and nothing else
+          final PeerCapabilityQuery.Advertisement advertisement = capabilityProber.probe(peerId, candidate, null,
+              clusterToken);
+          unanswered.remove(peerId);
+          recordPeerCapabilities(generation, peerId, advertisement);
+          learnFromAnswer(peerId, candidate, advertisement);
+          break;
+        } catch (final InterruptedException e) {
+          Thread.currentThread().interrupt();
+          forgetUnanswered(generation, unanswered);
+          return false;
+        } catch (final Exception e) {
+          peerHttpAddressCandidates.failed(peerId, candidate);
+          LogManager.instance().log(this, Level.FINE, "Peer '%s' did not answer on the candidate HTTP address %s: %s",
+              peerId, candidate, describeProbeFailure(e));
+        }
+      }
+    }
+    return true;
+  }
+
+  /** The candidate HTTP addresses held for {@code peerId}. Test seam. */
+  // @VisibleForTesting
+  List<String> getPeerHttpAddressCandidates(final String peerId) {
+    return peerHttpAddressCandidates.all(peerId);
   }
 
   /**

@@ -361,15 +361,22 @@ class DeltaOverlay {
       newOverflowCount++;
     }
 
-    // Process deleted vertices
+    // Process deleted vertices. The node of a deleted overflow vertex is remembered for the edges the same transaction
+    // deleted with it: they are reported after it, and its RID no longer resolves once it leaves the overflow (a deleted
+    // base vertex keeps resolving to its node, see resolveNodeId())
+    Map<RID, Integer> overflowDeletedNow = null;
     for (final RID rid : delta.deletedVertices) {
       final int baseId = baseMapping.getGlobalId(rid);
       if (baseId >= 0 && !isReusedBaseSlot(baseId, rid, newOverflowIds, newDeleted))
         newDeleted.set(baseId);
       else {
         final Integer overflowId = newOverflowIds.remove(rid);
-        if (overflowId != null)
+        if (overflowId != null) {
           newDeletedOverflow.set(overflowId - baseNodeCount);
+          if (overflowDeletedNow == null)
+            overflowDeletedNow = new HashMap<>();
+          overflowDeletedNow.put(rid, overflowId);
+        }
       }
     }
 
@@ -485,8 +492,10 @@ class DeltaOverlay {
     // The lightweight additions per type and pair, indexed on the first lightweight deletion of the type that needs them
     Map<String, Map<Long, ArrayDeque<RID>>> lightAdditions = null;
     for (final TxDelta.EdgeDelta ed : delta.deletedEdges) {
-      final int srcId = resolveNodeId(ed.source, baseMapping, newOverflowIds, newDeleted);
-      final int tgtId = resolveNodeId(ed.target, baseMapping, newOverflowIds, newDeleted);
+      // An edge of an overflow vertex this delta deletes is still withdrawn: left in the added index, it kept counting in
+      // the degree of the vertex at its other end, which kept listing the deleted one as a neighbour (found with #9572)
+      final int srcId = resolveDeletedEdgeEnd(ed.source, baseMapping, newOverflowIds, newDeleted, overflowDeletedNow);
+      final int tgtId = resolveDeletedEdgeEnd(ed.target, baseMapping, newOverflowIds, newDeleted, overflowDeletedNow);
       if (srcId < 0 || tgtId < 0)
         continue;
       // The edge was added by THIS overlay window and is now gone: the add and the delete are one no-op, so
@@ -755,6 +764,21 @@ class DeltaOverlay {
   /** How many base edges have new property values here, which counts toward the compaction threshold. */
   int getUpdatedBaseEdgeCount() {
     return updatedBaseEdgeCount;
+  }
+
+  /**
+   * The node of a deleted edge's end, including an overflow vertex the same delta deleted. -1 when there is none. The
+   * overflow vertex is asked first: one sitting on a reused base slot (#8948) would otherwise resolve, once it left the
+   * overflow, to the deleted base node whose RID it took.
+   */
+  private static int resolveDeletedEdgeEnd(final RID rid, final NodeIdMapping baseMapping,
+      final Map<RID, Integer> overflowIds, final BitSet deletedBase, final Map<RID, Integer> overflowDeletedNow) {
+    if (overflowDeletedNow != null) {
+      final Integer deletedOverflowId = overflowDeletedNow.get(rid);
+      if (deletedOverflowId != null)
+        return deletedOverflowId;
+    }
+    return resolveNodeId(rid, baseMapping, overflowIds, deletedBase);
   }
 
   /**
