@@ -27,6 +27,8 @@ import com.arcadedb.event.AfterRecordDeleteListener;
 import com.arcadedb.event.AfterRecordUpdateListener;
 import com.arcadedb.exception.DatabaseIsClosedException;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.GraphEngine.EdgeWriteListener;
+import com.arcadedb.graph.LightEdge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.log.LogManager;
 
@@ -50,7 +52,8 @@ import java.util.logging.Level;
  *   <li><b>OFF</b>: Only detects relevance, marks the view as STALE on commit.</li>
  * </ul>
  */
-class DeltaCollector implements AfterRecordCreateListener, AfterRecordUpdateListener, AfterRecordDeleteListener {
+class DeltaCollector
+    implements AfterRecordCreateListener, AfterRecordUpdateListener, AfterRecordDeleteListener, EdgeWriteListener {
 
   private static final AtomicInteger ANONYMOUS_COUNTER = new AtomicInteger();
 
@@ -139,12 +142,52 @@ class DeltaCollector implements AfterRecordCreateListener, AfterRecordUpdateList
         delta.deletedVertices.add(vertex.getIdentity());
       else if (record instanceof Edge edge) {
         watchEdgeSource(edge.getOut());
-        delta.deletedEdges.add(new TxDelta.EdgeDelta(edge.getTypeName(), edge.getOut(), edge.getIn(), edge.getIdentity()));
+        delta.deletedEdges.add(new TxDelta.EdgeDelta(edge.getTypeName(), edge.getOut(), edge.getIn(), changeKey(edge)));
       }
       scheduleSyncCallback(delta);
     } else {
       scheduleAsyncCallback();
     }
+  }
+
+  /**
+   * The creation of a lightweight edge, which no record listener hears of: there is no record (issue #9572). Its
+   * deletion needs no such hook, the record delete path reports it to {@link #onAfterDelete} like any other edge's.
+   */
+  @Override
+  public void onLightEdgeCreated(final Edge edge) {
+    if (!isRelevant(edge))
+      return;
+
+    if (perThreadDeltas != null) {
+      final TxDelta delta = getOrCreateDelta();
+      watchEdgeSource(edge.getOut());
+      // No properties to materialise: a lightweight edge has none
+      delta.addedEdges.add(new TxDelta.EdgeDelta(edge.getTypeName(), edge.getOut(), edge.getIn(), changeKey(edge)));
+      scheduleSyncCallback(delta);
+    } else
+      scheduleAsyncCallback();
+  }
+
+  /**
+   * A bulk load wrote edges no event reported one by one (issue #9572). They are not collected: a batch writes them by
+   * the million, and the view answers with a rebuild, which is what that many changes cost the overlay anyway.
+   */
+  @Override
+  public void onEdgesWrittenInBulk(final Set<String> edgeTypeNames) {
+    if (!view.isTrackingChanges())
+      return;
+    for (final String edgeTypeName : edgeTypeNames)
+      if (view.coversEdgeType(edgeTypeName)) {
+        view.onEdgesWrittenInBulk();
+        return;
+      }
+  }
+
+  /** The identity a change of {@code edge} is tracked by: the edge's own RID, or a key of the change's own for a lightweight edge. */
+  private static RID changeKey(final Edge edge) {
+    final RID rid = edge.getIdentity();
+    return edge instanceof LightEdge ? TxDelta.lightEdgeKey(rid.getBucketId()) : rid;
   }
 
   private boolean isRelevant(final Record record) {
