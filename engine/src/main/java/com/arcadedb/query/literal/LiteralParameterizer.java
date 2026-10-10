@@ -144,6 +144,10 @@ public abstract class LiteralParameterizer<S> {
       }
       if (policy == KEEP_ALL)
         return cache(text, classified.statement());
+      // The statement as written answers this text, and is not cached: a shape seen once (every text of a workload that never
+      // repeats one) costs one parse and the classification walk, never a second parse for a parameterized statement nobody
+      // reuses. The second text of the shape builds it.
+      return new Lookup<>(classified.statement(), text, null);
     } else if (policy == KEEP_ALL)
       return parseAsWritten(text);
 

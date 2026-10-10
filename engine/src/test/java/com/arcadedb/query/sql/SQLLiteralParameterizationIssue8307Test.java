@@ -155,6 +155,15 @@ class SQLLiteralParameterizationIssue8307Test extends TestHelper {
     return rows;
   }
 
+  /**
+   * The lookup of a text whose shape has already been decided. The first text of a shape runs as written (see
+   * {@link #aShapeSeenOnceRunsAsWritten}), so a lookup made to inspect the extraction looks the text up twice.
+   */
+  private Lookup<Statement> parameterized(final String sql) {
+    db().getStatementCache().getParameterized(sql);
+    return db().getStatementCache().getParameterized(sql);
+  }
+
   private void setParameterization(final boolean enabled) {
     database.getConfiguration().setValue(GlobalConfiguration.QUERY_LITERAL_PARAMETERIZATION, enabled);
     db().getStatementCache().clear();
@@ -231,8 +240,8 @@ class SQLLiteralParameterizationIssue8307Test extends TestHelper {
     for (int id = 0; id < 50; id++)
       assertThat(rows("SELECT name FROM Person WHERE id = " + id)).containsExactly(Map.of("name", "p" + id));
 
-    final Lookup<Statement> first = db().getStatementCache().getParameterized("SELECT name FROM Person WHERE id = 3");
-    final Lookup<Statement> second = db().getStatementCache().getParameterized("SELECT name FROM Person WHERE id = 77");
+    final Lookup<Statement> first = parameterized("SELECT name FROM Person WHERE id = 3");
+    final Lookup<Statement> second = parameterized("SELECT name FROM Person WHERE id = 77");
     assertThat(second.statement()).isSameAs(first.statement());
     assertThat(first.cacheKey()).isEqualTo("SELECT name FROM Person WHERE id = :__lit_i0");
     assertThat(first.parameters()).isEqualTo(Map.of("__lit_i0", 3));
@@ -240,6 +249,19 @@ class SQLLiteralParameterizationIssue8307Test extends TestHelper {
     // the one plan is cached under the parameterized text
     assertThat(db().getExecutionPlanCache().contains(first.cacheKey())).isTrue();
     assertThat(db().getStatementCache().contains("SELECT name FROM Person WHERE id = 3")).isFalse();
+  }
+
+  @Test
+  void aShapeSeenOnceRunsAsWritten() {
+    // a workload that never repeats a shape pays one parse per text, never a second one for a statement nobody reuses
+    final Lookup<Statement> first = db().getStatementCache().getParameterized("SELECT name AS once FROM Person WHERE id = 11");
+    assertThat(first.parameters()).isNull();
+    assertThat(first.cacheKey()).isEqualTo("SELECT name AS once FROM Person WHERE id = 11");
+    assertThat(db().getStatementCache().contains(first.cacheKey())).isFalse();
+
+    final Lookup<Statement> second = db().getStatementCache().getParameterized("SELECT name AS once FROM Person WHERE id = 12");
+    assertThat(second.parameters()).isEqualTo(Map.of("__lit_i0", 12));
+    assertThat(db().getStatementCache().contains(second.cacheKey())).isTrue();
   }
 
   @Test
@@ -293,12 +315,12 @@ class SQLLiteralParameterizationIssue8307Test extends TestHelper {
 
   @Test
   void keptPositionsStayInTheKey() {
-    assertThat(db().getStatementCache().getParameterized("SELECT name FROM Person WHERE id = 3 SKIP 2 LIMIT 7 TIMEOUT 5000")
+    assertThat(parameterized("SELECT name FROM Person WHERE id = 3 SKIP 2 LIMIT 7 TIMEOUT 5000")
         .cacheKey()).isEqualTo("SELECT name FROM Person WHERE id = :__lit_i0 SKIP 2 LIMIT 7 TIMEOUT 5000");
     // the same literal in a kept position and in a filter: both kept, so the expressions stay equal
-    assertThat(db().getStatementCache().getParameterized("SELECT id + 1 AS k FROM Person GROUP BY id + 1").parameters()).isNull();
+    assertThat(parameterized("SELECT id + 1 AS k FROM Person GROUP BY id + 1").parameters()).isNull();
     // a literal compared to a literal is folded by the planner
-    assertThat(db().getStatementCache().getParameterized("SELECT FROM Person WHERE 1 = 1").parameters()).isNull();
+    assertThat(parameterized("SELECT FROM Person WHERE 1 = 1").parameters()).isNull();
   }
 
   @Test
@@ -306,7 +328,7 @@ class SQLLiteralParameterizationIssue8307Test extends TestHelper {
     try (final ResultSet rs = database.query("sql", "SELECT name FROM Person WHERE id = :__lit_i0", Map.of("__lit_i0", 9))) {
       assertThat(rs.next().<String>getProperty("name")).isEqualTo("p9");
     }
-    assertThat(db().getStatementCache().getParameterized("SELECT FROM Person WHERE id = 3 AND name <> '__LIT_x'").parameters())
+    assertThat(parameterized("SELECT FROM Person WHERE id = 3 AND name <> '__LIT_x'").parameters())
         .isNull();
   }
 
@@ -314,7 +336,7 @@ class SQLLiteralParameterizationIssue8307Test extends TestHelper {
   void theSettingTurnsItOff() {
     setParameterization(false);
     try {
-      final Lookup<Statement> lookup = db().getStatementCache().getParameterized("SELECT name FROM Person WHERE id = 3");
+      final Lookup<Statement> lookup = parameterized("SELECT name FROM Person WHERE id = 3");
       assertThat(lookup.parameters()).isNull();
       assertThat(lookup.cacheKey()).isEqualTo("SELECT name FROM Person WHERE id = 3");
     } finally {

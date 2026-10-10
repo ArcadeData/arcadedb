@@ -203,7 +203,12 @@ class CypherLiteralParameterizationIssue8307Test extends TestHelper {
     return rows;
   }
 
+  /**
+   * The lookup of a text whose shape has already been decided. The first text of a shape runs as written (see
+   * {@link #aShapeSeenOnceRunsAsWritten}), so a lookup made to inspect the extraction looks the text up twice.
+   */
   private Lookup<ParsedQuery> lookup(final String cypher) {
+    db().getCypherStatementCache().getParameterized(cypher);
     return db().getCypherStatementCache().getParameterized(cypher);
   }
 
@@ -270,9 +275,9 @@ class CypherLiteralParameterizationIssue8307Test extends TestHelper {
       assertThat(rows.getFirst().<String>getProperty("name")).isEqualTo("p" + id);
     }
 
-    // one template per query shape, not one entry per value
+    // one template per query shape, not one entry per value; the first text of each shape ran as written
     assertThat(db().getCypherStatementCache().size()).isEqualTo(2);
-    assertThat(db().getCypherPlanCache().size()).isLessThanOrEqualTo(2);
+    assertThat(db().getCypherPlanCache().size()).isLessThanOrEqualTo(4);
 
     final Lookup<ParsedQuery> first = lookup("MATCH (p:Person) WHERE p.id = 3 RETURN p.name AS name");
     final Lookup<ParsedQuery> second = lookup("MATCH (p:Person) WHERE p.id = 77 RETURN p.name AS name");
@@ -281,6 +286,19 @@ class CypherLiteralParameterizationIssue8307Test extends TestHelper {
     assertThat(first.cacheKey()).doesNotContain("3");
     assertThat(first.parameters()).containsValue(3L);
     assertThat(second.parameters()).containsValue(77L);
+  }
+
+  @Test
+  void aShapeSeenOnceRunsAsWritten() {
+    // a workload that never repeats a shape pays one parse per text, never a second one for a statement nobody reuses
+    final Lookup<ParsedQuery> first = db().getCypherStatementCache().getParameterized("MATCH (p:Person {id: 11}) RETURN p.name AS once");
+    assertThat(first.parameters()).isNull();
+    assertThat(first.cacheKey()).isEqualTo("MATCH (p:Person {id: 11}) RETURN p.name AS once");
+    assertThat(db().getCypherStatementCache().contains(first.cacheKey())).isFalse();
+
+    final Lookup<ParsedQuery> second = db().getCypherStatementCache().getParameterized("MATCH (p:Person {id: 12}) RETURN p.name AS once");
+    assertThat(second.parameters()).containsValue(12);
+    assertThat(db().getCypherStatementCache().contains(second.cacheKey())).isTrue();
   }
 
   @Test
