@@ -228,7 +228,7 @@ public final class VertexPredicate {
     /** Whether the vertex passes every inline entry and the {@code WHERE} conjuncts. */
     private boolean test(final Document vertex) {
       for (int i = 0; i < keys.length; i++)
-        if (!InlineProperties.matchesResolvedValue(vertex.get(keys[i]), values[i]))
+        if (!InlineProperties.matchesProperty(vertex, keys[i], values[i]))
           return false;
       if (where == null)
         return true;

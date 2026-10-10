@@ -19,9 +19,11 @@
 package com.arcadedb.query.opencypher.ast;
 
 import com.arcadedb.schema.Type;
+import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.function.graph.IdFunction;
+import com.arcadedb.query.opencypher.InlineProperties;
 import com.arcadedb.query.opencypher.query.OpenCypherQueryEngine;
 import com.arcadedb.query.opencypher.temporal.CypherDateTime;
 import com.arcadedb.query.opencypher.temporal.CypherLocalDateTime;
@@ -117,7 +119,41 @@ public class ComparisonExpression implements BooleanExpression {
       rightValue = right.evaluate(result, context);
     }
 
-    return compareValuesTernary(leftValue, rightValue);
+    final Object plain = compareValuesTernary(leftValue, rightValue);
+
+    // A property declared STRING holds the text of what was written into it: = and <> also compare that text with the text
+    // the other operand would be stored as, so a pattern finds what it stored (issue #9695). On top of the plain comparison,
+    // not instead of it, so an equality it already grants (a RID spelled as text against its id()) stands. Only a stored
+    // text that did not equal a non-text operand pays for the schema lookup
+    if ((operator == Operator.EQUALS && !Boolean.TRUE.equals(plain) || operator == Operator.NOT_EQUALS && !Boolean.FALSE.equals(plain))
+        && leftValue != null && rightValue != null) {
+      if (leftValue instanceof String && !(rightValue instanceof String)) {
+        final Object text = toDeclaredText(left, rightValue, result);
+        if (text != rightValue)
+          return compareValuesTernary(leftValue, text);
+      } else if (rightValue instanceof String && !(leftValue instanceof String)) {
+        final Object text = toDeclaredText(right, leftValue, result);
+        if (text != leftValue)
+          return compareValuesTernary(text, rightValue);
+      }
+    }
+
+    return plain;
+  }
+
+  /**
+   * The text {@code operand} would be stored as in the property {@code propertySide} reads, when that is a property of a
+   * record declared {@code STRING}; the operand itself otherwise, so the Cypher typing of {@code =} is untouched wherever
+   * no declaration says what the stored text stands for.
+   */
+  private static Object toDeclaredText(final Expression propertySide, final Object operand, final Result result) {
+    if (!(propertySide instanceof PropertyAccessExpression access) || result == null)
+      return operand;
+    final Document record = InlineProperties.boundRecord(result.getProperty(access.getVariableName()));
+    if (record == null)
+      return operand;
+    final String text = InlineProperties.declaredText(record, access.getPropertyName(), operand);
+    return text != null ? text : operand;
   }
 
   public Object evaluateWithValues(final Object leftValue, final Object rightValue) {

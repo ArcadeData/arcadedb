@@ -272,9 +272,8 @@ public class IndexNestedLoopJoin extends AbstractPhysicalOperator {
     case STRING:
       if (value instanceof String)
         return KeyUse.SEEK;
-      if (value instanceof Boolean)
-        return KeyUse.NONE;
-      // A number equals a string spelling the RID it encodes
+      // A number equals a string spelling the RID it encodes, and a number or a boolean equals the text it was stored as in
+      // a property declared STRING (issue #9695)
       return KeyUse.SCAN;
     case BYTE:
     case SHORT:
