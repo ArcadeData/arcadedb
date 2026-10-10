@@ -318,7 +318,7 @@ public class SelectStatement extends Statement {
   }
 
   @Override
-  public boolean isIdempotent() {
+  protected boolean isIdempotentItself() {
     return true;
   }
 

@@ -114,6 +114,17 @@ public class ExplainStatement extends Statement {
     return statement != null ? statement.hashCode() : 0;
   }
 
+  /** Plans the wrapped statement and runs none of it: nested in another statement, it is a read (issue #9628). */
+  @Override
+  protected boolean isIdempotentItself() {
+    return true;
+  }
+
+  @Override
+  protected boolean executesNestedStatements() {
+    return false;
+  }
+
   @Override
   public boolean isIdempotent() {
     // EXPLAIN never executes the wrapped statement, so it stays idempotent whatever it wraps. This is the opposite of

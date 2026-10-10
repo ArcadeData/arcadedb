@@ -21,6 +21,7 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.query.OperationType;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.EmptyStep;
@@ -34,6 +35,7 @@ import com.arcadedb.query.sql.executor.UpdateExecutionPlan;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 public class IfStatement extends Statement {
@@ -44,19 +46,16 @@ public class IfStatement extends Statement {
   public IfStatement() {
   }
 
+  /** Writes nothing itself: an IF is exactly what its branches run (issue #9628). */
   @Override
-  public boolean isIdempotent() {
-    for (final Statement stm : statements) {
-      if (!stm.isIdempotent()) {
-        return false;
-      }
-    }
-    for (final Statement stm : elseStatements) {
-      if (!stm.isIdempotent()) {
-        return false;
-      }
-    }
+  protected boolean isIdempotentItself() {
     return true;
+  }
+
+  /** No operation of its own: the body's statements, nested in this one, contribute theirs (issue #9628). */
+  @Override
+  protected Set<OperationType> getOperationTypesItself() {
+    return Set.of();
   }
 
   @Override

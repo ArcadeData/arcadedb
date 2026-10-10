@@ -32,6 +32,8 @@ import com.arcadedb.query.OperationType;
 import com.arcadedb.schema.TimeSeriesTypeBuilder;
 import com.arcadedb.utility.CollectionUtils;
 
+import java.util.Collections;
+import java.util.EnumSet;
 import java.util.Map;
 import java.util.Set;
 
@@ -45,6 +47,16 @@ public class Statement extends SimpleNode {
   // reflective walk of this (immutable once parsed) tree, and the same parsed instance is handed out by the statement
   // cache to every execution of the same text, so it is computed once rather than on every execution.
   public volatile Boolean resultCacheable;
+  // Memo of what the statements nested in this one do (issue #9628): a reflective walk of the (immutable once parsed)
+  // tree, so computed once per parsed instance. Transient so the AST walkers never mistake it for part of the tree.
+  private transient volatile NestedClassification nestedClassification;
+
+  /**
+   * What the statements nested in a statement do, folded into the statement's own classification: whether they all
+   * write nothing, whether any changes the schema, and the operation types the statement reports once they are added.
+   */
+  private record NestedClassification(boolean idempotent, boolean ddl, Set<OperationType> operationTypes) {
+  }
 
   public Statement() {
   }
@@ -224,26 +236,113 @@ public class Statement extends SimpleNode {
     throw new UnsupportedOperationException("Implement " + getClass().getSimpleName() + ".refersToParent()");
   }
 
+  /**
+   * Whether executing this statement writes nothing: this statement itself ({@link #isIdempotentItself()}) and every
+   * statement nested in it, wherever SQL admits one - a LET, a projection, a FROM target, a block body (issue #9628).
+   * {@code query()}, the HTTP query routes, HA follower routing and the MCP gates all rely on this answer, so it must
+   * never be taken from the top node alone: {@code SELECT FROM (INSERT ...)} writes.
+   */
   public boolean isIdempotent() {
-    return false;
-  }
-
-  public boolean isDDL() {
-    return this instanceof DDLStatement;
+    return isIdempotentItself() && nestedClassification().idempotent();
   }
 
   /**
-   * Returns the set of operation types this statement performs.
-   * Subclasses should override to provide accurate classification.
-   * Default: if idempotent returns READ, if DDL returns SCHEMA, otherwise CREATE+UPDATE+DELETE.
+   * Whether this statement, leaving aside the statements nested in it, writes nothing. Subclasses override this, never
+   * {@link #isIdempotent()}, so a nested write cannot be forgotten.
+   */
+  protected boolean isIdempotentItself() {
+    return false;
+  }
+
+  /** Whether this statement, or a statement nested in it, changes the schema. */
+  public boolean isDDL() {
+    return this instanceof DDLStatement || nestedClassification().ddl();
+  }
+
+  /**
+   * Returns the set of operation types executing this statement performs: its own ({@link #getOperationTypesItself()})
+   * plus the writes of every statement nested in it (issue #9628). Never empty.
    */
   public Set<OperationType> getOperationTypes() {
-    if (isDDL())
+    return nestedClassification().operationTypes();
+  }
+
+  /**
+   * The operation types this statement performs itself, leaving aside the statements nested in it. Subclasses override
+   * this, never {@link #getOperationTypes()}. Default: SCHEMA for a DDL, READ when {@link #isIdempotentItself()},
+   * otherwise CREATE+UPDATE+DELETE. A pure container (a block, a LET) answers the empty set: it is what it runs.
+   */
+  protected Set<OperationType> getOperationTypesItself() {
+    if (this instanceof DDLStatement)
       return CollectionUtils.singletonSet(OperationType.SCHEMA);
-    if (isIdempotent())
+    if (isIdempotentItself())
       return CollectionUtils.singletonSet(OperationType.READ);
     return Set.of(OperationType.CREATE, OperationType.UPDATE, OperationType.DELETE);
   }
+
+  /**
+   * Whether the statements nested in this one are executed as part of executing it. Only EXPLAIN answers false. A DDL
+   * that stores a statement to run later (a materialized view's query) is still walked: a nested read adds nothing to a
+   * statement with operations of its own, so only a nested write could change its answer, and over-reporting a stored
+   * write is the safe direction, while an expression a DDL evaluates now ({@code ALTER TYPE ... CUSTOM k = (INSERT ...)})
+   * must not be missed.
+   */
+  protected boolean executesNestedStatements() {
+    return true;
+  }
+
+  private NestedClassification nestedClassification() {
+    NestedClassification result = nestedClassification;
+    if (result == null) {
+      result = classifyNested();
+      nestedClassification = result;
+    }
+    return result;
+  }
+
+  /**
+   * One flat walk over every statement this one executes, nested at any depth, folding in what each does itself. Flat
+   * rather than asking each nested statement for its own aggregate, so classifying a deeply nested statement never
+   * recurses.
+   */
+  private NestedClassification classifyNested() {
+    final Set<OperationType> own = getOperationTypesItself();
+    if (!executesNestedStatements())
+      return new NestedClassification(true, false, own.isEmpty() ? CollectionUtils.singletonSet(OperationType.READ) : own);
+
+    final boolean[] idempotent = { true };
+    final boolean[] ddl = { false };
+    final EnumSet<OperationType> types = EnumSet.noneOf(OperationType.class);
+    types.addAll(own);
+    SqlAstInspector.forEachNestedStatement(this, (nested, enclosing) -> {
+      if (!nested.isIdempotentItself())
+        idempotent[0] = false;
+      if (nested instanceof DDLStatement)
+        ddl[0] = true;
+      // A NESTED READ ADDS NOTHING TO A STATEMENT THAT HAS OPERATIONS OF ITS OWN: A WRITE THAT READS TO FIND WHAT IT
+      // WRITES (INSERT ... FROM SELECT, MOVE VERTEX (SELECT ...)) IS CLASSIFIED BY ITS WRITE, AS IT ALWAYS WAS. A
+      // CONTAINER (A BLOCK, A LET, PROFILE) HAS NONE, SO IT REPORTS WHAT ITS BODY DOES, READ INCLUDED: IF { BACKUP } IS
+      // READ+CREATE, EXACTLY LIKE BACKUP
+      final Set<OperationType> nestedTypes = nested.getOperationTypesItself();
+      if (enclosing.getOperationTypesItself().isEmpty())
+        types.addAll(nestedTypes);
+      else
+        for (final OperationType type : nestedTypes)
+          if (type != OperationType.READ)
+            types.add(type);
+      return nested.executesNestedStatements();
+    });
+
+    final Set<OperationType> result;
+    if (types.isEmpty())
+      result = CollectionUtils.singletonSet(OperationType.READ);
+    else if (types.size() == own.size())
+      result = own;
+    else
+      result = Collections.unmodifiableSet(types);
+    return new NestedClassification(idempotent[0], ddl[0], result);
+  }
+
 
   public boolean executionPlanCanBeCached() {
     return false;

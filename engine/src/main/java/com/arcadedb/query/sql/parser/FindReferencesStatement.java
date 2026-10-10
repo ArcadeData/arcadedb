@@ -302,7 +302,7 @@ public class FindReferencesStatement extends SimpleExecStatement {
   }
 
   @Override
-  public boolean isIdempotent() {
+  protected boolean isIdempotentItself() {
     return true;
   }
 

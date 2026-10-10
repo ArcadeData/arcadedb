@@ -29,6 +29,7 @@ import com.arcadedb.query.sql.parser.Statement;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -37,6 +38,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.BiPredicate;
 import java.util.function.Predicate;
 
 /**
@@ -47,6 +49,8 @@ import java.util.function.Predicate;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public final class SqlAstInspector {
+  private static final String PARSER_PACKAGE = SimpleNode.class.getPackageName();
+
   /** Read-only graph traversal methods, resolved at run time as the built-in graph functions of the same name. */
   static final Set<String> GRAPH_METHODS = Set.of("out", "in", "both", "oute", "ine", "bothe", "outv", "inv", "bothv");
 
@@ -54,7 +58,7 @@ public final class SqlAstInspector {
     @Override
     protected Field[] computeValue(final Class<?> type) {
       final List<Field> fields = new ArrayList<>();
-      for (Class<?> c = type; c != null && SimpleNode.class.isAssignableFrom(c); c = c.getSuperclass())
+      for (Class<?> c = type; c != null && isAstClass(c); c = c.getSuperclass())
         for (final Field f : c.getDeclaredFields()) {
           // TRANSIENT FIELDS ARE CACHES DERIVED FROM THE AST AT RUN TIME, NOT PART OF IT: WHAT THEY CACHE IS WALKED WHERE IT
           // COMES FROM. WALKING THEM WOULD MAKE THE ANSWER DEPEND ON WHETHER THE FRAGMENT RAN BEFORE (A NAMELESS SENTINEL
@@ -73,6 +77,19 @@ public final class SqlAstInspector {
   }
 
   /**
+   * A parsed node, or one of the plain holders the parser builds between nodes without making them nodes - an
+   * {@code INSERT ... SET} pair, a {@code CASE} alternative, an {@code ORDER BY} item, a JSON item, a MATCH pattern. A
+   * walk that stopped at those would not see {@code INSERT INTO T SET a = (CREATE TYPE X)} (issue #9628).
+   */
+  private static boolean isAstClass(final Class<?> type) {
+    return SimpleNode.class.isAssignableFrom(type) || (PARSER_PACKAGE.equals(type.getPackageName()) && !ResultSet.class.isAssignableFrom(type));
+  }
+
+  private static boolean isAstObject(final Object node) {
+    return node instanceof SimpleNode || (node != null && isAstClass(node.getClass()));
+  }
+
+  /**
    * Whether every node reachable from {@code root} - through AST fields, collections, maps and arrays - satisfies
    * {@code test}. A {@code null} root trivially does.
    */
@@ -81,15 +98,15 @@ public final class SqlAstInspector {
   }
 
   private static boolean allNodesMatch(final Object node, final Predicate<SimpleNode> test, final IdentityHashMap<Object, Boolean> visited) {
-    if (node instanceof SimpleNode simpleNode) {
-      if (visited.put(simpleNode, Boolean.TRUE) != null)
+    if (isAstObject(node)) {
+      if (visited.put(node, Boolean.TRUE) != null)
         return true;
-      if (!test.test(simpleNode))
+      if (node instanceof SimpleNode simpleNode && !test.test(simpleNode))
         return false;
-      for (final Field f : AST_FIELDS.get(simpleNode.getClass())) {
+      for (final Field f : AST_FIELDS.get(node.getClass())) {
         final Object value;
         try {
-          value = f.get(simpleNode);
+          value = f.get(node);
         } catch (final IllegalAccessException e) {
           return false;
         }
@@ -110,6 +127,69 @@ public final class SqlAstInspector {
           return false;
     }
     return true;
+  }
+
+  /**
+   * Hands {@code visitor} every statement nested in {@code root}'s tree - a parenthesized statement in an expression, a
+   * LET's right-hand side, a FROM-subquery, a block's body - together with the statement that directly encloses it
+   * (issue #9628). The visitor answers whether the walk continues into that statement: a statement that only stores
+   * what it holds (a DDL defining a view or a trigger) does not run it. Each statement's {@code originalStatement} is a
+   * cache pointer to itself or to the text it was copied from, not a statement it runs, so it is never reported.
+   * <p>
+   * Iterative, not recursive: a parsed expression chain can be thousands of nodes deep (issue #9148), and this runs on
+   * every classification of a new statement, on whatever stack the caller has.
+   */
+  public static void forEachNestedStatement(final Statement root, final BiPredicate<Statement, Statement> visitor) {
+    final IdentityHashMap<Object, Boolean> visited = new IdentityHashMap<>();
+    final ArrayDeque<Object> nodes = new ArrayDeque<>();
+    final ArrayDeque<Statement> enclosing = new ArrayDeque<>();
+    visited.put(root, Boolean.TRUE);
+    pushFields(root, root, nodes, enclosing, visited);
+
+    while (!nodes.isEmpty()) {
+      final Object node = nodes.pop();
+      final Statement parent = enclosing.pop();
+      if (node instanceof Collection<?> collection) {
+        for (final Object item : collection)
+          push(item, parent, nodes, enclosing);
+      } else if (node instanceof Map<?, ?> map) {
+        for (final Map.Entry<?, ?> entry : map.entrySet()) {
+          push(entry.getKey(), parent, nodes, enclosing);
+          push(entry.getValue(), parent, nodes, enclosing);
+        }
+      } else if (node instanceof Object[] array) {
+        for (final Object item : array)
+          push(item, parent, nodes, enclosing);
+      } else if (isAstObject(node) && visited.put(node, Boolean.TRUE) == null) {
+        if (node instanceof Statement statement) {
+          if (visitor.test(statement, parent))
+            pushFields(statement, statement, nodes, enclosing, visited);
+        } else
+          pushFields(node, parent, nodes, enclosing, visited);
+      }
+    }
+  }
+
+  private static void push(final Object node, final Statement parent, final ArrayDeque<Object> nodes, final ArrayDeque<Statement> enclosing) {
+    if (node == null)
+      return;
+    nodes.push(node);
+    enclosing.push(parent);
+  }
+
+  private static void pushFields(final Object node, final Statement parent, final ArrayDeque<Object> nodes,
+      final ArrayDeque<Statement> enclosing, final IdentityHashMap<Object, Boolean> visited) {
+    if (node instanceof Statement statement && statement.originalStatement != null)
+      visited.putIfAbsent(statement.originalStatement, Boolean.TRUE);
+    for (final Field f : AST_FIELDS.get(node.getClass())) {
+      final Object value;
+      try {
+        value = f.get(node);
+      } catch (final IllegalAccessException e) {
+        throw new IllegalStateException("Cannot read field " + f.getName() + " of " + node.getClass().getSimpleName(), e);
+      }
+      push(value, parent, nodes, enclosing);
+    }
   }
 
   /**
