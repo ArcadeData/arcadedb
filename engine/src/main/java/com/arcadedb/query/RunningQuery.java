@@ -255,6 +255,9 @@ public final class RunningQuery implements AutoCloseable {
    * {@link RunningQueryRegistry#open} or one whose work continues on another thread. Every command context created on
    * the thread meanwhile carries the entry, and every commit the thread attempts checks it. Closing the binding gives
    * the thread back the entry it had before; it does not end the entry, which {@link #close()} does.
+   * <p>
+   * Close the binding on the thread that created it, in a try-with-resources or a {@code finally}: the thread-local it
+   * restores is that thread's.
    */
   public Binding bind() {
     return new Binding();
@@ -340,6 +343,10 @@ public final class RunningQuery implements AutoCloseable {
       registry.unregister(this);
     } finally {
       ended.countDown();
+      // Nothing is left to stop: listeners a caller did not withdraw go with the entry, and whatever they reference
+      synchronized (this) {
+        terminationListeners = null;
+      }
       if (CURRENT.get() == this) {
         // Back to the closest enclosing entry still running: one closed out of turn is skipped, never restored
         RunningQuery restore = previous;
