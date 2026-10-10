@@ -28,7 +28,9 @@ import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -192,6 +194,66 @@ class Issue9572LightEdgeReachesViewTest extends TestHelper {
     assertCounts(2);
 
     dropViewAndAssertCounts(2);
+  }
+
+  /**
+   * The case the reconciliation cannot settle by counting, driven through a real rebuild: a duplicate of a copy older
+   * than the build, created by a transaction that reports it before the scan reads its source and commits after the
+   * rebuild published. The counts take the new copy as one the scan read; the view checks the pair against the graph,
+   * finds one copy missing and rebuilds, so it never stays READY one copy short.
+   */
+  @Test
+  void aDuplicateRacingARebuildIsNotLeftOutOfTheView() throws Exception {
+    createSchema("K");
+    database.transaction(() -> vertex("a").newLightEdge("K", vertex("b")));
+    createView("SYNCHRONOUS");
+    assertCounts(2);
+
+    final CountDownLatch reported = new CountDownLatch(1);
+    final CountDownLatch commit = new CountDownLatch(1);
+    final AtomicReference<Throwable> writerFailure = new AtomicReference<>();
+    final Thread writer = new Thread(() -> {
+      try {
+        database.transaction(() -> {
+          vertex("a").newLightEdge("K", vertex("b"));
+          reported.countDown();
+          try {
+            commit.await();
+          } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+          }
+        });
+      } catch (final Throwable t) {
+        writerFailure.set(t);
+        reported.countDown();
+      }
+    }, "issue9572-duplicate-writer");
+
+    final GraphAnalyticalView view = view();
+    view.setBeforeBuildScanForTest(() -> {
+      writer.start();
+      try {
+        assertThat(reported.await(60, TimeUnit.SECONDS)).isTrue();
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
+    });
+    try {
+      view.build();
+    } finally {
+      view.setBeforeBuildScanForTest(null);
+      commit.countDown();
+    }
+    writer.join(60_000);
+    assertThat(writerFailure.get()).isNull();
+
+    final long deadline = System.currentTimeMillis() + 60_000;
+    while (!(view.getStatus() == GraphAnalyticalView.Status.READY && view.getEdgeCount() == 3)
+        && System.currentTimeMillis() < deadline)
+      Thread.sleep(20);
+    assertThat(view.getEdgeCount()).as("the view must end up with every copy").isEqualTo(3);
+    assertCounts(3);
+    dropViewAndAssertCounts(3);
   }
 
   /** A dropped view stops listening for light edges, as it stops listening for records. */
