@@ -102,6 +102,26 @@ class Issue9637ExternalBucketInvolvedTest extends TestHelper {
     database.transaction(() -> assertThat(rid[0].asDocument().getString("blob")).isEqualTo("x".repeat(500)));
   }
 
+  /** Every primary bucket of a multi-bucket type has its own paired bucket: the type lock must cover each of them. */
+  @Test
+  void explicitTypeLockCoversEveryExternalBucketOfAMultiBucketType() {
+    final DocumentType type = database.getSchema().createDocumentType("Doc", 3);
+    type.createProperty("blob", Type.STRING).setExternal(true);
+    assertThat(externalBucketIds((LocalDocumentType) type)).hasSize(3);
+    assertExternalBucketsInvolved("Doc");
+
+    final List<Bucket> buckets = type.getBuckets(false);
+    database.transaction(() -> {
+      database.acquireLock().type("Doc").lock();
+      for (int i = 0; i < 9; i++)
+        database.newDocument("Doc").set("blob", Integer.toString(i).repeat(500)).save(buckets.get(i % 3).getName());
+    });
+
+    assertThat(database.countType("Doc", false)).isEqualTo(9);
+    for (final int extId : externalBucketIds((LocalDocumentType) type))
+      assertThat(database.getSchema().getBucketById(extId).count()).as("every paired bucket received values").isGreaterThan(0);
+  }
+
   /** Same through LOCK BUCKET on the primary bucket: the write lands in the paired bucket too. */
   @Test
   void explicitBucketLockCoversTheExternalBucket() {

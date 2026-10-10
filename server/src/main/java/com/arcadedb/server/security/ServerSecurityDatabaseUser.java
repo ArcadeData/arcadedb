@@ -385,7 +385,9 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
    * own create/delete grants would refuse an update-only role the update it is entitled to, so each write on the paired
    * bucket is allowed by the grant of its own kind OR by updateRecord. That widens nothing: whoever may update a record may
    * already replace or remove any of its external values through it, and a direct create into the paired bucket is
-   * refused for everyone ({@code LocalDatabase.createRecordNoLock} rejects a bucket whose purpose is not PRIMARY).
+   * refused for everyone ({@code LocalDatabase.createRecordNoLock} rejects a bucket whose purpose is not PRIMARY). The one
+   * accepted side effect: an update-only role that addresses the paired bucket by RID can delete an external record
+   * directly and leave its owner with a dangling pointer, a value of a record it is already allowed to overwrite.
    */
   private static boolean[] externalBucketAccess(final boolean[] typeAccess) {
     final boolean update = typeAccess[ACCESS.UPDATE_RECORD.ordinal()];

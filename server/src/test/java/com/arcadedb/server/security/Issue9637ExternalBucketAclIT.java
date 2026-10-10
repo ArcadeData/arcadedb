@@ -137,6 +137,52 @@ class Issue9637ExternalBucketAclIT extends BaseGraphServerTest {
     assertThat(database.countType(TYPE, false)).isEqualTo(1);
   }
 
+  /** The single-grant roles keep exactly the path to external values their grant names, now that the paired bucket is gated. */
+  @Test
+  void singleGrantRolesKeepTheirOwnPathToExternalValues() {
+    final DatabaseInternal database = (DatabaseInternal) getServerDatabase(0, getDatabaseName());
+    final RID rid = createVaultWithOneRecord(database);
+
+    createUser("vault-reader", "vaultReader", new JSONArray().put("readRecord"));
+    createUser("vault-creator", "vaultCreator", new JSONArray().put("createRecord"));
+    createUser("vault-deleter", "vaultDeleter", new JSONArray().put("readRecord").put("deleteRecord"));
+    try {
+      final ServerSecurity security = getServer(0).getSecurity();
+
+      // READ-ONLY: THE EXTERNAL VALUE IS MATERIALIZED THROUGH THE PAIRED BUCKET, BUT NOTHING CAN BE CHANGED
+      final ServerSecurityUser reader = security.getUser("vault-reader");
+      assertThat(DatabaseUserContext.runAs(database, reader, () -> database.lookupByRID(rid, true).asDocument().getString("blob")))
+          .isEqualTo(BLOB);
+      assertRefused(database, reader, () -> {
+        database.transaction(() -> rid.asDocument(true).modify().set("blob", "r".repeat(300)).save());
+        return null;
+      });
+
+      // CREATE-ONLY: A NEW RECORD'S EXTERNAL VALUE IS WRITTEN INTO THE PAIRED BUCKET
+      final RID created = DatabaseUserContext.runAs(database, security.getUser("vault-creator"), () -> {
+        final RID[] r = new RID[1];
+        database.transaction(() -> r[0] = database.newDocument(TYPE).set("blob", "c".repeat(300)).save().getIdentity());
+        return r[0];
+      });
+      assertThat(externalRids(database, created)).containsKey("blob");
+      assertThat(database.lookupByRID(created, true).asDocument().getString("blob")).isEqualTo("c".repeat(300));
+
+      // READ + DELETE: DELETING THE RECORD CASCADES TO ITS EXTERNAL VALUES
+      final RID extRid = externalRids(database, rid).get("blob");
+      final LocalBucket extBucket = database.getSchema().getEmbedded().getBucketById(extRid.getBucketId());
+      DatabaseUserContext.runAs(database, security.getUser("vault-deleter"), () -> {
+        database.transaction(() -> database.deleteRecord(rid.asDocument(true)));
+        return null;
+      });
+      assertThat(database.existsRecord(rid)).isFalse();
+      assertThat(extBucket.existsRecord(extRid)).isFalse();
+    } finally {
+      dropUser("vault-reader");
+      dropUser("vault-creator");
+      dropUser("vault-deleter");
+    }
+  }
+
   private RID createVaultWithOneRecord(final DatabaseInternal database) {
     final DocumentType type = database.getSchema().createDocumentType(TYPE, 1);
     type.createProperty("blob", Type.STRING).setExternal(true);
