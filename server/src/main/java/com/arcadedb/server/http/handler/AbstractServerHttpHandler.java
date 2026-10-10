@@ -28,6 +28,7 @@ import com.arcadedb.exception.*;
 import com.arcadedb.index.fulltext.FullTextQueryParseException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
+import com.arcadedb.query.RunningQuery;
 import com.arcadedb.query.sql.executor.CommandTimeoutOverride;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONException;
@@ -939,6 +940,15 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     // all. This arm is what makes the cap mean the same thing for a chunked or HTTP/2 body as for a
     // Content-Length one (issue #7772). A 4xx and not a 5xx: the server is working exactly as configured, and
     // repeating the request unchanged can only be refused again.
+    // 409: the statement was terminated on request (issue #9680). Looked for along the whole cause chain rather than one
+    // level down like the arms below: a termination is unambiguous wherever it surfaces, and the engine may wrap it in a
+    // planner or commit failure more than once. Not a 5xx - the server did what it was asked - and not the 503 a client's
+    // retry policy keys on: re-running work somebody deliberately stopped is the one thing the client must not do.
+    int depth = 0;
+    for (Throwable t = e; t != null && depth++ < 16; t = t.getCause())
+      if (t instanceof QueryTerminatedException terminated)
+        return new ErrorClassification(409, "Query terminated", terminated, null, ErrorLogKind.USER);
+
     // Named for the bytes ON THE WIRE, to keep it apart from the decoded-size arm below: the two caps are
     // different settings refusing at different points, and both are reachable on the same request.
     final RequestTooBigException wireBodyTooLarge = firstOf(e, cause, RequestTooBigException.class);
@@ -1923,6 +1933,65 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   /** Precompiled rather than {@code String.split}, which recompiles the pattern on every request. */
   private static final Pattern ACCEPT_ENTRY     = Pattern.compile(",");
   private static final Pattern ACCEPT_PARAMETER = Pattern.compile(";");
+
+  /**
+   * Request header carrying the opaque label a client gives a statement, or a transaction session at {@code /begin}, so
+   * that it can find the statement in {@code list queries} and terminate it (issue #9680). A header rather than a body
+   * field: it reaches every route alike, including the GET query route and the batch route that carry no JSON body, it is
+   * read before the payload is parsed, and the leader forward carries it with the other request headers.
+   */
+  public static final String QUERY_TAG_HEADER = "X-ArcadeDB-Query-Tag";
+
+  /** Longest label accepted: it is for telling statements apart, and it ends up in listings and logs. */
+  static final int MAX_QUERY_TAG_LENGTH = 256;
+
+  /** The label the request carries in {@link #QUERY_TAG_HEADER}, or {@code null}. Refuses one that cannot be a label. */
+  protected static String queryTag(final HttpServerExchange exchange) {
+    final HeaderValues values = exchange.getRequestHeaders().get(QUERY_TAG_HEADER);
+    return values == null || values.isEmpty() ? null : validateQueryTag(values.getFirst());
+  }
+
+  /**
+   * {@code raw} stripped, or {@code null} when blank. Longer than {@link #MAX_QUERY_TAG_LENGTH} or carrying a control
+   * character is refused with a 400, since the label is echoed into listings and log lines.
+   */
+  static String validateQueryTag(final String raw) {
+    if (raw == null)
+      return null;
+    final String tag = raw.strip();
+    if (tag.isEmpty())
+      return null;
+    if (tag.length() > MAX_QUERY_TAG_LENGTH)
+      throw new IllegalArgumentException("Header " + QUERY_TAG_HEADER + " is longer than " + MAX_QUERY_TAG_LENGTH + " characters");
+    for (int i = 0; i < tag.length(); i++)
+      if (Character.isISOControl(tag.charAt(i)))
+        throw new IllegalArgumentException("Header " + QUERY_TAG_HEADER + " contains a control character");
+    return tag;
+  }
+
+  /**
+   * Opens the registry entry of the statement this request runs, on the calling thread (issue #9680). The caller closes
+   * it in a {@code finally} block once the request's work is over, its rollback and cleanup included: its absence from
+   * {@code list queries} is what tells a client that the server stopped working on it.
+   *
+   * @param sessionTag the label of the transaction session the request runs in, used when the request carries none
+   */
+  protected RunningQuery registerRunningQuery(final HttpServerExchange exchange, final ServerSecurityUser user,
+      final String databaseName, final String sessionId, final String sessionTag) {
+    final String requestTag = queryTag(exchange);
+    final RunningQuery runningQuery = httpServer.getServer().getRunningQueries()
+        .register(databaseName, user != null ? user.getName() : null, "http", sessionId, requestTag != null ? requestTag : sessionTag);
+    // What the request is until the handler says which statement it runs: a commit, a batch load or a search has none
+    runningQuery.setStatement(null, exchange.getRequestMethod() + " " + exchange.getRequestPath());
+    return runningQuery;
+  }
+
+  /** Records which statement the request runs on its registry entry, once the handler has parsed it (issue #9680). */
+  protected static void describeRunningQuery(final String language, final String text) {
+    final RunningQuery runningQuery = RunningQuery.current();
+    if (runningQuery != null)
+      runningQuery.setStatement(language, text);
+  }
 
   /**
    * True when the caller selected the streaming encoding by sending {@code Accept: application/x-ndjson}.

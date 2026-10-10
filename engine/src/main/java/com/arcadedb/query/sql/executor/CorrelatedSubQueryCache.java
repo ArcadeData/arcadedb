@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 import com.arcadedb.graph.IncomingEdgeLookup;
+import com.arcadedb.query.RunningQuery;
 import com.arcadedb.query.sql.parser.FunctionCall;
 import com.arcadedb.query.sql.parser.MethodCall;
 import com.arcadedb.query.sql.parser.SimpleNode;
@@ -503,6 +504,12 @@ public final class CorrelatedSubQueryCache {
     @Override
     public QueryHeapTracker getQueryHeapTracker() {
       return outer.getQueryHeapTracker();
+    }
+
+    /** The outer query's registry entry, so the subquery stops when the statement is terminated (issue #9680). */
+    @Override
+    public RunningQuery getRunningQuery() {
+      return outer.getRunningQuery();
     }
 
     @Override

@@ -26,6 +26,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.RunningQuery;
 import com.arcadedb.query.sql.executor.QueryAdmissionGate;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.serializer.json.JSONObject;
@@ -219,6 +220,7 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
 
     final AtomicReference<ExecutionResponse> response = new AtomicReference<>();
     QueryAdmissionGate.Ticket admission = null;
+    RunningQuery runningQuery = null;
     try {
       // Set read consistency context for HA follower reads.
       // Must be inside the try block so the finally always clears the ThreadLocal.
@@ -252,6 +254,11 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
       }
       boolean finalAtomicTransaction = atomicTransaction;
       admission = admit(exchange);
+      // Once admitted, so a statement waiting for its slot is not listed as running, and a terminate never races a
+      // request that has not started yet (issue #9680)
+      if (registersRunningQuery())
+        runningQuery = registerRunningQuery(exchange, user, database != null ? database.getName() : null,
+            activeSession != null ? activeSession.id : null, activeSession != null ? activeSession.getTag() : null);
       if (activeSession != null) {
         // EXECUTE THE CODE LOCKING THE CURRENT SESSION. THIS AVOIDS USING THE SAME SESSION FROM MULTIPLE THREADS AT THE SAME TIME
         activeSession.execute(user, () -> {
@@ -295,13 +302,52 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
           }
         }
       } finally {
-        // LAST: THE SLOT COVERS THE WHOLE REQUEST, ITS COMMIT AND ITS CLEANUP INCLUDED
-        if (admission != null)
-          admission.close();
+        try {
+          // LAST: THE SLOT COVERS THE WHOLE REQUEST, ITS COMMIT AND ITS CLEANUP INCLUDED
+          if (admission != null)
+            admission.close();
+        } finally {
+          // AFTER EVERYTHING ELSE: THE ENTRY LEAVING THE LIST IS THE PROOF THE WORK IS OVER (issue #9680)
+          if (runningQuery != null)
+            endRunningQuery(exchange, runningQuery, activeSession);
+        }
       }
     }
 
     return response.get();
+  }
+
+  /**
+   * Whether the requests of this handler are listed by {@code list queries} and can be terminated (issue #9680). The
+   * same requests the admission gate holds back, since both mean "a request that does work": session management and
+   * probes are neither.
+   */
+  protected boolean registersRunningQuery() {
+    return goesThroughAdmissionGate();
+  }
+
+  /**
+   * Closes the registry entry of the request. A request terminated while it ran in a transaction session also ends the
+   * session, rolling back its transaction, before the entry goes (issue #9680).
+   * <p>
+   * The session goes because a client that stops a statement wants none of it to stand, and in a session the
+   * statement's writes are the session's: they would otherwise survive a statement that ended before it reached a check,
+   * to be published by the next {@code /commit}. Ending the session makes the answer the same whenever the termination
+   * landed, and a later {@code /commit} is told the session is gone instead of committing what is left of it.
+   */
+  private void endRunningQuery(final HttpServerExchange exchange, final RunningQuery runningQuery,
+      final HttpSession activeSession) {
+    try {
+      if (activeSession != null && runningQuery.isTerminated()
+          && httpServer.getSessionManager().removeSession(activeSession.id) != null) {
+        activeSession.cancel();
+        runningQuery.setRolledBack();
+        if (!exchange.isResponseStarted())
+          exchange.getResponseHeaders().put(SESSION_CLOSED_HEADER, "true");
+      }
+    } finally {
+      runningQuery.close();
+    }
   }
 
   /**

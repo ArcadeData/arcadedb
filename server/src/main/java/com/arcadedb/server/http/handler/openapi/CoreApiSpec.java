@@ -214,7 +214,8 @@ public class CoreApiSpec implements OpenApiContributor {
     final Operation postOp = new Operation();
     postOp.setSummary("Execute server command");
     postOp.setDescription("""
-        Executes administrative commands on the server (root user only). \
+        Executes administrative commands on the server (root user only, except 'list databases' and the \
+        commands on running work below). \
         Available commands: create database, drop database, open database, close database, \
         restore database <name> <url>, import database <name> <url>, \
         create user, drop user, shutdown, set server setting, get server events, align database, \
@@ -231,7 +232,17 @@ public class CoreApiSpec implements OpenApiContributor {
         direction: it never makes THIS server join another cluster, and an address that resolves to this \
         server is answered 400 rather than accepted as a no-op. To make a running server join a cluster \
         it is not configured for, issue this same command on a server that is already a member of that \
-        cluster, or declare arcadedb.ha.serverList and restart""");
+        cluster, or declare arcadedb.ha.serverList and restart. \
+        Running work (any authenticated user; root sees and stops every statement, another user only their own, \
+        and someone else's is answered 'not found'): 'list queries [database <name>] [tag <label>]' lists the \
+        statements this server is running, with the label a client gave them in the X-ArcadeDB-Query-Tag request \
+        header; 'terminate query <id>' and 'terminate queries tag <label>' stop them and wait for them to end, up to \
+        the payload's 'wait' in milliseconds (default 5000, at most 60000), answering each with a status: \
+        'terminated' (it stopped and what it wrote was rolled back), 'completed' (it ended on its own before it \
+        noticed: what it did stands), 'terminating' (not stopped yet) or 'not found'; 'list transactions' lists the \
+        open transaction sessions and 'terminate transaction <session id>' rolls one back and ends it. A statement \
+        terminated inside a session ends the session too. A terminated request is answered 409 'Query terminated'. \
+        These commands are never forwarded to the leader: each server lists and stops its own work""");
     postOp.setOperationId("executeServerCommand");
     postOp.addTagsItem("Server");
     postOp.setRequestBody(SpecBuilders.jsonBody("Command request with command and optional parameters", "CommandRequest", true));
@@ -368,6 +379,7 @@ public class CoreApiSpec implements OpenApiContributor {
         List.of("sql", "cypher", "gremlin", "graphql", "mongo")));
     getOp.addParametersItem(SpecBuilders.pathParam("command", "Query or command to execute"));
     getOp.addParametersItem(SpecBuilders.headerParam(SESSION_HEADER, SESSION_REQUEST_DESCRIPTION, false));
+    getOp.addParametersItem(SpecBuilders.queryTagHeaderParam());
     getOp.addParametersItem(ndJsonAcceptParam());
     getOp.setResponses(createGetQueryResponses());
     addNdJsonAlternative(getOp.getResponses());
@@ -388,6 +400,7 @@ public class CoreApiSpec implements OpenApiContributor {
     postOp.addTagsItem("Query");
     postOp.addParametersItem(SpecBuilders.pathParam("database", "Database name"));
     postOp.addParametersItem(SpecBuilders.headerParam(SESSION_HEADER, SESSION_REQUEST_DESCRIPTION, false));
+    postOp.addParametersItem(SpecBuilders.queryTagHeaderParam());
     postOp.addParametersItem(ndJsonAcceptParam());
     postOp.setRequestBody(SpecBuilders.jsonBody("Query request with command and optional parameters", "QueryRequest", true));
     postOp.setResponses(createQueryResponses());
@@ -410,6 +423,7 @@ public class CoreApiSpec implements OpenApiContributor {
     postOp.addTagsItem("Command");
     postOp.addParametersItem(SpecBuilders.pathParam("database", "Database name"));
     postOp.addParametersItem(SpecBuilders.headerParam(SESSION_HEADER, SESSION_REQUEST_DESCRIPTION, false));
+    postOp.addParametersItem(SpecBuilders.queryTagHeaderParam());
     postOp.addParametersItem(ndJsonAcceptParam());
     postOp.setRequestBody(SpecBuilders.jsonBody("Command request with command and optional parameters", "CommandRequest", true));
     postOp.setResponses(createCommandResponses());
@@ -431,6 +445,7 @@ public class CoreApiSpec implements OpenApiContributor {
     postOp.addTagsItem("Transaction");
     postOp.addParametersItem(SpecBuilders.pathParam("database", "Database name"));
     postOp.addParametersItem(SpecBuilders.headerParam(SESSION_HEADER, BEGIN_SESSION_REQUEST_DESCRIPTION, false));
+    postOp.addParametersItem(SpecBuilders.queryTagHeaderParam());
     postOp.setResponses(createBeginResponses());
     pathItem.setPost(postOp);
 
@@ -514,6 +529,7 @@ public class CoreApiSpec implements OpenApiContributor {
     post.addParametersItem(SpecBuilders.pathParam("database", "Database name"));
     post.addParametersItem(batchNdJsonAcceptParam());
     post.addParametersItem(SpecBuilders.headerParam(SESSION_HEADER, BATCH_SESSION_REQUEST_DESCRIPTION, false));
+    post.addParametersItem(SpecBuilders.queryTagHeaderParam());
     post.addParametersItem(SpecBuilders.queryParam("batchSize",
         "Records buffered per GraphBatch flush. Default 100000.", false, "integer"));
     post.addParametersItem(SpecBuilders.queryParam("lightEdges",
@@ -691,6 +707,11 @@ public class CoreApiSpec implements OpenApiContributor {
     return createQueryResponses(false);
   }
 
+  /** The 409 a query or command answers when it was stopped by 'terminate query' (issue #9680). */
+  private static final String QUERY_TERMINATED_409_DESCRIPTION = """
+      Query terminated: the statement was stopped by 'terminate query', 'terminate queries' or 'terminate transaction' \
+      (POST /api/v1/server) and what it wrote was rolled back. Not retryable: somebody stopped this work on purpose""";
+
   private ApiResponses createQueryResponses(final boolean sessionAware) {
     final ApiResponses responses = new ApiResponses();
     responses.addApiResponse("200", SpecBuilders.jsonResponse("Query executed successfully", "QueryResponse"));
@@ -704,6 +725,7 @@ public class CoreApiSpec implements OpenApiContributor {
       // session-less and says so in this header rather than answering 404 (issue #7714).
       responses.get("200").addHeaderObject(SESSION_EXPIRED_HEADER,
           SpecBuilders.sessionExpiredHeader());
+    responses.addApiResponse("409", SpecBuilders.errorResponse(QUERY_TERMINATED_409_DESCRIPTION));
     responses.addApiResponse("413", SpecBuilders.errorResponse(
         "The result exceeds 'arcadedb.server.httpQueryMaxResultRows': narrow or page the query"));
     responses.addApiResponse("500", SpecBuilders.errorResponse("Internal server error"));
@@ -716,6 +738,7 @@ public class CoreApiSpec implements OpenApiContributor {
     responses.addApiResponse("400", SpecBuilders.errorResponse("Bad request"));
     responses.addApiResponse("401", SpecBuilders.errorResponse("Unauthorized"));
     responses.addApiResponse("404", SpecBuilders.errorResponse(STALE_SESSION_404_DESCRIPTION));
+    responses.addApiResponse("409", SpecBuilders.errorResponse(QUERY_TERMINATED_409_DESCRIPTION));
     responses.addApiResponse("413", SpecBuilders.errorResponse(
         "The result exceeds 'arcadedb.server.httpQueryMaxResultRows': narrow or page the command"));
     responses.addApiResponse("500", SpecBuilders.errorResponse("Internal server error"));
