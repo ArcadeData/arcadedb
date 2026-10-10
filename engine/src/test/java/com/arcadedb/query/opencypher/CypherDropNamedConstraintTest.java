@@ -135,7 +135,8 @@ class CypherDropNamedConstraintTest extends TestHelper {
     command("CREATE CONSTRAINT cname FOR (n:T3) REQUIRE n.v IS UNIQUE");
     assertThatThrownBy(() -> command("CREATE CONSTRAINT cname FOR (n:T4) REQUIRE n.v IS UNIQUE"))
         .rootCause().isInstanceOf(SchemaException.class);
-    assertThat(database.getSchema().existsType("T4") ? uniqueIndexOn("T4", "v") : false).isFalse();
+    // the name is checked before anything is created, the type included
+    assertThat(database.getSchema().existsType("T4")).isFalse();
   }
 
   @Test
@@ -197,6 +198,55 @@ class CypherDropNamedConstraintTest extends TestHelper {
   }
 
   @Test
+  void compositeConstraintsTransferTheirIndex() {
+    command("CREATE CONSTRAINT u FOR (n:T10) REQUIRE (n.a, n.b) IS UNIQUE");
+    command("CREATE CONSTRAINT k IF NOT EXISTS FOR (n:T10) REQUIRE (n.a, n.b) IS NODE KEY");
+
+    command("DROP CONSTRAINT u");
+    assertThat(uniqueIndexOn("T10", "a", "b")).isTrue();
+    assertThat(property("T10", "a").isMandatory()).isTrue();
+    assertThat(property("T10", "b").isMandatory()).isTrue();
+
+    command("DROP CONSTRAINT k");
+    assertThat(uniqueIndexOn("T10", "a", "b")).isFalse();
+    assertThat(property("T10", "a").isMandatory()).isFalse();
+    assertThat(property("T10", "b").isMandatory()).isFalse();
+  }
+
+  @Test
+  void droppingTheTypeReleasesTheName() {
+    command("CREATE CONSTRAINT cname FOR (n:T11) REQUIRE n.v IS UNIQUE");
+    database.getSchema().dropType("T11");
+
+    command("CREATE CONSTRAINT cname FOR (n:T12) REQUIRE n.v IS UNIQUE");
+    command("DROP CONSTRAINT cname");
+    assertThat(uniqueIndexOn("T12", "v")).isFalse();
+  }
+
+  @Test
+  void dropAfterTheIndexWasRemovedElsewhereStillSucceeds() {
+    command("CREATE CONSTRAINT cname FOR (n:T13) REQUIRE n.v IS NODE KEY");
+    final String indexName = database.getSchema().getType("T13").getAllIndexes(false).iterator().next().getName();
+    database.command("sql", "DROP INDEX `" + indexName + "`");
+
+    assertThat(stats("DROP CONSTRAINT cname").getConstraintsRemoved()).isEqualTo(1);
+    assertThat(property("T13", "v").isMandatory()).isFalse();
+  }
+
+  /**
+   * Pins the current behavior of a named IS TYPED constraint: the name is dropped, the declared type stays (#9706).
+   */
+  @Test
+  void dropNamedTypedConstraintKeepsTheDeclaredType() {
+    command("CREATE CONSTRAINT t FOR (n:T14) REQUIRE n.v IS TYPED INTEGER");
+    assertThat(property("T14", "v").getType()).isEqualTo(Type.LONG);
+
+    assertThat(stats("DROP CONSTRAINT t").getConstraintsRemoved()).isEqualTo(1);
+    assertThat(property("T14", "v").getType()).isEqualTo(Type.LONG);
+    assertThatThrownBy(() -> command("DROP CONSTRAINT t")).rootCause().isInstanceOf(SchemaException.class);
+  }
+
+  @Test
   void dropByIndexNameStillWorks() {
     command("CREATE CONSTRAINT FOR (n:T9) REQUIRE n.v IS UNIQUE");
     final String indexName = database.getSchema().getType("T9").getAllIndexes(false).iterator().next().getName();
@@ -229,9 +279,9 @@ class CypherDropNamedConstraintTest extends TestHelper {
     return p;
   }
 
-  private boolean uniqueIndexOn(final String typeName, final String propertyName) {
+  private boolean uniqueIndexOn(final String typeName, final String... propertyNames) {
     for (final TypeIndex idx : database.getSchema().getType(typeName).getAllIndexes(false))
-      if (idx.isUnique() && idx.getPropertyNames().equals(List.of(propertyName)))
+      if (idx.isUnique() && idx.getPropertyNames().equals(List.of(propertyNames)))
         return true;
     return false;
   }
