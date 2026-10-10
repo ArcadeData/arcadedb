@@ -260,6 +260,49 @@ class Issue9619LightweightEdgeWriteGrantsTest {
     assertThat(countLW()).isEqualTo(2);
   }
 
+  // ---------------------------------------------------------------- MULTI-BUCKET
+
+  /**
+   * A lightweight type with several buckets, created after an indexed type so that index files sit between bucket files
+   * and the type's buckets are not the dense low ids of a fresh database. Pins the two assumptions the checks rest on: the
+   * RID's bucket id is the file id the grant is keyed on, and the type's first bucket answers for all of them.
+   */
+  @Test
+  void multiBucketLightweightTypeIsGatedOnCreateAndDelete() {
+    database.command("sql", "CREATE VERTEX TYPE Indexed");
+    database.command("sql", "CREATE PROPERTY Indexed.k STRING");
+    database.command("sql", "CREATE INDEX ON Indexed (k) UNIQUE");
+    database.command("sql", "CREATE EDGE TYPE LW4 LIGHTWEIGHT BUCKETS 4");
+
+    final DocumentType lw4 = database.getSchema().getType("LW4");
+    assertThat(lw4.getBuckets(false)).hasSize(4);
+    for (final Bucket bucket : lw4.getBuckets(false))
+      assertThat(database.getSchema().getBucketById(bucket.getFileId()).getFileId()).isEqualTo(bucket.getFileId());
+
+    bindUserRefusing(SecurityDatabaseUser.ACCESS.CREATE_RECORD, "LW4");
+    database.begin();
+    assertThat(catchThrowable(() -> database.command("sql", "CREATE EDGE LW4 FROM " + a + " TO " + b))).isInstanceOf(
+        SecurityException.class);
+    database.commit();
+    try (final GraphBatch batch = GraphBatch.builder(database).withBatchSize(10).build()) {
+      assertThat(catchThrowable(() -> batch.newEdge(a, "LW4", b))).isInstanceOf(SecurityException.class);
+    }
+    unbindUser();
+    assertThat(a.asVertex().countEdges(Vertex.DIRECTION.OUT, "LW4")).isZero();
+
+    database.transaction(() -> database.command("sql", "CREATE EDGE LW4 FROM " + a + " TO " + b));
+    final Edge edge = a.asVertex().getEdges(Vertex.DIRECTION.OUT, "LW4").iterator().next();
+    assertThat(edge).isInstanceOf(LightEdge.class);
+    assertThat(edge.getIdentity().getBucketId()).isEqualTo(lw4.getFirstBucketId());
+
+    bindUserRefusing(SecurityDatabaseUser.ACCESS.DELETE_RECORD, "LW4");
+    database.begin();
+    assertThat(catchThrowable(() -> database.command("sql", "DELETE FROM LW4"))).isInstanceOf(SecurityException.class);
+    database.commit();
+    unbindUser();
+    assertThat(a.asVertex().countEdges(Vertex.DIRECTION.OUT, "LW4")).isEqualTo(1);
+  }
+
   // ---------------------------------------------------------------- helpers
 
   private void connectLW() {
