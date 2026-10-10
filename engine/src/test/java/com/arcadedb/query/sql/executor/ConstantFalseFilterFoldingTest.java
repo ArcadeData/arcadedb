@@ -172,9 +172,7 @@ class ConstantFalseFilterFoldingTest extends TestHelper {
       Thread.onSpinWait();
 
     assertThat(names(sql)).containsExactlyInAnyOrder("Arya", "Jon", "Tyrion");
-    // cached under the text its literals were extracted into (issue #8307)
-    assertThat(db.getExecutionPlanCache().contains(db.getStatementCache().getParameterized(sql).cacheKey()))
-        .as("a deterministic function call must not block plan caching")
+    assertThat(db.getExecutionPlanCache().contains(sql)).as("a deterministic function call must not block plan caching")
         .isTrue();
   }
 
