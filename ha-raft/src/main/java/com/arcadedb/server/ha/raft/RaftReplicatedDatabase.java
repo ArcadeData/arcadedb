@@ -2301,14 +2301,43 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     // Scoped to THIS database: a snapshot install that gave up on one database publishes a read floor for it
     // alone, and the healthy co-located databases must keep serving unclamped reads (issue #6760).
     if (consistency == Database.READ_CONSISTENCY.READ_YOUR_WRITES) {
-      if (!isLeader() && ctx.readAfterIndex() >= 0)
-        raftHAServer.waitForAppliedIndex(getName(), ctx.readAfterIndex());
+      if (!isLeader() && ctx.readAfterIndex() >= 0) {
+        // A bookmark already applied here needs no wait, so membership only matters for one still ahead of this node.
+        if (raftHAServer.getTrustedAppliedIndex(getName()) < ctx.readAfterIndex()) {
+          refuseReadWhileRemovedFromConfiguration(consistency);
+          raftHAServer.waitForAppliedIndex(getName(), ctx.readAfterIndex());
+          // Removed while waiting: the wait gave up short of the bookmark, and serving now would hand back data missing
+          // the write the bookmark names, from a node that will never catch up. A member that timed out keeps the
+          // documented degrade-to-EVENTUAL contract. The applied index is read again on purpose: the one above predates the
+          // wait, so deduplicating the two reads would refuse every read that caught up.
+          if (raftHAServer.getTrustedAppliedIndex(getName()) < ctx.readAfterIndex())
+            refuseReadWhileRemovedFromConfiguration(consistency);
+        }
+      }
     } else if (consistency == Database.READ_CONSISTENCY.LINEARIZABLE) {
+      refuseReadWhileRemovedFromConfiguration(consistency);
       if (isLeader())
         raftHAServer.ensureLinearizableRead(getName());
       else
         raftHAServer.ensureLinearizableFollowerRead(getName());
     }
+  }
+
+  /**
+   * Refuses a READ_YOUR_WRITES read whose bookmark this node has not applied, or any LINEARIZABLE read, retryably, while
+   * this node is no longer a member of the Raft configuration (issue #9590, the read side of #9510).
+   * <p>
+   * A removed node's division stays open and receives no more appends, so the index such a read waits for is never
+   * applied here: READ_YOUR_WRITES waited the whole quorum timeout and then degraded to EVENTUAL, serving data missing
+   * the write the bookmark names, and LINEARIZABLE failed only at the timeout. Refused at once, the client retries on a
+   * member of the cluster. EVENTUAL reads promise nothing about recency and are still served.
+   */
+  private void refuseReadWhileRemovedFromConfiguration(final Database.READ_CONSISTENCY consistency) {
+    if (raftHAServer.isRemovedFromConfiguration())
+      throw new NeedRetryException("Database '" + getName() + "' cannot serve a " + consistency + " read on this server: "
+          + "it is not a member of the Raft cluster's configuration any more (it left or was removed), so it receives no "
+          + "entries and cannot reach the index this read needs. Send the request to a server of the cluster, use EVENTUAL "
+          + "consistency, or add this server back to it");
   }
 
   @Deprecated
