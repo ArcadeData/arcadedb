@@ -321,7 +321,10 @@ class SupportRedactorTest {
         .isEqualTo("{\"arcadedb.server.defaultDatabases\": \"Universe[albert:*****]\", \"x\": 1}");
     assertThat(session.redactLine("defaultDatabases='Universe[albert:einstein]' set"))
         .isEqualTo("defaultDatabases='Universe[albert:*****]' set");
-    assertThat(session.getCount()).isEqualTo(5);
+    // a password with a space in it is masked whole, not cut at the space
+    assertThat(session.redactLine("defaultDatabases=A[u:ein stein,v:p q];B[w:x y] then more"))
+        .isEqualTo("defaultDatabases=A[u:*****,v:*****];B[w:*****] then more");
+    assertThat(session.getCount()).isEqualTo(6);
 
     // nothing to hide: unchanged and not counted, including a value already redacted upstream
     final SupportRedactor.Session clean = new SupportRedactor.Session();

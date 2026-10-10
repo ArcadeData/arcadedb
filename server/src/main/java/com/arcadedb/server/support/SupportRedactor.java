@@ -77,9 +77,10 @@ public final class SupportRedactor {
       "(?i)(?:length|len|size|count|max|min|timeout|ttl|expiry|expiration|expires|enabled|disabled|path|file|dir|directory|policy|"
           + "type|algorithm|mode|interval|retries|attempts|url|uri|ms|secs|seconds|minutes|header|name|field|class|provider)$");
 
-  // (name)(separator)(value) of arcadedb.server.defaultDatabases in any spelling: -D, key=value, ARCADEDB_SERVER_DEFAULTDATABASES, JSON
+  // (name)(separator)(value) of arcadedb.server.defaultDatabases in any spelling: -D, key=value, ARCADEDB_SERVER_DEFAULTDATABASES, JSON.
+  // An unquoted value runs bracket block to bracket block, so a password with a space in it is not cut in two at the space
   private static final Pattern DEFAULT_DATABASES = Pattern.compile(
-      "(?i)(defaultdatabases)((?:\\\\?[\"'])?\\s*[=:]\\s*)(" + QUOTED_VALUE + "|\\S+)");
+      "(?i)(defaultdatabases)((?:\\\\?[\"'])?\\s*[=:]\\s*)(" + QUOTED_VALUE + "|(?:[^\\s\\[\\]\"']*+\\[[^\\]]*+\\])++\\S*+|\\S+)");
 
   private static final Pattern HEADER_VALUE = Pattern.compile(
       "(?i)\\b(authorization|proxy-authorization|set-cookie|cookie|x-api-key|x-auth-token)(\\\\?[\"']?\\s*[:=]\\s*)(.*)");
