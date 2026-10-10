@@ -25,6 +25,7 @@ import com.arcadedb.query.literal.LiteralParameterizer.Lookup;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.parser.Statement;
+import com.arcadedb.query.sql.parser.StatementCache;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -96,6 +97,16 @@ class SQLLiteralParameterizationIssue8307Test extends TestHelper {
       "SELECT FROM Flt WHERE f = 16777216",//
       "SELECT FROM Flt WHERE f = 3",//
       "SELECT name FROM Person WHERE id IN [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 1, 2, 3] ORDER BY name",//
+      "SELECT l FROM Lng WHERE l = 5",//
+      "SELECT l FROM Lng WHERE l = 5000000000",//
+      "SELECT l FROM Lng WHERE l = 5.0",//
+      "SELECT l FROM Lng WHERE l > 2.5 ORDER BY l",//
+      "SELECT l FROM Lng WHERE l BETWEEN 1 AND 5000000000 ORDER BY l",//
+      "SELECT l FROM Lng WHERE l = 1.00000000000000000001",//
+      "SELECT l FROM Lng WHERE a = 1 ORDER BY l",//
+      "SELECT l FROM Lng WHERE a = 1 AND b = 'x' ORDER BY l",//
+      "SELECT l FROM Lng WHERE a = 1.5 AND b = 'x'",//
+      "SELECT l FROM Lng WHERE a >= 1 AND a < 3 ORDER BY l",//
       "SELECT 1 + 2",//
       "SELECT 1 + 2 AS s, 3 * 4 AS p",//
       "SELECT id + 1 + 2 AS k FROM Person WHERE id < 3 ORDER BY id + 1 + 2 DESC"//
@@ -126,6 +137,12 @@ class SQLLiteralParameterizationIssue8307Test extends TestHelper {
     database.command("sql", "CREATE DOCUMENT TYPE Flt");
     database.command("sql", "CREATE PROPERTY Flt.f FLOAT");
     database.command("sql", "CREATE INDEX ON Flt (f) NOTUNIQUE");
+    database.command("sql", "CREATE DOCUMENT TYPE Lng");
+    database.command("sql", "CREATE PROPERTY Lng.l LONG");
+    database.command("sql", "CREATE PROPERTY Lng.a INTEGER");
+    database.command("sql", "CREATE PROPERTY Lng.b STRING");
+    database.command("sql", "CREATE INDEX ON Lng (l) NOTUNIQUE");
+    database.command("sql", "CREATE INDEX ON Lng (a, b) NOTUNIQUE");
     database.transaction(() -> {
       for (int i = 0; i < 100; i++)
         database.newDocument("Person").set("id", i).set("name", "p" + i).set("score", i * 1.5D).save();
@@ -133,6 +150,9 @@ class SQLLiteralParameterizationIssue8307Test extends TestHelper {
       database.newDocument("Dbl").set("d", 1D).save();
       database.newDocument("Flt").set("f", 16777216F).save();
       database.newDocument("Flt").set("f", 3F).save();
+      database.newDocument("Lng").set("l", 1L, "a", 1, "b", "x").save();
+      database.newDocument("Lng").set("l", 5L, "a", 1, "b", "y").save();
+      database.newDocument("Lng").set("l", 5000000000L, "a", 2, "b", "x").save();
     });
   }
 
@@ -262,6 +282,25 @@ class SQLLiteralParameterizationIssue8307Test extends TestHelper {
     final Lookup<Statement> second = db().getStatementCache().getParameterized("SELECT name AS once FROM Person WHERE id = 12");
     assertThat(second.parameters()).isEqualTo(Map.of("__lit_i0", 12));
     assertThat(db().getStatementCache().contains(second.cacheKey())).isTrue();
+  }
+
+  @Test
+  void aShapeWhoseStatementWasEvictedIsBuiltAgainFromItsPolicy() {
+    // a two-entry cache: the shape's policy and its statement are evicted independently, and either way the next text of the
+    // shape answers what it answers as written
+    final StatementCache small = new StatementCache(database, 2);
+    final List<String> shapes = List.of("SELECT name FROM Person WHERE id = %d", "SELECT name AS n FROM Person WHERE id = %d",
+        "SELECT name AS m FROM Person WHERE id = %d");
+    for (int round = 0; round < 3; round++)
+      for (final String shape : shapes) {
+        final int id = round * 10 + shapes.indexOf(shape);
+        final Lookup<Statement> lookup = small.getParameterized(String.format(shape, id));
+        final List<Object> values = new ArrayList<>();
+        try (final ResultSet rs = lookup.statement().execute(database, lookup.mergeParameters(null))) {
+          rs.forEachRemaining(r -> values.addAll(r.toMap().values()));
+        }
+        assertThat(values).as("%s with id %d", shape, id).containsExactly("p" + id);
+      }
   }
 
   @Test

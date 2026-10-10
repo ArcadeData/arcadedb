@@ -144,7 +144,8 @@ public final class LiteralScan {
 
   /**
    * The text with every literal replaced by {@link #MARKER}, its token type and the position (plus one) of the first literal
-   * written identically, or 0. Computed once.
+   * written identically, or 0. Computed once. Both are written as one 16-bit character: token types are a few hundred, and a
+   * text with more than {@code LiteralParameterizer.MAX_LITERALS} (4096) literals is never scanned into a shape.
    */
   public String getShape() {
     if (shape == null) {
