@@ -70,7 +70,7 @@ public final class RunningQuery implements AutoCloseable {
   // The keyword, the closing quote of a JSON key and a separator, then the value: quoted, or up to the next delimiter. The
   // separator's quantifiers are possessive, so a long run of blanks after a keyword is scanned once, never backtracked
   private static final Pattern                   CREDENTIAL =
-      Pattern.compile("(?i)\\b(identified\\s+by|password|token|secret|api[_-]?key|authorization|bearer)\\b([\"']?+\\s*+(?:[=:]\\s*+)?)('[^']*'|\"[^\"]*\"|[^\\s,;)}\\]]+)");
+      Pattern.compile("(?i)\\b(identified\\s+by|password|passwd|pwd|token|secret|api[_-]?key|authorization|bearer)\\b([\"']?+\\s*+(?:[=:]\\s*+)?)('[^']*'|\"[^\"]*\"|[^\\s,;)}\\]]+)");
 
   private final RunningQueryRegistry registry;
   private final long                 id;
@@ -134,7 +134,8 @@ public final class RunningQuery implements AutoCloseable {
   }
 
   /**
-   * The text with the value after {@code IDENTIFIED BY}, {@code PASSWORD}, {@code TOKEN}, {@code SECRET}, {@code API_KEY}
+   * The text with the value after {@code IDENTIFIED BY}, {@code PASSWORD} (also {@code PASSWD}, {@code PWD}), {@code TOKEN},
+   * {@code SECRET}, {@code API_KEY}
    * (also {@code APIKEY}, {@code API-KEY}), {@code AUTHORIZATION} or {@code BEARER} replaced by {@code ***}, in
    * statement form ({@code IDENTIFIED BY x}, {@code password = 'x'}) as in JSON form ({@code "password": "x"}), then cut to
    * {@link #MAX_TEXT_LENGTH}. The listing is read by the server administrator for every user's statements, and a credential
