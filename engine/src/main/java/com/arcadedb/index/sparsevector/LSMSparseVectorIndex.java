@@ -456,6 +456,10 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
    * <p>
    * The score formula is the engine's, term for term: each query entry contributes on its own (a dimension asked
    * twice counts twice), with the same effective - IDF-scaled when so configured - query weights.
+   * <p>
+   * A candidate is dropped for ONE reason only: its record is gone. The stale top-ups of {@link #committedTopK},
+   * {@code topKGrouped} and {@code committedForGroups} read "fewer out than in" as exactly that (issue #9692), so a new
+   * reason to drop a candidate here has to be told apart from it there, or it turns into needless retries.
    */
   private List<RidScore> rescoreExactly(final List<RidScore> candidates, final int[] queryIndices,
       final float[] effectiveWeights, final int k) {
