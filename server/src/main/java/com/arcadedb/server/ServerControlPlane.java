@@ -112,6 +112,10 @@ public class ServerControlPlane {
   /** The security documents in the order every source of the convergence signal names them (issue #8317). */
   private static final List<String> SECURITY_DOCUMENT_ORDER = List.of("users", "groups", "API tokens");
   private static final IPAddressBlocklist RESERVED_ADDRESSES = IPAddressBlocklist.defaultReservedRanges();
+  /** How long a terminate waits for the statement to end when the caller does not say (issue #9680). */
+  public static final  long               DEFAULT_TERMINATE_WAIT_MS = 5_000L;
+  /** The longest a terminate waits, whatever the caller asks: the wait holds a request thread. */
+  public static final  long               MAX_TERMINATE_WAIT_MS     = 60_000L;
 
   private final ArcadeDBServer server;
 
@@ -858,11 +862,6 @@ public class ServerControlPlane {
   // ---------------------------------------------------------------------------------------------
   // Running statements and transaction sessions (issue #9680)
   // ---------------------------------------------------------------------------------------------
-
-  /** How long a terminate waits for the statement to end when the caller does not say. */
-  public static final long DEFAULT_TERMINATE_WAIT_MS = 5_000L;
-  /** The longest a terminate waits, whatever the caller asks: the wait holds a request thread. */
-  public static final long MAX_TERMINATE_WAIT_MS     = 60_000L;
 
   /**
    * The statements this server is running that {@code user} may see: every one for the server administrator, the user's
