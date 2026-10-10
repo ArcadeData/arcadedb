@@ -20,6 +20,7 @@ package com.arcadedb.engine.timeseries;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.engine.timeseries.TimeSeriesSealedStore.BlockDirectorySnapshot;
+import com.arcadedb.query.sql.executor.InternalExecutionPlan;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.LocalTimeSeriesType;
@@ -209,6 +210,43 @@ class Issue9612TimeWindowAggregatePushDownTest extends TestHelper {
       typesOfTheTwin.removeIf(t -> t.startsWith("h:"));
       assertThat(typesOfTheBucket).isEqualTo(typesOfTheTwin);
     });
+  }
+
+  @Test
+  void aColumnWithNoMeasurementInTheRangeAnswersNullLikeTheTwin() {
+    database.command("sql", "CREATE TIMESERIES TYPE T TIMESTAMP ts TAGS (host STRING) FIELDS (uu DOUBLE, ui LONG) SHARDS 2");
+    database.command("sql", "CREATE DOCUMENT TYPE D");
+    database.transaction(() -> {
+      for (int s = 0; s < 200; s++)
+        for (final String type : new String[] { "T", "D" })
+          // uu only measured in the second half, so the first half is a run of absent samples inside one block
+          database.command("sql", "INSERT INTO " + type + " SET ts = ?, host = ?, uu = ?, ui = ?", T0 + s * 1_000L, "h" + (s % 2),
+              s < 100 ? null : (double) s, (long) s);
+    });
+    database.command("sql", "COMPACT TIMESERIES TYPE T");
+    final String firstHalf = "ts >= " + T0 + " AND ts < " + (T0 + 100 * 1_000L);
+    // the vectorized single-bucket path over an all-absent segment: min/max/sum/avg must be absent, not an extreme
+    assertSameAsTheTwin("SELECT count(*) AS c, min(uu) AS mn, max(uu) AS mx, sum(uu) AS s, avg(uu) AS a FROM X WHERE " + firstHalf);
+    assertSameAsTheTwin("SELECT count(*) AS c, min(uu) AS mn, max(uu) AS mx, sum(uu) AS s FROM X WHERE ui < 150");
+    assertSameAsTheTwin("SELECT count(*) AS c, min(uu) AS mn, max(uu) AS mx FROM X WHERE uu > 150");
+    assertSameAsTheTwin("SELECT count(*) AS c, min(uu) AS mn, max(uu) AS mx, sum(uu) AS s FROM X WHERE host = 'h1' AND " + firstHalf);
+  }
+
+  @Test
+  void aTimeSeriesPlanIsNeverCachedSinceItCarriesOperandsReadAtPlanningTime() {
+    loadMonotonic();
+    // the field filter, like the time range and the tag filter, holds the values the statement was planned with: a cached
+    // plan would answer the next run with the first run's values
+    for (final String sql : new String[] { "SELECT count(*) AS c FROM T WHERE uu > ?", "SELECT ts, uu FROM T WHERE uu > ?",
+        "SELECT ts.timeBucket('1h', ts) AS h, count(*) AS c FROM T WHERE uu > ? GROUP BY h" })
+      try (final ResultSet rs = database.query("sql", sql, 100)) {
+        assertThat(((InternalExecutionPlan) rs.getExecutionPlan().orElseThrow()).canBeCached()).as(sql).isFalse();
+      }
+    try (final ResultSet first = database.query("sql", "SELECT count(*) AS c FROM T WHERE uu > ?", 100);
+        final ResultSet second = database.query("sql", "SELECT count(*) AS c FROM T WHERE uu > ?", 300)) {
+      assertThat(first.next().<Long>getProperty("c")).isEqualTo(259L);
+      assertThat(second.next().<Long>getProperty("c")).isEqualTo(59L);
+    }
   }
 
   @Test
