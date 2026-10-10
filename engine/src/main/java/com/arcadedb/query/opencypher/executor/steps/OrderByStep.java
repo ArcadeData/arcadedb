@@ -161,8 +161,9 @@ public class OrderByStep extends AbstractExecutionStep {
             final ResultSet prevResults = prev.syncPull(context, nRecords > 0 ? nRecords : 100);
             // The whole input is consumed inside this one pull: see AggregationStep (issue #9680)
             final WorkGuard guard = WorkGuard.forCommandDeadline(context);
+            int consumed = 0;
             while (prevResults.hasNext()) {
-              guard.checkPeriodically(sortedResults.size() + 1);
+              guard.checkPeriodically(++consumed);
               final Result row = prevResults.next();
               sortedResults.add(row);
               heapLimit.add(sortedResults.size(), row);

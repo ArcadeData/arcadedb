@@ -23,6 +23,7 @@ import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Pattern;
 
 /**
  * One statement in progress, as {@link RunningQueryRegistry} lists it, and the switch that stops it (issue #9680).
@@ -63,7 +64,9 @@ public final class RunningQuery implements AutoCloseable {
     TERMINATED
   }
 
-  private static final ThreadLocal<RunningQuery> CURRENT = new ThreadLocal<>();
+  private static final ThreadLocal<RunningQuery> CURRENT    = new ThreadLocal<>();
+  private static final Pattern                   CREDENTIAL =
+      Pattern.compile("(?i)\\b(identified\\s+by|password|token)(\\s*[=:]?\\s*)('[^']*'|\"[^\"]*\"|[^\\s,;)]+)");
 
   private final RunningQueryRegistry registry;
   private final long                 id;
@@ -74,7 +77,7 @@ public final class RunningQuery implements AutoCloseable {
   private final String               tag;
   private final long                 startedAt;
   private final long                 startedNanos;
-  private final RunningQuery         previous;
+  private       RunningQuery         previous;
   private final CountDownLatch       ended = new CountDownLatch(1);
   private volatile String            language;
   private volatile String            text;
@@ -95,7 +98,15 @@ public final class RunningQuery implements AutoCloseable {
     this.tag = tag;
     this.startedAt = System.currentTimeMillis();
     this.startedNanos = System.nanoTime();
-    this.previous = CURRENT.get();
+  }
+
+  /**
+   * Publishes the entry on the calling thread. Called by {@link RunningQueryRegistry#register} once the entry is in the
+   * registry and nothing can fail any more, so an entry that never made it there cannot be left behind on a pooled thread,
+   * where the next request would obey its termination.
+   */
+  void publish() {
+    previous = CURRENT.get();
     CURRENT.set(this);
   }
 
@@ -107,7 +118,17 @@ public final class RunningQuery implements AutoCloseable {
   /** Records what the statement is, once the protocol has parsed it out of the request. */
   public void setStatement(final String language, final String text) {
     this.language = language;
-    this.text = text != null && text.length() > MAX_TEXT_LENGTH ? text.substring(0, MAX_TEXT_LENGTH) + "..." : text;
+    this.text = text == null ? null : maskCredentials(
+        text.length() > MAX_TEXT_LENGTH ? text.substring(0, MAX_TEXT_LENGTH) + "..." : text);
+  }
+
+  /**
+   * The statement with the value after {@code IDENTIFIED BY}, {@code PASSWORD} or {@code TOKEN} replaced by {@code ***}:
+   * the listing is read by the server administrator for every user's statements, and a credential written in clear in
+   * a statement ({@code CREATE USER ... IDENTIFIED BY ...}) is not something it needs to show.
+   */
+  static String maskCredentials(final String text) {
+    return CREDENTIAL.matcher(text).replaceAll("$1 ***");
   }
 
   /**

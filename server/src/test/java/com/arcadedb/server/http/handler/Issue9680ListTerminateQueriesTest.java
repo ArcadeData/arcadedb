@@ -180,6 +180,33 @@ class Issue9680ListTerminateQueriesTest extends BaseGraphServerTest {
   }
 
   @Test
+  void terminatingABusySessionStopsItsStatementAndEndsIt() throws Exception {
+    final Database database = getServerDatabase(0, "graph");
+    if (!database.getSchema().existsType("Busy9680"))
+      database.getSchema().createDocumentType("Busy9680");
+
+    final String session = call(ROOT, "POST", "/api/v1/begin/graph", new JSONObject(), Map.of(TAG_HEADER, "bench-busy")).sessionId;
+    assertThat(call(ROOT, "POST", "/api/v1/command/graph",
+        new JSONObject().put("language", "sql").put("command", "INSERT INTO Busy9680 SET x = 1"),
+        Map.of("arcadedb-session-id", session)).status).isEqualTo(200);
+
+    final CompletableFuture<Response> running = runAsync(ROOT, "/api/v1/command/graph", cypher(LONG_CYPHER),
+        Map.of("arcadedb-session-id", session));
+    final JSONObject entry = awaitSingleEntry(ROOT, "bench-busy");
+    final JSONObject listed = findById(serverCommand(ROOT, "list transactions").getJSONArray("result"), session);
+    assertThat(listed.getBoolean("busy")).isTrue();
+    assertThat(listed.getJSONArray("runningQueries").getString(0)).isEqualTo(entry.getString("id"));
+
+    assertThat(serverCommand(ROOT, "terminate transaction " + session).getJSONObject("result").getString("status"))
+        .isEqualTo("terminated");
+    assertThat(running.get(30, TimeUnit.SECONDS).status).isEqualTo(409);
+    assertThat(listQueries(ROOT, "bench-busy")).isEmpty();
+    assertThat(findById(serverCommand(ROOT, "list transactions").getJSONArray("result"), session)).isNull();
+    assertCommitFindsNoSession(session);
+    assertThat(database.countType("Busy9680", false)).isZero();
+  }
+
+  @Test
   void aUserSeesAndStopsOnlyTheirOwnStatements() throws Exception {
     createUser(OWNER);
     createUser(OTHER);

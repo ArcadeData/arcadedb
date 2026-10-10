@@ -530,8 +530,12 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
         throw e;
       }
       // Listed and terminable like a command (issue #9680): a terminated load stops at its next commit, which refuses it
-      runningQuery = registerRunningQuery(exchange, user, databaseName, exchange.getRequestHeaders().getFirst(SESSION_ID_HEADER),
-          null);
+      // The session as the manager resolves it for this principal, never the raw header: a session id is matched by the
+      // transaction commands, and a load must not be listed under a session its caller does not own
+      final String sessionHeader = exchange.getRequestHeaders().getFirst(SESSION_ID_HEADER);
+      final HttpSession session = sessionHeader != null ? httpServer.getSessionManager().getSessionById(user, sessionHeader) : null;
+      runningQuery = registerRunningQuery(exchange, user, databaseName, session != null ? session.id : null,
+          session != null ? session.getTag() : null);
 
       final DatabaseInternal database = httpServer.getServer().getDatabase(databaseName, false, false);
       final boolean isCsv = contentType.contains("text/csv");

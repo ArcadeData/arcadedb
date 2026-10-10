@@ -224,6 +224,35 @@ class Issue9680RunningQueryTerminationTest {
   }
 
   @Test
+  void credentialsAreMaskedInTheListedText() {
+    try (final RunningQuery q = registry.register("db", "root", "http", null, null)) {
+      q.setStatement("sql", "CREATE USER bob IDENTIFIED BY s3cr3t ROLE admin");
+      assertThat(q.getText()).isEqualTo("CREATE USER bob IDENTIFIED BY *** ROLE admin");
+      q.setStatement("sql", "ALTER USER bob SET password = 'my pass', token: \"abc\"");
+      assertThat(q.getText()).doesNotContain("my pass").doesNotContain("abc").contains("password ***").contains("token ***");
+      q.setStatement("opencypher", "MATCH (n) RETURN n.name");
+      assertThat(q.getText()).isEqualTo("MATCH (n) RETURN n.name");
+    }
+  }
+
+  @Test
+  void anEntryIsPublishedOnlyOnceRegistered() {
+    assertThat(RunningQuery.current()).isNull();
+    final RunningQuery q = registry.register("db", "root", "http", null, null);
+    try {
+      assertThat(RunningQuery.current()).isSameAs(q);
+      // a nested entry gives the outer one back when it closes
+      try (final RunningQuery nested = registry.register("db", "root", "http", null, null)) {
+        assertThat(RunningQuery.current()).isSameAs(nested);
+      }
+      assertThat(RunningQuery.current()).isSameAs(q);
+    } finally {
+      q.close();
+    }
+    assertThat(RunningQuery.current()).isNull();
+  }
+
+  @Test
   void registryResolvesIdsAndForgetsEndedStatements() {
     final RunningQuery q = registry.register("db", "admin", "http", "AS-1", "bench-1");
     try {
