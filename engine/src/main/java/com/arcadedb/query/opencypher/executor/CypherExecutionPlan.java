@@ -5915,7 +5915,9 @@ public class CypherExecutionPlan {
    * Whether no vertex can match both node patterns because their inline property maps give one key two different literal
    * values: {@code (c:Message {kind: 'Comment'})} and {@code (p:Message {kind: 'Post'})} are never one vertex, which their
    * labels cannot prove (issue #9608). Only values whose match is plain equality are compared - strings, booleans and
-   * integers - since {@code 1} and {@code 1.0} match the same stored value and a temporal compares by instant.
+   * integers - since {@code 1} and {@code 1.0} match the same stored value and a temporal compares by instant. Both
+   * literals are matched against the one value a vertex stores, whatever type the schema declares for it, so a value that
+   * equals one of them cannot equal the other.
    */
   private static boolean nodePropertiesAreDisjoint(final NodePattern node1, final NodePattern node2) {
     if (node1.getProperties().isEmpty() || node2.getProperties().isEmpty())
@@ -5935,8 +5937,15 @@ public class CypherExecutionPlan {
     return value instanceof Expression ? null : value;
   }
 
+  /**
+   * Whether no stored value can match both literals. Two strings must differ ignoring case: a node seek through a
+   * case-insensitive index answers {@code 'A'} and {@code 'a'} with the same vertices, so only a difference no collation
+   * folds away is a proof.
+   */
   private static boolean literalsNeverMatchTheSameValue(final Object a, final Object b) {
-    if (a instanceof String && b instanceof String || a instanceof Boolean && b instanceof Boolean)
+    if (a instanceof String sa && b instanceof String sb)
+      return !sa.equalsIgnoreCase(sb);
+    if (a instanceof Boolean && b instanceof Boolean)
       return !a.equals(b);
     return isIntegral(a) && isIntegral(b) && ((Number) a).longValue() != ((Number) b).longValue();
   }

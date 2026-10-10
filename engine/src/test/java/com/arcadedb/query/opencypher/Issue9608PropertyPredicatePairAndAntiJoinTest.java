@@ -149,6 +149,37 @@ class Issue9608PropertyPredicatePairAndAntiJoinTest extends TestHelper {
       assertThat(count(match + " RETURN count(*) AS n")).as(match).isEqualTo(count(match + " RETURN sum(1) AS n"));
   }
 
+  /**
+   * Two inline values prove two nodes different vertices only when no stored value can match both: a schema type on the
+   * property, or a case-insensitive index answering the node seek, must not make the proof wrong.
+   */
+  @Test
+  void typedAndCaseInsensitivelyIndexedPropertiesKeepTheCount() {
+    database.command("sql", "CREATE PROPERTY Message.code STRING");
+    database.command("sql", "CREATE PROPERTY Message.score INTEGER");
+    database.command("sql", "CREATE INDEX ON Message (code COLLATE ci) NOTUNIQUE");
+    populate(9);
+    final Random random = new Random(9);
+    final String[] codes = { "A", "a", "b" };
+    database.transaction(() -> database.iterateType("Message", true).forEachRemaining(record -> record.asVertex().modify()
+        .set("code", codes[random.nextInt(codes.length)]).set("score", random.nextInt(3)).save()));
+
+    for (final String match : new String[] {
+        "MATCH (person1:Person)-[:KNOWS]-(person2:Person), "
+            + "(person1)<-[:HAS_CREATOR]-(comment:Message {code: 'A'})-[:REPLY_OF]->(post:Message {code: 'a'})-[:HAS_CREATOR]->(person2)",
+        "MATCH (person1:Person)-[:KNOWS]-(person2:Person), "
+            + "(person1)<-[:HAS_CREATOR]-(comment:Message {code: 'A'})-[:REPLY_OF]->(post:Message {code: 'b'})-[:HAS_CREATOR]->(person2)",
+        "MATCH (person1:Person)-[:KNOWS]-(person2:Person), "
+            + "(person1)<-[:HAS_CREATOR]-(comment:Message {score: 1})-[:REPLY_OF]->(post:Message {score: 2})-[:HAS_CREATOR]->(person2)",
+        "MATCH (person1:Person)-[:KNOWS]-(person2:Person), "
+            + "(person1)<-[:HAS_CREATOR]-(comment:Message {score: '1'})-[:REPLY_OF]->(post:Message {score: 1})-[:HAS_CREATOR]->(person2)",
+        // a disjunction is no equality: it proves nothing about the two nodes
+        "MATCH (person1:Person)-[:KNOWS]-(person2:Person), "
+            + "(person1)<-[:HAS_CREATOR]-(comment:Message)-[:REPLY_OF]->(post:Message)-[:HAS_CREATOR]->(person2) "
+            + "WHERE (comment.kind = 'Comment' OR comment.kind = 'Post') AND post.kind = 'Post'" })
+      assertThat(count(match + " RETURN count(*) AS n")).as(match).isEqualTo(count(match + " RETURN sum(1) AS n"));
+  }
+
   /** Predicates no per-vertex filter can express leave the shapes to the row pipeline, with the same count. */
   @Test
   void predicatesThatAreNotPerVertexStayExact() {
