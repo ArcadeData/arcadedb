@@ -253,6 +253,9 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
         }
       }
       boolean finalAtomicTransaction = atomicTransaction;
+      if (registersRunningQuery())
+        // A label that cannot be one is refused before the request takes a slot it would only give back (issue #9680)
+        queryTag(exchange);
       admission = admit(exchange);
       // Once admitted, so a statement waiting for its slot is not listed as running, and a terminate never races a
       // request that has not started yet (issue #9680)
