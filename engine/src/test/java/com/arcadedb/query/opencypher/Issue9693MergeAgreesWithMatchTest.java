@@ -103,6 +103,15 @@ class Issue9693MergeAgreesWithMatchTest extends TestHelper {
   }
 
   @Test
+  void aPropertyTheStoredNodeLacksMatchesInNeitherClause() {
+    loadFloat("FlM", "NOTUNIQUE");
+    assertThat(count("MATCH (n:FlM {v: 0.1, missing: 1}) RETURN count(n) AS c")).isEqualTo(0L);
+    assertThat(merge("MERGE (n:FlM {v: 0.1, missing: 1}) ON CREATE SET n.tag = 'CREATED' ON MATCH SET n.tag = 'MATCHED' RETURN n.tag AS tag"))
+        .isEqualTo("CREATED");
+    assertThat(count("MATCH (n:FlM) RETURN count(n) AS c")).isEqualTo(2L);
+  }
+
+  @Test
   void mergeOnAFloatRelationshipPropertyMatchesTheExistingEdge() {
     database.command("sql", "CREATE VERTEX TYPE A");
     database.command("sql", "CREATE EDGE TYPE R");
