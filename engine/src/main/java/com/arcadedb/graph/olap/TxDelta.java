@@ -21,6 +21,7 @@ package com.arcadedb.graph.olap;
 import com.arcadedb.database.RID;
 
 import java.util.*;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Captures vertex/edge changes from a single transaction for incremental GAV update.
@@ -30,6 +31,9 @@ import java.util.*;
  * Not thread-safe — accessed only by the owning transaction thread.
  */
 class TxDelta {
+  // Numbers every lightweight edge change, see lightEdgeKey()
+  private static final AtomicLong LIGHT_EDGE_CHANGES = new AtomicLong();
+
   final List<VertexDelta>          addedVertices    = new ArrayList<>();
   final Set<RID>                   deletedVertices  = new HashSet<>();
   final List<EdgeDelta>            addedEdges       = new ArrayList<>();
@@ -126,5 +130,42 @@ class TxDelta {
       this.rid = rid;
       this.properties = properties;
     }
+
+    /**
+     * The change of a lightweight edge, which {@link #rid} then names by a key of the change's own (see
+     * {@link #lightEdgeKey}): its bucket is the edge type's, its position a negative number no record has.
+     */
+    boolean isLightweight() {
+      return rid.getPosition() < 0;
+    }
+  }
+
+  /**
+   * An identity for one change of a lightweight edge (issue #9572). The edge's own identity is the triple (type, out,
+   * in), which every copy of a duplicated lightweight edge shares, so keying the overlay by it would merge two copies
+   * into one, and drop the second of two deletions as a replay of the first. Each creation and each deletion gets a
+   * key no other change has instead, kept for as long as the delta is: a delta replayed on another base still
+   * carries the same keys, so the replay is recognised. Which copy a deletion took does not matter, the copies of a
+   * triple being indistinguishable, so {@link DeltaOverlay#merge} matches a deletion to an addition by the pair.
+   * <p>
+   * The bucket stays the edge type's, the one the edge-list entry carries, and the position is below the -1 every
+   * record-less RID uses, so the key equals no edge identity the database hands out. In memory only: a key is never
+   * persisted (the persisted CSR holds no overlay) nor shown to a query.
+   */
+  static RID lightEdgeKey(final int edgeTypeBucketId) {
+    return new RID(edgeTypeBucketId, -2L - LIGHT_EDGE_CHANGES.getAndIncrement());
+  }
+
+  /**
+   * The sequence number of the lightweight change a {@link #lightEdgeKey} names: changes are numbered as they are
+   * reported, inside their transaction and so before it commits.
+   */
+  static long lightEdgeChangeOf(final RID key) {
+    return -2L - key.getPosition();
+  }
+
+  /** How many lightweight changes were reported so far: every later one is numbered from here. */
+  static long lightEdgeChangesSoFar() {
+    return LIGHT_EDGE_CHANGES.get();
   }
 }

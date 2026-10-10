@@ -482,6 +482,8 @@ class DeltaOverlay {
     }
 
     // Process deleted edges
+    // The lightweight additions per type and pair, indexed on the first lightweight deletion of the type that needs them
+    Map<String, Map<Long, ArrayDeque<RID>>> lightAdditions = null;
     for (final TxDelta.EdgeDelta ed : delta.deletedEdges) {
       final int srcId = resolveNodeId(ed.source, baseMapping, newOverflowIds, newDeleted);
       final int tgtId = resolveNodeId(ed.target, baseMapping, newOverflowIds, newDeleted);
@@ -494,8 +496,22 @@ class DeltaOverlay {
       // the append-only added index used to surface an added-then-deleted edge as a live neighbour. Done by
       // identity, before the dedup guard below, so a RID recycled onto a new edge (see #6777) still cancels
       // its own add rather than having the whole deletion dropped.
+      // A lightweight edge has no identity of its own to match: its deletion withdraws any lightweight addition of the
+      // same pair, the copies being indistinguishable (issue #9572)
       final Map<RID, AddedEdge> addedForType = newAddedEdges.get(ed.edgeType);
-      if (addedForType != null && addedForType.remove(ed.rid) != null) {
+      final RID withdrawn;
+      if (addedForType == null)
+        withdrawn = null;
+      else if (ed.isLightweight()) {
+        if (lightAdditions == null)
+          lightAdditions = new HashMap<>();
+        final ArrayDeque<RID> sameEndpoints = lightAdditions.computeIfAbsent(ed.edgeType, k -> indexLightAdditions(addedForType))
+            .get(packEdge(srcId, tgtId));
+        // Always still in addedForType: the index is built from it, and only this branch removes lightweight keys from it
+        withdrawn = sameEndpoints != null ? sameEndpoints.pollLast() : null;
+      } else
+        withdrawn = ed.rid;
+      if (withdrawn != null && addedForType.remove(withdrawn) != null) {
         newDeltaEdgeCount--; // undo the +1 the withdrawn add contributed
         if (addedForType.isEmpty())
           newAddedEdges.remove(ed.edgeType); // keep hasChanges() honest: no adds left for this type
@@ -593,6 +609,17 @@ class DeltaOverlay {
         newAbsorbedDeletions, newAbsorbedAdditions, newDelOutCounts, newDelInCounts, newPropOverrides,
         newOutIndex, newInIndex,
         newOverflowCount, newDeltaEdgeCount, newDirtyTypes, newAllDirty, newBaseEdgeValues);
+  }
+
+  /** The lightweight additions of one type, per packed pair. Which one a deletion withdraws does not matter: copies are alike. */
+  private static Map<Long, ArrayDeque<RID>> indexLightAdditions(final Map<RID, AddedEdge> addedForType) {
+    final Map<Long, ArrayDeque<RID>> index = new HashMap<>();
+    for (final Map.Entry<RID, AddedEdge> entry : addedForType.entrySet())
+      if (entry.getKey().getPosition() < 0) {
+        final AddedEdge added = entry.getValue();
+        index.computeIfAbsent(packEdge(added.src(), added.tgt()), k -> new ArrayDeque<>()).add(entry.getKey());
+      }
+    return index;
   }
 
   /**
