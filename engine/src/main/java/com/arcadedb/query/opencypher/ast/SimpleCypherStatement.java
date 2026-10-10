@@ -64,6 +64,7 @@ public class SimpleCypherStatement implements CypherStatement {
   private final boolean            hasFinishClause;
 
   private volatile CypherReferencedVariables referencedVariables;
+  private volatile CypherStatement           countPushDownForm;
 
   public SimpleCypherStatement(final String originalQuery, final List<MatchClause> matchClauses,
                                final WhereClause whereClause, final ReturnClause returnClause,
@@ -533,6 +534,21 @@ public class SimpleCypherStatement implements CypherStatement {
     if (result == null)
       referencedVariables = result = CypherReferencedVariables.of(this);
     return result;
+  }
+
+  /**
+   * The statement the count push-downs read in place of this one: this statement itself when there is nothing to fold,
+   * or null until the executor has derived it. Kept here, as {@link #getReferencedVariables()} is, because the statement
+   * is immutable and shared while the plan that asks is built anew for every execution, and deriving it on every
+   * execution cost the index-answered queries that no push-down takes several percent of their time (issue #9652). Two
+   * threads deriving it together set equivalent statements, so which one wins makes no difference.
+   */
+  public CypherStatement getCountPushDownForm() {
+    return countPushDownForm;
+  }
+
+  public void setCountPushDownForm(final CypherStatement countPushDownForm) {
+    this.countPushDownForm = countPushDownForm;
   }
 
   public String getOriginalQuery() {
