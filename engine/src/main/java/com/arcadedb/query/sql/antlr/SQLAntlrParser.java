@@ -70,6 +70,27 @@ public record SQLAntlrParser(Database database) {
    * @throws CommandSQLParsingException if the SQL is invalid
    */
   public Statement parse(final String sqlText) throws CommandSQLParsingException {
+    return parseWithTree(sqlText).statement();
+  }
+
+  /**
+   * A parsed statement together with the parse tree it was built from, for a caller that decides something on the tree itself
+   * (see {@link SQLLiteralParameterizer}).
+   *
+   * @param statement the parsed statement
+   * @param tree      the parse tree of the whole text
+   */
+  public record ParsedTree(Statement statement, SQLParser.ParseContext tree) {
+  }
+
+  /**
+   * Parses a single SQL statement like {@link #parse(String)}, also returning its parse tree.
+   *
+   * @param sqlText The SQL text to parse
+   * @return The parsed Statement object and its parse tree
+   * @throws CommandSQLParsingException if the SQL is invalid
+   */
+  public ParsedTree parseWithTree(final String sqlText) throws CommandSQLParsingException {
     try {
       // Create lexer
       final CharStream input = CharStreams.fromString(sqlText);
@@ -119,7 +140,7 @@ public record SQLAntlrParser(Database database) {
         stmt.originalStatementAsString = sqlText;
       }
 
-      return stmt;
+      return new ParsedTree(stmt, parseTree);
 
     } catch (final CommandSQLParsingException e) {
       // Re-throw parsing exceptions as-is

@@ -164,7 +164,7 @@ public class NodeByLabelScan extends AbstractPhysicalOperator {
           // A partitioned type whose partition properties are all pinned to literals lives in a
           // single bucket: read that one instead of the whole type.
           final String prunedBucket = PartitionPruning.prunedBucketName(
-              context.getDatabase().getSchema().getType(label), patternProperties);
+              context.getDatabase().getSchema().getType(label), patternProperties, context);
           final ParallelRecordScan parallelScan = parallelCandidate && prunedBucket == null ?
               ParallelRecordScan.plan(context, label, (record, workerContext) -> {
                 final ResultInternal row = new ResultInternal();
@@ -272,7 +272,7 @@ public class NodeByLabelScan extends AbstractPhysicalOperator {
     if (!context.getDatabase().getSchema().existsType(label)
         || !(context.getDatabase().getSchema().getType(label) instanceof VertexType))
       return null;
-    if (PartitionPruning.prunedBucketName(context.getDatabase().getSchema().getType(label), patternProperties) != null)
+    if (PartitionPruning.prunedBucketName(context.getDatabase().getSchema().getType(label), patternProperties, context) != null)
       return null;
 
     final BooleanExpression rowFilter = filter;

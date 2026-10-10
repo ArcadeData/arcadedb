@@ -336,7 +336,7 @@ public class NodeIndexSeek extends AbstractPhysicalOperator {
     // Show every key column the seek resolves, so a prefix seek on a composite index is recognizable
     for (int i = 0; i < keyValues.size(); i++)
       sb.append(", ").append(i < indexProperties.size() ? indexProperties.get(i) : propertyName)
-          .append("=").append(keyValues.get(i));
+          .append("=").append(keyValues.get(i) instanceof Expression expression ? expression.getText() : keyValues.get(i));
     if (whereFilter != null)
       sb.append(", filter: ").append(whereFilter.getText());
     sb.append(", cost=").append(String.format(Locale.US, "%.2f", estimatedCost));

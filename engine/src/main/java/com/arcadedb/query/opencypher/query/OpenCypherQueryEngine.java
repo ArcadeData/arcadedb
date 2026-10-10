@@ -36,6 +36,7 @@ import com.arcadedb.graph.GraphTraversalProviderRegistry.ViewsPassedOver;
 import com.arcadedb.query.OperationType;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.QuerySession;
+import com.arcadedb.query.literal.LiteralParameterizer.Lookup;
 import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.ast.CypherAdminStatement;
 import com.arcadedb.query.opencypher.ast.CypherDDLStatement;
@@ -115,7 +116,9 @@ public class OpenCypherQueryEngine implements QueryEngine {
       final String actual = explain || stripped.regionMatches(true, 0, "PROFILE ", 0, 8) ? stripped.substring(8).trim() : query;
 
       // Use statement cache to avoid re-parsing
-      final CypherStatement statement = database.getCypherStatementCache().get(actual);
+      // The same lookup the execution makes, so the literals of the text are extracted the same way and the cache holds one
+      // entry for both (issue #8307)
+      final CypherStatement statement = database.getCypherStatementCache().getParameterized(actual).statement().statement();
 
       return new AnalyzedQuery() {
         @Override
@@ -177,7 +180,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
    */
   @Override
   public DDLClassification classifyDDL(final String query) {
-    return database.getCypherStatementCache().get(query) instanceof CypherDDLStatement ?
+    return database.getCypherStatementCache().getParameterized(query).statement().statement() instanceof CypherDDLStatement ?
         DDLClassification.DDL :
         DDLClassification.NOT_DDL;
   }
@@ -202,14 +205,19 @@ public class OpenCypherQueryEngine implements QueryEngine {
       final boolean timeExecution = asksForTimedExecution(parameters);
 
       // Use statement cache to avoid re-parsing. Carries the parameter names the query references, so the
-      // check below costs no extra lookup.
-      final ParsedQuery parsed = database.getCypherStatementCache().getParsed(actualQuery);
+      // check below costs no extra lookup. The literals of the text may come back extracted into parameters (issue #8307):
+      // they are bound with the caller's, and the plan is cached under the key they were extracted into. EXPLAIN and PROFILE
+      // plan the text as written, as SQL's do: their plans are never cached, and they show the values the caller wrote.
+      final Lookup<ParsedQuery> lookup = explain || profile ?
+          database.getCypherStatementCache().getAsWritten(actualQuery) :
+          database.getCypherStatementCache().getParameterized(actualQuery);
+      final ParsedQuery parsed = lookup.statement();
       final CypherStatement statement = parsed.statement();
 
       // Make any session parameters (SESSION SET) visible to this query as $name.
       final QuerySession session = currentQuerySession();
-      final Map<String, Object> effectiveParameters = QuerySession.mergeParameters(
-          session != null ? session.getParameters() : null, parameters);
+      final Map<String, Object> effectiveParameters = lookup.mergeParameters(QuerySession.mergeParameters(
+          session != null ? session.getParameters() : null, parameters));
 
       // EXPLAIN never executes the query, so it is also the one mode that tolerates unbound parameters:
       // Neo4j reports them as a notification there instead of failing, which is what makes EXPLAIN usable
@@ -223,7 +231,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
       if (!explain && !statement.isReadOnly())
         throw new QueryNotIdempotentException("Query '" + query + "' is not idempotent");
 
-      return execute(actualQuery, statement, configuration, effectiveParameters, explain, profile, timeExecution);
+      return execute(lookup.cacheKey(), statement, configuration, effectiveParameters, explain, profile, timeExecution);
     } catch (final QueryNotIdempotentException | CommandExecutionException | CommandParsingException | SecurityException
              | NeedRetryException e) {
       // A NeedRetryException keeps its type: Database.transaction(..., retries) retries on it, and SQL lets it through (#9487)
@@ -291,8 +299,13 @@ public class OpenCypherQueryEngine implements QueryEngine {
       final boolean timeExecution = asksForTimedExecution(parameters);
 
       // Use statement cache to avoid re-parsing. Carries the parameter names the query references, so the
-      // check below costs no extra lookup.
-      final ParsedQuery parsed = database.getCypherStatementCache().getParsed(actualQuery);
+      // check below costs no extra lookup. The literals of the text may come back extracted into parameters (issue #8307):
+      // they are bound with the caller's, and the plan is cached under the key they were extracted into. EXPLAIN and PROFILE
+      // plan the text as written, as SQL's do: their plans are never cached, and they show the values the caller wrote.
+      final Lookup<ParsedQuery> lookup = explain || profile ?
+          database.getCypherStatementCache().getAsWritten(actualQuery) :
+          database.getCypherStatementCache().getParameterized(actualQuery);
+      final ParsedQuery parsed = lookup.statement();
       final CypherStatement statement = parsed.statement();
 
       // Make any session parameters (SESSION SET) visible to this command as $name. Resolve the session
@@ -301,8 +314,8 @@ public class OpenCypherQueryEngine implements QueryEngine {
       // through this method - DDL, admin, transaction control, session and the planner pipeline - checks
       // the parameters the same way.
       final QuerySession session = currentQuerySession();
-      final Map<String, Object> effectiveParameters = QuerySession.mergeParameters(
-          session != null ? session.getParameters() : null, parameters);
+      final Map<String, Object> effectiveParameters = lookup.mergeParameters(QuerySession.mergeParameters(
+          session != null ? session.getParameters() : null, parameters));
 
       // See the EXPLAIN note in query(): a plan can be inspected before the values are known.
       if (!explain)
@@ -326,7 +339,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
       if (statement instanceof CypherSessionStatement)
         return executeSession((CypherSessionStatement) statement, session, effectiveParameters);
 
-      return execute(actualQuery, statement, configuration, effectiveParameters, explain, profile, timeExecution);
+      return execute(lookup.cacheKey(), statement, configuration, effectiveParameters, explain, profile, timeExecution);
     } catch (final CommandExecutionException | CommandParsingException | SecurityException | NeedRetryException e) {
       // See query(): a retryable conflict must reach Database.transaction(..., retries) with its own type (#9487)
       throw e;

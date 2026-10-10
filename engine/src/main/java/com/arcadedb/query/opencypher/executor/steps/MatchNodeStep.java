@@ -38,10 +38,12 @@ import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.FunctionCallExpression;
 import com.arcadedb.query.opencypher.ast.LogicalExpression;
 import com.arcadedb.query.opencypher.ast.NodePattern;
+import com.arcadedb.query.opencypher.ast.ParameterExpression;
 import com.arcadedb.query.opencypher.ast.PropertyAccessExpression;
 import com.arcadedb.query.opencypher.ast.VariableExpression;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
+import com.arcadedb.query.opencypher.parser.CypherASTBuilder;
 import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -742,14 +744,16 @@ public class MatchNodeStep extends AbstractExecutionStep {
         scanHashDeclined = true;
         return null;
       }
-      // Prefer a property whose value comes from the row (an expression or a parameter): a literal in the map is the
-      // same for every row and usually the low-cardinality one ({kind: 'X', name: r.v}), a poor key.
+      // Prefer a property whose value comes from the row (an expression): a literal or a parameter in the map is the
+      // same for every row and usually the low-cardinality one ({kind: 'X', name: r.v}, {kind: $k, name: r.v}), a poor
+      // key. A literal the statement cache extracted into a parameter (issue #8307) is one of those too.
       String fallback = null;
       for (final Map.Entry<String, Object> entry : pattern.getProperties().entrySet()) {
         final Object declared = entry.getValue();
         if (!ScanPropertyHashIndex.isSupported(InlineProperties.resolve(declared, currentInputResult, context)))
           continue;
-        if (!(declared instanceof String) && !(declared instanceof Number) && !(declared instanceof Boolean)) {
+        if (!(declared instanceof String) && !(declared instanceof Number) && !(declared instanceof Boolean)
+            && !(declared instanceof CypherASTBuilder.ParameterReference) && !(declared instanceof ParameterExpression)) {
           scanHashProperty = entry.getKey();
           break;
         }
@@ -782,7 +786,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
   }
 
   private Iterator<Identifiable> tryPartitionPrunedIterator(final DocumentType type, final String label) {
-    final String bucketName = PartitionPruning.prunedBucketName(type, pattern.getProperties());
+    final String bucketName = PartitionPruning.prunedBucketName(type, pattern.getProperties(), context);
     if (bucketName == null)
       return null;
 

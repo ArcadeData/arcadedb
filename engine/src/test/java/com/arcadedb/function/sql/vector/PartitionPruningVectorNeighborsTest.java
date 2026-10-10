@@ -113,13 +113,22 @@ class PartitionPruningVectorNeighborsTest extends TestHelper {
     // prune the function sees acme's single Y-axis vector and returns it alone (k=3 caps the
     // result, but only one record lives in that bucket). Without the prune the global top-3
     // are globex/initech/umbrella - so this assertion catches the un-pruned regression.
-    // The predicate is a literal (not a parameter) because the planner-side prune intentionally
-    // refuses to fire on parameter-bound values - the cached plan would freeze the bucket id at
-    // the first execution's binding (see PartitionPruningPlannerTest.parameterizedQuery...).
-    try (final ResultSet rs = database.query("sql",
-        "SELECT `vector.neighbors`('" + TYPE_NAME + "[embedding]', [1.0, 0.0, 0.0], 3) AS neighbors "
-            + "FROM " + TYPE_NAME + " WHERE tenant_id = 'acme' LIMIT 1")) {
+    assertOnlyAcmeNeighbours("SELECT `vector.neighbors`('" + TYPE_NAME + "[embedding]', [1.0, 0.0, 0.0], 3) AS neighbors "
+        + "FROM " + TYPE_NAME + " WHERE tenant_id = 'acme' LIMIT 1");
+  }
 
+  @Test
+  void vectorNeighborsHonorsPartitionPruneOnAParameter() {
+    // A parameter-bound partition key restricts vector.neighbors exactly like the literal (issue #8307): the planner
+    // prunes on the value bound and never caches that plan, so each binding is routed to its own bucket. Without it the
+    // same query answered differently with tenant_id = 'acme' than with tenant_id = ? bound to 'acme'.
+    for (int i = 0; i < 2; i++)
+      assertOnlyAcmeNeighbours("SELECT `vector.neighbors`('" + TYPE_NAME + "[embedding]', [1.0, 0.0, 0.0], 3) AS neighbors "
+          + "FROM " + TYPE_NAME + " WHERE tenant_id = ? LIMIT 1", "acme");
+  }
+
+  private void assertOnlyAcmeNeighbours(final String sql, final Object... args) {
+    try (final ResultSet rs = database.query("sql", sql, args)) {
       assertThat(rs.hasNext()).as("Query must return a row for the acme tenant").isTrue();
       final Result row = rs.next();
       @SuppressWarnings("unchecked")

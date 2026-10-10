@@ -2765,7 +2765,7 @@ class CypherExpressionBuilder {
   /**
    * Try to parse text as a literal value (number, string, boolean, null).
    */
-  Object tryParseLiteral(final String text) {
+  static Object tryParseLiteral(final String text) {
     // Null
     if ("null".equalsIgnoreCase(text)) {
       return null; // Return null as a marker that we found a literal

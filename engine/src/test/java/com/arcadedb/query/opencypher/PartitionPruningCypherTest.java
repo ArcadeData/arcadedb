@@ -25,7 +25,9 @@ import com.arcadedb.schema.LocalDocumentType;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -133,24 +135,26 @@ class PartitionPruningCypherTest extends TestHelper {
   }
 
   @Test
-  void cypherMatchWithParameterDoesNotFirePruning() {
-    // Parameter-bound partition values would bake the bucket id into a cached plan and misroute
-    // later executions; tryPartitionPrunedIterator must reject them. Pins the parameter-skip
-    // contract on the Cypher side.
+  void cypherMatchWithParameterPrunesToTheBucketOfItsOwnValue() {
+    // A parameter-bound partition value prunes like the literal it stands for: tryPartitionPrunedIterator resolves the
+    // bucket while the step executes, from that execution's own bindings, so no bucket id is ever baked into a cached plan
+    // and a later execution with another value is routed to its own bucket (issue #8307).
     createPartitionedVertexTypeThenDropIndex();
     populate();
 
-    final Map<String, Object> params = new HashMap<>();
-    params.put("t", "acme");
-    final ResultSet rs = database.query("cypher",
-        "PROFILE MATCH (n:" + TYPE_NAME + " {tenant_id: $t}) RETURN n.tenant_id AS x", params);
-    while (rs.hasNext())
-      rs.next();
-    final String plan = rs.getExecutionPlan().orElseThrow().prettyPrint(0, 2);
-    rs.close();
-    assertThat(plan)
-        .as("parameter-bound partition value must not trigger the pruning marker")
-        .doesNotContain("[partition:");
+    for (final String tenant : new String[] { "acme", "globex" }) {
+      final Map<String, Object> params = new HashMap<>();
+      params.put("t", tenant);
+      final ResultSet rs = database.query("cypher",
+          "PROFILE MATCH (n:" + TYPE_NAME + " {tenant_id: $t}) RETURN n.tenant_id AS x", params);
+      final List<String> found = new ArrayList<>();
+      while (rs.hasNext())
+        found.add(rs.next().getProperty("x"));
+      final String plan = rs.getExecutionPlan().orElseThrow().prettyPrint(0, 2);
+      rs.close();
+      assertThat(plan).as("a parameter-bound partition value prunes").contains("[partition:");
+      assertThat(found).as("the bucket of the value bound in this execution").containsExactly(tenant);
+    }
   }
 
   private String profilePlan(final String cypher) {
