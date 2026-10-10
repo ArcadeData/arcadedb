@@ -153,6 +153,28 @@ class Issue9644PromQLBoolModifierTest extends TestHelper {
   }
 
   @Test
+  void aBoolComparisonInsideAnAggregationCountsTheTrueSamples() {
+    database.command("sql", "CREATE TIMESERIES TYPE a9644 TIMESTAMP ts TAGS (host STRING) FIELDS (value DOUBLE)");
+    database.transaction(() -> {
+      database.command("sql", "INSERT INTO a9644 SET ts = 5000, host = 'h1', value = 5.0");
+      database.command("sql", "INSERT INTO a9644 SET ts = 5000, host = 'h2', value = 0.5");
+      database.command("sql", "INSERT INTO a9644 SET ts = 5000, host = 'h3', value = 2.0");
+    });
+    // sum over 0/1 counts the hosts above the threshold; the filter form would sum their values instead
+    final VectorSample sum = only("sum(a9644 > bool 1)");
+    assertThat(sum.value()).isEqualTo(2.0);
+    assertThat(sum.labels()).isEmpty();
+    assertThat(only("count(a9644 > bool 1)").value()).isEqualTo(3.0);
+
+    final InstantVector byHost = evaluate("sum by (host) (a9644 > bool 1)");
+    assertThat(byHost.samples()).hasSize(3);
+    for (final VectorSample s : byHost.samples()) {
+      assertThat(s.labels()).doesNotContainKey("__name__");
+      assertThat(s.value()).isEqualTo("h2".equals(s.labels().get("host")) ? 0.0 : 1.0);
+    }
+  }
+
+  @Test
   void aNaNSampleComparesAsPrometheusDoes() {
     // 5.5 * 0 / 0 = NaN on both sides: NaN == NaN is false, NaN != NaN is true, as in Go
     assertThat(only("(m9644 * 0 / 0) == bool (m9644 * 0 / 0)").value()).isEqualTo(0.0);

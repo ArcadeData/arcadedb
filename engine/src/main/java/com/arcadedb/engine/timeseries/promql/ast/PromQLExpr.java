@@ -53,11 +53,16 @@ public sealed interface PromQLExpr {
   record BinaryExpr(PromQLExpr left, BinaryOp op, PromQLExpr right, boolean returnBool) implements PromQLExpr {
     public BinaryExpr {
       if (returnBool && !op.isComparison())
-        throw new IllegalArgumentException("bool modifier can only be used on comparison operators, not on '" + op.symbol() + "'");
+        throw new IllegalArgumentException(boolOnNonComparisonMessage(op));
     }
 
     public BinaryExpr(final PromQLExpr left, final BinaryOp op, final PromQLExpr right) {
       this(left, op, right, false);
+    }
+
+    /** The error for the {@code bool} modifier on a non-comparison operator, shared with the parser. */
+    public static String boolOnNonComparisonMessage(final BinaryOp op) {
+      return "bool modifier can only be used on comparison operators, not on '" + op.symbol() + "'";
     }
   }
 

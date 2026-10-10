@@ -122,8 +122,7 @@ public class PromQLParser {
   private BinaryOp rejectBool(final BinaryOp op) {
     final int boolPos = lexer.matchKeywordAt("bool");
     if (boolPos >= 0)
-      throw new IllegalArgumentException(
-          "bool modifier can only be used on comparison operators, not on '" + op.symbol() + "' at position " + boolPos);
+      throw new IllegalArgumentException(BinaryExpr.boolOnNonComparisonMessage(op) + " at position " + boolPos);
     return op;
   }
 
