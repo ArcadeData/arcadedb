@@ -873,7 +873,7 @@ public class ServerControlPlane {
   public JSONArray listQueries(final ServerSecurityUser user, final String database, final String tag) {
     final JSONArray result = new JSONArray();
     for (final RunningQuery query : server.getRunningQueries().getRunning())
-      if (isVisible(user, query.getUser()) && (database == null || database.equals(query.getDatabase()))
+      if (isVisible(user, query) && (database == null || database.equals(query.getDatabase()))
           && (tag == null || tag.equals(query.getTag())))
         result.put(query.toJSON().put("server", server.getServerName()));
     return result;
@@ -890,8 +890,12 @@ public class ServerControlPlane {
    * </ul>
    */
   public JSONObject terminateQuery(final ServerSecurityUser user, final String id, final long waitMs) {
-    final RunningQuery query = user != null ? server.getRunningQueries().get(id) : null;
-    if (query == null || !isVisible(user, query.getUser()))
+    RunningQuery query = user != null ? server.getRunningQueries().get(id) : null;
+    if (query == null && user != null)
+      // A statement another node forwarded here is found by the id it has there too: that node's terminate reaches the
+      // work through it (issue #9689)
+      query = server.getRunningQueries().getForwardedFrom(id);
+    if (query == null || !isVisible(user, query))
       return new JSONObject().put("id", id).put("status", "not found");
 
     query.terminate(user.getName());
@@ -904,7 +908,7 @@ public class ServerControlPlane {
       return new JSONArray();
     final List<RunningQuery> matching = new ArrayList<>();
     for (final RunningQuery query : server.getRunningQueries().getRunning())
-      if (tag.equals(query.getTag()) && isVisible(user, query.getUser())) {
+      if (tag.equals(query.getTag()) && isVisible(user, query)) {
         query.terminate(user.getName());
         matching.add(query);
       }
@@ -1024,6 +1028,10 @@ public class ServerControlPlane {
    * commands authenticated, so a {@code null} here can only be a caller that forgot to pass one, and stopping somebody's
    * work is the one place where failing closed is the safe answer to that.
    */
+  private boolean isVisible(final ServerSecurityUser user, final RunningQuery query) {
+    return user != null && server.getRunningQueries().isVisible(user.getName(), query);
+  }
+
   private static boolean isVisible(final ServerSecurityUser user, final String owner) {
     return user != null && (ServerSecurityUser.isServerAdministrator(user.getName()) || user.getName().equals(owner));
   }

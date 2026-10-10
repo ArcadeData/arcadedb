@@ -231,6 +231,10 @@ public class OpenCypherQueryEngine implements QueryEngine {
       if (!explain && !statement.isReadOnly())
         throw new QueryNotIdempotentException("Query '" + query + "' is not idempotent");
 
+      // SHOW/TERMINATE TRANSACTIONS read no data and are answered by the server's registry, not by a plan (issue #9689)
+      if (!explain && statement instanceof CypherAdminStatement admin && admin.isTransactionsCommand())
+        return executeAdmin(admin, actualQuery, effectiveParameters);
+
       return execute(lookup.cacheKey(), statement, configuration, effectiveParameters, explain, profile, timeExecution);
     } catch (final QueryNotIdempotentException | CommandExecutionException | CommandParsingException | SecurityException
              | NeedRetryException e) {
@@ -845,6 +849,11 @@ public class OpenCypherQueryEngine implements QueryEngine {
    */
   private ResultSet executeAdmin(final CypherAdminStatement admin, final String query,
       final Map<String, Object> parameters) {
+    // SHOW/TERMINATE TRANSACTIONS act on the server's running statements, not on the security manager: every user may run
+    // them, and sees and stops only their own statements unless they administer the server (issue #9689)
+    if (admin.isTransactionsCommand())
+      return new CypherTransactionsCommand(database, EXPRESSION_EVALUATOR, query, parameters).execute(admin);
+
     final SecurityManager security = database.getSecurity();
     if (security == null)
       throw new CommandExecutionException("User management commands require server mode");

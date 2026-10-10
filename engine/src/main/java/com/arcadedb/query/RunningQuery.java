@@ -19,10 +19,15 @@
 package com.arcadedb.query;
 
 import com.arcadedb.exception.QueryTerminatedException;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONObject;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
+import java.util.logging.Level;
 import java.util.regex.Pattern;
 
 /**
@@ -45,6 +50,12 @@ import java.util.regex.Pattern;
  * {@link #getOutcome()} then says whether it was the termination that ended the statement or the statement ended on
  * its own first - a write that committed before it reached a check is not undone by a termination that came too late,
  * and the caller is told so rather than told it was stopped.
+ * <p>
+ * <b>Work that does not run on the thread that opened the entry</b> (issue #9689): a protocol that serves a statement
+ * across several messages - Bolt's RUN then PULL, a gRPC call hopping to its transaction's thread, a script running on
+ * the polyglot pool - opens the entry with {@link RunningQueryRegistry#open} and {@link #bind() binds} it wherever and
+ * whenever the statement's work runs. Work no flag can reach - a guest language loop, a statement forwarded to another
+ * server - registers a {@link #onTerminate(Runnable) termination listener} that stops it by its own means.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -87,7 +98,18 @@ public final class RunningQuery implements AutoCloseable {
   private final CountDownLatch       ended = new CountDownLatch(1);
   private volatile String            language;
   private volatile String            text;
+  /** The statement's text, for a protocol that would pay to build it on every request: computed only when listed. */
+  private volatile Supplier<String>  textSupplier;
   private volatile String            terminatedBy;
+  /** Which client connection runs the statement, in the protocol's own terms (a Postgres backend pid, a Bolt connection). */
+  private volatile String            connectionId;
+  private volatile String            clientAddress;
+  /** The query id this statement has on the server that forwarded it here, when it was forwarded (HA). */
+  private volatile String            forwardedFrom;
+  /** The server this statement was forwarded to and is running on, while it is (HA). */
+  private volatile String            forwardedTo;
+  /** Who to tell when the statement is asked to stop, besides the flag. Guarded by this entry's monitor. */
+  private          List<Runnable>    terminationListeners;
   /** Whether a check saw the termination and failed the statement for it. */
   private volatile boolean           terminationObserved;
   /** Whether what the statement wrote was rolled back after it ended, with the transaction session it ran in. */
@@ -132,6 +154,18 @@ public final class RunningQuery implements AutoCloseable {
   public void setStatement(final String language, final String text) {
     this.language = language;
     this.text = text;
+    this.textSupplier = null;
+  }
+
+  /**
+   * Records what the statement is as a function that builds its text, for a protocol whose requests do not carry it as
+   * text - a MongoDB command document, a Redis command line - so building it is paid only by a listing (issue #9689).
+   * The function runs on the listing thread while the statement runs: it must only read what the request carries.
+   */
+  public void setStatement(final String language, final Supplier<String> text) {
+    this.language = language;
+    this.text = null;
+    this.textSupplier = text;
   }
 
   /**
@@ -158,11 +192,88 @@ public final class RunningQuery implements AutoCloseable {
    *
    * @return {@code false} if the statement had already been asked to stop
    */
-  public synchronized boolean terminate(final String by) {
-    if (terminatedBy != null)
-      return false;
-    terminatedBy = by != null ? by : "unknown";
+  public boolean terminate(final String by) {
+    final List<Runnable> listeners;
+    synchronized (this) {
+      if (terminatedBy != null)
+        return false;
+      terminatedBy = by != null ? by : "unknown";
+      listeners = terminationListeners;
+      terminationListeners = null;
+    }
+    // Outside the monitor: a listener may block for a while (a guest language unwinding, a request to another server)
+    if (listeners != null)
+      for (final Runnable listener : listeners)
+        notifyTermination(listener);
     return true;
+  }
+
+  /**
+   * Runs {@code listener} when the statement is asked to stop, on the thread that asks - at once if it already was. For
+   * work the flag cannot reach: a guest language loop, a statement forwarded to another server. The listener must be
+   * quick to return or bounded, must not throw, and must stop only this statement's work: it may run after the work it
+   * was registered for is over, so it has to check that before acting.
+   *
+   * @return closing it unregisters the listener; a listener that ran, or was never registered, closes as a no-op
+   */
+  public AutoCloseable onTerminate(final Runnable listener) {
+    synchronized (this) {
+      if (terminatedBy == null) {
+        if (terminationListeners == null)
+          terminationListeners = new ArrayList<>(2);
+        terminationListeners.add(listener);
+        return () -> {
+          synchronized (RunningQuery.this) {
+            if (terminationListeners != null)
+              terminationListeners.remove(listener);
+          }
+        };
+      }
+    }
+    notifyTermination(listener);
+    return () -> {
+    };
+  }
+
+  private void notifyTermination(final Runnable listener) {
+    try {
+      listener.run();
+    } catch (final Throwable t) {
+      LogManager.instance().log(this, Level.WARNING, "Error notifying the termination of query %s", t, getId());
+    }
+  }
+
+  /**
+   * Publishes the entry on the calling thread until the returned binding is closed, for an entry opened with
+   * {@link RunningQueryRegistry#open} or one whose work continues on another thread. Every command context created on
+   * the thread meanwhile carries the entry, and every commit the thread attempts checks it. Closing the binding gives
+   * the thread back the entry it had before; it does not end the entry, which {@link #close()} does.
+   */
+  public Binding bind() {
+    return new Binding();
+  }
+
+  /** The time an entry is published on a thread other than through its registration, see {@link #bind()}. */
+  public final class Binding implements AutoCloseable {
+    private final RunningQuery previousOnThread = CURRENT.get();
+    private       boolean      closed;
+
+    private Binding() {
+      CURRENT.set(RunningQuery.this);
+    }
+
+    @Override
+    public void close() {
+      if (closed)
+        return;
+      closed = true;
+      if (CURRENT.get() == RunningQuery.this) {
+        if (previousOnThread != null && !previousOnThread.isEnded())
+          CURRENT.set(previousOnThread);
+        else
+          CURRENT.remove();
+      }
+    }
   }
 
   public boolean isTerminated() {
@@ -274,12 +385,63 @@ public final class RunningQuery implements AutoCloseable {
 
   /** The statement as it is listed: masked and truncated, see {@link #maskAndTruncate(String)}. */
   public String getText() {
-    final String raw = text;
+    String raw = text;
+    if (raw == null) {
+      final Supplier<String> supplier = textSupplier;
+      if (supplier != null)
+        try {
+          raw = supplier.get();
+        } catch (final RuntimeException e) {
+          // A request read while it is served: what cannot be described is listed without its text
+          return null;
+        }
+    }
     return raw == null ? null : maskAndTruncate(raw);
   }
 
   public String getTerminatedBy() {
     return terminatedBy;
+  }
+
+  /** The registry the entry belongs to: the server's, which lists and terminates the statements running there. */
+  public RunningQueryRegistry getRegistry() {
+    return registry;
+  }
+
+  /**
+   * Records which client connection runs the statement, for the listing: {@code connectionId} in the protocol's own
+   * terms (the Postgres backend pid a {@code pg_cancel_backend} takes, a Bolt connection), and the client's address.
+   */
+  public RunningQuery setConnection(final String connectionId, final String clientAddress) {
+    this.connectionId = connectionId;
+    this.clientAddress = clientAddress;
+    return this;
+  }
+
+  public String getConnectionId() {
+    return connectionId;
+  }
+
+  public String getClientAddress() {
+    return clientAddress;
+  }
+
+  /** Records the id the statement has on the server that forwarded it here (HA): that server's terminate finds it by it. */
+  public void setForwardedFrom(final String forwardedFrom) {
+    this.forwardedFrom = forwardedFrom;
+  }
+
+  public String getForwardedFrom() {
+    return forwardedFrom;
+  }
+
+  /** Records, while it is so, that the statement runs on another server it was forwarded to (HA); {@code null} when back. */
+  public void setForwardedTo(final String forwardedTo) {
+    this.forwardedTo = forwardedTo;
+  }
+
+  public String getForwardedTo() {
+    return forwardedTo;
   }
 
   public long getStartedAt() {
@@ -307,6 +469,14 @@ public final class RunningQuery implements AutoCloseable {
       json.put("tag", tag);
     if (terminatedBy != null)
       json.put("terminatedBy", terminatedBy);
+    if (connectionId != null)
+      json.put("connectionId", connectionId);
+    if (clientAddress != null)
+      json.put("clientAddress", clientAddress);
+    if (forwardedFrom != null)
+      json.put("forwardedFrom", forwardedFrom);
+    if (forwardedTo != null)
+      json.put("forwardedTo", forwardedTo);
     return json;
   }
 

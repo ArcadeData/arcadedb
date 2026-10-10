@@ -21,6 +21,7 @@ package com.arcadedb.mongo;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.QueryAdmissionException;
+import com.arcadedb.query.RunningQuery;
 import com.arcadedb.query.sql.executor.QueryAdmissionGate;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.security.ServerSecurityException;
@@ -134,6 +135,9 @@ public class MongoDBBackend extends AbstractMongoBackend {
       throw new MongoServerError(EXCEEDED_TIME_LIMIT, "ExceededTimeLimit", e.getMessage());
     }
 
+    // Listed by "list queries" / SHOW TRANSACTIONS and stopped by a terminate (issue #9689), over the same window as the
+    // slot. The command document is described only if somebody lists it
+    final RunningQuery runningQuery = admission != null ? registerRunningQuery(channel, databaseName, command, query, user) : null;
     try {
       final DatabaseInternal database = (DatabaseInternal) server.getDatabase(databaseName);
       final DatabaseContext.DatabaseContextTL ctx = DatabaseContext.INSTANCE.init(database);
@@ -144,9 +148,23 @@ public class MongoDBBackend extends AbstractMongoBackend {
         ctx.setCurrentUser(null);
       }
     } finally {
-      if (admission != null)
-        admission.close();
+      try {
+        if (admission != null)
+          admission.close();
+      } finally {
+        // LAST: THE ENTRY LEAVING THE LIST IS THE PROOF THE WORK IS OVER
+        if (runningQuery != null)
+          runningQuery.close();
+      }
     }
+  }
+
+  private RunningQuery registerRunningQuery(final Channel channel, final String databaseName, final String command,
+      final Document query, final ServerSecurityUser user) {
+    final RunningQuery runningQuery = server.getRunningQueries().register(databaseName, user.getName(), "mongodb", null, null);
+    runningQuery.setStatement("mongo", () -> command + " " + query.toString());
+    runningQuery.setConnection(channel.id().asShortText(), String.valueOf(channel.remoteAddress()));
+    return runningQuery;
   }
 
   @Override

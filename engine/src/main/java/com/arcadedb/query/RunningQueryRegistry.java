@@ -24,6 +24,7 @@ import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Predicate;
 
 /**
  * The statements in progress, by id (issue #9680). A server owns one; a protocol opens an entry around each statement
@@ -40,6 +41,8 @@ public final class RunningQueryRegistry {
   // Random per registry: part of every id this registry hands out, so an id never resolves on a node that did not issue it
   private final String                                instanceTag = Integer.toHexString(ThreadLocalRandom.current().nextInt() | 0x10000000);
   private final ConcurrentHashMap<Long, RunningQuery> running = new ConcurrentHashMap<>();
+  // Who sees and stops every statement rather than only their own: nobody until the server says who administers it
+  private volatile Predicate<String>                  administrator = user -> false;
 
   /**
    * Opens the entry of a statement about to run on the calling thread and publishes it there
@@ -53,10 +56,34 @@ public final class RunningQueryRegistry {
    */
   public RunningQuery register(final String database, final String user, final String protocol, final String sessionId,
       final String tag) {
-    final RunningQuery query = new RunningQuery(this, lastId.incrementAndGet(), database, user, protocol, sessionId, tag);
-    running.put(query.getNumericId(), query);
+    final RunningQuery query = open(database, user, protocol, sessionId, tag);
     query.publish();
     return query;
+  }
+
+  /**
+   * Opens the entry of a statement without publishing it on the calling thread, for a statement whose work runs across
+   * several messages or on another thread (issue #9689): the protocol {@link RunningQuery#bind() binds} it wherever the
+   * work runs and closes it once the statement is over. Same parameters as {@link #register}.
+   */
+  public RunningQuery open(final String database, final String user, final String protocol, final String sessionId,
+      final String tag) {
+    final RunningQuery query = new RunningQuery(this, lastId.incrementAndGet(), database, user, protocol, sessionId, tag);
+    running.put(query.getNumericId(), query);
+    return query;
+  }
+
+  /** Who sees and stops every statement running here; anybody else sees and stops only their own. */
+  public void setAdministrator(final Predicate<String> administrator) {
+    this.administrator = administrator != null ? administrator : user -> false;
+  }
+
+  /**
+   * Whether {@code viewer} may see and stop {@code query}: the administrator may see every statement, anybody else
+   * only their own. Every surface that lists or terminates statements asks this, so they cannot disagree.
+   */
+  public boolean isVisible(final String viewer, final RunningQuery query) {
+    return viewer != null && query != null && (administrator.test(viewer) || viewer.equals(query.getUser()));
   }
 
   /**
@@ -75,6 +102,20 @@ public final class RunningQueryRegistry {
     } catch (final NumberFormatException e) {
       return null;
     }
+  }
+
+  /**
+   * The running statement another server forwarded here as its statement {@code id} (see
+   * {@link RunningQuery#getForwardedFrom()}), or {@code null}.
+   */
+  public RunningQuery getForwardedFrom(final String id) {
+    if (id == null)
+      return null;
+    final String value = id.trim();
+    for (final RunningQuery query : running.values())
+      if (value.equalsIgnoreCase(query.getForwardedFrom()))
+        return query;
+    return null;
   }
 
   /** The tag that sets this registry's ids apart from any other's. */
