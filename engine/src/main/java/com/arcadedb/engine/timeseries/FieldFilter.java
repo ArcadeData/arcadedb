@@ -82,6 +82,9 @@ public final class FieldFilter {
     NONE, ALL, SOME
   }
 
+  /** Up to this magnitude (2^53) a double holds every integer exactly. */
+  private static final long EXACT_INTEGRAL_DOUBLE = 1L << 53;
+
   private final List<Condition> conditions;
 
   private FieldFilter(final List<Condition> conditions) {
@@ -250,8 +253,10 @@ public final class FieldFilter {
       final double high = condition.highLong;
       if ((condition.lowLong != Long.MIN_VALUE && max < low) || (condition.highLong != Long.MAX_VALUE && min > high))
         return BlockMatch.NONE;
-      final boolean aboveLow = condition.lowLong == Long.MIN_VALUE || min > low;
-      final boolean belowHigh = condition.highLong == Long.MAX_VALUE || max < high;
+      // Within 2^53 a bound is a double exactly, and a minimum the double says is at or above it is too: a minimum below the
+      // bound rounds to at most the bound's double, which is the bound. Past 2^53 only a strict inequality proves anything
+      final boolean aboveLow = condition.lowLong == Long.MIN_VALUE || min > low || (min == low && exactAsDouble(condition.lowLong));
+      final boolean belowHigh = condition.highLong == Long.MAX_VALUE || max < high || (max == high && exactAsDouble(condition.highLong));
       return aboveLow && belowHigh && present == samples ? BlockMatch.ALL : BlockMatch.SOME;
     }
 
@@ -259,6 +264,15 @@ public final class FieldFilter {
         || (min == condition.high && !condition.highInclusive))
       return BlockMatch.NONE;
     return condition.matches(min) && condition.matches(max) && present == samples ? BlockMatch.ALL : BlockMatch.SOME;
+  }
+
+  /**
+   * Whether a stat EQUAL to {@code bound} as a double proves the value is on the bound's side of it: true when the bound and
+   * its neighbours are all exact doubles, so no value past the bound rounds onto it. The LONG decides, since its double may
+   * already be rounded, and the range is open because at 2^53 the neighbour outside it rounds onto the bound itself.
+   */
+  private static boolean exactAsDouble(final long bound) {
+    return bound > -EXACT_INTEGRAL_DOUBLE && bound < EXACT_INTEGRAL_DOUBLE;
   }
 
   /**
