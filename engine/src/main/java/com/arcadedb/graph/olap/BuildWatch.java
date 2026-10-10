@@ -23,6 +23,7 @@ import com.arcadedb.database.RID;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
@@ -90,6 +91,12 @@ final class BuildWatch implements CSRBuilder.ScanObserver, DeltaOverlay.ExactSca
   // scan thread fills it, and account() reads and mutates the inner maps only after the build's publication hand-off,
   // under the view's monitor.
   private final Map<RID, Map<LightEndpoint, int[]>> observedLightEdges = new ConcurrentHashMap<>();
+  // The pairs a lightweight change that may have raced the scan was reconciled on by counting, not yet checked against
+  // the graph by the view. Written by account() only, under the view's monitor
+  private final Set<RacedLightPair>          racedLightPairs = new HashSet<>();
+  // Lightweight changes numbered from here on were reported after close(), so after the scan: the scan cannot have read
+  // them, and they are answered exactly, without counting. Set by close()
+  private volatile long                      lightChangesBeforeClose = Long.MAX_VALUE;
   private static final int                   SEEN           = 0;
   private static final int                   CAPTURED       = 1;
   private static final int                   NOT_CAPTURED   = 2;
@@ -219,6 +226,7 @@ final class BuildWatch implements CSRBuilder.ScanObserver, DeltaOverlay.ExactSca
    */
   synchronized List<TxDelta> close() {
     open = false;
+    lightChangesBeforeClose = TxDelta.lightEdgeChangesSoFar();
     return bufferedDeltas;
   }
 
@@ -286,14 +294,18 @@ final class BuildWatch implements CSRBuilder.ScanObserver, DeltaOverlay.ExactSca
    * That is exact whenever a triple has at most one copy at a time - always, on a {@code UNIQUE} type - since a copy the
    * scan saw is then either this addition or one an earlier buffered deletion removed - and whenever every copy of the
    * triple is one of the buffered additions. A duplicate of a copy older than the watch is where it errs: that older copy
-   * is counted as one of the additions, which nothing recorded can tell apart, and the answer errs towards "read".
+   * is counted as one of the additions, which nothing recorded can tell apart, and the answer errs towards "read". So
+   * every pair answered this way is handed to the view ({@link #takeRacedLightPairs}), which checks it against the graph
+   * and rebuilds rather than serve it wrong. A change reported after the watch closed is not counted: it is answered
+   * exactly.
    */
   private boolean sawLightEdge(final TxDelta.EdgeDelta ed) {
     // Read before the source was registered, so before this addition committed
     if (!observedSources.containsKey(ed.source))
       return false;
+    final boolean raced = racedTheScan(ed);
     final int[] copies = lightCopies(ed);
-    if (copies[CAPTURED] < copies[SEEN]) {
+    if (raced && copies[CAPTURED] < copies[SEEN]) {
       copies[CAPTURED]++;
       return true;
     }
@@ -305,6 +317,7 @@ final class BuildWatch implements CSRBuilder.ScanObserver, DeltaOverlay.ExactSca
   private boolean lightEdgeAlreadyMissing(final TxDelta.EdgeDelta ed) {
     if (!observedSources.containsKey(ed.source))
       return false;
+    final boolean raced = racedTheScan(ed);
     final int[] copies = lightCopies(ed);
     // The merge withdraws an overlay addition of the pair first, without asking: one the scan did not read
     if (copies[NOT_CAPTURED] > 0) {
@@ -316,6 +329,18 @@ final class BuildWatch implements CSRBuilder.ScanObserver, DeltaOverlay.ExactSca
       copies[CAPTURED] = Math.min(copies[CAPTURED], copies[SEEN]);
       return false;
     }
+    // A deletion reported after the scan removed a copy the base holds, whatever the counts say
+    return raced;
+  }
+
+  /**
+   * Whether this change may have committed before the scan read its source: one reported after the watch closed cannot
+   * have. Only such a change is answered by counting, and its pair is left for the view to check against the graph.
+   */
+  private boolean racedTheScan(final TxDelta.EdgeDelta ed) {
+    if (TxDelta.lightEdgeChangeOf(ed.rid) >= lightChangesBeforeClose)
+      return false;
+    racedLightPairs.add(new RacedLightPair(ed.source, ed.rid.getBucketId(), ed.target));
     return true;
   }
 
@@ -324,8 +349,24 @@ final class BuildWatch implements CSRBuilder.ScanObserver, DeltaOverlay.ExactSca
         .computeIfAbsent(new LightEndpoint(ed.rid.getBucketId(), ed.target), k -> new int[3]);
   }
 
+  /**
+   * Hands over the pairs reconciled by counting since the last call, for the view to check against the graph: the
+   * counting is exact unless duplicated copies are involved, and nothing it records can say whether they were.
+   */
+  Set<RacedLightPair> takeRacedLightPairs() {
+    if (racedLightPairs.isEmpty())
+      return Collections.emptySet();
+    final Set<RacedLightPair> taken = new HashSet<>(racedLightPairs);
+    racedLightPairs.clear();
+    return taken;
+  }
+
   /** A lightweight out-edge as the scan reads it: the bucket of its type, and its far end. */
   private record LightEndpoint(int edgeTypeBucketId, RID target) {
+  }
+
+  /** A pair a lightweight edge change raced the scan on: source, edge type bucket and target. */
+  record RacedLightPair(RID source, int edgeTypeBucketId, RID target) {
   }
 
   @Override

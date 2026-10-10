@@ -156,6 +156,41 @@ class Issue9572LightEdgeBuildWatchTest extends TestHelper {
         .merge(twin, scan.result().getMapping(), scan.result().getCsrPerType(), watch);
     assertThat(liveEdges()).isEqualTo(2);
     assertThat(scan.fresh() + overlay.getDeltaEdgeCount()).isEqualTo(1);
+    // Which is why the pair is handed to the view, to be checked against the graph before it is served
+    assertThat(watch.takeRacedLightPairs())
+        .containsExactly(new BuildWatch.RacedLightPair(a, database.getSchema().getType("K").getFirstBucketId(), b));
+    assertThat(watch.takeRacedLightPairs()).as("handed over once").isEmpty();
+  }
+
+  /**
+   * A change reported after the watch closed cannot have been read by the scan, so it is answered exactly, without
+   * counting: here a duplicate of a copy older than the build, the case counting cannot settle, is added.
+   */
+  @Test
+  void aDuplicateCopyReportedAfterTheWatchClosedIsAdded() {
+    newEdge();
+    final BuildWatch watch = openWatch();
+    final Scan scan = scan(watch);
+    watch.close();
+    watch.bindTo(scan.result().getCsrPerType());
+    final TxDelta twin = newEdge();
+
+    DeltaOverlay overlay = new DeltaOverlay(scan.result().getMapping().size());
+    watch.account(twin);
+    overlay = overlay.merge(twin, scan.result().getMapping(), scan.result().getCsrPerType(), watch);
+    assertThat(liveEdges()).isEqualTo(2);
+    assertThat(scan.fresh() + overlay.getDeltaEdgeCount()).isEqualTo(2);
+
+    // And a deletion reported after it removes a copy, never one the counts take as already missing
+    final TxDelta deleted = deleteEdge();
+    final TxDelta deletedAgain = deleteEdge();
+    for (final TxDelta delta : List.of(deleted, deletedAgain)) {
+      watch.account(delta);
+      overlay = overlay.merge(delta, scan.result().getMapping(), scan.result().getCsrPerType(), watch);
+    }
+    assertThat(liveEdges()).isZero();
+    assertThat(scan.fresh() + overlay.getDeltaEdgeCount()).isZero();
+    assertThat(watch.takeRacedLightPairs()).as("nothing for the view to check").isEmpty();
   }
 
   private BuildWatch openWatch() {

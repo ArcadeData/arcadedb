@@ -153,5 +153,18 @@ class TxDelta {
     return new RID(edgeTypeBucketId, -2L - LIGHT_EDGE_CHANGES.getAndIncrement());
   }
 
+  /**
+   * The sequence number of the lightweight change a {@link #lightEdgeKey} names: changes are numbered as they are
+   * reported, inside their transaction and so before it commits.
+   */
+  static long lightEdgeChangeOf(final RID key) {
+    return -2L - key.getPosition();
+  }
+
+  /** How many lightweight changes were reported so far: every later one is numbered from here. */
+  static long lightEdgeChangesSoFar() {
+    return LIGHT_EDGE_CHANGES.get();
+  }
+
   private static final AtomicLong LIGHT_EDGE_CHANGES = new AtomicLong();
 }
