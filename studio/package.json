@@ -40,7 +40,6 @@
     "datatables.net-select": "^4.1.1",
     "datatables.net-select-bs5": "^4.1.1",
     "jquery": "^4.0.0",
-    "marked": "^18.0.14",
     "jszip": "^3.10.2",
     "pdfmake": "^0.3.11",
     "swagger-ui-dist": "^5.33.0",

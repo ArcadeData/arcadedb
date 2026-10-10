@@ -18,13 +18,18 @@
  */
 
 /*
- * Markdown-lite for the comments of a support issue (Support tab). The comment that Studio posts for the answer to a support
- * request is "**label**" and a pipe table, and support staff write light markdown too; shown as plain text it is unreadable.
+ * Markdown-lite for every piece of untrusted markdown Studio shows: the comments of a support issue (Support tab), the answers
+ * of the AI Assistant and the AI analysis of the profiler. The comment that Studio posts for the answer to a support request is
+ * "**label**" and a pipe table, support staff write light markdown too, and a model writes headings, lists and tables; shown as
+ * plain text all of it is unreadable. None of it is trusted: an AI answer quotes type names and record values from the database
+ * and is delivered by a third-party portal (issue #9626), so it must never reach the page through a renderer that keeps raw
+ * HTML, as `marked` does.
  *
  * The rule that makes it safe: EVERY character of the input is escaped, and only then are the few elements below written, from
- * fixed templates. Supported: paragraphs and line breaks, **bold**, *italic*, `code`, fenced code blocks, pipe tables, bullet and
- * numbered lists (one level) and [text](url) links whose url is http or https. Nothing else: no raw HTML, no <img> (an image is a plain link), no other URL
- * scheme, no autolinks. Work is bounded for hostile input (see the SUPPORT_MD_* limits): a longer body is cut, a longer paragraph
+ * fixed templates. Supported: paragraphs and line breaks, # headings, > block quotes, --- rules, **bold**, *italic*, `code`,
+ * fenced code blocks, pipe tables, bullet and numbered lists (one level) and [text](url) links whose url is http or https.
+ * Nothing else: no raw HTML, no <img> (an image is a plain link), no other URL scheme, no autolinks. Work is bounded for hostile
+ * input (see the SUPPORT_MD_* limits, which a caller can raise through the options): a longer body is cut, a longer paragraph
  * is shown as plain text, a bigger table is cut.
  */
 
@@ -65,6 +70,33 @@ function supportMdInline(text) {
 
 function supportMdIsFence(line) {
   return /^\s*```/.test(line);
+}
+
+/** The language named on an opening fence ("```sql"), or "". Only a plain word: it is a label, never markup. */
+function supportMdFenceLanguage(line) {
+  var m = /^\s*```\s*([A-Za-z0-9_+#.-]{1,32})\s*$/.exec(line);
+  return m ? m[1] : "";
+}
+
+// Each pattern is anchored at the start and has no nested quantifier over the rest of the line, so it is linear; the closing
+// hashes of a heading are stripped by hand (a regex for them backtracks quadratically on a long run of spaces)
+var SUPPORT_MD_HEADING = /^\s{0,3}(#{1,6})\s+(.*)$/;
+var SUPPORT_MD_RULE = /^\s{0,3}([-*_])(\s*\1){2,}\s*$/;
+var SUPPORT_MD_QUOTE = /^\s{0,3}>\s?(.*)$/;
+
+/** The text of a heading without its optional closing hashes ("## Title ##" -> "Title"). */
+function supportMdHeadingText(text) {
+  var end = text.length;
+  while (end > 0 && /\s/.test(text.charAt(end - 1))) end--;
+  var hashes = end;
+  while (hashes > 0 && text.charAt(hashes - 1) === "#") hashes--;
+  if (hashes < end && (hashes === 0 || /\s/.test(text.charAt(hashes - 1)))) end = hashes;
+  return text.substring(0, end).trim();
+}
+
+/** A heading, rule or quote is at most a paragraph long: a longer line is a paragraph, shown as plain text. */
+function supportMdIsBlock(pattern, line) {
+  return line.length <= SUPPORT_MD_MAX_INLINE && pattern.test(line);
 }
 
 var SUPPORT_MD_SEPARATOR = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/;
@@ -109,11 +141,19 @@ function supportMdTable(header, rows) {
   return html + "</tbody></table></div>";
 }
 
-/** The HTML of a comment body: safe to put in the page as it is. */
-function supportMarkdownHtml(text) {
+/**
+ * The HTML of a markdown text: safe to put in the page as it is. The options are all optional:
+ * - maxChars, maxRows: raise the SUPPORT_MD_MAX_CHARS / SUPPORT_MD_MAX_ROWS bounds (an AI answer is longer than a comment);
+ * - codeBlock(code, language): draws a fenced block instead of <pre><code>. It receives the RAW code and language and must
+ *   escape them itself.
+ */
+function supportMarkdownHtml(text, options) {
   if (text == null) return "";
+  var opts = options || {};
+  var maxChars = opts.maxChars > 0 ? opts.maxChars : SUPPORT_MD_MAX_CHARS;
+  var maxRows = opts.maxRows > 0 ? opts.maxRows : SUPPORT_MD_MAX_ROWS;
   var source = String(text).replace(/\u0000/g, "").replace(/\r\n?/g, "\n");
-  if (source.length > SUPPORT_MD_MAX_CHARS) source = source.substring(0, SUPPORT_MD_MAX_CHARS);
+  if (source.length > maxChars) source = source.substring(0, maxChars);
   var lines = source.split("\n");
   var html = "";
   var paragraph = [];
@@ -132,18 +172,38 @@ function supportMarkdownHtml(text) {
       i++;
     } else if (supportMdIsFence(line)) {
       flush();
+      var language = supportMdFenceLanguage(line);
       var code = [];
       i++;
       while (i < lines.length && !supportMdIsFence(lines[i])) code.push(lines[i++]);
       i++; // the closing fence, or the end of the text for one that never closes
-      html += "<pre><code>" + supportMdEsc(code.join("\n")) + "</code></pre>";
+      html += typeof opts.codeBlock === "function" ? opts.codeBlock(code.join("\n"), language) : "<pre><code>" + supportMdEsc(code.join("\n")) + "</code></pre>";
+    } else if (supportMdIsBlock(SUPPORT_MD_HEADING, line)) {
+      flush();
+      var heading = SUPPORT_MD_HEADING.exec(line);
+      var level = heading[1].length;
+      html += "<h" + level + ">" + supportMdInline(supportMdHeadingText(heading[2])) + "</h" + level + ">";
+      i++;
+    } else if (supportMdIsBlock(SUPPORT_MD_RULE, line)) {
+      flush();
+      html += "<hr>";
+      i++;
+    } else if (supportMdIsBlock(SUPPORT_MD_QUOTE, line)) {
+      flush();
+      var quoted = [];
+      while (i < lines.length && supportMdIsBlock(SUPPORT_MD_QUOTE, lines[i])) {
+        if (quoted.length < maxRows) quoted.push(SUPPORT_MD_QUOTE.exec(lines[i])[1]);
+        i++;
+      }
+      // One level, as a paragraph: a nested '>' stays as text
+      html += "<blockquote><p>" + quoted.map(supportMdInline).join("<br>") + "</p></blockquote>";
     } else if (supportMdIsTableStart(lines, i)) {
       flush();
       var header = supportMdCells(line);
       var rows = [];
       i += 2;
       while (i < lines.length && lines[i].trim() && lines[i].indexOf("|") >= 0) {
-        if (rows.length < SUPPORT_MD_MAX_ROWS) rows.push(supportMdCells(lines[i]));
+        if (rows.length < maxRows) rows.push(supportMdCells(lines[i]));
         i++;
       }
       html += supportMdTable(header, rows);
@@ -154,7 +214,7 @@ function supportMarkdownHtml(text) {
       var items = "";
       var count = 0;
       while (i < lines.length && pattern.test(lines[i])) {
-        if (count++ < SUPPORT_MD_MAX_ROWS) items += "<li>" + supportMdInline(pattern.exec(lines[i])[1]) + "</li>";
+        if (count++ < maxRows) items += "<li>" + supportMdInline(pattern.exec(lines[i])[1]) + "</li>";
         i++;
       }
       html += (ordered ? "<ol>" : "<ul>") + items + (ordered ? "</ol>" : "</ul>");

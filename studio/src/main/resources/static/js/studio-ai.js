@@ -1262,64 +1262,31 @@ function aiRunSequential(commands, index, allBtn) {
 
 var aiMarkdownBlockId = 0;
 
+/** The bounds of an answer: well above a support comment, still finite for a hostile one. */
+var AI_MD_MAX_CHARS = 200000;
+var AI_MD_MAX_ROWS = 1000;
+
+/**
+ * The HTML of an assistant answer. The answer is untrusted: the model quotes type names and record values from the database,
+ * and the text arrives from a third-party portal (issue #9626). It goes through the escape-first renderer of
+ * studio-support-markdown.js, never through a library that keeps raw HTML, such as `marked`.
+ */
 function aiRenderMarkdown(text) {
   if (!text) return "";
-
-  // Use marked.js if available, otherwise basic rendering
-  if (typeof marked !== "undefined") {
-    try {
-      var renderer = new marked.Renderer();
-      renderer.code = function(obj) {
-        var code = (typeof obj === "object") ? obj.text : obj;
-        var lang = (typeof obj === "object") ? (obj.lang || "") : "";
-        var id = "aiMdCode_" + (aiMarkdownBlockId++);
-        var langBadge = lang ? '<span class="badge" style="background: var(--color-brand); color: white; font-size: 0.65rem;">' + escapeHtml(lang.toUpperCase()) + '</span>' : '';
-        return '<div style="position: relative; margin: 8px 0; border: 1px solid var(--border-main); border-radius: 6px; overflow: hidden;">' +
-          (langBadge ? '<div style="padding: 4px 8px; background: var(--bg-sidebar); border-bottom: 1px solid var(--border-main);">' + langBadge + '</div>' : '') +
-          '<pre id="' + id + '" style="margin: 0; padding: 12px; background: var(--bg-code); color: var(--text-code); font-size: 0.85rem; overflow-x: auto; white-space: pre-wrap; word-break: break-word;">' +
-          escapeHtml(code) + '</pre>' +
-          '<div style="padding: 4px 8px; border-top: 1px solid var(--border-main); background: var(--bg-sidebar);">' +
-          '<button class="btn btn-link btn-sm p-0" style="color: var(--text-muted); font-size: 0.75rem;" onclick="aiCopyCode(this, \'' + id + '\')" title="Copy to clipboard">' +
-          '<i class="fa fa-copy"></i></button></div></div>';
-      };
-      return marked.parse(text, { renderer: renderer });
-    } catch (e) {
-      // Fallback to basic rendering
-    }
-  }
-  return aiBasicMarkdown(text);
+  return supportMarkdownHtml(text, { maxChars: AI_MD_MAX_CHARS, maxRows: AI_MD_MAX_ROWS, codeBlock: aiRenderCodeBlock });
 }
 
-function aiBasicMarkdown(text) {
-  // Basic markdown rendering without external library
-  var html = escapeHtml(text);
-
-  // Code blocks with language: ```lang\ncode\n```
-  html = html.replace(/```(\w*)\n([\s\S]*?)```/g, function(match, lang, code) {
-    var id = "aiMdCode_" + (aiMarkdownBlockId++);
-    var langBadge = lang ? '<span class="badge" style="background: var(--color-brand); color: white; font-size: 0.65rem;">' + lang.toUpperCase() + '</span>' : '';
-    return '<div style="position: relative; margin: 8px 0; border: 1px solid var(--border-main); border-radius: 6px; overflow: hidden;">' +
-      (langBadge ? '<div style="padding: 4px 8px; background: var(--bg-sidebar); border-bottom: 1px solid var(--border-main);">' + langBadge + '</div>' : '') +
-      '<pre id="' + id + '" style="margin: 0; padding: 12px; background: var(--bg-code); color: var(--text-code); font-size: 0.85rem; overflow-x: auto; white-space: pre-wrap; word-break: break-word;">' +
-      code.trim() + '</pre>' +
-      '<div style="padding: 4px 8px; border-top: 1px solid var(--border-main); background: var(--bg-sidebar);">' +
-      '<button class="btn btn-link btn-sm p-0" style="color: var(--text-muted); font-size: 0.75rem;" onclick="aiCopyCode(this, \'' + id + '\')" title="Copy to clipboard">' +
-      '<i class="fa fa-copy"></i></button></div></div>';
-  });
-
-  // Inline code
-  html = html.replace(/`([^`]+)`/g, '<code style="background: var(--bg-reference); padding: 2px 4px; border-radius: 3px; font-size: 0.9em;">$1</code>');
-
-  // Bold
-  html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-
-  // Italic
-  html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
-
-  // Line breaks
-  html = html.replace(/\n/g, '<br>');
-
-  return html;
+/** A fenced block of an answer, with its language badge and a copy button. Code and language are raw: both are escaped here. */
+function aiRenderCodeBlock(code, lang) {
+  var id = "aiMdCode_" + (aiMarkdownBlockId++);
+  var langBadge = lang ? '<span class="badge" style="background: var(--color-brand); color: white; font-size: 0.65rem;">' + escapeHtml(lang.toUpperCase()) + '</span>' : '';
+  return '<div style="position: relative; margin: 8px 0; border: 1px solid var(--border-main); border-radius: 6px; overflow: hidden;">' +
+    (langBadge ? '<div style="padding: 4px 8px; background: var(--bg-sidebar); border-bottom: 1px solid var(--border-main);">' + langBadge + '</div>' : '') +
+    '<pre id="' + id + '" style="margin: 0; padding: 12px; background: var(--bg-code); color: var(--text-code); font-size: 0.85rem; overflow-x: auto; white-space: pre-wrap; word-break: break-word;">' +
+    escapeHtml(code) + '</pre>' +
+    '<div style="padding: 4px 8px; border-top: 1px solid var(--border-main); background: var(--bg-sidebar);">' +
+    '<button class="btn btn-link btn-sm p-0" style="color: var(--text-muted); font-size: 0.75rem;" onclick="aiCopyCode(this, \'' + id + '\')" title="Copy to clipboard">' +
+    '<i class="fa fa-copy"></i></button></div></div>';
 }
 
 // ===== SQL Helpers =====
