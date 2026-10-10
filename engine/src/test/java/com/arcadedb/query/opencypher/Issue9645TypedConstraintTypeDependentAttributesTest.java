@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.ValidationException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
@@ -122,7 +123,8 @@ class Issue9645TypedConstraintTypeDependentAttributesTest extends TestHelper {
     database.transaction(() -> database.command("sql", "INSERT INTO N SET other = 1").close());
     database.transaction(() -> database.command("sql", "INSERT INTO N SET n = 100").close());
     assertThatThrownBy(() -> database.transaction(() -> database.command("sql", "INSERT INTO N SET n = 101").close()))
-        .hasMessageContaining("100");
+        .isInstanceOf(ValidationException.class)
+        .hasMessageContaining("N.n");
   }
 
   @Test
@@ -161,10 +163,24 @@ class Issue9645TypedConstraintTypeDependentAttributesTest extends TestHelper {
     assertThat(p.getMin()).isEqualTo("2020-01-01");
     assertThat(p.getDefaultValue()).isNotNull();
 
-    database.transaction(() -> database.command("sql", "INSERT INTO W SET other = 1").close());
-    try (final ResultSet rs = database.query("sql", "SELECT d FROM W")) {
-      assertThat(rs.next().<Object>getProperty("d")).isNotNull();
+    // the carried default gives the value the same default declared directly on a DATETIME gives
+    database.command("sql", "CREATE VERTEX TYPE W2");
+    database.command("sql", "CREATE PROPERTY W2.d DATETIME (default '2021-06-01')");
+    database.transaction(() -> {
+      database.command("sql", "INSERT INTO W SET other = 1").close();
+      database.command("sql", "INSERT INTO W2 SET other = 1").close();
+    });
+    final Object direct;
+    try (final ResultSet rs = database.query("sql", "SELECT d FROM W2")) {
+      direct = rs.next().getProperty("d");
     }
+    assertThat(direct).isNotNull();
+    try (final ResultSet rs = database.query("sql", "SELECT d FROM W")) {
+      assertThat(rs.next().<Object>getProperty("d")).isEqualTo(direct);
+    }
+    // the carried MIN is still enforced on the new type
+    assertThatThrownBy(() -> database.transaction(() -> database.command("sql", "INSERT INTO W SET d = '2019-12-31 00:00:00'").close()))
+        .isInstanceOf(ValidationException.class);
   }
 
   @Test
