@@ -343,6 +343,8 @@ public class PostgresNetworkExecutor extends Thread {
   /**
    * Stops the statement this connection is running, if it runs one (issue #9689): it fails at its next check with
    * {@code 57014 query_canceled} and its transaction rolls back as after any other failure. The connection stays open.
+   * Best effort, as on PostgreSQL: a cancel that arrives between two statements stops nothing, and one that crosses the
+   * start of the next statement may stop that one.
    *
    * @return whether a statement was running and has been asked to stop
    */

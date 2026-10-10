@@ -27,6 +27,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -60,6 +61,8 @@ import static org.awaitility.Awaitility.await;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
+// A hang detector, not a latency bound: a terminate that regressed would otherwise leave each test running its 16 s statement
+@Timeout(value = 5, unit = TimeUnit.MINUTES)
 class Issue9689HttpRunningQueryTest extends BaseGraphServerTest {
   /** About 16 s on one core when left alone, all of it inside one aggregation. */
   private static final String LONG_CYPHER =
