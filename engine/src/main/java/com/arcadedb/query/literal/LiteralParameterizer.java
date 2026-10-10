@@ -106,6 +106,10 @@ public abstract class LiteralParameterizer<S> {
   /**
    * Returns the statement for a text, extracting its literals into parameters when {@code parameterize} is true and the
    * language's policy allows it.
+   * <p>
+   * The exact-text lookup that comes first also finds a statement cached under a generated key, when a caller sends that key
+   * as its own text (a query that writes {@code $__lit_i0} itself). That is the same statement its own parse would build, and
+   * the lookup carries no extracted value: like any parameter the text references, {@code __lit_i0} is the caller's to bind.
    */
   public Lookup<S> lookup(final String text, final boolean parameterize) {
     Lookup<S> cached;
@@ -193,9 +197,11 @@ public abstract class LiteralParameterizer<S> {
   private String buildKey(final LiteralScan scan, final byte[] policy, final Map<String, Object> values) {
     final String text = scan.getText();
     final StringBuilder key = new StringBuilder(text.length() + 16);
-    // names given so far, by literal index, so a literal written twice is one parameter: the two occurrences then stay the
-    // same expression, which the projection-matching rules of both languages compare by text
+    // the name given to each group of identical literals, by the group's first literal, so a literal written twice is one
+    // parameter: the two occurrences then stay the same expression, which the projection-matching rules of both languages
+    // compare by text. Members of a group extracted differently (one with a folded sign) get names of their own.
     final String[] names = new String[scan.size()];
+    final byte[] namedAction = new byte[scan.size()];
     int last = 0;
     int ordinal = 0;
     for (int i = 0; i < scan.size(); i++) {
@@ -208,11 +214,8 @@ public abstract class LiteralParameterizer<S> {
       final int end = scan.getEnd(i);
 
       // an identical literal met before, extracted the same way, already has the name
-      String name = null;
       final int group = scan.getDuplicateOf(i) < 0 ? i : scan.getDuplicateOf(i);
-      for (int j = group; j < i && name == null; j++)
-        if (names[j] != null && policy[j] == action && (j == group || scan.getDuplicateOf(j) == group))
-          name = names[j];
+      String name = names[group] != null && namedAction[group] == action ? names[group] : null;
 
       if (name == null) {
         final Object value;
@@ -223,8 +226,11 @@ public abstract class LiteralParameterizer<S> {
         }
         name = PARAMETER_PREFIX + kind(value) + ordinal++;
         values.put(name, value);
+        if (names[group] == null) {
+          names[group] = name;
+          namedAction[group] = action;
+        }
       }
-      names[i] = name;
 
       key.append(text, last, start);
       appendParameter(key, name);

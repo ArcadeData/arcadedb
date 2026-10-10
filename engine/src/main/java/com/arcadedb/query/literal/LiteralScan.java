@@ -19,6 +19,8 @@
 package com.arcadedb.query.literal;
 
 import java.util.Arrays;
+import java.util.HashMap;
+import java.util.Map;
 
 /**
  * The literal tokens a lexer found in one query text, and the text's SHAPE: the text with every one of those tokens replaced
@@ -40,6 +42,9 @@ public final class LiteralScan {
   /** Separates a literal marker from the text around it; a text holding this character is never parameterized. */
   public static final char MARKER = '\u0000';
 
+  /** Up to this many literals the first identical one is found by a linear search, which allocates nothing. */
+  private static final int LINEAR_SEARCH_LIMIT = 16;
+
   private final String text;
   private       String shape;
   private       int    count;
@@ -48,6 +53,8 @@ public final class LiteralScan {
   private       int[]  minusStarts = new int[4];
   private       int[]  tokenTypes  = new int[4];
   private       int[]  duplicateOf = new int[4];
+  // first literal of each distinct (token type, text), built once a text holds more literals than a linear search is worth
+  private       Map<String, Integer> firstByText;
 
   public LiteralScan(final String text) {
     this.text = text;
@@ -74,14 +81,30 @@ public final class LiteralScan {
     ends[count] = end;
     minusStarts[count] = minusStart;
     tokenTypes[count] = tokenType;
-    duplicateOf[count] = -1;
-    for (int j = 0; j < count; j++)
-      if (duplicateOf[j] < 0 && tokenTypes[j] == tokenType && ends[j] - starts[j] == end - start
-          && text.regionMatches(starts[j], text, start, end - start)) {
-        duplicateOf[count] = j;
-        break;
-      }
+    duplicateOf[count] = findFirstIdentical(tokenType, start, end);
     ++count;
+  }
+
+  private int findFirstIdentical(final int tokenType, final int start, final int end) {
+    if (firstByText == null && count < LINEAR_SEARCH_LIMIT) {
+      for (int j = 0; j < count; j++)
+        if (duplicateOf[j] < 0 && tokenTypes[j] == tokenType && ends[j] - starts[j] == end - start
+            && text.regionMatches(starts[j], text, start, end - start))
+          return j;
+      return -1;
+    }
+    if (firstByText == null) {
+      firstByText = new HashMap<>(count * 4);
+      for (int j = 0; j < count; j++)
+        if (duplicateOf[j] < 0)
+          firstByText.put(key(tokenTypes[j], starts[j], ends[j]), j);
+    }
+    final Integer first = firstByText.putIfAbsent(key(tokenType, start, end), count);
+    return first == null ? -1 : first;
+  }
+
+  private String key(final int tokenType, final int start, final int end) {
+    return (char) tokenType + text.substring(start, end);
   }
 
   public String getText() {
