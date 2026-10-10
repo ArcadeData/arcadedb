@@ -28,6 +28,7 @@ import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.database.RecordEventsRegistry;
 import com.arcadedb.database.RecordInternal;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.exception.BrokenChunkChainException;
@@ -1005,8 +1006,11 @@ public class GraphEngine {
    * unrelated edge is handed later. On a UNIQUE index the leak is not even silent - the old key stays taken and
    * the replacement is rejected as a duplicate, which made a move impossible on such a type.
    * <p>
-   * Delete/create events are deliberately NOT fired: a move is not a delete, and a listener that vetoed the
-   * delete would leave this method creating a second edge on top of one that was never removed.
+   * The delete is not offered to the {@code beforeDelete} listeners: one that vetoed it would leave this method creating a
+   * second edge on top of one that was never removed. The {@code afterDelete} listeners are told, though: the replacement
+   * is saved as an ordinary record, so its creation reaches the create listeners, and hearing of a new edge without the
+   * removal of the one it replaces made every listener that keeps state - a Graph Analytical View's overlay, a change
+   * feed - hold both (found with issue #9572).
    */
   public void moveEdge(final MutableEdge edge, final Vertex.DIRECTION direction, final RID newVertexRID) {
     if (direction != Vertex.DIRECTION.IN && direction != Vertex.DIRECTION.OUT)
@@ -1019,6 +1023,9 @@ public class GraphEngine {
 
     cleanUpBeforePhysicalDelete(edge);
     deleteEdge(edge);
+    // Still the record being replaced: its identity and endpoints change only at the end
+    ((RecordEventsRegistry) database.getEvents()).onAfterDelete(edge);
+    ((RecordEventsRegistry) edge.getType().getEvents()).onAfterDelete(edge);
 
     final EdgeType edgeType = (EdgeType) database.getSchema().getType(typeName);
     final VertexInternal fromVertex = (VertexInternal) database.lookupByRID(newOut, false);
