@@ -702,6 +702,16 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    */
   Iterator<Object[]> iterateRange(final BlockDirectorySnapshot directorySnapshot, final long fromTs, final long toTs,
       final int[] columnIndices, final TagFilter tagFilter, final AggregationMetrics metrics) {
+    return iterateRange(directorySnapshot, fromTs, toTs, columnIndices, tagFilter, null, metrics);
+  }
+
+  /**
+   * Same as above, handing over only the rows that also pass {@code fieldFilter} (issue #9612). A block whose statistics
+   * prove no sample passes is not read at all, and in a block that has to be decoded the filter is applied to the
+   * primitive columns before a row is built, so a rejected sample costs no allocation.
+   */
+  Iterator<Object[]> iterateRange(final BlockDirectorySnapshot directorySnapshot, final long fromTs, final long toTs,
+      final int[] columnIndices, final TagFilter tagFilter, final FieldFilter fieldFilter, final AggregationMetrics metrics) {
     final List<BlockEntry> blocks = directorySnapshot.blocks();
     return new Iterator<>() {
       private final ArrayList<Object[]> blockRows = new ArrayList<>();
@@ -719,7 +729,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
           final BlockDirectorySnapshot oneBlock = new BlockDirectorySnapshot(List.of(blocks.get(blockIdx)),
               directorySnapshot.firstIndex() + blockIdx, directorySnapshot.downsampleEpoch(), directorySnapshot.origin());
           try {
-            walkBlocks(oneBlock, fromTs, toTs, columnIndices, tagFilter, metrics, blockRows::add, false);
+            walkBlocks(oneBlock, fromTs, toTs, columnIndices, tagFilter, fieldFilter, metrics, blockRows::add, false);
           } catch (final IOException e) {
             throw new DatabaseOperationException("Error reading sealed TimeSeries block from '" + getSealedFileName() + "'", e);
           }
@@ -780,7 +790,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   boolean forEachRow(final BlockDirectorySnapshot directorySnapshot, final long fromTs, final long toTs,
       final int[] columnIndices, final TagFilter tagFilter, final AggregationMetrics metrics,
       final TimeSeriesRowVisitor visitor) throws IOException {
-    return walkBlocks(directorySnapshot, fromTs, toTs, columnIndices, tagFilter, metrics, visitor, false);
+    return walkBlocks(directorySnapshot, fromTs, toTs, columnIndices, tagFilter, null, metrics, visitor, false);
   }
 
   /**
@@ -979,7 +989,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   boolean forEachTagCombination(final BlockDirectorySnapshot directorySnapshot, final long fromTs, final long toTs,
       final int[] columnIndices, final AggregationMetrics metrics, final TimeSeriesRowVisitor visitor)
       throws IOException {
-    return walkBlocks(directorySnapshot, fromTs, toTs, columnIndices, null, metrics, visitor, true);
+    return walkBlocks(directorySnapshot, fromTs, toTs, columnIndices, null, null, metrics, visitor, true);
   }
 
   /**
@@ -999,7 +1009,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * file may have been swapped under it.
    */
   private boolean walkBlocks(final BlockDirectorySnapshot directorySnapshot, final long fromTs, final long toTs,
-      final int[] columnIndices, final TagFilter tagFilter, final AggregationMetrics metrics,
+      final int[] columnIndices, final TagFilter tagFilter, final FieldFilter fieldFilter, final AggregationMetrics metrics,
       final TimeSeriesRowVisitor visitor, final boolean combinationsOnly) throws IOException {
     final List<BlockEntry> snapshot = directorySnapshot.blocks();
     final WalkOrigin origin = directorySnapshot.origin();
@@ -1044,7 +1054,9 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       BlockMatchResult tagMatch = tagFilter != null
           ? blockMatchesTagFilter(entry, tagFilter)
           : BlockMatchResult.FAST_PATH;
-      if (tagMatch == BlockMatchResult.SKIP) {
+      // Issue #9612: a block whose min/max of a filtered column cannot pass is skipped on its entry, like a tag mismatch
+      FieldFilter.BlockMatch fieldMatch = fieldFilter != null ? blockMatchesFieldFilter(entry, fieldFilter) : FieldFilter.BlockMatch.ALL;
+      if (tagMatch == BlockMatchResult.SKIP || fieldMatch == FieldFilter.BlockMatch.NONE) {
         if (metrics != null)
           metrics.addSkippedBlock();
         continue;
@@ -1069,6 +1081,10 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       boolean vanished = false;
       boolean coarsened = false;
       BitSet rowFilter = null;
+      // Issue #9612: the rows the field filter keeps, and the block's columns left primitive so only those are boxed
+      int[] fieldRows = null;
+      int fieldRowCount = 0;
+      RawColumn[] rawCols = null;
       directoryLock.readLock().lock();
       try {
         BlockEntry live = resolveLiveBlock(entry, directorySnapshot.firstIndex() + blockIdx);
@@ -1083,6 +1099,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
             rowFilter = merged.rows();
             if (tagFilter != null)
               tagMatch = blockMatchesTagFilter(live, tagFilter);
+            if (fieldFilter != null)
+              fieldMatch = blockMatchesFieldFilter(live, fieldFilter);
           }
         }
         // A null live entry means the block left the directory while this walk was between two blocks. It no
@@ -1102,7 +1120,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
           if (combinationsOnly && rowFilter == null)
             combination = declaredSingleCombination(live, combinationColumns, combinationWidth, tsColIdx, fromTs, toTs);
 
-          if (tagMatch == BlockMatchResult.SKIP) {
+          if (tagMatch == BlockMatchResult.SKIP || fieldMatch == FieldFilter.BlockMatch.NONE) {
             // only reachable for a merged block: the walk's own test already dropped every other one
             if (metrics != null)
               metrics.addSkippedBlock();
@@ -1113,7 +1131,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
             if (from < to) {
               if (metrics != null) {
-                if (tagMatch == BlockMatchResult.SLOW_PATH)
+                if (tagMatch == BlockMatchResult.SLOW_PATH || fieldMatch == FieldFilter.BlockMatch.SOME)
                   metrics.addSlowPathBlock();
                 else
                   metrics.addFastPathBlock();
@@ -1122,7 +1140,17 @@ public class TimeSeriesSealedStore implements AutoCloseable {
               ts = decodedTs;
               start = from;
               end = to;
-              decompCols = decompressColumns(live, projection.scanIndices(), tsColIdx);
+              if (fieldMatch == FieldFilter.BlockMatch.SOME) {
+                final List<FieldFilter.Condition> conditions = fieldFilter.getConditions();
+                final Object[] filterCols = new Object[conditions.size()];
+                for (int c = 0; c < filterCols.length; c++)
+                  filterCols[c] = rawColumnValues(live, findNonTsColumnSchemaIndex(conditions.get(c).columnIndex()));
+                fieldRows = new int[to - from];
+                fieldRowCount = FieldFilter.select(conditions, filterCols, from, to, fieldRows);
+                if (fieldRowCount > 0)
+                  rawCols = decompressColumnsRaw(live, projection.scanIndices(), tsColIdx);
+              } else
+                decompCols = decompressColumns(live, projection.scanIndices(), tsColIdx);
             }
           }
         }
@@ -1159,8 +1187,29 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         continue;
       }
 
-      // Null only because the window above declined the block - no row of it was in range.
-      // decompressColumns has one return and it is a toArray, so it never hands back null itself.
+      if (rawCols != null) {
+        // Issue #9612: only the rows the field filter kept are built, from the primitive columns
+        final int resultCols = rawCols.length + 1;
+        for (int k = 0; k < fieldRowCount; k++) {
+          final int i = fieldRows[k];
+          if (rowFilter != null && !rowFilter.get(i))
+            continue;
+          final Object[] row = new Object[resultCols];
+          row[0] = ts[i];
+          for (int c = 0; c < rawCols.length; c++)
+            row[c + 1] = rawCols[c].valueAt(i);
+          if (tagMatch == BlockMatchResult.SLOW_PATH && !tagFilter.matchesMapped(row, projection.scanIndices()))
+            continue;
+          if (metrics != null)
+            metrics.addMaterializedRows(1);
+          if (!visitor.visit(projection.narrow(row)))
+            return false;
+        }
+        continue;
+      }
+
+      // Null only because the window above declined the block - no row of it was in range, or the field filter kept none of
+      // it. decompressColumns has one return and it is a toArray, so it never hands back null itself.
       if (decompCols == null)
         continue;
 
@@ -1802,6 +1851,28 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       final List<MultiColumnAggregationRequest> requests, final long bucketIntervalMs, final long bucketOffsetMs,
       final MultiColumnAggregationResult result, final AggregationMetrics metrics,
       final TagFilter tagFilter) throws IOException {
+    aggregateMultiBlocks(fromTs, toTs, requests, bucketIntervalMs, bucketOffsetMs, result, metrics, tagFilter, null);
+  }
+
+  /**
+   * Same as above, counting only the samples that also pass {@code fieldFilter} (issue #9612).
+   * <p>
+   * A non-positive {@code bucketIntervalMs} is one bucket over the whole range, anchored at
+   * {@link TimeSeriesEngine#singleBucketAnchor}, which is how an ungrouped aggregate ({@code SELECT count(*) ... WHERE ts
+   * ...}) is answered. Every block fits that bucket, so every block wholly inside the range is answered from its
+   * statistics, and only the (at most two) blocks straddling a bound of the range are decoded. That used to be the other
+   * way round: the single-bucket path folded every sample of every block into the result one row at a time.
+   * <p>
+   * The field filter is judged on the block's statistics first. A block none of whose samples can pass is skipped, and
+   * one all of whose samples pass is treated as if there were no filter, statistics included; only the blocks in between
+   * decode the filtered columns, select the passing rows on the primitive arrays, and fold those.
+   *
+   * @param fieldFilter range predicates on numeric FIELD columns, may be {@code null}
+   */
+  public void aggregateMultiBlocks(final long fromTs, final long toTs,
+      final List<MultiColumnAggregationRequest> requests, final long bucketIntervalMs, final long bucketOffsetMs,
+      final MultiColumnAggregationResult result, final AggregationMetrics metrics,
+      final TagFilter tagFilter, final FieldFilter fieldFilter) throws IOException {
     final int tsColIdx = findTimestampColumnIndex();
     final int reqCount = requests.size();
 
@@ -1831,7 +1902,11 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     // Pre-allocate decode buffers reused across all blocks in this call
     final long[] reusableTsBuf = new long[MAX_BLOCK_SIZE];
     final double[] reusableValBuf = new double[MAX_BLOCK_SIZE];
+    // The rows of a block that pass a row-level filter, when one has to be applied
+    final int[] selected = tagFilter != null || fieldFilter != null ? new int[MAX_BLOCK_SIZE] : null;
+    final List<FieldFilter.Condition> fieldConditions = fieldFilter != null ? fieldFilter.getConditions() : null;
 
+    final boolean bucketed = bucketIntervalMs > 0;
     final long singleBucketTs = TimeSeriesEngine.singleBucketAnchor(fromTs);
 
     // Hold the read lock for the entire scan including file I/O to prevent stale offsets
@@ -1855,23 +1930,26 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         final BlockMatchResult tagMatch = tagFilter != null
             ? blockMatchesTagFilter(entry, tagFilter)
             : BlockMatchResult.FAST_PATH;
-        if (tagMatch == BlockMatchResult.SKIP) {
+        // Block-level field filter (issue #9612): the block's min/max of each filtered column decide it the same way
+        final FieldFilter.BlockMatch fieldMatch = fieldFilter != null ? blockMatchesFieldFilter(entry, fieldFilter) : FieldFilter.BlockMatch.ALL;
+        if (tagMatch == BlockMatchResult.SKIP || fieldMatch == FieldFilter.BlockMatch.NONE) {
           if (metrics != null)
             metrics.addSkippedBlock();
           continue;
         }
 
         // Check if entire block falls within a single time bucket and is fully inside the query range
-        // FAST_PATH: block is homogeneous for the filtered tag, so block-level stats are valid
-        if (tagMatch == BlockMatchResult.FAST_PATH
-            && bucketIntervalMs > 0 && entry.minTimestamp >= fromTs && entry.maxTimestamp <= toTs) {
-          final long blockMinBucket = TimeBucketGrid.bucketStart(entry.minTimestamp, bucketIntervalMs, bucketOffsetMs);
-          final long blockMaxBucket = TimeBucketGrid.bucketStart(entry.maxTimestamp, bucketIntervalMs, bucketOffsetMs);
-
-          // A legacy block (written before issue #7089) whose column summed over a NaN sample declares neither a
-          // usable sum nor a count of its real samples, so every request over that column but COUNT has to come
-          // from the values: SUM/AVG for the value itself, MIN/MAX for the count recorded next to it.
-          if (blockMinBucket == blockMaxBucket && !needsValues(entry, requests, schemaColIndices)) {
+        // FAST_PATH: block is homogeneous for the filtered tag, so block-level stats are valid; ALL: every sample of it
+        // passes the field filter, so they are valid for the filtered answer too
+        //
+        // A legacy block (written before issue #7089) whose column summed over a NaN sample declares neither a
+        // usable sum nor a count of its real samples, so every request over that column but COUNT has to come
+        // from the values: SUM/AVG for the value itself, MIN/MAX for the count recorded next to it.
+        if (tagMatch == BlockMatchResult.FAST_PATH && fieldMatch == FieldFilter.BlockMatch.ALL
+            && entry.minTimestamp >= fromTs && entry.maxTimestamp <= toTs && !needsValues(entry, requests, schemaColIndices)) {
+          // Without a bucket interval the whole range is one bucket, which every block fits (issue #9612)
+          final long blockMinBucket = bucketed ? TimeBucketGrid.bucketStart(entry.minTimestamp, bucketIntervalMs, bucketOffsetMs) : singleBucketTs;
+          if (!bucketed || blockMinBucket == TimeBucketGrid.bucketStart(entry.maxTimestamp, bucketIntervalMs, bucketOffsetMs)) {
             // FAST PATH: use block-level stats directly — no decompression needed
             if (metrics != null)
               metrics.addFastPathBlock();
@@ -1896,7 +1974,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
           }
         }
 
-        // SLOW PATH: decompress and iterate (boundary blocks spanning multiple buckets)
+        // SLOW PATH: decompress and iterate (blocks straddling a bound of the range or several buckets, or needing a row filter)
         if (metrics != null)
           metrics.addSlowPathBlock();
 
@@ -1935,20 +2013,6 @@ public class TimeSeriesSealedStore implements AutoCloseable {
           }
         }
 
-        // Decompress tag columns for SLOW_PATH tag filtering
-        final boolean needRowTagFilter = tagFilter != null && tagMatch == BlockMatchResult.SLOW_PATH;
-        String[][] tagCols = null;
-        List<TagFilter.Condition> filterConditions = null;
-        if (needRowTagFilter) {
-          filterConditions = tagFilter.getConditions();
-          tagCols = new String[filterConditions.size()][];
-          for (int ci = 0; ci < filterConditions.size(); ci++) {
-            final int schemaIdx = findNonTsColumnSchemaIndex(filterConditions.get(ci).columnIndex());
-            final byte[] colBytes = sliceColumn(blockData, entry, schemaIdx);
-            tagCols[ci] = DictionaryCodec.decode(colBytes);
-          }
-        }
-
         // Use tsCount (not array length) since reusableTsBuf may be larger than actual data
         final long[] timestamps = reusableTsBuf;
 
@@ -1959,79 +2023,84 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         final int rangeStart = lowerBound(timestamps, 0, tsCount, fromTs);
         final int rangeEnd = upperBound(timestamps, 0, tsCount, toTs);
 
-        if (bucketIntervalMs > 0) {
-          if (needRowTagFilter) {
-            // Per-row accumulation with tag filtering (cannot use SIMD on mixed-tag blocks)
-            for (int i = rangeStart; i < rangeEnd; i++) {
-              if (!matchesTagConditions(tagCols, filterConditions, i))
-                continue;
-              final long bucketTs = TimeBucketGrid.bucketStart(timestamps[i], bucketIntervalMs, bucketOffsetMs);
-              for (int r = 0; r < reqCount; r++) {
-                if (isCount[r])
-                  result.accumulateSingleStat(bucketTs, r, 1.0, 1);
-                else {
-                  final double v = decompressedCols[schemaColIndices[r]][i];
-                  result.accumulateSingleStat(bucketTs, r, v, TimeSeriesNaN.countIfPresent(0, v));
-                }
-              }
+        final boolean needRowTagFilter = tagFilter != null && tagMatch == BlockMatchResult.SLOW_PATH;
+        final boolean needRowFieldFilter = fieldMatch == FieldFilter.BlockMatch.SOME;
+        if (needRowTagFilter || needRowFieldFilter) {
+          // Row-level filtering: the passing rows are selected first, on the primitive columns, and only those are folded
+          int count;
+          if (needRowFieldFilter)
+            count = FieldFilter.select(fieldConditions, fieldFilterColumns(blockData, entry, fieldConditions, decompressedCols), rangeStart,
+                rangeEnd, selected);
+          else {
+            count = 0;
+            for (int i = rangeStart; i < rangeEnd; i++)
+              selected[count++] = i;
+          }
+          if (needRowTagFilter && count > 0) {
+            // Mixed-tag block: decompress the tag columns the filter reads and keep the rows that match them
+            final List<TagFilter.Condition> filterConditions = tagFilter.getConditions();
+            final String[][] tagCols = new String[filterConditions.size()][];
+            for (int ci = 0; ci < filterConditions.size(); ci++) {
+              final int schemaIdx = findNonTsColumnSchemaIndex(filterConditions.get(ci).columnIndex());
+              tagCols[ci] = DictionaryCodec.decode(sliceColumn(blockData, entry, schemaIdx));
             }
-          } else {
-            // Vectorized path: find contiguous segments within each bucket and use SIMD ops
-            final TimeSeriesVectorOps ops = TimeSeriesVectorOpsProvider.getInstance();
+            int kept = 0;
+            for (int s = 0; s < count; s++)
+              if (matchesTagConditions(tagCols, filterConditions, selected[s]))
+                selected[kept++] = selected[s];
+            count = kept;
+          }
+          accumulateSelectedRows(selected, count, timestamps, decompressedCols, schemaColIndices, isCount, requests, bucketIntervalMs,
+              bucketOffsetMs, singleBucketTs, result);
+        } else {
+          // Vectorized path: find contiguous segments within each bucket and use SIMD ops. Without a bucket interval the
+          // whole clipped range is one segment of the single bucket (issue #9612)
+          final TimeSeriesVectorOps ops = TimeSeriesVectorOpsProvider.getInstance();
 
-            int segStart = rangeStart;
-            while (segStart < rangeEnd) {
-              final long bucketTs = TimeBucketGrid.bucketStart(timestamps[segStart], bucketIntervalMs, bucketOffsetMs);
+          int segStart = rangeStart;
+          while (segStart < rangeEnd) {
+            final long bucketTs;
+            int segEnd;
+            if (bucketed) {
+              bucketTs = TimeBucketGrid.bucketStart(timestamps[segStart], bucketIntervalMs, bucketOffsetMs);
               final long nextBucketTs = bucketTs + bucketIntervalMs;
 
               // Find end of this bucket's segment
-              int segEnd = segStart + 1;
+              segEnd = segStart + 1;
               while (segEnd < rangeEnd && timestamps[segEnd] < nextBucketTs)
                 segEnd++;
-
-              final int segLen = segEnd - segStart;
-
-              // Accumulate each request using vectorized ops on the segment. The count recorded with each value
-              // is of the samples that CONTRIBUTED to it, which under the NaN policy are the real ones (issue
-              // #7089) - the same count the per-row and the block-statistics paths record, so a result does not
-              // depend on how blocks happen to align with buckets. Two requests over the same column share one
-              // pass to count them.
-              Arrays.fill(presentBySchemaCol, -1);
-              for (int r = 0; r < reqCount; r++) {
-                if (isCount[r]) {
-                  result.accumulateSingleStat(bucketTs, r, segLen, segLen);
-                } else {
-                  final int sci = schemaColIndices[r];
-                  final double[] colData = decompressedCols[sci];
-                  final double val = switch (requests.get(r).type()) {
-                    case SUM, AVG -> ops.sum(colData, segStart, segLen);
-                    case MIN -> ops.min(colData, segStart, segLen);
-                    case MAX -> ops.max(colData, segStart, segLen);
-                    case COUNT -> segLen;
-                  };
-                  if (presentBySchemaCol[sci] < 0)
-                    presentBySchemaCol[sci] = ops.countPresent(colData, segStart, segLen);
-                  result.accumulateSingleStat(bucketTs, r, val, presentBySchemaCol[sci]);
-                }
-              }
-
-              segStart = segEnd;
+            } else {
+              bucketTs = singleBucketTs;
+              segEnd = rangeEnd;
             }
-          }
-        } else {
-          // No bucket interval — accumulate all into one bucket
-          for (int i = 0; i < tsCount; i++) {
-            final long ts = timestamps[i];
-            if (ts < fromTs || ts > toTs)
-              continue;
 
-            if (needRowTagFilter && !matchesTagConditions(tagCols, filterConditions, i))
-              continue;
+            final int segLen = segEnd - segStart;
 
-            for (int r = 0; r < reqCount; r++)
-              rowValues[r] = isCount[r] ? 1.0 : decompressedCols[schemaColIndices[r]][i];
+            // Accumulate each request using vectorized ops on the segment. The count recorded with each value
+            // is of the samples that CONTRIBUTED to it, which under the NaN policy are the real ones (issue
+            // #7089) - the same count the per-row and the block-statistics paths record, so a result does not
+            // depend on how blocks happen to align with buckets. Two requests over the same column share one
+            // pass to count them.
+            Arrays.fill(presentBySchemaCol, -1);
+            for (int r = 0; r < reqCount; r++) {
+              if (isCount[r]) {
+                result.accumulateSingleStat(bucketTs, r, segLen, segLen);
+              } else {
+                final int sci = schemaColIndices[r];
+                final double[] colData = decompressedCols[sci];
+                final double val = switch (requests.get(r).type()) {
+                  case SUM, AVG -> ops.sum(colData, segStart, segLen);
+                  case MIN -> ops.min(colData, segStart, segLen);
+                  case MAX -> ops.max(colData, segStart, segLen);
+                  case COUNT -> segLen;
+                };
+                if (presentBySchemaCol[sci] < 0)
+                  presentBySchemaCol[sci] = ops.countPresent(colData, segStart, segLen);
+                result.accumulateSingleStat(bucketTs, r, val, presentBySchemaCol[sci]);
+              }
+            }
 
-            result.accumulateRow(singleBucketTs, rowValues);
+            segStart = segEnd;
           }
         }
         if (metrics != null)
@@ -2040,6 +2109,108 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     } finally {
       directoryLock.readLock().unlock();
     }
+  }
+
+  /**
+   * Folds the rows {@code selected[0..count)} - ascending row indices of one block - into {@code result}, bucket by bucket
+   * (issue #9612). The rows of one bucket are accumulated into primitives and handed to the result once per request, so a
+   * filtered block costs one result update per bucket rather than one per row, and records the same values and counts the
+   * per-row path does: a COUNT counts the rows, every other request folds the real samples under the NaN policy of
+   * {@link TimeSeriesNaN}.
+   */
+  private static void accumulateSelectedRows(final int[] selected, final int count, final long[] timestamps, final double[][] columnsBySchema,
+      final int[] schemaColIndices, final boolean[] isCount, final List<MultiColumnAggregationRequest> requests, final long bucketIntervalMs,
+      final long bucketOffsetMs, final long singleBucketTs, final MultiColumnAggregationResult result) {
+    final int reqCount = requests.size();
+    int segStart = 0;
+    while (segStart < count) {
+      final long bucketTs;
+      int segEnd;
+      if (bucketIntervalMs > 0) {
+        bucketTs = TimeBucketGrid.bucketStart(timestamps[selected[segStart]], bucketIntervalMs, bucketOffsetMs);
+        final long nextBucketTs = bucketTs + bucketIntervalMs;
+        segEnd = segStart + 1;
+        while (segEnd < count && timestamps[selected[segEnd]] < nextBucketTs)
+          segEnd++;
+      } else {
+        bucketTs = singleBucketTs;
+        segEnd = count;
+      }
+
+      for (int r = 0; r < reqCount; r++) {
+        if (isCount[r]) {
+          result.accumulateSingleStat(bucketTs, r, segEnd - segStart, segEnd - segStart);
+          continue;
+        }
+        final double[] values = columnsBySchema[schemaColIndices[r]];
+        double accumulator = TimeSeriesNaN.ABSENT;
+        long present = 0;
+        switch (requests.get(r).type()) {
+        case MIN -> {
+          for (int s = segStart; s < segEnd; s++) {
+            final double v = values[selected[s]];
+            accumulator = TimeSeriesNaN.min(accumulator, v);
+            present = TimeSeriesNaN.countIfPresent(present, v);
+          }
+        }
+        case MAX -> {
+          for (int s = segStart; s < segEnd; s++) {
+            final double v = values[selected[s]];
+            accumulator = TimeSeriesNaN.max(accumulator, v);
+            present = TimeSeriesNaN.countIfPresent(present, v);
+          }
+        }
+        default -> {
+          for (int s = segStart; s < segEnd; s++) {
+            final double v = values[selected[s]];
+            accumulator = TimeSeriesNaN.sum(accumulator, present, v);
+            present = TimeSeriesNaN.countIfPresent(present, v);
+          }
+        }
+        }
+        result.accumulateSingleStat(bucketTs, r, accumulator, present);
+      }
+      segStart = segEnd;
+    }
+  }
+
+  /**
+   * What a block's statistics prove about {@code fieldFilter} (issue #9612): {@code NONE} when one condition cannot be met
+   * by any of its samples, {@code ALL} when every condition is met by all of them, {@code SOME} otherwise.
+   */
+  FieldFilter.BlockMatch blockMatchesFieldFilter(final BlockEntry entry, final FieldFilter fieldFilter) {
+    FieldFilter.BlockMatch match = FieldFilter.BlockMatch.ALL;
+    for (final FieldFilter.Condition condition : fieldFilter.getConditions()) {
+      final int schemaIdx = findNonTsColumnSchemaIndex(condition.columnIndex());
+      final FieldFilter.BlockMatch one = FieldFilter.blockMatch(condition, entry.columnMins[schemaIdx], entry.columnMaxs[schemaIdx],
+          entry.columnCounts[schemaIdx], entry.sampleCount);
+      if (one == FieldFilter.BlockMatch.NONE)
+        return one;
+      if (one == FieldFilter.BlockMatch.SOME)
+        match = one;
+    }
+    return match;
+  }
+
+  /**
+   * The decoded values of the columns {@code conditions} read, one per condition, from a block already read into
+   * {@code blockData}: a {@code long[]} for an integral condition, a {@code double[]} otherwise. A column the requests
+   * already decoded is reused.
+   */
+  private Object[] fieldFilterColumns(final byte[] blockData, final BlockEntry entry, final List<FieldFilter.Condition> conditions,
+      final double[][] decodedBySchema) throws IOException {
+    final Object[] values = new Object[conditions.size()];
+    for (int c = 0; c < values.length; c++) {
+      final FieldFilter.Condition condition = conditions.get(c);
+      final int schemaIdx = findNonTsColumnSchemaIndex(condition.columnIndex());
+      if (condition.integral())
+        values[c] = Simple8bCodec.decode(sliceColumn(blockData, entry, schemaIdx));
+      else if (decodedBySchema[schemaIdx] != null)
+        values[c] = decodedBySchema[schemaIdx];
+      else
+        values[c] = GorillaXORCodec.decode(sliceColumn(blockData, entry, schemaIdx));
+    }
+    return values;
   }
 
   /**
@@ -2057,6 +2228,19 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   public void aggregateGroupedBlocks(final long fromTs, final long toTs, final List<MultiColumnAggregationRequest> requests,
       final long bucketIntervalMs, final long bucketOffsetMs, final int[] groupColumns, final GroupedAggregationResult result,
       final AggregationMetrics metrics, final TagFilter tagFilter) throws IOException {
+    aggregateGroupedBlocks(fromTs, toTs, requests, bucketIntervalMs, bucketOffsetMs, groupColumns, result, metrics, tagFilter, null);
+  }
+
+  /**
+   * Same as above, counting only the samples that also pass {@code fieldFilter} (issue #9612), which is judged on the block
+   * statistics first exactly as {@link #aggregateMultiBlocks} judges it. A single-group block wholly inside the range is
+   * answered from its statistics without a bucket interval too: the whole range is then one bucket, which it fits.
+   *
+   * @param fieldFilter range predicates on numeric FIELD columns, may be {@code null}
+   */
+  public void aggregateGroupedBlocks(final long fromTs, final long toTs, final List<MultiColumnAggregationRequest> requests,
+      final long bucketIntervalMs, final long bucketOffsetMs, final int[] groupColumns, final GroupedAggregationResult result,
+      final AggregationMetrics metrics, final TagFilter tagFilter, final FieldFilter fieldFilter) throws IOException {
     final int tsColIdx = findTimestampColumnIndex();
     final int reqCount = requests.size();
     final int groupCount = groupColumns.length;
@@ -2088,6 +2272,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     final int[][] groupIds = new int[groupCount][MAX_BLOCK_SIZE];
     final long[] reusableTsBuf = new long[MAX_BLOCK_SIZE];
     final long singleBucketTs = TimeSeriesEngine.singleBucketAnchor(fromTs);
+    final List<FieldFilter.Condition> fieldConditions = fieldFilter != null ? fieldFilter.getConditions() : null;
+    int[] selected = null;
 
     directoryLock.readLock().lock();
     try {
@@ -2102,7 +2288,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         }
 
         final BlockMatchResult tagMatch = tagFilter != null ? blockMatchesTagFilter(entry, tagFilter) : BlockMatchResult.FAST_PATH;
-        if (tagMatch == BlockMatchResult.SKIP) {
+        final FieldFilter.BlockMatch fieldMatch = fieldFilter != null ? blockMatchesFieldFilter(entry, fieldFilter) : FieldFilter.BlockMatch.ALL;
+        if (tagMatch == BlockMatchResult.SKIP || fieldMatch == FieldFilter.BlockMatch.NONE) {
           if (metrics != null)
             metrics.addSkippedBlock();
           continue;
@@ -2118,10 +2305,10 @@ public class TimeSeriesSealedStore implements AutoCloseable {
             wholeBlockGroup[g] = declared[0];
         }
 
-        if (singleGroup && tagMatch == BlockMatchResult.FAST_PATH && bucketIntervalMs > 0
+        if (singleGroup && tagMatch == BlockMatchResult.FAST_PATH && fieldMatch == FieldFilter.BlockMatch.ALL
             && entry.minTimestamp >= fromTs && entry.maxTimestamp <= toTs && !needsValues(entry, requests, schemaColIndices)) {
-          final long blockMinBucket = TimeBucketGrid.bucketStart(entry.minTimestamp, bucketIntervalMs, bucketOffsetMs);
-          if (blockMinBucket == TimeBucketGrid.bucketStart(entry.maxTimestamp, bucketIntervalMs, bucketOffsetMs)) {
+          final long blockMinBucket = bucketIntervalMs > 0 ? TimeBucketGrid.bucketStart(entry.minTimestamp, bucketIntervalMs, bucketOffsetMs) : singleBucketTs;
+          if (bucketIntervalMs <= 0 || blockMinBucket == TimeBucketGrid.bucketStart(entry.maxTimestamp, bucketIntervalMs, bucketOffsetMs)) {
             if (metrics != null)
               metrics.addFastPathBlock();
             for (int r = 0; r < reqCount; r++) {
@@ -2196,13 +2383,25 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         final int rangeStart = lowerBound(reusableTsBuf, 0, tsCount, fromTs);
         final int rangeEnd = upperBound(reusableTsBuf, 0, tsCount, toTs);
 
+        // The rows the field filter keeps, selected on the primitive columns before any row is routed to its group
+        int selectedCount = 0;
+        if (fieldMatch == FieldFilter.BlockMatch.SOME) {
+          if (selected == null)
+            selected = new int[MAX_BLOCK_SIZE];
+          selectedCount = FieldFilter.select(fieldConditions, fieldFilterColumns(blockData, entry, fieldConditions, decompressedCols), rangeStart,
+              rangeEnd, selected);
+        }
+        final boolean rowFieldFilter = fieldMatch == FieldFilter.BlockMatch.SOME;
+
         // The group of each dictionary value, resolved the first time a row carries it. One grouping column: an array
         // indexed by the dictionary index. Several: a map keyed by the indices packed 16 bits apiece (a dictionary
         // holds at most 65535 entries), which is why the engine groups by at most four columns.
         final MultiColumnAggregationResult[] byIndex = groupCount == 1 ? new MultiColumnAggregationResult[dictionaries[0].length] : null;
         if (byPackedIndex != null)
           byPackedIndex.clear();
-        for (int i = rangeStart; i < rangeEnd; i++) {
+        final int rowCount = rowFieldFilter ? selectedCount : rangeEnd - rangeStart;
+        for (int k = 0; k < rowCount; k++) {
+          final int i = rowFieldFilter ? selected[k] : rangeStart + k;
           if (needRowTagFilter && !matchesTagConditions(filterCols, filterConditions, i))
             continue;
 
@@ -4935,6 +5134,26 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   }
 
   /**
+   * One column of a block decoded by its own codec, unboxed: a {@code double[]} for {@code GORILLA_XOR}, a {@code long[]}
+   * for {@code SIMPLE8B}, a {@code String[]} for {@code DICTIONARY}. Through the decoded-column cache, which holds exactly
+   * that array.
+   */
+  private Object rawColumnValues(final BlockEntry entry, final int schemaColIdx) throws IOException {
+    Object values = decodedColumnCache.get(entry.blockId, schemaColIdx, TimeSeriesDecodedColumnCache.SHAPE_RAW);
+    if (values == null) {
+      final byte[] compressed = readBytes(entry.columnOffsets[schemaColIdx], entry.columnSizes[schemaColIdx]);
+      values = switch (columns.get(schemaColIdx).getCompressionHint()) {
+        case GORILLA_XOR -> GorillaXORCodec.decode(compressed);
+        case SIMPLE8B -> Simple8bCodec.decode(compressed);
+        case DICTIONARY -> DictionaryCodec.decode(compressed);
+        default -> null;
+      };
+      decodedColumnCache.put(entry.blockId, schemaColIdx, TimeSeriesDecodedColumnCache.SHAPE_RAW, values);
+    }
+    return values;
+  }
+
+  /**
    * Same column selection as {@link #decompressColumns} but without boxing the values.
    */
   private RawColumn[] decompressColumnsRaw(final BlockEntry entry, final int[] columnIndices, final int tsColIdx)
@@ -4964,17 +5183,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
       // The CACHE holds the codec's own array; the RawColumn around it is rebuilt per call, being three references
       // and no data.
-      Object values = decodedColumnCache.get(entry.blockId, c, TimeSeriesDecodedColumnCache.SHAPE_RAW);
-      if (values == null) {
-        final byte[] compressed = readBytes(entry.columnOffsets[c], entry.columnSizes[c]);
-        values = switch (col.getCompressionHint()) {
-          case GORILLA_XOR -> GorillaXORCodec.decode(compressed);
-          case SIMPLE8B -> Simple8bCodec.decode(compressed);
-          case DICTIONARY -> DictionaryCodec.decode(compressed);
-          default -> null;
-        };
-        decodedColumnCache.put(entry.blockId, c, TimeSeriesDecodedColumnCache.SHAPE_RAW, values);
-      }
+      final Object values = rawColumnValues(entry, c);
 
       result.add(switch (col.getCompressionHint()) {
         case GORILLA_XOR -> new RawColumn(col, (double[]) values, null, null);

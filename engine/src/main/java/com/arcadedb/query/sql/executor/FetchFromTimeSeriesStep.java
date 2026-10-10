@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.engine.timeseries.ColumnDefinition;
+import com.arcadedb.engine.timeseries.FieldFilter;
 import com.arcadedb.engine.timeseries.TagFilter;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
 import com.arcadedb.engine.timeseries.TimeSeriesGateway;
@@ -48,6 +49,12 @@ public class FetchFromTimeSeriesStep extends AbstractExecutionStep {
   private final long                fromTs;
   private final long                toTs;
   private final TagFilter           tagFilter;
+  /**
+   * Issue #9612: range predicates on numeric FIELD columns the engine evaluates on block statistics and on the primitive
+   * columns, so a sample the WHERE clause drops is never turned into a row. Only on the unbounded ascending read; the
+   * residual filter above this step still runs over the rows it keeps.
+   */
+  private final FieldFilter         fieldFilter;
   /**
    * Issue #5414: when true the engine is scanned newest-first, so a last-point query
    * ({@code ORDER BY <ts> DESC LIMIT n}, {@code ts.last()}) stops after the newest blocks instead of
@@ -80,11 +87,23 @@ public class FetchFromTimeSeriesStep extends AbstractExecutionStep {
 
   public FetchFromTimeSeriesStep(final LocalTimeSeriesType tsType, final long fromTs, final long toTs,
       final TagFilter tagFilter, final boolean descending, final int limit, final CommandContext context) {
+    this(tsType, fromTs, toTs, tagFilter, null, descending, limit, context);
+  }
+
+  /**
+   * @param fieldFilter range predicates on numeric FIELD columns (issue #9612), or {@code null}; only honoured by the
+   *                    unbounded ascending read, so it must be {@code null} when {@code descending} or {@code limit > 0}
+   */
+  public FetchFromTimeSeriesStep(final LocalTimeSeriesType tsType, final long fromTs, final long toTs,
+      final TagFilter tagFilter, final FieldFilter fieldFilter, final boolean descending, final int limit, final CommandContext context) {
     super(context);
+    if (fieldFilter != null && (descending || limit > 0))
+      throw new IllegalArgumentException("A field filter is only pushed into the unbounded ascending TimeSeries read");
     this.tsType = tsType;
     this.fromTs = fromTs;
     this.toTs = toTs;
     this.tagFilter = tagFilter;
+    this.fieldFilter = fieldFilter;
     this.descending = descending;
     this.limit = limit;
   }
@@ -108,7 +127,7 @@ public class FetchFromTimeSeriesStep extends AbstractExecutionStep {
               ? engine.queryDescending(fromTs, toTs, null, tagFilter, limit, null).iterator()
               : limit > 0
                   ? engine.queryAscending(fromTs, toTs, null, tagFilter, limit, null).iterator()
-                  : engine.iterateQuery(fromTs, toTs, null, tagFilter);
+                  : engine.iterateQuery(fromTs, toTs, null, tagFilter, fieldFilter, null);
           fetched = true;
         } catch (final CommandExecutionException e) {
           throw e;
@@ -216,6 +235,8 @@ public class FetchFromTimeSeriesStep extends AbstractExecutionStep {
     // push-down happened.
     if (tagFilter != null)
       sb.append(" TAGS ").append(tagFilter.describe(nonTsColumnNames()));
+    if (fieldFilter != null)
+      sb.append(" FIELDS ").append(fieldFilter.describe());
     // Shown for either direction: the ascending cap is as much a plan decision as the descending one, and a plan
     // that hides it reads as if no push-down happened (issue #7663).
     if (limit > 0)
@@ -240,6 +261,6 @@ public class FetchFromTimeSeriesStep extends AbstractExecutionStep {
 
   @Override
   public ExecutionStep copy(final CommandContext context) {
-    return new FetchFromTimeSeriesStep(tsType, fromTs, toTs, tagFilter, descending, limit, context);
+    return new FetchFromTimeSeriesStep(tsType, fromTs, toTs, tagFilter, fieldFilter, descending, limit, context);
   }
 }
