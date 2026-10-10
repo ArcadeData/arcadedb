@@ -52,6 +52,13 @@ const formatRunningQueryElapsed = eval("(" + extractFn("formatRunningQueryElapse
 const buildRunningQueryRows = eval("(" + extractFn("buildRunningQueryRows") + ")");
 const buildTerminateQueryCommand = eval("(" + extractFn("buildTerminateQueryCommand") + ")");
 const describeTerminateOutcome = eval("(" + extractFn("describeTerminateOutcome") + ")");
+const isCurrentRunningQueriesResponse = eval("(" + extractFn("isCurrentRunningQueriesResponse") + ")");
+
+test("only the answer to the latest listing is shown", () => {
+  // A slow answer to an earlier listing must not bring back a row a later one, sent after a terminate, removed
+  assert.equal(isCurrentRunningQueriesResponse(3, 3), true);
+  assert.equal(isCurrentRunningQueriesResponse(2, 3), false);
+});
 
 test("the elapsed time reads like a person would say it", () => {
   assert.equal(formatRunningQueryElapsed(350), "350 ms");

@@ -27,6 +27,9 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.io.DataOutputStream;
+import java.net.InetSocketAddress;
+import java.net.Socket;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
@@ -231,6 +234,35 @@ class Issue9689PostgresCancelIT extends PostgresWireProtocolTestBase {
         assertThat(rs.next()).isTrue();
         assertThat(rs.getLong("c")).isZero();
       }
+    }
+  }
+
+  @Test
+  void aCancelRequestWithTheWrongSecretStopsNothing() throws Exception {
+    try (final Connection conn = connect("root", DEFAULT_PASSWORD_FOR_TESTS, "simple"); final Statement st = conn.createStatement()) {
+      final int pid = backendPid(conn);
+      final CompletableFuture<Void> running = runAsync(st);
+      final RunningQuery entry = awaitRunning(pid);
+
+      // The pid of a live connection, quoted with a secret that is not its own: no answer, and nothing stopped
+      try (final Socket socket = new Socket()) {
+        socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 5_000);
+        final DataOutputStream cancel = new DataOutputStream(socket.getOutputStream());
+        cancel.writeInt(16);
+        cancel.writeInt(80877102); // CancelRequest
+        cancel.writeInt(pid);
+        cancel.writeInt(0x5ec2e7);
+        cancel.flush();
+        socket.setSoTimeout(10_000);
+        assertThat(socket.getInputStream().read()).as("a CancelRequest is never answered").isEqualTo(-1);
+      }
+      Thread.sleep(500);
+      assertThat(entry.isTerminated()).as("a wrong secret must not stop the statement").isFalse();
+
+      // The connection's own key still works
+      st.cancel();
+      assertCanceled(running, "the right key");
+      assertThat(backendPid(conn)).isEqualTo(pid);
     }
   }
 

@@ -157,6 +157,37 @@ public class Issue9689GrpcRunningQueryIT extends BaseGrpcServerTest {
         .getInt64Value()).isZero();
   }
 
+  @Test
+  void aCommitQueuedBehindATerminatedStatementPublishesNothing() throws Exception {
+    final String txId = stub.beginTransaction(
+        BeginTransactionRequest.newBuilder().setDatabase(getDatabaseName()).setCredentials(credentials()).build()).getTransactionId();
+    final TransactionContext tx = TransactionContext.newBuilder().setTransactionId(txId).setDatabase(getDatabaseName()).build();
+
+    stub.executeCommand(ExecuteCommandRequest.newBuilder().setDatabase(getDatabaseName()).setCredentials(credentials())
+        .setLanguage("sql").setCommand("CREATE DOCUMENT TYPE Committed9689 IF NOT EXISTS").build());
+    stub.executeCommand(ExecuteCommandRequest.newBuilder().setDatabase(getDatabaseName()).setCredentials(credentials())
+        .setLanguage("sql").setCommand("INSERT INTO Committed9689 SET x = 1").setTransaction(tx).build());
+
+    final CompletableFuture<ExecuteQueryResponse> running = CompletableFuture.supplyAsync(() -> stub.executeQuery(longQuery(tx)));
+    final RunningQuery entry = awaitRunning();
+
+    // The commit claims the transaction while the statement still runs: its work waits behind the statement's
+    final CompletableFuture<CommitTransactionResponse> commit = CompletableFuture.supplyAsync(
+        () -> stub.commitTransaction(CommitTransactionRequest.newBuilder().setTransaction(tx).setCredentials(credentials()).build()));
+    await().atMost(Duration.ofSeconds(30)).until(
+        () -> getServer(0).getRunningQueries().getRunning().stream().anyMatch(q -> "CommitTransaction".equals(q.getText())));
+
+    entry.terminate("root");
+    assertThatThrownBy(() -> running.get(30, TimeUnit.SECONDS)).satisfies(
+        e -> assertThat(((StatusRuntimeException) e.getCause()).getStatus().getCode()).isEqualTo(Status.Code.CANCELLED));
+    // The commit is refused, and the write the transaction held before the statement is not published
+    assertThatThrownBy(() -> commit.get(30, TimeUnit.SECONDS)).satisfies(
+        e -> assertThat(((StatusRuntimeException) e.getCause()).getStatus().getCode()).isEqualTo(Status.Code.CANCELLED));
+    assertThat(stub.executeQuery(ExecuteQueryRequest.newBuilder().setDatabase(getDatabaseName()).setCredentials(credentials())
+        .setQuery("SELECT count(*) AS c FROM Committed9689").build()).getResults(0).getRecords(0).getPropertiesMap().get("c")
+        .getInt64Value()).isZero();
+  }
+
   private RunningQuery awaitRunning() {
     final RunningQuery[] found = new RunningQuery[1];
     await().atMost(Duration.ofSeconds(30)).pollInterval(Duration.ofMillis(20)).until(() -> (found[0] = findRunning()) != null);
