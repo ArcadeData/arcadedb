@@ -68,6 +68,8 @@ public class AggregateFromTimeSeriesStep extends AbstractExecutionStep {
   private       Iterator<ResultInternal>           resultIterator;
   private       boolean                            fetched = false;
   private       AggregationMetrics                 aggregationMetrics;
+  /** The non-timestamp columns in schema order, the numbering an engine row uses past its timestamp; built on first use. */
+  private       ColumnDefinition[]                 nonTsColumns;
 
   public AggregateFromTimeSeriesStep(final LocalTimeSeriesType tsType, final long fromTs, final long toTs,
       final List<MultiColumnAggregationRequest> requests, final long bucketIntervalMs, final String timeBucketAlias,
@@ -287,7 +289,7 @@ public class AggregateFromTimeSeriesStep extends AbstractExecutionStep {
   /**
    * The value of request {@code i} in a bucket, as the SQL boundary spells it.
    */
-  private static Object aggregateValue(final MultiColumnAggregationResult aggResult, final MultiColumnAggregationRequest req,
+  private Object aggregateValue(final MultiColumnAggregationResult aggResult, final MultiColumnAggregationRequest req,
       final long bucketTs, final int i) {
     final double value = aggResult.getValue(bucketTs, i);
     // The absent marker becomes SQL NULL at the SQL boundary, exactly as it does on the row path
@@ -307,7 +309,53 @@ public class AggregateFromTimeSeriesStep extends AbstractExecutionStep {
     if (req.type() == AggregationType.COUNT)
       // a Long, as SQLFunctionCount answers on the generic path (issue #8915)
       return (long) value;
-    return TimeSeriesNaN.isAbsent(value) && aggResult.getCount(bucketTs, i) == 0 ? null : value;
+    if (TimeSeriesNaN.isAbsent(value) && aggResult.getCount(bucketTs, i) == 0)
+      return null;
+    return typedLikeTheGenericPlan(req, value);
+  }
+
+  /**
+   * The value in the Java type the generic aggregation answers for the same column (issue #9612): the engine accumulates
+   * every aggregate as a double, while {@code min}/{@code max} hand back a sample of the column, so its declared type, and
+   * {@code sum} adds samples with {@code Type.increment}, which keeps an integral total integral and a FLOAT total a FLOAT.
+   * An ungrouped aggregate used to run the generic plan, so this is what its clients have always read. {@code avg} is a
+   * Double on both plans.
+   */
+  private Object typedLikeTheGenericPlan(final MultiColumnAggregationRequest req, final double value) {
+    if (Double.isNaN(value) || Double.isInfinite(value) || (req.type() != AggregationType.MIN && req.type() != AggregationType.MAX
+        && req.type() != AggregationType.SUM))
+      return value;
+    final ColumnDefinition column = requestColumn(req);
+    if (column == null)
+      return value;
+    return switch (column.getDataType()) {
+      case LONG -> value >= Long.MIN_VALUE && value < 0x1p63 ? (Object) (long) value : (Object) value;
+      case INTEGER, SHORT, BYTE -> {
+        if (req.type() != AggregationType.SUM)
+          yield column.boxRaw((long) value);
+        // a total of ints is an int until it overflows, then a long, as Type.increment widens it
+        yield value >= Integer.MIN_VALUE && value <= Integer.MAX_VALUE ? (Object) (int) value
+            : value >= Long.MIN_VALUE && value < 0x1p63 ? (Object) (long) value : (Object) value;
+      }
+      case FLOAT -> (float) value;
+      default -> value;
+    };
+  }
+
+  /** The column a request aggregates: its index is a position in the engine row, where 0 is the timestamp. */
+  private ColumnDefinition requestColumn(final MultiColumnAggregationRequest req) {
+    if (nonTsColumns == null)
+      nonTsColumns = nonTsColumnDefinitions();
+    final int nonTsIdx = req.columnIndex() - 1;
+    return nonTsIdx >= 0 && nonTsIdx < nonTsColumns.length ? nonTsColumns[nonTsIdx] : null;
+  }
+
+  private ColumnDefinition[] nonTsColumnDefinitions() {
+    final List<ColumnDefinition> columns = new ArrayList<>();
+    for (final ColumnDefinition column : tsType.getTsColumns())
+      if (column.getRole() != ColumnDefinition.ColumnRole.TIMESTAMP)
+        columns.add(column);
+    return columns.toArray(new ColumnDefinition[0]);
   }
 
   /**
@@ -407,11 +455,11 @@ public class AggregateFromTimeSeriesStep extends AbstractExecutionStep {
 
   /** Names of the non-timestamp columns in schema order, the numbering a {@link TagFilter} uses. */
   private String[] nonTsColumnNames() {
-    final List<String> names = new ArrayList<>();
-    for (final ColumnDefinition column : tsType.getTsColumns())
-      if (column.getRole() != ColumnDefinition.ColumnRole.TIMESTAMP)
-        names.add(column.getName());
-    return names.toArray(new String[0]);
+    final ColumnDefinition[] columns = nonTsColumnDefinitions();
+    final String[] names = new String[columns.length];
+    for (int i = 0; i < columns.length; i++)
+      names[i] = columns[i].getName();
+    return names;
   }
 
   @Override

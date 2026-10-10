@@ -298,6 +298,19 @@ public final class FieldFilter {
   }
 
   /**
+   * Whether row {@code row} passes every condition, reading {@code columns} as {@link #select} does. For a caller that walks
+   * the rows anyway and needs no index list.
+   */
+  static boolean matchesAt(final List<Condition> conditions, final Object[] columns, final int row) {
+    for (int c = 0; c < conditions.size(); c++) {
+      final Condition condition = conditions.get(c);
+      if (condition.integral ? !condition.matches(((long[]) columns[c])[row]) : !condition.matches(((double[]) columns[c])[row]))
+        return false;
+    }
+    return true;
+  }
+
+  /**
    * Renders the filter for an execution plan, e.g. {@code uu > 90.0 AND ui BETWEEN 1 AND 5}.
    */
   public String describe() {
@@ -322,21 +335,17 @@ public final class FieldFilter {
       final boolean hasLow = condition.low != Double.NEGATIVE_INFINITY;
       final boolean hasHigh = condition.high != Double.POSITIVE_INFINITY;
       if (hasLow && condition.low == condition.high && condition.lowInclusive && condition.highInclusive)
-        sb.append(name).append(" = ").append(format(condition.low));
+        sb.append(name).append(" = ").append(condition.low);
       else {
         if (hasLow)
-          sb.append(name).append(condition.lowInclusive ? " >= " : " > ").append(format(condition.low));
+          sb.append(name).append(condition.lowInclusive ? " >= " : " > ").append(condition.low);
         if (hasLow && hasHigh)
           sb.append(" AND ");
         if (hasHigh)
-          sb.append(name).append(condition.highInclusive ? " <= " : " < ").append(format(condition.high));
+          sb.append(name).append(condition.highInclusive ? " <= " : " < ").append(condition.high);
       }
     }
     return sb.toString();
-  }
-
-  private static String format(final double value) {
-    return Double.toString(value);
   }
 
   @Override

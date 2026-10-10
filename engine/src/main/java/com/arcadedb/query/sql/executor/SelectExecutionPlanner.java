@@ -3283,7 +3283,10 @@ public class SelectExecutionPlanner {
         return FieldFilter.range(nonTsIdx, column, value, true, value, true);
       return greater ? FieldFilter.range(nonTsIdx, column, value, inclusive, null, false) : FieldFilter.range(nonTsIdx, column, null, false, value, inclusive);
     } catch (final RuntimeException e) {
-      // an operand that cannot be evaluated at planning time is the generic filter's to evaluate
+      // an operand that cannot be evaluated at planning time is the generic filter's to evaluate; logged, so a planner bug
+      // that lands here is not mistaken for a predicate the push-down was never meant to take
+      LogManager.instance().log(SelectExecutionPlanner.class, Level.FINE, "TimeSeries field predicate '%s' left to the SQL filter: %s", null,
+          expr, e.toString());
       return null;
     }
   }
