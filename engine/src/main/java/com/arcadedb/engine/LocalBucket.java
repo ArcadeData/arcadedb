@@ -3240,7 +3240,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   /**
    * Gives back a page created by {@link #addNewPage()} when its transaction ends, whatever the outcome (issue #9694).
    * After a commit the page is published and is an ordinary page; after a rollback it was never written and is an
-   * empty page any transaction may fill.
+   * empty page any transaction may fill. Between the commit's publish and this call the page is still skipped, which
+   * only costs the others that one short window.
    */
   public void releaseNewPage(final int pageNumber) {
     inFlightNewPages.remove(pageNumber);
