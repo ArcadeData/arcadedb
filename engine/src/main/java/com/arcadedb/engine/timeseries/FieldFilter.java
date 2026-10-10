@@ -87,6 +87,7 @@ public final class FieldFilter {
 
   private final List<Condition> conditions;
 
+  /** Never empty: {@link #range} builds one condition and {@link #and} only adds, which {@link #select} and {@link #matchesAt} rely on. */
   private FieldFilter(final List<Condition> conditions) {
     this.conditions = conditions;
   }
