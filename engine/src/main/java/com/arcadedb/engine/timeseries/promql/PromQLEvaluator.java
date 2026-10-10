@@ -556,15 +556,15 @@ public class PromQLEvaluator {
 
     // vector-scalar
     if (leftResult instanceof InstantVector iv && rightResult instanceof ScalarResult rs)
-      return applyVectorScalar(iv, rs.value(), bin.op(), false);
+      return applyVectorScalar(iv, rs.value(), bin.op(), false, bin.returnBool());
 
     // scalar-vector
     if (leftResult instanceof ScalarResult ls && rightResult instanceof InstantVector iv)
-      return applyVectorScalar(iv, ls.value(), bin.op(), true);
+      return applyVectorScalar(iv, ls.value(), bin.op(), true, bin.returnBool());
 
     // vector-vector
     if (leftResult instanceof InstantVector lv && rightResult instanceof InstantVector rv)
-      return applyVectorVector(lv, rv, bin.op());
+      return applyVectorVector(lv, rv, bin.op(), bin.returnBool());
 
     return new ScalarResult(Double.NaN, evalTimeMs);
   }
@@ -929,9 +929,24 @@ public class PromQLEvaluator {
     return labelKey(labels, METRIC_NAME_LABEL);
   }
 
-  /** The result labels of an arithmetic operator: Prometheus drops the metric name. */
-  private Map<String, String> resultLabels(final Map<String, String> labels, final BinaryOp op) {
-    return isComparisonOp(op) ? labels : withoutMetricName(labels);
+  /**
+   * The result labels of a binary operator: Prometheus drops the metric name for an arithmetic operator and for a
+   * comparison with {@code bool} (its {@code returnBool} adds a {@code DropMetricName} of its own, issue #9644), and
+   * keeps it only for a filtering comparison.
+   */
+  private Map<String, String> resultLabels(final Map<String, String> labels, final BinaryOp op, final boolean returnBool) {
+    return op.isComparison() && !returnBool ? labels : withoutMetricName(labels);
+  }
+
+  /**
+   * The sample a comparison or arithmetic operator produces from {@code source} and the operator's raw {@code value},
+   * or {@code null} when a filtering comparison drops it. A comparison with {@code bool} keeps every sample and answers
+   * {@code 0}/{@code 1} (issue #9644); without it a comparison keeps the source value of the samples it lets through.
+   */
+  private VectorSample binarySample(final VectorSample source, final double value, final BinaryOp op, final boolean returnBool) {
+    if (!op.isComparison() || returnBool)
+      return new VectorSample(resultLabels(source.labels(), op, returnBool), value, source.timestampMs());
+    return value != 0 ? new VectorSample(source.labels(), source.value(), source.timestampMs()) : null;
   }
 
   /**
@@ -959,17 +974,19 @@ public class PromQLEvaluator {
   }
 
   private InstantVector applyVectorScalar(final InstantVector iv, final double scalar, final BinaryOp op,
-      final boolean scalarOnLeft) {
+      final boolean scalarOnLeft, final boolean returnBool) {
     final List<VectorSample> result = new ArrayList<>();
     for (final VectorSample s : iv.samples()) {
       final double value = scalarOnLeft ? applyBinaryOp(op, scalar, s.value()) : applyBinaryOp(op, s.value(), scalar);
-      if (!isComparisonOp(op) || value != 0)
-        result.add(new VectorSample(resultLabels(s.labels(), op), isComparisonOp(op) ? s.value() : value, s.timestampMs()));
+      final VectorSample out = binarySample(s, value, op, returnBool);
+      if (out != null)
+        result.add(out);
     }
     return new InstantVector(result);
   }
 
-  private InstantVector applyVectorVector(final InstantVector left, final InstantVector right, final BinaryOp op) {
+  private InstantVector applyVectorVector(final InstantVector left, final InstantVector right, final BinaryOp op,
+      final boolean returnBool) {
     // Simple vector-vector matching by label identity
     final Map<String, VectorSample> rightMap = new HashMap<>();
     for (final VectorSample s : right.samples())
@@ -988,9 +1005,9 @@ public class PromQLEvaluator {
         } else if (op == BinaryOp.UNLESS) {
           // skip — matched, so excluded
         } else {
-          final double value = applyBinaryOp(op, ls.value(), rs.value());
-          if (!isComparisonOp(op) || value != 0)
-            result.add(new VectorSample(resultLabels(ls.labels(), op), isComparisonOp(op) ? ls.value() : value, ls.timestampMs()));
+          final VectorSample out = binarySample(ls, applyBinaryOp(op, ls.value(), rs.value()), op, returnBool);
+          if (out != null)
+            result.add(out);
         }
       } else if (op == BinaryOp.OR || op == BinaryOp.UNLESS) {
         result.add(ls);
@@ -1024,11 +1041,6 @@ public class PromQLEvaluator {
       case GTE -> left >= right ? 1.0 : 0.0;
       case AND, OR, UNLESS -> Double.NaN; // handled at vector level
     };
-  }
-
-  private boolean isComparisonOp(final BinaryOp op) {
-    return op == BinaryOp.EQ || op == BinaryOp.NEQ || op == BinaryOp.LT || op == BinaryOp.GT || op == BinaryOp.LTE
-        || op == BinaryOp.GTE;
   }
 
   private boolean isRangeFunction(final String name) {

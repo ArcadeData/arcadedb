@@ -45,7 +45,15 @@ public sealed interface PromQLExpr {
   record FunctionCallExpr(String name, List<PromQLExpr> args) implements PromQLExpr {
   }
 
-  record BinaryExpr(PromQLExpr left, BinaryOp op, PromQLExpr right) implements PromQLExpr {
+  /**
+   * A binary operation. {@code returnBool} is the {@code bool} modifier of a comparison ({@code a > bool b}): the result
+   * is {@code 0}/{@code 1} for every sample instead of a filter, and drops the metric name (issue #9644). Always
+   * {@code false} for a non-comparison operator, which the parser refuses the modifier on.
+   */
+  record BinaryExpr(PromQLExpr left, BinaryOp op, PromQLExpr right, boolean returnBool) implements PromQLExpr {
+    public BinaryExpr(final PromQLExpr left, final BinaryOp op, final PromQLExpr right) {
+      this(left, op, right, false);
+    }
   }
 
   record UnaryExpr(char op, PromQLExpr expr) implements PromQLExpr {
@@ -68,6 +76,10 @@ public sealed interface PromQLExpr {
 
     public String symbol() {
       return symbol;
+    }
+
+    public boolean isComparison() {
+      return this == EQ || this == NEQ || this == LT || this == GT || this == LTE || this == GTE;
     }
   }
 
