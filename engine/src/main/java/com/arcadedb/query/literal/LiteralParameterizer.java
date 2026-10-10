@@ -18,10 +18,12 @@
  */
 package com.arcadedb.query.literal;
 
+import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.SegmentedLRUCache;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.logging.Level;
 
 /**
  * A statement cache that lets queries differing only in their literal values share one parsed statement and one plan (issue
@@ -73,7 +75,8 @@ public abstract class LiteralParameterizer<S> {
 
     /**
      * Merges the extracted literal values into the caller's parameters. Returns {@code callerParameters} itself when nothing
-     * was extracted, so the common path allocates nothing.
+     * was extracted, so the common path allocates nothing, and the extracted map itself when the caller has none: that map is
+     * built for this lookup alone (a cached {@code Lookup} never carries one), so the execution owns it.
      */
     public Map<String, Object> mergeParameters(final Map<String, Object> callerParameters) {
       if (parameters == null)
@@ -173,6 +176,8 @@ public abstract class LiteralParameterizer<S> {
         template = parse(key);
       } catch (final RuntimeException e) {
         // THE GRAMMAR REFUSES A PARAMETER WHERE THE POLICY PUT ONE: NEVER EXTRACT FROM THIS SHAPE AGAIN
+        LogManager.instance().log(this, Level.FINE, "Literals of the query are not extracted, its parameterized text does not parse: %s",
+            e, key);
         synchronized (policies) {
           policies.put(shape, KEEP_ALL);
         }
