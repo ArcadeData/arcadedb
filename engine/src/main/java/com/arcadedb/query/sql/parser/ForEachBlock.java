@@ -21,6 +21,7 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.query.OperationType;
 import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -34,6 +35,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
@@ -46,6 +48,18 @@ public class ForEachBlock extends Statement {
   public                 List<Statement> statements             = new ArrayList<>();
 
   public ForEachBlock() {
+  }
+
+  /** Writes nothing itself: a block is exactly what its body runs (issue #9628). */
+  @Override
+  protected boolean isIdempotentItself() {
+    return true;
+  }
+
+  /** No operation of its own: the body's statements, nested in this one, contribute theirs (issue #9628). */
+  @Override
+  protected Set<OperationType> getOperationTypesItself() {
+    return Set.of();
   }
 
   @Override

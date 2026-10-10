@@ -181,7 +181,7 @@ public class MoveVertexStatement extends Statement {
   }
 
   @Override
-  public Set<OperationType> getOperationTypes() {
+  protected Set<OperationType> getOperationTypesItself() {
     return EnumSet.of(OperationType.CREATE, OperationType.UPDATE, OperationType.DELETE);
   }
 }

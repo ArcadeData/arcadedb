@@ -123,21 +123,19 @@ public class ProfileStatement extends Statement {
     return statement != null ? statement.hashCode() : 0;
   }
 
+  /**
+   * PROFILE executes the wrapped statement, so it is exactly what that statement is (issue #9313): it writes nothing
+   * itself and has no operation of its own, and the wrapped statement - nested in it - contributes its own (issue
+   * #9628). EXPLAIN, which only plans, is the one that stays idempotent whatever it wraps.
+   */
   @Override
-  public boolean isIdempotent() {
-    // PROFILE executes the wrapped statement, so it is exactly as idempotent as that statement (issue #9313).
-    // EXPLAIN, which only plans, is the one that stays idempotent whatever it wraps.
-    return statement.isIdempotent();
+  protected boolean isIdempotentItself() {
+    return true;
   }
 
   @Override
-  public boolean isDDL() {
-    return statement.isDDL();
-  }
-
-  @Override
-  public Set<OperationType> getOperationTypes() {
-    return statement.getOperationTypes();
+  protected Set<OperationType> getOperationTypesItself() {
+    return Set.of();
   }
 
   /**

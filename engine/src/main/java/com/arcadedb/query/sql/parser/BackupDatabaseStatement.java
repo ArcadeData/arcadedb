@@ -55,7 +55,7 @@ public class BackupDatabaseStatement extends SimpleExecStatement {
   }
 
   @Override
-  public boolean isIdempotent() {
+  protected boolean isIdempotentItself() {
     return true;
   }
 
@@ -68,7 +68,7 @@ public class BackupDatabaseStatement extends SimpleExecStatement {
    * performs lets such a caller tell the two apart without special-casing this class by name.
    */
   @Override
-  public Set<OperationType> getOperationTypes() {
+  protected Set<OperationType> getOperationTypesItself() {
     return Set.of(OperationType.READ, OperationType.CREATE);
   }
 

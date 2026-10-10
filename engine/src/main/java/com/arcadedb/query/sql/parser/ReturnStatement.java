@@ -90,7 +90,7 @@ public class ReturnStatement extends SimpleExecStatement {
   }
 
   @Override
-  public boolean isIdempotent() {
+  protected boolean isIdempotentItself() {
     return true;
   }
 

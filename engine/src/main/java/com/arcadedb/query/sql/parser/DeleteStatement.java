@@ -155,7 +155,7 @@ public class DeleteStatement extends Statement {
   }
 
   @Override
-  public Set<OperationType> getOperationTypes() {
+  protected Set<OperationType> getOperationTypesItself() {
     return CollectionUtils.singletonSet(OperationType.DELETE);
   }
 }

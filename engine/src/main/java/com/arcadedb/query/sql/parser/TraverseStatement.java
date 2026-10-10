@@ -217,7 +217,7 @@ public class TraverseStatement extends Statement {
   }
 
   @Override
-  public boolean isIdempotent() {
+  protected boolean isIdempotentItself() {
     return true;
   }
 

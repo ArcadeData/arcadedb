@@ -20,6 +20,7 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
+import com.arcadedb.query.OperationType;
 import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
@@ -30,6 +31,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 
 public class LetStatement extends SimpleExecStatement {
   public Identifier variableName;
@@ -124,12 +126,19 @@ public class LetStatement extends SimpleExecStatement {
     return expression != null && expression.refersToParent();
   }
 
+  /**
+   * The assignment writes nothing itself; what it evaluates - a statement, or an expression that can be a parenthesized
+   * INSERT, DELETE or CREATE TYPE - is nested in it and classified with it (issue #9628).
+   */
   @Override
-  public boolean isIdempotent() {
-    if (statement != null)
-      return statement.isIdempotent();
-    // expressions (literals, variable references, method calls) do not write data
+  protected boolean isIdempotentItself() {
     return true;
+  }
+
+  /** No operation of its own: the right-hand side, nested in this statement, contributes its own (issue #9628). */
+  @Override
+  protected Set<OperationType> getOperationTypesItself() {
+    return Set.of();
   }
 }
 /* JavaCC - OriginalChecksum=cc646e5449351ad9ced844f61b687928 (do not edit this line) */

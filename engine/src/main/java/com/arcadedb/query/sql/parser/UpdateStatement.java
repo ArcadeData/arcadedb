@@ -255,7 +255,7 @@ public class UpdateStatement extends Statement {
   }
 
   @Override
-  public Set<OperationType> getOperationTypes() {
+  protected Set<OperationType> getOperationTypesItself() {
     if (upsert)
       return Set.of(OperationType.UPDATE, OperationType.CREATE);
     return CollectionUtils.singletonSet(OperationType.UPDATE);
