@@ -2777,10 +2777,17 @@ public class SelectExecutionPlanner {
     // fall back to the caller's filterClusters. The union of bucket names across blocks is the
     // pruned set the OR-disjuncts collectively need to cover.
     final Set<String> derivedBuckets = new HashSet<>();
+    // A plan depends on the values of its parameters when a parameter sits in a block that binds every partition coordinate:
+    // pruning then happens or not, and to which bucket, by the value bound (a null prunes nothing, another value prunes to
+    // its own bucket). A block that leaves a coordinate open never prunes, whatever is bound, so its plan can be cached.
+    boolean prunedOnParameter = false;
     for (final AndBlock andBlock : info.flattenedWhereClause) {
       final Object[] keyValues = new Object[partitionProps.size()];
       final boolean[] bound = new boolean[partitionProps.size()];
+      final boolean[] written = new boolean[partitionProps.size()];
       int boundCount = 0;
+      int writtenCount = 0;
+      boolean parameterInBlock = false;
 
       for (final BooleanExpression expr : andBlock.getSubBlocks()) {
         if (!(expr instanceof BinaryCondition bc) || !(bc.getOperator() instanceof EqualsCompareOperator))
@@ -2816,11 +2823,14 @@ public class SelectExecutionPlanner {
         // pruning no longer leans on it. See issue #6179.
         if (literalSide == null)
           continue;
-        if (isBareInputParameter(literalSide))
-          // whether this execution prunes, and to which bucket, depends on the value bound: no plan of it may be reused
-          planDependsOnInputParameters = true;
-        else if (!literalSide.isLiteral())
+        final boolean parameter = isBareInputParameter(literalSide);
+        if (!parameter && !literalSide.isLiteral())
           continue;
+        parameterInBlock |= parameter;
+        if (!written[idx]) {
+          written[idx] = true;
+          writtenCount++;
+        }
 
         if (!bound[idx]) {
           final Object literalValue;
@@ -2843,15 +2853,28 @@ public class SelectExecutionPlanner {
         }
       }
 
-      if (boundCount != partitionProps.size())
+      // a block that writes every coordinate but cannot prune with these values prunes with others: not cacheable
+      final boolean valueDecides = parameterInBlock && writtenCount == partitionProps.size();
+      if (boundCount != partitionProps.size()) {
+        if (valueDecides)
+          planDependsOnInputParameters = true;
         return filterClusters;  // Block left a partition coordinate open; cannot prune.
+      }
 
       // keyValues was filled in partitionProps order right above, so the strategy's own check is satisfied.
       final int bucketIndex = partitioned.getBucketIdByKeys(partitionProps, keyValues, false);
-      if (bucketIndex < 0 || bucketIndex >= typeBuckets.size())
+      if (bucketIndex < 0 || bucketIndex >= typeBuckets.size()) {
+        if (valueDecides)
+          planDependsOnInputParameters = true;
         return filterClusters;  // Strategy returned an out-of-range index; abort defensively.
+      }
       derivedBuckets.add(typeBuckets.get(bucketIndex).getName());
+      prunedOnParameter |= parameterInBlock;
     }
+
+    // the buckets hold for this execution's bindings only
+    if (prunedOnParameter)
+      planDependsOnInputParameters = true;
 
     // No partition prune was derivable (no AndBlock fully bound the partition properties); fall
     // back to the caller's filterClusters. The hint-stashing block below is skipped intentionally:
