@@ -19,11 +19,15 @@
 package com.arcadedb.graph.olap;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
+import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GraphBatch;
+import com.arcadedb.graph.GraphEngine;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -82,6 +86,36 @@ class Issue9572GraphBatchReachesViewTest extends TestHelper {
     assertThat(view.awaitReady(60, TimeUnit.SECONDS)).isTrue();
     assertThat(view.getEdgeCount()).isEqualTo(4);
     database.command("sql", "DROP GRAPH ANALYTICAL VIEW v1");
+  }
+
+  /** A listener that fails, told before the view, neither fails the batch nor keeps the view from rebuilding. */
+  @Test
+  void aFailingListenerDoesNotKeepTheViewFromTheBatch() throws Exception {
+    final GraphEngine graphEngine = ((DatabaseInternal) database).getGraphEngine();
+    final GraphEngine.EdgeWriteListener failing = new GraphEngine.EdgeWriteListener() {
+      @Override
+      public void onLightEdgeCreated(final Edge edge) {
+      }
+
+      @Override
+      public void onEdgesWrittenInBulk(final Set<String> edgeTypeNames) {
+        throw new IllegalStateException("listener failure the batch must survive");
+      }
+    };
+    graphEngine.registerEdgeWriteListener(failing);
+    try {
+      final RID[] v = createGraph("K LIGHTWEIGHT", "SYNCHRONOUS");
+      final GraphAnalyticalView view = GraphAnalyticalViewRegistry.get(database, "v1");
+      try (final GraphBatch batch = GraphBatch.builder(database).build()) {
+        batch.newEdge(v[1], "K", v[0]);
+      }
+      assertThat(count()).isEqualTo(4L);
+      assertThat(view.awaitReady(60, TimeUnit.SECONDS)).isTrue();
+      assertThat(view.getEdgeCount()).isEqualTo(4);
+      database.command("sql", "DROP GRAPH ANALYTICAL VIEW v1");
+    } finally {
+      graphEngine.unregisterEdgeWriteListener(failing);
+    }
   }
 
   /** A second batch on a view that a first batch sent rebuilding, before that rebuild is awaited. */

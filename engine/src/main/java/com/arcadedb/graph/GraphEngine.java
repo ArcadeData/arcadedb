@@ -132,6 +132,7 @@ public class GraphEngine {
     this.database = database;
   }
 
+  /** Internal: public only because the graph analytical views live in another package. */
   public synchronized void registerEdgeWriteListener(final EdgeWriteListener listener) {
     final EdgeWriteListener[] current = edgeWriteListeners;
     final EdgeWriteListener[] updated = Arrays.copyOf(current, current.length + 1);
@@ -156,10 +157,17 @@ public class GraphEngine {
     return edgeWriteListeners.length;
   }
 
-  /** See {@link EdgeWriteListener#onEdgesWrittenInBulk}. */
+  /**
+   * See {@link EdgeWriteListener#onEdgesWrittenInBulk}. Each listener is told on its own: the batch is already written,
+   * so one that fails costs that view its update, never the other views theirs or the caller its outcome.
+   */
   void edgesWrittenInBulk(final Set<String> edgeTypeNames) {
     for (final EdgeWriteListener listener : edgeWriteListeners)
-      listener.onEdgesWrittenInBulk(edgeTypeNames);
+      try {
+        listener.onEdgesWrittenInBulk(edgeTypeNames);
+      } catch (final RuntimeException e) {
+        LogManager.instance().log(this, Level.WARNING, "Cannot notify %s of the edges a batch wrote", e, listener);
+      }
   }
 
   /**
