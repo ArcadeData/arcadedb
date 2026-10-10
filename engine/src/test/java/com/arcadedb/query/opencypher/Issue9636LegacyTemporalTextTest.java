@@ -20,6 +20,8 @@ package com.arcadedb.query.opencypher;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.query.opencypher.procedures.db.DbMigrateLegacyTemporals;
 import com.arcadedb.query.opencypher.temporal.CypherDuration;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -163,6 +165,63 @@ class Issue9636LegacyTemporalTextTest extends TestHelper {
     database.command("opencypher", "CREATE (:T {name: 'z', d: 'P3D'})");
     try (final ResultSet rs = database.query("opencypher", "MATCH (n:T {name: 'z'}) RETURN n.d AS d")) {
       assertThat(rs.next().<Object>getProperty("d")).isEqualTo("P3D");
+    }
+  }
+
+  @Test
+  void migrationConvertsEdgesLeavesListsAndRunsSeveralBatches() throws IOException {
+    final int count = DbMigrateLegacyTemporals.BATCH_SIZE * 2 + 7;
+    database.getSchema().createVertexType("V");
+    database.getSchema().createEdgeType("E");
+    database.transaction(() -> {
+      final MutableVertex first = database.newVertex("V").set("d", "P1D").set("list", List.of("P2D", "P3D")).save();
+      for (int i = 1; i < count; i++)
+        database.newVertex("V").set("d", "P" + i + "D").save();
+      first.newEdge("E", first).set("since", "2024-01-01T10:00+01:00[Europe/Rome]").save();
+    });
+    makeLegacy();
+
+    try (final ResultSet rs = database.command("opencypher", "CALL db.migrateLegacyTemporals()")) {
+      final Result r = rs.next();
+      assertThat(((Number) r.getProperty("records")).longValue()).isEqualTo(count + 1L);
+      assertThat(((Number) r.getProperty("properties")).longValue()).isEqualTo(count + 1L);
+    }
+
+    final int[] durations = new int[1];
+    database.iterateType("V", false).forEachRemaining(record -> {
+      assertThat(record.asDocument().get("d")).isInstanceOf(CypherDuration.class);
+      ++durations[0];
+    });
+    assertThat(durations[0]).isEqualTo(count);
+    try (final ResultSet rs = database.query("sql", "SELECT since FROM E")) {
+      assertThat(rs.next().<Object>getProperty("since")).isInstanceOf(ZonedDateTime.class);
+    }
+    // The elements of a list were text on a property read before the native types too: left as they are
+    try (final ResultSet rs = database.query("sql", "SELECT list FROM V WHERE list IS NOT NULL")) {
+      assertThat(rs.next().<List<Object>>getProperty("list")).containsExactly("P2D", "P3D");
+    }
+  }
+
+  @Test
+  void migrationSurvivesARollbackOfTheCallersTransaction() throws IOException {
+    writeLegacyRecords();
+    makeLegacy();
+
+    // The HTTP handlers wrap every command in a transaction: the batches commit on their own, nested inside it
+    database.begin();
+    try (final ResultSet rs = database.command("opencypher", "CALL db.migrateLegacyTemporals()")) {
+      assertThat(((Number) rs.next().getProperty("records")).longValue()).isEqualTo(3L);
+    }
+    database.rollback();
+
+    try (final ResultSet rs = database.query("sql", "SELECT d FROM T WHERE name = 'b'")) {
+      assertThat(rs.next().<Object>getProperty("d")).isEqualTo(new CypherDuration(0, 2, 0, 0));
+    }
+    assertThat(database.getSchema().getEmbedded().isLegacyTemporalText()).isFalse();
+    reopenDatabase();
+    assertThat(database.getSchema().getEmbedded().isLegacyTemporalText()).isFalse();
+    try (final ResultSet rs = database.query("sql", "SELECT d FROM T WHERE name = 'b'")) {
+      assertThat(rs.next().<Object>getProperty("d")).isEqualTo(new CypherDuration(0, 2, 0, 0));
     }
   }
 

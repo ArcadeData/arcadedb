@@ -34,7 +34,6 @@ import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.schema.TimeSeriesType;
 import com.arcadedb.security.SecurityDatabaseUser;
 
-import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 import java.util.stream.Stream;
@@ -59,10 +58,16 @@ import java.util.stream.Stream;
  * The records are rewritten in transactions of their own, {@link #BATCH_SIZE} at a time, and the database is marked
  * native only once all of them committed: a conversion that fails part way leaves it legacy, and running the procedure
  * again picks up what is left.
+ * <p>
+ * Run it with writers quiesced: a String written while it runs, with the shape of a temporal, on a property the schema
+ * does not declare, is converted too - which is what the legacy reading already made of it. For the same reason a
+ * database created by a 26.11.1 development build earlier than this procedure counts as legacy (its schema file has no
+ * temporal storage setting either): its genuine Strings with a temporal shape on undeclared properties are read, and
+ * converted, as temporals.
  */
 public class DbMigrateLegacyTemporals implements CypherProcedure {
   public static final String NAME       = "db.migrateLegacyTemporals";
-  static final        int    BATCH_SIZE = 1_000;
+  public static final int    BATCH_SIZE = 1_000;
 
   @Override
   public String getName() {
@@ -106,36 +111,32 @@ public class DbMigrateLegacyTemporals implements CypherProcedure {
     long records = 0;
     long properties = 0;
     if (schema.isLegacyTemporalText()) {
-      // The RIDs first, the writes after: a scan does not run over the records it is rewriting
-      final List<RID> toConvert = new ArrayList<>();
+      // Streamed: the RIDs of at most one batch are held at a time. A record a batch rewrote holds no legacy text any
+      // more, so meeting it again further on in the scan converts nothing twice
+      final RID[] batch = new RID[BATCH_SIZE];
+      int size = 0;
       for (final DocumentType type : schema.getTypes()) {
         if (type instanceof TimeSeriesType)
           continue;
         final Iterator<Record> iterator = database.iterateType(type.getName(), false);
         while (iterator.hasNext()) {
           final Record record = iterator.next();
-          if (record instanceof Document document && hasLegacyText(document))
-            toConvert.add(record.getIdentity());
+          if (record instanceof Document document && hasLegacyText(document)) {
+            batch[size++] = record.getIdentity();
+            if (size == BATCH_SIZE) {
+              properties += convertBatch(database, batch, size);
+              records += size;
+              size = 0;
+            }
+          }
         }
       }
-
-      for (int from = 0; from < toConvert.size(); from += BATCH_SIZE) {
-        final List<RID> batch = toConvert.subList(from, Math.min(from + BATCH_SIZE, toConvert.size()));
-        long converted = 0;
-        database.begin();
-        try {
-          for (final RID rid : batch)
-            converted += convert(rid);
-          database.commit();
-        } catch (final RuntimeException e) {
-          if (database.isTransactionActive())
-            database.rollback();
-          throw e;
-        }
-        records += batch.size();
-        properties += converted;
+      if (size > 0) {
+        properties += convertBatch(database, batch, size);
+        records += size;
       }
 
+      // Only once every batch committed: a conversion that failed part way leaves the database legacy
       schema.markTemporalStorageNative();
     }
 
@@ -143,6 +144,26 @@ public class DbMigrateLegacyTemporals implements CypherProcedure {
     result.setProperty("records", records);
     result.setProperty("properties", properties);
     return Stream.of(result);
+  }
+
+  /**
+   * Rewrites one batch in a transaction of its own. Nested when the caller has one open (a {@code CALL} auto-opens one
+   * for a write procedure, and the HTTP handlers wrap every command in one): a nested transaction commits on its own,
+   * so a later rollback of the caller's transaction does not undo a batch that is already written.
+   */
+  private static long convertBatch(final DatabaseInternal database, final RID[] batch, final int size) {
+    long converted = 0;
+    database.begin();
+    try {
+      for (int i = 0; i < size; i++)
+        converted += convert(batch[i]);
+      database.commit();
+    } catch (final RuntimeException e) {
+      if (database.isTransactionActive())
+        database.rollback();
+      throw e;
+    }
+    return converted;
   }
 
   private static boolean hasLegacyText(final Document document) {
