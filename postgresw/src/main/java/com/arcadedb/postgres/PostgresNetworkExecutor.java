@@ -115,6 +115,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -149,6 +150,10 @@ public class PostgresNetworkExecutor extends Thread {
   private static final AtomicInteger                                  LAST_PROCESS_ID  = new AtomicInteger();
   /** The secret a CancelRequest has to quote: it is the request's only credential, so it must not be guessable. */
   private static final SecureRandom                                   CANCEL_SECRETS   = new SecureRandom();
+  /** At most one WARNING per interval for refused cancel keys: a guessing client must not be able to flood the log. */
+  private static final long                                           REFUSED_CANCEL_WARNING_INTERVAL_MS = 60_000L;
+  private static final AtomicLong                                     LAST_REFUSED_CANCEL_WARNING      = new AtomicLong();
+  private static final AtomicLong                                     REFUSED_CANCELS_SINCE_WARNING    = new AtomicLong();
   /** Bind-message parameter length denoting a NULL value (wire value -1, read unsigned). */
   private static final long                                           NULL_PARAM_LENGTH = 0xFFFFFFFFL;
   private static final Object[]                                       NO_PARAMETERS     = new Object[0];
@@ -307,6 +312,24 @@ public class PostgresNetworkExecutor extends Thread {
       // connection dies on its next read or write either way.
       LogManager.instance().log(this, Level.FINE, "PSQL: unable to lift the idle read timeout after authentication", e);
     }
+  }
+
+  /**
+   * Reports a CancelRequest that quoted a live backend with the wrong secret: at WARNING at most once a minute, with how
+   * many were refused since the last report, and at FINE otherwise, so guessing is visible and cannot flood the log.
+   */
+  private void logRefusedCancel(final int pid) {
+    final long refused = REFUSED_CANCELS_SINCE_WARNING.incrementAndGet();
+    final long now = System.currentTimeMillis();
+    final long last = LAST_REFUSED_CANCEL_WARNING.get();
+    if (now - last >= REFUSED_CANCEL_WARNING_INTERVAL_MS && LAST_REFUSED_CANCEL_WARNING.compareAndSet(last, now)) {
+      REFUSED_CANCELS_SINCE_WARNING.set(0);
+      LogManager.instance().log(this, Level.WARNING,
+          "PSQL: cancel request for backend %d from %s refused: the secret key does not match (%d refused in the last minute)",
+          pid, channel.socket.getRemoteSocketAddress(), refused);
+    } else
+      LogManager.instance().log(this, Level.FINE, "PSQL: cancel request for backend %d from %s refused: the secret key does not match",
+          pid, channel.socket.getRemoteSocketAddress());
   }
 
   /**
@@ -4046,9 +4069,7 @@ public class PostgresNetworkExecutor extends Thread {
           LogManager.instance().log(this, Level.FINE, "PSQL: cancel request for backend %d ignored: no such backend", pid);
         else if (session.cancelSecret != secret)
           // An open connection's pid with the wrong secret is no client's race: somebody guessing keys
-          LogManager.instance().log(this, Level.WARNING,
-              "PSQL: cancel request for backend %d from %s refused: the secret key does not match", pid,
-              channel.socket.getRemoteSocketAddress());
+          logRefusedCancel(pid);
         else {
           final boolean cancelled = session.cancelRunningStatement(session.userName);
           LogManager.instance().log(this, Level.FINE, "PSQL: cancel request for backend %d: %s", pid,
