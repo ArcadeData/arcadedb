@@ -28,6 +28,7 @@ import com.arcadedb.engine.timeseries.MultiColumnAggregationResult;
 import com.arcadedb.engine.timeseries.TagFilter;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
 import com.arcadedb.engine.timeseries.TimeSeriesNaN;
+import com.arcadedb.engine.timeseries.TimeSeriesRowVisitor;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.schema.LocalTimeSeriesType;
@@ -39,6 +40,7 @@ import java.io.IOException;
 import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
@@ -367,52 +369,91 @@ public class AggregateFromTimeSeriesStep extends AbstractExecutionStep {
    * <p>
    * Rounding to a double is monotonic and 2^53 is a double, so a stored long of magnitude at least 2^53 never rounds below it:
    * an engine extreme under 2^53 in magnitude is the stored long, exactly, and only one at or past it needs the stored value.
-   * That is the rare case, so the common one keeps the push-down's cost, and the rare one pays a single row scan over the same
-   * range and filters the engine aggregated, which folds the exact extremes of every such request at once. A LONG column is a
-   * SIMPLE8B column, whose samples come back as {@code Long}s.
+   * For those the step runs ONE row scan over the same range and filters the engine aggregated, and folds the exact extremes of
+   * every such request at once. A LONG column is a SIMPLE8B column, whose samples come back as {@code Long}s.
+   * <p>
+   * <b>Cost.</b> The scan decodes every block of the range, as the generic plan did before #9612, but only the columns it needs:
+   * without a field filter it projects just the recounted columns; with one it lets the engine filter (block statistics, then
+   * the primitive columns) before a row is built. A column whose values are routinely past 2^53 - epoch nanoseconds, 64-bit ids -
+   * therefore takes this path on every {@code min}/{@code max}, which is the exact answer's price until the engine keeps integral
+   * statistics as longs.
+   * <p>
+   * <b>Consistency.</b> The scan is a second read, so on a range still being written it may see samples the aggregation did not
+   * (or, past a retention pass, miss some): the recounted extremes then describe a slightly different row set than the
+   * {@code count(*)} next to them. A TimeSeries read is not a snapshot across calls, and a request the scan found no sample for
+   * keeps the engine's answer rather than turning into NULL.
    */
   private void replaceRoundedLongExtremes(final TimeSeriesEngine engine, final Object[] values) throws IOException {
-    boolean[] exact = null;
+    int recounted = 0;
+    final int[] recount = new int[values.length];
     for (int i = 0; i < values.length; i++) {
       final MultiColumnAggregationRequest req = requests.get(i);
       if ((req.type() != AggregationType.MIN && req.type() != AggregationType.MAX) || !(values[i] instanceof Number n)
           || !(Math.abs(n.doubleValue()) >= MAX_EXACT_INTEGRAL_DOUBLE))
         continue;
       final ColumnDefinition column = requestColumn(req);
-      if (column == null || column.getDataType() != Type.LONG)
-        continue;
-      if (exact == null)
-        exact = new boolean[values.length];
-      exact[i] = true;
+      if (column != null && column.getDataType() == Type.LONG)
+        recount[recounted++] = i;
     }
-    if (exact == null)
+    if (recounted == 0)
       return;
 
-    final boolean[] recount = exact;
-    final long[] extremes = new long[values.length];
-    final boolean[] seen = new boolean[values.length];
-    engine.forEachRow(fromTs, toTs, null, tagFilter, aggregationMetrics, row -> {
-      if (fieldFilter != null && !fieldFilter.matches(row))
-        return true;
-      for (int i = 0; i < recount.length; i++) {
-        if (!recount[i])
-          continue;
-        final int position = requests.get(i).columnIndex();
-        if (position >= row.length || !(row[position] instanceof Long sample))
+    // per recounted request: its position in the scanned row, and whether it is a MIN
+    final int count = recounted;
+    final int[] positions = new int[count];
+    final boolean[] isMin = new boolean[count];
+    final long[] extremes = new long[count];
+    final boolean[] seen = new boolean[count];
+    final int[] projection;
+    if (fieldFilter == null) {
+      // project only the recounted columns, in NON-timestamp indices: the row is { timestamp, projected columns... }
+      final int[] columns = new int[count];
+      int projected = 0;
+      for (int r = 0; r < count; r++) {
+        final int nonTsIdx = requests.get(recount[r]).columnIndex() - 1;
+        int at = -1;
+        for (int c = 0; c < projected; c++)
+          if (columns[c] == nonTsIdx)
+            at = c;
+        if (at < 0) {
+          at = projected;
+          columns[projected++] = nonTsIdx;
+        }
+        positions[r] = 1 + at;
+      }
+      projection = projected == columns.length ? columns : Arrays.copyOf(columns, projected);
+    } else {
+      projection = null;
+      for (int r = 0; r < count; r++)
+        positions[r] = requests.get(recount[r]).columnIndex();
+    }
+    for (int r = 0; r < count; r++)
+      isMin[r] = requests.get(recount[r]).type() == AggregationType.MIN;
+
+    final TimeSeriesRowVisitor fold = row -> {
+      for (int r = 0; r < count; r++) {
+        if (positions[r] >= row.length || !(row[positions[r]] instanceof Long sample))
           continue;
         final long value = sample;
-        if (!seen[i]) {
-          extremes[i] = value;
-          seen[i] = true;
-        } else if (requests.get(i).type() == AggregationType.MIN ? value < extremes[i] : value > extremes[i])
-          extremes[i] = value;
+        if (!seen[r]) {
+          extremes[r] = value;
+          seen[r] = true;
+        } else if (isMin[r] ? value < extremes[r] : value > extremes[r])
+          extremes[r] = value;
       }
       return true;
-    });
-    // a request the scan found no sample for keeps the engine's answer: only a retention pass racing the two reads can do that
-    for (int i = 0; i < values.length; i++)
-      if (seen[i])
-        values[i] = extremes[i];
+    };
+    if (fieldFilter == null)
+      engine.forEachRow(fromTs, toTs, projection, tagFilter, aggregationMetrics, fold);
+    else {
+      // the engine evaluates the field filter on block statistics and primitive columns before it builds a row
+      final Iterator<Object[]> rows = engine.iterateQuery(fromTs, toTs, null, tagFilter, fieldFilter, aggregationMetrics);
+      while (rows.hasNext())
+        fold.visit(rows.next());
+    }
+    for (int r = 0; r < count; r++)
+      if (seen[r])
+        values[recount[r]] = extremes[r];
   }
 
   /** The column a request aggregates: its index is a position in the engine row, where 0 is the timestamp. */
