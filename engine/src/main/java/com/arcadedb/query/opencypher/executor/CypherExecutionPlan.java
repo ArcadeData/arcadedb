@@ -6932,11 +6932,13 @@ public class CypherExecutionPlan {
     if (alias == null || !isMatchReturnOnlyStatement())
       return null;
 
-    // Every operator below counts walks over edges, and the star one needs at least one arm, so a MATCH with no
-    // relationship is left to what was asked before this - the type count, the index min/max, the product of parts - or
-    // to the pipeline. Answered without reading the WHERE: a count of single nodes filtered on an indexed property is
-    // among the commonest statements there are, no detector below takes it, and each of them used to parse its WHERE
-    // on every execution to find that out (issue #9652)
+    // Every operator below counts walks over edges: the edge count takes one hop, the chain at least one, the anti-join
+    // chain at least two, the star at least one arm, the triangle a three-hop cycle, the pair join a one-hop and a
+    // two-hop pattern, the joined chain the chain or anti-join over joined parts. A MATCH with no relationship is left to
+    // what was asked before this - the type count, the index min/max, the product of parts - or to the pipeline. A
+    // detector added below that can take one has to be asked before this check. Answered without reading the WHERE: a
+    // count of single nodes filtered on an indexed property is among the commonest statements there are, no detector
+    // below takes it, and each of them used to parse its WHERE on every execution to find that out (issue #9652)
     if (!hasRelationship())
       return null;
 
