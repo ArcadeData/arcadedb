@@ -78,9 +78,12 @@ public final class SupportRedactor {
           + "type|algorithm|mode|interval|retries|attempts|url|uri|ms|secs|seconds|minutes|header|name|field|class|provider)$");
 
   // (name)(separator)(value) of arcadedb.server.defaultDatabases in any spelling: -D, key=value, ARCADEDB_SERVER_DEFAULTDATABASES, JSON.
-  // An unquoted value runs bracket block to bracket block, so a password with a space in it is not cut in two at the space
+  // An unquoted value runs bracket block to bracket block, also across whitespace around a ';' (the server splits the value
+  // on ';' alone, so "A[u:p] ;B[v:q]" is two entries), so neither a space in a password nor one before the next entry cuts it short
+  private static final String  DATABASE_ENTRY    = "[^\\s\\[\\]\"']*+\\[[^\\]]*+\\]";
   private static final Pattern DEFAULT_DATABASES = Pattern.compile(
-      "(?i)(defaultdatabases)((?:\\\\?[\"'])?\\s*[=:]\\s*)(" + QUOTED_VALUE + "|(?:[^\\s\\[\\]\"']*+\\[[^\\]]*+\\])++\\S*+|\\S+)");
+      "(?i)(defaultdatabases)((?:\\\\?[\"'])?\\s*[=:]\\s*)(" + QUOTED_VALUE + "|" + DATABASE_ENTRY + "(?:\\s*+;\\s*+" + DATABASE_ENTRY + "|"
+          + DATABASE_ENTRY + ")*+\\S*+|\\S+)");
 
   private static final Pattern HEADER_VALUE = Pattern.compile(
       "(?i)\\b(authorization|proxy-authorization|set-cookie|cookie|x-api-key|x-auth-token)(\\\\?[\"']?\\s*[:=]\\s*)(.*)");

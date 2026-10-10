@@ -324,7 +324,10 @@ class SupportRedactorTest {
     // a password with a space in it is masked whole, not cut at the space
     assertThat(session.redactLine("defaultDatabases=A[u:ein stein,v:p q];B[w:x y] then more"))
         .isEqualTo("defaultDatabases=A[u:*****,v:*****];B[w:*****] then more");
-    assertThat(session.getCount()).isEqualTo(6);
+    // whitespace around the ';' between two entries does not hide the second one: the server splits on ';' alone
+    assertThat(session.redactLine("defaultDatabases=A[u:p1] ;B[v:p2] ; C[w:p3]; D[x:p4] done"))
+        .isEqualTo("defaultDatabases=A[u:*****] ;B[v:*****] ; C[w:*****]; D[x:*****] done");
+    assertThat(session.getCount()).isEqualTo(7);
 
     // nothing to hide: unchanged and not counted, including a value already redacted upstream
     final SupportRedactor.Session clean = new SupportRedactor.Session();
