@@ -154,7 +154,9 @@ class Issue8523ParallelScanAggregationTest extends TestHelper {
       assertThat(rowsAndPlan(query, rows)).as("execution " + i).contains("WITH FILTER (parallel)");
       assertThat(rows).hasSize(ROWS);
     }
-    assertThat(((DatabaseInternal) database).getExecutionPlanCache().contains(query)).isTrue();
+    // cached under the text its literals were extracted into (issue #8307)
+    final DatabaseInternal db = (DatabaseInternal) database;
+    assertThat(db.getExecutionPlanCache().contains(db.getStatementCache().getParameterized(query).cacheKey())).isTrue();
   }
 
   /** The plan a sequential execution cached must still run in parallel once parallel scans are enabled again. */

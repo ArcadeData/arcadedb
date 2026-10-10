@@ -171,6 +171,19 @@ public class AlterDatabaseStatement extends DDLStatement {
    */
   private void applyDatabaseSideEffect(final DatabaseInternal db, final GlobalConfiguration cfg,
       final Class<?> resolvedClass) {
+    switch (cfg) {
+    case SQL_MAX_EXPRESSION_DEPTH, CYPHER_MAX_EXPRESSION_DEPTH, CYPHER_MAX_CLAUSES, QUERY_LITERAL_PARAMETERIZATION -> {
+      // The parse limits are checked when a text is parsed, and a cached statement is never parsed again: without this a
+      // lowered limit would not reach a statement parsed under the old one - nor any text of the same shape, which the
+      // statement caches serve from one parsed statement since issue #8307
+      db.getStatementCache().clear();
+      db.getCypherStatementCache().clear();
+    }
+    default -> {
+      // no cached statement depends on it
+    }
+    }
+
     if (resolvedClass == null)
       return;
 

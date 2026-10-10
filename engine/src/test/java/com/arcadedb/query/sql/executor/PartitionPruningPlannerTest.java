@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.bucketselectionstrategy.PartitionedBucketSelectionStrategy;
 import com.arcadedb.partitioning.PartitioningTestFixture;
 import com.arcadedb.schema.LocalDocumentType;
@@ -109,40 +110,92 @@ class PartitionPruningPlannerTest extends TestHelper {
   }
 
   @Test
-  void parameterizedQueryDoesNotNarrowIndexFilterBuckets() {
-    // Parameter-bound predicates must not bake the bucket id into the cached plan; the
-    // GetValueFromIndexEntryStep should see every bucket.
+  void parameterizedQueryNarrowsIndexFilterBucketsWithoutCachingThePlan() {
+    // A parameter-bound predicate prunes like the literal it stands for (issue #8307: vector.neighbors() restricts its
+    // search to the pruned buckets, so a parameter that did not prune answered differently), but the bucket id must not
+    // be baked into a cached plan: the plan is never cached, so every binding is planned for its own value.
     createPartitionedType();
     populate();
 
-    final ResultSet rs = database.query("sql", "SELECT FROM " + TYPE_NAME + " WHERE tenant_id = ?", "acme");
+    final String sql = "SELECT FROM " + TYPE_NAME + " WHERE tenant_id = ?";
+    final ResultSet rs = database.query("sql", sql, "acme");
     final ExecutionPlan plan = rs.getExecutionPlan().orElseThrow();
     final GetValueFromIndexEntryStep extract = findIndexExtract(plan);
     assertThat(extract).isNotNull();
     assertThat(extract.getFilterBucketIds())
-        .as("parameter-bound queries must NOT prune; every bucket must still be visible")
-        .hasSize(BUCKETS);
+        .as("a parameter-bound query prunes to the bucket of its own value")
+        .hasSize(1);
     rs.close();
+    assertThat(((DatabaseInternal) database).getExecutionPlanCache().contains(sql))
+        .as("a plan pruned on a parameter must never be cached")
+        .isFalse();
   }
 
   @Test
-  void parenthesisedParameterDoesNotNarrowIndexFilterBuckets() {
-    // Defence-in-depth: a parameter wrapped in parentheses on the literal side ({@code = (?)})
-    // must still be detected as parameter-bound. Without the ParenthesisExpression override of
-    // containsInputParameter, the inherited walker would only see the empty {@code
-    // childExpressions} list and silently report no parameter, baking the first execution's
-    // bucket id into the cached plan and misrouting later parameter values.
+  void aParameterInABlockThatCanNeverPruneKeepsThePlanCacheable() {
+    // Partitioned on (a, b): a WHERE that binds b alone leaves a coordinate open, so no value bound to b can prune. The plan
+    // does not depend on that value and stays cacheable.
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Composite BUCKETS " + BUCKETS);
+      database.command("sql", "CREATE PROPERTY Composite.a STRING");
+      database.command("sql", "CREATE PROPERTY Composite.b STRING");
+      database.command("sql", "CREATE INDEX ON Composite (a, b) UNIQUE");
+      database.command("sql", "ALTER TYPE Composite BucketSelectionStrategy `partitioned('a','b')`");
+      database.newDocument("Composite").set("a", "x", "b", "1").save();
+      database.newDocument("Composite").set("a", "x", "b", "2").save();
+    });
+
+    final String sql = "SELECT FROM Composite WHERE b = ?";
+    for (int i = 0; i < 2; i++)
+      try (final ResultSet rs = database.query("sql", sql, "1")) {
+        assertThat(rs.next().<String>getProperty("a")).isEqualTo("x");
+        assertThat(rs.hasNext()).isFalse();
+      }
+    assertThat(((DatabaseInternal) database).getExecutionPlanCache().contains(sql))
+        .as("a parameter that can never prune does not keep the plan out of the cache")
+        .isTrue();
+  }
+
+  @Test
+  void aNullBindingOfAPartitionParameterIsNotCachedForTheNextValue() {
+    // A null prunes nothing; a plan built for it must not be reused by a later execution whose value prunes.
     createPartitionedType();
     populate();
 
-    final ResultSet rs = database.query("sql", "SELECT FROM " + TYPE_NAME + " WHERE tenant_id = (?)", "acme");
+    final String sql = "SELECT FROM " + TYPE_NAME + " WHERE tenant_id = ?";
+    try (final ResultSet rs = database.query("sql", sql, (Object) null)) {
+      assertThat(rs.hasNext()).isFalse();
+    }
+    assertThat(((DatabaseInternal) database).getExecutionPlanCache().contains(sql)).isFalse();
+
+    try (final ResultSet rs = database.query("sql", sql, "acme")) {
+      final GetValueFromIndexEntryStep extract = findIndexExtract(rs.getExecutionPlan().orElseThrow());
+      assertThat(extract).isNotNull();
+      assertThat(extract.getFilterBucketIds()).as("the value bound now prunes").hasSize(1);
+      assertThat(rs.next().<String>getProperty("tenant_id")).isEqualTo("acme");
+    }
+  }
+
+  @Test
+  void parenthesisedParameterNarrowsIndexFilterBucketsWithoutCachingThePlan() {
+    // Defence-in-depth: a parameter wrapped in parentheses on the literal side ({@code = (?)})
+    // must still be detected as parameter-bound. Missing it would bake the first execution's
+    // bucket id into the cached plan and misroute later parameter values.
+    createPartitionedType();
+    populate();
+
+    final String sql = "SELECT FROM " + TYPE_NAME + " WHERE tenant_id = (?)";
+    final ResultSet rs = database.query("sql", sql, "acme");
     final ExecutionPlan plan = rs.getExecutionPlan().orElseThrow();
     final GetValueFromIndexEntryStep extract = findIndexExtract(plan);
     assertThat(extract).isNotNull();
     assertThat(extract.getFilterBucketIds())
-        .as("parameter wrapped in parentheses must NOT prune; the parenthesis walker must see it")
-        .hasSize(BUCKETS);
+        .as("a parameter wrapped in parentheses prunes to the bucket of its own value")
+        .hasSize(1);
     rs.close();
+    assertThat(((DatabaseInternal) database).getExecutionPlanCache().contains(sql))
+        .as("a plan pruned on a parameter must never be cached")
+        .isFalse();
   }
 
   @Test
@@ -232,10 +285,10 @@ class PartitionPruningPlannerTest extends TestHelper {
     createPartitionedType();
     populate();
     for (final String tenant : new String[] { "acme", "globex", "initech", "umbrella" }) {
-      // Use ? parameter binding: pins the contract that pruning is suppressed for parameterised
-      // queries. Without that suppression, the planner caches the plan with the first
-      // execution's bucket pruning, then later executions with different parameter values get
-      // routed to the wrong bucket and silently miss records.
+      // Use ? parameter binding: pins the contract that a plan pruned on a parameter is never
+      // cached. Otherwise the planner would cache the plan with the first execution's bucket
+      // pruning, then later executions with different parameter values would be routed to the
+      // wrong bucket and silently miss records.
       final ResultSet rs = database.query("sql", "SELECT FROM " + TYPE_NAME + " WHERE tenant_id = ?", tenant);
       assertThat(rs.hasNext()).as("tenant '" + tenant + "' must be findable").isTrue();
       assertThat(rs.next().<String>getProperty("tenant_id")).isEqualTo(tenant);

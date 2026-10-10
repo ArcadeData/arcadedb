@@ -73,6 +73,7 @@ import com.arcadedb.query.sql.parser.Node;
 import com.arcadedb.query.sql.parser.OrBlock;
 import com.arcadedb.query.sql.parser.OrderBy;
 import com.arcadedb.query.sql.parser.OrderByItem;
+import com.arcadedb.query.sql.parser.ParenthesisExpression;
 import com.arcadedb.query.sql.parser.PInteger;
 import com.arcadedb.query.sql.parser.Projection;
 import com.arcadedb.query.sql.parser.ProjectionItem;
@@ -2735,7 +2736,7 @@ public class SelectExecutionPlanner {
    * The returned set is intersected with the caller-supplied {@code filterClusters} so explicit
    * cluster filters in the SQL (e.g., {@code SELECT FROM Doc IN BUCKET 'doc_3'}) are honoured.
    */
-  private static Set<String> derivePartitionPrunedClusters(final DocumentType docType, final Set<String> filterClusters,
+  private Set<String> derivePartitionPrunedClusters(final DocumentType docType, final Set<String> filterClusters,
       final QueryPlanningInfo info, final CommandContext context) {
     final BucketSelectionStrategy strategy = docType.getBucketSelectionStrategy();
     if (!(strategy instanceof PartitionedBucketSelectionStrategy partitioned))
@@ -2776,10 +2777,17 @@ public class SelectExecutionPlanner {
     // fall back to the caller's filterClusters. The union of bucket names across blocks is the
     // pruned set the OR-disjuncts collectively need to cover.
     final Set<String> derivedBuckets = new HashSet<>();
+    // A plan depends on the values of its parameters when a parameter sits in a block that binds every partition coordinate:
+    // pruning then happens or not, and to which bucket, by the value bound (a null prunes nothing, another value prunes to
+    // its own bucket). A block that leaves a coordinate open never prunes, whatever is bound, so its plan can be cached.
+    boolean prunedOnParameter = false;
     for (final AndBlock andBlock : info.flattenedWhereClause) {
       final Object[] keyValues = new Object[partitionProps.size()];
       final boolean[] bound = new boolean[partitionProps.size()];
+      final boolean[] written = new boolean[partitionProps.size()];
       int boundCount = 0;
+      int writtenCount = 0;
+      boolean parameterInBlock = false;
 
       for (final BooleanExpression expr : andBlock.getSubBlocks()) {
         if (!(expr instanceof BinaryCondition bc) || !(bc.getOperator() instanceof EqualsCompareOperator))
@@ -2800,17 +2808,29 @@ public class SelectExecutionPlanner {
           continue;
         final int idx = idxBoxed;
 
-        // Only a literal is bound here, not everything Expression.isEarlyCalculated() would admit. The
-        // bucket derived below is baked into the plan, so the value it comes from must be fixed for the
-        // life of that plan and free to compute: a parameter is not (a cached plan would reuse the first
-        // execution's bucket id for every subsequent binding, which is what the isEarlyCalculated form
-        // used to exclude by hand), and a function call is neither - it would be invoked at plan time,
-        // once more than the query asked for, and a non-deterministic one would fix a bucket that its
-        // per-row value no longer agrees with. That the plan is not cached today when the WHERE holds a
-        // function is an accident of FunctionCall.isCacheable() being true only for traversals; pruning
-        // no longer leans on it. See issue #6179.
-        if (literalSide == null || !literalSide.isLiteral())
+        // Only a literal or a parameter is bound here, not everything Expression.isEarlyCalculated() would
+        // admit. The bucket derived below is baked into the plan, so the value it comes from must be free to
+        // compute and fixed for the life of that plan. A literal is both. A parameter is free to compute but
+        // not fixed - a cached plan would reuse the first execution's bucket id for every later binding - so a
+        // plan pruned on a parameter is marked as depending on its parameters and never cached. It is pruned
+        // all the same because the pruning is not only an optimization: vector.neighbors() and its sparse twin
+        // restrict their own search to the pruned buckets, so a parameter that did not prune answered
+        // differently from the literal it stands for - which is also what a literal the statement cache
+        // extracted into a parameter would have done (issue #8307). A function call is neither - it would be
+        // invoked at plan time, once more than the query asked for, and a non-deterministic one would fix a
+        // bucket that its per-row value no longer agrees with. That the plan is not cached today when the
+        // WHERE holds a function is an accident of FunctionCall.isCacheable() being true only for traversals;
+        // pruning no longer leans on it. See issue #6179.
+        if (literalSide == null)
           continue;
+        final boolean parameter = isBareInputParameter(literalSide);
+        if (!parameter && !literalSide.isLiteral())
+          continue;
+        parameterInBlock |= parameter;
+        if (!written[idx]) {
+          written[idx] = true;
+          writtenCount++;
+        }
 
         if (!bound[idx]) {
           final Object literalValue;
@@ -2833,15 +2853,28 @@ public class SelectExecutionPlanner {
         }
       }
 
-      if (boundCount != partitionProps.size())
+      // a block that writes every coordinate but cannot prune with these values prunes with others: not cacheable
+      final boolean valueDecides = parameterInBlock && writtenCount == partitionProps.size();
+      if (boundCount != partitionProps.size()) {
+        if (valueDecides)
+          planDependsOnInputParameters = true;
         return filterClusters;  // Block left a partition coordinate open; cannot prune.
+      }
 
       // keyValues was filled in partitionProps order right above, so the strategy's own check is satisfied.
       final int bucketIndex = partitioned.getBucketIdByKeys(partitionProps, keyValues, false);
-      if (bucketIndex < 0 || bucketIndex >= typeBuckets.size())
+      if (bucketIndex < 0 || bucketIndex >= typeBuckets.size()) {
+        if (valueDecides)
+          planDependsOnInputParameters = true;
         return filterClusters;  // Strategy returned an out-of-range index; abort defensively.
+      }
       derivedBuckets.add(typeBuckets.get(bucketIndex).getName());
+      prunedOnParameter |= parameterInBlock;
     }
+
+    // the buckets hold for this execution's bindings only
+    if (prunedOnParameter)
+      planDependsOnInputParameters = true;
 
     // No partition prune was derivable (no AndBlock fully bound the partition properties); fall
     // back to the caller's filterClusters. The hint-stashing block below is skipped intentionally:
@@ -5288,6 +5321,22 @@ public class SelectExecutionPlanner {
           return true;
     }
     return false;
+  }
+
+  /**
+   * True when the expression is a bare input parameter ({@code ?} or {@code :name}), possibly wrapped in parentheses,
+   * with no method or selector applied to it.
+   */
+  private static boolean isBareInputParameter(final Expression expression) {
+    MathExpression math = expression.getMathExpression();
+    while (true) {
+      if (math instanceof ParenthesisExpression parenthesis && parenthesis.expression != null)
+        math = parenthesis.expression.getMathExpression();
+      else if (math instanceof BaseExpression base && base.modifier == null && base.expression != null)
+        math = base.expression.getMathExpression();
+      else
+        return math instanceof BaseExpression base && base.modifier == null && base.inputParam != null;
+    }
   }
 
   private static Object literalValue(final Expression expression, final CommandContext context) {
