@@ -180,6 +180,37 @@ class Issue9608PropertyPredicatePairAndAntiJoinTest extends TestHelper {
       assertThat(count(match + " RETURN count(*) AS n")).as(match).isEqualTo(count(match + " RETURN sum(1) AS n"));
   }
 
+  /**
+   * The proof that two hops bind different edges also decides which hops the row pipeline tracks for relationship
+   * uniqueness. Rows, not counts: an inline map written on both nodes returns what the same predicates written in WHERE
+   * return (which the proof does not read), whether the two values differ (no tracking needed) or are equal (the same edge
+   * reached from both hops must still be refused).
+   */
+  @Test
+  void theRowPipelineReturnsTheSameRowsWithInlineMaps() {
+    populate(10);
+    for (final String[] kinds : new String[][] { { "Comment", "Post" }, { "Comment", "Comment" } }) {
+      final String inline = "MATCH (p:Person)<-[:HAS_CREATOR]-(a:Message {kind: '" + kinds[0] + "'}), "
+          + "(b:Message {kind: '" + kinds[1] + "'})-[:HAS_CREATOR]->(p) RETURN id(a) AS a, id(b) AS b";
+      final String where = "MATCH (p:Person)<-[:HAS_CREATOR]-(a:Message), (b:Message)-[:HAS_CREATOR]->(p) WHERE a.kind = '" + kinds[0]
+          + "' AND b.kind = '" + kinds[1] + "' RETURN id(a) AS a, id(b) AS b";
+      final List<String> expected = rows(where);
+      assertThat(expected).isNotEmpty();
+      assertThat(rows(inline)).as(inline).isEqualTo(expected);
+      if (kinds[0].equals(kinds[1]))
+        assertThat(expected).as("a vertex never pairs with itself through one edge").noneMatch(row -> row.split("\\|")[0].equals(row.split("\\|")[1]));
+    }
+  }
+
+  private List<String> rows(final String query) {
+    final List<String> rows = new ArrayList<>();
+    try (final ResultSet rs = database.query("opencypher", query)) {
+      rs.stream().forEach(row -> rows.add(row.getProperty("a") + "|" + row.getProperty("b")));
+    }
+    rows.sort(null);
+    return rows;
+  }
+
   /** Predicates no per-vertex filter can express leave the shapes to the row pipeline, with the same count. */
   @Test
   void predicatesThatAreNotPerVertexStayExact() {

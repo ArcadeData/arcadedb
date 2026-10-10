@@ -196,6 +196,7 @@ import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -5940,11 +5941,13 @@ public class CypherExecutionPlan {
   /**
    * Whether no stored value can match both literals. Two strings must differ ignoring case: a node seek through a
    * case-insensitive index answers {@code 'A'} and {@code 'a'} with the same vertices, so only a difference no collation
-   * folds away is a proof.
+   * folds away is a proof. The index folds the whole key with {@code toLowerCase(Locale.ROOT)}, which differs from the
+   * per-character {@code equalsIgnoreCase} on a few characters ({@code 'İ'} lowers to two), so both have to tell the two
+   * strings apart.
    */
   private static boolean literalsNeverMatchTheSameValue(final Object a, final Object b) {
     if (a instanceof String sa && b instanceof String sb)
-      return !sa.equalsIgnoreCase(sb);
+      return !sa.equalsIgnoreCase(sb) && !sa.toLowerCase(Locale.ROOT).equals(sb.toLowerCase(Locale.ROOT));
     if (a instanceof Boolean && b instanceof Boolean)
       return !a.equals(b);
     return isIntegral(a) && isIntegral(b) && ((Number) a).longValue() != ((Number) b).longValue();
@@ -7236,6 +7239,9 @@ public class CypherExecutionPlan {
     String inequalityVar2 = null;
     String inequalityProperty = null;
     final CountPushDownPredicates predicates = new CountPushDownPredicates(context);
+    // the parser writes a MATCH's WHERE on the clause: a statement carrying one as well would have one of them ignored
+    if (matchClause.hasWhereClause() && statement.getWhereClause() != null)
+      return null;
     final WhereClause whereClause = matchClause.hasWhereClause() ? matchClause.getWhereClause() : statement.getWhereClause();
     if (whereClause != null) {
       if (whereClause.getConditionExpression() == null)
@@ -7968,6 +7974,9 @@ public class CypherExecutionPlan {
     // WHERE: only conjuncts that read one node of the pattern and nothing else, which the operator applies per vertex like
     // an inline property map (issue #9608)
     final CountPushDownPredicates predicates = new CountPushDownPredicates(context);
+    // the parser writes a MATCH's WHERE on the clause: a statement carrying one as well would have one of them ignored
+    if (matchClause.hasWhereClause() && statement.getWhereClause() != null)
+      return null;
     final WhereClause whereClause = matchClause.hasWhereClause() ? matchClause.getWhereClause() : statement.getWhereClause();
     if (whereClause != null) {
       if (whereClause.getConditionExpression() == null)
@@ -8368,6 +8377,9 @@ public class CypherExecutionPlan {
       return null;
 
     // Must have a WHERE clause with an anti-join pattern
+    // the parser writes a MATCH's WHERE on the clause: a statement carrying one as well would have one of them ignored
+    if (matchClause.hasWhereClause() && statement.getWhereClause() != null)
+      return null;
     final WhereClause whereClause = matchClause.hasWhereClause() ? matchClause.getWhereClause() : statement.getWhereClause();
     if (whereClause == null || whereClause.getConditionExpression() == null)
       return null;
