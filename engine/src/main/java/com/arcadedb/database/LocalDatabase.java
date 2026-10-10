@@ -1828,11 +1828,14 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
     // REFUSE UP FRONT (issue #9305). LocalBucket.deleteRecord checks DELETE_RECORD too, but it is the LAST thing a delete
     // does: by then the index entries, the EXTERNAL values and the edges are already gone, and a caller that owns its
-    // transaction and carries on after the refusal would commit that half-applied delete. A record-less RID (a
-    // lightweight edge) owns no slot in any bucket, so there is nothing to check.
-    if (record.getIdentity().getPosition() >= 0)
-      checkPermissionsOnFile(schema.getBucketById(record.getIdentity().getBucketId()).getFileId(),
-          SecurityDatabaseUser.ACCESS.DELETE_RECORD);
+    // transaction and carries on after the refusal would commit that half-applied delete.
+    //
+    // Unconditional, record-less RIDs included (issue #9619): a lightweight edge owns no slot, so LocalBucket.deleteRecord
+    // never runs for it and THIS is the only place its DELETE_RECORD grant can be enforced. Its LightEdgeRID carries the
+    // edge type's first bucket id, the file id the grant array is keyed on, and every bucket of a type carries the same
+    // access array, so the first bucket answers for the type.
+    checkPermissionsOnFile(schema.getBucketById(record.getIdentity().getBucketId()).getFileId(),
+        SecurityDatabaseUser.ACCESS.DELETE_RECORD);
 
     // INVOKE EVENT CALLBACKS. This is the ONE place the delete listeners are dispatched from: every caller, the
     // asynchronous delete task included, reaches the listeners through here (issue #7003).

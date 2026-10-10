@@ -41,6 +41,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Property;
+import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.serializer.BinaryTypes;
 import com.arcadedb.utility.LRUCache;
 import com.arcadedb.utility.LongHashSet;
@@ -828,13 +829,22 @@ public class GraphBatch implements AutoCloseable {
           + "' is declared LIGHTWEIGHT, so its edges cannot have properties. Use a regular edge type if the edge "
           + "needs to carry data");
 
-    edgeHasProperties[idx] = hasProps;
-    this.edgeProperties[idx] = hasProps ? propertyPairs(edgeProperties) : null;
     // A LIGHTWEIGHT type is stored lightweight whatever the builder was told: the storage shape belongs to the
     // schema, and withLightEdges() is only the legacy per-batch override for types that do not declare one.
     // An edge type with a default or a MANDATORY property is never stored lightweight by that override: those apply to an
     // edge without properties too (issue #9019). Types with only optional properties keep their compact property-less edges.
-    edgeIsLightweight[idx] = typeIsLightweight || (lightEdges && !hasProps && !typeAppliesSchemaToEmptyEdge(edgeTypeName));
+    final boolean isLightweight = typeIsLightweight || (lightEdges && !hasProps && !typeAppliesSchemaToEmptyEdge(edgeTypeName));
+
+    // A light edge allocates no record, so the bulk record writer never checks CREATE_RECORD for it (issue #9619): refused
+    // here, BEFORE it is buffered, so nothing is left for a later flush to write. Checked per edge, not cached per batch: the
+    // user bound to the thread can change between two calls, and the check (a no-op without security, a context lookup
+    // and an array read with it) costs about what the type-cache lookups above already do.
+    if (isLightweight)
+      database.checkPermissionsOnFile(typeBucketId, SecurityDatabaseUser.ACCESS.CREATE_RECORD);
+
+    edgeHasProperties[idx] = hasProps;
+    this.edgeProperties[idx] = hasProps ? propertyPairs(edgeProperties) : null;
+    edgeIsLightweight[idx] = isLightweight;
     edgeIsBidirectional[idx] = typeIsBidirectional;
 
     edgeCount++;
