@@ -31,6 +31,7 @@ import com.arcadedb.exception.CommandParameterMissingException;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.QueryNotIdempotentException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.GraphTraversalProviderRegistry.ViewsPassedOver;
 import com.arcadedb.query.OperationType;
@@ -66,6 +67,7 @@ import com.arcadedb.security.SecurityManager;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 import com.arcadedb.index.Index;
+import com.arcadedb.index.TypeIndex;
 
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
@@ -657,6 +659,15 @@ public class OpenCypherQueryEngine implements QueryEngine {
     final String typeName = ddl.getLabelName();
     final String[] propertyNames = ddl.getPropertyNames().toArray(new String[0]);
 
+    // A constraint name is unique across the database (#9646). Checked before anything is created, so a refused statement
+    // leaves no type, property or index behind; IF NOT EXISTS makes a taken name a no-op, as in Neo4j.
+    final String constraintName = ddl.getConstraintName();
+    if (CypherConstraintRegistry.findOwner(schema, constraintName) != null) {
+      if (ddl.isIfNotExists())
+        return;
+      throw new SchemaException("Constraint '" + constraintName + "' already exists");
+    }
+
     autoCreateDDLType(schema, ddl, typeName);
 
     // An existence constraint over a node that lacks the property is refused, as Neo4j does (#9112): the node would stay
@@ -707,6 +718,11 @@ public class OpenCypherQueryEngine implements QueryEngine {
       }
     }
 
+    // What this statement created, recorded under the constraint's name so DROP CONSTRAINT can undo exactly that (#9646)
+    String ownedIndex = null;
+    final List<String> ownedMandatory = new ArrayList<>(propertyNames.length);
+    boolean changed;
+
     switch (ddl.getConstraintKind()) {
     case UNIQUE: {
       final boolean existedBefore = uniqueIndexExistsOnProperties(schema, typeName, propertyNames);
@@ -720,14 +736,17 @@ public class OpenCypherQueryEngine implements QueryEngine {
       b.withReplaceIfIncompatible(true);
       if (anyUndeclared)
         b.withDefaultKeyTypesForUndeclaredProperties(defaultKeyTypes);
-      b.create();
-      if (!existedBefore)
+      final TypeIndex created = b.create();
+      changed = !existedBefore;
+      if (changed) {
+        ownedIndex = created.getName();
         stats.incConstraintsAdded();
+      }
       break;
     }
 
     case NOT_NULL: {
-      boolean changed = false;
+      changed = false;
       for (final String propName : propertyNames) {
         Property prop = schema.getType(typeName).getPropertyIfExists(propName);
         if (prop == null) {
@@ -738,6 +757,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
         }
         if (!prop.isMandatory()) {
           prop.setMandatory(true);
+          ownedMandatory.add(propName);
           changed = true;
         }
       }
@@ -758,13 +778,19 @@ public class OpenCypherQueryEngine implements QueryEngine {
       b.withReplaceIfIncompatible(true);
       if (anyUndeclared)
         b.withDefaultKeyTypesForUndeclaredProperties(defaultKeyTypes);
-      b.create();
+      final TypeIndex created = b.create();
+      if (!existedBefore)
+        ownedIndex = created.getName();
       for (final String propName : propertyNames) {
         Property prop = schema.getType(typeName).getPropertyIfExists(propName);
         if (prop == null)
           prop = schema.getType(typeName).createProperty(propName, Type.STRING);
-        prop.setMandatory(true);
+        if (!prop.isMandatory()) {
+          prop.setMandatory(true);
+          ownedMandatory.add(propName);
+        }
       }
+      changed = !existedBefore || !ownedMandatory.isEmpty();
       if (!existedBefore)
         stats.incConstraintsAdded();
       break;
@@ -772,10 +798,19 @@ public class OpenCypherQueryEngine implements QueryEngine {
 
     case TYPED:
       // Property type already set above; for IF NOT EXISTS, silently succeed if property already has the correct type
+      changed = typedChanged;
       if (typedChanged)
         stats.incConstraintsAdded();
       break;
+
+    default:
+      throw new IllegalStateException("Unhandled constraint kind: " + ddl.getConstraintKind());
     }
+
+    // An IF NOT EXISTS that found the constraint already in place is a no-op and claims no name, as in Neo4j
+    if (constraintName != null && (changed || !ddl.isIfNotExists()))
+      CypherConstraintRegistry.register(schema.getType(typeName), constraintName, ddl.getConstraintKind(), propertyNames,
+          ownedIndex, ownedMandatory);
   }
 
   /**
@@ -1045,17 +1080,24 @@ public class OpenCypherQueryEngine implements QueryEngine {
     return resultSet;
   }
 
+  /**
+   * Drops a constraint by the name {@code CREATE CONSTRAINT <name>} gave it, undoing what that statement created (#9646).
+   * A name that is no constraint's but is an index's still drops that index, which is how an unnamed constraint is
+   * dropped. Any other name raises unless {@code IF EXISTS} is given.
+   */
   private void executeDropConstraint(final CypherDDLStatement ddl, final Schema schema, final QueryStatistics stats) {
     final String constraintName = ddl.getConstraintName();
-    if (ddl.isIfExists()) {
-      if (schema.existsIndex(constraintName)) {
-        schema.dropIndex(constraintName);
-        stats.incConstraintsRemoved();
-      }
-    } else {
+    if (CypherConstraintRegistry.drop(schema, constraintName)) {
+      stats.incConstraintsRemoved();
+      return;
+    }
+    if (schema.existsIndex(constraintName)) {
       schema.dropIndex(constraintName);
       stats.incConstraintsRemoved();
+      return;
     }
+    if (!ddl.isIfExists())
+      throw new SchemaException("Constraint '" + constraintName + "' does not exist");
   }
 
   private void executeCreateIndex(final CypherDDLStatement ddl, final Schema schema, final QueryStatistics stats) {
