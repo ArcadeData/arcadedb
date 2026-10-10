@@ -758,7 +758,9 @@ public class TimeSeriesEngine implements AutoCloseable {
     }
 
     // Process sealed stores in parallel when there are multiple shards with data. Without a bucket interval the answer is one
-    // bucket, which each shard accumulates in a map-mode result of its own (issue #9612)
+    // bucket, which each shard accumulates in a map-mode result of its own (issue #9612). The work goes to this engine's own
+    // shardExecutor, never to the common ForkJoinPool (see QueryEngineManager), so an ungrouped count(*) - now on this path -
+    // cannot starve user code sharing that pool
     final boolean bucketed = bucketIntervalMs > 0;
     final long singleBucketTs = singleBucketAnchor(fromTs);
     if (shardCount > 1 && (maxBuckets > 0 || !bucketed)) {
