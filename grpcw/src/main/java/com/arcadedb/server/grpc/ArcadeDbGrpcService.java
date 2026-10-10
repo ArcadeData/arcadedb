@@ -2578,7 +2578,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
    */
   private boolean hasOrderBy(final Database db, final String sql) {
     try {
-      final Statement statement = ((DatabaseInternal) db).getStatementCache().get(sql);
+      // the parameterized lookup (issue #8307): whether there is an ORDER BY does not depend on the literal values
+      final Statement statement = ((DatabaseInternal) db).getStatementCache().getParameterized(sql).statement();
 
       final OrderBy orderBy;
       if (statement instanceof SelectStatement select)

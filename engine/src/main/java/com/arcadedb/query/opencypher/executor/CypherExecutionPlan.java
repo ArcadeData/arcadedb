@@ -155,6 +155,7 @@ import com.arcadedb.query.opencypher.executor.steps.UnwindStep;
 import com.arcadedb.query.opencypher.executor.steps.VariableProjectionStep;
 import com.arcadedb.query.opencypher.executor.steps.WithStep;
 import com.arcadedb.query.opencypher.executor.steps.ZeroLengthPathStep;
+import com.arcadedb.query.opencypher.parser.CypherASTBuilder;
 import com.arcadedb.query.opencypher.planner.CypherEagernessAnalyzer;
 import com.arcadedb.query.opencypher.optimizer.CypherOptimizer;
 import com.arcadedb.query.opencypher.optimizer.RangePredicate;
@@ -5923,22 +5924,33 @@ public class CypherExecutionPlan {
    * literals are matched against the one value a vertex stores, whatever type the schema declares for it, so a value that
    * equals one of them cannot equal the other. Two literals of different kinds ({@code 1} and {@code '1'}) prove nothing:
    * a declared type may convert what is stored, so they are never taken as disjoint.
+   * <p>
+   * A parameter counts as the value it is bound to: this plan is built for one execution and its bindings, so the proof holds
+   * for every row it produces. That keeps the proof for a query whose literals the statement cache extracted into parameters
+   * (issue #8307), and extends it to the parameters a caller writes.
    */
-  private static boolean nodePropertiesAreDisjoint(final NodePattern node1, final NodePattern node2) {
+  private boolean nodePropertiesAreDisjoint(final NodePattern node1, final NodePattern node2) {
     if (node1.getProperties().isEmpty() || node2.getProperties().isEmpty())
       return false;
     for (final Map.Entry<String, Object> entry : node1.getProperties().entrySet()) {
       final Object other = node2.getProperties().get(entry.getKey());
-      if (other != null && literalsNeverMatchTheSameValue(literalValue(entry.getValue()), literalValue(other)))
+      if (other != null && literalsNeverMatchTheSameValue(constantValue(entry.getValue()), constantValue(other)))
         return true;
     }
     return false;
   }
 
-  /** The constant an inline property value is, null when it is an expression evaluated at run time. */
-  private static Object literalValue(final Object value) {
+  /**
+   * The constant an inline property value is - a literal, or a parameter of this execution - and null when it is an expression
+   * evaluated at run time.
+   */
+  private Object constantValue(final Object value) {
     if (value instanceof LiteralExpression literal)
       return literal.getValue();
+    if (value instanceof ParameterExpression parameter)
+      return parameters != null ? parameters.get(parameter.getParameterName()) : null;
+    if (value instanceof CypherASTBuilder.ParameterReference parameter)
+      return parameters != null ? parameters.get(parameter.getName()) : null;
     return value instanceof Expression ? null : value;
   }
 
@@ -5962,7 +5974,7 @@ public class CypherExecutionPlan {
   }
 
   /**
-   * The patterns with every {@code v.key = literal} conjunct of a {@code WHERE} written into the inline property map of the
+   * The patterns with every {@code v.key = literal} (or {@code = $parameter}) conjunct of a {@code WHERE} written into the inline property map of the
    * nodes of {@code v}, for {@link #clauseHopsMayShareAnEdge} to read (issue #9608). The conjunct excludes the vertices the
    * inline entry would, and the proof reads inline maps only. Never handed to an operator, which applies the conjunct itself.
    */
@@ -5977,9 +5989,10 @@ public class CypherExecutionPlan {
         continue;
       final Expression left = comparison.getLeft();
       final Expression right = comparison.getRight();
-      if (left instanceof PropertyAccessExpression property && right instanceof LiteralExpression)
+      if (left instanceof PropertyAccessExpression property && (right instanceof LiteralExpression || right instanceof ParameterExpression))
         equalities.computeIfAbsent(property.getVariableName(), k -> new LinkedHashMap<>()).putIfAbsent(property.getPropertyName(), right);
-      else if (right instanceof PropertyAccessExpression property && left instanceof LiteralExpression)
+      else if (right instanceof PropertyAccessExpression property && (left instanceof LiteralExpression
+          || left instanceof ParameterExpression))
         equalities.computeIfAbsent(property.getVariableName(), k -> new LinkedHashMap<>()).putIfAbsent(property.getPropertyName(), left);
     }
     if (equalities.isEmpty())

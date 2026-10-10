@@ -363,6 +363,8 @@ public class GraphBatch implements AutoCloseable {
   // --- Statistics ---
   private long totalVerticesCreated;
   private long totalEdgesCreated;
+  // How many of them the graph analytical views were told about (issue #9572)
+  private long totalEdgesReported;
   private long totalFlushes;
   private long totalFlushTimeNs;
   private long totalOrphanEdgeRecordsReclaimed;
@@ -1600,6 +1602,8 @@ public class GraphBatch implements AutoCloseable {
       } finally {
         // Restore database settings, even on an exceptional exit (issue #5378)
         restoreDatabaseSettings();
+        // Also on a failed batch: what it did commit is in the graph
+        reportEdgesWritten();
       }
 
       LogManager.instance().log(this, Level.INFO,
@@ -1632,7 +1636,22 @@ public class GraphBatch implements AutoCloseable {
     database.setReadYourWrites(savedReadYourWrites);
     restoreAsyncSettings();
     maintenanceSuspension.close();
+    reportEdgesWritten();
     releaseBatchGuard();
+  }
+
+  /**
+   * Tells the graph analytical views which edge types this batch wrote (issue #9572). Its edges reach the edge lists
+   * without a record event apiece - a lightweight edge has no record, and a regular one is created in bulk - so this is
+   * the only way a view learns of them. Once, when the batch ends: until then the head pointers and the incoming side of
+   * the edges are deferred, so the graph does not hold them whole and a view rebuilt earlier would miss them anyway.
+   */
+  private void reportEdgesWritten() {
+    if (totalEdgesCreated == totalEdgesReported)
+      return;
+    totalEdgesReported = totalEdgesCreated;
+    // Never throws: the outcome of the batch is the caller's to handle, not a listener's
+    database.getGraphEngine().edgesWrittenInBulk(Set.copyOf(edgeTypeFirstBucketCache.keySet()));
   }
 
   /**

@@ -32,6 +32,7 @@ import com.arcadedb.event.AfterRecordUpdateListener;
 import com.arcadedb.exception.DatabaseIsClosedException;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.TransactionException;
+import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.EdgeWeight;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
@@ -318,6 +319,9 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   private final AtomicBoolean    compacting = new AtomicBoolean(false);
   private final AtomicBoolean    buildQueued = new AtomicBoolean(false);
   private volatile boolean       asyncRebuildNeeded;  // true when a commit arrived during an async rebuild
+  // SYNCHRONOUS only: the graph changed in a way no build dispatched since has scanned and no delta can bring in - a
+  // GraphBatch load that ended, or lightweight edges a build could not reconcile (issue #9572)
+  private volatile boolean       followUpRebuildPending;
   // true when an edge property update (which cannot be represented in the overlay) was buffered
   // during a compaction rebuild and needs a follow-up rebuild to become visible. See issue #4513.
   private volatile boolean       edgePropRebuildNeeded;
@@ -484,9 +488,11 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
               "GraphAnalyticalView '%s': build result discarded (superseded by a newer build/restore)", name);
         }
       }
-      if (committed)
+      if (committed) {
         invalidateGraphStatisticsCache();
-      else if (newer != null)
+        if (followUpRebuildPending)
+          rebuildAfterPublication();
+      } else if (newer != null)
         adoptNewerOutcome(newer);
       else if (shutDownMeanwhile)
         throw new DatabaseOperationException("GraphAnalyticalView '" + name + "' was shut down while it was being built");
@@ -643,7 +649,18 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
         if (overlay.hasChanges())
           fresh = fresh.withOverlay(overlay);
       }
+      // The scan cannot tell duplicated lightweight copies apart, so the reconciliation of the pairs it raced on is
+      // checked against the graph: a view that disagrees is not published READY, it rebuilds (issue #9572)
+      if (!lightEdgesAgreeWithGraph(fresh, watch.takeRacedLightPairs())) {
+        LogManager.instance().log(this, Level.FINE,
+            "GraphAnalyticalView '%s': lightweight edges changed during the build could not be reconciled, rebuilding", name);
+        followUpRebuildPending = true;
+      }
     } else if (updateMode == UpdateMode.OFF && watch.hadRelevantCommit())
+      newStatus = Status.STALE;
+    // A bulk load that ended during the scan is only partly in it, and in no delta, and lightweight edges the
+    // reconciliation got wrong are in no delta either: the rebuild they asked for follows
+    if (updateMode == UpdateMode.SYNCHRONOUS && followUpRebuildPending)
       newStatus = Status.STALE;
     final boolean rebuildNeeded = updateMode == UpdateMode.ASYNCHRONOUS && watch.hadRelevantCommit();
 
@@ -698,6 +715,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     readyLatch = latch;
     status = Status.BUILDING;
     buildError = null;
+    // This scan starts after the bulk load that asked for it ended, so it reads all of it
+    followUpRebuildPending = false;
     // Opened at dispatch, with the listeners armed, so no commit between now and publication escapes (issue #8378)
     final BuildWatch watch;
     try {
@@ -777,6 +796,10 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
           buildQueued.set(false);
           latch.countDown();
           taskCompleted();
+          // A bulk load ended while this build was scanning, or its lightweight edges disagreed with the graph: it
+          // published STALE, and the next build reads the graph as it is now
+          if (followUpRebuildPending)
+            rebuildAfterPublication();
         }
       });
     } catch (final RejectedExecutionException e) {
@@ -2311,12 +2334,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     this.updateMode = newMode;
     if (snapshot != null || buildWatch != null)
       registerChangeListeners();
-    if (oldCollector != null) {
-      database.getEvents().unregisterListener((AfterRecordCreateListener) oldCollector);
-      database.getEvents().unregisterListener((AfterRecordUpdateListener) oldCollector);
-      database.getEvents().unregisterListener((AfterRecordDeleteListener) oldCollector);
-      oldCollector.close();
-    }
+    if (oldCollector != null)
+      detach(oldCollector);
   }
 
   public String[] getVertexTypes() {
@@ -3221,15 +3240,155 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     database.getEvents().registerListener((AfterRecordCreateListener) deltaCollector);
     database.getEvents().registerListener((AfterRecordUpdateListener) deltaCollector);
     database.getEvents().registerListener((AfterRecordDeleteListener) deltaCollector);
+    // A lightweight edge has no record, so its creation reaches no record listener, and GraphBatch writes edges in
+    // bulk without record events (issue #9572)
+    ((DatabaseInternal) database).getGraphEngine().registerEdgeWriteListener(deltaCollector);
   }
 
   private void unregisterChangeListeners() {
     if (deltaCollector != null) {
-      database.getEvents().unregisterListener((AfterRecordCreateListener) deltaCollector);
-      database.getEvents().unregisterListener((AfterRecordUpdateListener) deltaCollector);
-      database.getEvents().unregisterListener((AfterRecordDeleteListener) deltaCollector);
-      deltaCollector.close();
+      detach(deltaCollector);
       deltaCollector = null;
+    }
+  }
+
+  private void detach(final DeltaCollector collector) {
+    database.getEvents().unregisterListener((AfterRecordCreateListener) collector);
+    database.getEvents().unregisterListener((AfterRecordUpdateListener) collector);
+    database.getEvents().unregisterListener((AfterRecordDeleteListener) collector);
+    ((DatabaseInternal) database).getGraphEngine().unregisterEdgeWriteListener(collector);
+    collector.close();
+  }
+
+  /**
+   * A {@code GraphBatch} wrote edges of a covered type in bulk, with no record event to report them one by one (issue
+   * #9572). {@code OFF} and {@code ASYNCHRONOUS} react as to any relevant commit. {@code SYNCHRONOUS} cannot reconcile
+   * edges it holds no delta for, so it rebuilds; while it does, the view is not READY and queries take the ordinary
+   * path, so none is answered without the load.
+   */
+  void onEdgesWrittenInBulk() {
+    if (updateMode != UpdateMode.SYNCHRONOUS) {
+      onRelevantCommitCallback();
+      return;
+    }
+    // Set before asking for the build: a build already queued or scanning ignores the request, and then publishes STALE
+    // and asks for the next one itself
+    followUpRebuildPending = true;
+    rebuildAfterPublication();
+  }
+
+  /**
+   * Whether the snapshot a build is about to publish counts, for every pair a lightweight edge change raced its scan on,
+   * the edges the graph holds now (issue #9572). Copies of one lightweight edge have no identity, so the reconciliation
+   * counts them, and a duplicate of a copy older than the build can make it count one too few; this read is what keeps
+   * that from being published READY. Only the raced pairs are read, one walk per source vertex. A commit whose callback
+   * has not been delivered yet also reads as a disagreement: that costs a rebuild, never a wrong answer.
+   */
+  private boolean lightEdgesAgreeWithGraph(final Snapshot snap, final Set<BuildWatch.RacedLightPair> raced) {
+    if (raced.isEmpty())
+      return true;
+    final Map<RID, List<BuildWatch.RacedLightPair>> bySource = new HashMap<>();
+    for (final BuildWatch.RacedLightPair pair : raced)
+      bySource.computeIfAbsent(pair.source(), k -> new ArrayList<>()).add(pair);
+
+    // The async build reads inside its own transaction; a blocking build may run on a thread that has none
+    final boolean ownTransaction = !database.isTransactionActive();
+    if (ownTransaction)
+      database.begin();
+    try {
+      for (final Map.Entry<RID, List<BuildWatch.RacedLightPair>> entry : bySource.entrySet()) {
+        final Map<String, Map<RID, int[]>> inGraph = new HashMap<>();
+        for (final BuildWatch.RacedLightPair pair : entry.getValue()) {
+          final String edgeType = edgeTypeOfBucket(pair.edgeTypeBucketId());
+          if (edgeType != null)
+            inGraph.computeIfAbsent(edgeType, k -> new HashMap<>()).put(pair.target(), new int[1]);
+        }
+        if (inGraph.isEmpty())
+          continue;
+
+        final Vertex source = database.lookupByRID(entry.getKey(), true).asVertex();
+        for (final Edge edge : source.getEdges(Vertex.DIRECTION.OUT, inGraph.keySet().toArray(new String[0]))) {
+          final Map<RID, int[]> perTarget = inGraph.get(edge.getTypeName());
+          final int[] count = perTarget != null ? perTarget.get(edge.getIn()) : null;
+          if (count != null)
+            count[0]++;
+        }
+
+        final int sourceId = nodeIdIn(snap, entry.getKey());
+        for (final Map.Entry<String, Map<RID, int[]>> perType : inGraph.entrySet())
+          for (final Map.Entry<RID, int[]> perTarget : perType.getValue().entrySet()) {
+            final int targetId = nodeIdIn(snap, perTarget.getKey());
+            final long inView = sourceId < 0 || targetId < 0 ? 0 :
+                countBetweenForType(snap, sourceId, targetId, Vertex.DIRECTION.OUT, perType.getKey());
+            if (inView != perTarget.getValue()[0])
+              return false;
+          }
+      }
+      return true;
+    } catch (final RuntimeException e) {
+      // A source deleted since, or any read that fails: the reconciliation cannot be confirmed, so it is not trusted
+      LogManager.instance().log(this, Level.FINE, "GraphAnalyticalView '%s': cannot check the lightweight edges against the graph",
+          e, name);
+      return false;
+    } finally {
+      if (ownTransaction)
+        database.rollback();
+    }
+  }
+
+  /**
+   * Runs {@link #lightEdgesAgreeWithGraph} on the build executor for pairs whose racing change arrived after the
+   * publication, and rebuilds the view when the snapshot it serves then disagrees with the graph. Until the check runs
+   * the view may serve those pairs one copy off, as briefly as a commit callback takes to be followed by this task.
+   */
+  private void checkLightEdgesAgainstGraphLater(final Set<BuildWatch.RacedLightPair> raced) {
+    inFlightTasks.incrementAndGet();
+    try {
+      getExecutor().execute(() -> {
+        boolean rebuild = false;
+        try {
+          synchronized (GraphAnalyticalView.this) {
+            final Snapshot served = snapshot;
+            if (!shutDown && served != null && status == Status.READY && !lightEdgesAgreeWithGraph(served, raced)) {
+              LogManager.instance().log(this, Level.FINE,
+                  "GraphAnalyticalView '%s': lightweight edges changed during the build could not be reconciled, rebuilding", name);
+              followUpRebuildPending = true;
+              status = Status.STALE;
+              rebuild = true;
+            }
+          }
+          if (rebuild)
+            rebuildAfterPublication();
+        } finally {
+          DatabaseContext.INSTANCE.removeCurrentThreadContexts();
+          taskCompleted();
+        }
+      });
+    } catch (final RejectedExecutionException e) {
+      // Shutting down: nothing left to serve
+      taskCompleted();
+    }
+  }
+
+  /** The covered edge type a lightweight edge-list entry of this bucket belongs to, or null when the view does not cover it. */
+  private String edgeTypeOfBucket(final int bucketId) {
+    final DocumentType type = database.getSchema().getTypeByBucketId(bucketId);
+    return type != null && coversEdgeType(type.getName()) ? type.getName() : null;
+  }
+
+  private static int nodeIdIn(final Snapshot snap, final RID rid) {
+    return snap.overlay != null ? snap.overlay.resolveNodeId(rid, snap.nodeMapping) : snap.nodeMapping.getGlobalId(rid);
+  }
+
+  private void rebuildAfterPublication() {
+    // Reached from the finally of a build that may outlive the view: a dropped or closed view never builds again
+    if (shutDown)
+      return;
+    try {
+      buildAsync();
+    } catch (final RuntimeException e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "GraphAnalyticalView '%s': cannot rebuild after a bulk load, the view stays STALE", e, name);
     }
   }
 
@@ -3390,6 +3549,13 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     final DeltaOverlay merged = mergeAgainstBase(base, delta, current.nodeMapping, watch, current.csrPerType);
     this.snapshot = current.withOverlay(merged);
     notifyContractionHierarchies();
+    // A lightweight change that raced the scan but was delivered after the publication: checked as publishBuild() checks
+    // the ones delivered before it, off this commit callback's thread (issue #9572)
+    if (watch != null) {
+      final Set<BuildWatch.RacedLightPair> raced = watch.takeRacedLightPairs();
+      if (!raced.isEmpty())
+        checkLightEdgesAgainstGraphLater(raced);
+    }
 
     // Buffer raw delta during compaction for re-application against the new mapping.
     // TxDelta uses RIDs (not dense IDs), so it can be cleanly re-applied against any mapping.

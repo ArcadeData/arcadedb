@@ -101,10 +101,73 @@ public class GraphEngine {
   private static final EdgeBucketMask[] NO_NEIGHBOR_MASK = new EdgeBucketMask[1];
   private static final boolean[]        SKIP_SELF_LOOPS  = { true };
 
-  private final DatabaseInternal database;
+  /**
+   * Told about the edge writes no record event reports (issue #9572). Internal: these are not record events, so no
+   * trigger or user listener sees them.
+   */
+  public interface EdgeWriteListener {
+    /**
+     * A lightweight edge was created. It has no record, so no record listener hears of its creation; its DELETION does
+     * reach them, through the ordinary record delete path. Called inside the creating transaction, as an after-create
+     * record event would be.
+     */
+    void onLightEdgeCreated(Edge edge);
+
+    /**
+     * {@link GraphBatch} finished writing edges of these types, which it writes straight into the edge lists, light
+     * and regular alike, without a record event per edge. Called once the edges are durable and fully linked, outside
+     * any transaction.
+     */
+    void onEdgesWrittenInBulk(Set<String> edgeTypeNames);
+  }
+
+  private static final EdgeWriteListener[] NO_EDGE_WRITE_LISTENERS = new EdgeWriteListener[0];
+
+  private final    DatabaseInternal    database;
+  // COPY-ON-WRITE: READ ON EVERY LIGHTWEIGHT EDGE CREATED, WRITTEN ONLY WHEN A GRAPH ANALYTICAL VIEW STARTS OR STOPS
+  // TRACKING CHANGES
+  private volatile EdgeWriteListener[] edgeWriteListeners = NO_EDGE_WRITE_LISTENERS;
 
   public GraphEngine(final DatabaseInternal database) {
     this.database = database;
+  }
+
+  /** Internal: public only because the graph analytical views live in another package. */
+  public synchronized void registerEdgeWriteListener(final EdgeWriteListener listener) {
+    final EdgeWriteListener[] current = edgeWriteListeners;
+    final EdgeWriteListener[] updated = Arrays.copyOf(current, current.length + 1);
+    updated[current.length] = listener;
+    edgeWriteListeners = updated;
+  }
+
+  public synchronized void unregisterEdgeWriteListener(final EdgeWriteListener listener) {
+    final EdgeWriteListener[] current = edgeWriteListeners;
+    for (int i = 0; i < current.length; i++)
+      if (current[i] == listener) {
+        final EdgeWriteListener[] updated = new EdgeWriteListener[current.length - 1];
+        System.arraycopy(current, 0, updated, 0, i);
+        System.arraycopy(current, i + 1, updated, i, current.length - i - 1);
+        edgeWriteListeners = updated;
+        return;
+      }
+  }
+
+  /** How many listeners are registered: one per graph analytical view tracking changes. */
+  public int getEdgeWriteListenerCount() {
+    return edgeWriteListeners.length;
+  }
+
+  /**
+   * See {@link EdgeWriteListener#onEdgesWrittenInBulk}. Each listener is told on its own: the batch is already written,
+   * so one that fails costs that view its update, never the other views theirs or the caller its outcome.
+   */
+  void edgesWrittenInBulk(final Set<String> edgeTypeNames) {
+    for (final EdgeWriteListener listener : edgeWriteListeners)
+      try {
+        listener.onEdgesWrittenInBulk(edgeTypeNames);
+      } catch (final RuntimeException e) {
+        LogManager.instance().log(this, Level.WARNING, "Cannot notify %s of the edges a batch wrote", e, listener);
+      }
   }
 
   /**
@@ -326,6 +389,12 @@ public class GraphEngine {
     // head flip, super-node promotion) call modify() themselves, re-validating the head at that point.
     getOrCreateEdgeList(fromVertex, Vertex.DIRECTION.OUT).add(edge.getIdentity(), toVertex.getIdentity());
     recordCreated(edge.getType(), edge, fromVertex.getIdentity(), toVertex.getIdentity());
+    // EVERY LIGHTWEIGHT EDGE IS CREATED THROUGH HERE (Java API, SQL, Cypher, async): A REGULAR ONE WAS ALREADY REPORTED
+    // BY ITS RECORD'S save(). A LISTENER THAT THROWS FAILS THE CREATION, AS A RECORD LISTENER DOES: THE APPEND ABOVE IS
+    // IN THE SAME TRANSACTION, SO ITS ROLLBACK TAKES THE EDGE BACK OUT
+    if (edge instanceof LightEdge)
+      for (final EdgeWriteListener listener : edgeWriteListeners)
+        listener.onLightEdgeCreated(edge);
   }
 
   public List<Edge> newEdges(VertexInternal sourceVertex, final List<CreateEdgeOperation> connections,

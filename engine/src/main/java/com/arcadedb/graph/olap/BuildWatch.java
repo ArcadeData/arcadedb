@@ -23,6 +23,7 @@ import com.arcadedb.database.RID;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
@@ -84,6 +85,21 @@ final class BuildWatch implements CSRBuilder.ScanObserver, DeltaOverlay.ExactSca
   // are written by the scan thread, then read and trimmed by account() under the view's monitor, which the build's
   // publication also takes: that hand-off is what orders the two, not the concurrency of the outer map.
   private final Map<RID, Map<RID, RID>>      observedSources = new ConcurrentHashMap<>();
+  // The lightweight out-edges of the same observed sources, which have no identity to be told apart by (issue #9572):
+  // per (edge type bucket, target), how many copies the scan put into the CSR, how many buffered additions were taken
+  // as among them, and how many were not and so sit in the overlay. Written and read exactly as observedSources is: the
+  // scan thread fills it, and account() reads and mutates the inner maps only after the build's publication hand-off,
+  // under the view's monitor.
+  private final Map<RID, Map<LightEndpoint, int[]>> observedLightEdges = new ConcurrentHashMap<>();
+  // The pairs a lightweight change that may have raced the scan was reconciled on by counting, not yet checked against
+  // the graph by the view. Written by account() only, under the view's monitor
+  private final Set<RacedLightPair>          racedLightPairs = new HashSet<>();
+  // Lightweight changes numbered from here on were reported after close(), so after the scan: the scan cannot have read
+  // them, and they are answered exactly, without counting. Set by close()
+  private volatile long                      lightChangesBeforeClose = Long.MAX_VALUE;
+  private static final int                   SEEN           = 0;
+  private static final int                   CAPTURED       = 1;
+  private static final int                   NOT_CAPTURED   = 2;
 
   // Guarded by this
   private boolean                            open           = true;
@@ -147,15 +163,23 @@ final class BuildWatch implements CSRBuilder.ScanObserver, DeltaOverlay.ExactSca
 
   @Override
   public void observed(final RID source, final List<RID> edges, final List<RID> targets) {
-    final Map<RID, RID> seen;
-    if (edges.isEmpty())
-      seen = NOTHING_SEEN;
-    else {
-      seen = new HashMap<>(edges.size() * 2);
-      for (int i = 0; i < edges.size(); i++)
-        seen.put(edges.get(i), targets.get(i));
+    Map<RID, RID> seen = NOTHING_SEEN;
+    Map<LightEndpoint, int[]> light = null;
+    for (int i = 0; i < edges.size(); i++) {
+      final RID edge = edges.get(i);
+      if (edge.getPosition() < 0) {
+        // A lightweight edge: every one of a type reads back as the same bucket marker, so it is counted per far end
+        if (light == null)
+          light = new HashMap<>();
+        light.computeIfAbsent(new LightEndpoint(edge.getBucketId(), targets.get(i)), k -> new int[3])[SEEN]++;
+      } else {
+        if (seen == NOTHING_SEEN)
+          seen = new HashMap<>(edges.size() * 2);
+        seen.put(edge, targets.get(i));
+      }
     }
-    observedSources.putIfAbsent(source, seen);
+    if (observedSources.putIfAbsent(source, seen) == null && light != null)
+      observedLightEdges.put(source, light);
   }
 
   /**
@@ -202,6 +226,7 @@ final class BuildWatch implements CSRBuilder.ScanObserver, DeltaOverlay.ExactSca
    */
   synchronized List<TxDelta> close() {
     open = false;
+    lightChangesBeforeClose = TxDelta.lightEdgeChangesSoFar();
     return bufferedDeltas;
   }
 
@@ -238,12 +263,17 @@ final class BuildWatch implements CSRBuilder.ScanObserver, DeltaOverlay.ExactSca
     for (final TxDelta.EdgeDelta ed : delta.addedEdges) {
       if (!watchedSources.contains(ed.source))
         continue;
-      if (sawEdge(ed))
+      if (ed.isLightweight() ? sawLightEdge(ed) : sawEdge(ed))
         answers.put(ed, Boolean.TRUE);
     }
     for (final TxDelta.EdgeDelta ed : delta.deletedEdges) {
       if (!watchedSources.contains(ed.source))
         continue;
+      if (ed.isLightweight()) {
+        if (lightEdgeAlreadyMissing(ed))
+          answers.put(ed, Boolean.TRUE);
+        continue;
+      }
       // An edge added after the scan and deleted again never reaches this answer: the merge withdraws its overlay
       // addition by identity first. One the scan captured is in what it saw, so its deletion is news to the base.
       final Map<RID, RID> seen = observedSources.get(ed.source);
@@ -256,6 +286,87 @@ final class BuildWatch implements CSRBuilder.ScanObserver, DeltaOverlay.ExactSca
       if (seen != null && seen != NOTHING_SEEN)
         seen.remove(ed.rid);
     }
+  }
+
+  /**
+   * Whether the scan read this lightweight addition. Copies of one triple have no identity to tell them apart, so this
+   * counts them instead: the addition is taken as read while the scan saw more copies than the additions already taken.
+   * That is exact whenever a triple has at most one copy at a time - always, on a {@code UNIQUE} type - since a copy the
+   * scan saw is then either this addition or one an earlier buffered deletion removed - and whenever every copy of the
+   * triple is one of the buffered additions. A duplicate of a copy older than the watch is where it errs: that older copy
+   * is counted as one of the additions, which nothing recorded can tell apart, and the answer errs towards "read". So
+   * every pair answered this way is handed to the view ({@link #takeRacedLightPairs}), which checks it against the graph
+   * and rebuilds rather than serve it wrong. A change reported after the watch closed is not counted: it is answered
+   * exactly.
+   */
+  private boolean sawLightEdge(final TxDelta.EdgeDelta ed) {
+    // Read before the source was registered, so before this addition committed
+    if (!observedSources.containsKey(ed.source))
+      return false;
+    final boolean raced = racedTheScan(ed);
+    final int[] copies = lightCopies(ed);
+    if (raced && copies[CAPTURED] < copies[SEEN]) {
+      copies[CAPTURED]++;
+      return true;
+    }
+    copies[NOT_CAPTURED]++;
+    return false;
+  }
+
+  /** Whether the copy this lightweight deletion removed was already missing when the scan read its source. */
+  private boolean lightEdgeAlreadyMissing(final TxDelta.EdgeDelta ed) {
+    if (!observedSources.containsKey(ed.source))
+      return false;
+    final boolean raced = racedTheScan(ed);
+    final int[] copies = lightCopies(ed);
+    // The merge withdraws an overlay addition of the pair first, without asking: one the scan did not read
+    if (copies[NOT_CAPTURED] > 0) {
+      copies[NOT_CAPTURED]--;
+      return false;
+    }
+    if (copies[SEEN] > 0) {
+      copies[SEEN]--;
+      copies[CAPTURED] = Math.min(copies[CAPTURED], copies[SEEN]);
+      return false;
+    }
+    // A deletion reported after the scan removed a copy the base holds, whatever the counts say
+    return raced;
+  }
+
+  /**
+   * Whether this change may have committed before the scan read its source: one reported after the watch closed cannot
+   * have. Only such a change is answered by counting, and its pair is left for the view to check against the graph.
+   */
+  private boolean racedTheScan(final TxDelta.EdgeDelta ed) {
+    if (TxDelta.lightEdgeChangeOf(ed.rid) >= lightChangesBeforeClose)
+      return false;
+    racedLightPairs.add(new RacedLightPair(ed.source, ed.rid.getBucketId(), ed.target));
+    return true;
+  }
+
+  private int[] lightCopies(final TxDelta.EdgeDelta ed) {
+    return observedLightEdges.computeIfAbsent(ed.source, k -> new HashMap<>())
+        .computeIfAbsent(new LightEndpoint(ed.rid.getBucketId(), ed.target), k -> new int[3]);
+  }
+
+  /**
+   * Hands over the pairs reconciled by counting since the last call, for the view to check against the graph: the
+   * counting is exact unless duplicated copies are involved, and nothing it records can say whether they were.
+   */
+  Set<RacedLightPair> takeRacedLightPairs() {
+    if (racedLightPairs.isEmpty())
+      return Collections.emptySet();
+    final Set<RacedLightPair> taken = new HashSet<>(racedLightPairs);
+    racedLightPairs.clear();
+    return taken;
+  }
+
+  /** A lightweight out-edge as the scan reads it: the bucket of its type, and its far end. */
+  private record LightEndpoint(int edgeTypeBucketId, RID target) {
+  }
+
+  /** A pair a lightweight edge change raced the scan on: source, edge type bucket and target. */
+  record RacedLightPair(RID source, int edgeTypeBucketId, RID target) {
   }
 
   @Override

@@ -22,6 +22,7 @@ import com.arcadedb.engine.Bucket;
 import com.arcadedb.database.bucketselectionstrategy.PartitionedBucketSelectionStrategy;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.parser.CypherASTBuilder;
+import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalDocumentType;
 
@@ -43,14 +44,17 @@ public final class PartitionPruning {
    * Returns the single bucket a pattern can be restricted to, or null when pruning does not apply.
    * <p>
    * Pruning is skipped when the type is not partitioned, when its partition mapping is stale, or when
-   * any partition property is missing from the pattern or bound to something other than a literal.
-   * Parameters and expressions are deliberately excluded: baking a bucket id resolved from a
-   * parameter into a plan would misroute every later execution that passes a different value.
+   * any partition property is missing from the pattern or bound to something other than a literal or a parameter.
+   * Every caller resolves the bucket while it executes, never while it plans, so a parameter is read from the bindings of
+   * the execution asking: a bucket resolved from one execution's value never reaches another. That keeps the pruning for a
+   * query whose literals the statement cache extracted into parameters (issue #8307). Other expressions are excluded.
    *
    * @param type              the vertex type being scanned
    * @param patternProperties inline property map written on the node pattern
+   * @param context           the context of the execution asking, whose parameters a parameter value is read from
    */
-  public static String prunedBucketName(final DocumentType type, final Map<String, Object> patternProperties) {
+  public static String prunedBucketName(final DocumentType type, final Map<String, Object> patternProperties,
+      final CommandContext context) {
     if (type == null || !(type.getBucketSelectionStrategy() instanceof PartitionedBucketSelectionStrategy partitioned))
       return null;
 
@@ -72,8 +76,10 @@ public final class PartitionPruning {
       final String property = partitionProperties.get(i);
       if (!patternProperties.containsKey(property))
         return null;
-      final Object value = patternProperties.get(property);
-      if (value == null || value instanceof CypherASTBuilder.ParameterReference || value instanceof Expression)
+      Object value = patternProperties.get(property);
+      if (value instanceof CypherASTBuilder.ParameterReference parameter)
+        value = context != null && context.getInputParameters() != null ? context.getInputParameters().get(parameter.getName()) : null;
+      if (value == null || value instanceof Expression)
         return null;
       keyValues[i] = value;
     }
