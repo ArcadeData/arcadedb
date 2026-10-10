@@ -109,7 +109,7 @@
              UndertowInputStream.close() reads the request body to the end, and available() reports a finished body
              as -1 rather than 0. Both are covered by Issue5470BatchErrorDeliveryIT, so a bump that changes either
              shows up as a test failure there rather than as a silently worse diagnosis (issue #5470). -->
-        <undertow-core.version>2.4.3.Final</undertow-core.version>
+        <undertow-core.version>2.4.4.Final</undertow-core.version>
         <jboss-threads.version>3.10.1</jboss-threads.version>
         <mockito-core.version>5.24.0</mockito-core.version>
         <neo4j-driver.version>6.3.0</neo4j-driver.version>
