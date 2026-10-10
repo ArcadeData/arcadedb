@@ -247,6 +247,32 @@ class CypherDropNamedConstraintTest extends TestHelper {
   }
 
   @Test
+  void ifNotExistsOverAnEquivalentUnnamedConstraintClaimsNoName() {
+    command("CREATE CONSTRAINT FOR (n:T15) REQUIRE n.v IS NOT NULL");
+
+    final QueryStatistics created = stats("CREATE CONSTRAINT nn IF NOT EXISTS FOR (n:T15) REQUIRE n.v IS NOT NULL");
+    assertThat(created.getConstraintsAdded()).isZero();
+
+    // nothing was created under that name, so there is nothing to drop and the flag stays
+    assertThatThrownBy(() -> command("DROP CONSTRAINT nn")).rootCause().isInstanceOf(SchemaException.class);
+    assertThat(property("T15", "v").isMandatory()).isTrue();
+  }
+
+  @Test
+  void anUnreadableEntryDoesNotBlockDroppingAnotherConstraint() {
+    command("CREATE CONSTRAINT a FOR (n:T16) REQUIRE n.v IS NOT NULL");
+    command("CREATE CONSTRAINT b FOR (n:T16) REQUIRE n.w IS NOT NULL");
+    database.getSchema().getType("T16").setCustomValue("cypher.constraint.b", "not json {");
+
+    command("DROP CONSTRAINT a");
+    assertThat(property("T16", "v").isMandatory()).isFalse();
+
+    // the unreadable one can still be dropped by name; it owns nothing it can be trusted to undo
+    command("DROP CONSTRAINT b");
+    assertThatThrownBy(() -> command("DROP CONSTRAINT b")).rootCause().isInstanceOf(SchemaException.class);
+  }
+
+  @Test
   void dropByIndexNameStillWorks() {
     command("CREATE CONSTRAINT FOR (n:T9) REQUIRE n.v IS UNIQUE");
     final String indexName = database.getSchema().getType("T9").getAllIndexes(false).iterator().next().getName();

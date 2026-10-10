@@ -656,7 +656,9 @@ public class OpenCypherQueryEngine implements QueryEngine {
     final String[] propertyNames = ddl.getPropertyNames().toArray(new String[0]);
 
     // A constraint name is unique across the database (#9646). Checked before anything is created, so a refused statement
-    // leaves no type, property or index behind; IF NOT EXISTS makes a taken name a no-op, as in Neo4j.
+    // leaves no type, property or index behind; IF NOT EXISTS makes a taken name a no-op, as in Neo4j. The check and the
+    // registration at the end are not atomic with the schema changes in between, like every multi-step DDL here: two
+    // concurrent CREATE CONSTRAINT statements with one name on different types can both pass it.
     final String constraintName = ddl.getConstraintName();
     if (CypherConstraintRegistry.findOwner(schema, constraintName) != null) {
       if (ddl.isIfNotExists())
