@@ -21,6 +21,7 @@ package com.arcadedb.engine;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.ConcurrentModificationException;
 
 import org.junit.jupiter.api.Test;
 
@@ -31,6 +32,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression for issue #9694: a page a transaction has just created is private to it until it commits, but the
@@ -118,6 +120,49 @@ class Issue9694InFlightNewPageAllocationTest extends TestHelper {
       assertThat(rid.getPosition() / maxRecordsInPage).as("record %s must not be on the creator's page", rid).isNotEqualTo(creatorPage);
 
     database.transaction(() -> assertThat(database.countType(TYPE, true)).isEqualTo(3));
+  }
+
+  /**
+   * A page stays its creator's only while the creator runs: a commit, a rollback and a commit that fails with a
+   * conflict all give it back, and a page abandoned by a rollback is an empty page the next insert can fill.
+   */
+  @Test
+  void aCreatedPageIsGivenBackWheneverItsTransactionEnds() throws Exception {
+    final LocalBucket bucket = (LocalBucket) database.getSchema().getType(TYPE).getBuckets(false).getFirst();
+    database.getSchema().createDocumentType("Issue9694Other");
+    database.begin();
+    final RID shared = database.newDocument("Issue9694Other").set("v", 0).save().getIdentity();
+    database.commit();
+
+    // ROLLBACK: the page the transaction created is never committed
+    database.begin();
+    database.newDocument(TYPE).set("owner", "rolledBack").save();
+    assertThat(bucket.getInFlightNewPagesForTesting()).isEqualTo(1);
+    database.rollback();
+    assertThat(bucket.getInFlightNewPagesForTesting()).isZero();
+
+    // FAILED COMMIT: a new page plus an update another transaction commits first
+    database.begin();
+    database.newDocument(TYPE).set("owner", "conflicted").save();
+    database.lookupByRID(shared, true).asDocument().modify().set("v", 1).save();
+    assertThat(bucket.getInFlightNewPagesForTesting()).isEqualTo(1);
+    final Thread concurrent = new Thread(() -> database.transaction(
+        () -> database.lookupByRID(shared, true).asDocument().modify().set("v", 2).save()));
+    concurrent.start();
+    concurrent.join(30_000);
+    assertThatThrownBy(database::commit).isInstanceOf(ConcurrentModificationException.class);
+    assertThat(bucket.getInFlightNewPagesForTesting()).isZero();
+
+    // COMMIT: the abandoned pages are free again, and a committed page is an ordinary one afterwards
+    database.begin();
+    final RID rid = database.newDocument(TYPE).set("owner", "committed").save().getIdentity();
+    database.commit();
+    assertThat(bucket.getInFlightNewPagesForTesting()).isZero();
+
+    database.transaction(() -> {
+      assertThat(database.countType(TYPE, true)).isEqualTo(1);
+      assertThat(database.lookupByRID(rid, true).asDocument().getString("owner")).isEqualTo("committed");
+    });
   }
 
   /**

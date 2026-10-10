@@ -269,14 +269,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   // only while at least one transaction is inserting into that page, so the map is as small as the write
   // concurrency; see reserveInsertSlot().
   private final          Map<Integer, PageInsertReservation> insertReservations     = new ConcurrentHashMap<>();
-  // #9694: pageNumber → the transaction that created that page and has not ended yet. A brand-new page is private to
-  // its creator until the commit publishes it, yet nothing kept the allocator of the OTHER transactions off it: the
-  // creator's own writes list it in the bucket-wide free-space map, and once any later page is committed (or the
-  // other transaction opens a later page itself) its number lies below their page horizon. They then read it from the
-  // page manager as an empty page and claimed its slot 0 - the slot the creator wrote first - so the two commits could
-  // never both succeed. With several writers on one bucket each transaction opens its own tail page, so this made
-  // most of their commits conflict. Same lifetime as insertReservations: released when the creator ends.
-  private final          Map<Integer, Object>      inFlightNewPages                 = new ConcurrentHashMap<>();
+  // #9694: pageNumber → the transaction that created that page and has not ended yet. The creator lists its page in
+  // freeSpaceInPages, and page numbers are committed out of order, so other transactions could otherwise read it as an
+  // empty page below their horizon and claim the slots its creator already wrote. Released when the creator ends.
+  private final          Map<Integer, TransactionContext> inFlightNewPages          = new ConcurrentHashMap<>();
   private final          REUSE_SPACE_MODE          reuseSpaceMode;
   // #4958: both fields are read/written outside the freeSpaceInPages monitor on some paths (delete,
   // updatePageStatistics), so they must be safe on their own: volatile timestamp + atomic counter.
@@ -3237,7 +3233,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   private boolean isNewPageOfAnotherTransaction(final int pageNumber, final TransactionContext tx) {
     if (inFlightNewPages.isEmpty())
       return false;
-    final Object creator = inFlightNewPages.get(pageNumber);
+    final TransactionContext creator = inFlightNewPages.get(pageNumber);
     return creator != null && creator != tx;
   }
 
@@ -3248,6 +3244,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    */
   public void releaseNewPage(final int pageNumber) {
     inFlightNewPages.remove(pageNumber);
+  }
+
+  /** How many pages of this bucket are owned by a running transaction (issue #9694). Package-private: for tests only. */
+  int getInFlightNewPagesForTesting() {
+    return inFlightNewPages.size();
   }
 
   /**
@@ -3604,14 +3605,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
                                     final byte[] body) throws IOException {
     final int spaceNeeded = Binary.getNumberSpace(body.length) + body.length;
 
-    // Where free content begins on the CURRENT committed page, measured on that page. #9694: NOT with the allocator's
-    // getAvailableSpaceInPage, which answers "can a NEW record go here?" and gives up without measuring anything on a
-    // page whose record count reached maxRecordsInPage (the same trap #8401 removed from the delete replay). That is
-    // the routine shape of a page several transactions insert into: each reserves its slots past the others', the one
-    // holding the last slot of the table commits first, and every other insert - into a slot that IS free, on a page
-    // with half its bytes free - was refused and sent its whole transaction to a retry. Nor the SOFT
-    // SPARE_SPACE_FOR_GROWTH preference: the allocator may have deliberately squeezed this record into the tail of an
-    // almost full page (#5279), so only a page with no room left for it refuses the replay.
+    // Measured on the committed page itself. #9694: NOT with the allocator's getAvailableSpaceInPage, which gives up
+    // without measuring once the record count reaches maxRecordsInPage (the trap #8401 removed from the delete replay):
+    // when the transaction holding a page's last slot committed first, every other insert into a free slot of that page
+    // was refused. Nor with the SOFT SPARE_SPACE_FOR_GROWTH preference: the allocator may have squeezed this record
+    // into the tail of an almost full page (#5279), so only a page with no room left refuses the replay.
     final int contentPos = findContentInsertionOffset(page, recordCountInPage);
     if (spaceNeeded > page.getMaxContentSize() - contentPos)
       // The page filled up under concurrency: fall back to a full retry (which will pick a new page/slot).
