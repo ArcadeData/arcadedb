@@ -70,7 +70,7 @@ public final class RunningQuery implements AutoCloseable {
   // The keyword, the closing quote of a JSON key and a separator, then the value: quoted, or up to the next delimiter. The
   // separator's quantifiers are possessive, so a long run of blanks after a keyword is scanned once, never backtracked
   private static final Pattern                   CREDENTIAL =
-      Pattern.compile("(?i)\\b(identified\\s+by|password|token|secret|api[_-]?key)\\b([\"']?+\\s*+(?:[=:]\\s*+)?)('[^']*'|\"[^\"]*\"|[^\\s,;)}\\]]+)");
+      Pattern.compile("(?i)\\b(identified\\s+by|password|token|secret|api[_-]?key|authorization|bearer)\\b([\"']?+\\s*+(?:[=:]\\s*+)?)('[^']*'|\"[^\"]*\"|[^\\s,;)}\\]]+)");
 
   private final RunningQueryRegistry registry;
   private final long                 id;
@@ -118,7 +118,9 @@ public final class RunningQuery implements AutoCloseable {
 
   /** The entry of the statement running on this thread, or {@code null} when nothing registered one. */
   public static RunningQuery current() {
-    return CURRENT.get();
+    final RunningQuery query = CURRENT.get();
+    // An entry that has ended no longer stands for anything running on the thread, whatever order entries were closed in
+    return query != null && query.ended.getCount() > 0 ? query : null;
   }
 
   /**
@@ -132,8 +134,8 @@ public final class RunningQuery implements AutoCloseable {
   }
 
   /**
-   * The text with the value after {@code IDENTIFIED BY}, {@code PASSWORD}, {@code TOKEN}, {@code SECRET} or {@code API_KEY}
-   * (also {@code APIKEY}, {@code API-KEY}) replaced by {@code ***}, in
+   * The text with the value after {@code IDENTIFIED BY}, {@code PASSWORD}, {@code TOKEN}, {@code SECRET}, {@code API_KEY}
+   * (also {@code APIKEY}, {@code API-KEY}), {@code AUTHORIZATION} or {@code BEARER} replaced by {@code ***}, in
    * statement form ({@code IDENTIFIED BY x}, {@code password = 'x'}) as in JSON form ({@code "password": "x"}), then cut to
    * {@link #MAX_TEXT_LENGTH}. The listing is read by the server administrator for every user's statements, and a credential
    * written in clear in a statement is not something it needs to show.
@@ -167,7 +169,7 @@ public final class RunningQuery implements AutoCloseable {
 
   /** Fails the statement if it was asked to stop. {@code what} names the work that noticed, for the message. */
   public void checkNotTerminated(final String what) {
-    if (terminatedBy != null) {
+    if (terminatedBy != null && ended.getCount() > 0) {
       terminationObserved = true;
       throw new QueryTerminatedException(
           (what != null ? what : "the command") + " has been terminated (query " + getId() + ", terminated by " + terminatedBy
@@ -207,7 +209,8 @@ public final class RunningQuery implements AutoCloseable {
   /**
    * Ends the entry: removes it from the registry and gives the thread back the entry it had before. Must run on the
    * thread that opened the entry, and entries opened on one thread close in the reverse order they were opened (a
-   * try-with-resources nesting does that): an entry closed out of turn leaves the thread-local alone rather than guess.
+   * try-with-resources nesting does that). An entry closed out of turn is not left behind: an ended entry is never what
+   * {@link #current()} answers, and closing the inner entry later restores the closest enclosing one still running.
    */
   @Override
   public void close() {
@@ -216,13 +219,17 @@ public final class RunningQuery implements AutoCloseable {
     try {
       registry.unregister(this);
     } finally {
+      ended.countDown();
       if (CURRENT.get() == this) {
-        if (previous != null)
-          CURRENT.set(previous);
+        // Back to the closest enclosing entry still running: one closed out of turn is skipped, never restored
+        RunningQuery restore = previous;
+        while (restore != null && restore.isEnded())
+          restore = restore.previous;
+        if (restore != null)
+          CURRENT.set(restore);
         else
           CURRENT.remove();
       }
-      ended.countDown();
     }
   }
 
