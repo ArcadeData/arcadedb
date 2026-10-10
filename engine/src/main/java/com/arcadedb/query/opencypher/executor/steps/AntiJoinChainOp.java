@@ -65,6 +65,11 @@ import java.util.Set;
  *     </ul>
  *   </li>
  * </ol>
+ * <p>
+ * Every position can carry a {@link VertexPredicate} on top of its label, the inline property map and the {@code WHERE}
+ * conjuncts of that node alone ({@code (c:Message {kind: 'Comment'})}). Each counting path applies it wherever it applies the
+ * label, asking it once per distinct vertex a run reaches there (issue #9608). The negated pattern is an existence test on an
+ * edge between two vertices the chain already bound, so no predicate ever narrows the set of neighbours it excludes.
  */
 public final class AntiJoinChainOp implements CountOp {
   private final String[] nodeLabels;
@@ -81,11 +86,25 @@ public final class AntiJoinChainOp implements CountOp {
   private final int inequalityIdxA;
   private final int inequalityIdxB;
 
+  // Property predicates per position, on top of the labels; null when no position has one
+  private final VertexPredicate[] nodePredicates;
+
   public AntiJoinChainOp(final String[] nodeLabels, final String[] edgeTypes,
       final Vertex.DIRECTION[] directions,
       final int antiJoinSourceIdx, final int antiJoinTargetIdx,
       final String antiJoinEdgeType, final Vertex.DIRECTION antiJoinDirection,
       final int inequalityIdxA, final int inequalityIdxB) {
+    this(nodeLabels, null, edgeTypes, directions, antiJoinSourceIdx, antiJoinTargetIdx, antiJoinEdgeType, antiJoinDirection,
+        inequalityIdxA, inequalityIdxB);
+  }
+
+  /** @param nodePredicates the property predicate of each position, null entries (or a null array) for none */
+  public AntiJoinChainOp(final String[] nodeLabels, final VertexPredicate[] nodePredicates, final String[] edgeTypes,
+      final Vertex.DIRECTION[] directions,
+      final int antiJoinSourceIdx, final int antiJoinTargetIdx,
+      final String antiJoinEdgeType, final Vertex.DIRECTION antiJoinDirection,
+      final int inequalityIdxA, final int inequalityIdxB) {
+    this.nodePredicates = VertexPredicate.any(nodePredicates) ? nodePredicates : null;
     this.nodeLabels = nodeLabels;
     this.edgeTypes = edgeTypes;
     this.directions = directions;
@@ -123,6 +142,8 @@ public final class AntiJoinChainOp implements CountOp {
     final IntHashSet[] validBuckets = new IntHashSet[hops + 1];
     for (int i = 0; i <= hops; i++)
       validBuckets[i] = CSRCountUtils.buildValidBuckets(db, nodeLabels[i]);
+    // null entries where a position has no property predicate (issue #9608)
+    final VertexPredicate.Evaluation[] filters = filters(db, provider);
 
     // Determine the "check position" — the later of the two anti-join endpoints.
     // We always iterate from chain position 0 (anchor) and expand to the check position.
@@ -136,7 +157,7 @@ public final class AntiJoinChainOp implements CountOp {
 
     // The Q8 shape (see isOverlapShape) has its own exact count: one pass over the middle hop's edges.
     if (isOverlapShape()) {
-      final long result = executeEdgeScanAlgebraic(provider, nodeIdUpperBound, validBuckets, guard);
+      final long result = executeEdgeScanAlgebraic(provider, nodeIdUpperBound, validBuckets, filters, guard);
       return result >= 0 ? result : executeOverlapOLTP(db, guard);
     }
 
@@ -149,7 +170,7 @@ public final class AntiJoinChainOp implements CountOp {
 
     // Two hops to the check position (Q9): count the paths algebraically instead of materializing the frontier.
     if (laterIdx == 2) {
-      final long result = executeTwoHopAlgebraic(provider, nodeIdUpperBound, validBuckets, guard);
+      final long result = executeTwoHopAlgebraic(provider, nodeIdUpperBound, validBuckets, filters, guard);
       if (result >= 0)
         return result;
     }
@@ -172,6 +193,8 @@ public final class AntiJoinChainOp implements CountOp {
         continue;
       if (anchorBuckets != null && !anchorBuckets.contains(bucketIds[anchorId]))
         continue;
+      if (!accepts(filters, 0, anchorId))
+        continue;
 
       // Pre-compute anti-join neighbors for Case A (anchor is the anti-join source)
       final int[] anchorAntiNbrs = anchorIsSource
@@ -179,7 +202,7 @@ public final class AntiJoinChainOp implements CountOp {
           : null;
 
       final long count = countWithAntiJoin(provider, anchorId, anchorAntiNbrs,
-          anchorIsSource, laterIdx, validBuckets, bucketIds, hopViews);
+          anchorIsSource, laterIdx, validBuckets, filters, bucketIds, hopViews);
       totalCount += count;
     }
 
@@ -207,7 +230,7 @@ public final class AntiJoinChainOp implements CountOp {
    * @return the count, or -1 when the shape or the provider is not one this handles (the caller falls back)
    */
   private long executeTwoHopAlgebraic(final GraphTraversalProvider provider, final int nodeIdUpperBound,
-      final IntHashSet[] validBuckets, final WorkGuard guard) {
+      final IntHashSet[] validBuckets, final VertexPredicate.Evaluation[] filters, final WorkGuard guard) {
     // The only inequality the enumeration applies is between the anchor and the check position
     final boolean inequality = inequalityIdxA >= 0 && inequalityIdxB >= 0;
     if (inequality && !(inequalityIdxA == 0 && inequalityIdxB == 2 || inequalityIdxA == 2 && inequalityIdxB == 0))
@@ -246,6 +269,9 @@ public final class AntiJoinChainOp implements CountOp {
     final IntHashSet anchorBuckets = validBuckets[0];
     final IntHashSet midBuckets = validBuckets[1];
     final IntHashSet checkBuckets = validBuckets[2];
+    // the predicates read the vertex, so each is asked only of a node some walk reaches at its position
+    final VertexPredicate.Evaluation midFilter = filterAt(filters, 1);
+    final VertexPredicate.Evaluation checkFilter = filterAt(filters, 2);
     if ((anchorBuckets != null && anchorBuckets.isEmpty()) || (midBuckets != null && midBuckets.isEmpty())
         || (checkBuckets != null && checkBuckets.isEmpty()))
       return 0;
@@ -261,7 +287,7 @@ public final class AntiJoinChainOp implements CountOp {
         continue;
       long paths = 1;
       for (int h = 2; h < edgeTypes.length; h++) {
-        paths *= targetDegree(tailViews[h - 2], x, validBuckets[h + 1], bucketIds);
+        paths *= targetDegree(tailViews[h - 2], x, validBuckets[h + 1], filterAt(filters, h + 1), bucketIds);
         if (paths == 0)
           break;
       }
@@ -276,9 +302,12 @@ public final class AntiJoinChainOp implements CountOp {
       if (!provider.isNodeLive(m) || midBuckets != null && !midBuckets.contains(bucketIds[m]))
         continue;
       long sum = 0;
-      for (int j = hop1.offset(m), end = hop1.offsetEnd(m); j < end; j++)
-        sum += tail[hop1Neighbors[j]];
-      weight[m] = sum;
+      for (int j = hop1.offset(m), end = hop1.offsetEnd(m); j < end; j++) {
+        final int x = hop1Neighbors[j];
+        if (tail[x] != 0 && (checkFilter == null || checkFilter.acceptsNode(x)))
+          sum += tail[x];
+      }
+      weight[m] = sum != 0 && (midFilter == null || midFilter.acceptsNode(m)) ? sum : 0;
     }
 
     final int[] hop0Neighbors = hop0.neighbors();
@@ -297,7 +326,7 @@ public final class AntiJoinChainOp implements CountOp {
       long count = 0;
       for (int j = start; j < end; j++)
         count += weight[hop0Neighbors[j]];
-      if (count == 0)
+      if (count == 0 || !accepts(filters, 0, anchor))
         continue;
 
       boolean anchorIsAntiJoined = false;
@@ -308,13 +337,13 @@ public final class AntiJoinChainOp implements CountOp {
           continue;
         previous = x;
         anchorIsAntiJoined |= x == anchor;
-        if (tail[x] != 0)
+        if (tail[x] != 0 && (checkFilter == null || checkFilter.acceptsNode(x)))
           count -= tail[x] * pathsBetween(hop0Neighbors, start, end, hop1ReverseNeighbors, hop1Reverse.offset(x),
-              hop1Reverse.offsetEnd(x), midBuckets, bucketIds);
+              hop1Reverse.offsetEnd(x), midBuckets, midFilter, bucketIds);
       }
-      if (inequality && !anchorIsAntiJoined && tail[anchor] != 0)
+      if (inequality && !anchorIsAntiJoined && tail[anchor] != 0 && (checkFilter == null || checkFilter.acceptsNode(anchor)))
         count -= tail[anchor] * pathsBetween(hop0Neighbors, start, end, hop1ReverseNeighbors, hop1Reverse.offset(anchor),
-            hop1Reverse.offsetEnd(anchor), midBuckets, bucketIds);
+            hop1Reverse.offsetEnd(anchor), midBuckets, midFilter, bucketIds);
       total += count;
     }
     return total;
@@ -327,11 +356,12 @@ public final class AntiJoinChainOp implements CountOp {
 
   /**
    * The number of pairs of equal values in two sorted ranges, counting a value as often as the two ranges repeat it, and
-   * restricted to the values a middle-position label keeps (null keeps all). The shorter range is looked up in the longer
-   * by binary search when they differ a lot in length, so a hub is not scanned for each of its small neighbours.
+   * restricted to the values a middle-position label and property predicate keep (null keeps all). The shorter range is
+   * looked up in the longer by binary search when they differ a lot in length, so a hub is not scanned for each of its small
+   * neighbours.
    */
   private static long pathsBetween(final int[] a, final int aStart, final int aEnd, final int[] b, final int bStart,
-      final int bEnd, final IntHashSet allowed, final int[] bucketIds) {
+      final int bEnd, final IntHashSet allowed, final VertexPredicate.Evaluation filter, final int[] bucketIds) {
     if (aStart == aEnd || bStart == bEnd)
       return 0;
     final int aLength = aEnd - aStart;
@@ -352,7 +382,8 @@ public final class AntiJoinChainOp implements CountOp {
           runEnd++;
         final int low = lowerBound(longArray, longFrom, longEnd, value);
         longFrom = low;
-        if (low < longEnd && longArray[low] == value && (allowed == null || allowed.contains(bucketIds[value]))) {
+        if (low < longEnd && longArray[low] == value && (allowed == null || allowed.contains(bucketIds[value]))
+            && (filter == null || filter.acceptsNode(value))) {
           int high = low + 1;
           while (high < longEnd && longArray[high] == value)
             high++;
@@ -379,7 +410,7 @@ public final class AntiJoinChainOp implements CountOp {
         int jEnd = j + 1;
         while (jEnd < bEnd && b[jEnd] == av)
           jEnd++;
-        if (allowed == null || allowed.contains(bucketIds[av]))
+        if ((allowed == null || allowed.contains(bucketIds[av])) && (filter == null || filter.acceptsNode(av)))
           pairs += (long) (iEnd - i) * (jEnd - j);
         i = iEnd;
         j = jEnd;
@@ -446,7 +477,8 @@ public final class AntiJoinChainOp implements CountOp {
    * @return count, or -1 if a NeighborView is unavailable (the caller counts through the vertices instead)
    */
   private long executeEdgeScanAlgebraic(final GraphTraversalProvider provider,
-      final int nodeIdUpperBound, final IntHashSet[] validBuckets, final WorkGuard guard) {
+      final int nodeIdUpperBound, final IntHashSet[] validBuckets, final VertexPredicate.Evaluation[] filters,
+      final WorkGuard guard) {
     for (final IntHashSet buckets : validBuckets)
       if (buckets.isEmpty())
         return 0;
@@ -461,6 +493,7 @@ public final class AntiJoinChainOp implements CountOp {
     final int[] rNbrs = viewR.neighbors();
     final int[] bucketIds = precomputeBucketIds(provider, nodeIdUpperBound, guard);
     final IntHashSet t1Buckets = validBuckets[0], mBuckets = validBuckets[1], cBuckets = validBuckets[2], t2Buckets = validBuckets[3];
+    final VertexPredicate.Evaluation t1Filter = filterAt(filters, 0), mFilter = filterAt(filters, 1), t2Filter = filterAt(filters, 3);
 
     long total = 0;
     int[] targets = new int[16];
@@ -471,14 +504,15 @@ public final class AntiJoinChainOp implements CountOp {
       final int cStart = viewC.offset(c), cEnd = viewC.offsetEnd(c);
       if (cStart == cEnd)
         continue;
-      long t2 = 0;
-      for (int k = cStart; k < cEnd; k++)
-        if (t2Buckets.contains(bucketIds[cNbrs[k]]))
-          t2++;
-      if (t2 == 0)
-        continue;
       final int rStart = viewR.offset(c), rEnd = viewR.offsetEnd(c);
       if (rStart == rEnd)
+        continue;
+      long t2 = 0;
+      for (int k = cStart; k < cEnd; k++)
+        if (t2Buckets.contains(bucketIds[cNbrs[k]]) && (t2Filter == null || t2Filter.acceptsNode(cNbrs[k])))
+          t2++;
+      // the predicates read the vertex, so the one of c is asked last, of a node that makes rows
+      if (t2 == 0 || !accepts(filters, 2, c))
         continue;
       final int n = cEnd - cStart;
       if (targets.length < n)
@@ -488,12 +522,13 @@ public final class AntiJoinChainOp implements CountOp {
 
       for (int j = rStart; j < rEnd; j++) {
         final int m = rNbrs[j];
-        if (!mBuckets.contains(bucketIds[m]))
+        if (!mBuckets.contains(bucketIds[m]) || (mFilter != null && !mFilter.acceptsNode(m)))
           continue;
         long t1 = 0;
         for (int k = viewA.offset(m), end = viewA.offsetEnd(m); k < end; k++) {
           final int a = aNbrs[k];
-          if (t1Buckets.contains(bucketIds[a]) && Arrays.binarySearch(targets, 0, n, a) < 0)
+          if (t1Buckets.contains(bucketIds[a]) && Arrays.binarySearch(targets, 0, n, a) < 0
+              && (t1Filter == null || t1Filter.acceptsNode(a)))
             t1++;
         }
         total += t1 * t2;
@@ -510,26 +545,31 @@ public final class AntiJoinChainOp implements CountOp {
       if (buckets[i].isEmpty())
         return 0;
     }
+    final VertexPredicate.Evaluation[] filters = filters(db, null);
+    final VertexPredicate.Evaluation t1Filter = filterAt(filters, 0), mFilter = filterAt(filters, 1), cFilter = filterAt(filters, 2),
+        t2Filter = filterAt(filters, 3);
     final Vertex.DIRECTION cToTags = directions[2], cToM = reverse(directions[1]), mToTags = reverse(directions[0]);
     long total = 0;
     for (final Iterator<? extends Identifiable> it = CSRCountUtils.iterateAnchors(db, nodeLabels[2]); it.hasNext(); ) {
       guard.check();
       final Vertex c = it.next().asVertex();
+      if (cFilter != null && !cFilter.accepts(c))
+        continue;
       final Set<RID> targets = new HashSet<>();
       long t2 = 0;
       for (final RID tag : SelfLoops.connectedVertexRIDs(c, cToTags, edgeTypes[2])) {
         targets.add(tag);
-        if (buckets[3].contains(tag.getBucketId()))
+        if (buckets[3].contains(tag.getBucketId()) && (t2Filter == null || t2Filter.acceptsRid(tag)))
           t2++;
       }
       if (t2 == 0)
         continue;
       for (final RID m : SelfLoops.connectedVertexRIDs(c, cToM, edgeTypes[1])) {
-        if (!buckets[1].contains(m.getBucketId()))
+        if (!buckets[1].contains(m.getBucketId()) || (mFilter != null && !mFilter.acceptsRid(m)))
           continue;
         long t1 = 0;
         for (final RID a : SelfLoops.connectedVertexRIDs(m.asVertex(), mToTags, edgeTypes[0]))
-          if (buckets[0].contains(a.getBucketId()) && !targets.contains(a))
+          if (buckets[0].contains(a.getBucketId()) && !targets.contains(a) && (t1Filter == null || t1Filter.acceptsRid(a)))
             t1++;
         total += t1 * t2;
       }
@@ -545,28 +585,51 @@ public final class AntiJoinChainOp implements CountOp {
     return false;
   }
 
-  /** The edges of {@code view} out of {@code node} that reach a vertex of the labelled bucket set (null: any vertex, the plain degree). */
-  private static long targetDegree(final NeighborView view, final int node, final IntHashSet targetBuckets, final int[] bucketIds) {
-    if (targetBuckets == null)
+  /**
+   * The edges of {@code view} out of {@code node} that reach a vertex of the labelled bucket set and the property predicate
+   * (null: any vertex; both null, the plain degree).
+   */
+  private static long targetDegree(final NeighborView view, final int node, final IntHashSet targetBuckets,
+      final VertexPredicate.Evaluation targetFilter, final int[] bucketIds) {
+    if (targetBuckets == null && targetFilter == null)
       return view.degree(node);
     final int[] neighbors = view.neighbors();
     long degree = 0;
     for (int j = view.offset(node), end = view.offsetEnd(node); j < end; j++)
-      if (targetBuckets.contains(bucketIds[neighbors[j]]))
+      if ((targetBuckets == null || targetBuckets.contains(bucketIds[neighbors[j]]))
+          && (targetFilter == null || targetFilter.acceptsNode(neighbors[j])))
         degree++;
     return degree;
   }
 
-  /** The edges of {@code vertex} that reach a vertex of the labelled bucket set (null: any vertex, the plain degree). */
+  /**
+   * The edges of {@code vertex} that reach a vertex of the labelled bucket set and the property predicate (null: any vertex;
+   * both null, the plain degree).
+   */
   private static long targetDegree(final Vertex vertex, final Vertex.DIRECTION direction, final String edgeType,
-      final IntHashSet targetBuckets) {
-    if (targetBuckets == null)
+      final IntHashSet targetBuckets, final VertexPredicate.Evaluation targetFilter) {
+    if (targetBuckets == null && targetFilter == null)
       return IncomingEdgeLookup.countPatternEdges(null, vertex, direction, edgeType);
     long degree = 0;
     for (final RID target : SelfLoops.connectedVertexRIDs(vertex, direction, edgeType))
-      if (targetBuckets.contains(target.getBucketId()))
+      if ((targetBuckets == null || targetBuckets.contains(target.getBucketId()))
+          && (targetFilter == null || targetFilter.acceptsRid(target)))
         degree++;
     return degree;
+  }
+
+  /** One evaluation per position with a predicate, the array null when no position has one. */
+  private VertexPredicate.Evaluation[] filters(final Database db, final GraphTraversalProvider provider) {
+    return VertexPredicate.evaluations(nodePredicates, db, provider);
+  }
+
+  private static VertexPredicate.Evaluation filterAt(final VertexPredicate.Evaluation[] filters, final int position) {
+    return filters != null ? filters[position] : null;
+  }
+
+  /** Whether the provider's node passes the predicate of a position, a position without one accepting every node. */
+  private static boolean accepts(final VertexPredicate.Evaluation[] filters, final int position, final int nodeId) {
+    return filters == null || filters[position] == null || filters[position].acceptsNode(nodeId);
   }
 
   /** Pre-computes bucket IDs for all live CSR nodes. One-time O(node ID space) cost. */
@@ -603,8 +666,8 @@ public final class AntiJoinChainOp implements CountOp {
    */
   private long countWithAntiJoin(final GraphTraversalProvider provider, final int anchorId,
       final int[] anchorAntiNbrs, final boolean anchorIsSource,
-      final int checkPosition, final IntHashSet[] validBuckets, final int[] bucketIds,
-      final NeighborView[] hopViews) {
+      final int checkPosition, final IntHashSet[] validBuckets, final VertexPredicate.Evaluation[] filters,
+      final int[] bucketIds, final NeighborView[] hopViews) {
     long count = 0;
 
     // Expand from anchor through hops [0, checkPosition) using NeighborViews
@@ -650,6 +713,8 @@ public final class AntiJoinChainOp implements CountOp {
       } else {
         frontier = pos < nextFrontier.length ? Arrays.copyOf(nextFrontier, pos) : nextFrontier;
       }
+      if (filters != null && filters[h + 1] != null)
+        frontier = filters[h + 1].retain(frontier);
     }
 
     // frontier now contains nodes at checkPosition.
@@ -670,7 +735,7 @@ public final class AntiJoinChainOp implements CountOp {
         if (Arrays.binarySearch(anchorAntiNbrs, target) >= 0)
           continue;
 
-        count += computeTailCount(provider, target, validBuckets, bucketIds);
+        count += computeTailCount(provider, target, validBuckets, filters, bucketIds);
       }
     } else {
       // Case B (Q8): anchor is anti-join target. For each frontier node, check
@@ -688,7 +753,7 @@ public final class AntiJoinChainOp implements CountOp {
           final int aEnd = antiView.offsetEnd(frontierNode);
           if (Arrays.binarySearch(antiNbrs, aStart, aEnd, anchorId) >= 0)
             continue; // anti-join hit — exclude
-          count += computeTailCount(provider, frontierNode, validBuckets, bucketIds);
+          count += computeTailCount(provider, frontierNode, validBuckets, filters, bucketIds);
         }
       } else {
         for (final int frontierNode : frontier) {
@@ -699,7 +764,7 @@ public final class AntiJoinChainOp implements CountOp {
               antiJoinDirection, antiJoinEdgeType);
           if (Arrays.binarySearch(frontierAntiNbrs, anchorId) >= 0)
             continue;
-          count += computeTailCount(provider, frontierNode, validBuckets, bucketIds);
+          count += computeTailCount(provider, frontierNode, validBuckets, filters, bucketIds);
         }
       }
     }
@@ -722,18 +787,20 @@ public final class AntiJoinChainOp implements CountOp {
    * For single remaining hops, uses O(1) degree lookup.
    */
   private long computeTailCount(final GraphTraversalProvider provider, final int nodeId,
-      final IntHashSet[] validBuckets, final int[] bucketIds) {
+      final IntHashSet[] validBuckets, final VertexPredicate.Evaluation[] filters, final int[] bucketIds) {
     final int checkPos = Math.max(antiJoinSourceIdx, antiJoinTargetIdx);
     long tailCount = 1;
     for (int h = checkPos; h < edgeTypes.length; h++) {
       final IntHashSet targetBuckets = validBuckets[h + 1];
+      final VertexPredicate.Evaluation targetFilter = filterAt(filters, h + 1);
       long degree = 0;
-      if (targetBuckets == null)
+      if (targetBuckets == null && targetFilter == null)
         degree = CSRCountUtils.hopDegree(provider, nodeId, directions[h], edgeTypes[h]);
       else
-        // the label of the hop's target node filters the edges it counts
+        // the label and the property predicate of the hop's target node filter the edges it counts
         for (final int target : CSRCountUtils.hopNeighborIds(provider, nodeId, directions[h], edgeTypes[h]))
-          if (targetBuckets.contains(bucketIds[target]))
+          if ((targetBuckets == null || targetBuckets.contains(bucketIds[target]))
+              && (targetFilter == null || targetFilter.acceptsNode(target)))
             degree++;
       if (degree == 0)
         return 0;
@@ -762,6 +829,7 @@ public final class AntiJoinChainOp implements CountOp {
     final IntHashSet[] validBuckets = new IntHashSet[hops + 1];
     for (int i = 0; i <= hops; i++)
       validBuckets[i] = CSRCountUtils.buildValidBuckets(db, nodeLabels[i]);
+    final VertexPredicate.Evaluation[] filters = filters(db, null);
 
     // Phase 1: Build neighbor RID maps for hops 0..checkPos-1.
     // Each map: vertex RID → RID[] of neighbors (filtered by target label buckets).
@@ -774,24 +842,28 @@ public final class AntiJoinChainOp implements CountOp {
             && Objects.equals(edgeTypes[h], edgeTypes[prev])
             && directions[h] == directions[prev]
             // THE MAP KEEPS ONLY TARGETS OF THE NEXT POSITION'S LABEL, SO THE TARGET LABEL MUST MATCH TOO (issue #9277)
-            && Objects.equals(nodeLabels[h + 1], nodeLabels[prev + 1])) {
+            && Objects.equals(nodeLabels[h + 1], nodeLabels[prev + 1])
+            // and of its property predicate (issue #9608)
+            && predicateAt(h + 1) == predicateAt(prev + 1)) {
           hopMaps[h] = hopMaps[prev];
           reused = true;
           break;
         }
       }
       if (!reused)
-        hopMaps[h] = buildNeighborRIDMap(db, nodeLabels[h], edgeTypes[h], directions[h], validBuckets[h + 1], guard);
+        hopMaps[h] = buildNeighborRIDMap(db, nodeLabels[h], edgeTypes[h], directions[h], validBuckets[h + 1],
+            filterAt(filters, h + 1), guard);
     }
 
     // Build anti-join neighbor map (reuse hop map if parameters match; hopMaps[0] keeps only targets of nodeLabels[1], hence the label test)
     final Map<RID, RID[]> antiJoinMap;
+    // and no predicate, which would drop from the excluded set a neighbour the frontier still reaches (issue #9608)
     if (anchorIsSource && checkPos > 0 && antiJoinEdgeType.equals(edgeTypes[0]) && antiJoinDirection == directions[0]
-        && Objects.equals(nodeLabels[antiJoinTargetIdx], nodeLabels[1]))
+        && Objects.equals(nodeLabels[antiJoinTargetIdx], nodeLabels[1]) && predicateAt(1) == null)
       antiJoinMap = hopMaps[0];
     else if (anchorIsSource)
       antiJoinMap = buildNeighborRIDMap(db, anchorLabel, antiJoinEdgeType, antiJoinDirection,
-          validBuckets[antiJoinTargetIdx], guard);
+          validBuckets[antiJoinTargetIdx], null, guard);
     else
       antiJoinMap = null;
 
@@ -799,16 +871,20 @@ public final class AntiJoinChainOp implements CountOp {
     // tailCount[rid] = product of countEdges for hops checkPos..end.
     final Map<RID, Long> tailCounts;
     if (checkPos < hops)
-      tailCounts = buildTailCounts(db, nodeLabels[checkPos], checkPos, guard);
+      tailCounts = buildTailCounts(db, nodeLabels[checkPos], checkPos, filters, guard);
     else
       tailCounts = Collections.emptyMap();
 
     // Phase 3: Frontier expansion from each anchor.
     final RID[] EMPTY = new RID[0];
     long totalCount = 0;
+    final VertexPredicate.Evaluation anchorFilter = filterAt(filters, 0);
     for (final Iterator<? extends Identifiable> it = db.iterateType(anchorLabel, true); it.hasNext(); ) {
       guard.check();
-      final RID anchorRid = it.next().getIdentity();
+      final Identifiable anchor = it.next();
+      if (anchorFilter != null && !anchorFilter.accepts(anchor))
+        continue;
+      final RID anchorRid = anchor.getIdentity();
 
       // Get anti-join neighbors for this anchor
       final Set<RID> antiJoinSet;
@@ -874,7 +950,7 @@ public final class AntiJoinChainOp implements CountOp {
    */
   private Map<RID, RID[]> buildNeighborRIDMap(final Database db, final String sourceLabel,
       final String edgeType, final Vertex.DIRECTION direction, final IntHashSet targetBuckets,
-      final WorkGuard guard) {
+      final VertexPredicate.Evaluation targetFilter, final WorkGuard guard) {
     final Map<RID, RID[]> map = new HashMap<>();
     if (sourceLabel == null || !db.getSchema().existsType(sourceLabel))
       return map;
@@ -893,7 +969,8 @@ public final class AntiJoinChainOp implements CountOp {
         if (nodeId >= 0) {
           for (final int nid : CSRCountUtils.hopNeighborIds(gavProvider, nodeId, direction, edgeType)) {
             final RID rid = gavProvider.getRID(nid);
-            if (rid != null && (targetBuckets == null || targetBuckets.contains(rid.getBucketId())))
+            if (rid != null && (targetBuckets == null || targetBuckets.contains(rid.getBucketId()))
+                && (targetFilter == null || targetFilter.acceptsRid(rid)))
               neighbors.add(rid);
           }
           if (!neighbors.isEmpty())
@@ -904,7 +981,8 @@ public final class AntiJoinChainOp implements CountOp {
       // OLTP fallback
       final Vertex v = (Vertex) db.lookupByRID(vertexRid, true);
       for (final RID rid : SelfLoops.connectedVertexRIDs(v, direction, edgeType)) {
-        if (targetBuckets == null || targetBuckets.contains(rid.getBucketId()))
+        if ((targetBuckets == null || targetBuckets.contains(rid.getBucketId()))
+            && (targetFilter == null || targetFilter.acceptsRid(rid)))
           neighbors.add(rid);
       }
       if (!neighbors.isEmpty())
@@ -917,7 +995,7 @@ public final class AntiJoinChainOp implements CountOp {
    * Pre-computes the tail count (product of edge degrees for remaining hops) for each vertex.
    */
   private Map<RID, Long> buildTailCounts(final Database db, final String sourceLabel, final int fromHop,
-      final WorkGuard guard) {
+      final VertexPredicate.Evaluation[] filters, final WorkGuard guard) {
     final Map<RID, Long> counts = new HashMap<>();
     if (sourceLabel == null || !db.getSchema().existsType(sourceLabel))
       return counts;
@@ -936,11 +1014,13 @@ public final class AntiJoinChainOp implements CountOp {
       long tailCount = 1;
       for (int h = fromHop; h < edgeTypes.length; h++) {
         final long degree;
-        final int nodeId = gavProvider != null && targetBuckets[h] == null ? gavProvider.getNodeId(vertexRid) : -1;
+        final VertexPredicate.Evaluation targetFilter = filterAt(filters, h + 1);
+        final int nodeId = gavProvider != null && targetBuckets[h] == null && targetFilter == null ? gavProvider.getNodeId(vertexRid) : -1;
         if (nodeId >= 0)
           degree = CSRCountUtils.hopDegree(gavProvider, nodeId, directions[h], edgeTypes[h]);
         else
-          degree = targetDegree((Vertex) db.lookupByRID(vertexRid, true), directions[h], edgeTypes[h], targetBuckets[h]);
+          degree = targetDegree((Vertex) db.lookupByRID(vertexRid, true), directions[h], edgeTypes[h], targetBuckets[h],
+              targetFilter);
         if (degree == 0) {
           tailCount = 0;
           break;
@@ -962,21 +1042,26 @@ public final class AntiJoinChainOp implements CountOp {
     final IntHashSet[] hopBuckets = new IntHashSet[edgeTypes.length + 1];
     for (int i = 0; i < hopBuckets.length; i++)
       hopBuckets[i] = CSRCountUtils.buildValidBuckets(db, nodeLabels[i]);
+    final VertexPredicate.Evaluation[] filters = filters(db, null);
+    final VertexPredicate.Evaluation anchorFilter = filterAt(filters, 0);
     long total = 0;
     for (final Iterator<? extends Identifiable> it = CSRCountUtils.iterateAnchors(db, nodeLabels[0]); it.hasNext(); ) {
       guard.check();
       final Vertex anchor = it.next().asVertex();
+      if (anchorFilter != null && !anchorFilter.accepts(anchor))
+        continue;
       final Set<RID> antiJoinSet = new HashSet<>();
       for (final RID rid : SelfLoops.connectedVertexRIDs(anchor, antiJoinDirection, antiJoinEdgeType))
         antiJoinSet.add(rid);
 
-      total += countPathsRec(anchor, 0, db, anchor.getIdentity(), antiJoinSet, hopBuckets);
+      total += countPathsRec(anchor, 0, db, anchor.getIdentity(), antiJoinSet, hopBuckets, filters);
     }
     return total;
   }
 
   private long countPathsRec(final Vertex vertex, final int hopIndex, final Database db,
-      final RID sourceRid, final Set<RID> antiJoinSet, final IntHashSet[] hopBuckets) {
+      final RID sourceRid, final Set<RID> antiJoinSet, final IntHashSet[] hopBuckets,
+      final VertexPredicate.Evaluation[] filters) {
     if (hopIndex >= edgeTypes.length)
       return 1;
 
@@ -986,7 +1071,7 @@ public final class AntiJoinChainOp implements CountOp {
     if (hopIndex >= checkPos) {
       long tailCount = 1;
       for (int h = hopIndex; h < edgeTypes.length; h++) {
-        final long degree = targetDegree(vertex, directions[h], edgeTypes[h], hopBuckets[h + 1]);
+        final long degree = targetDegree(vertex, directions[h], edgeTypes[h], hopBuckets[h + 1], filterAt(filters, h + 1));
         if (degree == 0)
           return 0;
         tailCount *= degree;
@@ -995,6 +1080,7 @@ public final class AntiJoinChainOp implements CountOp {
     }
 
     final IntHashSet targetBuckets = hopBuckets[hopIndex + 1];
+    final VertexPredicate.Evaluation targetFilter = filterAt(filters, hopIndex + 1);
 
     long count = 0;
     for (final RID neighborRid : SelfLoops.connectedVertexRIDs(vertex, directions[hopIndex], edgeTypes[hopIndex])) {
@@ -1007,9 +1093,15 @@ public final class AntiJoinChainOp implements CountOp {
               || (inequalityIdxB == antiJoinSourceIdx && (hopIndex + 1) == inequalityIdxA))
           && neighborRid.equals(sourceRid))
         continue;
-      count += countPathsRec(neighborRid.asVertex(), hopIndex + 1, db, sourceRid, antiJoinSet, hopBuckets);
+      if (targetFilter != null && !targetFilter.acceptsRid(neighborRid))
+        continue;
+      count += countPathsRec(neighborRid.asVertex(), hopIndex + 1, db, sourceRid, antiJoinSet, hopBuckets, filters);
     }
     return count;
+  }
+
+  private VertexPredicate predicateAt(final int position) {
+    return nodePredicates != null ? nodePredicates[position] : null;
   }
 
   @Override
@@ -1022,15 +1114,23 @@ public final class AntiJoinChainOp implements CountOp {
     for (int i = 0; i < edgeTypes.length; i++) {
       if (i > 0)
         sb.append(" → ");
-      sb.append("(").append(nodeLabels[i] != null ? nodeLabels[i] : "?").append(")");
+      appendNode(sb, i);
       sb.append(directions[i] == Vertex.DIRECTION.OUT ? "-[:" : "<-[:");
       sb.append(edgeTypes[i]);
       sb.append(directions[i] == Vertex.DIRECTION.OUT ? "]->" : "]-");
     }
-    sb.append("(").append(nodeLabels[edgeTypes.length] != null ? nodeLabels[edgeTypes.length] : "?").append(")");
+    appendNode(sb, edgeTypes.length);
     sb.append("\n").append("  ".repeat(Math.max(0, depth * indent)));
     sb.append("  anti-join: NOT (").append(antiJoinSourceIdx).append(")-[:").append(antiJoinEdgeType)
         .append("]-(").append(antiJoinTargetIdx).append(")");
     return sb.toString();
+  }
+
+  private void appendNode(final StringBuilder sb, final int position) {
+    sb.append("(").append(nodeLabels[position] != null ? nodeLabels[position] : "?");
+    final VertexPredicate predicate = predicateAt(position);
+    if (predicate != null)
+      sb.append(' ').append(predicate.describe());
+    sb.append(")");
   }
 }
