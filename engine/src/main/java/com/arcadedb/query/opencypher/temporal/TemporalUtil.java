@@ -557,6 +557,15 @@ public final class TemporalUtil {
     return value;
   }
 
+  /**
+   * Whether {@code value} is a native temporal {@link #fromCoreJavaType(Object)} wraps: a {@code java.time} value, a
+   * {@code java.util.Date} or a {@code java.util.Calendar}. The one list of those classes, so a newly supported
+   * {@code arcadedb.dateTimeImplementation} cannot be missed on one path (issue #9647).
+   */
+  public static boolean isNativeTemporal(final Object value) {
+    return value instanceof Temporal || value instanceof Date || value instanceof Calendar;
+  }
+
   // The classes a non-default arcadedb.dateImplementation reads a DATE into: only these need the schema lookup, so the
   // default LocalDate and every non-temporal value pay one instanceof chain and nothing more
   private static boolean isDateReadAsInstant(final Object value) {
@@ -588,7 +597,7 @@ public final class TemporalUtil {
     // into Cypher temporal values so a stored native datetime reads back as a comparable temporal.
     if (value instanceof CypherDuration)
       return value;
-    if (value instanceof Temporal || value instanceof Date || value instanceof Calendar) {
+    if (isNativeTemporal(value)) {
       // A stored datetime keeps no zone: mark it so a comparison lets it adopt the other operand's zone (issue #9325).
       // Built directly, not through fromCoreJavaType(), so a scan allocates one wrapper per value
       if (value instanceof ZonedDateTime zdt)

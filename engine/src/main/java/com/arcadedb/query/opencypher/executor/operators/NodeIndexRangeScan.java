@@ -31,6 +31,7 @@ import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.optimizer.RangePredicate;
 import com.arcadedb.query.opencypher.temporal.CypherDuration;
+import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.PhysicalOrderRidFetcher;
 import com.arcadedb.query.sql.executor.QueryHelper;
@@ -43,11 +44,8 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
 
-import java.time.temporal.Temporal;
 import java.time.temporal.TemporalAmount;
 import java.util.ArrayList;
-import java.util.Calendar;
-import java.util.Date;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
@@ -707,7 +705,7 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
       return 2;
     if (bound instanceof Boolean)
       return 3;
-    if (bound instanceof Temporal || bound instanceof Date || bound instanceof Calendar)
+    if (TemporalUtil.isNativeTemporal(bound))
       return 4;
     return 0;
   }

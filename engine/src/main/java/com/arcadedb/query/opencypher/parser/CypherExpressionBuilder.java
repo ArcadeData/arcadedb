@@ -31,10 +31,8 @@ import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 
-import java.time.temporal.Temporal;
 import java.util.ArrayList;
 import java.util.Calendar;
-import java.util.Date;
 import java.util.LinkedHashMap;
 
 import org.antlr.v4.runtime.CharStreams;
@@ -1662,7 +1660,7 @@ class CypherExpressionBuilder {
       }
       // A native temporal (a parameter, a value read off a map): every class fromCoreJavaType wraps, java.util.Calendar
       // included (issue #9647), where only LocalDate and LocalDateTime used to be accepted
-      if (baseValue instanceof Temporal || baseValue instanceof Date || baseValue instanceof Calendar) {
+      if (TemporalUtil.isNativeTemporal(baseValue)) {
         final Object coerced = TemporalUtil.fromCoreJavaType(baseValue);
         if (coerced instanceof CypherTemporalValue temporal)
           return temporal.getTemporalProperty(propertyName);

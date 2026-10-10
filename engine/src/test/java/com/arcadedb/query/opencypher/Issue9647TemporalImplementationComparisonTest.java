@@ -65,6 +65,9 @@ class Issue9647TemporalImplementationComparisonTest extends TestHelper {
         }
       });
 
+      // the setting took effect: otherwise the run silently degrades to the default LocalDate path
+      assertThat(database.iterateType("D", false).next().asDocument().get("d")).isInstanceOf(implementation);
+
       for (final String type : new String[] { "D", "DI" }) {
         assertThat(cypherCount("MATCH (n:" + type + ") WHERE n.d = date('2024-02-29') RETURN count(n) AS c")).isEqualTo(1L);
         assertThat(cypherCount("MATCH (n:" + type + " {d: date('2024-02-29')}) RETURN count(n) AS c")).isEqualTo(1L);
@@ -109,6 +112,8 @@ class Issue9647TemporalImplementationComparisonTest extends TestHelper {
           database.newVertex(type).set("n", 3).set("ts", ZonedDateTime.parse("2027-03-01T09:30:00Z")).save();
         }
       });
+
+      assertThat(database.iterateType("E", false).next().asDocument().get("ts")).isInstanceOf(implementation);
 
       for (final String type : new String[] { "E", "EI" }) {
         assertThat(where(type, "e.ts = datetime('2026-01-01T11:00:00Z')")).isEqualTo(1L);
@@ -179,6 +184,13 @@ class Issue9647TemporalImplementationComparisonTest extends TestHelper {
       }
       try (final ResultSet rs = database.query("opencypher", "RETURN $p.year AS c", "p", parameter)) {
         assertThat(((Number) rs.next().getProperty("c")).longValue()).isEqualTo(2026L);
+      }
+      // SQL reads a Calendar as its instant on either side of '='
+      try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM E WHERE ts = ?", parameter)) {
+        assertThat(((Number) rs.next().getProperty("c")).longValue()).isEqualTo(1L);
+      }
+      try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM E WHERE ? = ts", parameter)) {
+        assertThat(((Number) rs.next().getProperty("c")).longValue()).isEqualTo(1L);
       }
     } finally {
       serializer.setDateTimeImplementation(previous);

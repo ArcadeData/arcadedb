@@ -423,7 +423,7 @@ public class ComparisonExpression implements BooleanExpression {
    * (typically a bound parameter) is coerced once and served from a single-slot memo thereafter.
    */
   private Object coerceTemporal(final Object value) {
-    if (!(value instanceof Temporal || value instanceof Date || value instanceof Calendar))
+    if (!TemporalUtil.isNativeTemporal(value))
       return value;
     final Object[] memo = temporalCoercionMemo;
     if (memo != null && memo[0] == value && (long) memo[2] == dateMillis(value))
