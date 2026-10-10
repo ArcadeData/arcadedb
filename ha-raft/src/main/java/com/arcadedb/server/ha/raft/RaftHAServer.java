@@ -20,8 +20,8 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.ContextConfiguration;
-import com.arcadedb.database.Database;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.Database;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
@@ -7214,7 +7214,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   private PeerCapabilityQuery.Advertisement queryPeerCapabilities(final String expectedPeerId,
       final String httpAddress, final String httpsAddress, final String clusterToken)
       throws IOException, InterruptedException {
-    final JSONObject caller = capabilityRequestDocument();
+    final Map<String, String> caller = capabilityRequestHeaders();
     return expectedPeerId != null
         ? PeerCapabilityQuery.fetch(expectedPeerId, httpAddress, httpsAddress, clusterToken,
             PeerCapabilityRegistry.PROBE_TIMEOUT_MS, arcadeServer, capabilityHttpsClients, caller)
@@ -7223,22 +7223,23 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   /**
-   * What this node says about itself in every capability request (issue #9255): its peer id, the HTTP address it resolves
+   * What this node says about itself, in headers, in every capability request (issue #9255): its peer id, the HTTP address it resolves
    * for itself and the port its HTTP listener is bound to. The port is the one fact about its endpoint only this node knows
    * for certain; the peer pairs it with the Raft host it already dials this node on, so the two halves of the address come
    * from where each is known.
    */
   // @VisibleForTesting
-  JSONObject capabilityRequestDocument() {
-    final JSONObject document = new JSONObject().put(PostCapabilitiesHandler.CALLER_PEER_ID, localPeerId.toString());
+  Map<String, String> capabilityRequestHeaders() {
+    final Map<String, String> headers = new LinkedHashMap<>(4);
+    headers.put(PostCapabilitiesHandler.CALLER_PEER_ID_HEADER, localPeerId.toString());
     final String self = getLocalHttpAddress();
     if (self != null)
-      document.put(PostCapabilitiesHandler.CALLER_HTTP_ADDRESS, self);
+      headers.put(PostCapabilitiesHandler.CALLER_HTTP_ADDRESS_HEADER, self);
     final HttpServer httpServer = arcadeServer.getHttpServer();
     final int httpPort = httpServer != null ? httpServer.getPort() : -1;
     if (httpPort > 0)
-      document.put(PostCapabilitiesHandler.CALLER_HTTP_PORT, httpPort);
-    return document;
+      headers.put(PostCapabilitiesHandler.CALLER_HTTP_PORT_HEADER, String.valueOf(httpPort));
+    return headers;
   }
 
   /**
@@ -7266,6 +7267,12 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * own server list declares (the operator said it here, and nothing heard from another node outranks that - the same rule
    * {@link #recordAdmittedPeerHttpAddress} applies), the address is not a {@code host:port}, or it is already the one
    * recorded.
+   * <p>
+   * And dropped when its host is not the peer's Raft host, the host the cluster already talks to it on (a server list
+   * declares an HTTP port on that same host). A candidate is probed with the cluster token, and the probe is what proves
+   * the address, so without this rule a member could have every node send the token to any {@code host:port} of its
+   * choosing. What is learnt is therefore the PORT; an HTTP listener declared on another host through {@code connect
+   * cluster} still reaches the node it was typed on and the leader, through the admission's seed request (#8689).
    */
   void offerPeerHttpAddress(final String peerId, final String address) {
     if (peerId == null || address == null || peerId.equals(localPeerId.toString()))
@@ -7274,9 +7281,19 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     final String current = httpAddresses.get(id);
     if (address.equals(current) || isServerListAddressInForce(id, current))
       return;
-    if (!PeerCapabilityQuery.isPeerAddress(address) || configuredRaftAddress(id) == null)
+    if (!PeerCapabilityQuery.isPeerAddress(address))
+      return;
+    final String raftAddress = configuredRaftAddress(id);
+    if (raftAddress == null || !isSameHost(extractHost(address), extractHost(raftAddress)))
       return;
     peerHttpAddressCandidates.offer(peerId, address);
+  }
+
+  /** Host equality as {@link #isSameHttpEndpoint} sees it: case-insensitive, and every loopback name is the same host. */
+  static boolean isSameHost(final String host, final String other) {
+    if (host == null || other == null)
+      return false;
+    return host.equalsIgnoreCase(other) || (LoopbackHosts.isLoopback(host) && LoopbackHosts.isLoopback(other));
   }
 
   /**
@@ -7307,9 +7324,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * kept while it is the one in force: the operator said it here.
    */
   private void recordConfirmedPeerHttpAddress(final RaftPeerId peerId, final String httpAddress) {
-    peerHttpAddressCandidates.confirmed(peerId.toString());
+    // An answer over HTTPS confirms nothing about the HTTP address, so the candidates offered for it are kept
     if (httpAddress == null)
       return;
+    peerHttpAddressCandidates.confirmed(peerId.toString());
     while (true) {
       final String current = httpAddresses.get(peerId);
       if (httpAddress.equals(current) || isServerListAddressInForce(peerId, current))
