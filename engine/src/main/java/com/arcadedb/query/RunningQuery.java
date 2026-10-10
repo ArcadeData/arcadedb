@@ -67,10 +67,11 @@ public final class RunningQuery implements AutoCloseable {
   }
 
   private static final ThreadLocal<RunningQuery> CURRENT    = new ThreadLocal<>();
-  // The keyword, the closing quote of a JSON key and a separator, then the value: quoted, or up to the next delimiter. The
+  // The keyword, the closing quote of a JSON key, a separator and an authentication scheme (Authorization: Bearer x),
+  // then the value: quoted, or up to the next delimiter. The
   // separator's quantifiers are possessive, so a long run of blanks after a keyword is scanned once, never backtracked
   private static final Pattern                   CREDENTIAL =
-      Pattern.compile("(?i)\\b(identified\\s+by|password|passwd|pwd|token|secret|api[_-]?key|authorization|bearer)\\b([\"']?+\\s*+(?:[=:]\\s*+)?)('[^']*'|\"[^\"]*\"|[^\\s,;)}\\]]+)");
+      Pattern.compile("(?i)\\b(identified\\s+by|password|passwd|pwd|token|secret|api[_-]?key|authorization|bearer)\\b([\"']?+\\s*+(?:[=:]\\s*+)?(?:(?:bearer|basic)\\s++)?)('[^']*'|\"[^\"]*\"|[^\\s,;)}\\]]+)");
 
   private final RunningQueryRegistry registry;
   private final long                 id;

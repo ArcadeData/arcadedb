@@ -249,6 +249,10 @@ class Issue9680RunningQueryTerminationTest {
       q.setStatement("sql", "INSERT INTO Cfg SET secret = 'x1', api_key = 'x2', apiKey: 'x3', passwordHash = 'kept'");
       assertThat(q.getText()).isEqualTo("INSERT INTO Cfg SET secret = ***, api_key = ***, apiKey: ***, passwordHash = 'kept'");
 
+      // The scheme word is not the credential: the token after it is
+      q.setStatement("sql", "SELECT http('GET', 'u', {headers: {authorization: Bearer abc123}}), 'Authorization Basic dXNlcg=='");
+      assertThat(q.getText()).doesNotContain("abc123").doesNotContain("dXNlcg").contains("authorization: Bearer ***");
+
       q.setStatement("sql", "UPDATE Cfg SET pwd = 'x4', passwd = 'x5'");
       assertThat(q.getText()).isEqualTo("UPDATE Cfg SET pwd = ***, passwd = ***");
 
