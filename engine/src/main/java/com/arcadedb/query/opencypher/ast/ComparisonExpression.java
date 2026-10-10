@@ -18,7 +18,6 @@
  */
 package com.arcadedb.query.opencypher.ast;
 
-import com.arcadedb.schema.Type;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
@@ -32,6 +31,7 @@ import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinaryComparator;
 
 import java.math.BigDecimal;
@@ -119,6 +119,14 @@ public class ComparisonExpression implements BooleanExpression {
       rightValue = right.evaluate(result, context);
     }
 
+    return evaluateWithValues(leftValue, rightValue, result);
+  }
+
+  /**
+   * {@link #evaluateWithValues(Object, Object)} for a caller that evaluated this comparison's own operands against
+   * {@code result}: also applies the declared-STRING coercion, which needs the row to find the record an operand reads.
+   */
+  public Object evaluateWithValues(final Object leftValue, final Object rightValue, final Result result) {
     final Object plain = compareValuesTernary(leftValue, rightValue);
 
     // A property declared STRING holds the text of what was written into it: = and <> also compare that text with the text

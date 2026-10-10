@@ -65,7 +65,6 @@ import com.arcadedb.schema.Type;
 
 import java.time.temporal.Temporal;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.Iterator;
@@ -1197,14 +1196,10 @@ public class MergeStep extends AbstractExecutionStep {
       // property holds the text a write of the value stores, which is what a MATCH compares it with
       // (InlineProperties.matchesProperty), so that text is the key (issue #9695)
       final Property property = type.getPolymorphicPropertyIfExists(propertyNames[i]);
-      if (property != null && property.getType() == Type.STRING && value != null && !(value instanceof String)) {
-        final String text = InlineProperties.declaredText(property, context.getDatabase(), value);
-        if (text == null)
-          return Collections.emptyIterator(); // no text form: nothing stored can equal it
-        propertyValues[i] = text;
-        continue;
-      }
-      propertyValues[i] = TemporalUtil.toIndexKey(value);
+      final String text = property != null && property.getType() == Type.STRING ?
+          InlineProperties.declaredText(property, context.getDatabase(), value) :
+          null;
+      propertyValues[i] = text != null ? text : TemporalUtil.toIndexKey(value);
     }
 
     final Iterator<Identifiable> cursor = context.getDatabase().lookupByKey(label, propertyNames, propertyValues);
