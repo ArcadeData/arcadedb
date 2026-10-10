@@ -261,4 +261,79 @@ class SupportRedactorTest {
   void aShortBearerTokenIsMaskedToo() {
     assertThat(redact("sent bearer abc123 to the portal")).doesNotContain("abc123");
   }
+  /**
+   * Issue #9625: {@code arcadedb.server.defaultDatabases} carries the credentials in its VALUE, not in its name, so the
+   * keyword rules let {@code -Darcadedb.server.defaultDatabases=Universe[albert:einstein]} through verbatim into
+   * {@code jvm.inputArguments} of diagnostics.json. The database and user names stay, the password goes.
+   */
+  @Test
+  void defaultDatabasesJvmArgumentKeepsTheNamesAndHidesThePasswords() {
+    final SupportRedactor.Session session = new SupportRedactor.Session();
+    final List<String> result = session.redactArguments(List.of(//
+        "-Darcadedb.server.defaultDatabases=Universe[albert:einstein]",//
+        "-Darcadedb.server.defaultDatabases=Universe[albert:einstein:admin,elon:musk];Beer[ada:lovelace]{import:/tmp/x.tgz}",//
+        "-Darcadedb.server.defaultDatabases=Imported[root]",//
+        "-Xmx4g"));
+    assertThat(result).containsExactly(//
+        "-Darcadedb.server.defaultDatabases=Universe[albert:*****]",//
+        "-Darcadedb.server.defaultDatabases=Universe[albert:*****:admin,elon:*****];Beer[ada:*****]{import:/tmp/x.tgz}",//
+        "-Darcadedb.server.defaultDatabases=Imported[root]",//
+        "-Xmx4g");
+    assertThat(String.join(" ", result)).doesNotContain("einstein").doesNotContain("musk").doesNotContain("lovelace");
+    // the password-free form has nothing to mask and is not counted
+    assertThat(session.getCount()).isEqualTo(2);
+  }
+
+  /** Issue #9625: any -D argument naming an ArcadeDB setting is published under that setting's own rule, case-insensitively. */
+  @Test
+  void settingArgumentsArePublishedUnderTheSettingsOwnRule() {
+    final SupportRedactor.Session session = new SupportRedactor.Session();
+    final List<String> result = session.redactArguments(List.of(//
+        "-DARCADEDB.SERVER.DEFAULTDATABASES=Universe[albert:einstein]",//
+        "-Darcadedb.server.rootPassword=Sup3rS3cret!",//
+        "-Darcadedb.server.httpIncomingPort=2480",//
+        "-Darcadedb.server.defaultDatabases=Universe[albert:einstein",//
+        "-Dunrelated.property=value"));
+    assertThat(result).containsExactly(//
+        "-DARCADEDB.SERVER.DEFAULTDATABASES=Universe[albert:*****]",//
+        "-Darcadedb.server.rootPassword=***",//
+        "-Darcadedb.server.httpIncomingPort=2480",//
+        // an unclosed credential block fails closed on the remainder, as publishableValue does
+        "-Darcadedb.server.defaultDatabases=Universe[*****",//
+        "-Dunrelated.property=value");
+    assertThat(session.getCount()).isEqualTo(3);
+  }
+
+  /**
+   * Issue #9625: a log line (or a thread dump, a message) that echoes the command line or the setting must not carry the
+   * password either: the same rule applies to free text, in the -D, key=value, environment variable and JSON spellings.
+   */
+  @Test
+  void defaultDatabasesInFreeTextKeepsTheNamesAndHidesThePasswords() {
+    final SupportRedactor.Session session = new SupportRedactor.Session();
+    assertThat(session.redactLine("Starting with arcadedb.server.defaultDatabases=Universe[albert:einstein]"))
+        .isEqualTo("Starting with arcadedb.server.defaultDatabases=Universe[albert:*****]");
+    assertThat(session.redactLine("java -Darcadedb.server.defaultDatabases=A[u:p1];B[v:p2,w:p3] -Xmx4g -jar x.jar"))
+        .isEqualTo("java -Darcadedb.server.defaultDatabases=A[u:*****];B[v:*****,w:*****] -Xmx4g -jar x.jar");
+    assertThat(session.redactLine("ARCADEDB_SERVER_DEFAULTDATABASES=Universe[albert:einstein:admin]"))
+        .isEqualTo("ARCADEDB_SERVER_DEFAULTDATABASES=Universe[albert:*****:admin]");
+    assertThat(session.redactLine("{\"arcadedb.server.defaultDatabases\": \"Universe[albert:einstein]\", \"x\": 1}"))
+        .isEqualTo("{\"arcadedb.server.defaultDatabases\": \"Universe[albert:*****]\", \"x\": 1}");
+    assertThat(session.redactLine("defaultDatabases='Universe[albert:einstein]' set"))
+        .isEqualTo("defaultDatabases='Universe[albert:*****]' set");
+    // a password with a space in it is masked whole, not cut at the space
+    assertThat(session.redactLine("defaultDatabases=A[u:ein stein,v:p q];B[w:x y] then more"))
+        .isEqualTo("defaultDatabases=A[u:*****,v:*****];B[w:*****] then more");
+    // whitespace around the ';' between two entries does not hide the second one: the server splits on ';' alone
+    assertThat(session.redactLine("defaultDatabases=A[u:p1] ;B[v:p2] ; C[w:p3]; D[x:p4] done"))
+        .isEqualTo("defaultDatabases=A[u:*****] ;B[v:*****] ; C[w:*****]; D[x:*****] done");
+    assertThat(session.getCount()).isEqualTo(7);
+
+    // nothing to hide: unchanged and not counted, including a value already redacted upstream
+    final SupportRedactor.Session clean = new SupportRedactor.Session();
+    assertThat(clean.redactLine("arcadedb.server.defaultDatabases=Imported[root]")).isEqualTo("arcadedb.server.defaultDatabases=Imported[root]");
+    assertThat(clean.redactLine("arcadedb.server.defaultDatabases=Universe[albert:*****]"))
+        .isEqualTo("arcadedb.server.defaultDatabases=Universe[albert:*****]");
+    assertThat(clean.getCount()).isZero();
+  }
 }

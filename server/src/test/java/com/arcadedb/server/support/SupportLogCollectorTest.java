@@ -132,6 +132,24 @@ class SupportLogCollectorTest {
     assertThat(result.getFiles().get(0).lines()).isEqualTo(result.getLines());
   }
 
+  /** Issue #9625: a log line echoing the default databases setting reaches the bundle without the passwords. */
+  @Test
+  void defaultDatabasesPasswordsAreRedactedInCollectedLogs() throws Exception {
+    final Path log = write("arcadedb.log", """
+
+        2026-09-30 12:05:00.000 INFO  [Server] Starting with -Darcadedb.server.defaultDatabases=Universe[albert:einstein:admin];Beer[ada:lovelace]
+        2026-09-30 12:06:00.000 INFO  [Server] Started
+        """, Instant.parse("2026-09-30T10:11:00Z"));
+    final Path zip = dir.resolve("out.zip");
+    final SupportLogWindow window = new SupportLogWindow(Instant.parse("2026-09-30T09:00:00Z"), Instant.parse("2026-09-30T11:00:00Z"));
+    final SupportLogCollector.Result result = new SupportLogCollector(ROME).collect(List.of(log), window, zip, 10_000_000);
+
+    final String content = String.join("\n", read(zip, "arcadedb.log"));
+    assertThat(content).doesNotContain("einstein").doesNotContain("lovelace")
+        .contains("defaultDatabases=Universe[albert:*****:admin];Beer[ada:*****]");
+    assertThat(result.getRedactions()).isEqualTo(1);
+  }
+
   @Test
   void rotatedAndGzippedFilesAreCollectedInOrder() throws Exception {
     write("arcadedb.log.1", "\n2026-09-30 09:00:00.000 INFO  [A] in rotated 1\n2026-09-30 09:30:00.000 INFO  [A] second in rotated 1\n",
