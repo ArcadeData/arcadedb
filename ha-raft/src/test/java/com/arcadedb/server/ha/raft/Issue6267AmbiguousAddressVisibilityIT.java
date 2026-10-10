@@ -71,6 +71,9 @@ class Issue6267AmbiguousAddressVisibilityIT extends BaseRaftHATest {
     final Map<RaftPeerId, String> httpAddresses = raft.getHttpAddresses();
     final Map<RaftPeerId, String> declared = new HashMap<>(httpAddresses);
     try {
+      // Paused for the window: the capability round would otherwise learn the real address back from the peers
+      // (issue #9255) and undo the misconfiguration this test injects
+      raft.stopCapabilityMonitor();
       httpAddresses.clear(); // nothing declared: every peer now derives to this node's own endpoint
 
       final JSONArray peers = getCluster(leader, "").getJSONArray("peers");
@@ -86,6 +89,7 @@ class Issue6267AmbiguousAddressVisibilityIT extends BaseRaftHATest {
       }
     } finally {
       httpAddresses.putAll(declared);
+      raft.startCapabilityMonitor();
     }
   }
 
@@ -124,6 +128,9 @@ class Issue6267AmbiguousAddressVisibilityIT extends BaseRaftHATest {
     final Map<RaftPeerId, String> httpAddresses = raft.getHttpAddresses();
     final Map<RaftPeerId, String> declared = new HashMap<>(httpAddresses);
     try {
+      // Paused for the window: the capability round would otherwise learn the real address back from the peers
+      // (issue #9255) and undo the misconfiguration this test injects
+      raft.stopCapabilityMonitor();
       httpAddresses.clear();
 
       final JSONObject presence = getCluster(leader, "?presence=true").getJSONObject("databasePresence");
@@ -147,6 +154,7 @@ class Issue6267AmbiguousAddressVisibilityIT extends BaseRaftHATest {
       }
     } finally {
       httpAddresses.putAll(declared);
+      raft.startCapabilityMonitor();
     }
   }
 

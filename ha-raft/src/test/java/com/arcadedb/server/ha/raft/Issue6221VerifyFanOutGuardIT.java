@@ -88,6 +88,9 @@ class Issue6221VerifyFanOutGuardIT extends BaseRaftHATest {
     final Map<RaftPeerId, String> httpAddresses = raft.getHttpAddresses();
     final Map<RaftPeerId, String> declared = new HashMap<>(httpAddresses);
     try {
+      // Paused for the window: the capability round would otherwise learn the real address back from the peers
+      // (issue #9255) and undo the misconfiguration this test injects
+      raft.stopCapabilityMonitor();
       httpAddresses.clear(); // nothing declared: every peer now derives to this node's own endpoint
 
       final JSONObject result = verifyOnLeader(leader).getJSONObject("result");
@@ -113,6 +116,7 @@ class Issue6221VerifyFanOutGuardIT extends BaseRaftHATest {
           .isEqualTo("VERIFICATION_INCOMPLETE");
     } finally {
       httpAddresses.putAll(declared);
+      raft.startCapabilityMonitor();
     }
   }
 
@@ -175,6 +179,9 @@ class Issue6221VerifyFanOutGuardIT extends BaseRaftHATest {
     final Map<RaftPeerId, String> httpAddresses = raft.getHttpAddresses();
     final Map<RaftPeerId, String> declared = new HashMap<>(httpAddresses);
     try {
+      // Paused for the window: the capability round would otherwise learn the real address back from the peers
+      // (issue #9255) and undo the misconfiguration this test injects
+      raft.stopCapabilityMonitor();
       // A port nothing listens on: the address identifies one peer and is not this node's, so it is dialled.
       httpAddresses.put(RaftPeerId.valueOf(peerIdForIndex(unreachable)), "127.0.0.1:" + closedPort());
 
@@ -198,6 +205,7 @@ class Issue6221VerifyFanOutGuardIT extends BaseRaftHATest {
           .isEqualTo("VERIFICATION_INCOMPLETE");
     } finally {
       httpAddresses.putAll(declared);
+      raft.startCapabilityMonitor();
     }
   }
 

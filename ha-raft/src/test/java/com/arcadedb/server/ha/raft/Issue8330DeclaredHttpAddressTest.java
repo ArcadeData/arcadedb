@@ -113,11 +113,13 @@ class Issue8330DeclaredHttpAddressTest {
   }
 
   /**
-   * Without a declared port nothing changes: the address is still derived after the commit, as it always was, so a
-   * homogeneous cluster (a Kubernetes StatefulSet) keeps the behaviour it relies on.
+   * Without a declared port nothing is written, before the commit or after it (issue #9255). The node serving the admission
+   * used to write a {@code raftPort + offset} guess here while every other node derived the peer's Raft host plus its own
+   * HTTP port, so two nodes dialled one member on two addresses (issue #9230). Every node now derives the same address until
+   * the member is heard from, and then records the one it answers on.
    */
   @Test
-  void withoutADeclaredPortTheAddressIsStillDerivedAfterTheCommit() throws Exception {
+  void withoutADeclaredPortNoAddressIsGuessedAtTheCommit() throws Exception {
     final Map<RaftPeerId, String> httpAddresses = new ConcurrentHashMap<>();
     final AdminApi admin = mock(AdminApi.class);
     final AtomicReference<String> seenAtCommit = new AtomicReference<>("unset");
@@ -137,8 +139,7 @@ class Issue8330DeclaredHttpAddressTest {
     new RaftClusterManager(server).addPeer(target.peer(), target.name(), target.httpAddress());
 
     assertThat(seenAtCommit.get()).isNull();
-    // Offset of peer A: 2480 - 28654 = -26174, applied to 22898.
-    assertThat(httpAddresses.get(joining)).isEqualTo("localhost:" + (22898 + 2480 - 28654));
+    assertThat(httpAddresses).as("no guess left behind once the change returned").doesNotContainKey(joining);
   }
 
   /**

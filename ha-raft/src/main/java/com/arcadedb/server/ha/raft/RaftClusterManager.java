@@ -155,8 +155,14 @@ class RaftClusterManager {
    * If the change fails and the peer is not in the current configuration, the declared entry is withdrawn - the
    * previous one put back, or none left - unless something else has replaced it meanwhile. A change that timed out
    * can still commit later; if that happens after the check, the peer is a member resolved by the derived address,
-   * exactly as without a declared one. Without a declared address the derived one is written after the commit, as
-   * before.
+   * exactly as without a declared one.
+   * <p>
+   * Without a declared address nothing is written (issue #9255). This method used to write a {@code raftPort + offset}
+   * guess after the commit, on whichever node served the admission, while every other node derived the peer's Raft host
+   * plus its own HTTP port: two nodes dialled one member on two addresses, and which one was right depended on whether
+   * the cluster's ports were homogeneous or in step (issue #9230). Every node now resolves the new member the same way -
+   * the derived address until the member is heard from, then the address it answers on, learnt from its own capability
+   * requests or relayed by a member that confirmed one (see {@link PeerHttpAddressCandidates}).
    *
    * @param declaredHttpAddress the {@code host:port} declared for the peer's HTTP listener, or {@code null} to derive
    *                            one
@@ -192,17 +198,6 @@ class RaftClusterManager {
           httpAddresses.remove(newPeer.getId(), declaredHttpAddress);
       }
       throw e;
-    }
-
-    final int colonIdx = address.lastIndexOf(':');
-    if (declaredHttpAddress == null && colonIdx > 0) {
-      final String host = address.substring(0, colonIdx);
-      try {
-        final int raftPort = Integer.parseInt(address.substring(colonIdx + 1));
-        final int httpPortOffset = getHttpPortOffset();
-        raftHAServer.getHttpAddresses().put(newPeer.getId(), host + ":" + (raftPort + httpPortOffset));
-      } catch (final NumberFormatException ignored) {
-      }
     }
 
     if (name != null && !name.isEmpty())
@@ -1038,22 +1033,5 @@ class RaftClusterManager {
       return "no error detail";
     final String failureMessage = failure.getMessage();
     return failureMessage != null && !failureMessage.isBlank() ? failureMessage : failure.toString();
-  }
-
-  private int getHttpPortOffset() {
-    final Map<RaftPeerId, String> httpAddresses = raftHAServer.getHttpAddresses();
-    for (final RaftPeer peer : raftHAServer.getRaftGroup().getPeers()) {
-      final String httpAddr = httpAddresses.get(peer.getId());
-      if (httpAddr != null) {
-        try {
-          final int httpPort = Integer.parseInt(httpAddr.substring(httpAddr.lastIndexOf(':') + 1));
-          final int raftPort = Integer.parseInt(
-              peer.getAddress().substring(peer.getAddress().lastIndexOf(':') + 1));
-          return httpPort - raftPort;
-        } catch (final NumberFormatException ignored) {
-        }
-      }
-    }
-    return 46;
   }
 }
