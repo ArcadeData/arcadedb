@@ -76,6 +76,9 @@ class Issue9647TemporalImplementationComparisonTest extends TestHelper {
         assertThat(cypherCount("MATCH (n:" + type + ") WHERE n.d <= date('2024-02-29') RETURN count(n) AS c")).isEqualTo(2L);
         assertThat(cypherCount("MATCH (n:" + type + ") WHERE n.d <> date('2024-02-29') RETURN count(n) AS c")).isEqualTo(2L);
         assertThat(cypherCount("MATCH (n:" + type + ") WHERE n.d.year = 2024 RETURN count(n) AS c")).isEqualTo(1L);
+        // chained access on a non-variable base reads the property the way the variable-bound access does
+        assertThat(cypherCount("MATCH (n:" + type + ") WITH {node: n} AS m WHERE m.node.d = date('2024-02-29') RETURN count(*) AS c"))
+            .isEqualTo(1L);
 
         try (final ResultSet rs = database.query("opencypher", "MATCH (n:" + type + " {n: 2}) RETURN toString(n.d) AS s")) {
           assertThat((String) rs.next().getProperty("s")).isEqualTo("2024-02-29");
