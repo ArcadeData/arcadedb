@@ -284,6 +284,7 @@ public final class FieldFilter {
    * @return how many indices were written
    */
   static int select(final List<Condition> conditions, final Object[] columns, final int from, final int to, final int[] selected) {
+    assert !conditions.isEmpty() : "a FieldFilter is never empty";
     int count = 0;
     final Condition first = conditions.getFirst();
     if (first.integral) {
@@ -321,6 +322,7 @@ public final class FieldFilter {
    * the rows anyway and needs no index list.
    */
   static boolean matchesAt(final List<Condition> conditions, final Object[] columns, final int row) {
+    assert !conditions.isEmpty() : "a FieldFilter is never empty";
     for (int c = 0; c < conditions.size(); c++) {
       final Condition condition = conditions.get(c);
       if (condition.integral ? !condition.matches(((long[]) columns[c])[row]) : !condition.matches(((double[]) columns[c])[row]))

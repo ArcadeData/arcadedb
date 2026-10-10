@@ -1903,7 +1903,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     final long[] reusableTsBuf = new long[MAX_BLOCK_SIZE];
     final double[] reusableValBuf = new double[MAX_BLOCK_SIZE];
     // The rows of a block that pass a row-level filter, allocated by the first block that needs one: a tag filter alone usually
-    // meets only homogeneous blocks, which need none
+    // meets only homogeneous blocks, which need none. Local to the call, like every buffer here: shards run this method
+    // concurrently on the same store type, so none of them may become a field
     int[] selected = null;
     final List<FieldFilter.Condition> fieldConditions = fieldFilter != null ? fieldFilter.getConditions() : null;
 
