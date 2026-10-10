@@ -120,9 +120,8 @@ public class PromQLParser {
    * instead of letting {@code bool} parse as a metric name and failing on the token after it (issue #9644).
    */
   private BinaryOp rejectBool(final BinaryOp op) {
-    lexer.skipWhitespace();
-    final int boolPos = lexer.pos;
-    if (lexer.matchKeyword("bool"))
+    final int boolPos = lexer.matchKeywordAt("bool");
+    if (boolPos >= 0)
       throw new IllegalArgumentException(
           "bool modifier can only be used on comparison operators, not on '" + op.symbol() + "' at position " + boolPos);
     return op;
@@ -486,6 +485,13 @@ public class PromQLParser {
         return false;
       pos = end;
       return true;
+    }
+
+    /** Like {@link #matchKeyword} but returns the position the keyword started at, or {@code -1} when it does not match. */
+    int matchKeywordAt(final String keyword) {
+      skipWhitespace();
+      final int start = pos;
+      return matchKeyword(keyword) ? start : -1;
     }
 
     void expect(final String s) {

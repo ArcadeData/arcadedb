@@ -113,6 +113,22 @@ class Issue9644PromQLBoolModifierTest extends TestHelper {
   }
 
   @Test
+  void boolFollowedByAParenthesisIsTheModifier() {
+    // as in Prometheus, `bool` is the modifier and the parenthesised expression after it is the right operand
+    final BinaryExpr paren = (BinaryExpr) new PromQLParser("m9644 > bool(1 + 1)").parse();
+    assertThat(paren.returnBool()).isTrue();
+    assertThat(paren.right()).isInstanceOf(BinaryExpr.class);
+    assertThat(only("m9644 > bool(1 + 1)").value()).isEqualTo(1.0);
+  }
+
+  @Test
+  void theAstRefusesTheModifierOnANonComparisonOperator() {
+    assertThatThrownBy(() -> new BinaryExpr(new VectorSelector("m9644", List.of(), 0), BinaryOp.ADD,
+        new VectorSelector("m9644", List.of(), 0), true)).isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("bool modifier can only be used on comparison operators");
+  }
+
+  @Test
   void chainedAndParenthesisedBoolComparisonsParse() {
     // left-associative: (m9644 > bool 1) > bool 0
     final BinaryExpr chained = (BinaryExpr) new PromQLParser("m9644 > bool 1 > bool 0").parse();

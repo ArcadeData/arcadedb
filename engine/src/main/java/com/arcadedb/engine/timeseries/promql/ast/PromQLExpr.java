@@ -51,6 +51,11 @@ public sealed interface PromQLExpr {
    * {@code false} for a non-comparison operator, which the parser refuses the modifier on.
    */
   record BinaryExpr(PromQLExpr left, BinaryOp op, PromQLExpr right, boolean returnBool) implements PromQLExpr {
+    public BinaryExpr {
+      if (returnBool && !op.isComparison())
+        throw new IllegalArgumentException("bool modifier can only be used on comparison operators, not on '" + op.symbol() + "'");
+    }
+
     public BinaryExpr(final PromQLExpr left, final BinaryOp op, final PromQLExpr right) {
       this(left, op, right, false);
     }
