@@ -2679,8 +2679,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // A peer that joins must be asked again before a transaction states its prepared-at index (issue #8686): the cached answer
     // describes the membership that has just changed.
     final RaftHAServer membershipHolder = raftHAServer;
-    if (membershipHolder != null)
+    if (membershipHolder != null) {
       membershipHolder.invalidateTxPreparedAtCapability();
+      // A consistent read waiting here asks again whether this node is still a member (issue #9606)
+      membershipHolder.notifyMembershipChanged();
+    }
 
     try {
       final List<RaftPeerId> peers = new ArrayList<>(newRaftConfiguration.getPeersCount());
