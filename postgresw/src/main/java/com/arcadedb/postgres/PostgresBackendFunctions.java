@@ -23,6 +23,7 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.query.RunningQuery;
+import com.arcadedb.query.RunningQueryRegistry;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.util.Set;
@@ -40,8 +41,9 @@ import java.util.Set;
  * Both signalling functions answer {@code true} once the signal is sent, and {@code false} for a process id that names no
  * connection the caller may signal: as everywhere a running statement is listed or stopped, the server administrator may
  * signal every connection and any other user only their own, and somebody else's connection is not told apart from one
- * that does not exist. The rule is the server's registry's own ({@code RunningQueryRegistry.isVisible}), the one
- * {@code list queries} and {@code SHOW TRANSACTIONS} apply, so the surfaces cannot disagree.
+ * that does not exist. Only connections of the caller's own server can be signalled, when a JVM runs several. The rule
+ * is the server's registry's own ({@code RunningQueryRegistry.isVisible}), the one {@code list queries} and
+ * {@code SHOW TRANSACTIONS} apply, so the surfaces cannot disagree.
  * <p>
  * Registered in the JVM-wide SQL function factory once the Postgres plugin starts, so they are also callable from SQL sent
  * over any other protocol: there {@code pg_backend_pid()} answers {@code null} (the caller is not a Postgres connection)
@@ -117,7 +119,7 @@ public final class PostgresBackendFunctions {
     public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
         final CommandContext context) {
       final String caller = caller(context);
-      final PostgresNetworkExecutor backend = signalled(params, caller);
+      final PostgresNetworkExecutor backend = signalled(params, caller, context);
       if (backend == null)
         return false;
       backend.cancelRunningStatement(caller);
@@ -152,7 +154,7 @@ public final class PostgresBackendFunctions {
     public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
         final CommandContext context) {
       final String caller = caller(context);
-      final PostgresNetworkExecutor backend = signalled(params, caller);
+      final PostgresNetworkExecutor backend = signalled(params, caller, context);
       if (backend == null)
         return false;
       // The statement first, so its work stops at its next check rather than running on against a closed socket
@@ -185,7 +187,7 @@ public final class PostgresBackendFunctions {
   }
 
   /** The connection {@code params} names, if the caller may signal it; otherwise {@code null}. */
-  private static PostgresNetworkExecutor signalled(final Object[] params, final String caller) {
+  private static PostgresNetworkExecutor signalled(final Object[] params, final String caller, final CommandContext context) {
     if (params == null || params.length != 1 || params[0] == null)
       return null;
     if (!(params[0] instanceof Number pid))
@@ -196,6 +198,12 @@ public final class PostgresBackendFunctions {
     final PostgresNetworkExecutor backend = PostgresNetworkExecutor.getBackend((int) value);
     if (backend == null || caller == null)
       return null;
-    return backend.getServer().getRunningQueries().isVisible(caller, backend.getUserName()) ? backend : null;
+    // Only a connection of the caller's own server: process ids are unique in the JVM, but a JVM may run several servers,
+    // each with its own users, and the caller's server is the one whose registry its own statement is in
+    final RunningQuery callerStatement = context != null ? context.getRunningQuery() : RunningQuery.current();
+    final RunningQueryRegistry registry = backend.getServer().getRunningQueries();
+    if (callerStatement == null || callerStatement.getRegistry() != registry)
+      return null;
+    return registry.isVisible(caller, backend.getUserName()) ? backend : null;
   }
 }
