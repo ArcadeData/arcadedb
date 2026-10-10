@@ -1589,6 +1589,21 @@ public class TransactionContext implements Transaction {
    * already this transaction's (see {@link #trackNewPageReservation}).
    */
   public void trackInsertSlotReservation(final LocalBucket bucket, final int pageNumber, final int slot) {
+    // A negative slot would be read back as NEW_PAGE_RESERVATION and release the wrong thing (#9694)
+    assert slot >= 0 : "invalid insert slot " + slot + " on page " + pageNumber;
+    trackReservation(bucket, pageNumber, slot);
+  }
+
+  /**
+   * Registers a page {@link LocalBucket} created for this transaction, so the bucket keeps every other transaction's
+   * allocator off it until this one ends (issue #9694). Held in the same arrays as the insert slots, under
+   * {@link #NEW_PAGE_RESERVATION} in place of a slot.
+   */
+  public void trackNewPageReservation(final LocalBucket bucket, final int pageNumber) {
+    trackReservation(bucket, pageNumber, NEW_PAGE_RESERVATION);
+  }
+
+  private void trackReservation(final LocalBucket bucket, final int pageNumber, final int slot) {
     if (insertReservationBuckets == null) {
       insertReservationBuckets = new LocalBucket[16];
       insertReservationPages = new int[16];
@@ -1604,15 +1619,6 @@ public class TransactionContext implements Transaction {
     insertReservationPages[insertReservationCount] = pageNumber;
     insertReservationSlots[insertReservationCount] = slot;
     ++insertReservationCount;
-  }
-
-  /**
-   * Registers a page {@link LocalBucket} created for this transaction, so the bucket keeps every other transaction's
-   * allocator off it until this one ends (issue #9694). Held in the same arrays as the insert slots, under
-   * {@link #NEW_PAGE_RESERVATION} in place of a slot.
-   */
-  public void trackNewPageReservation(final LocalBucket bucket, final int pageNumber) {
-    trackInsertSlotReservation(bucket, pageNumber, NEW_PAGE_RESERVATION);
   }
 
   /**

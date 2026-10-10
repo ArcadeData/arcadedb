@@ -195,6 +195,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   private static final   int                       CHAIN_READ_CHANGED               = 2;
   private static final   long                      MINIMUM_SPACE_LEFT_IN_PAGE       = 50L;
   private static final   int                       MAX_PAGES_GATHER_STATS           = 100;
+  /** Pages an insert tries before opening a new one when running transactions have taken the room it found (#9694). */
+  private static final   int                       MAX_INSERT_PAGE_ATTEMPTS         = 3;
   private static final   long                      MAX_TIMEOUT_GATHER_STATS         = 5000L;
   private static final   int                       GATHER_STATS_MIN_SPACE_PERC      = 10;
   /**
@@ -2697,20 +2699,38 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       final int spaceNeeded = Binary.getNumberSpace(isPlaceHolder ? (-1L * bufferSize) : bufferSize) + bufferSize;
 
       if (txPageCounter > 0) {
-        final PageAnalysis pageAnalysis = findAvailableSpace(-1, spaceNeeded, txPageCounter, false, -1);
-        foundPage = pageAnalysis.page;
-        newRecordPositionInPage = pageAnalysis.newRecordPositionInPage;
-        availablePositionIndex = pageAnalysis.availablePositionIndex;
-        createNewPage = pageAnalysis.createNewPage;
+        int avoidPageNumber = -1;
+        for (int attempt = 0; ; ++attempt) {
+          final PageAnalysis pageAnalysis = findAvailableSpace(-1, spaceNeeded, txPageCounter, false, avoidPageNumber);
+          foundPage = pageAnalysis.page;
+          newRecordPositionInPage = pageAnalysis.newRecordPositionInPage;
+          availablePositionIndex = pageAnalysis.availablePositionIndex;
+          createNewPage = pageAnalysis.createNewPage;
+          if (createNewPage)
+            break;
 
-        if (!createNewPage) {
           final int reservedSlot = claimInsertSlot(foundPage, pageAnalysis, availablePositionIndex,
                   newRecordPositionInPage, spaceNeeded);
-          if (reservedSlot < 0)
-            // ONCE THE IN-FLIGHT RESERVATIONS ARE COUNTED THE PAGE CANNOT HOST THE RECORD ANYMORE: USE A NEW PAGE
-            createNewPage = true;
-          else
+          if (reservedSlot >= 0) {
             availablePositionIndex = reservedSlot;
+            break;
+          }
+
+          // ONCE THE IN-FLIGHT RESERVATIONS ARE COUNTED THE PAGE CANNOT HOST THE RECORD ANYMORE. #9694: going straight to
+          // a new page here made a transaction open one page PER RECORD while the free-space map kept offering it the
+          // same page, whose room the committed image shows but running transactions have already been promised (4
+          // async workers on one bucket spread 9,742 small records over ~100 pages instead of 5). The page is dropped
+          // from the map - the commits that fill it re-list whatever room is really left - and the allocator is asked
+          // once more with that page excluded, which also reaches the caller's own tail page.
+          final int rejectedPage = foundPage.getPageId().getPageNumber();
+          synchronized (freeSpaceInPages) {
+            freeSpaceInPages.remove(rejectedPage, -1);
+          }
+          if (attempt == MAX_INSERT_PAGE_ATTEMPTS - 1) {
+            createNewPage = true;
+            break;
+          }
+          avoidPageNumber = rejectedPage;
         }
       } else
         createNewPage = true;

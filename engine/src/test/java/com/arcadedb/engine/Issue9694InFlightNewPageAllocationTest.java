@@ -27,6 +27,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -260,6 +261,34 @@ class Issue9694InFlightNewPageAllocationTest extends TestHelper {
       for (final RID rid : secondRids)
         assertThat(database.lookupByRID(rid, true).asDocument().getString("owner")).isEqualTo("second");
     });
+  }
+
+  /**
+   * Found while measuring #9694: when the page the allocator offered had no room left once the slots running
+   * transactions reserved were counted, the insert opened a brand-new page - while the free-space map kept offering the
+   * same page to the next insert, so the transaction opened one page PER RECORD. The #7615 load (4 async workers on
+   * one bucket) spread 9,742 small records over ~100 pages, where one worker needs 5. The rejected page is now dropped
+   * from the map and the allocator asked again. The bound counts pages, not time: each worker may hold a partly filled
+   * tail page of its own, which is the whole difference from a single worker.
+   */
+  @Test
+  void concurrentInsertsDoNotOpenAPagePerRecord() {
+    final int total = 9_742;
+    database.async().setParallelLevel(4);
+    database.async().setCommitEvery(1_000);
+    final AtomicReference<Throwable> asyncFailure = new AtomicReference<>();
+    database.async().onError(asyncFailure::set);
+
+    for (int i = 0; i < total; i++)
+      database.async().command("sql", "INSERT INTO " + TYPE + " SET seq = :seq", null, Map.of("seq", i));
+    database.async().waitCompletion();
+
+    assertThat(asyncFailure.get()).isNull();
+    database.transaction(() -> assertThat(scanCount()).isEqualTo(total));
+
+    final LocalBucket bucket = (LocalBucket) database.getSchema().getType(TYPE).getBuckets(false).getFirst();
+    // ~5 pages hold the records; one partly filled tail page per worker comes on top of that
+    assertThat(bucket.getTotalPages()).as("pages used by %s small records", total).isLessThanOrEqualTo(12);
   }
 
   /** Counts by scanning the records: {@code countType} and {@code count(*)} read the bucket's cached counter. */
