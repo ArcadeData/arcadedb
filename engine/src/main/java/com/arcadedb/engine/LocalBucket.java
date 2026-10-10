@@ -269,6 +269,14 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   // only while at least one transaction is inserting into that page, so the map is as small as the write
   // concurrency; see reserveInsertSlot().
   private final          Map<Integer, PageInsertReservation> insertReservations     = new ConcurrentHashMap<>();
+  // #9694: pageNumber → the transaction that created that page and has not ended yet. A brand-new page is private to
+  // its creator until the commit publishes it, yet nothing kept the allocator of the OTHER transactions off it: the
+  // creator's own writes list it in the bucket-wide free-space map, and once any later page is committed (or the
+  // other transaction opens a later page itself) its number lies below their page horizon. They then read it from the
+  // page manager as an empty page and claimed its slot 0 - the slot the creator wrote first - so the two commits could
+  // never both succeed. With several writers on one bucket each transaction opens its own tail page, so this made
+  // most of their commits conflict. Same lifetime as insertReservations: released when the creator ends.
+  private final          Map<Integer, Object>      inFlightNewPages                 = new ConcurrentHashMap<>();
   private final          REUSE_SPACE_MODE          reuseSpaceMode;
   // #4958: both fields are read/written outside the freeSpaceInPages monitor on some paths (delete,
   // updatePageStatistics), so they must be safe on their own: volatile timestamp + atomic counter.
@@ -528,6 +536,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     gatherTruncated = false;
     gatherResumePage = 0;
     insertReservations.clear();
+    inFlightNewPages.clear();
   }
 
   public int getMaxRecordsInPage() {
@@ -2712,11 +2721,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
       final MutablePage selectedPage;
       if (createNewPage) {
-        // Atomically reserve the next page number to prevent two concurrent transactions
-        // from allocating the same page number (which would cause silent data corruption
-        // when their commits both succeed and overwrite each other's chunks).
-        final int reservedPageNumber = reservedPageCounter.getAndIncrement();
-        selectedPage = database.getTransaction().addPage(new PageId(database, file.getFileId(), reservedPageNumber), pageSize);
+        selectedPage = addNewPage();
         newRecordPositionInPage = contentHeaderSize;
         availablePositionIndex = 0;
       } else
@@ -3034,6 +3039,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
                               final int candidateOffset, final int spaceNeeded) {
     final int reusedPageNumber = foundPage.getPageId().getPageNumber();
     final TransactionContext tx = database.getTransaction();
+    if (isNewPageOfAnotherTransaction(reusedPageNumber, tx))
+      // #9694: the allocator keeps off these pages already; this covers any path that still reaches one
+      return -1;
     // A slot BELOW the record count is a hole left by a delete. The page image the allocator walked may be this
     // transaction's own - dirty, and therefore older than the committed page - so on a page somebody ELSE is
     // inserting into, the hole is confirmed against the committed page with a single O(1) record-table read. On an
@@ -3206,6 +3214,43 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   }
 
   /**
+   * Reserves the next page number of this bucket and adds it to the current transaction as a brand-new page, owned by
+   * that transaction until it ends (issue #9694): see {@link #inFlightNewPages}. Every page this bucket creates goes
+   * through here.
+   */
+  private MutablePage addNewPage() {
+    final TransactionContext tx = database.getTransaction();
+    // The page number is reserved atomically, so two concurrent transactions can never create the same page (both
+    // commits would succeed and overwrite each other's records).
+    final int pageNumber = reservedPageCounter.getAndIncrement();
+    final MutablePage page = tx.addPage(new PageId(database, file.getFileId(), pageNumber), pageSize);
+    // Registered before anything is written on the page, so before its creator can list it in freeSpaceInPages
+    inFlightNewPages.put(pageNumber, tx);
+    tx.trackNewPageReservation(this, pageNumber);
+    return page;
+  }
+
+  /**
+   * Whether {@code pageNumber} is a page another transaction created and has not committed (or rolled back) yet
+   * (issue #9694). Such a page reads as empty to everybody else, but it is not free: its creator is writing into it.
+   */
+  private boolean isNewPageOfAnotherTransaction(final int pageNumber, final TransactionContext tx) {
+    if (inFlightNewPages.isEmpty())
+      return false;
+    final Object creator = inFlightNewPages.get(pageNumber);
+    return creator != null && creator != tx;
+  }
+
+  /**
+   * Gives back a page created by {@link #addNewPage()} when its transaction ends, whatever the outcome (issue #9694).
+   * After a commit the page is published and is an ordinary page; after a rollback it was never written and is an
+   * empty page any transaction may fill.
+   */
+  public void releaseNewPage(final int pageNumber) {
+    inFlightNewPages.remove(pageNumber);
+  }
+
+  /**
    * A record UPDATE is a disjoint-slot-merge candidate unless it is an edge-list segment (record type 3): appending
    * to an existing chunk is owned by the commutative edge-append merge ({@link TransactionContext#trackEdgeAppend}),
    * which also handles the case the slot merge cannot - two transactions appending to the SAME chunk - so the two
@@ -3239,7 +3284,6 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   public boolean rebaseRecordOnPage(final MutablePage page, final int positionInPage, final byte[] body, final byte[] baseBody,
                                     final byte kind) {
     try {
-      final int pageNumber = page.getPageId().getPageNumber();
       final short recordCountInPage = page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
       final int existingPos = positionInPage < recordCountInPage ? getRecordPositionInPage(page, positionInPage) : 0;
 
@@ -3247,7 +3291,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         // INSERT: the slot must still be free on the committed page (else a concurrent commit used it).
         if (existingPos != 0)
           return false;
-        return writeRecordAtSlot(page, pageNumber, positionInPage, recordCountInPage, body);
+        return writeRecordAtSlot(page, positionInPage, recordCountInPage, body);
       }
 
       // UPDATE: the slot must still hold the record this transaction started from, byte-for-byte, so we never
@@ -3556,22 +3600,22 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     }
   }
 
-  private boolean writeRecordAtSlot(final MutablePage page, final int pageNumber, final int positionInPage,
-                                    final short recordCountInPage, final byte[] body) throws IOException {
+  private boolean writeRecordAtSlot(final MutablePage page, final int positionInPage, final short recordCountInPage,
+                                    final byte[] body) throws IOException {
     final int spaceNeeded = Binary.getNumberSpace(body.length) + body.length;
 
-    // Find where free content begins on the CURRENT committed page (reuses the tested free-space walker). Only the
-    // HARD verdicts are honoured here: an unusable slot table or a page with no room left leaves
-    // newRecordPositionInPage negative, while a plain createNewPage also fires on the SOFT
-    // SPARE_SPACE_FOR_GROWTH preference - which would refuse to replay a record the allocator had deliberately
-    // squeezed into the tail of an almost full page (#5279).
-    final PageAnalysis analysis = getAvailableSpaceInPage(pageNumber, spaceNeeded, false);
-    if (analysis.newRecordPositionInPage < 0//
-            || spaceNeeded > page.getMaxContentSize() - analysis.newRecordPositionInPage)
+    // Where free content begins on the CURRENT committed page, measured on that page. #9694: NOT with the allocator's
+    // getAvailableSpaceInPage, which answers "can a NEW record go here?" and gives up without measuring anything on a
+    // page whose record count reached maxRecordsInPage (the same trap #8401 removed from the delete replay). That is
+    // the routine shape of a page several transactions insert into: each reserves its slots past the others', the one
+    // holding the last slot of the table commits first, and every other insert - into a slot that IS free, on a page
+    // with half its bytes free - was refused and sent its whole transaction to a retry. Nor the SOFT
+    // SPARE_SPACE_FOR_GROWTH preference: the allocator may have deliberately squeezed this record into the tail of an
+    // almost full page (#5279), so only a page with no room left for it refuses the replay.
+    final int contentPos = findContentInsertionOffset(page, recordCountInPage);
+    if (spaceNeeded > page.getMaxContentSize() - contentPos)
       // The page filled up under concurrency: fall back to a full retry (which will pick a new page/slot).
       return false;
-
-    final int contentPos = analysis.newRecordPositionInPage;
 
     page.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + positionInPage * INT_SERIALIZED_SIZE, contentPos);
     if (positionInPage + 1 > recordCountInPage)
@@ -3603,10 +3647,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       database.checkPermissionsOnFile(fileId, SecurityDatabaseUser.ACCESS.CREATE_RECORD);
 
       // Always start from a fresh new page for bulk writes.
-      // Atomically reserve the next page number to prevent two concurrent transactions
-      // from allocating the same page number (which would cause silent data corruption).
-      MutablePage currentPage = database.getTransaction()
-          .addPage(new PageId(database, file.getFileId(), reservedPageCounter.getAndIncrement()), pageSize);
+      MutablePage currentPage = addNewPage();
       int recordPositionInPage = contentHeaderSize;
       int availablePositionIndex = 0;
       final int maxContent = currentPage.getMaxContentSize();
@@ -3628,8 +3669,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           currentPage.writeShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET, (short) availablePositionIndex);
 
           // Create a new page
-          currentPage = database.getTransaction()
-              .addPage(new PageId(database, file.getFileId(), reservedPageCounter.getAndIncrement()), pageSize);
+          currentPage = addNewPage();
           recordPositionInPage = contentHeaderSize;
           availablePositionIndex = 0;
         }
@@ -5944,12 +5984,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
       if (nextPage == null) {
         // CREATE A NEW PAGE
-        // Atomically reserve the next page number to prevent two concurrent transactions
-        // from allocating the same page number (which would cause silent data corruption
-        // when their commits both succeed and overwrite each other's chunks).
-        final int reservedPageNumber = reservedPageCounter.getAndIncrement();
-        nextPage = database.getTransaction().addPage(new PageId(database, file.getFileId(), reservedPageNumber), pageSize);
-        txPageCounter = reservedPageNumber + 1;
+        nextPage = addNewPage();
+        txPageCounter = nextPage.getPageId().getPageNumber() + 1;
         newPosition = contentHeaderSize;
         nextPage.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET, newPosition);
         nextPage.writeShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET, (short) 1);
@@ -6233,10 +6269,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
         if (nextPage == null) {
           // CREATE A NEW PAGE
-          // Atomically reserve the next page number to prevent two concurrent transactions
-          // from allocating the same page number (which would cause silent data corruption).
-          final int reservedPageNumber = reservedPageCounter.getAndIncrement();
-          nextPage = database.getTransaction().addPage(new PageId(database, file.getFileId(), reservedPageNumber), pageSize);
+          nextPage = addNewPage();
           newPosition = contentHeaderSize;
           nextPage.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET, newPosition);
           nextPage.writeShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET, (short) 1);
@@ -6827,9 +6860,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
     // CHECK IF THERE IS SPACE IN THE LAST PAGE
     final PageAnalysis lastPageAnalysis = getAvailableSpaceInPage(txPageCounter - 1, spaceNeeded, multiPageRecord);
-    if (txPageCounter - 1 == avoidPageNumber)
-      // The last page is the one page this allocation may not use, so a brand-new page is all that is left - and a
-      // brand-new page is one no other record is on, so poisoning it costs nobody anything.
+    if (txPageCounter - 1 == avoidPageNumber || isNewPageOfAnotherTransaction(txPageCounter - 1, database.getTransaction()))
+      // The last page is the one page this allocation may not use (or one another transaction is still filling, #9694),
+      // so a brand-new page is all that is left - and a brand-new page is one no other record is on, so poisoning it
+      // costs nobody anything.
       lastPageAnalysis.createNewPage = true;
     return lastPageAnalysis;
   }
@@ -6875,6 +6909,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     // by other concurrent transactions, not yet committed and not visible via readCache; reusing
     // them at slot 0 would collide with the reserving tx and silently corrupt that record's chain.
     final int txVisiblePageHorizon = getTotalPages();
+    // #9694: the horizon alone does not keep a phantom out. Page numbers are handed out in one order and committed in
+    // another, so a page another transaction is still filling can lie BELOW it - and its creator lists it here.
+    final TransactionContext tx = database.getTransaction();
     for (int s = 0; s < snapSize; s++) {
       final int pageId = snapPageIds[s];
       if (pageId == currentPageId)
@@ -6885,7 +6922,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         // OFF LIMITS FOR THIS ALLOCATION (#6175)
         continue;
 
-      if (pageId >= txVisiblePageHorizon)
+      if (pageId >= txVisiblePageHorizon || isNewPageOfAnotherTransaction(pageId, tx))
         continue;
 
       final int pageStats = snapPageStats[s];

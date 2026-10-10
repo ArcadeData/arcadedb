@@ -206,6 +206,8 @@ public class TransactionContext implements Transaction {
   // page get different slots (hence different RIDs) and commute instead of conflicting. Held in parallel primitive
   // arrays - grown by doubling and reused across transactions - so inserting N records allocates nothing per record,
   // and released as a block when the transaction ends (see releaseInsertSlotReservations).
+  // #9694: the slot recorded for a page this transaction CREATED, which the bucket keeps off-limits to the others.
+  private static final int                           NEW_PAGE_RESERVATION = -1;
   private       LocalBucket[]                        insertReservationBuckets;
   private       int[]                                insertReservationPages;
   private       int[]                                insertReservationSlots;
@@ -1583,8 +1585,8 @@ public class TransactionContext implements Transaction {
   /**
    * Registers an insert slot {@link LocalBucket} handed to this transaction on an existing page, so it is given
    * back when the transaction ends - whatever the outcome (issue #5279). Called once per created record
-   * that lands on a reused page; a record on a brand-new page needs no reservation because the page number itself is
-   * already reserved atomically.
+   * that lands on a reused page; a record on a brand-new page needs no slot reservation, because the whole page is
+   * already this transaction's (see {@link #trackNewPageReservation}).
    */
   public void trackInsertSlotReservation(final LocalBucket bucket, final int pageNumber, final int slot) {
     if (insertReservationBuckets == null) {
@@ -1605,6 +1607,15 @@ public class TransactionContext implements Transaction {
   }
 
   /**
+   * Registers a page {@link LocalBucket} created for this transaction, so the bucket keeps every other transaction's
+   * allocator off it until this one ends (issue #9694). Held in the same arrays as the insert slots, under
+   * {@link #NEW_PAGE_RESERVATION} in place of a slot.
+   */
+  public void trackNewPageReservation(final LocalBucket bucket, final int pageNumber) {
+    trackInsertSlotReservation(bucket, pageNumber, NEW_PAGE_RESERVATION);
+  }
+
+  /**
    * Gives every insert slot this transaction claimed back to its bucket. Must run on EVERY transaction teardown path
    * (commit, rollback and kill): a leaked reservation would keep a slot of a live page permanently unusable.
    */
@@ -1613,7 +1624,10 @@ public class TransactionContext implements Transaction {
       final LocalBucket bucket = insertReservationBuckets[i];
       insertReservationBuckets[i] = null;
       try {
-        bucket.releaseInsertSlot(insertReservationPages[i], insertReservationSlots[i]);
+        if (insertReservationSlots[i] == NEW_PAGE_RESERVATION)
+          bucket.releaseNewPage(insertReservationPages[i]);
+        else
+          bucket.releaseInsertSlot(insertReservationPages[i], insertReservationSlots[i]);
       } catch (final Exception e) {
         // A RELEASE FAILURE (E.G. THE BUCKET WAS DROPPED MEANWHILE) MUST NEVER ABORT THE TRANSACTION TEARDOWN
         LogManager.instance()
