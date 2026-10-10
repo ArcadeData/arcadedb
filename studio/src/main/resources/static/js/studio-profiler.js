@@ -609,14 +609,10 @@ function profilerRenderAiResponse(data) {
   profilerAiCommandCounter = 0;
   var contentHtml = '';
 
-  // Render markdown content
-  if (data.response) {
-    if (typeof marked !== "undefined") {
-      try { contentHtml = marked.parse(data.response); }
-      catch (e) { contentHtml = '<pre>' + escapeHtml(data.response) + '</pre>'; }
-    } else
-      contentHtml = '<pre style="white-space: pre-wrap;">' + escapeHtml(data.response) + '</pre>';
-  }
+  // The analysis is model output delivered by a third-party portal: untrusted, so it goes through the escape-first markdown
+  // renderer (studio-support-markdown.js), never through a library that keeps raw HTML (issue #9626)
+  if (data.response)
+    contentHtml = supportMarkdownHtml(data.response, { maxChars: SUPPORT_MD_AI_MAX_CHARS, maxRows: SUPPORT_MD_AI_MAX_ROWS });
 
   var html = '<div class="ai-message-content" style="color: var(--text-primary); line-height: 1.6; font-size: 0.9rem;">' + contentHtml + '</div>';
 

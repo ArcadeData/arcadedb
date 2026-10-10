@@ -31,11 +31,11 @@ const vm = require("node:vm");
 
 const STATIC = path.join(__dirname, "..", "src", "main", "resources", "static");
 
-function md(text) {
+function md(text, options) {
   const context = { String, Array, Object, Math, RegExp };
   vm.createContext(context);
   vm.runInContext(fs.readFileSync(path.join(STATIC, "js", "studio-support-markdown.js"), "utf8"), context, { filename: "studio-support-markdown.js" });
-  return vm.runInContext("supportMarkdownHtml", context)(text);
+  return vm.runInContext("supportMarkdownHtml", context)(text, options);
 }
 
 /** No tag other than the ones the renderer owns, and no attribute other than the ones it writes. */
@@ -44,7 +44,7 @@ function assertSafe(html) {
   for (const tag of tags) {
     assert.match(
       tag,
-      /^<\/?(p|br|strong|em|code|pre|ul|ol|li|table|thead|tbody|tr|th|td|div)( class="[a-z -]*")?>$|^<a href="https?:\/\/[^"<>]*" target="_blank" rel="noopener noreferrer">$|^<\/a>$/,
+      /^<\/?(p|br|hr|h[1-6]|blockquote|strong|em|code|pre|ul|ol|li|table|thead|tbody|tr|th|td|div)( class="[a-z -]*")?>$|^<a href="https?:\/\/[^"<>]*" target="_blank" rel="noopener noreferrer">$|^<\/a>$/,
       "unexpected tag: " + tag
     );
   }
@@ -164,6 +164,45 @@ test("XSS attempts in every position come out as text", () => {
   }
 });
 
+test("headings, block quotes and rules (issue #9626: what an AI answer writes)", () => {
+  assert.equal(md("# One\n### Three **b** ###"), "<h1>One</h1><h3>Three <strong>b</strong></h3>");
+  assert.equal(md("#not a heading"), "<p>#not a heading</p>");
+  assert.equal(md("####### seven"), "<p>####### seven</p>");
+  assert.equal(md("> a\n> *b*\n\nafter"), "<blockquote><p>a<br><em>b</em></p></blockquote><p>after</p>");
+  assert.equal(md("a\n\n---\n\n* * *\nb"), "<p>a</p><hr><hr><p>b</p>");
+  // A rule never steals the separator row of a table
+  assert.match(md("| a |\n| --- |\n| 1 |"), /<table/);
+});
+
+test("XSS attempts in headings and block quotes come out as text", () => {
+  for (const a of ["<script>alert(1)</script>", "<img src=x onerror=alert(1)>", "[x](javascript:alert(1))"]) {
+    for (const input of ["# " + a, "###### " + a + " ##", "> " + a, ">> " + a]) {
+      const html = md(input);
+      assertSafe(html);
+      assert.doesNotMatch(html, /<script|<img|<a /i, input);
+    }
+  }
+});
+
+test("a caller draws fenced blocks itself and raises the bounds", () => {
+  const seen = [];
+  const html = md("```sql\nSELECT <1>\n```\n```\nplain\n```\n```sql\" onclick=\"x\nz\n```", {
+    codeBlock: (code, lang) => {
+      seen.push([code, lang]);
+      return "<pre>X</pre>";
+    },
+  });
+  assert.equal(html, "<pre>X</pre><pre>X</pre><pre>X</pre>");
+  // The callback receives the raw code (it escapes it), and the language only when it is a plain word
+  assert.deepEqual(seen, [["SELECT <1>", "sql"], ["plain", ""], ["z", ""]]);
+  const long = "x".repeat(25000) + "\n\nEND";
+  assert.doesNotMatch(md(long), /END/);
+  assert.match(md(long, { maxChars: 30000 }), /END/);
+  const rows = "| a |\n| --- |\n" + "| x |\n".repeat(300);
+  assert.equal((md(rows).match(/<tr>/g) || []).length, 201);
+  assert.equal((md(rows, { maxRows: 1000 }).match(/<tr>/g) || []).length, 301);
+});
+
 test("a quote in a link target cannot leave the attribute", () => {
   const html = md('[x](https://a.example/" onclick="alert(1))');
   assertSafe(html);
@@ -174,6 +213,9 @@ test("pathological input is bounded and still safe", () => {
   const started = Date.now();
   const big = "**a ".repeat(50000) + "\n" + "| a |\n| --- |\n".repeat(1) + "| x |\n".repeat(5000) + "- i\n".repeat(5000) + "`".repeat(40000);
   const html = md(big);
+  // A heading whose closing hashes follow a long run of spaces backtracks quadratically through a naive regex (#9626)
+  const headings = md("# x" + " ".repeat(60000) + "#a\n## y" + " ".repeat(3990) + "#a\n" + "- ".repeat(3000) + "x", { maxChars: 200000 });
+  assertSafe(headings);
   assertSafe(html);
   assert.ok(Date.now() - started < 2000, "took " + (Date.now() - started) + " ms");
   assert.ok(html.length < 200000, "output too large: " + html.length);

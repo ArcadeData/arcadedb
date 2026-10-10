@@ -219,10 +219,6 @@ module.exports = {
           to: 'js/cytoscape-node-html-label.min.js',
         },
         {
-          from: 'node_modules/marked/lib/marked.umd.js',
-          to: 'js/marked.min.js',
-        },
-        {
           from: 'node_modules/@fortawesome/fontawesome-free/css/all.min.css',
           to: 'css/fontawesome.min.css',
         },
