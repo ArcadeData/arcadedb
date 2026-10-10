@@ -79,6 +79,12 @@ final class CypherConstraintRegistry {
   /**
    * Drops the named constraint, undoing what it owns unless another named constraint on the same type still requires
    * it.
+   * <p>
+   * The steps are separate schema changes, not one atomic one. Each is safe to repeat, which is what makes a retry after a
+   * failure part-way through converge: the entry is removed last so the name is still there to retry with, an index
+   * already gone is skipped, a flag already cleared is left alone, and a property already handed to an heir is not added
+   * to it twice. An entry whose index or property was removed by other means (SQL {@code DROP INDEX}, {@code DROP
+   * PROPERTY}) is still a constraint by that name, and dropping it succeeds with nothing left to undo.
    *
    * @return false if no named constraint has that name
    */
@@ -107,8 +113,11 @@ final class CypherConstraintRegistry {
       final String heir = findHeir(type, key, propertyName, null);
       if (heir != null) {
         final JSONObject heirEntry = entry(type, heir);
-        heirEntry.put("mandatory", heirEntry.getJSONArray("mandatory", new JSONArray()).put(propertyName));
-        type.setCustomValue(heir, heirEntry.toString());
+        final JSONArray heirMandatory = heirEntry.getJSONArray("mandatory", new JSONArray());
+        if (!toStrings(heirMandatory).contains(propertyName)) {
+          heirEntry.put("mandatory", heirMandatory.put(propertyName));
+          type.setCustomValue(heir, heirEntry.toString());
+        }
       } else {
         final Property property = type.getPropertyIfExists(propertyName);
         if (property != null && property.isMandatory())
@@ -121,8 +130,10 @@ final class CypherConstraintRegistry {
   }
 
   /**
-   * Finds a named constraint other than the one being dropped on the type that still needs what is being released: with {@code uniqueOver}, a
-   * UNIQUE or NODE KEY over exactly those properties; with {@code mandatoryProperty}, a NOT NULL or NODE KEY covering it.
+   * Finds a named constraint on the type, other than the one being dropped, that still needs what is being released:
+   * with {@code uniqueOver}, a UNIQUE or NODE KEY over exactly those properties IN THAT ORDER (an index over (a, b) is
+   * not the index over (b, a), so the order is part of the index's identity); with {@code mandatoryProperty}, a NOT NULL
+   * or NODE KEY covering it.
    */
   private static String findHeir(final DocumentType type, final String droppedKey, final String mandatoryProperty,
       final List<String> uniqueOver) {
@@ -130,7 +141,13 @@ final class CypherConstraintRegistry {
       if (!key.startsWith(KEY_PREFIX) || key.equals(droppedKey))
         continue;
       final JSONObject candidate = entry(type, key);
-      final ConstraintKind kind = ConstraintKind.valueOf(candidate.getString("kind"));
+      final ConstraintKind kind;
+      try {
+        kind = ConstraintKind.valueOf(candidate.getString("kind", ""));
+      } catch (final IllegalArgumentException e) {
+        // an entry this version does not know (written by a newer one) claims nothing here, and must not abort the drop
+        continue;
+      }
       final List<String> properties = toStrings(candidate.getJSONArray("properties", new JSONArray()));
       if (uniqueOver != null) {
         if ((kind == ConstraintKind.UNIQUE || kind == ConstraintKind.KEY) && properties.equals(uniqueOver))
