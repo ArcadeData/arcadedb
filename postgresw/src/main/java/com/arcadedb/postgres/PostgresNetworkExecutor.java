@@ -151,9 +151,9 @@ public class PostgresNetworkExecutor extends Thread {
   /** The secret a CancelRequest has to quote: it is the request's only credential, so it must not be guessable. */
   private static final SecureRandom                                   CANCEL_SECRETS   = new SecureRandom();
   /** At most one WARNING per interval for refused cancel keys: a guessing client must not be able to flood the log. */
-  private static final long                                           REFUSED_CANCEL_WARNING_INTERVAL_MS = 60_000L;
-  private static final AtomicLong                                     LAST_REFUSED_CANCEL_WARNING      = new AtomicLong();
-  private static final AtomicLong                                     REFUSED_CANCELS_SINCE_WARNING    = new AtomicLong();
+  private static final long                                           REFUSED_CANCEL_WARNING_MS = 60_000L;
+  private static final AtomicLong                                     LAST_REFUSED_WARNING      = new AtomicLong();
+  private static final AtomicLong                                     REFUSED_SINCE_WARNING     = new AtomicLong();
   /** Bind-message parameter length denoting a NULL value (wire value -1, read unsigned). */
   private static final long                                           NULL_PARAM_LENGTH = 0xFFFFFFFFL;
   private static final Object[]                                       NO_PARAMETERS     = new Object[0];
@@ -316,14 +316,15 @@ public class PostgresNetworkExecutor extends Thread {
 
   /**
    * Reports a CancelRequest that quoted a live backend with the wrong secret: at WARNING at most once a minute, with how
-   * many were refused since the last report, and at FINE otherwise, so guessing is visible and cannot flood the log.
+   * many were refused since the last report, and at FINE otherwise, so guessing is visible and cannot flood the log. The
+   * count is approximate - two counters updated apart - which is all a report of a guessing rate needs.
    */
   private void logRefusedCancel(final int pid) {
-    final long refused = REFUSED_CANCELS_SINCE_WARNING.incrementAndGet();
+    final long refused = REFUSED_SINCE_WARNING.incrementAndGet();
     final long now = System.currentTimeMillis();
-    final long last = LAST_REFUSED_CANCEL_WARNING.get();
-    if (now - last >= REFUSED_CANCEL_WARNING_INTERVAL_MS && LAST_REFUSED_CANCEL_WARNING.compareAndSet(last, now)) {
-      REFUSED_CANCELS_SINCE_WARNING.set(0);
+    final long last = LAST_REFUSED_WARNING.get();
+    if (now - last >= REFUSED_CANCEL_WARNING_MS && LAST_REFUSED_WARNING.compareAndSet(last, now)) {
+      REFUSED_SINCE_WARNING.set(0);
       LogManager.instance().log(this, Level.WARNING,
           "PSQL: cancel request for backend %d from %s refused: the secret key does not match (%d refused in the last minute)",
           pid, channel.socket.getRemoteSocketAddress(), refused);
@@ -379,7 +380,9 @@ public class PostgresNetworkExecutor extends Thread {
   /**
    * Opens the registry entry of a statement this connection runs (issue #9689): it is listed by {@code list queries} and
    * {@code SHOW TRANSACTIONS} with this connection's process id, and a {@code CancelRequest} stops it. Close it once the
-   * statement's work - its commit included - is over.
+   * statement's work - its commit included - is over. The rows are materialized inside that window, so writing them to
+   * the client afterwards is not the statement's work and is not covered; COPY TO STDOUT, which streams rows as the
+   * statement produces them, keeps its entry until the last one is written.
    */
   private RunningStatement startStatement(final String language, final String text) {
     final RunningQuery entry = server.getRunningQueries()

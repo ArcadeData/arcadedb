@@ -199,7 +199,8 @@ public final class PostgresBackendFunctions {
     if (!(params[0] instanceof Number pid))
       throw new CommandExecutionException("The process id must be an integer, found: " + params[0]);
     final long value = pid.longValue();
-    if (value < Integer.MIN_VALUE || value > Integer.MAX_VALUE)
+    // Process ids are positive, as on the wire a CancelRequest quotes them
+    if (value <= 0 || value > Integer.MAX_VALUE)
       return null;
     final PostgresNetworkExecutor backend = PostgresNetworkExecutor.getBackend((int) value);
     if (backend == null || caller == null)
