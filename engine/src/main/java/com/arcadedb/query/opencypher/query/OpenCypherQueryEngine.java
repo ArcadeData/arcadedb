@@ -638,7 +638,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
 
     final List<String> notCarried = typeDependentAttributesNotCarried(database, existing, newType);
     if (!notCarried.isEmpty())
-      throw refuseRetype(typeName, existing, newType, notCarried);
+      throw refuseRetype(typeName, existing, newType, notCarried, null);
 
     final JSONObject previous = existing.toJSON();
     final JSONObject retyped = new JSONObject(previous.toMap());
@@ -763,20 +763,18 @@ public class OpenCypherQueryEngine implements QueryEngine {
         // a default set through the API as a non-String is returned verbatim: whether the new type can take it is asked here
         value = Type.convert(database, value, newType.getDefaultJavaType());
     } catch (final RuntimeException e) {
-      final CommandExecutionException refusal = refuseRetype(typeName, existing, newType, List.of(notCarried));
-      refusal.initCause(e);
-      throw refusal;
+      throw refuseRetype(typeName, existing, newType, List.of(notCarried), e);
     }
     if (value == null && evaluateDefaultOrNull(existing) != null)
-      throw refuseRetype(typeName, existing, newType, List.of(notCarried));
+      throw refuseRetype(typeName, existing, newType, List.of(notCarried), null);
   }
 
   private static CommandExecutionException refuseRetype(final String typeName, final Property existing, final Type newType,
-      final List<String> notCarried) {
+      final List<String> notCarried, final Throwable cause) {
     return new CommandExecutionException(
         "Cannot change the type of property '" + typeName + "." + existing.getName() + "' from "
             + existing.getType() + " to " + newType + ": " + String.join(", ", notCarried)
-            + " cannot be carried over to the new type. Change or remove them with ALTER PROPERTY first");
+            + " cannot be carried over to the new type. Change or remove them with ALTER PROPERTY first", cause);
   }
 
   private void executeCreateConstraint(final CypherDDLStatement ddl, final Schema schema, final QueryStatistics stats) {
