@@ -192,6 +192,27 @@ class Issue9710LongMinMaxPastTwoPow53Test extends TestHelper {
   }
 
   @Test
+  void samplesWithoutAMeasurementDoNotDisturbTheRecount() {
+    database.command("sql", "CREATE TIMESERIES TYPE T TIMESTAMP ts TAGS (host STRING) FIELDS (bg LONG, f LONG) SHARDS 2");
+    database.command("sql", "CREATE DOCUMENT TYPE D");
+    database.transaction(() -> {
+      for (int i = 0; i < 60; i++)
+        for (final String type : new String[] { "T", "D" })
+          database.command("sql", "INSERT INTO " + type + " SET ts = ?, host = ?, bg = ?, f = ?", T0 + i * 1_000L, "h" + (i % 2),
+              i % 3 == 0 ? null : BASE + i % 9, (long) i);
+    });
+    // only max: a LONG TimeSeries column has no absent marker, so a sample stored without bg reads back as 0 on every plan, and
+    // min answers that 0 rather than the twin's smallest measured value - a storage property this issue does not change
+    final String[] queries = { "SELECT max(bg) AS mx FROM X", "SELECT max(bg) AS mx FROM X WHERE f >= 10",
+        "SELECT max(bg) AS mx FROM X WHERE host = 'h1'" };
+    for (int pass = 0; pass < 2; pass++) {
+      for (final String sql : queries)
+        assertThat(row(sql.replace("FROM X", "FROM T"))).as(sql).isEqualTo(row(sql.replace("FROM X", "FROM D")));
+      database.command("sql", "COMPACT TIMESERIES TYPE T");
+    }
+  }
+
+  @Test
   void anEmptyRangeStillAnswersNull() {
     createAndLoad(1, BASE, 0, 90, true);
     final String sql = "SELECT min(bg) AS mn, max(bg) AS mx, count(*) AS c FROM X WHERE bg > 9007199254741000";

@@ -365,14 +365,14 @@ public class AggregateFromTimeSeriesStep extends AbstractExecutionStep {
   /**
    * Replaces, in the answer of an ungrouped aggregate, every {@code min}/{@code max} of a LONG column the engine's double may have
    * rounded with the stored long (issue #9710). The generic plan answers a sample of the column, exactly, and an ungrouped
-   * aggregate ran the generic plan before #9612, so that is what it must still answer.
+   * aggregate ran the generic plan until its push-down (issue #9612, PR #9688), so that is what it must still answer.
    * <p>
    * Rounding to a double is monotonic and 2^53 is a double, so a stored long of magnitude at least 2^53 never rounds below it:
    * an engine extreme under 2^53 in magnitude is the stored long, exactly, and only one at or past it needs the stored value.
    * For those the step runs ONE row scan over the same range and filters the engine aggregated, and folds the exact extremes of
    * every such request at once. A LONG column is a SIMPLE8B column, whose samples come back as {@code Long}s.
    * <p>
-   * <b>Cost.</b> The scan decodes every block of the range, as the generic plan did before #9612, but only the columns it needs:
+   * <b>Cost.</b> The scan decodes every block of the range, as the generic plan did before the push-down, but only the columns it needs:
    * without a field filter it projects just the recounted columns; with one it lets the engine filter (block statistics, then
    * the primitive columns) before a row is built. A column whose values are routinely past 2^53 - epoch nanoseconds, 64-bit ids -
    * therefore takes this path on every {@code min}/{@code max}, which is the exact answer's price until the engine keeps integral
@@ -413,8 +413,10 @@ public class AggregateFromTimeSeriesStep extends AbstractExecutionStep {
         final int nonTsIdx = requests.get(recount[r]).columnIndex() - 1;
         int at = -1;
         for (int c = 0; c < projected; c++)
-          if (columns[c] == nonTsIdx)
+          if (columns[c] == nonTsIdx) {
             at = c;
+            break;
+          }
         if (at < 0) {
           at = projected;
           columns[projected++] = nonTsIdx;
