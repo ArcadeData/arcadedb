@@ -249,6 +249,9 @@ class Issue9680RunningQueryTerminationTest {
       q.setStatement("sql", "INSERT INTO Cfg SET secret = 'x1', api_key = 'x2', apiKey: 'x3', passwordHash = 'kept'");
       assertThat(q.getText()).isEqualTo("INSERT INTO Cfg SET secret = ***, api_key = ***, apiKey: ***, passwordHash = 'kept'");
 
+      q.setStatement("sql", "UPDATE Cfg SET pwd = 'x4', passwd = 'x5'");
+      assertThat(q.getText()).isEqualTo("UPDATE Cfg SET pwd = ***, passwd = ***");
+
       q.setStatement("opencypher", "MATCH (n) RETURN n.name");
       assertThat(q.getText()).isEqualTo("MATCH (n) RETURN n.name");
 
