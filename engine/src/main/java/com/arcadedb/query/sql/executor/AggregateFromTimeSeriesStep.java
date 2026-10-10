@@ -21,6 +21,7 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.engine.timeseries.AggregationMetrics;
 import com.arcadedb.engine.timeseries.AggregationType;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
+import com.arcadedb.engine.timeseries.FieldFilter;
 import com.arcadedb.engine.timeseries.GroupedAggregationResult;
 import com.arcadedb.engine.timeseries.MultiColumnAggregationRequest;
 import com.arcadedb.engine.timeseries.MultiColumnAggregationResult;
@@ -58,6 +59,9 @@ public class AggregateFromTimeSeriesStep extends AbstractExecutionStep {
   private final String                             timeBucketAlias;
   private final Map<String, String>                requestAliasToOutputAlias;
   private final TagFilter                          tagFilter;
+  private final FieldFilter                        fieldFilter;
+  /** An ungrouped aggregate (issue #9612): exactly one row, whatever the range holds. */
+  private final boolean                            singleRow;
   private final int[]                              groupColumns;
   private final String[]                           groupTagNames;
   private final List<OutputColumn>                 outputs;
@@ -86,7 +90,20 @@ public class AggregateFromTimeSeriesStep extends AbstractExecutionStep {
       final String timeBucketAlias, final Map<String, String> requestAliasToOutputAlias, final TagFilter tagFilter,
       final CommandContext context) {
     this(tsType, fromTs, toTs, requests, bucketIntervalMs, bucketOffsetMs, timeBucketAlias, requestAliasToOutputAlias, tagFilter, null,
-        null, null, context);
+        null, null, null, false, context);
+  }
+
+  /**
+   * The push-down of an ungrouped aggregate, {@code SELECT count(*), avg(uu) FROM T WHERE ts >= ? AND ts < ?} (issue #9612):
+   * one row, as SQL answers an aggregate with no GROUP BY even over no rows (a COUNT of 0, every other aggregate NULL). The
+   * engine aggregates the whole range as one bucket, answering every sealed block wholly inside it from its statistics.
+   *
+   * @param outputs the aggregates of the answer in projection order
+   */
+  public AggregateFromTimeSeriesStep(final LocalTimeSeriesType tsType, final long fromTs, final long toTs,
+      final List<MultiColumnAggregationRequest> requests, final TagFilter tagFilter, final FieldFilter fieldFilter,
+      final List<OutputColumn> outputs, final CommandContext context) {
+    this(tsType, fromTs, toTs, requests, 0L, 0L, null, null, tagFilter, fieldFilter, null, null, outputs, true, context);
   }
 
   /**
@@ -114,7 +131,34 @@ public class AggregateFromTimeSeriesStep extends AbstractExecutionStep {
       final List<MultiColumnAggregationRequest> requests, final long bucketIntervalMs, final long bucketOffsetMs,
       final String timeBucketAlias, final Map<String, String> requestAliasToOutputAlias, final TagFilter tagFilter,
       final int[] groupColumns, final String[] groupTagNames, final List<OutputColumn> outputs, final CommandContext context) {
+    this(tsType, fromTs, toTs, requests, bucketIntervalMs, bucketOffsetMs, timeBucketAlias, requestAliasToOutputAlias, tagFilter, null,
+        groupColumns, groupTagNames, outputs, false, context);
+  }
+
+  /**
+   * Any of the above with a field filter (issue #9612): range predicates on numeric FIELD columns the engine evaluates, so the
+   * WHERE clause can carry them and still be consumed by the push-down.
+   *
+   * @param fieldFilter may be {@code null}; {@code groupColumns}, {@code groupTagNames} and {@code outputs} are {@code null} for
+   *                    a query grouped by the bucket alone
+   */
+  public AggregateFromTimeSeriesStep(final LocalTimeSeriesType tsType, final long fromTs, final long toTs,
+      final List<MultiColumnAggregationRequest> requests, final long bucketIntervalMs, final long bucketOffsetMs,
+      final String timeBucketAlias, final Map<String, String> requestAliasToOutputAlias, final TagFilter tagFilter,
+      final FieldFilter fieldFilter, final int[] groupColumns, final String[] groupTagNames, final List<OutputColumn> outputs,
+      final CommandContext context) {
+    this(tsType, fromTs, toTs, requests, bucketIntervalMs, bucketOffsetMs, timeBucketAlias, requestAliasToOutputAlias, tagFilter, fieldFilter,
+        groupColumns, groupTagNames, outputs, false, context);
+  }
+
+  private AggregateFromTimeSeriesStep(final LocalTimeSeriesType tsType, final long fromTs, final long toTs,
+      final List<MultiColumnAggregationRequest> requests, final long bucketIntervalMs, final long bucketOffsetMs,
+      final String timeBucketAlias, final Map<String, String> requestAliasToOutputAlias, final TagFilter tagFilter,
+      final FieldFilter fieldFilter, final int[] groupColumns, final String[] groupTagNames, final List<OutputColumn> outputs,
+      final boolean singleRow, final CommandContext context) {
     super(context);
+    this.fieldFilter = fieldFilter;
+    this.singleRow = singleRow;
     this.groupColumns = groupColumns;
     this.groupTagNames = groupTagNames;
     this.outputs = outputs;
@@ -150,16 +194,30 @@ public class AggregateFromTimeSeriesStep extends AbstractExecutionStep {
           final int ceiling = (int) Math.min(Math.max(limit.getMaxElements(), 0L), Integer.MAX_VALUE);
           if (groupColumns != null) {
             final GroupedAggregationResult grouped = engine.aggregateGrouped(fromTs, toTs, requests, bucketIntervalMs, bucketOffsetMs,
-                groupColumns, tagFilter, aggregationMetrics, ceiling);
+                groupColumns, tagFilter, fieldFilter, aggregationMetrics, ceiling);
             limit.check(grouped.getUsedBucketCount());
             resultIterator = groupedRows(grouped, context);
             fetched = true;
             return resultSet(nRecords);
           }
           final MultiColumnAggregationResult aggResult = engine.aggregateMulti(fromTs, toTs, requests, bucketIntervalMs, bucketOffsetMs,
-              tagFilter, aggregationMetrics, ceiling);
+              tagFilter, fieldFilter, aggregationMetrics, ceiling);
           // THE SCAN STOPS ONE BLOCK PAST THE CEILING AT MOST, AND WHAT COMES BACK OVER IT IS REFUSED HERE
           limit.check(aggResult.getUsedBucketCount());
+
+          if (singleRow) {
+            // The one bucket the engine filled, or none when no sample matched: the result then answers a COUNT of 0 and the
+            // absent marker for every other request, which aggregateValue turns into the NULL the generic plan answers
+            final List<Long> buckets = aggResult.getBucketTimestamps();
+            final long bucketTs = buckets.isEmpty() ? Long.MIN_VALUE : buckets.getFirst();
+            final ResultInternal row = new ResultInternal(context.getDatabase());
+            for (final OutputColumn output : outputs)
+              row.setProperty(output.name(), aggregateValue(aggResult, requests.get(output.index()), bucketTs, output.index()));
+            rowCount++;
+            resultIterator = List.of(row).iterator();
+            fetched = true;
+            return resultSet(nRecords);
+          }
 
           // Lazy conversion: wrap the bucket timestamp iterator instead of materializing all rows
           final Iterator<Long> bucketIterator = aggResult.getBucketTimestamps().iterator();
@@ -312,7 +370,15 @@ public class AggregateFromTimeSeriesStep extends AbstractExecutionStep {
     final String spaces = ExecutionStepInternal.getIndent(depth, indent);
     final StringBuilder sb = new StringBuilder();
     sb.append(spaces).append("+ AGGREGATE FROM TIMESERIES ").append(tsType.getName());
-    sb.append(" [").append(fromTs).append(" - ").append(toTs).append("] bucket=").append(bucketIntervalMs).append("ms");
+    sb.append(" [").append(fromTs).append(" - ").append(toTs).append("]");
+    if (singleRow)
+      sb.append(" ungrouped");
+    else
+      sb.append(" bucket=").append(bucketIntervalMs).append("ms");
+    if (tagFilter != null)
+      sb.append(" TAGS ").append(tagFilter.describe(nonTsColumnNames()));
+    if (fieldFilter != null)
+      sb.append(" FIELDS ").append(fieldFilter.describe());
     if (groupTagNames != null)
       sb.append(" group by ").append(String.join(", ", groupTagNames));
     if (bucketOffsetMs != 0)
@@ -339,9 +405,18 @@ public class AggregateFromTimeSeriesStep extends AbstractExecutionStep {
     return sb.toString();
   }
 
+  /** Names of the non-timestamp columns in schema order, the numbering a {@link TagFilter} uses. */
+  private String[] nonTsColumnNames() {
+    final List<String> names = new ArrayList<>();
+    for (final ColumnDefinition column : tsType.getTsColumns())
+      if (column.getRole() != ColumnDefinition.ColumnRole.TIMESTAMP)
+        names.add(column.getName());
+    return names.toArray(new String[0]);
+  }
+
   @Override
   public ExecutionStep copy(final CommandContext context) {
     return new AggregateFromTimeSeriesStep(tsType, fromTs, toTs, requests, bucketIntervalMs, bucketOffsetMs, timeBucketAlias,
-        requestAliasToOutputAlias, tagFilter, groupColumns, groupTagNames, outputs, context);
+        requestAliasToOutputAlias, tagFilter, fieldFilter, groupColumns, groupTagNames, outputs, singleRow, context);
   }
 }

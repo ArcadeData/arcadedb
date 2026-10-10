@@ -425,11 +425,26 @@ public class TimeSeriesEngine implements AutoCloseable {
    */
   public Iterator<Object[]> iterateQuery(final long fromTs, final long toTs, final int[] columnIndices,
       final TagFilter tagFilter, final AggregationMetrics metrics) throws IOException {
+    return iterateQuery(fromTs, toTs, columnIndices, tagFilter, null, metrics);
+  }
+
+  /**
+   * {@link #iterateQuery(long, long, int[], TagFilter, AggregationMetrics)} returning only the rows that also pass
+   * {@code fieldFilter} (issue #9612). The sealed layer skips a block whose statistics prove no sample passes and, in a
+   * block it decodes, tests the primitive columns before it builds a row, so a rejected sample costs no allocation.
+   *
+   * @param columnIndices must be {@code null} (every column) when a field filter is given
+   * @param fieldFilter   range predicates on numeric FIELD columns, may be {@code null}
+   */
+  public Iterator<Object[]> iterateQuery(final long fromTs, final long toTs, final int[] columnIndices,
+      final TagFilter tagFilter, final FieldFilter fieldFilter, final AggregationMetrics metrics) throws IOException {
+    if (fieldFilter != null)
+      fieldFilter.validate(columns);
     final PriorityQueue<PeekableIterator> heap = new PriorityQueue<>(
         Math.max(1, shardCount), Comparator.comparingLong(it -> (long) it.peek()[0]));
 
     for (final TimeSeriesShard shard : shards) {
-      final Iterator<Object[]> it = shard.iterateRange(fromTs, toTs, columnIndices, tagFilter, metrics);
+      final Iterator<Object[]> it = shard.iterateRange(fromTs, toTs, columnIndices, tagFilter, fieldFilter, metrics);
       if (it.hasNext())
         heap.add(new PeekableIterator(it));
     }
@@ -708,6 +723,26 @@ public class TimeSeriesEngine implements AutoCloseable {
   public MultiColumnAggregationResult aggregateMulti(final long fromTs, final long toTs,
       final List<MultiColumnAggregationRequest> requests, final long bucketIntervalMs, final long bucketOffsetMs,
       final TagFilter tagFilter, final AggregationMetrics metrics, final int bucketCeiling) throws IOException {
+    return aggregateMulti(fromTs, toTs, requests, bucketIntervalMs, bucketOffsetMs, tagFilter, null, metrics, bucketCeiling);
+  }
+
+  /**
+   * Same as above over only the samples that also pass {@code fieldFilter} (issue #9612): range predicates on numeric
+   * FIELD columns, judged on each sealed block's statistics before anything is read (see
+   * {@link TimeSeriesSealedStore#aggregateMultiBlocks}).
+   * <p>
+   * A non-positive {@code bucketIntervalMs} is ONE bucket over the whole range, which is how an ungrouped aggregate is
+   * answered. Every sealed block fits it, so a block wholly inside the range is answered from its statistics, and the shards
+   * are read in parallel as they are for a bucketed aggregation.
+   *
+   * @param fieldFilter range predicates on numeric FIELD columns, may be {@code null}
+   */
+  public MultiColumnAggregationResult aggregateMulti(final long fromTs, final long toTs,
+      final List<MultiColumnAggregationRequest> requests, final long bucketIntervalMs, final long bucketOffsetMs,
+      final TagFilter tagFilter, final FieldFilter fieldFilter, final AggregationMetrics metrics, final int bucketCeiling)
+      throws IOException {
+    if (fieldFilter != null)
+      fieldFilter.validate(columns);
     final int reqCount = requests.size();
 
     final BucketWindow window = bucketWindow(fromTs, toTs, bucketIntervalMs, bucketOffsetMs, bucketCeiling);
@@ -722,8 +757,11 @@ public class TimeSeriesEngine implements AutoCloseable {
       isCount[r] = requests.get(r).type() == AggregationType.COUNT;
     }
 
-    // Process sealed stores in parallel when there are multiple shards with data
-    if (shardCount > 1 && maxBuckets > 0) {
+    // Process sealed stores in parallel when there are multiple shards with data. Without a bucket interval the answer is one
+    // bucket, which each shard accumulates in a map-mode result of its own (issue #9612)
+    final boolean bucketed = bucketIntervalMs > 0;
+    final long singleBucketTs = singleBucketAnchor(fromTs);
+    if (shardCount > 1 && (maxBuckets > 0 || !bucketed)) {
       @SuppressWarnings("unchecked")
       final CompletableFuture<MultiColumnAggregationResult>[] futures = new CompletableFuture[shardCount];
 
@@ -745,8 +783,9 @@ public class TimeSeriesEngine implements AutoCloseable {
             shardMetricsArr[s] = shardMetrics;
           futures[s] = CompletableFuture.supplyAsync(() -> {
             try {
-              final MultiColumnAggregationResult shardResult =
-                  new MultiColumnAggregationResult(requests, firstBucket, bucketIntervalMs, maxBuckets);
+              final MultiColumnAggregationResult shardResult = bucketed
+                  ? new MultiColumnAggregationResult(requests, firstBucket, bucketIntervalMs, maxBuckets)
+                  : new MultiColumnAggregationResult(requests);
               // Each shard stops at the ceiling on its own. Buckets only ever union across shards, so a shard
               // that has passed it guarantees the merged total has too (issue #7724).
               //
@@ -758,7 +797,8 @@ public class TimeSeriesEngine implements AutoCloseable {
               // refuse a request whose real answer fits. The bound stays a bound either way, and it is the one
               // that cannot refuse an answer the caller was entitled to.
               shardResult.setBucketCeiling(bucketCeiling);
-              shard.getSealedStore().aggregateMultiBlocks(fromTs, toTs, requests, bucketIntervalMs, bucketOffsetMs, shardResult, shardMetrics, tagFilter);
+              shard.getSealedStore()
+                  .aggregateMultiBlocks(fromTs, toTs, requests, bucketIntervalMs, bucketOffsetMs, shardResult, shardMetrics, tagFilter, fieldFilter);
               return shardResult;
             } catch (final IOException e) {
               throw new CompletionException(e);
@@ -795,8 +835,10 @@ public class TimeSeriesEngine implements AutoCloseable {
             final Object[] row = mutableIter.next();
             if (tagFilter != null && !tagFilter.matches(row))
               continue;
+            if (fieldFilter != null && !fieldFilter.matches(row))
+              continue;
             final long ts = (long) row[0];
-            final long bucketTs = TimeBucketGrid.bucketStart(ts, bucketIntervalMs, bucketOffsetMs);
+            final long bucketTs = bucketed ? TimeBucketGrid.bucketStart(ts, bucketIntervalMs, bucketOffsetMs) : singleBucketTs;
             for (int r = 0; r < reqCount; r++)
               rowValues[r] = mutableSample(row, columnIndices[r], isCount[r]);
             result.accumulateRow(bucketTs, rowValues);
@@ -821,8 +863,6 @@ public class TimeSeriesEngine implements AutoCloseable {
 
       final double[] rowValues = new double[reqCount];
 
-      final long singleBucketTs = singleBucketAnchor(fromTs);
-
       for (final TimeSeriesShard shard : shards) {
         if (result.isOverBucketCeiling())
           break;
@@ -830,7 +870,8 @@ public class TimeSeriesEngine implements AutoCloseable {
         // if compaction completes between reading the two layers.
         shard.getCompactionLock().readLock().lock();
         try {
-          shard.getSealedStore().aggregateMultiBlocks(fromTs, toTs, requests, bucketIntervalMs, bucketOffsetMs, result, metrics, tagFilter);
+          shard.getSealedStore().aggregateMultiBlocks(fromTs, toTs, requests, bucketIntervalMs, bucketOffsetMs, result, metrics, tagFilter,
+              fieldFilter);
 
           final Iterator<Object[]> mutableIter = shard.getMutableBucket().iterateRange(fromTs, toTs, null, metrics);
           while (mutableIter.hasNext()) {
@@ -839,8 +880,10 @@ public class TimeSeriesEngine implements AutoCloseable {
             final Object[] row = mutableIter.next();
             if (tagFilter != null && !tagFilter.matches(row))
               continue;
+            if (fieldFilter != null && !fieldFilter.matches(row))
+              continue;
             final long ts = (long) row[0];
-            final long bucketTs = bucketIntervalMs > 0 ? TimeBucketGrid.bucketStart(ts, bucketIntervalMs, bucketOffsetMs) : singleBucketTs;
+            final long bucketTs = bucketed ? TimeBucketGrid.bucketStart(ts, bucketIntervalMs, bucketOffsetMs) : singleBucketTs;
 
             for (int r = 0; r < reqCount; r++)
               rowValues[r] = mutableSample(row, columnIndices[r], isCount[r]);
@@ -878,6 +921,19 @@ public class TimeSeriesEngine implements AutoCloseable {
   public GroupedAggregationResult aggregateGrouped(final long fromTs, final long toTs, final List<MultiColumnAggregationRequest> requests,
       final long bucketIntervalMs, final long bucketOffsetMs, final int[] groupColumns, final TagFilter tagFilter,
       final AggregationMetrics metrics, final int bucketCeiling) throws IOException {
+    return aggregateGrouped(fromTs, toTs, requests, bucketIntervalMs, bucketOffsetMs, groupColumns, tagFilter, null, metrics, bucketCeiling);
+  }
+
+  /**
+   * Same as above over only the samples that also pass {@code fieldFilter} (issue #9612).
+   *
+   * @param fieldFilter range predicates on numeric FIELD columns, may be {@code null}
+   */
+  public GroupedAggregationResult aggregateGrouped(final long fromTs, final long toTs, final List<MultiColumnAggregationRequest> requests,
+      final long bucketIntervalMs, final long bucketOffsetMs, final int[] groupColumns, final TagFilter tagFilter,
+      final FieldFilter fieldFilter, final AggregationMetrics metrics, final int bucketCeiling) throws IOException {
+    if (fieldFilter != null)
+      fieldFilter.validate(columns);
     if (groupColumns.length == 0 || groupColumns.length > MAX_GROUP_COLUMNS)
       throw new IllegalArgumentException("A grouped aggregation groups by 1 to " + MAX_GROUP_COLUMNS + " tag column(s), not " + groupColumns.length);
 
@@ -921,7 +977,8 @@ public class TimeSeriesEngine implements AutoCloseable {
               final GroupedAggregationResult shardResult = new GroupedAggregationResult(requests, firstBucket, bucketIntervalMs, buckets);
               shardResult.setBucketCeiling(bucketCeiling);
               shard.getSealedStore()
-                  .aggregateGroupedBlocks(fromTs, toTs, requests, bucketIntervalMs, bucketOffsetMs, groupColumns, shardResult, shardMetric, tagFilter);
+                  .aggregateGroupedBlocks(fromTs, toTs, requests, bucketIntervalMs, bucketOffsetMs, groupColumns, shardResult, shardMetric, tagFilter,
+                      fieldFilter);
               return shardResult;
             } catch (final IOException e) {
               throw new CompletionException(e);
@@ -943,16 +1000,16 @@ public class TimeSeriesEngine implements AutoCloseable {
         for (final TimeSeriesShard shard : shards)
           if (!result.isOverBucketCeiling())
             accumulateMutableGroups(shard, fromTs, toTs, requests, columnIndices, isCount, bucketIntervalMs, bucketOffsetMs, singleBucketTs,
-                groupRowIndices, tagFilter, metrics, result);
+                groupRowIndices, tagFilter, fieldFilter, metrics, result);
       } else {
         result = new GroupedAggregationResult(requests, firstBucket, bucketIntervalMs, buckets);
         result.setBucketCeiling(bucketCeiling);
         final TimeSeriesShard shard = shards[0];
         shard.getSealedStore()
-            .aggregateGroupedBlocks(fromTs, toTs, requests, bucketIntervalMs, bucketOffsetMs, groupColumns, result, metrics, tagFilter);
+            .aggregateGroupedBlocks(fromTs, toTs, requests, bucketIntervalMs, bucketOffsetMs, groupColumns, result, metrics, tagFilter, fieldFilter);
         if (!result.isOverBucketCeiling())
           accumulateMutableGroups(shard, fromTs, toTs, requests, columnIndices, isCount, bucketIntervalMs, bucketOffsetMs, singleBucketTs,
-              groupRowIndices, tagFilter, metrics, result);
+              groupRowIndices, tagFilter, fieldFilter, metrics, result);
       }
     } finally {
       for (int s = 0; s < shardCount; s++)
@@ -967,7 +1024,7 @@ public class TimeSeriesEngine implements AutoCloseable {
   private void accumulateMutableGroups(final TimeSeriesShard shard, final long fromTs, final long toTs,
       final List<MultiColumnAggregationRequest> requests, final int[] columnIndices, final boolean[] isCount, final long bucketIntervalMs,
       final long bucketOffsetMs, final long singleBucketTs, final int[] groupRowIndices, final TagFilter tagFilter,
-      final AggregationMetrics metrics, final GroupedAggregationResult result) throws IOException {
+      final FieldFilter fieldFilter, final AggregationMetrics metrics, final GroupedAggregationResult result) throws IOException {
     final int reqCount = requests.size();
     final double[] rowValues = new double[reqCount];
     // One array for every row: groupFor only reads it, and copies it when the group is new
@@ -980,6 +1037,8 @@ public class TimeSeriesEngine implements AutoCloseable {
         break;
       final Object[] row = mutableIter.next();
       if (tagFilter != null && !tagFilter.matches(row))
+        continue;
+      if (fieldFilter != null && !fieldFilter.matches(row))
         continue;
 
       // The text a sealed block's dictionary holds for the value: null is stored as the empty string
