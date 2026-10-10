@@ -132,6 +132,51 @@ class PartitionPruningPlannerTest extends TestHelper {
   }
 
   @Test
+  void aParameterInABlockThatCanNeverPruneKeepsThePlanCacheable() {
+    // Partitioned on (a, b): a WHERE that binds b alone leaves a coordinate open, so no value bound to b can prune. The plan
+    // does not depend on that value and stays cacheable.
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Composite BUCKETS " + BUCKETS);
+      database.command("sql", "CREATE PROPERTY Composite.a STRING");
+      database.command("sql", "CREATE PROPERTY Composite.b STRING");
+      database.command("sql", "CREATE INDEX ON Composite (a, b) UNIQUE");
+      database.command("sql", "ALTER TYPE Composite BucketSelectionStrategy `partitioned('a','b')`");
+      database.newDocument("Composite").set("a", "x", "b", "1").save();
+      database.newDocument("Composite").set("a", "x", "b", "2").save();
+    });
+
+    final String sql = "SELECT FROM Composite WHERE b = ?";
+    for (int i = 0; i < 2; i++)
+      try (final ResultSet rs = database.query("sql", sql, "1")) {
+        assertThat(rs.next().<String>getProperty("a")).isEqualTo("x");
+        assertThat(rs.hasNext()).isFalse();
+      }
+    assertThat(((DatabaseInternal) database).getExecutionPlanCache().contains(sql))
+        .as("a parameter that can never prune does not keep the plan out of the cache")
+        .isTrue();
+  }
+
+  @Test
+  void aNullBindingOfAPartitionParameterIsNotCachedForTheNextValue() {
+    // A null prunes nothing; a plan built for it must not be reused by a later execution whose value prunes.
+    createPartitionedType();
+    populate();
+
+    final String sql = "SELECT FROM " + TYPE_NAME + " WHERE tenant_id = ?";
+    try (final ResultSet rs = database.query("sql", sql, (Object) null)) {
+      assertThat(rs.hasNext()).isFalse();
+    }
+    assertThat(((DatabaseInternal) database).getExecutionPlanCache().contains(sql)).isFalse();
+
+    try (final ResultSet rs = database.query("sql", sql, "acme")) {
+      final GetValueFromIndexEntryStep extract = findIndexExtract(rs.getExecutionPlan().orElseThrow());
+      assertThat(extract).isNotNull();
+      assertThat(extract.getFilterBucketIds()).as("the value bound now prunes").hasSize(1);
+      assertThat(rs.next().<String>getProperty("tenant_id")).isEqualTo("acme");
+    }
+  }
+
+  @Test
   void parenthesisedParameterNarrowsIndexFilterBucketsWithoutCachingThePlan() {
     // Defence-in-depth: a parameter wrapped in parentheses on the literal side ({@code = (?)})
     // must still be detected as parameter-bound. Missing it would bake the first execution's
