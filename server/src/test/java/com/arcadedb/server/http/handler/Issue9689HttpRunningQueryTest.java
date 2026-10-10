@@ -36,8 +36,14 @@ import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Base64;
+import java.util.List;
+import java.util.Random;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -123,6 +129,67 @@ class Issue9689HttpRunningQueryTest extends BaseGraphServerTest {
       assertThat(readResponse(in)).startsWith("HTTP/1.1 409");
       assertThat(readResponse(in)).startsWith("HTTP/1.1 200").contains("\"answer\":7");
     }
+  }
+
+  /**
+   * The listener swap under load: clients that keep their connection, pipeline, and walk away in the middle of a long
+   * statement, all at once. Every request a client stayed for is answered, in order, with its own answer - no byte lost
+   * or misplaced by a watch - and every statement whose client left is stopped.
+   */
+  @Test
+  void manyClientsPipeliningAndLeavingAreEachServedOrStopped() throws Exception {
+    final int clients = 8;
+    final int rounds = 12;
+    final ExecutorService pool = Executors.newFixedThreadPool(clients);
+    try {
+      final List<Future<Integer>> results = new ArrayList<>();
+      for (int c = 0; c < clients; c++) {
+        final int client = c;
+        results.add(pool.submit(() -> {
+          final Random random = new Random(9689L + client);
+          int answered = 0;
+          Socket socket = connect();
+          try {
+            for (int round = 0; round < rounds; round++) {
+              final int choice = random.nextInt(3);
+              if (choice == 0) {
+                // One request at a time on a kept-alive connection
+                final int n = client * 1000 + round;
+                send(socket, command("RETURN " + n + " AS answer"));
+                assertThat(readResponse(socket.getInputStream())).startsWith("HTTP/1.1 200").contains("\"answer\":" + n);
+                ++answered;
+              } else if (choice == 1) {
+                // Two requests in one write: both answered, in order
+                final int a = client * 1000 + round;
+                final int b = a + 500;
+                send(socket, command("RETURN " + a + " AS answer") + command("RETURN " + b + " AS answer"));
+                assertThat(readResponse(socket.getInputStream())).startsWith("HTTP/1.1 200").contains("\"answer\":" + a);
+                assertThat(readResponse(socket.getInputStream())).startsWith("HTTP/1.1 200").contains("\"answer\":" + b);
+                answered += 2;
+              } else {
+                // A long statement whose client leaves: a fresh connection afterwards
+                send(socket, command(LONG_CYPHER));
+                Thread.sleep(random.nextInt(200));
+                socket.close();
+                socket = connect();
+              }
+            }
+          } finally {
+            socket.close();
+          }
+          return answered;
+        }));
+      }
+      int answered = 0;
+      for (final Future<Integer> result : results)
+        answered += result.get(120, TimeUnit.SECONDS);
+      assertThat(answered).isPositive();
+    } finally {
+      pool.shutdownNow();
+    }
+
+    // Every long statement was left by its client, and every one of them stops
+    await().atMost(Duration.ofSeconds(60)).until(() -> getServer(0).getRunningQueries().getRunning().isEmpty());
   }
 
   @Test

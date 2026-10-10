@@ -25,6 +25,8 @@ import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.query.RunningQuery;
 import com.arcadedb.query.sql.executor.CommandContext;
 
+import java.util.Set;
+
 /**
  * PostgreSQL's backend signalling functions (issue #9689), so a client stops another connection's statement the way it
  * would on PostgreSQL:
@@ -56,11 +58,14 @@ public final class PostgresBackendFunctions {
   static void register() {
     final DefaultSQLFunctionFactory factory = DefaultSQLFunctionFactory.getInstance();
     synchronized (PostgresBackendFunctions.class) {
-      if (!factory.getFunctionNames().contains(BackendPid.NAME)) {
+      // One by one: whatever happened to an earlier registration, each function ends up registered exactly once
+      final Set<String> registered = factory.getFunctionNames();
+      if (!registered.contains(BackendPid.NAME))
         factory.register(new BackendPid());
+      if (!registered.contains(CancelBackend.NAME))
         factory.register(new CancelBackend());
+      if (!registered.contains(TerminateBackend.NAME))
         factory.register(new TerminateBackend());
-      }
     }
   }
 
@@ -102,8 +107,10 @@ public final class PostgresBackendFunctions {
 
   /** {@code pg_cancel_backend(pid)}. */
   static final class CancelBackend extends SQLFunctionAbstract {
+    static final String NAME = "pg_cancel_backend";
+
     CancelBackend() {
-      super("pg_cancel_backend");
+      super(NAME);
     }
 
     @Override
@@ -135,8 +142,10 @@ public final class PostgresBackendFunctions {
 
   /** {@code pg_terminate_backend(pid)}. */
   static final class TerminateBackend extends SQLFunctionAbstract {
+    static final String NAME = "pg_terminate_backend";
+
     TerminateBackend() {
-      super("pg_terminate_backend");
+      super(NAME);
     }
 
     @Override
