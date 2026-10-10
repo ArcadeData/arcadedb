@@ -308,6 +308,10 @@ class Issue9689PostgresCancelIT extends PostgresWireProtocolTestBase {
           assertThat(rs.next()).isTrue();
           assertThat(rs.getObject("signalled")).as("%s(null)", function).isNull();
         }
+        // A fractional pid is refused, never rounded to some other connection's
+        final int pid = backendPid(conn);
+        assertThatThrownBy(() -> st.executeQuery("SELECT " + function + "(" + pid + ".5) AS signalled").close())
+            .as("%s(%s.5)", function, pid).isInstanceOf(SQLException.class);
       }
       assertThat(backendPid(conn)).isPositive();
     }
