@@ -80,8 +80,7 @@ final class ScanPropertyHashIndex {
       if (value instanceof String) {
         put(value, rid);
         anyText = true;
-      }
-      else if (isIntegral(value))
+      } else if (isIntegral(value))
         put(((Number) value).longValue(), rid);
       else if (value instanceof Number)
         nonIntegral.add(rid);

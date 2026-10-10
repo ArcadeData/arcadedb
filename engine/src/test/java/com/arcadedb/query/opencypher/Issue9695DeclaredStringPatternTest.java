@@ -264,8 +264,12 @@ class Issue9695DeclaredStringPatternTest extends TestHelper {
       for (int i = 0; i < 30; i++)
         database.command("opencypher", "CREATE (:JC {id: " + i + ", code: " + i + "})").close();
       database.command("opencypher", "CREATE (:JC {id: 100, code: true}), (:JC {id: 101, code: '5.0'}), (:JC {id: 102, code: 'x'})").close();
+      // Past 2^53 two longs share one double key: only the comparison above the join tells them apart
+      database.command("opencypher", "CREATE (:JC {id: 103, code: 9007199254740993}), (:JC {id: 104, code: '9007199254740992'})").close();
+      database.command("opencypher", "CREATE (:JC {id: 105, code: '02134'}), (:JC {id: 106, code: '1-2'}), (:JC {id: 107, code: -0.0})").close();
       database.command("opencypher", "CREATE (:JP {id: 1, num: 5}), (:JP {id: 2, num: true}), (:JP {id: 3, num: 5.5}), (:JP {id: 4, num: '7'})")
           .close();
+      database.command("opencypher", "CREATE (:JP {id: 5, num: 9007199254740993}), (:JP {id: 6, num: 2134}), (:JP {id: 7, num: 0.0})").close();
     });
 
     final String query = "MATCH (p:JP), (c:JC) WHERE c.code = p.num RETURN p.id AS a, c.id AS b ORDER BY a, b";
@@ -275,7 +279,7 @@ class Issue9695DeclaredStringPatternTest extends TestHelper {
       assertThat(plan).contains(indexed ? "IndexNestedLoopJoin" : "ValueHashJoin");
     }
     final List<String> joined = pairs(query);
-    assertThat(joined).containsExactly("1/5", "2/100", "4/7");
+    assertThat(joined).containsExactly("1/5", "2/100", "4/7", "5/103");
     assertThat(joined).isEqualTo(pairs(product));
   }
 
@@ -288,6 +292,34 @@ class Issue9695DeclaredStringPatternTest extends TestHelper {
       }
     }
     return pairs;
+  }
+
+  /** Over schemaless properties a join keeps Cypher typing: '5' and 5 share a hash key, and the comparison still rejects them. */
+  @Test
+  void aJoinOnASchemalessPropertyKeepsCypherTyping() {
+    database.command("sql", "CREATE VERTEX TYPE SC");
+    database.command("sql", "CREATE VERTEX TYPE SP2");
+    database.transaction(() -> {
+      for (int i = 0; i < 30; i++)
+        database.command("opencypher", "CREATE (:SC {id: " + i + ", code: '" + i + "'})").close();
+      database.command("opencypher", "CREATE (:SP2 {id: 1, num: 5}), (:SP2 {id: 2, num: '5'})").close();
+    });
+    assertThat(pairs("MATCH (p:SP2), (c:SC) WHERE c.code = p.num RETURN p.id AS a, c.id AS b ORDER BY a, b")).containsExactly("2/5");
+    assertThat(count("MATCH (c:SC) WHERE c.code IN [5] RETURN count(c) AS c")).isEqualTo(0L);
+    assertThat(count("MATCH (c:SC) WHERE c.code <> 5 RETURN count(c) AS c")).isEqualTo(30L);
+  }
+
+  /** NaN equals nothing, not even the 'NaN' it was stored as; a signed zero is found by the text it was stored as. */
+  @Test
+  void nanAndSignedZero() {
+    declare("Z", null);
+    database.transaction(() -> database.command("opencypher", "CREATE (:Z {id: 1, d: 0.0 / 0.0}), (:Z {id: 2, d: -0.0}), (:Z {id: 3, d: 0.0})").close());
+    assertThat(count("MATCH (p:Z {d: 0.0 / 0.0}) RETURN count(p) AS c")).isEqualTo(0L);
+    assertThat(count("MATCH (p:Z) WHERE p.d = 0.0 / 0.0 RETURN count(p) AS c")).isEqualTo(0L);
+    assertThat(count("MATCH (p:Z {d: -0.0}) RETURN count(p) AS c")).isEqualTo(1L);
+    assertThat(count("MATCH (p:Z {d: 0.0}) RETURN count(p) AS c")).isEqualTo(1L);
+    database.transaction(() -> database.command("opencypher", "MERGE (p:Z {d: -0.0})").close());
+    assertThat(count("MATCH (p:Z) RETURN count(p) AS c")).isEqualTo(3L);
   }
 
   /** A node reached through a persisted link is bound as its RID until a property is read: it is coerced all the same. */
