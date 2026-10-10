@@ -97,7 +97,66 @@ class Issue9644PromQLBoolModifierTest extends TestHelper {
           .hasMessageContaining("bool modifier can only be used on comparison operators");
   }
 
+  @Test
+  void theErrorPointsAtTheModifier() {
+    // "m9644 + bool 1": the modifier starts at position 8
+    assertThatThrownBy(() -> new PromQLParser("m9644 + bool 1").parse()).hasMessageEndingWith("at position 8");
+  }
+
+  @Test
+  void boolIsAKeywordRightAfterAnOperatorAsInPrometheus() {
+    // Prometheus lexes `bool` as a keyword, so a metric literally named `bool` cannot be the right operand of a binary
+    // operator: `a + bool` and `a > bool` are parse errors there too
+    assertThatThrownBy(() -> new PromQLParser("m9644 + bool").parse()).isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("bool modifier can only be used on comparison operators");
+    assertThatThrownBy(() -> new PromQLParser("m9644 > bool").parse()).isInstanceOf(IllegalArgumentException.class);
+  }
+
+  @Test
+  void chainedAndParenthesisedBoolComparisonsParse() {
+    // left-associative: (m9644 > bool 1) > bool 0
+    final BinaryExpr chained = (BinaryExpr) new PromQLParser("m9644 > bool 1 > bool 0").parse();
+    assertThat(chained.returnBool()).isTrue();
+    assertThat(((BinaryExpr) chained.left()).returnBool()).isTrue();
+
+    final BinaryExpr plusOne = (BinaryExpr) new PromQLParser("(m9644 > bool 1) + 1").parse();
+    assertThat(plusOne.op()).isEqualTo(BinaryOp.ADD);
+    assertThat(plusOne.returnBool()).isFalse();
+    assertThat(((BinaryExpr) plusOne.left()).returnBool()).isTrue();
+  }
+
   // --- evaluator ---
+
+  @Test
+  void chainedAndParenthesisedBoolComparisonsEvaluate() {
+    assertThat(only("m9644 > bool 1 > bool 0").value()).isEqualTo(1.0); // (5.5 > 1 = 1) > 0 = 1
+    assertThat(only("m9644 > bool 10 > bool 0").value()).isEqualTo(0.0); // (5.5 > 10 = 0) > 0 = 0
+    final VectorSample s = only("(m9644 > bool 1) + 1");
+    assertThat(s.value()).isEqualTo(2.0);
+    assertThat(s.labels()).doesNotContainKey("__name__");
+  }
+
+  @Test
+  void aNaNSampleComparesAsPrometheusDoes() {
+    // 5.5 * 0 / 0 = NaN on both sides: NaN == NaN is false, NaN != NaN is true, as in Go
+    assertThat(only("(m9644 * 0 / 0) == bool (m9644 * 0 / 0)").value()).isEqualTo(0.0);
+    assertThat(only("(m9644 * 0 / 0) != bool (m9644 * 0 / 0)").value()).isEqualTo(1.0);
+    assertThat(only("(m9644 * 0 / 0) > bool 1").value()).isEqualTo(0.0);
+  }
+
+  @Test
+  void vectorVectorWithBoolDropsUnmatchedSeriesRatherThanAnsweringZero() {
+    database.command("sql", "CREATE TIMESERIES TYPE n9644 TIMESTAMP ts TAGS (host STRING) FIELDS (value DOUBLE)");
+    database.transaction(() -> {
+      database.command("sql", "INSERT INTO n9644 SET ts = 5000, host = 'h1', value = 1.0");
+      database.command("sql", "INSERT INTO n9644 SET ts = 5000, host = 'h2', value = 1.0");
+    });
+    // only h1 exists on both sides: h2 of n9644 has no partner in m9644, so it is not in the result at all
+    final InstantVector iv = evaluate("n9644 < bool m9644");
+    assertThat(iv.samples()).hasSize(1);
+    assertThat(iv.samples().getFirst().labels()).containsEntry("host", "h1").doesNotContainKey("__name__");
+    assertThat(iv.samples().getFirst().value()).isEqualTo(1.0);
+  }
 
   @Test
   void vectorScalarWithBoolAnswersOneAndDropsTheName() {
