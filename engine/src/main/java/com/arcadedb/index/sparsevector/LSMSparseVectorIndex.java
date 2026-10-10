@@ -108,6 +108,17 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
   private static final int MAX_OVERFETCH_ROWS = 100_000;
 
   /**
+   * How much a rescored search widens its candidate budget when the answer came up short because candidates were
+   * dropped - their record deleted by a commit that landed between the index answer and the record load (issue #9692).
+   * The same geometric step the dense BINARY rerank uses (issue #9396): a commit removes the records before their index
+   * entries, so the stale stretch is as wide as the commit's deletes and the budget has to step over it.
+   */
+  private static final int STALE_TOP_UP_GROWTH       = 4;
+
+  /** How many times a rescored search that came up short of its answer widens its candidate budget and asks again. */
+  private static final int STALE_TOP_UP_MAX_ATTEMPTS = 6;
+
+  /**
    * Factory handler used by the schema to instantiate sparse vector indexes.
    */
   public static class LSMSparseVectorIndexFactoryHandler implements IndexFactoryHandler {
@@ -321,55 +332,8 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
 
     final float[] effectiveWeights = effectiveWeights(queryIndices, queryValues);
 
-    // Over-fetch when an allowedRIDs whitelist is in play to reduce the chance of returning
-    // fewer than K items because the top-scored RIDs were filtered out. The fixed cap keeps
-    // worst-case work bounded even when the filter is very selective.
-    //
-    // The overlay widens it by exactly the number of RIDs the transaction has touched (issue #7966): those are
-    // dropped from the committed answer below - their committed vector is stale, and a deleted record must not
-    // come back - so fetching k of them and discarding some would under-fill. Fetching k + touched cannot.
-    final Set<RID> pendingRIDs = overlay != null ? overlay.touchedRIDs() : null;
-    // With exact rescoring on (issue #8576) the committed side keeps k * oversample candidates for it to choose from:
-    // their quantized scores decide only who is a candidate, never the final order.
-    final int oversample = rescoreOversample();
-    final int keep = oversampled(k, oversample);
-    final long widened = (long) keep + (overlay != null ? overlay.touchedCount() : 0);
-    // The unfiltered branch stays UNCAPPED, as it was before the overflow guard went in (PR #8001 review). The
-    // 100_000 ceiling belongs to the over-fetch: it bounds the multiplier applied to compensate for a selective
-    // filter, not the caller's own k. Capping the unfiltered branch made this method quietly return at most
-    // 100_000 rows to a caller that asked for more and would previously have got them all - a truncation with no
-    // error to notice it by. The SQL function refuses a k that large long before it reaches here, but this method
-    // is public and an embedded caller is not going through it.
-    final int fetchK = allowedRIDs == null || allowedRIDs.isEmpty() ?
-        (int) Math.min(widened, Integer.MAX_VALUE) :
-        (int) Math.min(widened * 8, MAX_OVERFETCH_ROWS);
-
-    final List<RidScore> raw;
-    try {
-      raw = engine.topK(queryIndices, effectiveWeights, fetchK);
-    } catch (final IOException e) {
-      throw new IndexException("Sparse vector top-K failed", e);
-    }
-
-    final boolean filtered = allowedRIDs != null && !allowedRIDs.isEmpty();
-    if (!filtered && pendingRIDs == null) {
-      final List<RidScore> head = raw.size() <= keep ? raw : raw.subList(0, keep);
-      if (oversample > 0)
-        return rescoreExactly(head, queryIndices, effectiveWeights, k);
-      return head.size() <= k ? head : head.subList(0, k);
-    }
-
-    final List<RidScore> out = new ArrayList<>(Math.min(keep, raw.size()));
-    for (final RidScore r : raw) {
-      if (filtered && !allowedRIDs.contains(r.rid()))
-        continue;
-      if (pendingRIDs != null && pendingRIDs.contains(r.rid()))
-        continue;
-      out.add(r);
-      if (out.size() == keep)
-        break;
-    }
-    final List<RidScore> committed = oversample > 0 ? rescoreExactly(out, queryIndices, effectiveWeights, k) : out;
+    final List<RidScore> committed = committedTopK(queryIndices, effectiveWeights, k, allowedRIDs,
+        overlay != null ? overlay.touchedRIDs() : null, overlay != null ? overlay.touchedCount() : 0);
 
     if (overlay == null)
       return committed;
@@ -380,6 +344,96 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
     // when rescoring is on, but it is the top-k of the k * oversample candidates the quantized pass picked, so its
     // recall is bounded by rescoreOversample; with rescoring off it is exact only under the quantized scoring.
     return mergeByScore(committed, overlay.topK(queryIndices, effectiveWeights, allowedRIDs, k), k);
+  }
+
+  /**
+   * The committed top-{@code k}, exactly rescored when the index rescores (issue #8576), skipping every RID in
+   * {@code pendingRIDs} and every RID outside a non-empty {@code allowedRIDs}.
+   * <p>
+   * The rescoring loads each candidate's record and drops the candidates whose record is gone, which a commit deleting
+   * them between the index answer and the record load makes exactly the best-scored ones. So an answer that comes up
+   * short of {@code k} because candidates were dropped asks the engine again with a wider candidate budget, against the
+   * state committed by then, instead of answering short while the index holds more (issue #9692, the sparse twin of
+   * the dense BINARY rerank's #9396). It stops as soon as {@code k} come back, when the engine returned fewer
+   * candidates than asked (the index really holds fewer), when the budget cannot grow, or after
+   * {@link #STALE_TOP_UP_MAX_ATTEMPTS}. With rescoring off nothing is loaded, so nothing is dropped here: a stale RID is
+   * returned as it is and the caller resolving it is the one that tops it up.
+   */
+  private List<RidScore> committedTopK(final int[] queryIndices, final float[] effectiveWeights, final int k,
+      final Set<RID> allowedRIDs, final Set<RID> pendingRIDs, final int touchedCount) {
+    final boolean filtered = allowedRIDs != null && !allowedRIDs.isEmpty();
+    // With exact rescoring on (issue #8576) the committed side keeps k * oversample candidates for it to choose from:
+    // their quantized scores decide only who is a candidate, never the final order.
+    final int oversample = rescoreOversample();
+    int keep = oversampled(k, oversample);
+    int previousFetchK = -1;
+    List<RidScore> committed = List.of();
+    for (int attempt = 0; attempt < STALE_TOP_UP_MAX_ATTEMPTS; attempt++) {
+      // Over-fetch when an allowedRIDs whitelist is in play to reduce the chance of returning fewer than K items
+      // because the top-scored RIDs were filtered out. The fixed cap keeps worst-case work bounded even when the
+      // filter is very selective.
+      //
+      // The overlay widens it by exactly the number of RIDs the transaction has touched (issue #7966): those are
+      // dropped from the committed answer below - their committed vector is stale, and a deleted record must not
+      // come back - so fetching k of them and discarding some would under-fill. Fetching k + touched cannot.
+      final long widened = (long) keep + touchedCount;
+      // The unfiltered branch stays UNCAPPED, as it was before the overflow guard went in (PR #8001 review). The
+      // 100_000 ceiling belongs to the over-fetch: it bounds the multiplier applied to compensate for a selective
+      // filter, not the caller's own k. Capping the unfiltered branch made this method quietly return at most
+      // 100_000 rows to a caller that asked for more and would previously have got them all - a truncation with no
+      // error to notice it by. The SQL function refuses a k that large long before it reaches here, but this method
+      // is public and an embedded caller is not going through it.
+      final int fetchK = filtered ? (int) Math.min(widened * 8, MAX_OVERFETCH_ROWS) : (int) Math.min(widened, Integer.MAX_VALUE);
+      // A budget the cap kept where it was would only fetch the same candidates again.
+      if (fetchK == previousFetchK)
+        break;
+      previousFetchK = fetchK;
+
+      final List<RidScore> raw;
+      try {
+        raw = engine.topK(queryIndices, effectiveWeights, fetchK);
+      } catch (final IOException e) {
+        throw new IndexException("Sparse vector top-K failed", e);
+      }
+
+      final List<RidScore> candidates;
+      if (!filtered && pendingRIDs == null)
+        candidates = raw.size() <= keep ? raw : raw.subList(0, keep);
+      else {
+        final List<RidScore> out = new ArrayList<>(Math.min(keep, raw.size()));
+        for (final RidScore r : raw) {
+          if (filtered && !allowedRIDs.contains(r.rid()))
+            continue;
+          if (pendingRIDs != null && pendingRIDs.contains(r.rid()))
+            continue;
+          out.add(r);
+          if (out.size() == keep)
+            break;
+        }
+        candidates = out;
+      }
+
+      if (oversample == 0)
+        return candidates.size() <= k ? candidates : candidates.subList(0, k);
+
+      committed = rescoreExactly(candidates, queryIndices, effectiveWeights, k);
+
+      // rescoreExactly keeps every candidate whose record it found, so an answer below both k and the candidate count
+      // means records were gone. Anything else is the real answer: k found, or the index holding fewer.
+      final boolean shortBecauseDropped = committed.size() < k && committed.size() < candidates.size();
+      // The engine had fewer than the budget AND the selection above used all of them: a filtered fetch is wider than
+      // `keep`, so a short raw list alone does not mean the candidates ran out before `keep` did.
+      final boolean indexExhausted = raw.size() < fetchK && candidates.size() < keep;
+      if (!shortBecauseDropped || indexExhausted)
+        break;
+      // The cap bounds what the top-up ADDS, like oversampled() does. A first pass that already asked for more than it
+      // (a k * oversample past MAX_OVERFETCH_ROWS) would otherwise be "widened" into a narrower one (PR #9698 review).
+      final int wider = (int) Math.min((long) keep * STALE_TOP_UP_GROWTH, Math.max(k, MAX_OVERFETCH_ROWS));
+      if (wider <= keep)
+        break;
+      keep = wider;
+    }
+    return committed;
   }
 
   /** The exact-rescoring oversampling this index applies; see {@link LSMSparseVectorIndexMetadata#rescoreOversample}. */
@@ -402,6 +456,10 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
    * <p>
    * The score formula is the engine's, term for term: each query entry contributes on its own (a dimension asked
    * twice counts twice), with the same effective - IDF-scaled when so configured - query weights.
+   * <p>
+   * A candidate is dropped for ONE reason only: its record is gone. The stale top-ups of {@link #committedTopK},
+   * {@code topKGrouped} and {@code committedForGroups} read "fewer out than in" as exactly that (issue #9692), so a new
+   * reason to drop a candidate here has to be told apart from it there, or it turns into needless retries.
    */
   private List<RidScore> rescoreExactly(final List<RidScore> candidates, final int[] queryIndices,
       final float[] effectiveWeights, final int k) {
@@ -613,20 +671,40 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
     // Exact rescoring (issue #8576) widens both caps: which groups win and which members fill them are decided on the
     // exact scores, so the quantized pass only has to hand over enough of each.
     final int oversample = rescoreOversample();
-    final int widening = groupedWidening((long) limit * groupSize, oversample);
-    final List<RidScore> committed;
-    try {
-      // The excluded set is applied INSIDE the DAAT loop rather than by filtering the result: a grouped search
-      // counts admissions per group as it goes, so dropping rows afterwards would leave groups short of their cap
-      // with candidates still available (issue #7966).
-      final List<RidScore> candidates = engine.topKGrouped(queryIndices, effectiveWeights, oversampled(limit, widening),
-          oversampled(groupSize, widening), groupKeyResolver, allowedRIDs, overlay != null ? overlay.touchedRIDs() : null);
-      committed = oversample > 0 ?
-          admitGroups(rescoreExactly(candidates, queryIndices, effectiveWeights, Integer.MAX_VALUE), limit, groupSize,
-              groupKeyResolver) :
-          candidates;
-    } catch (final IOException e) {
-      throw new IndexException("Sparse vector grouped top-K failed", e);
+    final long rows = (long) limit * groupSize;
+    int widening = groupedWidening(rows, oversample);
+    List<RidScore> committed = List.of();
+    for (int attempt = 0; attempt < STALE_TOP_UP_MAX_ATTEMPTS; attempt++) {
+      final int groupsAsked = oversampled(limit, widening);
+      final int membersAsked = oversampled(groupSize, widening);
+      final List<RidScore> candidates;
+      try {
+        // The excluded set is applied INSIDE the DAAT loop rather than by filtering the result: a grouped search
+        // counts admissions per group as it goes, so dropping rows afterwards would leave groups short of their cap
+        // with candidates still available (issue #7966).
+        candidates = engine.topKGrouped(queryIndices, effectiveWeights, groupsAsked, membersAsked, groupKeyResolver, allowedRIDs,
+            overlay != null ? overlay.touchedRIDs() : null);
+      } catch (final IOException e) {
+        throw new IndexException("Sparse vector grouped top-K failed", e);
+      }
+      if (oversample == 0) {
+        committed = candidates;
+        break;
+      }
+
+      final List<RidScore> rescored = rescoreExactly(candidates, queryIndices, effectiveWeights, Integer.MAX_VALUE);
+      committed = admitGroups(rescored, limit, groupSize, groupKeyResolver);
+
+      // Candidates dropped because their record was gone (issue #9692) may have cost a group its members or its place:
+      // ask again with both caps wider, as the ungrouped search does, unless the answer is already full or the engine
+      // handed over everything it holds.
+      if (rescored.size() == candidates.size() || committed.size() >= rows
+          || groupedExhausted(candidates, groupKeyResolver, groupsAsked, membersAsked))
+        break;
+      final int wider = groupedWidening(rows, grownWidening(widening));
+      if (wider <= widening)
+        break;
+      widening = wider;
     }
 
     if (overlay == null)
@@ -747,27 +825,62 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
   private List<RidScore> committedForGroups(final int[] queryIndices, final float[] effectiveWeights,
       final Set<Object> groupKeys, final int groupSize, final float floor, final Set<RID> allowedRIDs,
       final Function<RID, Object> groupKeyResolver, final Set<RID> excludedRIDs, final int oversample) {
-    final List<RidScore> candidates;
-    try {
-      candidates = engine.topKForGroups(queryIndices, effectiveWeights, groupKeys,
-          oversampled(groupSize, rowWidening((long) groupKeys.size() * groupSize, oversample)),
-          oversample > 0 ? Float.NEGATIVE_INFINITY : floor, groupKeyResolver, allowedRIDs, excludedRIDs);
-    } catch (final IOException e) {
-      throw new IndexException("Sparse vector grouped top-K failed", e);
-    }
-    if (oversample == 0)
-      return candidates;
+    final long rows = (long) groupKeys.size() * groupSize;
+    int widening = rowWidening(rows, oversample);
+    List<RidScore> out = List.of();
+    for (int attempt = 0; attempt < STALE_TOP_UP_MAX_ATTEMPTS; attempt++) {
+      final int membersAsked = oversampled(groupSize, widening);
+      final List<RidScore> candidates;
+      try {
+        candidates = engine.topKForGroups(queryIndices, effectiveWeights, groupKeys, membersAsked,
+            oversample > 0 ? Float.NEGATIVE_INFINITY : floor, groupKeyResolver, allowedRIDs, excludedRIDs);
+      } catch (final IOException e) {
+        throw new IndexException("Sparse vector grouped top-K failed", e);
+      }
+      if (oversample == 0)
+        return candidates;
 
-    final List<RidScore> rescored = rescoreExactly(candidates, queryIndices, effectiveWeights, Integer.MAX_VALUE);
-    final HashMap<Object, Integer> perGroup = new HashMap<>();
-    final List<RidScore> out = new ArrayList<>((int) Math.min(rescored.size(), (long) groupKeys.size() * groupSize));
-    for (final RidScore candidate : rescored) {
-      if (candidate.score() <= floor)
+      final List<RidScore> rescored = rescoreExactly(candidates, queryIndices, effectiveWeights, Integer.MAX_VALUE);
+      final HashMap<Object, Integer> perGroup = new HashMap<>();
+      out = new ArrayList<>((int) Math.min(rescored.size(), rows));
+      for (final RidScore candidate : rescored) {
+        if (candidate.score() <= floor)
+          break;
+        if (perGroup.merge(groupKeyResolver.apply(candidate.rid()), 1, Integer::sum) <= groupSize)
+          out.add(candidate);
+      }
+
+      // The same top-up as the grouped search (issue #9692): a group left short because its members' records were
+      // gone asks again with a wider per-group cap, unless the engine already handed over every member it holds.
+      if (rescored.size() == candidates.size() || out.size() >= rows
+          // No group budget here: the groups are named by the caller, so only the per-group cap says whether more exist.
+          || groupedExhausted(candidates, groupKeyResolver, Integer.MAX_VALUE, membersAsked))
         break;
-      if (perGroup.merge(groupKeyResolver.apply(candidate.rid()), 1, Integer::sum) <= groupSize)
-        out.add(candidate);
+      final int wider = rowWidening(rows, grownWidening(widening));
+      if (wider <= widening)
+        break;
+      widening = wider;
     }
     return out;
+  }
+
+  /** The next widening a grouped stale top-up asks for, clamped rather than left to overflow an int. */
+  private static int grownWidening(final int widening) {
+    return (int) Math.min((long) Math.max(widening, 1) * STALE_TOP_UP_GROWTH, Integer.MAX_VALUE);
+  }
+
+  /**
+   * Whether a grouped engine answer holds everything the index has for it: fewer groups than {@code groupsAsked} and
+   * no group at its {@code membersAsked} cap, so asking again with wider caps cannot return anything new. Only called
+   * once the answer is known to be short, so the group keys it resolves are paid for on that path alone.
+   */
+  private static boolean groupedExhausted(final List<RidScore> candidates, final Function<RID, Object> groupKeyResolver,
+      final int groupsAsked, final int membersAsked) {
+    final HashMap<Object, Integer> perGroup = new HashMap<>();
+    for (final RidScore candidate : candidates)
+      if (perGroup.merge(groupKeyResolver.apply(candidate.rid()), 1, Integer::sum) >= membersAsked)
+        return false;
+    return perGroup.size() < groupsAsked;
   }
 
   /** The rows of {@code sorted} (best first) that fit {@code limit} groups of at most {@code groupSize} members. */

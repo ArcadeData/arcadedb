@@ -216,6 +216,28 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
             + " candidates (cap " + MAX_FETCH_CANDIDATES + "). Reduce k or groupSize.");
     }
 
+    // A record deleted by a commit that overlaps the search can still be in an index's answer for a short while, and
+    // the non-grouped path asks each sub-index for exactly `k` candidates, so each such record would cost the caller a
+    // row (issue #9692, the sparse twin of #9368). When a stale candidate was skipped, the answer is short, and a
+    // sub-index could have given more (one that returned fewer candidates than asked has nothing left), ask again with
+    // a wider fetch so a stale entry costs a candidate and not an answer row. Bounded by MAX_FETCH_CANDIDATES. The
+    // grouped path keeps its single pass, as the dense function's does: `k` there is a group budget, not a row count.
+    int fetchK = k;
+    while (true) {
+      final boolean[] staleSkipped = new boolean[1];
+      final boolean[] saturated = new boolean[1];
+      final ArrayList<Object> result = searchAndEmit(indexes, queryIndices, queryValues, k, fetchK, allowedRIDs, groupBy,
+          groupSize, minScore, context, staleSkipped, saturated);
+      if (groupBy != null || result.size() >= k || !staleSkipped[0] || !saturated[0] || fetchK >= MAX_FETCH_CANDIDATES)
+        return result;
+      fetchK = (int) Math.min((long) fetchK * 2L, MAX_FETCH_CANDIDATES);
+    }
+  }
+
+  private ArrayList<Object> searchAndEmit(final List<LSMSparseVectorIndex> indexes, final int[] queryIndices,
+      final float[] queryValues, final int k, final int fetchK, final Set<RID> allowedRIDs, final String groupBy,
+      final int groupSize, final float minScore, final CommandContext context, final boolean[] staleSkipped,
+      final boolean[] saturated) {
     final ArrayList<RidScore> merged = new ArrayList<>();
     final BasicDatabase databaseRef = context.getDatabase();
 
@@ -231,12 +253,12 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
       }
     };
 
-    // Per-bucket fetch cap. The non-grouped path keeps the original {@code fetchK = k} shape; the
-    // grouped path uses {@code k} as the distinct-group budget. In multi-bucket mode each bucket
-    // returns up to {@code k} distinct groups, a second phase fetches the members of winning groups
-    // a bucket ranked out (issue #8002), and the post-merge {@link GroupAdmissionState} re-applies
-    // the global cap so cross-bucket group keys collapse correctly.
-    final int fetchK = k;
+    // Per-bucket fetch cap. The non-grouped path asks for {@code fetchK} candidates, {@code k} on the first pass and
+    // wider on a stale top-up; the grouped path uses {@code k} as the distinct-group budget. In multi-bucket mode each
+    // bucket returns up to {@code k} distinct groups, a second phase fetches the members of winning groups a bucket
+    // ranked out (issue #8002), and the post-merge {@link GroupAdmissionState} re-applies the global cap so
+    // cross-bucket group keys collapse correctly.
+    final int groupBudget = k;
 
     // Resolved HERE, on the caller's thread, and never inside the searches below (issue #7966). A search that
     // fans out runs on a SparseVectorScoringPool worker, where getTransactionIfExists() answers null, so an
@@ -254,7 +276,7 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
       if (groupBy == null)
         searches.add(() -> idx.topK(queryIndices, queryValues, fetchK, allowedRIDs, overlay));
       else
-        searches.add(() -> idx.topKGrouped(queryIndices, queryValues, fetchK, groupSize, allowedRIDs, groupKeyResolver,
+        searches.add(() -> idx.topKGrouped(queryIndices, queryValues, groupBudget, groupSize, allowedRIDs, groupKeyResolver,
             overlay));
     }
     // Serial on the caller's thread whenever it holds uncommitted changes. A pool worker has no view of the caller's
@@ -263,8 +285,14 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
     // inside the transaction would go unseen. The engine refuses to split its own traversal for the same reason.
     final boolean serial = SparseVectorScoringPool.callerHoldsUncommittedChanges(databaseRef.getDatabasePath());
     final List<List<RidScore>> perIndex = runAll(searches, serial);
-    for (final List<RidScore> partial : perIndex)
+    for (final List<RidScore> partial : perIndex) {
       merged.addAll(partial);
+      // Any sub-index at its budget may hold more, so the answer as a whole can grow. Over several sub-indexes this can
+      // re-run a search whose stale row came from one that was not saturated: wasted work, never a wrong answer, and
+      // bounded by MAX_FETCH_CANDIDATES - the same trade the dense function makes (#9368).
+      if (groupBy == null && partial.size() >= fetchK)
+        saturated[0] = true;
+    }
 
     // Second phase of a grouped search over several buckets (issue #8002). Each bucket answered with ITS best k
     // groups, which settles the winners overall but not their members: a bucket that ranked a winner outside its own
@@ -331,6 +359,8 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
       try {
         record = (Document) databaseRef.lookupByRID(neighbor.rid(), true);
       } catch (final RecordNotFoundException e) {
+        // Deleted after the index answered: the caller tops the answer up with a wider fetch (issue #9692).
+        staleSkipped[0] = true;
         continue;
       }
 
