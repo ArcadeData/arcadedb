@@ -21,6 +21,7 @@ package com.arcadedb.query;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -34,9 +35,9 @@ import java.util.concurrent.atomic.AtomicLong;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public final class RunningQueryRegistry {
-  private static final String ID_PREFIX = "q";
-
-  private final AtomicLong                            lastId  = new AtomicLong();
+  private final AtomicLong                            lastId      = new AtomicLong();
+  // Random per registry: part of every id this registry hands out, so an id never resolves on a node that did not issue it
+  private final String                                instanceTag = Integer.toHexString(ThreadLocalRandom.current().nextInt() | 0x10000000);
   private final ConcurrentHashMap<Long, RunningQuery> running = new ConcurrentHashMap<>();
 
   /**
@@ -57,18 +58,27 @@ public final class RunningQueryRegistry {
     return query;
   }
 
-  /** The running statement with this id ({@code q12}, or just {@code 12}), or {@code null} if none is running. */
+  /**
+   * The running statement with this id ({@code q<n>-<instance>}, see {@link RunningQuery#getId()}), or {@code null} if none
+   * is running here. An id issued by another registry - another node, or this one before a restart - is not found.
+   */
   public RunningQuery get(final String id) {
     if (id == null)
       return null;
-    String value = id.trim();
-    if (value.regionMatches(true, 0, ID_PREFIX, 0, ID_PREFIX.length()))
-      value = value.substring(ID_PREFIX.length());
+    final String value = id.trim();
+    final int dash = value.lastIndexOf('-');
+    if (dash < 2 || (value.charAt(0) != 'q' && value.charAt(0) != 'Q') || !instanceTag.equalsIgnoreCase(value.substring(dash + 1)))
+      return null;
     try {
-      return running.get(Long.parseLong(value));
+      return running.get(Long.parseLong(value.substring(1, dash)));
     } catch (final NumberFormatException e) {
       return null;
     }
+  }
+
+  /** The tag that sets this registry's ids apart from any other's. */
+  public String getInstanceTag() {
+    return instanceTag;
   }
 
   /** A snapshot of the statements running now, oldest first. */

@@ -242,6 +242,14 @@ class Issue9680RunningQueryTerminationTest {
 
       q.setStatement("opencypher", "MATCH (n) RETURN n.name");
       assertThat(q.getText()).isEqualTo("MATCH (n) RETURN n.name");
+
+      // A long run of blanks after a keyword, with no value to end it, is scanned once rather than backtracked over, and a
+      // huge statement is scanned only as far as it can be shown
+      q.setStatement("sql", "SELECT password" + " ".repeat(200_000) + ",");
+      final StallAwareStopwatch watch = StallAwareStopwatch.start();
+      for (int i = 0; i < 20; i++)
+        assertThat(q.getText()).hasSize(RunningQuery.MAX_TEXT_LENGTH + 3);
+      watch.assertStayedUnder(2_000, "masking is linear in the shown text: a backtracking pattern takes minutes on this input");
     }
   }
 
@@ -267,7 +275,14 @@ class Issue9680RunningQueryTerminationTest {
     final RunningQuery q = registry.register("db", "admin", "http", "AS-1", "bench-1");
     try {
       assertThat(registry.get(q.getId())).isSameAs(q);
-      assertThat(registry.get(q.getId().substring(1))).isSameAs(q);
+      assertThat(registry.get(" " + q.getId().toUpperCase() + " ")).isSameAs(q);
+      // Only an id this registry issued: a bare number, or the same number issued by another node, finds nothing here
+      assertThat(registry.get(q.getId().substring(0, q.getId().indexOf('-')))).isNull();
+      final RunningQueryRegistry otherNode = new RunningQueryRegistry();
+      try (final RunningQuery foreign = otherNode.register("db", "admin", "http", null, null)) {
+        assertThat(foreign.getId()).startsWith(q.getId().substring(0, q.getId().indexOf('-') + 1));
+        assertThat(registry.get(foreign.getId())).isNull();
+      }
       assertThat(registry.get("not-an-id")).isNull();
       assertThat(registry.get(null)).isNull();
       assertThat(RunningQuery.current()).isSameAs(q);
