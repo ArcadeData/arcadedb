@@ -210,9 +210,10 @@ public final class RunningQuery implements AutoCloseable {
 
   /**
    * Runs {@code listener} when the statement is asked to stop, on the thread that asks - at once if it already was. For
-   * work the flag cannot reach: a guest language loop, a statement forwarded to another server. The listener must be
-   * quick to return or bounded, must not throw, and must stop only this statement's work: it may run after the work it
-   * was registered for is over, so it has to check that before acting.
+   * work the flag cannot reach: a guest language loop, a statement forwarded to another server. The listener must not
+   * block - the terminating thread may be a network I/O thread (a client that went away, a cancelled gRPC call) - so
+   * anything slow is handed to another thread; it must not throw, and must stop only this statement's work: it may run
+   * after the work it was registered for is over, so it has to check that before acting.
    *
    * @return closing it unregisters the listener; a listener that ran, or was never registered, closes as a no-op
    */
@@ -231,8 +232,7 @@ public final class RunningQuery implements AutoCloseable {
       }
     }
     notifyTermination(listener);
-    return () -> {
-    };
+    return NO_REGISTRATION;
   }
 
   /** Withdraws a termination listener; closing it never fails, and closing it twice is harmless. */
@@ -241,6 +241,10 @@ public final class RunningQuery implements AutoCloseable {
     @Override
     void close();
   }
+
+  /** The registration of a listener that already ran: there is nothing to withdraw. */
+  private static final Registration NO_REGISTRATION = () -> {
+  };
 
   private void notifyTermination(final Runnable listener) {
     try {

@@ -269,13 +269,18 @@ class Issue9689PostgresCancelIT extends PostgresWireProtocolTestBase {
   @Test
   void aPidThatNamesNoConnectionIsAnsweredFalse() throws Exception {
     try (final Connection conn = connect("root", DEFAULT_PASSWORD_FOR_TESTS, "simple"); final Statement st = conn.createStatement()) {
-      // Beyond the int range of a pid, a pid nobody holds, a null: no connection, no error
-      for (final String argument : new String[] { "9999999999", "2147483647", "null" })
-        for (final String function : new String[] { "pg_cancel_backend", "pg_terminate_backend" })
+      // Beyond the int range of a pid, a pid nobody holds: no connection, no error. A NULL is answered NULL, as PostgreSQL does
+      for (final String function : new String[] { "pg_cancel_backend", "pg_terminate_backend" }) {
+        for (final String argument : new String[] { "9999999999", "2147483647" })
           try (final ResultSet rs = st.executeQuery("SELECT " + function + "(" + argument + ") AS signalled")) {
             assertThat(rs.next()).isTrue();
             assertThat(rs.getBoolean("signalled")).as("%s(%s)", function, argument).isFalse();
           }
+        try (final ResultSet rs = st.executeQuery("SELECT " + function + "(null) AS signalled")) {
+          assertThat(rs.next()).isTrue();
+          assertThat(rs.getObject("signalled")).as("%s(null)", function).isNull();
+        }
+      }
       assertThat(backendPid(conn)).isPositive();
     }
   }
