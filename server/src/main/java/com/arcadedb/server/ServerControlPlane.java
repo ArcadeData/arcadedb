@@ -964,13 +964,17 @@ public class ServerControlPlane {
 
     // A statement running in the session ends the session on its way out once it is terminated (DatabaseAbstractHandler),
     // so the session is left to it rather than rolled back under its feet: cancel() would wait for it anyway
-    final long deadline = System.currentTimeMillis() + boundedWait(waitMs);
+    // Every statement of the session is asked to stop before any of them is waited for, as by tag
+    final List<RunningQuery> inSession = new ArrayList<>();
     for (final RunningQuery query : server.getRunningQueries().getRunning())
       if (sessionId.equals(query.getSessionId())) {
         query.terminate(user.getName());
-        if (!awaitEnd(query, deadline))
-          return new JSONObject().put("id", sessionId).put("status", "terminating");
+        inSession.add(query);
       }
+    final long deadline = System.currentTimeMillis() + boundedWait(waitMs);
+    for (final RunningQuery query : inSession)
+      if (!awaitEnd(query, deadline))
+        return new JSONObject().put("id", sessionId).put("status", "terminating");
 
     // Idle, or what ran in it is over: end it here. Removed first, so no new request can resolve it meanwhile
     if (httpServer.getSessionManager().removeSession(sessionId) != null)

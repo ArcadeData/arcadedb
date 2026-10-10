@@ -280,6 +280,24 @@ class Issue9680RunningQueryTerminationTest {
   }
 
   @Test
+  void anEntryClosedOutOfTurnIsNeverLeftBehind() {
+    final RunningQuery outer = registry.register("db", "root", "http", null, null);
+    final RunningQuery inner = registry.register("db", "root", "http", null, null);
+    outer.terminate("root");
+    // The outer entry ends first: the inner one still runs and is still the thread's
+    outer.close();
+    assertThat(RunningQuery.current()).isSameAs(inner);
+    // Closing the inner one does not bring the ended (and terminated) outer one back
+    inner.close();
+    assertThat(RunningQuery.current()).isNull();
+    // So a later statement on this thread, embedded or not, is not failed by a termination meant for another
+    database.transaction(() -> database.newDocument("Written").set("x", 3).save());
+    database.transaction(() -> database.command("sql", "DELETE FROM Written"));
+    // And an ended entry no longer fails anybody
+    outer.checkNotTerminated("the check");
+  }
+
+  @Test
   void registryResolvesIdsAndForgetsEndedStatements() {
     final RunningQuery q = registry.register("db", "admin", "http", "AS-1", "bench-1");
     try {
