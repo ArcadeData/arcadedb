@@ -625,8 +625,8 @@ public class OpenCypherQueryEngine implements QueryEngine {
    * from its own JSON; a refusal (or any failure, an Error included) puts the previous declaration back before rethrowing. The
    * check scans the whole type, as CREATE PROPERTY does.
    * <p>
-   * The attributes that mean the same thing whatever the type (MANDATORY, NOTNULL, READONLY, HIDDEN, custom values, ...) are
-   * carried over as they are. The ones expressed in the old type's terms - OF, REGEXP, MIN, MAX and DEFAULT - are carried over
+   * The attributes no type restricts (MANDATORY, NOTNULL, READONLY, HIDDEN, EXTERNAL, COMPRESSION, custom values) are carried
+   * over as they are. The ones expressed in the old type's terms - OF, REGEXP, MIN, MAX and DEFAULT - are carried over
    * only when the new type reads them the same way, and otherwise the statement is refused naming them (#9645): copied blindly
    * they left a property no value could be written through, and the scan of the stored records cannot notice it on a type that
    * holds none.
@@ -640,8 +640,6 @@ public class OpenCypherQueryEngine implements QueryEngine {
     if (!notCarried.isEmpty())
       throw refuseRetype(typeName, existing, newType, notCarried);
 
-    final Object previousDefault = evaluateDefaultOrNull(existing);
-
     final JSONObject previous = existing.toJSON();
     final JSONObject retyped = new JSONObject(previous.toMap());
     retyped.put("type", newType.name());
@@ -649,7 +647,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
     type.dropProperty(propName);
     try {
       final Property created = type.createProperty(propName, retyped);
-      requireDefaultReadableAs(database, typeName, existing, created, newType, previousDefault);
+      requireDefaultReadableAs(database, typeName, existing, created, newType);
       ExistingRecordsCheck.requireDeclaration(database, type, created);
     } catch (final Throwable e) {
       // the schema is not transactional: until the declaration is back, a concurrent write is not validated against it
@@ -726,13 +724,16 @@ public class OpenCypherQueryEngine implements QueryEngine {
       case LIST, MAP, ARRAY_OF_SHORTS, ARRAY_OF_INTEGERS, ARRAY_OF_LONGS, ARRAY_OF_FLOATS, ARRAY_OF_DOUBLES -> "number of items";
       case BYTE, SHORT, INTEGER, LONG, FLOAT, DOUBLE, DECIMAL -> "numeric value";
       case DATE, DATETIME, DATETIME_SECOND, DATETIME_MICROS, DATETIME_NANOS -> "date";
-      default -> type.name();
+      // a type no case above names takes no bound this method knows how to compare: refuse rather than call two of them equal
+      default -> null;
     };
   }
 
+  /**
+   * The default of the previous declaration, or null when it produces none. A default that already failed to evaluate under
+   * the old type counts as producing none: the new type is then only asked not to throw, which it was asked already.
+   */
   private static Object evaluateDefaultOrNull(final Property property) {
-    if (property.getDefaultValueDefinition() == null)
-      return null;
     try {
       return property.getDefaultValue();
     } catch (final RuntimeException e) {
@@ -744,9 +745,12 @@ public class OpenCypherQueryEngine implements QueryEngine {
    * Refuses the retype when the DEFAULT of the previous declaration does not produce a value of {@code newType}: it would be
    * stored, and every record created without the property would then fail on it (#9645). A default that produced a value
    * before and produces none now lost it in the conversion, which is the same failure without the exception.
+   * <p>
+   * The new default is evaluated once, and the old one only when the new one produced nothing, so a default with a side effect
+   * (a sequence's next value) is not consumed twice by a DDL statement.
    */
   private static void requireDefaultReadableAs(final Database database, final String typeName, final Property existing,
-      final Property created, final Type newType, final Object previousDefault) {
+      final Property created, final Type newType) {
     final Object definition = created.getDefaultValueDefinition();
     if (definition == null)
       return;
@@ -763,7 +767,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
       refusal.initCause(e);
       throw refusal;
     }
-    if (value == null && previousDefault != null)
+    if (value == null && evaluateDefaultOrNull(existing) != null)
       throw refuseRetype(typeName, existing, newType, List.of(notCarried));
   }
 

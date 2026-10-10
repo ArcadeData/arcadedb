@@ -138,6 +138,36 @@ class Issue9645TypedConstraintTypeDependentAttributesTest extends TestHelper {
   }
 
   @Test
+  void aLengthBoundIsRefusedOnACollection() {
+    database.command("sql", "CREATE VERTEX TYPE S");
+    database.command("sql", "CREATE PROPERTY S.v STRING (max 4)");
+
+    // 4 characters on a STRING would become 4 entries on a MAP
+    assertThatThrownBy(() -> database.command("opencypher", "CREATE CONSTRAINT FOR (n:S) REQUIRE n.v IS :: MAP"))
+        .isInstanceOf(CommandExecutionException.class)
+        .hasMessageContaining("MAX '4'");
+    assertThat(database.getSchema().getType("S").getProperty("v").getType()).isEqualTo(Type.STRING);
+  }
+
+  @Test
+  void dateBoundsAndDefaultAreCarriedOverBetweenDateTypes() {
+    database.command("sql", "CREATE VERTEX TYPE W");
+    database.command("sql", "CREATE PROPERTY W.d DATE (min '2020-01-01', default '2021-06-01')");
+
+    database.command("opencypher", "CREATE CONSTRAINT FOR (n:W) REQUIRE n.d IS :: LOCAL DATETIME").close();
+
+    final Property p = database.getSchema().getType("W").getProperty("d");
+    assertThat(p.getType()).isEqualTo(Type.DATETIME);
+    assertThat(p.getMin()).isEqualTo("2020-01-01");
+    assertThat(p.getDefaultValue()).isNotNull();
+
+    database.transaction(() -> database.command("sql", "INSERT INTO W SET other = 1").close());
+    try (final ResultSet rs = database.query("sql", "SELECT d FROM W")) {
+      assertThat(rs.next().<Object>getProperty("d")).isNotNull();
+    }
+  }
+
+  @Test
   void aBoundTheNewTypeCannotReadIsRefused() {
     database.command("sql", "CREATE VERTEX TYPE F");
     database.command("sql", "CREATE PROPERTY F.n DOUBLE (max 2.5)");
