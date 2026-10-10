@@ -19,6 +19,7 @@
 package com.arcadedb.engine.timeseries;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.engine.timeseries.TimeSeriesSealedStore.BlockDirectorySnapshot;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.LocalTimeSeriesType;
@@ -198,7 +199,79 @@ class Issue9612TimeWindowAggregatePushDownTest extends TestHelper {
       final String byHost = "SELECT host, " + projection + " FROM X WHERE host = 'host_1' GROUP BY host";
       assertThat(plan(byHost.replace(" X", " T"))).contains("group by host");
       assertThat(types(byHost.replace(" X", " T"))).isEqualTo(types(byHost.replace(" X", " D")));
+
+      // the time-bucket push-down answered Doubles before 26.11.1; it answers the generic plan's types too now
+      final String byHour = "SELECT ts.timeBucket('1h', ts) AS h, " + projection + " FROM X WHERE " + RANGE + " GROUP BY h";
+      assertThat(plan(byHour.replace(" X", " T"))).contains("bucket=3600000ms");
+      final List<String> typesOfTheBucket = types(byHour.replace(" X", " T"));
+      typesOfTheBucket.removeIf(t -> t.startsWith("h:"));
+      final List<String> typesOfTheTwin = types(byHour.replace(" X", " D"));
+      typesOfTheTwin.removeIf(t -> t.startsWith("h:"));
+      assertThat(typesOfTheBucket).isEqualTo(typesOfTheTwin);
     });
+  }
+
+  @Test
+  void anIntegralTotalPastWhatADoubleHoldsExactlyStaysADouble() {
+    database.command("sql", "CREATE TIMESERIES TYPE T TIMESTAMP ts TAGS (host STRING) FIELDS (ui LONG) SHARDS 1");
+    final long big = 1L << 60;
+    database.transaction(() -> {
+      for (int s = 0; s < 3; s++)
+        database.command("sql", "INSERT INTO T SET ts = ?, host = 'a', ui = ?", T0 + s * 1_000L, big + s);
+    });
+    database.command("sql", "COMPACT TIMESERIES TYPE T");
+    // the engine accumulates in doubles, so a total past 2^53 may have been rounded: it is not handed back as an exact Long
+    try (final ResultSet rs = database.query("sql", "SELECT sum(ui) AS s, max(ui) AS m, count(*) AS c FROM T")) {
+      final Result r = rs.next();
+      assertThat(r.<Object>getProperty("s")).isInstanceOf(Double.class);
+      assertThat(r.<Object>getProperty("m")).isInstanceOf(Double.class);
+      assertThat(r.<Long>getProperty("c")).isEqualTo(3L);
+    }
+    try (final ResultSet rs = database.query("sql", "SELECT sum(ui) AS s FROM T WHERE ui < 0")) {
+      assertThat(rs.next().<Object>getProperty("s")).isNull();
+    }
+  }
+
+  @Test
+  void aFieldFilteredWalkFollowsAMergeOfSmallBlocksAndEmitsEachPassingRowOnce() throws Exception {
+    database.command("sql", "CREATE TIMESERIES TYPE T TIMESTAMP ts TAGS (host STRING) FIELDS (uu DOUBLE) SHARDS 1");
+    final TimeSeriesEngine engine = engine();
+    // six small blocks of 20 samples each, uu = 0..119 in time order
+    for (int block = 0; block < 6; block++) {
+      final long[] timestamps = new long[20];
+      final Object[] hosts = new Object[20];
+      final Object[] values = new Object[20];
+      for (int i = 0; i < 20; i++) {
+        final int v = block * 20 + i;
+        timestamps[i] = T0 + v * 1_000L;
+        hosts[i] = "h" + (v % 3);
+        values[i] = (double) v;
+      }
+      engine.appendSamples(timestamps, hosts, values);
+      engine.compactAll();
+    }
+    final TimeSeriesSealedStore sealed = engine.getShard(0).getSealedStore();
+    final BlockDirectorySnapshot snapshot = sealed.snapshotBlockDirectory(Long.MIN_VALUE, Long.MAX_VALUE);
+    assertThat(snapshot.blocks()).hasSize(6);
+
+    // 10 <= uu < 110: the first and the fifth block straddle it, the last block cannot match
+    final List<ColumnDefinition> columns = engine.getColumns();
+    final FieldFilter filter = FieldFilter.range(1, columns.get(2), 10, true, 110, false);
+    final Iterator<Object[]> it = sealed.iterateRange(snapshot, Long.MIN_VALUE, Long.MAX_VALUE, null, null, filter, new AggregationMetrics());
+    final List<Double> seen = new ArrayList<>();
+    while (it.hasNext()) {
+      seen.add(((Number) it.next()[2]).doubleValue());
+      // the merge lands while the walk is in its second block, so the rest of the walk reads the merged block in part
+      if (seen.size() == 15) {
+        engine.mergeSmallBlocks();
+        assertThat(sealed.getBlockCount()).isEqualTo(1);
+      }
+    }
+    final List<Double> expected = new ArrayList<>();
+    for (int v = 10; v < 110; v++)
+      expected.add((double) v);
+    seen.sort(null);
+    assertThat(seen).isEqualTo(expected);
   }
 
   @Test
@@ -344,6 +417,17 @@ class Issue9612TimeWindowAggregatePushDownTest extends TestHelper {
     // integral bounds are normalised to inclusive longs, and an exclusive bound past the extreme matches nothing
     assertThat(FieldFilter.range(0, lng, 5, false, 9, false).describe()).isEqualTo("l BETWEEN 6 AND 8");
     assertThat(FieldFilter.range(0, lng, Long.MAX_VALUE, false, null, false).matchesNothing()).isTrue();
+    assertThat(FieldFilter.range(0, lng, null, false, Long.MIN_VALUE, false).matchesNothing()).isTrue();
+    final FieldFilter atTheTop = FieldFilter.range(0, lng, Long.MAX_VALUE, true, null, false);
+    assertThat(atTheTop.matchesNothing()).isFalse();
+    assertThat(atTheTop.matches(new Object[] { 1L, Long.MAX_VALUE })).isTrue();
+    assertThat(atTheTop.matches(new Object[] { 1L, Long.MAX_VALUE - 1 })).isFalse();
+    assertThat(atTheTop.describe()).isEqualTo("l = " + Long.MAX_VALUE); // nothing is above it
+    assertThat(FieldFilter.range(0, lng, null, false, Long.MIN_VALUE, true).matches(new Object[] { 1L, Long.MIN_VALUE })).isTrue();
+    // a DOUBLE column against a Long operand past 2^53 compares as doubles, as SQL widens that pair
+    final FieldFilter pastExact = FieldFilter.range(0, dbl, (1L << 53) + 1, false, null, false);
+    assertThat(pastExact.matches(new Object[] { 1L, 0x1p53 })).isFalse();
+    assertThat(pastExact.matches(new Object[] { 1L, 0x1p53 + 2 })).isTrue();
     assertThat(FieldFilter.range(0, dbl, 5, false, 5, true).matchesNothing()).isTrue();
     assertThat(FieldFilter.range(0, dbl, 5, true, 5, true).describe()).isEqualTo("d = 5.0");
 

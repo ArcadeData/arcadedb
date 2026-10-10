@@ -68,6 +68,8 @@ public class AggregateFromTimeSeriesStep extends AbstractExecutionStep {
   private       Iterator<ResultInternal>           resultIterator;
   private       boolean                            fetched = false;
   private       AggregationMetrics                 aggregationMetrics;
+  /** The largest magnitude up to which a double holds every integer: 2^53. */
+  private static final double MAX_EXACT_INTEGRAL_DOUBLE = 0x1p53;
   /** The non-timestamp columns in schema order, the numbering an engine row uses past its timestamp; built on first use. */
   private       ColumnDefinition[]                 nonTsColumns;
 
@@ -329,17 +331,28 @@ public class AggregateFromTimeSeriesStep extends AbstractExecutionStep {
     if (column == null)
       return value;
     return switch (column.getDataType()) {
-      case LONG -> value >= Long.MIN_VALUE && value < 0x1p63 ? (Object) (long) value : (Object) value;
-      case INTEGER, SHORT, BYTE -> {
-        if (req.type() != AggregationType.SUM)
-          yield column.boxRaw((long) value);
-        // a total of ints is an int until it overflows, then a long, as Type.increment widens it
-        yield value >= Integer.MIN_VALUE && value <= Integer.MAX_VALUE ? (Object) (int) value
-            : value >= Long.MIN_VALUE && value < 0x1p63 ? (Object) (long) value : (Object) value;
-      }
+      case LONG -> integralOrDouble(value, false);
+      case INTEGER, SHORT, BYTE -> req.type() == AggregationType.SUM
+          // a total of ints is an int until it overflows, then a long, as Type.increment widens it
+          ? integralOrDouble(value, true)
+          // a sample of the column, so it fits the column's type
+          : column.boxRaw((long) value);
       case FLOAT -> (float) value;
       default -> value;
     };
+  }
+
+  /**
+   * The integral value an engine double stands for, as an Integer when {@code preferInt} and it fits one, else as a Long - or the
+   * double itself past 2^53 in magnitude, where a double no longer holds every integer: the engine accumulates in doubles, so a
+   * total that large may have been rounded, and handing it back as a Long would dress a rounded total up as an exact one.
+   */
+  private static Object integralOrDouble(final double value, final boolean preferInt) {
+    if (Math.abs(value) > MAX_EXACT_INTEGRAL_DOUBLE)
+      return value;
+    if (preferInt && value >= Integer.MIN_VALUE && value <= Integer.MAX_VALUE)
+      return (int) value;
+    return (long) value;
   }
 
   /** The column a request aggregates: its index is a position in the engine row, where 0 is the timestamp. */
