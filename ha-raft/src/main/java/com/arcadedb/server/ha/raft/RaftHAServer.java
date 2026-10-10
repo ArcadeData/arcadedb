@@ -5760,23 +5760,28 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       // applied, which wakes every waiter
       long membershipSeen = membershipChanges.get();
       long nextMembershipCheck = 0L;
-      synchronized (applyNotifier) {
-        while (getTrustedAppliedIndex(databaseName) < targetIndex) {
-          if (readConsistency != null) {
-            final long now = System.currentTimeMillis();
-            final long membership = membershipChanges.get();
-            if (membership != membershipSeen || now >= nextMembershipCheck) {
-              membershipSeen = membership;
-              nextMembershipCheck = now + APPLY_WAIT_RECHECK_INTERVAL_MS;
-              if (isRemovedFromConfiguration()) {
-                LogManager.instance().log(this, Level.INFO,
-                    "%s read on database '%s' refused while waiting for index %d (applied=%d): this server is no longer a "
-                        + "member of the Raft configuration", readConsistency, databaseName, targetIndex,
-                    getTrustedAppliedIndex(databaseName));
-                throw readRefusedWhileRemovedFromConfiguration(databaseName, readConsistency);
-              }
+      while (true) {
+        // Outside the monitor: the configuration is read from the Ratis division, and holding applyNotifier across that
+        // read would stall notifyApplied() - the apply thread - and every other waiter behind it. The applied index is
+        // still re-checked under the monitor before each wait, so no notification can be missed between the two
+        if (readConsistency != null && getTrustedAppliedIndex(databaseName) < targetIndex) {
+          final long now = System.currentTimeMillis();
+          final long membership = membershipChanges.get();
+          if (membership != membershipSeen || now >= nextMembershipCheck) {
+            membershipSeen = membership;
+            nextMembershipCheck = now + APPLY_WAIT_RECHECK_INTERVAL_MS;
+            if (isRemovedFromConfiguration()) {
+              LogManager.instance().log(this, Level.INFO,
+                  "%s read on database '%s' refused while waiting for index %d (applied=%d): this server is no longer a "
+                      + "member of the Raft configuration", readConsistency, databaseName, targetIndex,
+                  getTrustedAppliedIndex(databaseName));
+              throw readRefusedWhileRemovedFromConfiguration(databaseName, readConsistency);
             }
           }
+        }
+        synchronized (applyNotifier) {
+          if (getTrustedAppliedIndex(databaseName) >= targetIndex)
+            break;
           if (!throwOnTimeout && (getStaleSnapshotAppliedFloor() >= 0 || getDatabaseAppliedFloor(databaseName) >= 0)) {
             // No explicit "targetIndex > floor" test is needed, and adding one would be dead code:
             // reaching this line means the loop condition held, i.e. getTrustedAppliedIndex() (pinned at
@@ -7379,6 +7384,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       }
       for (final String candidate : peerHttpAddressCandidates.due(peerId)) {
         try {
+          // No HTTPS endpoint is handed over, so the probe dials the candidate over plain HTTP whatever the SSL setting
+          // (PeerCapabilityQuery.chooseUrl): its answer confirms the HTTP address and nothing else
           final PeerCapabilityQuery.Advertisement advertisement = capabilityProber.probe(peerId, candidate, null,
               clusterToken);
           unanswered.remove(peerId);

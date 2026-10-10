@@ -101,6 +101,16 @@ class Issue9255PeerHttpAddressCandidatesTest {
         PostCapabilitiesHandler.advertisement("hostA_2434", Set.of("x")).toString(), "test").peerHttpAddresses()).isEmpty();
   }
 
+  /**
+   * A candidate is probed with no HTTPS endpoint, which dials plain HTTP whatever the SSL setting: the answer confirms the
+   * HTTP address it is recorded as, never an HTTPS listener.
+   */
+  @Test
+  void aCandidateIsAlwaysDialledOnItsHttpAddress() {
+    assertThat(PeerCapabilityQuery.chooseUrl("hostB:2490", null, true)).isEqualTo("http://hostB:2490/api/v1/cluster/capabilities");
+    assertThat(PeerCapabilityQuery.chooseUrl("hostB:2490", null, false)).isEqualTo("http://hostB:2490/api/v1/cluster/capabilities");
+  }
+
   /** A malformed relayed entry is dropped, never the answer it came with: the relay is only ever a hint. */
   @Test
   void aMalformedRelayedAddressIsDroppedAndTheAnswerKept() throws IOException {

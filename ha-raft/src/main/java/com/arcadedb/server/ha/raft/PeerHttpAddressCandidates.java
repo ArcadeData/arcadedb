@@ -44,6 +44,13 @@ import java.util.function.LongSupplier;
  * until a probe dialled on it is answered by the peer it was offered for - the binding {@link PeerCapabilityQuery}
  * already enforces - and only then is it recorded as that peer's address.
  * <p>
+ * <b>Trust.</b> A candidate is dialled with the cluster token, so who may offer one matters: a peer's own capability request
+ * (accepted only when it carries the cluster token, never from a user's Basic-auth request) and a member's capability reply.
+ * Both come from holders of the token, which is the trust the module already gives them - the same caller can run
+ * {@code connect cluster} and write an address directly. What the binding adds is that no offered address is ever acted on
+ * beyond that read-only probe until the peer it names answers there; a misconfigured or compromised member can make the
+ * others probe an address, at most {@link #MAX_PER_PEER} per peer and once per back-off, and no more.
+ * <p>
  * Bounded on both axes, because the offers arrive on every capability round from every peer: at most
  * {@link #MAX_PER_PEER} addresses per peer (the oldest goes first), and a candidate whose probe failed is not dialled
  * again for {@link #RETRY_AFTER_FAILURE_MS}, whatever re-offers it - a relay repeats the same stale address every
@@ -59,7 +66,9 @@ final class PeerHttpAddressCandidates {
   static final long RETRY_AFTER_FAILURE_MS = 60_000L;
 
   // peer id -> candidate address -> the time from which it may be dialled (0 = never tried). Each per-peer map is only
-  // touched inside ConcurrentHashMap.compute for its key, which is what makes the LinkedHashMap safe to mutate
+  // touched inside ConcurrentHashMap.compute for its key, which is what makes the LinkedHashMap safe to mutate - and why the
+  // reads go through computeIfPresent too: a plain get() would iterate a map another thread may be changing. The cost is a
+  // bin lock per read, a few times per capability round
   private final ConcurrentHashMap<String, LinkedHashMap<String, Long>> candidates = new ConcurrentHashMap<>();
   private volatile LongSupplier clock = System::currentTimeMillis;
 
