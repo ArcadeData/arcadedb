@@ -350,7 +350,7 @@ public class GraalPolyglotEngine implements AutoCloseable {
     query.checkNotTerminated(what);
 
     final TerminationInterrupt interrupt = new TerminationInterrupt();
-    final AutoCloseable registration = query.onTerminate(interrupt);
+    final RunningQuery.Registration registration = query.onTerminate(interrupt);
     try {
       return work.run();
     } catch (final Exception e) {
@@ -359,11 +359,7 @@ public class GraalPolyglotEngine implements AutoCloseable {
       throw e;
     } finally {
       interrupt.disarm();
-      try {
-        registration.close();
-      } catch (final Exception ignore) {
-        // Unregistering a listener does not fail
-      }
+      registration.close();
     }
   }
 

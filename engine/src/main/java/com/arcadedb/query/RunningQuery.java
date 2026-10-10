@@ -216,7 +216,7 @@ public final class RunningQuery implements AutoCloseable {
    *
    * @return closing it unregisters the listener; a listener that ran, or was never registered, closes as a no-op
    */
-  public AutoCloseable onTerminate(final Runnable listener) {
+  public Registration onTerminate(final Runnable listener) {
     synchronized (this) {
       if (terminatedBy == null) {
         if (terminationListeners == null)
@@ -233,6 +233,13 @@ public final class RunningQuery implements AutoCloseable {
     notifyTermination(listener);
     return () -> {
     };
+  }
+
+  /** Withdraws a termination listener; closing it never fails, and closing it twice is harmless. */
+  @FunctionalInterface
+  public interface Registration extends AutoCloseable {
+    @Override
+    void close();
   }
 
   private void notifyTermination(final Runnable listener) {

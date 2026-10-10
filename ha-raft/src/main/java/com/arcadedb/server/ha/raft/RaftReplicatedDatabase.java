@@ -4820,7 +4820,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     // its own entry. Listed meanwhile as forwarded to the leader, and the client's tag travels with it. Under the cluster
     // token only, the one form in which the leader honours the id
     final RunningQuery runningQuery = RunningQuery.current();
-    AutoCloseable terminationRelay = null;
+    RunningQuery.Registration terminationRelay = null;
     if (runningQuery != null && ordinalTrusted && !postsToItself) {
       builder.header(LeaderForwardContext.FORWARDED_QUERY_HEADER, runningQuery.getId());
       if (runningQuery.getTag() != null)
@@ -4906,11 +4906,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       throw new TransactionException("Error forwarding command to leader at " + leaderUrl, e);
     } finally {
       if (terminationRelay != null) {
-        try {
-          terminationRelay.close();
-        } catch (final Exception ignore) {
-          // Unregistering a listener does not fail
-        }
+        terminationRelay.close();
         runningQuery.setForwardedTo(null);
       }
     }
