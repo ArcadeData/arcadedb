@@ -732,6 +732,15 @@ public enum GlobalConfiguration {
   SQL_STATEMENT_CACHE("arcadedb.sqlStatementCache", SCOPE.DATABASE, "Maximum number of parsed statements to keep in cache",
       Integer.class, 300),
 
+  QUERY_LITERAL_PARAMETERIZATION("arcadedb.queryLiteralParameterization", SCOPE.DATABASE,
+      """
+          Extract the literal values of a SQL or OpenCypher query into generated parameters before the statement and plan \
+          cache lookups, so queries that differ only in the values written in their text (generated queries, query builders) \
+          share one parsed statement and one plan instead of being parsed and planned again for every value. Literals whose \
+          value shapes the result or the plan (projected column names, SKIP/LIMIT, DDL) are never extracted. \
+          Turn it off to key the caches on the exact query text""",
+      Boolean.class, true),
+
   SQL_LET_SUBQUERY_CACHE_SIZE("arcadedb.sql.letSubqueryCacheSize", SCOPE.DATABASE,
       """
       Maximum number of distinct correlated bindings whose result a per-record LET subquery \

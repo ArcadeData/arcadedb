@@ -73,6 +73,7 @@ import com.arcadedb.query.sql.parser.Node;
 import com.arcadedb.query.sql.parser.OrBlock;
 import com.arcadedb.query.sql.parser.OrderBy;
 import com.arcadedb.query.sql.parser.OrderByItem;
+import com.arcadedb.query.sql.parser.ParenthesisExpression;
 import com.arcadedb.query.sql.parser.PInteger;
 import com.arcadedb.query.sql.parser.Projection;
 import com.arcadedb.query.sql.parser.ProjectionItem;
@@ -2735,7 +2736,7 @@ public class SelectExecutionPlanner {
    * The returned set is intersected with the caller-supplied {@code filterClusters} so explicit
    * cluster filters in the SQL (e.g., {@code SELECT FROM Doc IN BUCKET 'doc_3'}) are honoured.
    */
-  private static Set<String> derivePartitionPrunedClusters(final DocumentType docType, final Set<String> filterClusters,
+  private Set<String> derivePartitionPrunedClusters(final DocumentType docType, final Set<String> filterClusters,
       final QueryPlanningInfo info, final CommandContext context) {
     final BucketSelectionStrategy strategy = docType.getBucketSelectionStrategy();
     if (!(strategy instanceof PartitionedBucketSelectionStrategy partitioned))
@@ -2800,16 +2801,25 @@ public class SelectExecutionPlanner {
           continue;
         final int idx = idxBoxed;
 
-        // Only a literal is bound here, not everything Expression.isEarlyCalculated() would admit. The
-        // bucket derived below is baked into the plan, so the value it comes from must be fixed for the
-        // life of that plan and free to compute: a parameter is not (a cached plan would reuse the first
-        // execution's bucket id for every subsequent binding, which is what the isEarlyCalculated form
-        // used to exclude by hand), and a function call is neither - it would be invoked at plan time,
-        // once more than the query asked for, and a non-deterministic one would fix a bucket that its
-        // per-row value no longer agrees with. That the plan is not cached today when the WHERE holds a
-        // function is an accident of FunctionCall.isCacheable() being true only for traversals; pruning
-        // no longer leans on it. See issue #6179.
-        if (literalSide == null || !literalSide.isLiteral())
+        // Only a literal or a parameter is bound here, not everything Expression.isEarlyCalculated() would
+        // admit. The bucket derived below is baked into the plan, so the value it comes from must be free to
+        // compute and fixed for the life of that plan. A literal is both. A parameter is free to compute but
+        // not fixed - a cached plan would reuse the first execution's bucket id for every later binding - so a
+        // plan pruned on a parameter is marked as depending on its parameters and never cached. It is pruned
+        // all the same because the pruning is not only an optimization: vector.neighbors() and its sparse twin
+        // restrict their own search to the pruned buckets, so a parameter that did not prune answered
+        // differently from the literal it stands for - which is also what a literal the statement cache
+        // extracted into a parameter would have done (issue #8307). A function call is neither - it would be
+        // invoked at plan time, once more than the query asked for, and a non-deterministic one would fix a
+        // bucket that its per-row value no longer agrees with. That the plan is not cached today when the
+        // WHERE holds a function is an accident of FunctionCall.isCacheable() being true only for traversals;
+        // pruning no longer leans on it. See issue #6179.
+        if (literalSide == null)
+          continue;
+        if (isBareInputParameter(literalSide))
+          // whether this execution prunes, and to which bucket, depends on the value bound: no plan of it may be reused
+          planDependsOnInputParameters = true;
+        else if (!literalSide.isLiteral())
           continue;
 
         if (!bound[idx]) {
@@ -5288,6 +5298,22 @@ public class SelectExecutionPlanner {
           return true;
     }
     return false;
+  }
+
+  /**
+   * True when the expression is a bare input parameter ({@code ?} or {@code :name}), possibly wrapped in parentheses,
+   * with no method or selector applied to it.
+   */
+  private static boolean isBareInputParameter(final Expression expression) {
+    MathExpression math = expression.getMathExpression();
+    while (true) {
+      if (math instanceof ParenthesisExpression parenthesis && parenthesis.expression != null)
+        math = parenthesis.expression.getMathExpression();
+      else if (math instanceof BaseExpression base && base.modifier == null && base.expression != null)
+        math = base.expression.getMathExpression();
+      else
+        return math instanceof BaseExpression base && base.modifier == null && base.inputParam != null;
+    }
   }
 
   private static Object literalValue(final Expression expression, final CommandContext context) {

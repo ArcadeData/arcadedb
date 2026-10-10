@@ -31,6 +31,7 @@ import com.arcadedb.function.FunctionDefinition;
 import com.arcadedb.function.FunctionRegistry;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.QueryEngine;
+import com.arcadedb.query.literal.LiteralParameterizer.Lookup;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
@@ -49,6 +50,7 @@ import com.arcadedb.utility.MultiIterator;
 
 import com.arcadedb.query.OperationType;
 
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.Set;
@@ -135,34 +137,40 @@ public class SQLQueryEngine implements QueryEngine {
 
   @Override
   public ResultSet query(final String query, ContextConfiguration configuration, final Map<String, Object> parameters) {
-    final Statement statement = parse(query, database);
+    final Lookup<Statement> lookup = parseParameterized(query);
+    final Statement statement = lookup.statement();
     if (!statement.isIdempotent())
       throw new QueryNotIdempotentException("Query '" + query + "' is not idempotent");
 
     statement.setLimit(new Limit().setValue((int) database.getResultSetLimit()));
-    return executeGuarded(statement, database, parameters);
+    return executeGuarded(statement, database, lookup.mergeParameters(parameters));
   }
 
   @Override
   public ResultSet query(final String query, ContextConfiguration configuration, final Object... parameters) {
-    final Statement statement = parse(query, database);
+    final Lookup<Statement> lookup = parseParameterized(query);
+    final Statement statement = lookup.statement();
     if (!statement.isIdempotent())
       throw new QueryNotIdempotentException("Query '" + query + "' is not idempotent");
 
     statement.setLimit(new Limit().setValue((int) database.getResultSetLimit()));
+    if (lookup.parameters() != null)
+      return executeGuarded(statement, database, lookup.mergeParameters(positionalParameters(parameters)));
     return executeGuarded(statement, database, parameters);
   }
 
   @Override
   public ResultSet command(final String query, final ContextConfiguration configuration, final Map<String, Object> parameters) {
-    final Statement statement = parse(query, database);
+    final Lookup<Statement> lookup = parseParameterized(query);
+    final Statement statement = lookup.statement();
     statement.setLimit(new Limit().setValue((int) database.getResultSetLimit()));
 
+    final Map<String, Object> bound = lookup.mergeParameters(parameters);
     final CommandContext context = new BasicCommandContext();
-    context.setInputParameters(parameters);
+    context.setInputParameters(bound);
     context.setConfiguration(configuration);
 
-    return executeGuarded(statement, executionDatabase(), parameters, context);
+    return executeGuarded(statement, executionDatabase(), bound, context);
   }
 
   /**
@@ -176,26 +184,52 @@ public class SQLQueryEngine implements QueryEngine {
    */
   public ResultSet command(final String query, final ContextConfiguration configuration, final Map<String, Object> parameters,
       final Map<String, Object> variables) {
-    final Statement statement = parse(query, database);
+    final Lookup<Statement> lookup = parseParameterized(query);
+    final Statement statement = lookup.statement();
     statement.setLimit(new Limit().setValue((int) database.getResultSetLimit()));
 
+    final Map<String, Object> bound = lookup.mergeParameters(parameters);
     final CommandContext context = new BasicCommandContext();
-    context.setInputParameters(parameters);
+    context.setInputParameters(bound);
     context.setConfiguration(configuration);
     if (variables != null)
       for (final Map.Entry<String, Object> entry : variables.entrySet())
         context.setVariable(entry.getKey(), entry.getValue());
 
-    return executeGuarded(statement, executionDatabase(), parameters, context);
+    return executeGuarded(statement, executionDatabase(), bound, context);
   }
 
   @Override
   public ResultSet command(final String query, ContextConfiguration configuration, final Object... parameters) {
-    final Statement statement = parse(query, database);
+    final Lookup<Statement> lookup = parseParameterized(query);
+    final Statement statement = lookup.statement();
     statement.setLimit(new Limit().setValue((int) database.getResultSetLimit()));
     final CommandContext context = new BasicCommandContext();
     context.setConfiguration(configuration);
+    if (lookup.parameters() != null) {
+      final Map<String, Object> bound = lookup.mergeParameters(positionalParameters(parameters));
+      context.setInputParameters(bound);
+      return executeGuarded(statement, executionDatabase(), bound, context);
+    }
     return executeGuarded(statement, executionDatabase(), parameters, context);
+  }
+
+  /**
+   * Parses a statement through the statement cache, extracting its literals into generated parameters when the database allows
+   * it (issue #8307): the caller binds {@link Lookup#parameters()} with its own.
+   */
+  private Lookup<Statement> parseParameterized(final String query) {
+    return database.getStatementCache().getParameterized(query);
+  }
+
+  /** Positional parameters keyed the way every statement keys them: by their position, as a string. */
+  private static Map<String, Object> positionalParameters(final Object[] parameters) {
+    if (parameters == null || parameters.length == 0)
+      return null;
+    final Map<String, Object> map = new HashMap<>(parameters.length * 2);
+    for (int i = 0; i < parameters.length; i++)
+      map.put(String.valueOf(i), parameters[i]);
+    return map;
   }
 
   /**
@@ -232,7 +266,8 @@ public class SQLQueryEngine implements QueryEngine {
 
   @Override
   public AnalyzedQuery analyze(final String query) {
-    final Statement statement = parse(query, database);
+    final Lookup<Statement> lookup = parseParameterized(query);
+    final Statement statement = lookup.statement();
     return new AnalyzedQuery() {
       @Override
       public boolean isIdempotent() {
@@ -270,7 +305,7 @@ public class SQLQueryEngine implements QueryEngine {
         final String databaseName = database.getName();
         final long start = QueryMetricsRecorder.Holder.startNanos();
         try (final QueryTracer.Span span = QueryTracer.Holder.begin(databaseName, ENGINE_NAME, type, query)) {
-          return executeGuarded(statement, executionDatabase(), parameters);
+          return executeGuarded(statement, executionDatabase(), lookup.mergeParameters(parameters));
         } finally {
           QueryMetricsRecorder.Holder.record(start, databaseName, ENGINE_NAME, type);
         }
@@ -405,7 +440,7 @@ public class SQLQueryEngine implements QueryEngine {
    */
   @Override
   public DDLClassification classifyDDL(final String query) {
-    return parse(query, database) instanceof DDLStatement ? DDLClassification.DDL : DDLClassification.NOT_DDL;
+    return parseParameterized(query).statement() instanceof DDLStatement ? DDLClassification.DDL : DDLClassification.NOT_DDL;
   }
 
   public static String validateVariableName(String varName) {

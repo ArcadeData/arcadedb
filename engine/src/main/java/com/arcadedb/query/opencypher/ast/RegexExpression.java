@@ -39,7 +39,11 @@ public class RegexExpression implements BooleanExpression {
   // that same cached query text throw a spurious TimeoutException on any pattern, catastrophic or not.
   private final Expression expression;
   private final Expression pattern;
-  private Pattern compiledPattern;
+  // The last pattern compiled, reused while the pattern text stays the same. Read ONCE into a local per evaluation: the AST is
+  // shared by every concurrent execution of the cached statement, and with a parameter as the pattern - a $param, or a literal
+  // the statement cache extracted into one (issue #8307) - two executions can compile different patterns, so checking the
+  // field and then reading it again could match against the other execution's pattern.
+  private volatile Pattern compiledPattern;
 
   public RegexExpression(final Expression expression, final Expression pattern) {
     this.expression = expression;
@@ -66,13 +70,15 @@ public class RegexExpression implements BooleanExpression {
     final String patternStr = patternObj.toString();
 
     // Compile pattern if not already compiled or if pattern changed
-    if (compiledPattern == null || !compiledPattern.pattern().equals(patternStr)) {
+    Pattern compiled = compiledPattern;
+    if (compiled == null || !compiled.pattern().equals(patternStr)) {
       try {
-        compiledPattern = Pattern.compile(patternStr);
+        compiled = Pattern.compile(patternStr);
       } catch (final PatternSyntaxException e) {
         // Invalid regex pattern
         return false;
       }
+      compiledPattern = compiled;
     }
 
     // Match against value. context.getRegexDeadline() resolves context.getDatabase()'s per-database
@@ -81,7 +87,7 @@ public class RegexExpression implements BooleanExpression {
     // already bound). See MatchesCondition.matches() for why context.getConfiguration() would silently ignore a
     // per-database override here.
     final String valueStr = value.toString();
-    return TimeBoundRegex.matchesUntil(compiledPattern, valueStr, context.getRegexDeadline());
+    return TimeBoundRegex.matchesUntil(compiled, valueStr, context.getRegexDeadline());
   }
 
   @Override

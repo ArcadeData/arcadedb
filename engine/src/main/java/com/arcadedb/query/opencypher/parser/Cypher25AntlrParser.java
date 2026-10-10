@@ -96,6 +96,27 @@ public class Cypher25AntlrParser {
    * @throws CommandParsingException if query cannot be parsed
    */
   public ParsedQuery parseQuery(final String query) {
+    return parseQueryWithTree(query).parsed();
+  }
+
+  /**
+   * A parsed query together with the parse tree it was built from, for a caller that decides something on the tree itself
+   * (see {@link CypherLiteralParameterizer}).
+   *
+   * @param parsed the parsed query
+   * @param tree   the parse tree of the whole statement
+   */
+  public record ParsedTree(ParsedQuery parsed, Cypher25Parser.StatementContext tree) {
+  }
+
+  /**
+   * Parses a Cypher query string like {@link #parseQuery(String)}, also returning its parse tree.
+   *
+   * @param query the Cypher query string
+   * @return the parsed statement, its referenced parameter names and its parse tree
+   * @throws CommandParsingException if query cannot be parsed
+   */
+  public ParsedTree parseQueryWithTree(final String query) {
     if (query == null || query.trim().isEmpty())
       throw new CommandParsingException("Query cannot be empty");
 
@@ -174,7 +195,8 @@ public class Cypher25AntlrParser {
       CypherSemanticValidator.validate(statement);
 
       // After validation, so that an error names the query as written (issue #9598)
-      return new ParsedQuery(OptionalMatchAntiJoinRewriter.rewrite(statement), collectParameterNames(statementContext, query));
+      return new ParsedTree(new ParsedQuery(OptionalMatchAntiJoinRewriter.rewrite(statement), collectParameterNames(statementContext, query)),
+          statementContext);
 
     } catch (final CommandParsingException e) {
       // semantic-validation and explicit parse errors already carry a clear, actionable message
