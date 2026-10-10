@@ -5780,6 +5780,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
           }
         }
         synchronized (applyNotifier) {
+          // The one normal exit: the index is applied. Every other way out returns or throws below
           if (getTrustedAppliedIndex(databaseName) >= targetIndex)
             break;
           if (!throwOnTimeout && (getStaleSnapshotAppliedFloor() >= 0 || getDatabaseAppliedFloor(databaseName) >= 0)) {
