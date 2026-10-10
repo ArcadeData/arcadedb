@@ -26,6 +26,7 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinaryComparator;
 
 import java.util.Arrays;
+import java.util.Calendar;
 import java.util.Set;
 
 public class QueryOperatorEquals {
@@ -74,6 +75,11 @@ public class QueryOperatorEquals {
     }
 
     // ALL OTHER CASES
+    // A java.util.Calendar (a supported arcadedb.dateImplementation / dateTimeImplementation) is its instant, as the index
+    // key and BinaryComparator.compareTo read it: its runtime class GregorianCalendar is no conversion target, so a scan
+    // of a DATE column answered nothing where the index answered the row (issue #9647)
+    if (left instanceof Calendar calendar)
+      left = calendar.getTime();
     try {
       // convertOrNull(): comparing a value against a literal of an incompatible shape is an ordinary "not equal",
       // not a query to refuse, so this stays on the lenient side of the strict/lenient split issue #8090 drew.

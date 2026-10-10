@@ -29,6 +29,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 
 import java.time.temporal.Temporal;
+import java.util.Calendar;
 import java.util.Date;
 import java.util.Map;
 
@@ -68,7 +69,7 @@ public class PropertyAccessExpression implements Expression {
     } else if (variable instanceof CypherTemporalValue) {
       // Handle temporal value property access (e.g., date.year, time.hour)
       return ((CypherTemporalValue) variable).getTemporalProperty(propertyName);
-    } else if (variable instanceof Temporal || variable instanceof Date) {
+    } else if (variable instanceof Temporal || variable instanceof Date || variable instanceof Calendar) {
       // Native java.time / java.util.Date value (e.g. a temporal parameter or a stored
       // ZonedDateTime/Date) → wrap into its Cypher temporal type for component access (date.year, ...).
       final Object coerced = TemporalUtil.fromCoreJavaType(variable);

@@ -65,6 +65,7 @@ import com.arcadedb.schema.Type;
 
 import java.time.temporal.Temporal;
 import java.util.ArrayList;
+import java.util.Calendar;
 import java.util.Collections;
 import java.util.Date;
 import java.util.HashMap;
@@ -1322,7 +1323,7 @@ public class MergeStep extends AbstractExecutionStep {
 
       // MERGE is defined as the MATCH of its pattern: the very comparison a MATCH applies to an inline property, so the
       // two clauses cannot drift apart on a FLOAT, a signed zero or a temporal against stored text (issue #9693)
-      if (!InlineProperties.matchesResolvedValue(doc.get(key), expectedValue))
+      if (!InlineProperties.matchesResolvedProperty(doc, key, expectedValue))
         return false;
     }
     return true;
@@ -1574,7 +1575,7 @@ public class MergeStep extends AbstractExecutionStep {
     if (value instanceof CypherTemporalValue)
       return value;
     // A native java.time parameter (a datetime sent over Bolt or HTTP) is wrapped like datetime() so both compare alike
-    if (value instanceof Temporal || value instanceof Date) {
+    if (value instanceof Temporal || value instanceof Date || value instanceof Calendar) {
       final Object wrapped = TemporalUtil.fromCoreJavaType(value);
       if (wrapped instanceof CypherTemporalValue)
         return wrapped;

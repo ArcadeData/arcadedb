@@ -424,7 +424,7 @@ public class QuantifiedPathStep extends AbstractExecutionStep {
 
   private static boolean matchesResolved(final Document record, final Map<String, Object> resolved) {
     for (final Map.Entry<String, Object> entry : resolved.entrySet())
-      if (!InlineProperties.matchesResolvedValue(record.get(entry.getKey()), entry.getValue()))
+      if (!InlineProperties.matchesResolvedProperty(record, entry.getKey(), entry.getValue()))
         return false;
     return true;
   }

@@ -80,7 +80,7 @@ public final class InlineProperties {
       return true;
 
     for (final Map.Entry<String, Object> entry : properties.entrySet()) {
-      if (!matchesValue(record.get(entry.getKey()), entry.getValue(), row, context))
+      if (!matchesResolvedProperty(record, entry.getKey(), resolve(entry.getValue(), row, context)))
         return false;
     }
     return true;
@@ -102,6 +102,20 @@ public final class InlineProperties {
    * either side never matches, not even against another null. Numbers compare by value across types, so a
    * stored {@code Integer} matches an inline literal parsed as {@code Long} and a stored {@code Float}
    * matches a {@code Double} parameter (issue #5146).
+   */
+  public static boolean matchesResolvedProperty(final Document record, final String key, final Object expected) {
+    final Object actual = record.get(key);
+    // A temporal is compared as the type the schema declares: a DATE that arcadedb.dateImplementation read back as an
+    // instant is still a date (issue #9647). Only looked up against a temporal, so any other entry pays nothing
+    if (expected instanceof CypherTemporalValue)
+      return matchesResolvedValue(TemporalUtil.asDeclaredDate(record, key, actual), expected);
+    return matchesResolvedValue(actual, expected);
+  }
+
+  /**
+   * Compares a stored property value against an already resolved expected value. Prefer
+   * {@link #matchesResolvedProperty(Document, String, Object)} when the record is at hand: only that one knows the declared
+   * type of the property.
    */
   public static boolean matchesResolvedValue(final Object actual, final Object expected) {
     if (actual == null || expected == null)

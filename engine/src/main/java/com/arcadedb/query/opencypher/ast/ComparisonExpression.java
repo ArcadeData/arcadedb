@@ -38,6 +38,7 @@ import java.time.Instant;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.time.temporal.Temporal;
+import java.util.Calendar;
 import java.util.Date;
 import java.util.List;
 import java.util.Map;
@@ -185,8 +186,8 @@ public class ComparisonExpression implements BooleanExpression {
     // Only against a genuinely zoned operand: two zone-less ones are both UTC already.
     // A datetime read from a stored property is the same: it carries a zone the engine materialized, not one chosen
     // (issue #9325), and the property read has already wrapped it, so it is flagged zone-less on the wrapper.
-    final boolean leftZoneless = left instanceof Date || left instanceof Instant || isStoredZoneless(left);
-    final boolean rightZoneless = right instanceof Date || right instanceof Instant || isStoredZoneless(right);
+    final boolean leftZoneless = left instanceof Date || left instanceof Calendar || left instanceof Instant || isStoredZoneless(left);
+    final boolean rightZoneless = right instanceof Date || right instanceof Calendar || right instanceof Instant || isStoredZoneless(right);
     if (leftZoneless && !rightZoneless && rightTemporal instanceof CypherDateTime zoned)
       leftTemporal = adoptZone(left, (CypherDateTime) leftTemporal, zoned.getValue().getZone());
     else if (rightZoneless && !leftZoneless && leftTemporal instanceof CypherDateTime zoned)
@@ -422,7 +423,7 @@ public class ComparisonExpression implements BooleanExpression {
    * (typically a bound parameter) is coerced once and served from a single-slot memo thereafter.
    */
   private Object coerceTemporal(final Object value) {
-    if (!(value instanceof Temporal || value instanceof Date))
+    if (!(value instanceof Temporal || value instanceof Date || value instanceof Calendar))
       return value;
     final Object[] memo = temporalCoercionMemo;
     if (memo != null && memo[0] == value && (long) memo[2] == dateMillis(value))
@@ -454,7 +455,9 @@ public class ComparisonExpression implements BooleanExpression {
    * the memo with the value it had before. Its millis are part of the key; any other operand keys as 0.
    */
   private static long dateMillis(final Object value) {
-    return value instanceof Date date ? date.getTime() : 0L;
+    if (value instanceof Date date)
+      return date.getTime();
+    return value instanceof Calendar calendar ? calendar.getTimeInMillis() : 0L;
   }
 
   private Boolean numericCompare(final long leftNum, final long rightNum) {

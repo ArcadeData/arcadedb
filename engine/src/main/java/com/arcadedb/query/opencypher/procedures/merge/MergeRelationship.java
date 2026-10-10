@@ -225,7 +225,7 @@ public class MergeRelationship implements CypherProcedure {
               allMatch = false;
               break;
             }
-          } else if (!InlineProperties.matchesResolvedValue(edgeValue, matchValue)) {
+          } else if (!InlineProperties.matchesResolvedProperty(edge, entry.getKey(), matchValue)) {
             allMatch = false;
             break;
           }

@@ -22,6 +22,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
+import com.arcadedb.utility.DateUtils;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
@@ -31,6 +32,7 @@ import java.time.temporal.IsoFields;
 import java.time.temporal.Temporal;
 import java.time.temporal.WeekFields;
 import java.util.ArrayList;
+import java.util.Calendar;
 import java.util.Collection;
 import java.util.Date;
 import java.util.List;
@@ -520,6 +522,9 @@ public final class TemporalUtil {
       return new CypherDateTime(i.atZone(ZoneOffset.UTC));
     if (value instanceof Date date)
       return new CypherDateTime(date.toInstant().atZone(ZoneOffset.UTC));
+    // A supported arcadedb.dateTimeImplementation / dateImplementation: an instant like java.util.Date (issue #9647)
+    if (value instanceof Calendar calendar)
+      return new CypherDateTime(calendar.toInstant().atZone(ZoneOffset.UTC));
 
     return value;
   }
@@ -536,7 +541,32 @@ public final class TemporalUtil {
     // DATETIME read back in the configured Java class, so it is a real zoned value (issue #8572)
     if (value instanceof ZonedDateTime zoned && keepsZone(document, propertyName))
       return new CypherDateTime(zoned);
-    return convertFromStorage(value);
+    // A DATE is a Cypher Date whatever Java class arcadedb.dateImplementation reads it into (issue #9647)
+    return convertFromStorage(asDeclaredDate(document, propertyName, value));
+  }
+
+  /**
+   * The value of {@code propertyName} as the Cypher type its schema declares: a property declared DATE that
+   * {@code arcadedb.dateImplementation} read back as a {@code java.util.Date}, a {@code java.util.Calendar} or a
+   * {@code LocalDateTime} is the {@link CypherDate} of that day, so it compares with a {@code date()} literal under every
+   * setting as it does under the default {@code LocalDate} (issue #9647). Any other value is returned unchanged.
+   */
+  public static Object asDeclaredDate(final Document document, final String propertyName, final Object value) {
+    if (isDateReadAsInstant(value) && isDeclaredDate(document, propertyName))
+      return new CypherDate(LocalDate.ofEpochDay(DateUtils.dateToEpochDays(value)));
+    return value;
+  }
+
+  // The classes a non-default arcadedb.dateImplementation reads a DATE into: only these need the schema lookup, so the
+  // default LocalDate and every non-temporal value pay one instanceof chain and nothing more
+  private static boolean isDateReadAsInstant(final Object value) {
+    return value instanceof Date || value instanceof Calendar || value instanceof LocalDateTime;
+  }
+
+  private static boolean isDeclaredDate(final Document document, final String propertyName) {
+    final DocumentType type = document.getType();
+    final Property property = type != null ? type.getPolymorphicPropertyIfExists(propertyName) : null;
+    return property != null && property.getType() == Type.DATE;
   }
 
   private static boolean keepsZone(final Document document, final String propertyName) {
@@ -558,7 +588,7 @@ public final class TemporalUtil {
     // into Cypher temporal values so a stored native datetime reads back as a comparable temporal.
     if (value instanceof CypherDuration)
       return value;
-    if (value instanceof Temporal || value instanceof Date) {
+    if (value instanceof Temporal || value instanceof Date || value instanceof Calendar) {
       // A stored datetime keeps no zone: mark it so a comparison lets it adopt the other operand's zone (issue #9325).
       // Built directly, not through fromCoreJavaType(), so a scan allocates one wrapper per value
       if (value instanceof ZonedDateTime zdt)
@@ -569,6 +599,9 @@ public final class TemporalUtil {
         return CypherDateTime.ofStored(instant.atZone(ZoneOffset.UTC));
       if (value instanceof Date date)
         return CypherDateTime.ofStored(date.toInstant().atZone(ZoneOffset.UTC));
+      // Under arcadedb.dateTimeImplementation=java.util.Calendar: the zone it carries is the schema's, not a chosen one
+      if (value instanceof Calendar calendar)
+        return CypherDateTime.ofStored(calendar.toInstant().atZone(ZoneOffset.UTC));
       final Object coerced = fromCoreJavaType(value);
       if (coerced instanceof CypherTemporalValue)
         return coerced;

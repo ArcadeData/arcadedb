@@ -46,6 +46,7 @@ import com.arcadedb.schema.VertexType;
 import java.time.temporal.Temporal;
 import java.time.temporal.TemporalAmount;
 import java.util.ArrayList;
+import java.util.Calendar;
 import java.util.Date;
 import java.util.Iterator;
 import java.util.List;
@@ -706,7 +707,7 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
       return 2;
     if (bound instanceof Boolean)
       return 3;
-    if (bound instanceof Temporal || bound instanceof Date)
+    if (bound instanceof Temporal || bound instanceof Date || bound instanceof Calendar)
       return 4;
     return 0;
   }
