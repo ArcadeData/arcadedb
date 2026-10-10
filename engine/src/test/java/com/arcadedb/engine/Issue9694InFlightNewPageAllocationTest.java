@@ -291,6 +291,37 @@ class Issue9694InFlightNewPageAllocationTest extends TestHelper {
     assertThat(bucket.getTotalPages()).as("pages used by %s small records", total).isLessThanOrEqualTo(12);
   }
 
+  /**
+   * The page an insert was turned away from is taken out of the free-space map, because the room its committed image
+   * shows is promised to running transactions. When those give it back - here by rolling back - the page must be
+   * listed again, not left unlisted until the next statistics gather.
+   */
+  @Test
+  void aPageTakenOutOfTheFreeSpaceMapIsListedAgainWhenItsReservationsAreReleased() {
+    final LocalBucket bucket = (LocalBucket) database.getSchema().getType(TYPE).getBuckets(false).getFirst();
+    database.transaction(() -> {
+      for (int i = 0; i < 10; i++)
+        database.newDocument(TYPE).set("seq", i).save();
+    });
+
+    database.begin();
+    final RID reserved = database.newDocument(TYPE).set("owner", "reserving").save().getIdentity();
+    assertThat(reserved.getPosition() / bucket.getMaxRecordsInPage()).as("the insert reserved a slot on page 0").isZero();
+
+    bucket.delistReservedPage(0);
+    assertThat(bucket.getListedFreeSpacePagesForTesting()).doesNotContain(0);
+
+    database.rollback();
+    assertThat(bucket.getListedFreeSpacePagesForTesting()).as("page 0 after its reservations were released").contains(0);
+
+    // The entry is an upper bound: the next insert reads the page and lands on it
+    database.begin();
+    final RID next = database.newDocument(TYPE).set("owner", "next").save().getIdentity();
+    database.commit();
+    assertThat(next.getPosition() / bucket.getMaxRecordsInPage()).isZero();
+    database.transaction(() -> assertThat(scanCount()).isEqualTo(11));
+  }
+
   /** Counts by scanning the records: {@code countType} and {@code count(*)} read the bucket's cached counter. */
   private long scanCount() {
     try (final ResultSet rs = database.query("sql", "SELECT count(@rid) AS c FROM " + TYPE)) {

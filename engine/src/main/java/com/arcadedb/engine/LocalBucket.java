@@ -332,6 +332,12 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     private volatile Object soleOwner;
     /** Set when the entry was taken out of the map, so a claim that raced with the removal retries on a fresh one. */
     private boolean         removed;
+    /**
+     * Set when an insert was turned away from this page and the page was taken out of freeSpaceInPages (#9694): the
+     * room its committed image shows was promised to the running transactions. The last release lists it again, so
+     * room those transactions give back by rolling back is not left unlisted until the next gather.
+     */
+    private boolean         delisted;
   }
 
   private static final Function<Integer, PageInsertReservation> NEW_INSERT_RESERVATION = k -> new PageInsertReservation();
@@ -2723,9 +2729,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           // from the map - the commits that fill it re-list whatever room is really left - and the allocator is asked
           // once more with that page excluded, which also reaches the caller's own tail page.
           final int rejectedPage = foundPage.getPageId().getPageNumber();
-          synchronized (freeSpaceInPages) {
-            freeSpaceInPages.remove(rejectedPage, -1);
-          }
+          delistReservedPage(rejectedPage);
           if (attempt == MAX_INSERT_PAGE_ATTEMPTS - 1) {
             createNewPage = true;
             break;
@@ -3220,12 +3224,55 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     final PageInsertReservation res = insertReservations.get(pageNumber);
     if (res == null)
       return;
+    final boolean relist;
     synchronized (res) {
       res.reservedSlots.clear(slot);
-      if (--res.outstanding <= 0) {
+      relist = --res.outstanding <= 0 && res.delisted;
+      if (res.outstanding <= 0) {
         res.removed = true;
         insertReservations.remove(pageNumber, res);
       }
+    }
+    if (relist)
+      relistPage(pageNumber);
+  }
+
+  /**
+   * Takes a page out of freeSpaceInPages because the room its committed image shows is promised to running
+   * transactions (#9694), and marks its reservations so the last release lists it again (see
+   * {@link PageInsertReservation#delisted}). Package-private: tests drive it directly.
+   */
+  void delistReservedPage(final int pageNumber) {
+    synchronized (freeSpaceInPages) {
+      freeSpaceInPages.remove(pageNumber, -1);
+    }
+    final PageInsertReservation res = insertReservations.get(pageNumber);
+    if (res == null) {
+      // Nobody holds the page any more (or never did): whatever room it has is free now
+      relistPage(pageNumber);
+      return;
+    }
+    final boolean releasedMeanwhile;
+    synchronized (res) {
+      releasedMeanwhile = res.removed;
+      if (!releasedMeanwhile)
+        res.delisted = true;
+    }
+    if (releasedMeanwhile)
+      relistPage(pageNumber);
+  }
+
+  /**
+   * Lists a page in freeSpaceInPages again after the reservations that hid its room are gone (#9694). The entry is an
+   * upper bound - the whole usable page - because the room left is only known by reading the page, which every
+   * allocation does before trusting an entry: it corrects or drops this one on first sight.
+   */
+  private void relistPage(final int pageNumber) {
+    if (reuseSpaceMode.ordinal() < REUSE_SPACE_MODE.HIGH.ordinal())
+      return;
+    synchronized (freeSpaceInPages) {
+      if (!freeSpaceInPages.containsKey(pageNumber) && freeSpaceInPages.size() < MAX_PAGES_GATHER_STATS)
+        freeSpaceInPages.put(pageNumber, getPageSize() - BasePage.PAGE_HEADER_SIZE - contentHeaderSize);
     }
   }
 
