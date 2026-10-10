@@ -946,7 +946,7 @@ public class PromQLEvaluator {
   private VectorSample binarySample(final VectorSample source, final double value, final BinaryOp op, final boolean returnBool) {
     if (!op.isComparison() || returnBool)
       return new VectorSample(resultLabels(source.labels(), op, returnBool), value, source.timestampMs());
-    return value != 0 ? new VectorSample(source.labels(), source.value(), source.timestampMs()) : null;
+    return value != 0 ? source : null; // a filter passes the sample through unchanged, and VectorSample is immutable
   }
 
   /**

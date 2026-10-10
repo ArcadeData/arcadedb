@@ -117,7 +117,9 @@ public class PromQLParser {
 
   /**
    * Refuses the {@code bool} modifier after an operator that is not a comparison, with the error Prometheus gives,
-   * instead of letting {@code bool} parse as a metric name and failing on the token after it (issue #9644).
+   * instead of letting {@code bool} parse as a metric name and failing on the token after it (issue #9644). Called as
+   * the operator argument of {@code new BinaryExpr(left, rejectBool(op), parseX())}: Java evaluates arguments left to
+   * right, so the check runs before the right operand is parsed.
    */
   private BinaryOp rejectBool(final BinaryOp op) {
     final int boolPos = lexer.matchKeywordAt("bool");
