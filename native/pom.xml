@@ -129,7 +129,7 @@
             .github/workflows/dependabot-auto-merge.yml no longer auto-merges a PR that touches
             this file.
         -->
-        <native.graalvm.version>25.0.2</native.graalvm.version>
+        <native.graalvm.version>25.4.4.1.1</native.graalvm.version>
         <!--
             Flag plumbed through by the CI matrix (native-image.yml) for the linux/amd64 job.
             Activates the native-static profile below, which appends the fully-static musl
