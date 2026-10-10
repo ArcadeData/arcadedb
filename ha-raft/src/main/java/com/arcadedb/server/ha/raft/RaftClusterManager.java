@@ -251,6 +251,9 @@ class RaftClusterManager {
             + " CURRENT configuration, so check that the cluster still has one.");
 
     raftHAServer.getHttpAddresses().remove(RaftPeerId.valueOf(peerId));
+    // On this node's own removal (leaveCluster()) the consistent reads waiting here are refused at once (issue #9606): a
+    // removed node is usually cut off before it applies its removal, so its state machine is not told
+    raftHAServer.notifyMembershipChanged();
     LogManager.instance().log(this, Level.INFO, "Peer %s removed from Raft cluster", peerId);
   }
 

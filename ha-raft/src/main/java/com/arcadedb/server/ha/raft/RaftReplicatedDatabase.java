@@ -2305,7 +2305,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         // A bookmark already applied here needs no wait, so membership only matters for one still ahead of this node.
         if (raftHAServer.getTrustedAppliedIndex(getName()) < ctx.readAfterIndex()) {
           refuseReadWhileRemovedFromConfiguration(consistency);
-          raftHAServer.waitForAppliedIndex(getName(), ctx.readAfterIndex());
+          // Refused at once if this node is removed while waiting (issue #9606)
+          raftHAServer.waitForAppliedIndexForRead(getName(), ctx.readAfterIndex(), consistency);
           // Removed while waiting: the wait gave up short of the bookmark, and serving now would hand back data missing
           // the write the bookmark names, from a node that will never catch up. A member that timed out keeps the
           // documented degrade-to-EVENTUAL contract. The applied index is read again on purpose: the one above predates the
@@ -2334,10 +2335,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    */
   private void refuseReadWhileRemovedFromConfiguration(final Database.READ_CONSISTENCY consistency) {
     if (raftHAServer.isRemovedFromConfiguration())
-      throw new NeedRetryException("Database '" + getName() + "' cannot serve a " + consistency + " read on this server: "
-          + "it is not a member of the Raft cluster's configuration any more (it left or was removed), so it receives no "
-          + "entries and cannot reach the index this read needs. Send the request to a server of the cluster, use EVENTUAL "
-          + "consistency, or add this server back to it");
+      throw RaftHAServer.readRefusedWhileRemovedFromConfiguration(getName(), consistency);
   }
 
   @Deprecated

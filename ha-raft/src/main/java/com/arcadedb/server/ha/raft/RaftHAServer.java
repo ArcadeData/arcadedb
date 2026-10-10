@@ -20,6 +20,7 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.ContextConfiguration;
+import com.arcadedb.database.Database;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONObject;
@@ -425,6 +426,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   // is not enforced by the compiler. This bound caps the cost of a future missed notification at this
   // interval instead of the full quorumTimeout.
   private static final long                  APPLY_WAIT_RECHECK_INTERVAL_MS = 1000L;
+  // Bumped on every Raft configuration change this node observes (issue #9606): a consistent read waiting in
+  // awaitAppliedIndex() asks whether this node is still a member only when it moved, or once per recheck interval
+  private final    AtomicLong                membershipChanges     = new AtomicLong();
   private          RaftClusterManager        clusterManager;
   private final    Object                    recoveryLock          = new Object();
   private volatile boolean                   shutdownRequested     = false;
@@ -5628,6 +5632,34 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   /**
+   * Wakes every consistent read blocked in {@link #waitForAppliedIndexForRead} so it asks again whether this node is still a
+   * member of the Raft configuration (issue #9606). Called where this node learns of a configuration change: the state
+   * machine's configuration callback and a removal this node submitted, its own {@code leaveCluster()} included.
+   * <p>
+   * Not the only way a waiting read learns of a removal, and it cannot be: a removed node is usually cut off before it
+   * applies the entry that removes it, so its state machine is never told. The read also asks once per
+   * {@link #APPLY_WAIT_RECHECK_INTERVAL_MS}, which bounds the wait there instead of the quorum timeout.
+   */
+  public void notifyMembershipChanged() {
+    membershipChanges.incrementAndGet();
+    synchronized (applyNotifier) {
+      applyNotifier.notifyAll();
+    }
+  }
+
+  /**
+   * The refusal of a consistent read on a node that is no longer a member of the Raft configuration (issues #9590, #9606):
+   * retryable, because a member of the cluster can serve it.
+   */
+  static NeedRetryException readRefusedWhileRemovedFromConfiguration(final String databaseName,
+      final Database.READ_CONSISTENCY consistency) {
+    return new NeedRetryException("Database '" + databaseName + "' cannot serve a " + consistency + " read on this server: "
+        + "it is not a member of the Raft cluster's configuration any more (it left or was removed), so it receives no "
+        + "entries and cannot reach the index this read needs. Send the request to a server of the cluster, use EVENTUAL "
+        + "consistency, or add this server back to it");
+  }
+
+  /**
    * Waits until the condition holds, re-evaluating it whenever the state machine applies an entry.
    *
    * @return {@code false} when the timeout elapsed first
@@ -5688,12 +5720,60 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * @param databaseName the database the read targets, or {@code null} for a node-wide wait
    */
   public void waitForAppliedIndex(final String databaseName, final long targetIndex, final boolean throwOnTimeout) {
+    awaitAppliedIndex(databaseName, targetIndex, throwOnTimeout, null);
+  }
+
+  /**
+   * The wait of a consistent read: as {@link #waitForAppliedIndex(String, long, boolean)}, strict for
+   * {@code LINEARIZABLE} and lenient for {@code READ_YOUR_WRITES}, but refused retryably as soon as this node is no
+   * longer a member of the Raft configuration (issue #9606).
+   * <p>
+   * A removed node receives no more entries, so the index a read waits for is never applied here: a read that started
+   * waiting while the node was still a member blocked the whole quorum timeout before it was refused (#9590) or failed.
+   * Only a read may give up this way. The commit and drop paths wait on the same index after their entry committed
+   * cluster-wide, and a retryable exception there would invite a duplicate retry of a durable write - they keep
+   * {@link #waitForAppliedIndex(String, long, boolean)}.
+   *
+   * @throws NeedRetryException when this node is, or becomes during the wait, no longer a member of the configuration
+   */
+  public void waitForAppliedIndexForRead(final String databaseName, final long targetIndex,
+      final Database.READ_CONSISTENCY consistency) {
+    awaitAppliedIndex(databaseName, targetIndex, consistency == Database.READ_CONSISTENCY.LINEARIZABLE, consistency);
+  }
+
+  /**
+   * The apply wait behind both public forms.
+   *
+   * @param readConsistency the consistency of the read waiting, which then gives up on a removal from the configuration;
+   *                        {@code null} for any other waiter
+   */
+  void awaitAppliedIndex(final String databaseName, final long targetIndex, final boolean throwOnTimeout,
+      final Database.READ_CONSISTENCY readConsistency) {
     if (targetIndex <= 0)
       return;
     try {
       final long deadline = System.currentTimeMillis() + quorumTimeout;
+      // The configuration is read on entry, then whenever it changed, and once per recheck interval: not on every entry
+      // applied, which wakes every waiter
+      long membershipSeen = membershipChanges.get();
+      long nextMembershipCheck = 0L;
       synchronized (applyNotifier) {
         while (getTrustedAppliedIndex(databaseName) < targetIndex) {
+          if (readConsistency != null) {
+            final long now = System.currentTimeMillis();
+            final long membership = membershipChanges.get();
+            if (membership != membershipSeen || now >= nextMembershipCheck) {
+              membershipSeen = membership;
+              nextMembershipCheck = now + APPLY_WAIT_RECHECK_INTERVAL_MS;
+              if (isRemovedFromConfiguration()) {
+                LogManager.instance().log(this, Level.INFO,
+                    "%s read on database '%s' refused while waiting for index %d (applied=%d): this server is no longer a "
+                        + "member of the Raft configuration", readConsistency, databaseName, targetIndex,
+                    getTrustedAppliedIndex(databaseName));
+                throw readRefusedWhileRemovedFromConfiguration(databaseName, readConsistency);
+              }
+            }
+          }
           if (!throwOnTimeout && (getStaleSnapshotAppliedFloor() >= 0 || getDatabaseAppliedFloor(databaseName) >= 0)) {
             // No explicit "targetIndex > floor" test is needed, and adding one would be dead code:
             // reaching this line means the loop condition held, i.e. getTrustedAppliedIndex() (pinned at
@@ -5989,8 +6069,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     final long readIndex = fetchReadIndex(true);
     if (!isLeader())
       throw new ReplicationException("Lost leadership after ReadIndex confirmation");
-    // LINEARIZABLE: a timeout MUST throw (HTTP 503) - never silently degrade to a stale read.
-    waitForAppliedIndex(databaseName, readIndex, true);
+    // LINEARIZABLE: a timeout MUST throw (HTTP 503) - never silently degrade to a stale read. A removal from the
+    // configuration during the wait refuses the read at once (issue #9606)
+    waitForAppliedIndexForRead(databaseName, readIndex, Database.READ_CONSISTENCY.LINEARIZABLE);
   }
 
   /**
@@ -6008,8 +6089,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   /** As {@link #ensureLinearizableFollowerRead()}, scoped to the database the read targets (issue #6760). */
   public void ensureLinearizableFollowerRead(final String databaseName) {
     final long readIndex = fetchReadIndex(false);
-    // LINEARIZABLE: a timeout MUST throw (HTTP 503) - never silently degrade to a stale read.
-    waitForAppliedIndex(databaseName, readIndex, true);
+    // LINEARIZABLE: a timeout MUST throw (HTTP 503) - never silently degrade to a stale read. A removal from the
+    // configuration during the wait refuses the read at once (issue #9606)
+    waitForAppliedIndexForRead(databaseName, readIndex, Database.READ_CONSISTENCY.LINEARIZABLE);
   }
 
   /**
