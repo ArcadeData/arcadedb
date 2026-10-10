@@ -45,7 +45,7 @@ class Issue9695DeclaredStringPatternTest extends TestHelper {
 
   private static final String[] OPERANDS = { "1", "-7", "1.5", "true", "datetime('2021-06-15T12:30:00Z')",
       "localdatetime('2021-06-15T12:30:00')", "date('2021-06-15')", "time('12:30:00Z')", "localtime('12:30:00')",
-      "duration('P1DT2H')" };
+      "duration('P1DT2H')", "[1, 2]" };
 
   private long count(final String query) {
     return count(query, Map.of());
@@ -109,6 +109,11 @@ class Issue9695DeclaredStringPatternTest extends TestHelper {
           .isEqualTo(1L);
       assertThat(count("MATCH (p:" + type + ") WHERE p.d <> " + operand + " RETURN count(p) AS c")).as(described + " WHERE <>")
           .isEqualTo(0L);
+      // The same comparison inside a projection, which the expression evaluator answers
+      assertThat(count("MATCH (p:" + type + ") RETURN sum(CASE WHEN p.d = " + operand + " THEN 1 ELSE 0 END) AS c"))
+          .as(described + " projected =").isEqualTo(1L);
+      assertThat(count("MATCH (p:" + type + ") WITH p.d = " + operand + " AS eq, p.d <> " + operand + " AS ne WHERE eq AND NOT ne RETURN count(*) AS c"))
+          .as(described + " projected comparison").isEqualTo(1L);
     }
   }
 
@@ -119,6 +124,8 @@ class Issue9695DeclaredStringPatternTest extends TestHelper {
     assertThat(count("MATCH (p:D {d: 2}) RETURN count(p) AS c")).isEqualTo(0L);
     assertThat(count("MATCH (p:D) WHERE p.d = 2 RETURN count(p) AS c")).isEqualTo(0L);
     assertThat(count("MATCH (p:D) WHERE p.d <> 2 RETURN count(p) AS c")).isEqualTo(1L);
+    // A map is never stored, so it has no text to be found by
+    assertThat(count("MATCH (p:D) WHERE p.d = {a: 1} RETURN count(p) AS c")).isEqualTo(0L);
     // 1.0 is stored as '1.0': a different text from the '1' the integer stored
     assertThat(count("MATCH (p:D {d: 1.0}) RETURN count(p) AS c")).isEqualTo(0L);
     assertThat(merge("MERGE (p:D {d: 2}) ON CREATE SET p.tag = 'CREATED' RETURN p.tag AS tag")).isEqualTo("CREATED");
@@ -267,6 +274,8 @@ class Issue9695DeclaredStringPatternTest extends TestHelper {
       // Past 2^53 two longs share one double key: only the comparison above the join tells them apart
       database.command("opencypher", "CREATE (:JC {id: 103, code: 9007199254740993}), (:JC {id: 104, code: '9007199254740992'})").close();
       database.command("opencypher", "CREATE (:JC {id: 105, code: '02134'}), (:JC {id: 106, code: '1-2'}), (:JC {id: 107, code: -0.0})").close();
+      // Texts made of a number's characters in no number's shape: their own keys, never a parse
+      database.command("opencypher", "CREATE (:JC {id: 108, code: 'E'}), (:JC {id: 109, code: '2024-01'}), (:JC {id: 110, code: '1.'}), (:JC {id: 111, code: '1E'})").close();
       database.command("opencypher", "CREATE (:JP {id: 1, num: 5}), (:JP {id: 2, num: true}), (:JP {id: 3, num: 5.5}), (:JP {id: 4, num: '7'})")
           .close();
       database.command("opencypher", "CREATE (:JP {id: 5, num: 9007199254740993}), (:JP {id: 6, num: 2134}), (:JP {id: 7, num: 0.0})").close();

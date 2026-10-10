@@ -156,7 +156,7 @@ public final class InlineProperties {
         || operand instanceof Map)
       return null;
     // NaN equals nothing, not even the 'NaN' it was stored as
-    if (operand instanceof Double d && d.isNaN() || operand instanceof Float f && f.isNaN())
+    if ((operand instanceof Double d && d.isNaN()) || (operand instanceof Float f && f.isNaN()))
       return null;
     return Type.convertOrNull(database, TemporalUtil.toCoreJavaType(operand), String.class, property) instanceof String text ?
         text :

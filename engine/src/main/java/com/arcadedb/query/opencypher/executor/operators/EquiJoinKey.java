@@ -131,9 +131,10 @@ public record EquiJoinKey(Expression left, Expression right, boolean viaEvaluato
   }
 
   /**
-   * The key of a text: the key of the number or boolean it spells, or the text itself. A text is only parsed when its
-   * characters are all those of a number's text, so an ordinary text (a zip code with a dash, an id with letters) costs a
-   * character scan and never a thrown exception, and an integer's digits are read as a long without one either.
+   * The key of a text: the key of the number or boolean it spells, or the text itself. A text is only parsed when it has
+   * the exact shape of a number's text ({@code -?digits(.digits)?(E-?digits)?}, what a number is stored as), so an
+   * ordinary text costs a character scan that stops at the first character out of place and never a thrown exception,
+   * and an integer's digits are read as a long without a parse at all.
    */
   private static Object textKey(final String text) {
     final int length = text.length();
@@ -146,33 +147,42 @@ public record EquiJoinKey(Expression left, Expression right, boolean viaEvaluato
       return Double.parseDouble(text);
 
     final int start = first == '-' ? 1 : 0;
-    if (start == length)
+    int i = digits(text, start);
+    if (i == start)
+      return text; // no leading digit
+    final int integralEnd = i;
+    if (i < length && text.charAt(i) == '.') {
+      final int fraction = digits(text, i + 1);
+      if (fraction == i + 1)
+        return text; // a dot with no digit after it
+      i = fraction;
+    }
+    if (i < length && text.charAt(i) == 'E') {
+      final int exponentStart = i + 1 < length && text.charAt(i + 1) == '-' ? i + 2 : i + 1;
+      final int exponent = digits(text, exponentStart);
+      if (exponent == exponentStart)
+        return text; // an E with no digit after it
+      i = exponent;
+    }
+    if (i != length)
       return text;
-    boolean integral = true;
-    for (int i = start; i < length; i++) {
-      final char c = text.charAt(i);
-      if (c >= '0' && c <= '9')
-        continue;
-      if (c != '.' && c != 'E' && c != '-')
-        return text; // not the text of a number: no parse at all
-      integral = false;
-    }
 
-    if (integral) {
+    final double d;
+    if (integralEnd == length && length - start <= 18) {
       // Up to 18 digits always fit a long; the key of a number is its double, like canonicalValue's
-      if (length - start <= 18) {
-        long value = 0;
-        for (int i = start; i < length; i++)
-          value = value * 10 + (text.charAt(i) - '0');
-        final double d = start == 1 ? -(double) value : (double) value;
-        return d == 0.0 ? 0.0 : d;
-      }
-    }
-    try {
-      final double d = Double.parseDouble(text);
-      return d == 0.0 ? 0.0 : d;
-    } catch (final NumberFormatException e) {
-      return text; // the characters of a number in no number's order ("1-2", "1..2")
-    }
+      long value = 0;
+      for (int k = start; k < length; k++)
+        value = value * 10 + (text.charAt(k) - '0');
+      d = start == 1 ? -(double) value : (double) value;
+    } else
+      d = Double.parseDouble(text); // the shape was checked: this cannot throw
+    return d == 0.0 ? 0.0 : d;
+  }
+
+  /** The index just past the run of decimal digits starting at {@code from}. */
+  private static int digits(final String text, int from) {
+    while (from < text.length() && text.charAt(from) >= '0' && text.charAt(from) <= '9')
+      from++;
+    return from;
   }
 }
