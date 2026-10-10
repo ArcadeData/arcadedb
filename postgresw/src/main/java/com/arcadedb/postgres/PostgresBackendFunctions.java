@@ -23,7 +23,6 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.server.security.ServerSecurityUser;
 
 /**
  * PostgreSQL's backend signalling functions (issue #9689), so a client stops another connection's statement the way it
@@ -37,7 +36,13 @@ import com.arcadedb.server.security.ServerSecurityUser;
  * Both signalling functions answer {@code true} once the signal is sent, and {@code false} for a process id that names no
  * connection the caller may signal: as everywhere a running statement is listed or stopped, the server administrator may
  * signal every connection and any other user only their own, and somebody else's connection is not told apart from one
- * that does not exist.
+ * that does not exist. The rule is the server's registry's own ({@code RunningQueryRegistry.isVisible}), the one
+ * {@code list queries} and {@code SHOW TRANSACTIONS} apply, so the surfaces cannot disagree.
+ * <p>
+ * Registered in the JVM-wide SQL function factory once the Postgres plugin starts, so they are also callable from SQL sent
+ * over any other protocol: there {@code pg_backend_pid()} answers {@code null} (the caller is not a Postgres connection)
+ * and the signalling functions still reach Postgres connections. They stay registered after the plugin stops, where they
+ * find no connection and answer {@code false}.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -130,7 +135,9 @@ public final class PostgresBackendFunctions {
         return false;
       // The statement first, so its work stops at its next check rather than running on against a closed socket
       backend.cancelRunningStatement(caller);
-      // Ends the connection's thread, which rolls back what its transaction left open
+      // Ends the connection's thread, which rolls back what its transaction left open. Safe from this thread: close()
+      // only raises the shutdown flag and closes the socket, and the connection's own thread - blocked reading, or
+      // writing - fails out of its I/O and runs its cleanup (the rollback included) itself
       backend.close();
       return true;
     }
@@ -167,6 +174,6 @@ public final class PostgresBackendFunctions {
     final PostgresNetworkExecutor backend = PostgresNetworkExecutor.getBackend((int) value);
     if (backend == null || caller == null)
       return null;
-    return ServerSecurityUser.isServerAdministrator(caller) || caller.equals(backend.getUserName()) ? backend : null;
+    return backend.getServer().getRunningQueries().isVisible(caller, backend.getUserName()) ? backend : null;
   }
 }

@@ -1032,8 +1032,8 @@ public class ServerControlPlane {
     return user != null && server.getRunningQueries().isVisible(user.getName(), query);
   }
 
-  private static boolean isVisible(final ServerSecurityUser user, final String owner) {
-    return user != null && (ServerSecurityUser.isServerAdministrator(user.getName()) || user.getName().equals(owner));
+  private boolean isVisible(final ServerSecurityUser user, final String owner) {
+    return user != null && server.getRunningQueries().isVisible(user.getName(), owner);
   }
 
   // ---------------------------------------------------------------------------------------------

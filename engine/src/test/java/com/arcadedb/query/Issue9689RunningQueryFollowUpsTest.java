@@ -257,6 +257,11 @@ class Issue9689RunningQueryFollowUpsTest {
       assertThat(registry.isVisible("alice", query)).isTrue();
       assertThat(registry.isVisible("bob", query)).isFalse();
       assertThat(registry.isVisible(null, query)).isFalse();
+      // The same rule for what a user owns without a statement running - a session, an idle connection
+      assertThat(registry.isVisible("root", "alice")).isTrue();
+      assertThat(registry.isVisible("alice", "alice")).isTrue();
+      assertThat(registry.isVisible("bob", "alice")).isFalse();
+      assertThat(registry.isVisible((String) null, "alice")).isFalse();
       // A registry nobody set an administrator for has none
       final RunningQueryRegistry plain = new RunningQueryRegistry();
       try (final RunningQuery other = plain.open("db", "alice", "test", null, null)) {

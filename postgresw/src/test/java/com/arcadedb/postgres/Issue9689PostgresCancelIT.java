@@ -54,7 +54,7 @@ import static org.awaitility.Awaitility.await;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class Issue9689PostgresCancelIT extends PostgresWireProtocolTestBase {
-  /** One full scan of 5,000 records per record: tens of seconds when left alone. */
+  /** One full scan of 10,000 records per record, 100 million comparisons: minutes when left alone, on any machine. */
   private static final String LONG_SQL =
       "SELECT FROM Node9689 WHERE (SELECT count(*) AS c FROM Node9689 WHERE v = $parent.$current.v + 1000000)[0].c > 0";
   private static final String OTHER    = "other9689";
@@ -66,7 +66,7 @@ class Issue9689PostgresCancelIT extends PostgresWireProtocolTestBase {
     if (!database.getSchema().existsType("Node9689")) {
       database.getSchema().createDocumentType("Node9689");
       database.transaction(() -> {
-        for (int i = 0; i < 5_000; i++)
+        for (int i = 0; i < 10_000; i++)
           database.newDocument("Node9689").set("v", i).save();
       });
     }

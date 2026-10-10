@@ -83,7 +83,15 @@ public final class RunningQueryRegistry {
    * only their own. Every surface that lists or terminates statements asks this, so they cannot disagree.
    */
   public boolean isVisible(final String viewer, final RunningQuery query) {
-    return viewer != null && query != null && (administrator.test(viewer) || viewer.equals(query.getUser()));
+    return query != null && isVisible(viewer, query.getUser());
+  }
+
+  /**
+   * The same rule for whatever else belongs to a user and may be stopped - a transaction session, a protocol connection
+   * with or without a statement running: whether {@code viewer} may see and stop what {@code owner} runs.
+   */
+  public boolean isVisible(final String viewer, final String owner) {
+    return viewer != null && (administrator.test(viewer) || viewer.equals(owner));
   }
 
   /**
