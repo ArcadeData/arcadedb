@@ -701,7 +701,7 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
       if (rescored.size() == candidates.size() || committed.size() >= rows
           || groupedExhausted(candidates, groupKeyResolver, groupsAsked, membersAsked))
         break;
-      final int wider = groupedWidening(rows, Math.max(widening, 1) * STALE_TOP_UP_GROWTH);
+      final int wider = groupedWidening(rows, grownWidening(widening));
       if (wider <= widening)
         break;
       widening = wider;
@@ -853,14 +853,20 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
       // The same top-up as the grouped search (issue #9692): a group left short because its members' records were
       // gone asks again with a wider per-group cap, unless the engine already handed over every member it holds.
       if (rescored.size() == candidates.size() || out.size() >= rows
+          // No group budget here: the groups are named by the caller, so only the per-group cap says whether more exist.
           || groupedExhausted(candidates, groupKeyResolver, Integer.MAX_VALUE, membersAsked))
         break;
-      final int wider = rowWidening(rows, Math.max(widening, 1) * STALE_TOP_UP_GROWTH);
+      final int wider = rowWidening(rows, grownWidening(widening));
       if (wider <= widening)
         break;
       widening = wider;
     }
     return out;
+  }
+
+  /** The next widening a grouped stale top-up asks for, clamped rather than left to overflow an int. */
+  private static int grownWidening(final int widening) {
+    return (int) Math.min((long) Math.max(widening, 1) * STALE_TOP_UP_GROWTH, Integer.MAX_VALUE);
   }
 
   /**
