@@ -76,13 +76,22 @@ final class DisconnectedCountParts {
     if (clauses == null || clauses.isEmpty())
       return null;
 
+    // Counted before anything is allocated: almost every count statement is one unit, and it is asked on every execution
+    // of every one of them (issue #9652)
+    int unitCount = 0;
+    for (final MatchClause clause : clauses) {
+      if (!clause.hasPathPatterns())
+        return null;
+      unitCount += clause.isOptional() ? 1 : clause.getPathPatterns().size();
+    }
+    if (unitCount < 2)
+      return null;
+
     // the units: [clause][pattern], all the patterns of an OPTIONAL clause sharing the first one's unit
-    final List<int[]> unitOf = new ArrayList<>(); // unit -> {clause, pattern or -1 for the whole clause}
+    final List<int[]> unitOf = new ArrayList<>(unitCount); // unit -> {clause, pattern or -1 for the whole clause}
     final int[][] patternUnit = new int[clauses.size()][];
     for (int c = 0; c < clauses.size(); c++) {
       final MatchClause clause = clauses.get(c);
-      if (!clause.hasPathPatterns())
-        return null;
       final int patterns = clause.getPathPatterns().size();
       patternUnit[c] = new int[patterns];
       if (clause.isOptional()) {
@@ -96,8 +105,6 @@ final class DisconnectedCountParts {
           unitOf.add(new int[] { c, p });
         }
     }
-    if (unitOf.size() < 2)
-      return null;
 
     // Union-find over the units: two units with the same root are one part. Units are only ever joined, never split,
     // so every check below reads the roots after all the joins that could affect it - the parts are computed once

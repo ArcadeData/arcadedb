@@ -67,6 +67,10 @@ final class PassThroughWithFolder {
 
   /**
    * The statement as a count push-down reads it.
+   * <p>
+   * A function of the statement's text alone: it reads no schema, data or parameter, which is what lets the result be
+   * kept on the cached statement for every later execution ({@code SimpleCypherStatement.getCountPushDownForm()}, issue
+   * #9652). A fold that came to depend on anything else would have to stop being kept there.
    *
    * @return the statement itself when it holds no {@code WITH}, the folded statement when every {@code WITH} is a
    * pass-through, null when one is not or when a name could not be kept apart
@@ -75,7 +79,7 @@ final class PassThroughWithFolder {
     if (!(statement instanceof SimpleCypherStatement simple) || statement instanceof UnionStatement)
       return statement;
     final List<ClauseEntry> clauses = statement.getClausesInOrder();
-    if (clauses == null || clauses.stream().noneMatch(c -> c.getType() == ClauseEntry.ClauseType.WITH))
+    if (clauses == null || !hasWith(clauses))
       return statement;
 
     // visible name -> the variable of the folded statement it stands for
@@ -117,6 +121,13 @@ final class PassThroughWithFolder {
     return new SimpleCypherStatement(simple.getOriginalQuery(), matches, simple.getWhereClause(), simple.getReturnClause(),
         simple.getOrderByClause(), simple.getSkip(), simple.getLimit(), null, null, null, null, null, null, null, null,
         entries, false, false, false, false);
+  }
+
+  private static boolean hasWith(final List<ClauseEntry> clauses) {
+    for (final ClauseEntry clause : clauses)
+      if (clause.getType() == ClauseEntry.ClauseType.WITH)
+        return true;
+    return false;
   }
 
   /**
