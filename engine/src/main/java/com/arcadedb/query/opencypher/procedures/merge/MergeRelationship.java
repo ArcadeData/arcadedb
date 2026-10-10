@@ -25,6 +25,7 @@ import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.LightEdge;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.opencypher.InlineProperties;
 import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.executor.CypherVertexReload;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
@@ -217,12 +218,14 @@ public class MergeRelationship implements CypherProcedure {
           final Object edgeValue = edge.get(entry.getKey());
           final Object matchValue = entry.getValue();
 
+          // A value is compared the way a MATCH compares an inline property, so a stored FLOAT or INTEGER is found by the
+          // DOUBLE or LONG a query supplies instead of creating a duplicate (issue #9693)
           if (matchValue == null) {
             if (edgeValue != null) {
               allMatch = false;
               break;
             }
-          } else if (!matchValue.equals(edgeValue)) {
+          } else if (!InlineProperties.matchesResolvedValue(edgeValue, matchValue)) {
             allMatch = false;
             break;
           }
