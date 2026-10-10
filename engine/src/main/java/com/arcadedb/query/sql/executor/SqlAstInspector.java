@@ -20,9 +20,17 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 import com.arcadedb.query.sql.method.DefaultSQLMethodFactory;
+import com.arcadedb.query.sql.parser.AlterTypeStatement;
+import com.arcadedb.query.sql.parser.CaseAlternative;
+import com.arcadedb.query.sql.parser.CreateIndexStatement;
+import com.arcadedb.query.sql.parser.CreateTimeSeriesTypeStatement;
 import com.arcadedb.query.sql.parser.FunctionCall;
+import com.arcadedb.query.sql.parser.InsertSetExpression;
+import com.arcadedb.query.sql.parser.JsonItem;
 import com.arcadedb.query.sql.parser.MethodCall;
 import com.arcadedb.query.sql.parser.NamedParameter;
+import com.arcadedb.query.sql.parser.OrderByItem;
+import com.arcadedb.query.sql.parser.Pattern;
 import com.arcadedb.query.sql.parser.PositionalParameter;
 import com.arcadedb.query.sql.parser.SimpleNode;
 import com.arcadedb.query.sql.parser.Statement;
@@ -49,8 +57,6 @@ import java.util.function.Predicate;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public final class SqlAstInspector {
-  private static final String PARSER_PACKAGE = SimpleNode.class.getPackageName();
-
   /** Read-only graph traversal methods, resolved at run time as the built-in graph functions of the same name. */
   static final Set<String> GRAPH_METHODS = Set.of("out", "in", "both", "oute", "ine", "bothe", "outv", "inv", "bothv");
 
@@ -77,12 +83,19 @@ public final class SqlAstInspector {
   }
 
   /**
-   * A parsed node, or one of the plain holders the parser builds between nodes without making them nodes - an
-   * {@code INSERT ... SET} pair, a {@code CASE} alternative, an {@code ORDER BY} item, a JSON item, a MATCH pattern. A
-   * walk that stopped at those would not see {@code INSERT INTO T SET a = (CREATE TYPE X)} (issue #9628).
+   * The plain holders the parser builds between nodes without making them nodes - an {@code INSERT ... SET} pair, a
+   * {@code CASE} alternative, an {@code ORDER BY} item, a JSON item, a MATCH pattern, an ALTER TYPE item (whose
+   * {@code CUSTOM} value is an expression evaluated by the DDL), a CREATE INDEX property, a time series column. A walk that stopped at them would
+   * not see {@code INSERT INTO T SET a = (CREATE TYPE X)} (issue #9628). An explicit list rather than "anything in the
+   * parser package", so a helper or cache kept in a node's field is never walked; {@code SqlAstHolderClassesTest} fails
+   * when a node gains a field of a parser class that is neither a node nor listed here.
    */
+  static final Set<Class<?>> AST_HOLDER_CLASSES = Set.of(InsertSetExpression.class, CaseAlternative.class, OrderByItem.class,
+      JsonItem.class, Pattern.class, AlterTypeStatement.Item.class, CreateIndexStatement.Property.class,
+      CreateTimeSeriesTypeStatement.ColumnDef.class);
+
   private static boolean isAstClass(final Class<?> type) {
-    return SimpleNode.class.isAssignableFrom(type) || (PARSER_PACKAGE.equals(type.getPackageName()) && !ResultSet.class.isAssignableFrom(type));
+    return SimpleNode.class.isAssignableFrom(type) || AST_HOLDER_CLASSES.contains(type);
   }
 
   private static boolean isAstObject(final Object node) {
@@ -138,13 +151,17 @@ public final class SqlAstInspector {
    * <p>
    * Iterative, not recursive: a parsed expression chain can be thousands of nodes deep (issue #9148), and this runs on
    * every classification of a new statement, on whatever stack the caller has.
+   *
+   * @return false when a field could not be read, so the walk may have missed a statement: the caller must then assume the
+   * worst, as {@link #allNodesMatch} does by answering false
    */
-  public static void forEachNestedStatement(final Statement root, final BiPredicate<Statement, Statement> visitor) {
+  public static boolean forEachNestedStatement(final Statement root, final BiPredicate<Statement, Statement> visitor) {
     final IdentityHashMap<Object, Boolean> visited = new IdentityHashMap<>();
     final ArrayDeque<Object> nodes = new ArrayDeque<>();
     final ArrayDeque<Statement> enclosing = new ArrayDeque<>();
     visited.put(root, Boolean.TRUE);
-    pushFields(root, root, nodes, enclosing, visited);
+    if (!pushFields(root, root, nodes, enclosing, visited))
+      return false;
 
     while (!nodes.isEmpty()) {
       final Object node = nodes.pop();
@@ -162,12 +179,13 @@ public final class SqlAstInspector {
           push(item, parent, nodes, enclosing);
       } else if (isAstObject(node) && visited.put(node, Boolean.TRUE) == null) {
         if (node instanceof Statement statement) {
-          if (visitor.test(statement, parent))
-            pushFields(statement, statement, nodes, enclosing, visited);
-        } else
-          pushFields(node, parent, nodes, enclosing, visited);
+          if (visitor.test(statement, parent) && !pushFields(statement, statement, nodes, enclosing, visited))
+            return false;
+        } else if (!pushFields(node, parent, nodes, enclosing, visited))
+          return false;
       }
     }
+    return true;
   }
 
   private static void push(final Object node, final Statement parent, final ArrayDeque<Object> nodes, final ArrayDeque<Statement> enclosing) {
@@ -177,7 +195,7 @@ public final class SqlAstInspector {
     enclosing.push(parent);
   }
 
-  private static void pushFields(final Object node, final Statement parent, final ArrayDeque<Object> nodes,
+  private static boolean pushFields(final Object node, final Statement parent, final ArrayDeque<Object> nodes,
       final ArrayDeque<Statement> enclosing, final IdentityHashMap<Object, Boolean> visited) {
     if (node instanceof Statement statement && statement.originalStatement != null)
       visited.putIfAbsent(statement.originalStatement, Boolean.TRUE);
@@ -186,10 +204,11 @@ public final class SqlAstInspector {
       try {
         value = f.get(node);
       } catch (final IllegalAccessException e) {
-        throw new IllegalStateException("Cannot read field " + f.getName() + " of " + node.getClass().getSimpleName(), e);
+        return false;
       }
       push(value, parent, nodes, enclosing);
     }
+    return true;
   }
 
   /**

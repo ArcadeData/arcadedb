@@ -49,6 +49,9 @@ public class Statement extends SimpleNode {
   public volatile Boolean resultCacheable;
   // Memo of what the statements nested in this one do (issue #9628): a reflective walk of the (immutable once parsed)
   // tree, so computed once per parsed instance. Transient so the AST walkers never mistake it for part of the tree.
+  // Valid because nothing adds a statement to a parsed tree after it is classified: rewrites happen on the text before
+  // parsing (the HTTP automatic LIMIT is appended to the command string) and planners work on copy(), which starts with
+  // no memo.
   private transient volatile NestedClassification nestedClassification;
 
   /**
@@ -314,7 +317,7 @@ public class Statement extends SimpleNode {
     final boolean[] ddl = { false };
     final EnumSet<OperationType> types = EnumSet.noneOf(OperationType.class);
     types.addAll(own);
-    SqlAstInspector.forEachNestedStatement(this, (nested, enclosing) -> {
+    final boolean complete = SqlAstInspector.forEachNestedStatement(this, (nested, enclosing) -> {
       if (!nested.isIdempotentItself())
         idempotent[0] = false;
       if (nested instanceof DDLStatement)
@@ -333,16 +336,21 @@ public class Statement extends SimpleNode {
       return nested.executesNestedStatements();
     });
 
+    if (!complete)
+      // PART OF THE TREE COULD NOT BE READ: ASSUME IT DOES EVERYTHING, SO NO READ-ONLY GATE ADMITS IT
+      return new NestedClassification(false, true, Collections.unmodifiableSet(EnumSet.of(OperationType.CREATE, OperationType.UPDATE,
+          OperationType.DELETE, OperationType.SCHEMA)));
+
     final Set<OperationType> result;
     if (types.isEmpty())
       result = CollectionUtils.singletonSet(OperationType.READ);
     else if (types.size() == own.size())
+      // TYPES STARTED AS A COPY OF OWN AND ONLY GREW: SAME SIZE MEANS NOTHING WAS ADDED, SO KEEP THE SUBCLASS'S OWN SET
       result = own;
     else
       result = Collections.unmodifiableSet(types);
     return new NestedClassification(idempotent[0], ddl[0], result);
   }
-
 
   public boolean executionPlanCanBeCached() {
     return false;
