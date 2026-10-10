@@ -25,6 +25,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.graph.IncomingEdgeLookup;
+import com.arcadedb.query.RunningQuery;
 import com.arcadedb.utility.TimeBoundRegex;
 
 import java.util.HashMap;
@@ -80,6 +81,12 @@ public class BasicCommandContext implements CommandContext {
   private volatile   QueryHeapTracker     queryHeapTracker;
   /** Created by the root context on first use. See {@link #getIncomingEdgeLookup()}. */
   private volatile   IncomingEdgeLookup   incomingEdgeLookup;
+  /**
+   * The registry entry of the statement, captured from the thread that builds the context (issue #9680). Captured at
+   * construction rather than resolved on first use: a root context can be read first by a parallel worker, on a thread
+   * that has no entry published. See {@link #getRunningQuery()}.
+   */
+  private            RunningQuery         runningQuery            = RunningQuery.current();
 
   @Override
   public Object getVariablePath(final String name) {
@@ -480,6 +487,23 @@ public class BasicCommandContext implements CommandContext {
     }
   }
 
+  /**
+   * The statement's registry entry: this context's own, captured from the thread that built it, otherwise the parent's,
+   * so a context derived on a worker thread still obeys the termination of the statement it works for.
+   */
+  @Override
+  public RunningQuery getRunningQuery() {
+    final RunningQuery query = runningQuery;
+    if (query != null)
+      return query;
+    return parent != null ? parent.getRunningQuery() : null;
+  }
+
+  /** Binds this context to the registry entry of a statement, for a context built apart from the statement's tree. */
+  public void setRunningQuery(final RunningQuery runningQuery) {
+    this.runningQuery = runningQuery;
+  }
+
   public CommandContext setParent(final CommandContext iParentContext) {
     if (parent != iParentContext) {
       parent = iParentContext;
@@ -592,6 +616,8 @@ public class BasicCommandContext implements CommandContext {
     copy.queryHeapTracker = getQueryHeapTracker();
     // And for the incoming-edge lookup, so the workers share the one scan the query builds (issue #8625)
     copy.incomingEdgeLookup = getIncomingEdgeLookup();
+    // And for the termination switch, so a worker stops with the statement it works for (issue #9680)
+    copy.runningQuery = getRunningQuery();
     return copy;
   }
 

@@ -36,6 +36,7 @@ import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.RunningQuery;
 import com.arcadedb.query.opencypher.ast.AllReduceExpression;
 import com.arcadedb.query.opencypher.ast.ArithmeticExpression;
 import com.arcadedb.query.opencypher.ast.BooleanCoercionExpression;
@@ -484,12 +485,17 @@ public class CypherExecutionPlan {
    * correlated {@code COUNT { }} probe and every UNION branch runs on a context of its own (issue #6266).
    * <p>
    * What reaching the deadline means travels with it: an outer {@code TIMEOUT n RETURN} must end the nested
-   * plan's rows too, not abort it with the exception the clause promised not to raise (issue #6304).
+   * plan's rows too, not abort it with the exception the clause promised not to raise (issue #6304). So does the
+   * statement's termination switch, for the same reason: a nested plan is part of the statement (issue #9680).
    */
   private static void inheritCommandDeadline(final BasicCommandContext context, final CommandContext outerContext) {
-    if (outerContext != null)
+    if (outerContext != null) {
       context.setCommandDeadline(outerContext.getCommandDeadline(), outerContext.getCommandDeadlineDescription(),
           outerContext.isCommandDeadlinePartial());
+      final RunningQuery runningQuery = outerContext.getRunningQuery();
+      if (runningQuery != null)
+        context.setRunningQuery(runningQuery);
+    }
   }
 
   /**

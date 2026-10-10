@@ -30,6 +30,7 @@ import com.arcadedb.engine.OperationProgressRegistry;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.DatabaseOperationInProgressException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.RunningQuery;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
@@ -39,6 +40,8 @@ import com.arcadedb.server.backup.BackupCoordinator;
 import com.arcadedb.server.http.HttpAuthSession;
 import com.arcadedb.server.http.HttpAuthSessionManager;
 import com.arcadedb.server.http.HttpServer;
+import com.arcadedb.server.http.HttpSession;
+import com.arcadedb.server.http.HttpSessionManager;
 import com.arcadedb.server.monitor.ServerQueryProfiler;
 import com.arcadedb.server.security.ApiTokenConfiguration;
 import com.arcadedb.server.security.ServerSecurity;
@@ -64,6 +67,7 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -108,6 +112,10 @@ public class ServerControlPlane {
   /** The security documents in the order every source of the convergence signal names them (issue #8317). */
   private static final List<String> SECURITY_DOCUMENT_ORDER = List.of("users", "groups", "API tokens");
   private static final IPAddressBlocklist RESERVED_ADDRESSES = IPAddressBlocklist.defaultReservedRanges();
+  /** How long a terminate waits for the statement to end when the caller does not say (issue #9680). */
+  public static final  long               DEFAULT_TERMINATE_WAIT_MS = 5_000L;
+  /** The longest a terminate waits, whatever the caller asks: the wait holds a request thread, and a client that needs longer polls "list queries". */
+  public static final  long               MAX_TERMINATE_WAIT_MS     = 10_000L;
 
   private final ArcadeDBServer server;
 
@@ -849,6 +857,175 @@ public class ServerControlPlane {
 
     final HttpAuthSessionManager sessionManager = httpServer.getAuthSessionManager();
     return sessionManager == null ? List.of() : sessionManager.getActiveSessions();
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // Running statements and transaction sessions (issue #9680)
+  // ---------------------------------------------------------------------------------------------
+
+  /**
+   * The statements this server is running that {@code user} may see: every one for the server administrator, the user's
+   * own for anybody else. Optionally only those against {@code database} or carrying {@code tag}.
+   * <p>
+   * A statement leaves the list only once the server has stopped working on it - its rollback and cleanup included - so
+   * a statement missing from it is a statement that is over.
+   */
+  public JSONArray listQueries(final ServerSecurityUser user, final String database, final String tag) {
+    final JSONArray result = new JSONArray();
+    for (final RunningQuery query : server.getRunningQueries().getRunning())
+      if (isVisible(user, query.getUser()) && (database == null || database.equals(query.getDatabase()))
+          && (tag == null || tag.equals(query.getTag())))
+        result.put(query.toJSON().put("server", server.getServerName()));
+    return result;
+  }
+
+  /**
+   * Terminates a running statement and waits up to {@code waitMs} for it to end. The answer says what happened:
+   * <ul>
+   * <li>{@code terminated}: the statement stopped and what it wrote was rolled back;</li>
+   * <li>{@code completed}: it ended on its own before it noticed the request - a write it committed stands;</li>
+   * <li>{@code terminating}: it was asked to stop and has not reached a check yet; poll {@code list queries};</li>
+   * <li>{@code not found}: no such statement is running, or it is not one {@code user} may see - not told apart, so
+   * the existence of another user's statement is not given away.</li>
+   * </ul>
+   */
+  public JSONObject terminateQuery(final ServerSecurityUser user, final String id, final long waitMs) {
+    final RunningQuery query = user != null ? server.getRunningQueries().get(id) : null;
+    if (query == null || !isVisible(user, query.getUser()))
+      return new JSONObject().put("id", id).put("status", "not found");
+
+    query.terminate(user.getName());
+    return terminationStatus(query, System.currentTimeMillis() + boundedWait(waitMs));
+  }
+
+  /** Terminates every running statement carrying {@code tag} that {@code user} may see, then waits for them together. */
+  public JSONArray terminateQueriesByTag(final ServerSecurityUser user, final String tag, final long waitMs) {
+    if (user == null || tag == null)
+      return new JSONArray();
+    final List<RunningQuery> matching = new ArrayList<>();
+    for (final RunningQuery query : server.getRunningQueries().getRunning())
+      if (tag.equals(query.getTag()) && isVisible(user, query.getUser())) {
+        query.terminate(user.getName());
+        matching.add(query);
+      }
+
+    final long deadline = System.currentTimeMillis() + boundedWait(waitMs);
+    final JSONArray result = new JSONArray();
+    for (final RunningQuery query : matching)
+      result.put(terminationStatus(query, deadline));
+    return result;
+  }
+
+  /** The open HTTP transaction sessions {@code user} may see, with the statements running in each. */
+  public JSONArray listTransactions(final ServerSecurityUser user) {
+    final JSONArray result = new JSONArray();
+    final HttpServer httpServer = server.getHttpServer();
+    if (httpServer == null)
+      return result;
+
+    // The running statements grouped by session once, rather than scanned again for every session
+    final Map<String, JSONArray> queriesBySession = new HashMap<>();
+    for (final RunningQuery query : server.getRunningQueries().getRunning())
+      if (query.getSessionId() != null)
+        queriesBySession.computeIfAbsent(query.getSessionId(), k -> new JSONArray()).put(query.getId());
+
+    for (final HttpSession session : httpServer.getSessionManager().getSessions()) {
+      final String owner = session.user != null ? session.user.getName() : null;
+      if (!isVisible(user, owner))
+        continue;
+      final JSONArray queries = queriesBySession.getOrDefault(session.id, new JSONArray());
+      final JSONObject json = new JSONObject()//
+          .put("id", session.id)//
+          .put("user", owner)//
+          .put("database", session.transaction != null && session.transaction.getDatabase() != null ?
+              session.transaction.getDatabase().getName() : null)//
+          .put("idleMs", session.elapsedFromLastUpdate())//
+          .put("busy", session.isBusy())//
+          .put("runningQueries", queries)//
+          .put("server", server.getServerName());
+      if (session.getTag() != null)
+        json.put("tag", session.getTag());
+      result.put(json);
+    }
+    return result;
+  }
+
+  /**
+   * Ends an HTTP transaction session: terminates the statements running in it, rolls its transaction back and removes
+   * it, so a later request naming it is told it does not exist. Answers {@code terminated}, {@code terminating} when a
+   * statement running in it has not stopped within {@code waitMs} (the session is rolled back and removed as soon as it
+   * does), or {@code not found}.
+   */
+  public JSONObject terminateTransaction(final ServerSecurityUser user, final String sessionId, final long waitMs) {
+    final HttpServer httpServer = server.getHttpServer();
+    final HttpSession session = httpServer != null ? findSession(httpServer.getSessionManager(), sessionId) : null;
+    if (session == null || !isVisible(user, session.user != null ? session.user.getName() : null))
+      return new JSONObject().put("id", sessionId).put("status", "not found");
+
+    // A statement running in the session ends the session on its way out once it is terminated (DatabaseAbstractHandler),
+    // so the session is left to it rather than rolled back under its feet: cancel() would wait for it anyway
+    // Every statement of the session is asked to stop before any of them is waited for, as by tag
+    final List<RunningQuery> inSession = new ArrayList<>();
+    for (final RunningQuery query : server.getRunningQueries().getRunning())
+      if (sessionId.equals(query.getSessionId())) {
+        query.terminate(user.getName());
+        inSession.add(query);
+      }
+    final long deadline = System.currentTimeMillis() + boundedWait(waitMs);
+    for (final RunningQuery query : inSession)
+      if (!awaitEnd(query, deadline))
+        return new JSONObject().put("id", sessionId).put("status", "terminating");
+
+    // Idle, or what ran in it is over: end it here. Removed first, so no new request can resolve it meanwhile
+    if (httpServer.getSessionManager().removeSession(sessionId) != null)
+      session.cancel();
+    return new JSONObject().put("id", sessionId).put("status", "terminated");
+  }
+
+  private static HttpSession findSession(final HttpSessionManager sessionManager, final String sessionId) {
+    if (sessionId == null)
+      return null;
+    for (final HttpSession session : sessionManager.getSessions())
+      if (session.id.equals(sessionId))
+        return session;
+    return null;
+  }
+
+  private static JSONObject terminationStatus(final RunningQuery query, final long deadline) {
+    final String status;
+    if (!awaitEnd(query, deadline))
+      status = "terminating";
+    else
+      status = query.getOutcome() == RunningQuery.Outcome.TERMINATED ? "terminated" : "completed";
+    return new JSONObject().put("id", query.getId()).put("status", status);
+  }
+
+  private static boolean awaitEnd(final RunningQuery query, final long deadline) {
+    final long remaining = deadline - System.currentTimeMillis();
+    if (remaining <= 0)
+      // The shared deadline is spent: what has ended has ended, the rest is still terminating
+      return query.isEnded();
+    try {
+      return query.awaitEnd(remaining);
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+      return query.isEnded();
+    }
+  }
+
+  private static long boundedWait(final long waitMs) {
+    return waitMs < 0 ? DEFAULT_TERMINATE_WAIT_MS : Math.min(waitMs, MAX_TERMINATE_WAIT_MS);
+  }
+
+  /**
+   * Whether {@code user} may see and stop the work of {@code owner}: the server administrator any, others their own.
+   * <p>
+   * A {@code null} user sees nothing, unlike in {@link #filterAuthorizedDatabases}: every HTTP request reaches the server
+   * commands authenticated, so a {@code null} here can only be a caller that forgot to pass one, and stopping somebody's
+   * work is the one place where failing closed is the safe answer to that.
+   */
+  private static boolean isVisible(final ServerSecurityUser user, final String owner) {
+    return user != null && (ServerSecurityUser.isServerAdministrator(user.getName()) || user.getName().equals(owner));
   }
 
   // ---------------------------------------------------------------------------------------------

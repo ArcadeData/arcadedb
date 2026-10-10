@@ -307,6 +307,9 @@ public class PostCommandHandler extends AbstractQueryHandler {
     if ("detailed".equalsIgnoreCase(profileExecution))
       paramMap.put("$profileExecution", true);
 
+    // The text the caller sent, not the one rewritten with a LIMIT: it is what the caller will recognize (issue #9680)
+    describeRunningQuery(language, originalCommand);
+
     boolean awaitResponse = true;
     if (requestMap.containsKey("awaitResponse") && requestMap.get("awaitResponse") instanceof Boolean) {
       awaitResponse = (Boolean) requestMap.get("awaitResponse");

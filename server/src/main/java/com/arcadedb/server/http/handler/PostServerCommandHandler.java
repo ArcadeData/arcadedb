@@ -60,6 +60,12 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
   private static final String RESTORE_DATABASE     = "restore database";
   private static final String IMPORT_DATABASE      = "import database";
   private static final String PROFILER             = "profiler";
+  // Issue #9680: open to every authenticated user, each seeing and stopping only their own work unless root
+  private static final String LIST_QUERIES          = "list queries";
+  private static final String TERMINATE_QUERY       = "terminate query";
+  private static final String TERMINATE_QUERIES     = "terminate queries";
+  private static final String LIST_TRANSACTIONS     = "list transactions";
+  private static final String TERMINATE_TRANSACTION = "terminate transaction";
 
   /**
    * The transport-independent implementation of these commands, shared with gRPC's
@@ -94,6 +100,8 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
 
     if (LIST_DATABASES.equals(command_lc))
       return listDatabases(user);
+    else if (isRunningWorkCommand(command_lc))
+      return runningWorkCommand(command, command_lc, user, payload);
     else
       checkRootUser(user);
 
@@ -180,6 +188,87 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
   // increment onto the receiver would have counted attempts instead, because Java evaluates the
   // receiver first.
   // ---------------------------------------------------------------------------------------------
+
+  private static boolean isRunningWorkCommand(final String command_lc) {
+    return command_lc.startsWith(LIST_QUERIES) || command_lc.startsWith(TERMINATE_QUERY)
+        || command_lc.startsWith(TERMINATE_QUERIES) || command_lc.startsWith(LIST_TRANSACTIONS)
+        || command_lc.startsWith(TERMINATE_TRANSACTION);
+  }
+
+  /**
+   * The commands that list and stop running work (issue #9680):
+   * <ul>
+   * <li>{@code list queries [database <name>] [tag <label>]} - the label runs to the end of the command;</li>
+   * <li>{@code terminate query <id>}, {@code terminate queries tag <label>};</li>
+   * <li>{@code list transactions}, {@code terminate transaction <session id>}.</li>
+   * </ul>
+   * A terminate waits for the work to end before answering, up to the payload's {@code wait} in milliseconds (5 s when
+   * absent, 10 s at most), and says how it ended. Never forwarded to the leader: each node lists and stops its own work.
+   * Never held behind the query admission gate either - this handler does not take it - so a saturated server can still
+   * be relieved.
+   */
+  private ExecutionResponse runningWorkCommand(final String command, final String command_lc, final ServerSecurityUser user,
+      final JSONObject payload) {
+    final long waitMs = payload.getLong("wait", -1L);
+    final Object result;
+    if (command_lc.startsWith(LIST_QUERIES)) {
+      String rest = command.substring(LIST_QUERIES.length()).strip();
+      String database = null;
+      String tag = null;
+      if (startsWithKeyword(rest, "database ")) {
+        rest = rest.substring("database ".length()).strip();
+        final int space = rest.indexOf(' ');
+        database = space < 0 ? rest : rest.substring(0, space);
+        rest = space < 0 ? "" : rest.substring(space + 1).strip();
+      }
+      if (startsWithKeyword(rest, "tag ")) {
+        tag = rest.substring("tag ".length()).strip();
+        rest = "";
+      }
+      if (!rest.isEmpty() || (database != null && database.isEmpty()) || (tag != null && tag.isEmpty()))
+        return invalidRunningWorkCommand("list queries [database <name>] [tag <label>]");
+      result = controlPlane.listQueries(user, database, tag);
+      Metrics.counter("http.list-queries").increment();
+
+    } else if (command_lc.startsWith(TERMINATE_QUERIES)) {
+      final String rest = command.substring(TERMINATE_QUERIES.length()).strip();
+      if (!startsWithKeyword(rest, "tag ") || rest.substring("tag ".length()).isBlank())
+        return invalidRunningWorkCommand("terminate queries tag <label>");
+      result = controlPlane.terminateQueriesByTag(user, rest.substring("tag ".length()).strip(), waitMs);
+      Metrics.counter("http.terminate-query").increment();
+
+    } else if (command_lc.startsWith(TERMINATE_QUERY)) {
+      final String id = command.substring(TERMINATE_QUERY.length()).strip();
+      if (id.isEmpty() || id.indexOf(' ') >= 0)
+        return invalidRunningWorkCommand("terminate query <id>");
+      result = controlPlane.terminateQuery(user, id, waitMs);
+      Metrics.counter("http.terminate-query").increment();
+
+    } else if (command_lc.startsWith(LIST_TRANSACTIONS)) {
+      if (!command_lc.equals(LIST_TRANSACTIONS))
+        return invalidRunningWorkCommand("list transactions");
+      result = controlPlane.listTransactions(user);
+      Metrics.counter("http.list-transactions").increment();
+
+    } else {
+      final String sessionId = command.substring(TERMINATE_TRANSACTION.length()).strip();
+      if (sessionId.isEmpty() || sessionId.indexOf(' ') >= 0)
+        return invalidRunningWorkCommand("terminate transaction <session id>");
+      result = controlPlane.terminateTransaction(user, sessionId, waitMs);
+      Metrics.counter("http.terminate-transaction").increment();
+    }
+    return new ExecutionResponse(200, new JSONObject().put("result", result).toString());
+  }
+
+  private static boolean startsWithKeyword(final String text, final String keyword) {
+    return text.regionMatches(true, 0, keyword, 0, keyword.length());
+  }
+
+  private static ExecutionResponse invalidRunningWorkCommand(final String syntax) {
+    Metrics.counter("http.server-command.invalid").increment();
+    return new ExecutionResponse(400,
+        new JSONObject().put("error", "Server command not valid").put("detail", "Syntax: " + syntax).toString());
+  }
 
   private void shutdownServer(final String serverName) throws IOException {
     controlPlane.shutdownServer(serverName);

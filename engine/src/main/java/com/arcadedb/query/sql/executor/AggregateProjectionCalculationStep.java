@@ -156,7 +156,12 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
       final int groupOverhead = groupOverheadBytes(projection);
 
       ResultSet lastRs = source.syncPull(context, nRecords);
+      // The whole input is consumed inside this one pull, and the step below may check nothing (an UNWIND, a projection
+      // of a computed list): the statement's deadline and termination are checked here too (issue #9680)
+      final WorkGuard guard = WorkGuard.forCommandDeadline(context);
+      int consumed = 0;
       while (lastRs.hasNext()) {
+        guard.checkPeriodically(++consumed);
         if (timeoutMillis > 0 && timeoutBegin + timeoutMillis < System.currentTimeMillis()) {
           sendTimeout();
         }

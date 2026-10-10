@@ -24,6 +24,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.exception.QueryAdmissionException;
 import com.arcadedb.graph.GraphBatch;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.RunningQuery;
 import com.arcadedb.query.sql.executor.QueryAdmissionGate;
 import com.arcadedb.network.SilenceBoundedInputStream;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
@@ -507,6 +508,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     // socket either, so its own watchdog would kill the upload it is relaying (issue #5470).
     final Integer previousReadTimeout = relaxConnectionReadTimeout(exchange);
     QueryAdmissionGate.Ticket admission = null;
+    RunningQuery runningQuery = null;
     try {
       // On a follower of a replicated database the request must run on the leader: the bulk
       // path mutates shared state (schema dictionary, type metadata) that only the leader can
@@ -527,6 +529,13 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
         inputStream.close();
         throw e;
       }
+      // Listed and terminable like a command (issue #9680): a terminated load stops at its next commit, which refuses it
+      // The session as the manager resolves it for this principal, never the raw header: a session id is matched by the
+      // transaction commands, and a load must not be listed under a session its caller does not own
+      final String sessionHeader = exchange.getRequestHeaders().getFirst(SESSION_ID_HEADER);
+      final HttpSession session = sessionHeader != null ? httpServer.getSessionManager().getSessionById(user, sessionHeader) : null;
+      runningQuery = registerRunningQuery(exchange, user, databaseName, session != null ? session.id : null,
+          session != null ? session.getTag() : null);
 
       final DatabaseInternal database = httpServer.getServer().getDatabase(databaseName, false, false);
       final boolean isCsv = contentType.contains("text/csv");
@@ -561,9 +570,14 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
         emitCommitIndexBookmark(exchange, haDb);
       }
     } finally {
-      if (admission != null)
-        admission.close();
-      restoreConnectionReadTimeout(exchange, previousReadTimeout);
+      try {
+        if (admission != null)
+          admission.close();
+        restoreConnectionReadTimeout(exchange, previousReadTimeout);
+      } finally {
+        if (runningQuery != null)
+          runningQuery.close();
+      }
     }
   }
 

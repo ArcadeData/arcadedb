@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.graph.IncomingEdgeLookup;
+import com.arcadedb.query.RunningQuery;
 import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 import com.arcadedb.utility.TimeBoundRegex;
 
@@ -167,6 +168,16 @@ public interface CommandContext {
   default IncomingEdgeLookup getIncomingEdgeLookup() {
     final CommandContext parent = getParent();
     return parent != null ? parent.getIncomingEdgeLookup() : null;
+  }
+
+  /**
+   * The registry entry of the statement this command belongs to, whose termination the command's
+   * {@link WorkGuard}s obey (issue #9680): the parent's, and at the root the one published on the thread that runs the
+   * statement. Null when nothing registered the statement, as for every embedded call.
+   */
+  default RunningQuery getRunningQuery() {
+    final CommandContext parent = getParent();
+    return parent != null ? parent.getRunningQuery() : RunningQuery.current();
   }
 
   CommandContext setParent(CommandContext parentContext);

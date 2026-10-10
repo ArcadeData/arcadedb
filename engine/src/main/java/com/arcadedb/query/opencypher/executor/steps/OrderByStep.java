@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.executor.steps;
 
+import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.Type;
 import com.arcadedb.database.Document;
 import com.arcadedb.exception.TimeoutException;
@@ -158,7 +159,11 @@ public class OrderByStep extends AbstractExecutionStep {
             // sort out of sight of both limits on it (issue #8591)
             sortedResults = new ArrayList<>();
             final ResultSet prevResults = prev.syncPull(context, nRecords > 0 ? nRecords : 100);
+            // The whole input is consumed inside this one pull: see AggregationStep (issue #9680)
+            final WorkGuard guard = WorkGuard.forCommandDeadline(context);
+            int consumed = 0;
             while (prevResults.hasNext()) {
+              guard.checkPeriodically(++consumed);
               final Result row = prevResults.next();
               sortedResults.add(row);
               heapLimit.add(sortedResults.size(), row);
@@ -210,8 +215,11 @@ public class OrderByStep extends AbstractExecutionStep {
         // Pull all results and maintain a top-K heap
         final int batchSize = Math.max(1000, k * 10);
         final ResultSet prevResults = prev.syncPull(context, batchSize);
+        final WorkGuard guard = WorkGuard.forCommandDeadline(context);
+        int consumed = 0;
 
         while (prevResults.hasNext()) {
+          guard.checkPeriodically(++consumed);
           final Result row = prevResults.next();
 
           if (topK.size() < k) {

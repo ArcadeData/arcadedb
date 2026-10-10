@@ -43,6 +43,9 @@ public class DistinctExecutionStep extends AbstractExecutionStep {
   // RIDS OF THE FAST PATH ARE NOT ELEMENTS UNDER THE CAP - A BITMAP TAKES A BIT PER RECORD POSITION - BUT THE BITMAP
   // GROWS TO THE HIGHEST POSITION OF EACH BUCKET, SO WHAT IT TAKES IS CHARGED TO THE BUDGET
   private final OperationHeapLimit heapLimit;
+  /** Checks the statement's deadline and termination while duplicates are skipped (issue #9680). */
+  private       WorkGuard          guard;
+  private       int                consumed = 0;
 
   public DistinctExecutionStep(final CommandContext context) {
     super(context);
@@ -89,10 +92,14 @@ public class DistinctExecutionStep extends AbstractExecutionStep {
   }
 
   private void fetchNext(final int nRecords) {
+    // Skipping duplicates consumes input without producing a row, as long as the duplicates last (issue #9680)
+    if (guard == null)
+      guard = WorkGuard.forCommandDeadline(context);
     while (true) {
       if (nextValue != null) {
         return;
       }
+      guard.checkPeriodically(++consumed);
       if (lastResult == null || !lastResult.hasNext()) {
         lastResult = getPrev().syncPull(context, nRecords);
       }

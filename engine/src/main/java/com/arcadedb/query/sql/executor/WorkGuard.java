@@ -21,6 +21,8 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.PartialResultTimeoutException;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.query.RunningQuery;
+import com.arcadedb.query.RunningQueryRegistry;
 
 /**
  * Cooperative abort check for a loop whose length is a property of the data rather than of the statement.
@@ -35,6 +37,11 @@ import com.arcadedb.exception.TimeoutException;
  * the budget: a subquery, a procedure call or a per-row expansion all share the command's single deadline. The
  * clock is read only when a deadline is actually configured, so with {@code arcadedb.command.timeout} at its
  * default of 0 a check costs one field load and one comparison, and no syscall.
+ * <p>
+ * A statement registered in a {@link RunningQueryRegistry} can also be terminated on request
+ * (issue #9680). Unlike the deadline, that flag is read on every check rather than once, because it is set while the
+ * guard is already looping; it costs one volatile load, and a statement nobody registered - every embedded call - still
+ * gets the shared guard that checks nothing.
  * <p>
  * {@link #forCommand(CommandContext, String)} additionally consumes a pending thread interrupt so that a
  * cancelled query stops rather than running to the end. The flag is CLEARED rather than restored, matching
@@ -52,11 +59,12 @@ public final class WorkGuard {
   private static final int CHECK_INTERVAL_MASK = 1023;
 
   /**
-   * Shared instance for the default configuration - no deadline and no interrupt check. Returned instead of a
-   * fresh object so that guarding a hot loop costs nothing at all when the operator is disabled, which is the
-   * case for every query on a server that has not set {@code arcadedb.command.timeout}.
+   * Shared instance for the default configuration - no deadline, no interrupt check and no statement that can be
+   * terminated. Returned instead of a fresh object so that guarding a hot loop costs nothing at all when the operator
+   * is disabled, which is the case for every embedded query on a database that has not set
+   * {@code arcadedb.command.timeout}.
    */
-  private static final WorkGuard UNBOUNDED = new WorkGuard("the command", null, Long.MAX_VALUE, false, false);
+  private static final WorkGuard UNBOUNDED = new WorkGuard("the command", null, Long.MAX_VALUE, false, false, null);
 
   private final String         what;
   private final CommandContext context;
@@ -68,14 +76,20 @@ public final class WorkGuard {
    * one fact about the bound and a check is a field load and a comparison.
    */
   private final boolean        yieldPartialResults;
+  /**
+   * The registry entry of the statement, whose termination flag every check reads (issue #9680). Held by reference and
+   * read on each check, unlike the deadline: a termination arrives while the guard is already looping.
+   */
+  private final RunningQuery   runningQuery;
 
   private WorkGuard(final String what, final CommandContext context, final long deadline, final boolean interruptible,
-      final boolean yieldPartialResults) {
+      final boolean yieldPartialResults, final RunningQuery runningQuery) {
     this.what = what;
     this.context = context;
     this.deadline = deadline;
     this.interruptible = interruptible;
     this.yieldPartialResults = yieldPartialResults;
+    this.runningQuery = runningQuery;
   }
 
   /**
@@ -90,9 +104,10 @@ public final class WorkGuard {
     // No shared instance here even when nothing is configured: the guard still tests the interrupt flag, and
     // it has to name the caller when it aborts.
     if (context == null)
-      return new WorkGuard(what, null, Long.MAX_VALUE, true, false);
+      return new WorkGuard(what, null, Long.MAX_VALUE, true, false, RunningQuery.current());
 
-    return new WorkGuard(what, context, context.getCommandDeadline(), true, context.isCommandDeadlinePartial());
+    return new WorkGuard(what, context, context.getCommandDeadline(), true, context.isCommandDeadlinePartial(),
+        context.getRunningQuery());
   }
 
   /**
@@ -101,21 +116,29 @@ public final class WorkGuard {
    * statement and consuming it would change behaviour beyond the timeout this guard exists to enforce.
    */
   public static WorkGuard forCommandDeadline(final CommandContext context) {
-    if (context == null)
-      return UNBOUNDED;
+    if (context == null) {
+      final RunningQuery runningQuery = RunningQuery.current();
+      return runningQuery == null ? UNBOUNDED :
+          new WorkGuard("the command", null, Long.MAX_VALUE, false, false, runningQuery);
+    }
 
     final long deadline = context.getCommandDeadline();
-    if (deadline == Long.MAX_VALUE)
+    final RunningQuery runningQuery = context.getRunningQuery();
+    // The shared instance only when there is neither a bound nor a statement that can be terminated: an embedded call
+    // keeps the free check, a statement a client can stop does not.
+    if (deadline == Long.MAX_VALUE && runningQuery == null)
       return UNBOUNDED;
 
-    return new WorkGuard("the command", context, deadline, false, context.isCommandDeadlinePartial());
+    return new WorkGuard("the command", context, deadline, false, context.isCommandDeadlinePartial(), runningQuery);
   }
 
   /**
-   * Aborts the call if the query thread was interrupted or the command deadline has passed. Call from a
-   * loop whose single iteration already costs enough to swallow a flag test.
+   * Aborts the call if the statement was terminated, the query thread was interrupted or the command deadline has
+   * passed. Call from a loop whose single iteration already costs enough to swallow a flag test.
    */
   public void check() {
+    if (runningQuery != null)
+      runningQuery.checkNotTerminated(what);
     if (interruptible && Thread.interrupted())
       throw new CommandExecutionException(what + " has been interrupted");
     if (deadline < Long.MAX_VALUE && System.currentTimeMillis() > deadline) {
