@@ -41,6 +41,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Property;
+import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.serializer.BinaryTypes;
 import com.arcadedb.utility.LRUCache;
 import com.arcadedb.utility.LongHashSet;
@@ -318,6 +319,8 @@ public class GraphBatch implements AutoCloseable {
   private final Map<String, Boolean> lightweightTypeCache     = new ConcurrentHashMap<>();
   private final Map<String, Boolean> bidirectionalTypeCache   = new ConcurrentHashMap<>();
   private final Map<String, Boolean> emptyEdgeSchemaCache     = new ConcurrentHashMap<>();
+  // Edge type buckets whose CREATE_RECORD grant was already checked for a light edge (issue #9619)
+  private final Set<Integer>          lightCreateCheckedBuckets = ConcurrentHashMap.newKeySet();
 
   // --- Head chunk RID cache: avoids vertex loads when chunk is already known ---
   // Bounded LRU wrapped in synchronizedMap (issue #5664): getOrCreate*EdgeChunk() is called from parallel async
@@ -826,13 +829,24 @@ public class GraphBatch implements AutoCloseable {
           + "' is declared LIGHTWEIGHT, so its edges cannot have properties. Use a regular edge type if the edge "
           + "needs to carry data");
 
-    edgeHasProperties[idx] = hasProps;
-    this.edgeProperties[idx] = hasProps ? propertyPairs(edgeProperties) : null;
     // A LIGHTWEIGHT type is stored lightweight whatever the builder was told: the storage shape belongs to the
     // schema, and withLightEdges() is only the legacy per-batch override for types that do not declare one.
     // An edge type with a default or a MANDATORY property is never stored lightweight by that override: those apply to an
     // edge without properties too (issue #9019). Types with only optional properties keep their compact property-less edges.
-    edgeIsLightweight[idx] = typeIsLightweight || (lightEdges && !hasProps && !typeAppliesSchemaToEmptyEdge(edgeTypeName));
+    final boolean isLightweight = typeIsLightweight || (lightEdges && !hasProps && !typeAppliesSchemaToEmptyEdge(edgeTypeName));
+
+    // A light edge allocates no record, so the bulk record writer never checks CREATE_RECORD for it (issue #9619): refused
+    // here, BEFORE it is buffered, so nothing is left for a later flush to write. Checked once per edge type for the life of
+    // the batch, which is bound to the caller's thread and therefore to one user: a per-edge check would put a context
+    // lookup on the hot import path.
+    if (isLightweight && !lightCreateCheckedBuckets.contains(typeBucketId)) {
+      database.checkPermissionsOnFile(typeBucketId, SecurityDatabaseUser.ACCESS.CREATE_RECORD);
+      lightCreateCheckedBuckets.add(typeBucketId);
+    }
+
+    edgeHasProperties[idx] = hasProps;
+    this.edgeProperties[idx] = hasProps ? propertyPairs(edgeProperties) : null;
+    edgeIsLightweight[idx] = isLightweight;
     edgeIsBidirectional[idx] = typeIsBidirectional;
 
     edgeCount++;

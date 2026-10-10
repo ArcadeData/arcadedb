@@ -47,6 +47,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.InternalBucketNaming;
 import com.arcadedb.schema.VertexType;
+import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.utility.MultiIterator;
 import com.arcadedb.utility.Pair;
 
@@ -324,6 +325,16 @@ public class GraphEngine {
     // the vertex FILE into the commit lock set of EVERY append and serialising all writers on a hot vertex
     // across the whole replication round. The rare paths that really rewrite the vertex record (first chunk,
     // head flip, super-node promotion) call modify() themselves, re-validating the head at that point.
+
+    // A lightweight edge allocates no record, so LocalBucket.createRecord - where CREATE_RECORD is enforced for every
+    // other record - never runs for it (issue #9619). This append is the one point every lightweight create passes
+    // through (Vertex.newEdge, the deprecated newLightEdge, SQL CREATE EDGE via ConnectEdgeStep, openCypher, Gremlin,
+    // the async create task), so the grant is checked here, before either edge list is touched. The RID carries the
+    // edge type's first bucket id, the file id the grant array is keyed on. A record-backed edge was already checked
+    // when its record was saved.
+    if (edge instanceof LightEdge)
+      database.checkPermissionsOnFile(edge.getIdentity().getBucketId(), SecurityDatabaseUser.ACCESS.CREATE_RECORD);
+
     getOrCreateEdgeList(fromVertex, Vertex.DIRECTION.OUT).add(edge.getIdentity(), toVertex.getIdentity());
     recordCreated(edge.getType(), edge, fromVertex.getIdentity(), toVertex.getIdentity());
   }
