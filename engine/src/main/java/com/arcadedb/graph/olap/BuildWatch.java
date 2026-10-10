@@ -86,7 +86,9 @@ final class BuildWatch implements CSRBuilder.ScanObserver, DeltaOverlay.ExactSca
   private final Map<RID, Map<RID, RID>>      observedSources = new ConcurrentHashMap<>();
   // The lightweight out-edges of the same observed sources, which have no identity to be told apart by (issue #9572):
   // per (edge type bucket, target), how many copies the scan put into the CSR, how many buffered additions were taken
-  // as among them, and how many were not and so sit in the overlay. Written and read exactly as observedSources is.
+  // as among them, and how many were not and so sit in the overlay. Written and read exactly as observedSources is: the
+  // scan thread fills it, and account() reads and mutates the inner maps only after the build's publication hand-off,
+  // under the view's monitor.
   private final Map<RID, Map<LightEndpoint, int[]>> observedLightEdges = new ConcurrentHashMap<>();
   private static final int                   SEEN           = 0;
   private static final int                   CAPTURED       = 1;
@@ -282,8 +284,9 @@ final class BuildWatch implements CSRBuilder.ScanObserver, DeltaOverlay.ExactSca
    * Whether the scan read this lightweight addition. Copies of one triple have no identity to tell them apart, so this
    * counts them instead: the addition is taken as read while the scan saw more copies than the additions already taken.
    * That is exact whenever a triple has at most one copy at a time - always, on a {@code UNIQUE} type - since a copy the
-   * scan saw is then either this addition or one an earlier buffered deletion removed. With duplicated copies a copy the
-   * scan saw may have preceded the addition, which nothing recorded can tell, and the answer then errs towards "read".
+   * scan saw is then either this addition or one an earlier buffered deletion removed - and whenever every copy of the
+   * triple is one of the buffered additions. A duplicate of a copy older than the watch is where it errs: that older copy
+   * is counted as one of the additions, which nothing recorded can tell apart, and the answer errs towards "read".
    */
   private boolean sawLightEdge(final TxDelta.EdgeDelta ed) {
     // Read before the source was registered, so before this addition committed

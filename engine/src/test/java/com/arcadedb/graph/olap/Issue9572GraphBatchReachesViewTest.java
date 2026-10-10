@@ -57,6 +57,33 @@ class Issue9572GraphBatchReachesViewTest extends TestHelper {
     assertBatchReachesView("K", "ASYNCHRONOUS");
   }
 
+  /**
+   * A batch writing only a type the view does not cover leaves it alone; one writing that type and a covered one, in
+   * either storage shape, rebuilds it.
+   */
+  @Test
+  void onlyABatchWritingACoveredTypeRebuildsTheView() throws Exception {
+    final RID[] v = createGraph("K", "SYNCHRONOUS");
+    database.command("sql", "CREATE EDGE TYPE L LIGHTWEIGHT");
+    final GraphAnalyticalView view = GraphAnalyticalViewRegistry.get(database, "v1");
+    final long builtAt = view.getBuildTimestamp();
+
+    try (final GraphBatch batch = GraphBatch.builder(database).build()) {
+      batch.newEdge(v[1], "L", v[0]);
+    }
+    assertThat(view.getStatus()).isEqualTo(GraphAnalyticalView.Status.READY);
+    assertThat(view.getBuildTimestamp()).as("no rebuild for an uncovered type").isEqualTo(builtAt);
+
+    try (final GraphBatch batch = GraphBatch.builder(database).build()) {
+      batch.newEdge(v[2], "L", v[1]);
+      batch.newEdge(v[1], "K", v[0]);
+    }
+    assertThat(count()).isEqualTo(4L);
+    assertThat(view.awaitReady(60, TimeUnit.SECONDS)).isTrue();
+    assertThat(view.getEdgeCount()).isEqualTo(4);
+    database.command("sql", "DROP GRAPH ANALYTICAL VIEW v1");
+  }
+
   /** A second batch on a view that a first batch sent rebuilding, before that rebuild is awaited. */
   @Test
   void twoBatchesInARowLeaveASynchronousViewComplete() throws Exception {

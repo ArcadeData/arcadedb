@@ -151,6 +151,11 @@ public class GraphEngine {
       }
   }
 
+  /** How many listeners are registered: one per graph analytical view tracking changes. */
+  public int getEdgeWriteListenerCount() {
+    return edgeWriteListeners.length;
+  }
+
   /** See {@link EdgeWriteListener#onEdgesWrittenInBulk}. */
   void edgesWrittenInBulk(final Set<String> edgeTypeNames) {
     for (final EdgeWriteListener listener : edgeWriteListeners)

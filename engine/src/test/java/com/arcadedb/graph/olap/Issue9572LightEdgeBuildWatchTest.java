@@ -119,6 +119,45 @@ class Issue9572LightEdgeBuildWatchTest extends TestHelper {
     assertReconciled(scan, watch, List.of(added, deleted), 0);
   }
 
+  /**
+   * Duplicated copies the counts can still tell apart: every copy is one of the buffered changes, so the copy the scan
+   * read is the first addition and the duplicate added after the scan is added.
+   */
+  @Test
+  void aDuplicateCopyAddedAfterTheScanIsAddedWhenEveryCopyIsBuffered() {
+    final BuildWatch watch = openWatch();
+    final TxDelta first = newEdge();
+    final Scan scan = scan(watch);
+    final TxDelta twin = newEdge();
+
+    assertThat(scan.fresh()).isEqualTo(1);
+    assertReconciled(scan, watch, List.of(first, twin), 2);
+  }
+
+  /**
+   * The documented limit: a copy that existed before the build and a duplicate added after the scan read its source
+   * look, to the counts, exactly like no earlier copy and a duplicate the scan read. Any copy older than the watch is
+   * counted as if it were one of the buffered additions. Nothing recorded tells the two
+   * apart, so the answer errs towards "read" and the view holds one copy too few until its next rebuild or compaction.
+   * Only duplicated copies of one pair, which the {@code UNIQUE} flag rules out, reach this.
+   */
+  @Test
+  void aDuplicateCopyAddedAfterTheScanIsTakenAsRead() {
+    newEdge();
+    final BuildWatch watch = openWatch();
+    final Scan scan = scan(watch);
+    final TxDelta twin = newEdge();
+
+    assertThat(scan.fresh()).isEqualTo(1);
+    watch.close();
+    watch.bindTo(scan.result().getCsrPerType());
+    watch.account(twin);
+    final DeltaOverlay overlay = new DeltaOverlay(scan.result().getMapping().size())
+        .merge(twin, scan.result().getMapping(), scan.result().getCsrPerType(), watch);
+    assertThat(liveEdges()).isEqualTo(2);
+    assertThat(scan.fresh() + overlay.getDeltaEdgeCount()).isEqualTo(1);
+  }
+
   private BuildWatch openWatch() {
     final BuildWatch watch = new BuildWatch(1_000);
     // What the record listener does before every change of a's out-edges commits

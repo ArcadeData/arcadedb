@@ -19,6 +19,7 @@
 package com.arcadedb.graph.olap;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
@@ -191,6 +192,25 @@ class Issue9572LightEdgeReachesViewTest extends TestHelper {
     assertCounts(2);
 
     dropViewAndAssertCounts(2);
+  }
+
+  /** A dropped view stops listening for light edges, as it stops listening for records. */
+  @Test
+  void droppingTheViewUnregistersItsLightEdgeListener() throws Exception {
+    createSchema("K LIGHTWEIGHT");
+    final int before = edgeWriteListeners();
+    createView("SYNCHRONOUS");
+    assertThat(edgeWriteListeners()).isEqualTo(before + 1);
+
+    database.command("sql", "ALTER GRAPH ANALYTICAL VIEW v1 UPDATE MODE OFF");
+    assertThat(edgeWriteListeners()).as("a mode change replaces the listener").isEqualTo(before + 1);
+
+    dropViewAndAssertCounts(1);
+    assertThat(edgeWriteListeners()).isEqualTo(before);
+  }
+
+  private int edgeWriteListeners() {
+    return ((DatabaseInternal) database).getGraphEngine().getEdgeWriteListenerCount();
   }
 
   /** A rolled back light edge never reaches the view. */

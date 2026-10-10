@@ -3265,6 +3265,9 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   }
 
   private void rebuildAfterBulkLoad() {
+    // Reached from the finally of a build that may outlive the view: a dropped or closed view never builds again
+    if (shutDown)
+      return;
     try {
       buildAsync();
     } catch (final RuntimeException e) {
