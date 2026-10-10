@@ -81,6 +81,7 @@ class Issue9652CountPushDownDeclineCostTest extends TestHelper {
     final String query = "MATCH (v:V) WHERE v.a = 77 RETURN count(*) AS c";
     final long expected = sql("SELECT count(@rid) AS c FROM V WHERE a = 77");
     assertThat(cypher(query)).isEqualTo(expected);
+    assertThat(cypher(query)).isEqualTo(expected);
 
     final SimpleCypherStatement statement = cachedStatement(query);
     assertThat(statement.getCountPushDownForm()).isSameAs(statement);
@@ -93,6 +94,7 @@ class Issue9652CountPushDownDeclineCostTest extends TestHelper {
   @Test
   void aFoldedStatementIsDerivedOnceAndStillPushedDown() {
     final String query = "MATCH (v:V) WITH v RETURN count(v) AS c";
+    assertThat(cypher(query)).isEqualTo(VERTICES);
     assertThat(cypher(query)).isEqualTo(VERTICES);
 
     final SimpleCypherStatement statement = cachedStatement(query);
@@ -113,6 +115,7 @@ class Issue9652CountPushDownDeclineCostTest extends TestHelper {
   void aRefusedFoldIsRememberedAsTheStatementItself() {
     final String query = "MATCH (v:V) WITH v WHERE v.a > 10 RETURN count(*) AS c";
     final long expected = sql("SELECT count(@rid) AS c FROM V WHERE a > 10");
+    assertThat(cypher(query)).isEqualTo(expected);
     assertThat(cypher(query)).isEqualTo(expected);
     final SimpleCypherStatement statement = cachedStatement(query);
     assertThat(statement.getCountPushDownForm()).isSameAs(statement);
@@ -192,7 +195,12 @@ class Issue9652CountPushDownDeclineCostTest extends TestHelper {
     }
   }
 
+  /**
+   * The statement the engine executes for the query from now on: the cached one of its shape, its literals extracted
+   * (issue #8307). The first text of a shape runs as written, so the query has to have run twice before it is the one used.
+   */
   private SimpleCypherStatement cachedStatement(final String query) {
-    return (SimpleCypherStatement) ((DatabaseInternal) database).getCypherStatementCache().get(query);
+    return (SimpleCypherStatement) ((DatabaseInternal) database).getCypherStatementCache().getParameterized(query).statement()
+        .statement();
   }
 }
