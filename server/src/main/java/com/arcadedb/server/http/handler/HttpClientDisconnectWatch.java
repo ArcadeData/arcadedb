@@ -51,8 +51,10 @@ import java.util.logging.Level;
  * left; {@code arcadedb.server.httpTerminateOnClientDisconnect=false} turns the watch off for such clients.
  * <p>
  * <b>Why the swap is safe.</b> Undertow suspends reads on the connection once it has parsed the request and resumes them
- * only when the exchange completes, which is after {@link #disarm()}: the watch is disarmed, under the same monitor its
- * reads take, before the response is written. No read of the watch can therefore overlap Undertow's own, and bytes the
+ * only when the exchange completes, and the watch is disarmed before that, under the same monitor its reads take: when
+ * the statement's entry closes, before a buffered response is written, or - for an answer the handler streams itself,
+ * which completes the exchange inside the handler - by an exchange-completion listener, which Undertow runs before it
+ * hands the connection to the next request. No read of the watch can therefore overlap Undertow's own, and bytes the
  * watch did read are back in the connection before Undertow looks for the next request.
  * <p>
  * Costs one listener swap per request and nothing while the client is quiet: the selector wakes the watch only when the
@@ -91,6 +93,12 @@ final class HttpClientDisconnectWatch implements ChannelListener<ConduitStreamSo
       return null;
 
     final HttpClientDisconnectWatch watch = new HttpClientDisconnectWatch(connection, runningQuery);
+    // Disarmed when the exchange completes at the latest: Undertow runs these listeners before it resumes reads for the next
+    // request. A streamed answer completes the exchange inside the handler, before the statement's entry is closed
+    exchange.addExchangeCompleteListener((completed, next) -> {
+      watch.disarm();
+      next.proceed();
+    });
     watch.channel.setReadListener(watch);
     // On the socket itself: the request's own conduits are exhausted, and an empty body's one never reads the socket
     watch.socket.resumeReads();
@@ -131,11 +139,16 @@ final class HttpClientDisconnectWatch implements ChannelListener<ConduitStreamSo
    */
   void disarm() {
     synchronized (this) {
-      if (armed)
-        stopWatching();
+      // Reads are this watch's to suspend only while it is the connection's listener: once Undertow has taken the
+      // connection back for the next request, they are Undertow's
+      if (armed) {
+        armed = false;
+        if (channel.getReadListener() == this)
+          socket.suspendReads();
+      }
     }
     // Outside the monitor, and still exact: nothing but this watch and Undertow sets the listener, and Undertow sets it
-    // only when the exchange completes, after this call
+    // only when the exchange completes, which disarms this watch first
     if (channel.getReadListener() == this)
       channel.setReadListener(previous);
   }
