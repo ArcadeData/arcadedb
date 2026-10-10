@@ -47,6 +47,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Set;
@@ -699,13 +700,13 @@ public class CreateStep extends AbstractExecutionStep {
           builder.append("\n").append(ind).append("  ");
           builder.append("├─ Property eval: ").append(formatTime(propertyEvaluationTime));
           final double propPercent = 100.0 * propertyEvaluationTime / cost;
-          builder.append(String.format(" (%.1f%%)", propPercent));
+          builder.append(String.format(Locale.ROOT, " (%.1f%%)", propPercent));
         }
         if (saveOperationTime > 0) {
           builder.append("\n").append(ind).append("  ");
           builder.append("├─ Save ops: ").append(formatTime(saveOperationTime));
           final double savePercent = 100.0 * saveOperationTime / cost;
-          builder.append(String.format(" (%.1f%%)", savePercent));
+          builder.append(String.format(Locale.ROOT, " (%.1f%%)", savePercent));
         }
         if (batchCount > 0) {
           builder.append("\n").append(ind).append("  ");
@@ -726,10 +727,10 @@ public class CreateStep extends AbstractExecutionStep {
     if (nanos < 1000)
       return nanos + "ns";
     if (nanos < 1_000_000)
-      return String.format("%.1fμs", nanos / 1000.0);
+      return String.format(Locale.ROOT, "%.1fμs", nanos / 1000.0);
     if (nanos < 1_000_000_000)
-      return String.format("%.1fms", nanos / 1_000_000.0);
-    return String.format("%.2fs", nanos / 1_000_000_000.0);
+      return String.format(Locale.ROOT, "%.1fms", nanos / 1_000_000.0);
+    return String.format(Locale.ROOT, "%.2fs", nanos / 1_000_000_000.0);
   }
 
   private static String getIndent(final int depth, final int indent) {
