@@ -390,7 +390,8 @@ public class GraphEngine {
     getOrCreateEdgeList(fromVertex, Vertex.DIRECTION.OUT).add(edge.getIdentity(), toVertex.getIdentity());
     recordCreated(edge.getType(), edge, fromVertex.getIdentity(), toVertex.getIdentity());
     // EVERY LIGHTWEIGHT EDGE IS CREATED THROUGH HERE (Java API, SQL, Cypher, async): A REGULAR ONE WAS ALREADY REPORTED
-    // BY ITS RECORD'S save()
+    // BY ITS RECORD'S save(). A LISTENER THAT THROWS FAILS THE CREATION, AS A RECORD LISTENER DOES: THE APPEND ABOVE IS
+    // IN THE SAME TRANSACTION, SO ITS ROLLBACK TAKES THE EDGE BACK OUT
     if (edge instanceof LightEdge)
       for (final EdgeWriteListener listener : edgeWriteListeners)
         listener.onLightEdgeCreated(edge);

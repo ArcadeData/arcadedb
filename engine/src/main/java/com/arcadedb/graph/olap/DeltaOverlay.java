@@ -507,6 +507,7 @@ class DeltaOverlay {
           lightAdditions = new HashMap<>();
         final ArrayDeque<RID> sameEndpoints = lightAdditions.computeIfAbsent(ed.edgeType, k -> indexLightAdditions(addedForType))
             .get(packEdge(srcId, tgtId));
+        // Always still in addedForType: the index is built from it, and only this branch removes lightweight keys from it
         withdrawn = sameEndpoints != null ? sameEndpoints.pollLast() : null;
       } else
         withdrawn = ed.rid;
