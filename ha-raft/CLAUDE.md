@@ -57,6 +57,22 @@ Each has its own local `excludeId` derivation (`leaderId != null ? leaderId : lo
 
 `getDeclaredPeers()` is the newest of those (#7136): `RaftClusterStatusExporter` reconciles the declared list against the committed membership itself, to decide which declared peers are still *pending a join* rather than *removed*. It reads the committed side through `getCommittedPeersOrNull()`, not `getLivePeers()` - the latter substitutes the declared list when the division is unreadable, and folding that fallback into the "have I ever seen this peer committed" record would mark every declared peer as once-committed and silence the convergence note for good. A caller that must not mistake the declared list for a committed membership reads `getCommittedPeersOrNull()` and treats `null` as "no information this tick".
 
+## A peer's HTTP address is LEARNT, and the capability round is what writes it
+
+Since #9255 `RaftHAServer.httpAddresses` is not only what the server list, `connect cluster` and the #8689 seed wrote:
+every capability round records the address each peer answered on under its own id, and a peer that does not answer
+where this node resolves it is asked on candidates (`PeerHttpAddressCandidates`) - the port it pushes in its own
+capability request body, and the addresses other members relay in their reply (`peerHttpAddresses`). An entry equal to
+this node's own server-list declaration is never replaced; nothing writes a `raftPort + offset` guess at admission any
+more.
+
+The consequence for tests: a test that injects a wrong or missing address into the live map (`getHttpAddresses()`) to
+simulate a misconfigured node now races the capability monitor, which heals it within a round or two. Pause it for the
+window - `raft.stopCapabilityMonitor()` before the mutation, `raft.startCapabilityMonitor()` in the `finally` - as
+`Issue6191FollowerForwardLoopIT`, `Issue6221VerifyFanOutGuardIT` and `Issue6267AmbiguousAddressVisibilityIT` do. The
+fixture's server list declares placeholder HTTP ports (`2480 + i`), so an entry patched to a different bound port is not
+"in force" and can be learnt over.
+
 ## Anything that commits must hold the WRAPPED database instance, not the inner one
 
 `LocalDatabase.commit()` writes pages locally. `RaftReplicatedDatabase.commit()` proposes them to Raft and *then* writes them. Code holding the wrong one of the two commits successfully, applies its pages on the leader, and replicates nothing. Followers trail by exactly those page versions, and the next replicated entry touching one of them fails its version check - `WALVersionGapException`, database marked diverged, snapshot resync, and the entry after it breaks the same way. Nothing throws at the point of the mistake, so the symptom always surfaces somewhere else.

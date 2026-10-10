@@ -31,7 +31,9 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -83,21 +85,33 @@ public final class PeerCapabilityQuery {
    * a node that has quarantined a database can then tell whether any voter still holds a copy it could resync from.
    * A peer that predates the field omits it, which reads as "nothing quarantined" - so the all-voters-quarantined
    * alert never fires on its account, the safe side for an alert that tells the operator to force-accept a copy.
+   * <p>
+   * {@code peerHttpAddresses} are the HTTP addresses the peer holds for the OTHER members, declared by an operator or
+   * confirmed by a probe they answered (issue #9255). They are relayed, not believed: the caller offers each one as a
+   * candidate and records it only once the member it names answers a probe on it. A peer that predates the field
+   * omits it, which relays nothing.
    */
   public record Advertisement(String peerId, String version, Set<String> capabilities, boolean serviceGap,
-      Set<String> quarantined) {
+      Set<String> quarantined, Map<String, String> peerHttpAddresses) {
     public Advertisement {
       if (quarantined == null)
         quarantined = Set.of();
+      if (peerHttpAddresses == null)
+        peerHttpAddresses = Map.of();
     }
 
     public Advertisement(final String peerId, final String version, final Set<String> capabilities) {
-      this(peerId, version, capabilities, false, Set.of());
+      this(peerId, version, capabilities, false, Set.of(), Map.of());
     }
 
     public Advertisement(final String peerId, final String version, final Set<String> capabilities,
         final boolean serviceGap) {
-      this(peerId, version, capabilities, serviceGap, Set.of());
+      this(peerId, version, capabilities, serviceGap, Set.of(), Map.of());
+    }
+
+    public Advertisement(final String peerId, final String version, final Set<String> capabilities,
+        final boolean serviceGap, final Set<String> quarantined) {
+      this(peerId, version, capabilities, serviceGap, quarantined, Map.of());
     }
   }
 
@@ -129,8 +143,21 @@ public final class PeerCapabilityQuery {
   public static Advertisement fetch(final String expectedPeerId, final String httpAddr, final String httpsAddr,
       final String clusterToken, final long timeoutMs, final ArcadeDBServer server,
       final TrustedHttpClientCache httpsClients) throws IOException, InterruptedException {
+    return fetch(expectedPeerId, httpAddr, httpsAddr, clusterToken, timeoutMs, server, httpsClients, null);
+  }
+
+  /**
+   * As {@link #fetch(String, String, String, String, long, ArcadeDBServer, TrustedHttpClientCache)}, sending
+   * {@code caller} as the request body: the calling node's own id and HTTP endpoint, which the peer offers as a candidate
+   * address for it (issue #9255). A peer that predates the field ignores the body.
+   *
+   * @param caller the calling node's self-description, or {@code null} to send an empty document
+   */
+  public static Advertisement fetch(final String expectedPeerId, final String httpAddr, final String httpsAddr,
+      final String clusterToken, final long timeoutMs, final ArcadeDBServer server,
+      final TrustedHttpClientCache httpsClients, final JSONObject caller) throws IOException, InterruptedException {
     return ask(Objects.requireNonNull(expectedPeerId, "expectedPeerId"), httpAddr, httpsAddr, clusterToken, timeoutMs,
-        server, httpsClients);
+        server, httpsClients, caller);
   }
 
   /**
@@ -145,12 +172,19 @@ public final class PeerCapabilityQuery {
   public static Advertisement fetchFromSharedEndpoint(final String httpAddr, final String httpsAddr,
       final String clusterToken, final long timeoutMs, final ArcadeDBServer server,
       final TrustedHttpClientCache httpsClients) throws IOException, InterruptedException {
-    return ask(null, httpAddr, httpsAddr, clusterToken, timeoutMs, server, httpsClients);
+    return fetchFromSharedEndpoint(httpAddr, httpsAddr, clusterToken, timeoutMs, server, httpsClients, null);
+  }
+
+  /** As {@link #fetchFromSharedEndpoint(String, String, String, long, ArcadeDBServer, TrustedHttpClientCache)}, sending {@code caller}. */
+  public static Advertisement fetchFromSharedEndpoint(final String httpAddr, final String httpsAddr,
+      final String clusterToken, final long timeoutMs, final ArcadeDBServer server,
+      final TrustedHttpClientCache httpsClients, final JSONObject caller) throws IOException, InterruptedException {
+    return ask(null, httpAddr, httpsAddr, clusterToken, timeoutMs, server, httpsClients, caller);
   }
 
   private static Advertisement ask(final String expectedPeerId, final String httpAddr, final String httpsAddr,
       final String clusterToken, final long timeoutMs, final ArcadeDBServer server,
-      final TrustedHttpClientCache httpsClients) throws IOException, InterruptedException {
+      final TrustedHttpClientCache httpsClients, final JSONObject caller) throws IOException, InterruptedException {
 
     final boolean useSSL = server != null && server.getConfiguration().getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL);
     final String url = chooseUrl(httpAddr, httpsAddr, useSSL);
@@ -172,7 +206,7 @@ public final class PeerCapabilityQuery {
         .uri(URI.create(url))
         .timeout(Duration.ofMillis(timeoutMs))
         .header("Content-Type", "application/json")
-        .POST(HttpRequest.BodyPublishers.ofString("{}"));
+        .POST(HttpRequest.BodyPublishers.ofString(caller != null ? caller.toString() : "{}"));
     if (clusterToken != null && !clusterToken.isBlank())
       builder.header("X-ArcadeDB-Cluster-Token", clusterToken);
     builder.header("X-ArcadeDB-Forwarded-User", RaftHAServer.FORWARDED_ROOT_USER);
@@ -264,6 +298,41 @@ public final class PeerCapabilityQuery {
     }
 
     return new Advertisement(peerId, json.getString("version", ""), capabilities,
-        json.getBoolean(PostCapabilitiesHandler.SERVICE_GAP, false), quarantined);
+        json.getBoolean(PostCapabilitiesHandler.SERVICE_GAP, false), quarantined, readPeerHttpAddresses(json, url));
+  }
+
+  /**
+   * The {@link PostCapabilitiesHandler#PEER_HTTP_ADDRESSES} a peer relayed, keeping only well-formed {@code host:port}
+   * values (issue #9255). A malformed entry is dropped rather than failing the whole answer: the capabilities it came
+   * with are still the peer's, and the relay is only ever a hint.
+   */
+  private static Map<String, String> readPeerHttpAddresses(final JSONObject json, final String url) {
+    final JSONObject relayed = json.has(PostCapabilitiesHandler.PEER_HTTP_ADDRESSES) ?
+        json.getJSONObject(PostCapabilitiesHandler.PEER_HTTP_ADDRESSES, null) : null;
+    if (relayed == null || relayed.length() == 0)
+      return Map.of();
+    final Map<String, String> addresses = new LinkedHashMap<>();
+    for (final String peerId : relayed.keySet()) {
+      final String address = relayed.getString(peerId, "");
+      if (peerId.isEmpty() || !isPeerAddress(address)) {
+        LogManager.instance().log(PeerCapabilityQuery.class, Level.FINE,
+            "Ignoring the HTTP address relayed for peer '%s' by %s: '%s' is not a host:port", peerId, url, address);
+        continue;
+      }
+      addresses.put(peerId, address);
+    }
+    return addresses;
+  }
+
+  /** Whether {@code address} passes the {@code host:port} rules every other peer address of this module is held to. */
+  static boolean isPeerAddress(final String address) {
+    if (address == null || address.isEmpty())
+      return false;
+    try {
+      RaftPeerAddressResolver.validatePeerAddress(address);
+      return true;
+    } catch (final RuntimeException e) {
+      return false;
+    }
   }
 }

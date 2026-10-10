@@ -88,6 +88,9 @@ class Issue6191FollowerForwardLoopIT extends BaseRaftHATest {
     final Map<RaftPeerId, String> httpAddresses = raft.getHttpAddresses();
     final Map<RaftPeerId, String> declared = new HashMap<>(httpAddresses);
     try {
+      // Paused for the window: the capability round would otherwise learn the real address back from the peers
+      // (issue #9255) and undo the misconfiguration this test injects
+      raft.stopCapabilityMonitor();
       httpAddresses.clear(); // nothing declared: every peer now derives to this node's own endpoint
 
       final String ownAddress = "localhost:" + getServer(follower).getHttpServer().getPort();
@@ -104,6 +107,7 @@ class Issue6191FollowerForwardLoopIT extends BaseRaftHATest {
           .hasMessageContaining(GlobalConfiguration.HA_SERVER_LIST.getKey());
     } finally {
       httpAddresses.putAll(declared);
+      raft.startCapabilityMonitor();
     }
   }
 
@@ -130,6 +134,9 @@ class Issue6191FollowerForwardLoopIT extends BaseRaftHATest {
     final Map<RaftPeerId, String> httpAddresses = raft.getHttpAddresses();
     final Map<RaftPeerId, String> declared = new HashMap<>(httpAddresses);
     try {
+      // Paused for the window: the capability round would otherwise learn the real address back from the peers
+      // (issue #9255) and undo the misconfiguration this test injects
+      raft.stopCapabilityMonitor();
       // This follower now believes the leader listens where the OTHER follower does.
       httpAddresses.put(RaftPeerId.valueOf(peerIdForIndex(leader)),
           "localhost:" + getServer(otherFollower).getHttpServer().getPort());
@@ -141,6 +148,7 @@ class Issue6191FollowerForwardLoopIT extends BaseRaftHATest {
           .hasMessageContaining("already forwarded");
     } finally {
       httpAddresses.putAll(declared);
+      raft.startCapabilityMonitor();
     }
   }
 
