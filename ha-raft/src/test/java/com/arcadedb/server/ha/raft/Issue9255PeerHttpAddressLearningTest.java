@@ -20,7 +20,6 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.FakeArcadeDBServer;
 import com.arcadedb.server.UnstartedHttpServers;
 import com.arcadedb.server.http.HttpServer;
@@ -143,6 +142,8 @@ class Issue9255PeerHttpAddressLearningTest {
     raft.offerCallerHttpAddress(LOCAL, "hostA:2499", 2499);
     raft.offerCallerHttpAddress("stranger_2434", "stranger:2490", 2490);
     raft.offerPeerHttpAddress(PEER_B, "not an address");
+    // A candidate is probed with the cluster token: only a host this node already knows the peer by may be offered
+    raft.offerPeerHttpAddress(PEER_B, "elsewhere:2490");
 
     assertThat(raft.getPeerHttpAddressCandidates(LOCAL)).isEmpty();
     assertThat(raft.getPeerHttpAddressCandidates("stranger_2434")).isEmpty();
@@ -152,11 +153,11 @@ class Issue9255PeerHttpAddressLearningTest {
   /** What this node says about itself in every capability request. */
   @Test
   void theCapabilityRequestCarriesThisNodesOwnEndpoint() {
-    final JSONObject document = newDetachedServer(SERVER_LIST).capabilityRequestDocument();
+    final Map<String, String> headers = newDetachedServer(SERVER_LIST).capabilityRequestHeaders();
 
-    assertThat(document.getString(PostCapabilitiesHandler.CALLER_PEER_ID, "")).isEqualTo(LOCAL);
-    assertThat(document.getString(PostCapabilitiesHandler.CALLER_HTTP_ADDRESS, "")).isEqualTo("hostA:2480");
-    assertThat(document.getInt(PostCapabilitiesHandler.CALLER_HTTP_PORT, -1)).isEqualTo(2480);
+    assertThat(headers).containsExactly(Map.entry(PostCapabilitiesHandler.CALLER_PEER_ID_HEADER, LOCAL),
+        Map.entry(PostCapabilitiesHandler.CALLER_HTTP_ADDRESS_HEADER, "hostA:2480"),
+        Map.entry(PostCapabilitiesHandler.CALLER_HTTP_PORT_HEADER, "2480"));
   }
 
   /** A peer answering on the address this node derives is confirmed there and relayed from then on. */

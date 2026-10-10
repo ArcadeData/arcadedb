@@ -766,13 +766,19 @@ class DeltaOverlay {
     return updatedBaseEdgeCount;
   }
 
-  /** The node of a deleted edge's end, including an overflow vertex the same delta deleted. -1 when there is none. */
+  /**
+   * The node of a deleted edge's end, including an overflow vertex the same delta deleted. -1 when there is none. The
+   * overflow vertex is asked first: one sitting on a reused base slot (#8948) would otherwise resolve, once it left the
+   * overflow, to the deleted base node whose RID it took.
+   */
   private static int resolveDeletedEdgeEnd(final RID rid, final NodeIdMapping baseMapping,
       final Map<RID, Integer> overflowIds, final BitSet deletedBase, final Map<RID, Integer> overflowDeletedNow) {
-    final int nodeId = resolveNodeId(rid, baseMapping, overflowIds, deletedBase);
-    if (nodeId >= 0 || overflowDeletedNow == null)
-      return nodeId;
-    return overflowDeletedNow.getOrDefault(rid, -1);
+    if (overflowDeletedNow != null) {
+      final Integer deletedOverflowId = overflowDeletedNow.get(rid);
+      if (deletedOverflowId != null)
+        return deletedOverflowId;
+    }
+    return resolveNodeId(rid, baseMapping, overflowIds, deletedBase);
   }
 
   /**

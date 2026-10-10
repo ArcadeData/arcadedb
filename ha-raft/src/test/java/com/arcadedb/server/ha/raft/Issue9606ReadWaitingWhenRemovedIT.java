@@ -30,6 +30,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -106,7 +107,9 @@ class Issue9606ReadWaitingWhenRemovedIT extends BaseRaftHATest {
   private CompletableFuture<Throwable> readWaitingOn(final int followerIndex, final int leaderIndex) {
     final long bookmark = getRaftPlugin(leaderIndex).getRaftHAServer().getCommitIndex() + 1_000_000L;
     final Database followerDb = getServerDatabase(followerIndex, getDatabaseName());
+    final AtomicReference<Thread> reader = new AtomicReference<>();
     final CompletableFuture<Throwable> read = CompletableFuture.supplyAsync(() -> {
+      reader.set(Thread.currentThread());
       RaftReplicatedDatabase.applyReadConsistencyContext(Database.READ_CONSISTENCY.READ_YOUR_WRITES, bookmark);
       try (final ResultSet rs = followerDb.query("sql", "SELECT count(*) AS cnt FROM " + TYPE_NAME)) {
         rs.next();
@@ -117,10 +120,21 @@ class Issue9606ReadWaitingWhenRemovedIT extends BaseRaftHATest {
         RaftReplicatedDatabase.removeReadConsistencyContext();
       }
     });
-    // Waiting rather than refused or served: the follower is a member and the bookmark is unreachable
-    Awaitility.await().pollDelay(500, TimeUnit.MILLISECONDS).atMost(5, TimeUnit.SECONDS).until(() -> true);
+    // Parked in the apply wait, not merely unfinished: a read that had not reached it yet would be refused by the entry check
+    // and pass without exercising a removal DURING the wait
+    Awaitility.await("the read parks in the apply wait").atMost(30, TimeUnit.SECONDS).pollInterval(50, TimeUnit.MILLISECONDS)
+        .until(() -> isParkedInApplyWait(reader.get()));
     assertThat(read).as("the read is waiting for its bookmark").isNotDone();
     return read;
+  }
+
+  private static boolean isParkedInApplyWait(final Thread thread) {
+    if (thread == null || thread.getState() != Thread.State.TIMED_WAITING)
+      return false;
+    for (final StackTraceElement frame : thread.getStackTrace())
+      if (frame.getMethodName().equals("awaitAppliedIndex") && frame.getClassName().equals(RaftHAServer.class.getName()))
+        return true;
+    return false;
   }
 
   private static void assertRefused(final Throwable failure) {

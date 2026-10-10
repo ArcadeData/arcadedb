@@ -148,14 +148,14 @@ public final class PeerCapabilityQuery {
 
   /**
    * As {@link #fetch(String, String, String, String, long, ArcadeDBServer, TrustedHttpClientCache)}, sending
-   * {@code caller} as the request body: the calling node's own id and HTTP endpoint, which the peer offers as a candidate
-   * address for it (issue #9255). A peer that predates the field ignores the body.
+   * {@code caller} as request headers: the calling node's own id and HTTP endpoint, which the peer offers as a candidate
+   * address for it (issue #9255). A peer that predates them ignores the headers.
    *
-   * @param caller the calling node's self-description, or {@code null} to send an empty document
+   * @param caller the calling node's self-description as header name to value, or {@code null} to send none
    */
   public static Advertisement fetch(final String expectedPeerId, final String httpAddr, final String httpsAddr,
       final String clusterToken, final long timeoutMs, final ArcadeDBServer server,
-      final TrustedHttpClientCache httpsClients, final JSONObject caller) throws IOException, InterruptedException {
+      final TrustedHttpClientCache httpsClients, final Map<String, String> caller) throws IOException, InterruptedException {
     return ask(Objects.requireNonNull(expectedPeerId, "expectedPeerId"), httpAddr, httpsAddr, clusterToken, timeoutMs,
         server, httpsClients, caller);
   }
@@ -178,13 +178,13 @@ public final class PeerCapabilityQuery {
   /** As {@link #fetchFromSharedEndpoint(String, String, String, long, ArcadeDBServer, TrustedHttpClientCache)}, sending {@code caller}. */
   public static Advertisement fetchFromSharedEndpoint(final String httpAddr, final String httpsAddr,
       final String clusterToken, final long timeoutMs, final ArcadeDBServer server,
-      final TrustedHttpClientCache httpsClients, final JSONObject caller) throws IOException, InterruptedException {
+      final TrustedHttpClientCache httpsClients, final Map<String, String> caller) throws IOException, InterruptedException {
     return ask(null, httpAddr, httpsAddr, clusterToken, timeoutMs, server, httpsClients, caller);
   }
 
   private static Advertisement ask(final String expectedPeerId, final String httpAddr, final String httpsAddr,
       final String clusterToken, final long timeoutMs, final ArcadeDBServer server,
-      final TrustedHttpClientCache httpsClients, final JSONObject caller) throws IOException, InterruptedException {
+      final TrustedHttpClientCache httpsClients, final Map<String, String> caller) throws IOException, InterruptedException {
 
     final boolean useSSL = server != null && server.getConfiguration().getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL);
     final String url = chooseUrl(httpAddr, httpsAddr, useSSL);
@@ -206,7 +206,10 @@ public final class PeerCapabilityQuery {
         .uri(URI.create(url))
         .timeout(Duration.ofMillis(timeoutMs))
         .header("Content-Type", "application/json")
-        .POST(HttpRequest.BodyPublishers.ofString(caller != null ? caller.toString() : "{}"));
+        .POST(HttpRequest.BodyPublishers.ofString("{}"));
+    if (caller != null)
+      for (final Map.Entry<String, String> header : caller.entrySet())
+        builder.header(header.getKey(), header.getValue());
     if (clusterToken != null && !clusterToken.isBlank())
       builder.header("X-ArcadeDB-Cluster-Token", clusterToken);
     builder.header("X-ArcadeDB-Forwarded-User", RaftHAServer.FORWARDED_ROOT_USER);

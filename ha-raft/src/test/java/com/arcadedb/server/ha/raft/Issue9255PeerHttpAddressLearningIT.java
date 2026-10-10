@@ -18,7 +18,6 @@
  */
 package com.arcadedb.server.ha.raft;
 
-import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
 import org.apache.ratis.protocol.RaftPeerId;
 import org.awaitility.Awaitility;
@@ -92,8 +91,6 @@ class Issue9255PeerHttpAddressLearningIT extends BaseRaftHATest {
     final int member = (leader + 1) % getServerCount();
     final RaftHAServer node = getRaftPlugin(leader).getRaftHAServer();
     final String memberId = peerIdForIndex(member);
-    final String body = new JSONObject().put(PostCapabilitiesHandler.CALLER_PEER_ID, memberId)
-        .put(PostCapabilitiesHandler.CALLER_HTTP_ADDRESS, "planted.invalid:1").toString();
 
     // Paused so a capability round cannot clear the candidates between the request and the assertion. The member's entry
     // is dropped, as a removal does: while it equals this node's server-list declaration no offer is taken at all, which
@@ -102,16 +99,16 @@ class Issue9255PeerHttpAddressLearningIT extends BaseRaftHATest {
     final String recorded = node.getHttpAddresses().remove(memberPeer);
     node.stopCapabilityMonitor();
     try {
-      assertThat(capabilities(leader, body, b -> b.header("Authorization", basicRoot())).statusCode()).isEqualTo(200);
+      assertThat(capabilities(leader, memberId, b -> b.header("Authorization", basicRoot())).statusCode()).isEqualTo(200);
       assertThat(node.getPeerHttpAddressCandidates(memberId)).as("a Basic-auth root request plants nothing").isEmpty();
 
-      assertThat(capabilities(leader, body, b -> b.header("Authorization", basicRoot())
+      assertThat(capabilities(leader, memberId, b -> b.header("Authorization", basicRoot())
           .header("X-ArcadeDB-Cluster-Token", "not-the-cluster-token")).statusCode()).isEqualTo(401);
       assertThat(node.getPeerHttpAddressCandidates(memberId)).as("a wrong token is refused before the body is read").isEmpty();
 
-      assertThat(capabilities(leader, body, b -> b.header("X-ArcadeDB-Cluster-Token", node.getClusterToken())
+      assertThat(capabilities(leader, memberId, b -> b.header("X-ArcadeDB-Cluster-Token", node.getClusterToken())
           .header("X-ArcadeDB-Forwarded-User", "root")).statusCode()).isEqualTo(200);
-      assertThat(node.getPeerHttpAddressCandidates(memberId)).as("a peer's request is heard").containsExactly("planted.invalid:1");
+      assertThat(node.getPeerHttpAddressCandidates(memberId)).as("a peer's request is heard").containsExactly("localhost:1");
     } finally {
       if (recorded != null)
         node.getHttpAddresses().put(memberPeer, recorded);
@@ -119,12 +116,15 @@ class Issue9255PeerHttpAddressLearningIT extends BaseRaftHATest {
     }
   }
 
-  private HttpResponse<String> capabilities(final int serverIndex, final String body,
+  /** A capability request whose caller claims to be {@code callerPeerId} listening on {@code localhost:1}. */
+  private HttpResponse<String> capabilities(final int serverIndex, final String callerPeerId,
       final UnaryOperator<HttpRequest.Builder> authenticate) throws Exception {
     final HttpRequest.Builder builder = HttpRequest.newBuilder()
         .uri(URI.create("http://localhost:" + getServerHttpPort(serverIndex) + "/api/v1/cluster/capabilities"))
         .timeout(Duration.ofSeconds(10)).header("Content-Type", "application/json")
-        .POST(HttpRequest.BodyPublishers.ofString(body));
+        .header(PostCapabilitiesHandler.CALLER_PEER_ID_HEADER, callerPeerId)
+        .header(PostCapabilitiesHandler.CALLER_HTTP_ADDRESS_HEADER, "localhost:1")
+        .POST(HttpRequest.BodyPublishers.ofString("{}"));
     try (final HttpClient client = HttpClient.newHttpClient()) {
       return client.send(authenticate.apply(builder).build(), HttpResponse.BodyHandlers.ofString());
     }

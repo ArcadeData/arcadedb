@@ -27,6 +27,7 @@ import com.arcadedb.server.http.handler.AbstractServerHttpHandler;
 import com.arcadedb.server.http.handler.ExecutionResponse;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
+import io.undertow.util.HeaderMap;
 
 import java.util.Map;
 import java.util.Set;
@@ -86,12 +87,15 @@ public class PostCapabilitiesHandler extends AbstractServerHttpHandler {
    */
   static final String PEER_HTTP_ADDRESSES = "peerHttpAddresses";
 
-  /** The request's member: the calling node's peer id (issue #9255). */
-  static final String CALLER_PEER_ID      = "peerId";
-  /** The request's member: the HTTP address the calling node resolves for itself (issue #9255). */
-  static final String CALLER_HTTP_ADDRESS = "httpAddress";
-  /** The request's member: the port the calling node's HTTP listener is bound to (issue #9255). */
-  static final String CALLER_HTTP_PORT    = "httpPort";
+  /**
+   * Request header: the calling node's peer id (issue #9255). The self-description travels in headers rather than in the
+   * body so this handler keeps answering on the IO thread: the shared pipeline reads a body only on a worker thread.
+   */
+  static final String CALLER_PEER_ID_HEADER      = "X-ArcadeDB-Caller-Peer-Id";
+  /** Request header: the HTTP address the calling node resolves for itself (issue #9255). */
+  static final String CALLER_HTTP_ADDRESS_HEADER = "X-ArcadeDB-Caller-Http-Address";
+  /** Request header: the port the calling node's HTTP listener is bound to (issue #9255). */
+  static final String CALLER_HTTP_PORT_HEADER    = "X-ArcadeDB-Caller-Http-Port";
 
   private static final String CLUSTER_TOKEN_HEADER = "X-ArcadeDB-Cluster-Token";
 
@@ -100,15 +104,6 @@ public class PostCapabilitiesHandler extends AbstractServerHttpHandler {
   public PostCapabilitiesHandler(final HttpServer httpServer, final RaftHAPlugin plugin) {
     super(httpServer);
     this.plugin = plugin;
-  }
-
-  /**
-   * On a worker thread so the request body - the caller's self-description (issue #9255) - is read at all: the shared
-   * pipeline parses a payload only for a handler that runs there, and on the IO thread {@code payload} is always null.
-   */
-  @Override
-  protected boolean mustExecuteOnWorkerThread() {
-    return true;
   }
 
   @Override
@@ -124,10 +119,12 @@ public class PostCapabilitiesHandler extends AbstractServerHttpHandler {
     // dials the caller there for anything else. Only from a peer: that probe carries the cluster token, so an address a
     // root user could plant through Basic auth would be a way to send the token somewhere. A peer holds it already, and
     // the header was validated before this method runs (an invalid one is refused with 401)
-    if (payload != null && exchange.getRequestHeaders().contains(CLUSTER_TOKEN_HEADER))
+    final HeaderMap headers = exchange.getRequestHeaders();
+    if (headers.contains(CLUSTER_TOKEN_HEADER) && headers.contains(CALLER_PEER_ID_HEADER))
       try {
-        raftHAServer.offerCallerHttpAddress(payload.getString(CALLER_PEER_ID, ""),
-            payload.getString(CALLER_HTTP_ADDRESS, ""), payload.getInt(CALLER_HTTP_PORT, -1));
+        final String port = headers.getFirst(CALLER_HTTP_PORT_HEADER);
+        raftHAServer.offerCallerHttpAddress(headers.getFirst(CALLER_PEER_ID_HEADER), headers.getFirst(CALLER_HTTP_ADDRESS_HEADER),
+            port != null && !port.isBlank() ? Integer.parseInt(port.trim()) : -1);
       } catch (final RuntimeException e) {
         // A malformed self-description costs the caller its candidate, never the answer it asked for
         LogManager.instance().log(this, Level.FINE, "Ignoring the self-description of a capability request: %s", e.getMessage());

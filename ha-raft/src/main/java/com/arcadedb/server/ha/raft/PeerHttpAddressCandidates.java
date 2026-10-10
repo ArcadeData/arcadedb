@@ -46,10 +46,11 @@ import java.util.function.LongSupplier;
  * <p>
  * <b>Trust.</b> A candidate is dialled with the cluster token, so who may offer one matters: a peer's own capability request
  * (accepted only when it carries the cluster token, never from a user's Basic-auth request) and a member's capability reply.
- * Both come from holders of the token, which is the trust the module already gives them - the same caller can run
- * {@code connect cluster} and write an address directly. What the binding adds is that no offered address is ever acted on
- * beyond that read-only probe until the peer it names answers there; a misconfigured or compromised member can make the
- * others probe an address, at most {@link #MAX_PER_PEER} per peer and once per back-off, and no more.
+ * Both come from holders of the token. The probe still DISCLOSES the token to whoever listens on the offered address, so
+ * {@code RaftHAServer.offerPeerHttpAddress} takes only a candidate on the peer's own Raft host: the token goes only to
+ * hosts the cluster already talks to, and what an offer can change is the port. Beyond that, no offered address is acted on until the peer it names answers there under
+ * its own id, and a misconfigured member can make the others probe at most {@link #MAX_PER_PEER} addresses per peer, once
+ * per back-off.
  * <p>
  * Bounded on both axes, because the offers arrive on every capability round from every peer: at most
  * {@link #MAX_PER_PEER} addresses per peer (the oldest goes first), and a candidate whose probe failed is not dialled
