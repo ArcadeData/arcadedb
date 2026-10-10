@@ -104,7 +104,27 @@ class CypherLiteralParameterizationIssue8307Test extends TestHelper {
       "WITH [1, 2] AS xs UNWIND xs AS x MATCH (p:Person {id: x}) RETURN p.name AS n ORDER BY n",//
       "MATCH (p:Person) WHERE p.id = 2 SET p.tmp = 5 RETURN p.tmp AS t",//
       "MATCH (p:Person) WHERE p.id = 2 RETURN p.tmp AS t",//
-      "MATCH (n:Nothing) RETURN size('ab') AS s"//
+      "MATCH (n:Nothing) RETURN size('ab') AS s",//
+      "MATCH (p:Person) WHERE p.id IN [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 1, 2, 3] RETURN p.name AS n ORDER BY n",//
+      "RETURN 1 + 2",//
+      "RETURN 1 + 2 AS s, 3 * 4 AS p",//
+      "MATCH (p:Person) WHERE p.id < 3 RETURN p.id + 1 + 2 AS k ORDER BY p.id + 1 + 2 DESC",//
+      "MATCH (p:Person) WHERE p.id < 6 RETURN p.id % 2 + 1 AS k, count(*) AS c ORDER BY p.id % 2 + 1"//
+  );
+
+  /**
+   * Texts of one shape, each sequence opened by the edge case: the first text of a shape is the one the policy is decided on,
+   * so it must not matter which value it happens to carry.
+   */
+  private static final List<List<String>> SHAPE_SEQUENCES = List.of(//
+      List.of("MATCH (p:Person) WHERE p.id > -1 AND p.id < 3 RETURN p.name AS n ORDER BY n",
+          "MATCH (p:Person) WHERE p.id > -50 AND p.id < 4 RETURN p.name AS n ORDER BY n"),//
+      List.of("MATCH (p:Person {id: 0}) RETURN p.name AS n", "MATCH (p:Person {id: 42}) RETURN p.name AS n"),//
+      List.of("MATCH (p:Person) WHERE p.name = 'it\\'s' RETURN p.id AS id", "MATCH (p:Person) WHERE p.name = 'p5' RETURN p.id AS id"),//
+      List.of("MATCH (p:Person) WHERE p.name = '' RETURN p.id AS id", "MATCH (p:Person) WHERE p.name = 'p6' RETURN p.id AS id"),//
+      List.of("RETURN -9223372036854775808 AS a, 'a\\nb' AS b", "RETURN 7 AS a, 'plain' AS b"),//
+      List.of("MATCH (p:Person) WHERE p.score = 0.0 RETURN p.name AS n", "MATCH (p:Person) WHERE p.score = 4.5 RETURN p.name AS n"),//
+      List.of("MATCH (p:Person {id: 1}) RETURN p.name AS n, 1 + 2 AS s", "MATCH (p:Person {id: 2}) RETURN p.name AS n, 5 + 6 AS s")//
   );
 
   @Override
@@ -185,6 +205,53 @@ class CypherLiteralParameterizationIssue8307Test extends TestHelper {
 
   private Lookup<ParsedQuery> lookup(final String cypher) {
     return db().getCypherStatementCache().getParameterized(cypher);
+  }
+
+  @Test
+  void theFirstTextOfAShapeDecidesForEveryValueWhicheverValueItCarries() {
+    for (final List<String> sequence : SHAPE_SEQUENCES) {
+      final List<List<Map<String, Object>>> asWritten = new ArrayList<>();
+      setParameterization(false);
+      try {
+        for (final String cypher : sequence)
+          asWritten.add(rows(cypher));
+      } finally {
+        setParameterization(true);
+      }
+      for (int i = 0; i < sequence.size(); i++)
+        assertThat(rows(sequence.get(i))).as(sequence.get(i)).isEqualTo(asWritten.get(i));
+    }
+  }
+
+  @Test
+  void concurrentExecutionsOfOneShapeEachBindTheirOwnValues() throws Exception {
+    final List<String> failures = new CopyOnWriteArrayList<>();
+    final CountDownLatch start = new CountDownLatch(1);
+    final List<Thread> threads = new ArrayList<>();
+    for (int t = 0; t < 8; t++) {
+      final int offset = t;
+      final Thread thread = new Thread(() -> {
+        try {
+          start.await();
+          for (int i = 0; i < 200; i++) {
+            final int id = (offset * 13 + i) % 100;
+            final List<Result> found = query(
+                "MATCH (p:Person {id: " + id + "}) WHERE p.name = 'p" + id + "' RETURN p.name AS n, p.id + 1000 AS k");
+            if (found.size() != 1 || !("p" + id).equals(found.getFirst().getProperty("n"))
+                || ((Number) found.getFirst().getProperty("k")).longValue() != id + 1000)
+              failures.add("id " + id + " answered " + found);
+          }
+        } catch (final Exception e) {
+          failures.add(e.toString());
+        }
+      });
+      threads.add(thread);
+      thread.start();
+    }
+    start.countDown();
+    for (final Thread thread : threads)
+      thread.join();
+    assertThat(failures).isEmpty();
   }
 
   @Test

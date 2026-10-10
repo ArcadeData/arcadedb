@@ -31,6 +31,8 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -92,7 +94,25 @@ class SQLLiteralParameterizationIssue8307Test extends TestHelper {
       "SELECT FROM Dbl WHERE d IN [9007199254740993, 1]",//
       "SELECT FROM Flt WHERE f = 16777217",//
       "SELECT FROM Flt WHERE f = 16777216",//
-      "SELECT FROM Flt WHERE f = 3"//
+      "SELECT FROM Flt WHERE f = 3",//
+      "SELECT name FROM Person WHERE id IN [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 1, 2, 3] ORDER BY name",//
+      "SELECT 1 + 2",//
+      "SELECT 1 + 2 AS s, 3 * 4 AS p",//
+      "SELECT id + 1 + 2 AS k FROM Person WHERE id < 3 ORDER BY id + 1 + 2 DESC"//
+  );
+
+  /**
+   * Texts of one shape, each sequence opened by the edge case: the first text of a shape is the one the policy is decided on,
+   * so it must not matter which value it happens to carry.
+   */
+  private static final List<List<String>> SHAPE_SEQUENCES = List.of(//
+      List.of("SELECT name FROM Person WHERE id > -1 AND id < 3 ORDER BY name", "SELECT name FROM Person WHERE id > -50 AND id < 4 ORDER BY name"),//
+      List.of("SELECT name FROM Person WHERE id = 0", "SELECT name FROM Person WHERE id = 42"),//
+      List.of("SELECT name FROM Person WHERE name = 'it\\'s'", "SELECT name FROM Person WHERE name = 'p5'"),//
+      List.of("SELECT name FROM Person WHERE name = ''", "SELECT name FROM Person WHERE name = 'p6'"),//
+      List.of("SELECT -2147483648 AS a, 'a\\nb' AS b", "SELECT 7 AS a, 'plain' AS b"),//
+      List.of("SELECT name FROM Person WHERE score = 0.0", "SELECT name FROM Person WHERE score = 4.5"),//
+      List.of("SELECT name, 1 + 2 AS s FROM Person WHERE id = 1", "SELECT name, 5 + 6 AS s FROM Person WHERE id = 2")//
   );
 
   @Override
@@ -156,6 +176,51 @@ class SQLLiteralParameterizationIssue8307Test extends TestHelper {
     for (int pass = 0; pass < 2; pass++)
       for (int i = 0; i < CORPUS.size(); i++)
         assertThat(rows(CORPUS.get(i))).as("pass %d: %s", pass, CORPUS.get(i)).isEqualTo(asWritten.get(i));
+  }
+
+  @Test
+  void theFirstTextOfAShapeDecidesForEveryValueWhicheverValueItCarries() {
+    for (final List<String> sequence : SHAPE_SEQUENCES) {
+      final List<List<Map<String, Object>>> asWritten = new ArrayList<>();
+      setParameterization(false);
+      try {
+        for (final String sql : sequence)
+          asWritten.add(rows(sql));
+      } finally {
+        setParameterization(true);
+      }
+      for (int i = 0; i < sequence.size(); i++)
+        assertThat(rows(sequence.get(i))).as(sequence.get(i)).isEqualTo(asWritten.get(i));
+    }
+  }
+
+  @Test
+  void concurrentExecutionsOfOneShapeEachBindTheirOwnValues() throws Exception {
+    final List<String> failures = new CopyOnWriteArrayList<>();
+    final CountDownLatch start = new CountDownLatch(1);
+    final List<Thread> threads = new ArrayList<>();
+    for (int t = 0; t < 8; t++) {
+      final int offset = t;
+      final Thread thread = new Thread(() -> {
+        try {
+          start.await();
+          for (int i = 0; i < 200; i++) {
+            final int id = (offset * 13 + i) % 100;
+            final List<Map<String, Object>> found = rows("SELECT name, id + 1000 AS k FROM Person WHERE id = " + id + " AND name = 'p" + id + "'");
+            if (!found.equals(List.of(Map.of("name", "p" + id, "k", id + 1000))))
+              failures.add("id " + id + " answered " + found);
+          }
+        } catch (final Exception e) {
+          failures.add(e.toString());
+        }
+      });
+      threads.add(thread);
+      thread.start();
+    }
+    start.countDown();
+    for (final Thread thread : threads)
+      thread.join();
+    assertThat(failures).isEmpty();
   }
 
   @Test
