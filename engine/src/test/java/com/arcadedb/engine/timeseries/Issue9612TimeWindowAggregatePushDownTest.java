@@ -287,6 +287,10 @@ class Issue9612TimeWindowAggregatePushDownTest extends TestHelper {
         assertSameAsTheTwin(sql);
         assertSameAsTheTwin("SELECT count(*) AS c FROM X WHERE " + predicate);
       }
+      // the same statement with other values: the operands are read when the statement is planned, so a second run must not
+      // reuse the first one's filter
+      assertSameAsTheTwin("SELECT count(*) AS c, avg(uu) AS a FROM X WHERE uu > ? AND ui <= ?", 30, 500L);
+      assertSameAsTheTwin("SELECT count(*) AS c, avg(uu) AS a FROM X WHERE uu > ? AND ui <= ?", 80, 150L);
       assertSameAsTheTwin("SELECT count(*) AS c, avg(uu) AS a FROM X WHERE uu > ? AND ui <= ?", 30, 500L);
     });
   }
@@ -437,6 +441,9 @@ class Issue9612TimeWindowAggregatePushDownTest extends TestHelper {
     assertThat(positive.matches(new Object[] { 1L, -2.0 })).isFalse();
     assertThat(positive.matches(new Object[] { 1L, null })).isFalse();
     assertThat(positive.matches(new Object[] { 1L, Double.NaN })).isFalse();
+    // a mutable row may hold any Number for a DOUBLE column
+    assertThat(positive.matches(new Object[] { 1L, 3 })).isTrue();
+    assertThat(positive.matches(new Object[] { 1L, -3L })).isFalse();
   }
 
   @Test
@@ -466,6 +473,10 @@ class Issue9612TimeWindowAggregatePushDownTest extends TestHelper {
     assertThat(FieldFilter.blockMatch(above, rounded, rounded, 10, 10)).isEqualTo(FieldFilter.BlockMatch.SOME);
     assertThat(FieldFilter.blockMatch(above, rounded + 4, rounded + 8, 10, 10)).isEqualTo(FieldFilter.BlockMatch.ALL);
     assertThat(FieldFilter.blockMatch(above, 0, 100, 10, 10)).isEqualTo(FieldFilter.BlockMatch.NONE);
+    // within 2^53 a block whose minimum IS the inclusive bound matches whole
+    final FieldFilter.Condition atLeastTen = FieldFilter.range(0, lng, 10, true, 20, true).getConditions().getFirst();
+    assertThat(FieldFilter.blockMatch(atLeastTen, 10, 20, 10, 10)).isEqualTo(FieldFilter.BlockMatch.ALL);
+    assertThat(FieldFilter.blockMatch(atLeastTen, 9, 20, 10, 10)).isEqualTo(FieldFilter.BlockMatch.SOME);
 
     final ColumnDefinition dbl = new ColumnDefinition("d", Type.DOUBLE, ColumnDefinition.ColumnRole.FIELD);
     final FieldFilter.Condition over = FieldFilter.range(0, dbl, 10, false, null, false).getConditions().getFirst();
