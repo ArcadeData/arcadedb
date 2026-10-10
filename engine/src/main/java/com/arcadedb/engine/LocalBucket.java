@@ -2729,7 +2729,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           // from the map - the commits that fill it re-list whatever room is really left - and the allocator is asked
           // once more with that page excluded, which also reaches the caller's own tail page.
           final int rejectedPage = foundPage.getPageId().getPageNumber();
-          delistReservedPage(rejectedPage);
+          if (!isNewPageOfAnotherTransaction(rejectedPage, database.getTransaction()))
+            // Another transaction's page is skipped by the allocator already, and its creator's entry stays valid
+            delistReservedPage(rejectedPage);
           if (attempt == MAX_INSERT_PAGE_ATTEMPTS - 1) {
             createNewPage = true;
             break;
@@ -3263,16 +3265,34 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   }
 
   /**
-   * Lists a page in freeSpaceInPages again after the reservations that hid its room are gone (#9694). The entry is an
-   * upper bound - the whole usable page - because the room left is only known by reading the page, which every
-   * allocation does before trusting an entry: it corrects or drops this one on first sight.
+   * Lists a page in freeSpaceInPages again after the reservations that hid its room are gone (#9694), with the free
+   * tail measured on its committed image and under the same thresholds {@link #updatePageStatistics} applies: a page
+   * that is still full stays out, and the statistics never advertise room the page does not have.
    */
   private void relistPage(final int pageNumber) {
     if (reuseSpaceMode.ordinal() < REUSE_SPACE_MODE.HIGH.ordinal())
       return;
+    final int freeSpace;
+    try {
+      final BasePage page = database.getPageManager()
+              .getImmutablePage(new PageId(database, file.getFileId(), pageNumber), pageSize, false, false);
+      if (page == null)
+        return;
+      final short recordCountInPage = page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
+      if (recordCountInPage >= maxRecordsInPage)
+        return;
+      freeSpace = page.getMaxContentSize() - findContentInsertionOffset(page, recordCountInPage);
+    } catch (final Exception e) {
+      // Only a hint: the next gather measures the page anyway
+      return;
+    }
+
+    final int usableSpaceInPage = getPageSize() - BasePage.PAGE_HEADER_SIZE - contentHeaderSize;
+    if (freeSpace <= MINIMUM_SPACE_LEFT_IN_PAGE || freeSpace * 100 / usableSpaceInPage <= GATHER_STATS_MIN_SPACE_PERC)
+      return;
     synchronized (freeSpaceInPages) {
       if (!freeSpaceInPages.containsKey(pageNumber) && freeSpaceInPages.size() < MAX_PAGES_GATHER_STATS)
-        freeSpaceInPages.put(pageNumber, getPageSize() - BasePage.PAGE_HEADER_SIZE - contentHeaderSize);
+        freeSpaceInPages.put(pageNumber, freeSpace);
     }
   }
 
