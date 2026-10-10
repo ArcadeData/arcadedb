@@ -166,7 +166,10 @@ final class CypherTransactionsCommand {
   private ShowCommandTail.Table terminate(final Set<String> ids, final String terminateText) {
     final List<List<Object>> rows = new ArrayList<>(ids.size());
     for (final String id : ids) {
-      final RunningQuery running = registry.get(id);
+      RunningQuery running = registry.get(id);
+      if (running == null)
+        // A statement another server forwarded here, named by the id it has there: as "terminate query" finds it
+        running = registry.getForwardedFrom(id);
       // Another user's statement is "not found", as one that does not exist: its existence is not given away
       if (running != null && registry.isVisible(user, running)) {
         running.terminate(user);

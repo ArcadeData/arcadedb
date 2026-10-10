@@ -233,7 +233,11 @@ public class PostgresNetworkExecutor extends Thread {
   private String   userPassword               = null;
   private ServerSecurityUser authenticatedUser;
   private int      consecutiveErrors          = 0;
-  /** BackendKeyData of this connection: its process id and the secret a CancelRequest must quote to reach it. */
+  /**
+   * BackendKeyData of this connection: its process id and the secret a CancelRequest must quote to reach it. Plain fields:
+   * both are written once, before {@link #ACTIVE_SESSIONS} publishes the connection, and every other thread reaches the
+   * connection through that map, whose insertion happens-before its lookups.
+   */
   private int      processId;
   private int      cancelSecret;
   /** The statement this connection is running, which a CancelRequest stops; null between statements (issue #9689). */
@@ -430,18 +434,18 @@ public class PostgresNetworkExecutor extends Thread {
 
       writeMessage("authentication ok", () -> channel.writeUnsignedInt(0), 'R', 8);
 
-      // BackendKeyData: registered before it is sent, so a client cancelling as soon as it has the key is not refused
-      cancelSecret = CANCEL_SECRETS.nextInt();
-      registerProcessId();
-      writeMessage("backend key data", () -> {
-        channel.writeUnsignedInt(processId);
-        channel.writeUnsignedInt(cancelSecret);
-      }, 'K', 12);
-
-      // Every reported parameter, the ones the startup packet set included, goes out as a ParameterStatus ahead of
-      // the first ReadyForQuery: writeReadyForQueryMessage() reports them (issue #8241).
-
       try {
+        // BackendKeyData: registered before it is sent, so a client cancelling as soon as it has the key is not refused,
+        // and inside the block whose finally removes it, so a client gone before it arrives leaves nothing registered
+        cancelSecret = CANCEL_SECRETS.nextInt();
+        registerProcessId();
+        writeMessage("backend key data", () -> {
+          channel.writeUnsignedInt(processId);
+          channel.writeUnsignedInt(cancelSecret);
+        }, 'K', 12);
+
+        // Every reported parameter, the ones the startup packet set included, goes out as a ParameterStatus ahead of
+        // the first ReadyForQuery: writeReadyForQueryMessage() reports them (issue #8241).
         writeReadyForQueryMessage();
 
         while (!shutdown) {

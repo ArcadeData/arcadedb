@@ -51,6 +51,7 @@ import com.arcadedb.engine.timeseries.TimeSeriesGateway.TypeResolution;
 import com.arcadedb.engine.timeseries.TimeSeriesGateway.WriteReport;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.DuplicatedKeyException;
+import com.arcadedb.exception.QueryTerminatedException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.graph.Edge;
@@ -201,6 +202,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     final String          owner;
     final long            createdAtMs;
     volatile long         lastAccessMs;
+    // A statement running in this transaction was terminated (issue #9689): it is rolled back, and a commit that claimed
+    // the transaction while the statement still ran - its task queued behind the statement's - must not publish anything
+    volatile boolean      terminated;
     // The ENGINE's transaction object behind this gRPC transaction, captured once on the dedicated thread right
     // after database.begin() (issue #8134). Its commit counter is the only witness that a statement with a
     // BATCH boundary published part of the caller's block: LocalDatabase.begin() reuses the same context object
@@ -669,8 +673,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
    * whether or not the statement reached a check before it ended - the same rule as for an HTTP transaction session.
    */
   private void endTerminatedTransaction(final TransactionContext txCtx, final RunningQuery runningQuery) {
-    if (!activeTransactions.remove(txCtx.txId, txCtx))
-      return;
+    // First, whoever owns the transaction now: a commit or rollback that claimed it while this statement ran has its
+    // task queued behind this one on the same thread, and reads the flag before it touches anything
+    txCtx.terminated = true;
     try {
       if (txCtx.db != null && txCtx.db.isTransactionActive())
         txCtx.db.rollback();
@@ -679,8 +684,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       LogManager.instance().log(this, Level.WARNING, "Error rolling back the transaction of a terminated statement txId=%s", e,
           txCtx.txId);
     } finally {
-      releaseTransactionSlot(txCtx.owner);
-      txCtx.shutdown();
+      // Released here only if nobody claimed it meanwhile: a commit or rollback that did releases it itself
+      if (activeTransactions.remove(txCtx.txId, txCtx)) {
+        releaseTransactionSlot(txCtx.owner);
+        txCtx.shutdown();
+      }
     }
   }
 
@@ -1993,6 +2001,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
       // Execute commit ON THE SAME THREAD that began the transaction
       Future<?> commitFuture = txCtx.executor.submit(() -> {
+        // A statement of this transaction was terminated while this commit waited behind it: what it wrote was rolled
+        // back, and nothing of the transaction is published (issue #9689)
+        if (txCtx.terminated)
+          throw new QueryTerminatedException(
+              "Transaction " + txId + " was ended: a statement running in it was terminated, and everything it wrote rolled back");
         // A client request, on a thread no listener callback runs on (issue #8363): see submitToActiveTransaction.
         ProtocolContext.set(GRPC_PROTOCOL);
         try {

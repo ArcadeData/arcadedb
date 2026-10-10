@@ -160,6 +160,21 @@ class Issue9689RunningQueryFollowUpsTest {
   }
 
   @Test
+  void terminateTransactionsFindsAStatementByTheIdItHasOnTheServerThatForwardedIt() throws Exception {
+    final RunningQueryRegistry registry = newRegistry();
+    try (final Background forwarded = Background.run(registry, "alice", null, q -> {
+      // As the leader records a statement a replica forwarded to it
+      q.setForwardedFrom("q7-0ff1ce");
+      drain(database.query("opencypher", LONG_CYPHER));
+    })) {
+      final List<Result> rows = cypherAs(registry, "root", "TERMINATE TRANSACTIONS 'q7-0ff1ce'", Map.of());
+      assertThat(rows).hasSize(1);
+      assertThat(rows.getFirst().<String>getProperty("message")).isEqualTo("Transaction terminated.");
+      forwarded.awaitTerminated();
+    }
+  }
+
+  @Test
   void showComposedWithTerminateStopsWhatTheShowSelected() throws Exception {
     final RunningQueryRegistry registry = newRegistry();
     try (final Background tagged = Background.run(registry, "alice", "stop-me", q -> drain(database.query("opencypher", LONG_CYPHER)));

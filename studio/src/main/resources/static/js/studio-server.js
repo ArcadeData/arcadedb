@@ -555,6 +555,14 @@ function loadServerSessions() {
 // ---------------------------------------------------------------------------------------------
 
 var runningQueriesRefreshTimer = null;
+// Which "list queries" answer the table may show: only the latest request's, so a slow one never brings back a row a
+// later answer (one sent after a terminate) has already removed
+var runningQueriesRequestSequence = 0;
+
+/** Whether the answer to request {@code sequence} is still the one to show, {@code latest} being the last one sent. */
+function isCurrentRunningQueriesResponse(sequence, latest) {
+  return sequence === latest;
+}
 
 /** How long a statement has been running, for a person: 350 ms, 12.3 s, 4m 05s, 2h 03m. */
 function formatRunningQueryElapsed(ms) {
@@ -618,6 +626,7 @@ function describeTerminateOutcome(status) {
 }
 
 function loadRunningQueries() {
+  const sequence = ++runningQueriesRequestSequence;
   jQuery
     .ajax({
       type: "POST",
@@ -628,6 +637,7 @@ function loadRunningQueries() {
       },
     })
     .done(function (data) {
+      if (!isCurrentRunningQueriesResponse(sequence, runningQueriesRequestSequence)) return;
       const rows = buildRunningQueryRows(data.result);
 
       if ($.fn.dataTable.isDataTable("#serverRunningQueries")) {

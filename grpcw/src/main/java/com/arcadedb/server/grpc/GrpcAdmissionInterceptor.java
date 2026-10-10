@@ -22,6 +22,8 @@ import com.arcadedb.exception.QueryAdmissionException;
 import com.arcadedb.query.RunningQuery;
 import com.arcadedb.query.sql.executor.QueryAdmissionGate;
 import com.arcadedb.server.ArcadeDBServer;
+import com.google.protobuf.Descriptors;
+import com.google.protobuf.Message;
 import io.grpc.Context;
 import io.grpc.ForwardingServerCallListener;
 import io.grpc.Metadata;
@@ -120,30 +122,23 @@ class GrpcAdmissionInterceptor implements ServerInterceptor {
    * statement (issue #9689). A transaction's statements run on the transaction's own thread, where the service binds it.
    */
   private RunningQuery register(final MethodDescriptor<?, ?> method, final Metadata headers, final Object request) {
-    String database = headers.get(DATABASE_HEADER);
-    String user = GrpcAuthInterceptor.USER_CONTEXT_KEY.get();
+    // Who the call was authenticated as, by its headers or its session: never a name the payload carries
+    final String user = GrpcAuthInterceptor.USER_CONTEXT_KEY.get();
+    String database = requestDatabase(request);
+    if (database == null || database.isEmpty())
+      database = headers.get(DATABASE_HEADER);
     String language = null;
     String text = method.getBareMethodName();
-    DatabaseCredentials credentials = null;
     if (request instanceof ExecuteQueryRequest query) {
-      database = query.getDatabase();
       language = query.getLanguage();
       text = query.getQuery();
-      credentials = query.hasCredentials() ? query.getCredentials() : null;
     } else if (request instanceof ExecuteCommandRequest command) {
-      database = command.getDatabase();
       language = command.getLanguage();
       text = command.getCommand();
-      credentials = command.hasCredentials() ? command.getCredentials() : null;
     } else if (request instanceof StreamQueryRequest stream) {
-      database = stream.getDatabase();
       language = stream.getLanguage();
       text = stream.getQuery();
-      credentials = stream.hasCredentials() ? stream.getCredentials() : null;
     }
-    if (user == null && credentials != null && !credentials.getUsername().isEmpty())
-      // Authenticated by the credentials the request carries rather than by its headers
-      user = credentials.getUsername();
     if (language != null && language.isEmpty())
       language = "sql";
 
@@ -151,6 +146,19 @@ class GrpcAdmissionInterceptor implements ServerInterceptor {
         .register(database != null && !database.isEmpty() ? database : null, user, "grpc", null, null);
     runningQuery.setStatement(language, text);
     return runningQuery;
+  }
+
+  /**
+   * The database a request names in its own {@code database} field - every data RPC of the service carries one - or
+   * {@code null}. Read through the message descriptor, so an RPC added later is covered without being listed here.
+   */
+  private static String requestDatabase(final Object request) {
+    if (!(request instanceof Message message))
+      return null;
+    final Descriptors.FieldDescriptor field = message.getDescriptorForType().findFieldByName("database");
+    return field != null && field.getJavaType() == Descriptors.FieldDescriptor.JavaType.STRING ?
+        (String) message.getField(field) :
+        null;
   }
 
   /** Like the service: in production the refusal is answered without the exception's own text (issue #7472). */
