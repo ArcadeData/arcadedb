@@ -5918,7 +5918,8 @@ public class CypherExecutionPlan {
    * labels cannot prove (issue #9608). Only values whose match is plain equality are compared - strings, booleans and
    * integers - since {@code 1} and {@code 1.0} match the same stored value and a temporal compares by instant. Both
    * literals are matched against the one value a vertex stores, whatever type the schema declares for it, so a value that
-   * equals one of them cannot equal the other.
+   * equals one of them cannot equal the other. Two literals of different kinds ({@code 1} and {@code '1'}) prove nothing:
+   * a declared type may convert what is stored, so they are never taken as disjoint.
    */
   private static boolean nodePropertiesAreDisjoint(final NodePattern node1, final NodePattern node2) {
     if (node1.getProperties().isEmpty() || node2.getProperties().isEmpty())
@@ -5986,6 +5987,7 @@ public class CypherExecutionPlan {
       final List<NodePattern> nodes = new ArrayList<>(pattern.getNodes().size());
       for (final NodePattern node : pattern.getNodes()) {
         final Map<String, Object> written = node.getVariable() != null ? equalities.get(node.getVariable()) : null;
+        // the copy below carries no parameter map nor dynamic label, so a node holding one stays as written
         if (written == null || node.getPropertiesParameterName() != null || node.hasDynamicLabels()) {
           nodes.add(node);
           continue;
