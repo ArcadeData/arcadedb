@@ -34,7 +34,7 @@
         <logback-classic.version>1.6.5</logback-classic.version>
         <allowIncompleteProjects>true</allowIncompleteProjects>
         <assertj-db.version>3.0.2</assertj-db.version>
-        <jedis.version>8.0.1</jedis.version>
+        <jedis.version>8.0.2</jedis.version>
         <mongo-java-driver.version>3.12.14</mongo-java-driver.version>
     </properties>
 
