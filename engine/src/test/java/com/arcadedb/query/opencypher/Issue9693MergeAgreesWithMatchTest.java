@@ -136,6 +136,17 @@ class Issue9693MergeAgreesWithMatchTest extends TestHelper {
   }
 
   @Test
+  void mergeRelationshipProcedureMatchesAStoredIntegerEdgeProperty() {
+    database.command("sql", "CREATE VERTEX TYPE IA");
+    database.command("sql", "CREATE EDGE TYPE IR");
+    database.command("sql", "CREATE PROPERTY IR.n INTEGER");
+    database.transaction(() -> database.command("opencypher", "CREATE (:IA {id: 1})-[:IR {n: 7}]->(:IA {id: 2})").close());
+    database.transaction(() -> database.command("opencypher",
+        "MATCH (a:IA {id: 1}), (b:IA {id: 2}) CALL merge.relationship(a, 'IR', {n: 7}, {}, b) YIELD rel RETURN rel").close());
+    assertThat(count("MATCH ()-[r:IR]->() RETURN count(r) AS c")).isEqualTo(1L);
+  }
+
+  @Test
   void mergeNodeProcedureMatchesAStoredFloatProperty() {
     loadFloat("FlP", null);
     database.transaction(() -> database.command("opencypher", "CALL merge.node(['FlP'], {v: 0.1}) YIELD node RETURN node").close());
