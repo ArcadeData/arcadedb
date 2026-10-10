@@ -18,6 +18,8 @@
  */
 package com.arcadedb.server.support;
 
+import com.arcadedb.GlobalConfiguration;
+
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -38,6 +40,9 @@ import java.util.regex.Pattern;
  * <li>the value of {@code Authorization}, {@code Proxy-Authorization} and {@code Cookie} headers (the rest of the line);
  * {@code Bearer <token>} anywhere; the arguments after {@code --password} style options; {@code IDENTIFIED BY x};</li>
  * <li>the password of URLs with credentials ({@code scheme://user:pass@host});</li>
+ * <li>the passwords inside a {@code defaultDatabases} value ({@code db[user:password[:group]]}), the one setting whose
+ * value EMBEDS credentials: the name is not secret, so no keyword sees it; the database, user and group names are kept
+ * and only the password field is replaced, by {@link GlobalConfiguration#publishableValue(Object)} itself;</li>
  * <li>PEM blocks ({@code -----BEGIN ...-----} to {@code -----END ...-----}), also across lines;</li>
  * <li>well known token shapes: ArcadeDB API tokens ({@code at-<hex>}), portal keys ({@code wsk_...}), JWTs, AWS access key
  * ids, GitHub tokens.</li>
@@ -58,7 +63,7 @@ public final class SupportRedactor {
 
   // Cheap pre-filter: a line that matches none of these cannot be changed by any rule below.
   private static final Pattern PRE_FILTER = Pattern.compile(
-      "(?i)" + KEYWORDS + "|authorization|bearer|identified\\s+by|-----|://[^/\\s]*@|wsk_|eyJ|AKIA|gh[pousr]_|\\bat-[0-9a-f]{20}");
+      "(?i)" + KEYWORDS + "|defaultdatabases|authorization|bearer|identified\\s+by|-----|://[^/\\s]*@|wsk_|eyJ|AKIA|gh[pousr]_|\\bat-[0-9a-f]{20}");
 
   // Possessive: a long quoted value must neither backtrack nor recurse once per character (a 64K-character string overflows the
   // stack with a plain (?:a|b)* and is polynomial without the possessive quantifiers)
@@ -71,6 +76,10 @@ public final class SupportRedactor {
   private static final Pattern BENIGN_SUFFIX = Pattern.compile(
       "(?i)(?:length|len|size|count|max|min|timeout|ttl|expiry|expiration|expires|enabled|disabled|path|file|dir|directory|policy|"
           + "type|algorithm|mode|interval|retries|attempts|url|uri|ms|secs|seconds|minutes|header|name|field|class|provider)$");
+
+  // (name)(separator)(value) of arcadedb.server.defaultDatabases in any spelling: -D, key=value, ARCADEDB_SERVER_DEFAULTDATABASES, JSON
+  private static final Pattern DEFAULT_DATABASES = Pattern.compile(
+      "(?i)(defaultdatabases)((?:\\\\?[\"'])?\\s*[=:]\\s*)(" + QUOTED_VALUE + "|\\S+)");
 
   private static final Pattern HEADER_VALUE = Pattern.compile(
       "(?i)\\b(authorization|proxy-authorization|set-cookie|cookie|x-api-key|x-auth-token)(\\\\?[\"']?\\s*[:=]\\s*)(.*)");
@@ -178,7 +187,11 @@ public final class SupportRedactor {
       return out.toString();
     }
 
-    /** Redacts the JVM input arguments: {@code -Dx.password=abc} and {@code --password abc} (the next argument). */
+    /**
+     * Redacts the JVM input arguments: {@code -Dx.password=abc} and {@code --password abc} (the next argument). A
+     * {@code -D<setting>=<value>} argument that names an ArcadeDB setting is first published under that setting's own
+     * rule ({@link #publishableArgument(String)}), the rule the configuration section of the same report applies.
+     */
     public List<String> redactArguments(final List<String> arguments) {
       final List<String> result = new ArrayList<>(arguments.size());
       boolean maskNext = false;
@@ -191,11 +204,37 @@ public final class SupportRedactor {
             continue;
           }
         }
-        result.add(redact(arg));
+        result.add(redact(publishableArgument(arg)));
         if (arg.indexOf('=') < 0 && PASSWORD_OPTION_ONLY.matcher(arg).matches() && !BENIGN_SUFFIX.matcher(arg).find())
           maskNext = true;
       }
       return result;
+    }
+
+    /**
+     * A JVM argument of the form {@code -D<setting>=<value>} republished under the setting's own rule
+     * ({@link GlobalConfiguration#publishableValue(Object)}), so a value that EMBEDS credentials -
+     * {@code arcadedb.server.defaultDatabases}' {@code db[user:password]} triples - is redacted here exactly as it is in
+     * the configuration section of diagnostics.json (issue #9625). The name-based rules cannot see those: the secret is
+     * in the value, not in the name. A hidden setting is masked whatever its name, so a future one is covered without
+     * a new keyword. Any other argument is returned as it is, for the usual rules.
+     */
+    String publishableArgument(final String arg) {
+      if (!arg.startsWith("-D"))
+        return arg;
+      final int eq = arg.indexOf('=');
+      if (eq < 3)
+        return arg;
+      final GlobalConfiguration cfg = GlobalConfiguration.findByKey(arg.substring(2, eq));
+      if (cfg == null)
+        return arg;
+
+      final String value = arg.substring(eq + 1);
+      final String publishable = cfg.isHidden() ? MASK : String.valueOf(cfg.publishableValue(value));
+      if (publishable.equals(value) || isAlreadyMasked(value))
+        return arg;
+      count++;
+      return arg.substring(0, eq + 1) + publishable;
     }
 
     private String redactPlain(final String line) {
@@ -204,8 +243,28 @@ public final class SupportRedactor {
 
       String current = line;
 
+      // The passwords inside a defaultDatabases value, before the keyword rules: a user named "token" must not let
+      // KEY_VALUE swallow the rest of the value
+      Matcher m = DEFAULT_DATABASES.matcher(current);
+      if (m.find()) {
+        final StringBuilder out = new StringBuilder(current.length());
+        m.reset();
+        while (m.find()) {
+          final String value = m.group(3);
+          final String publishable = publishableDefaultDatabases(value);
+          if (publishable.equals(value)) {
+            m.appendReplacement(out, Matcher.quoteReplacement(m.group()));
+            continue;
+          }
+          m.appendReplacement(out, Matcher.quoteReplacement(m.group(1) + m.group(2) + publishable));
+          count++;
+        }
+        m.appendTail(out);
+        current = out.toString();
+      }
+
       // Header values: the whole rest of the line
-      Matcher m = HEADER_VALUE.matcher(current);
+      m = HEADER_VALUE.matcher(current);
       if (m.find()) {
         final StringBuilder out = new StringBuilder(current.length());
         m.reset();
@@ -334,6 +393,20 @@ public final class SupportRedactor {
   /** Redacts one text with a throw-away session: for callers that do not need the count. */
   public static String redact(final String text) {
     return new Session().redact(text);
+  }
+
+  /** A defaultDatabases value, possibly quoted, with its passwords replaced; the quotes are kept. */
+  private static String publishableDefaultDatabases(final String value) {
+    final String open;
+    if (value.startsWith("\\\"") || value.startsWith("\\'"))
+      open = value.substring(0, 2);
+    else if (value.startsWith("\"") || value.startsWith("'"))
+      open = value.substring(0, 1);
+    else
+      open = "";
+    final boolean closed = !open.isEmpty() && value.length() >= 2 * open.length() && value.endsWith(open);
+    final String inner = value.substring(open.length(), closed ? value.length() - open.length() : value.length());
+    return open + GlobalConfiguration.SERVER_DEFAULT_DATABASES.publishableValue(inner) + (closed ? open : "");
   }
 
   private static boolean queryStringBefore(final String text, final int start) {
