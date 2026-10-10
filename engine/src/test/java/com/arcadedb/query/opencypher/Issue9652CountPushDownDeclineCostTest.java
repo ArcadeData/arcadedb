@@ -79,7 +79,7 @@ class Issue9652CountPushDownDeclineCostTest extends TestHelper {
   @Test
   void aStatementWithNoWithIsReadAsItselfAndNotFoldedAgain() {
     final String query = "MATCH (v:V) WHERE v.a = 77 RETURN count(*) AS c";
-    final long expected = sql("SELECT count(*) AS c FROM V WHERE a = 77");
+    final long expected = sql("SELECT count(@rid) AS c FROM V WHERE a = 77");
     assertThat(cypher(query)).isEqualTo(expected);
 
     final SimpleCypherStatement statement = cachedStatement(query);
@@ -112,15 +112,20 @@ class Issue9652CountPushDownDeclineCostTest extends TestHelper {
   @Test
   void aRefusedFoldIsRememberedAsTheStatementItself() {
     final String query = "MATCH (v:V) WITH v WHERE v.a > 10 RETURN count(*) AS c";
-    assertThat(cypher(query)).isEqualTo(sql("SELECT count(*) AS c FROM V WHERE a > 10"));
+    final long expected = sql("SELECT count(@rid) AS c FROM V WHERE a > 10");
+    assertThat(cypher(query)).isEqualTo(expected);
     final SimpleCypherStatement statement = cachedStatement(query);
+    assertThat(statement.getCountPushDownForm()).isSameAs(statement);
+
+    // the remembered refusal sends the next execution straight to the pipeline, with the same answer
+    assertThat(cypher(query)).isEqualTo(expected);
     assertThat(statement.getCountPushDownForm()).isSameAs(statement);
   }
 
   @Test
   void theIndexAnsweredQueriesOfTheIssueAnswerAsBefore() {
     assertThat(cypher("MATCH (v:V) WHERE v.a = 77 RETURN count(*) AS c")).isEqualTo(
-        cypher("MATCH (v:V) WHERE v.a = 77 RETURN sum(1) AS c")).isEqualTo(sql("SELECT count(*) AS c FROM V WHERE a = 77"));
+        cypher("MATCH (v:V) WHERE v.a = 77 RETURN sum(1) AS c")).isEqualTo(sql("SELECT count(@rid) AS c FROM V WHERE a = 77"));
     assertThat(cypher("MATCH (v:V) RETURN max(v.a) AS c")).isEqualTo(sql("SELECT max(a) AS c FROM V"));
     assertThat(cypher("MATCH (v:V) WHERE v.a > 250 RETURN min(v.a) AS c")).isEqualTo(
         sql("SELECT min(a) AS c FROM V WHERE a > 250"));
