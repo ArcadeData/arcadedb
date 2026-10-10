@@ -133,8 +133,8 @@ public class ComparisonExpression implements BooleanExpression {
     // the other operand would be stored as, so a pattern finds what it stored (issue #9695). On top of the plain comparison,
     // not instead of it, so an equality it already grants (a RID spelled as text against its id()) stands. Only a stored
     // text that did not equal a non-text operand pays for the schema lookup
-    if ((operator == Operator.EQUALS && !Boolean.TRUE.equals(plain) || operator == Operator.NOT_EQUALS && !Boolean.FALSE.equals(plain))
-        && leftValue != null && rightValue != null) {
+    if (((operator == Operator.EQUALS && !Boolean.TRUE.equals(plain)) || (operator == Operator.NOT_EQUALS && !Boolean.FALSE.equals(
+        plain))) && leftValue != null && rightValue != null) {
       if (leftValue instanceof String && !(rightValue instanceof String)) {
         final Object text = toDeclaredText(left, rightValue, result);
         if (text != rightValue)

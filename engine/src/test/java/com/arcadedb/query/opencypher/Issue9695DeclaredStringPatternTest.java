@@ -231,6 +231,10 @@ class Issue9695DeclaredStringPatternTest extends TestHelper {
     assertThat(count("MATCH (p:I) WHERE p.d IN range(6, 9) RETURN count(p) AS c")).isEqualTo(0L);
     assertThat(count("MATCH (p:I) WHERE p.d IN ['x', 7] RETURN count(p) AS c")).isEqualTo(1L);
     assertThat(count("MATCH (p:I) WHERE NOT p.d IN [5] RETURN count(p) AS c")).isEqualTo(2L);
+    // Only the canonical spelling of a long is a member of a range: '-0' and '05' were never written by an integer
+    database.transaction(() -> database.command("opencypher", "CREATE (:I {d: '-0'}), (:I {d: '05'}), (:I {d: 0})").close());
+    assertThat(count("MATCH (p:I) WHERE p.d IN range(-1, 1) RETURN count(p) AS c")).isEqualTo(1L);
+    assertThat(count("MATCH (p:I) WHERE p.d IN range(0, 9) RETURN count(p) AS c")).isEqualTo(2L);
     // schemaless: '5' IN [5] stays false
     assertThat(count("MATCH (p:IU) WHERE p.d IN [5] RETURN count(p) AS c")).isEqualTo(0L);
     assertThat(count("MATCH (p:IU) WHERE p.d IN range(0, 9) RETURN count(p) AS c")).isEqualTo(0L);
