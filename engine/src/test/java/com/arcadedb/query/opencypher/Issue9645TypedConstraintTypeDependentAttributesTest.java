@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DocumentValidator;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.ValidationException;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -182,6 +183,50 @@ class Issue9645TypedConstraintTypeDependentAttributesTest extends TestHelper {
     // the carried MIN is still enforced on the new type
     assertThatThrownBy(() -> database.transaction(() -> database.command("sql", "INSERT INTO W SET d = '2019-12-31 00:00:00'").close()))
         .isInstanceOf(ValidationException.class);
+  }
+
+  @Test
+  void aNumericDefaultThatWouldLoseItsValueIsRefused() {
+    database.command("sql", "CREATE VERTEX TYPE G");
+    database.command("sql", "CREATE PROPERTY G.n DOUBLE (default 3.7)");
+
+    assertThatThrownBy(() -> database.command("opencypher", "CREATE CONSTRAINT FOR (n:G) REQUIRE n.n IS :: INTEGER"))
+        .isInstanceOf(CommandExecutionException.class)
+        .hasMessageContaining("DEFAULT `3.7`");
+    final Property p = database.getSchema().getType("G").getProperty("n");
+    assertThat(p.getType()).isEqualTo(Type.DOUBLE);
+    assertThat(p.getDefaultValue()).isEqualTo(3.7d);
+  }
+
+  @Test
+  void aNumericDefaultThatKeepsItsValueIsCarriedOver() {
+    database.command("sql", "CREATE VERTEX TYPE H");
+    database.command("sql", "CREATE PROPERTY H.n DOUBLE (default 3.0)");
+
+    database.command("opencypher", "CREATE CONSTRAINT FOR (n:H) REQUIRE n.n IS :: INTEGER").close();
+
+    final Property p = database.getSchema().getType("H").getProperty("n");
+    assertThat(p.getType()).isEqualTo(Type.LONG);
+    assertThat(p.getDefaultValue()).isEqualTo(3L);
+  }
+
+  @Test
+  void aBoundThatOverflowsTheNarrowerTypeIsRefused() {
+    database.command("sql", "CREATE VERTEX TYPE O");
+    database.command("sql", "CREATE PROPERTY O.n LONG (max 5000000000)");
+
+    assertThatThrownBy(() -> database.command("opencypher", "CREATE CONSTRAINT FOR (n:O) REQUIRE n.n IS :: INT32"))
+        .isInstanceOf(CommandExecutionException.class)
+        .hasMessageContaining("MAX '5000000000'");
+    assertThat(database.getSchema().getType("O").getProperty("n").getType()).isEqualTo(Type.LONG);
+  }
+
+  @Test
+  void everyTypeThatTakesABoundHasAMeasure() {
+    // boundMeasure and unreadableBound group the types in two switches: a type added to one must be added to the other
+    for (final Type type : Type.values())
+      if (DocumentValidator.isBoundApplicable(type))
+        assertThat(DocumentValidator.boundMeasure(type)).as(type.name()).isNotNull();
   }
 
   @Test

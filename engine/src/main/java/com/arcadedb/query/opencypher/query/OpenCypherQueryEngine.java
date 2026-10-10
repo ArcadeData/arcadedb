@@ -70,6 +70,7 @@ import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.TypeIndex;
 
+import java.math.BigDecimal;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -712,6 +713,8 @@ public class OpenCypherQueryEngine implements QueryEngine {
     final String newMeasure = DocumentValidator.boundMeasure(newType);
     if (newMeasure == null)
       return newType + " has no order and no size";
+    if (oldMeasure == null)
+      return oldType + " has no order and no size, so the bound has no meaning to carry";
     if (!newMeasure.equals(oldMeasure))
       return "a " + oldMeasure + " on " + oldType + ", a " + newMeasure + " on " + newType;
     return DocumentValidator.unreadableBound(database, newType, bound);
@@ -734,8 +737,12 @@ public class OpenCypherQueryEngine implements QueryEngine {
    * stored, and every record created without the property would then fail on it (#9645). A default that produced a value
    * before and produces none now lost it in the conversion, which is the same failure without the exception.
    * <p>
-   * The new default is evaluated once, and the old one only when the new one produced nothing, so a default with a side effect
-   * (a sequence's next value) is not consumed twice by a DDL statement.
+   * A numeric default carried onto another numeric type has to keep its value: {@code Type.convert} narrows silently, so a
+   * DOUBLE {@code 3.7} would become a LONG {@code 3}, and the bounds are refused for the same reason.
+   * <p>
+   * The new default is evaluated once. The old one is evaluated too only when the new one produced nothing, or when both types
+   * are numeric and the new value has to be compared with it, so a default with a side effect (a sequence's next value) is
+   * consumed at most twice by this DDL statement, and usually once.
    */
   private static void requireDefaultReadableAs(final Database database, final String typeName, final Property existing,
       final Property created, final Type newType) {
@@ -753,9 +760,20 @@ public class OpenCypherQueryEngine implements QueryEngine {
     } catch (final RuntimeException e) {
       throw refuseRetype(typeName, existing, newType, List.of(notCarried), e);
     }
-    if (value == null && evaluateDefaultOrNull(existing) != null)
-      throw refuseRetype(typeName, existing, newType, List.of(notCarried), null);
+    if (value == null) {
+      if (evaluateDefaultOrNull(existing) != null)
+        throw refuseRetype(typeName, existing, newType, List.of(notCarried), null);
+      return;
+    }
+
+    if (value instanceof Number converted && NUMERIC_MEASURE.equals(DocumentValidator.boundMeasure(existing.getType()))
+        && evaluateDefaultOrNull(existing) instanceof Number original
+        && new BigDecimal(original.toString()).compareTo(new BigDecimal(converted.toString())) != 0)
+      throw refuseRetype(typeName, existing, newType,
+          List.of("DEFAULT `" + definition + "` (" + original + " becomes " + converted + " as a " + newType + ")"), null);
   }
+
+  private static final String NUMERIC_MEASURE = DocumentValidator.boundMeasure(Type.LONG);
 
   private static CommandExecutionException refuseRetype(final String typeName, final Property existing, final Type newType,
       final List<String> notCarried, final Throwable cause) {
