@@ -51,6 +51,8 @@ import java.util.regex.Pattern;
 public final class RunningQuery implements AutoCloseable {
   /** Longest statement text kept for the listing: the text is for recognizing the statement, not for re-running it. */
   public static final int MAX_TEXT_LENGTH = 1024;
+  /** How far past {@link #MAX_TEXT_LENGTH} the masking looks, so a credential cut by the limit is still recognized. */
+  private static final int MASKING_MARGIN = 256;
 
   /** What the statement's end, once reached, owes to a termination. */
   public enum Outcome {
@@ -65,12 +67,14 @@ public final class RunningQuery implements AutoCloseable {
   }
 
   private static final ThreadLocal<RunningQuery> CURRENT    = new ThreadLocal<>();
-  // The keyword, the closing quote of a JSON key and a separator, then the value: quoted, or up to the next delimiter
+  // The keyword, the closing quote of a JSON key and a separator, then the value: quoted, or up to the next delimiter. The
+  // separator's quantifiers are possessive, so a long run of blanks after a keyword is scanned once, never backtracked
   private static final Pattern                   CREDENTIAL =
-      Pattern.compile("(?i)\\b(identified\\s+by|password|token)([\"']?\\s*[=:]?\\s*)('[^']*'|\"[^\"]*\"|[^\\s,;)}\\]]+)");
+      Pattern.compile("(?i)\\b(identified\\s+by|password|token)([\"']?+\\s*+(?:[=:]\\s*+)?)('[^']*'|\"[^\"]*\"|[^\\s,;)}\\]]+)");
 
   private final RunningQueryRegistry registry;
   private final long                 id;
+  private final String               externalId;
   private final String               database;
   private final String               user;
   private final String               protocol;
@@ -92,6 +96,7 @@ public final class RunningQuery implements AutoCloseable {
       final String protocol, final String sessionId, final String tag) {
     this.registry = registry;
     this.id = id;
+    this.externalId = "q" + id + "-" + registry.getInstanceTag();
     this.database = database;
     this.user = user;
     this.protocol = protocol;
@@ -136,7 +141,10 @@ public final class RunningQuery implements AutoCloseable {
    * proper place for one, are never listed at all.
    */
   static String maskAndTruncate(final String text) {
-    final String masked = CREDENTIAL.matcher(text).replaceAll("$1$2***");
+    // Only what can be shown is scanned, plus a margin for a credential that straddles the cut: the listing costs the same
+    // for a statement of a kilobyte and for one of a hundred megabytes
+    final String scanned = text.length() > MAX_TEXT_LENGTH + MASKING_MARGIN ? text.substring(0, MAX_TEXT_LENGTH + MASKING_MARGIN) : text;
+    final String masked = CREDENTIAL.matcher(scanned).replaceAll("$1$2***");
     return masked.length() > MAX_TEXT_LENGTH ? masked.substring(0, MAX_TEXT_LENGTH) + "..." : masked;
   }
 
@@ -216,8 +224,13 @@ public final class RunningQuery implements AutoCloseable {
     }
   }
 
+  /**
+   * The id clients list and terminate it by: {@code q<n>-<instance>}, where the instance tag tells this server's registry
+   * from any other's, so a terminate that a load balancer routes to another node finds nothing there instead of stopping
+   * that node's statement number {@code n}.
+   */
   public String getId() {
-    return "q" + id;
+    return externalId;
   }
 
   long getNumericId() {
