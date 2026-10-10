@@ -156,6 +156,11 @@ class Issue9652CountPushDownDeclineCostTest extends TestHelper {
     assertThat(profile(star)).contains("COUNT STAR JOIN");
     assertThat(cypher(star)).isEqualTo(cypher("MATCH (a:A), (a)-[:K]->(b:B) RETURN sum(1) AS c"));
 
+    // the relationship sits in a later, optional clause: the check reads every clause, so the star still answers it
+    final String optional = "MATCH (a:A) OPTIONAL MATCH (a)-[:K]->(b:B) RETURN count(*) AS c";
+    assertThat(profile(optional)).contains("COUNT STAR JOIN");
+    assertThat(cypher(optional)).isEqualTo(cypher("MATCH (a:A) OPTIONAL MATCH (a)-[:K]->(b:B) RETURN sum(1) AS c"));
+
     final String chain = "MATCH (a:A)-[:K]->(b:B) WHERE a.id > 2 RETURN count(*) AS c";
     assertThat(profile(chain)).contains("COUNT CHAIN PATHS");
     assertThat(cypher(chain)).isEqualTo(cypher("MATCH (a:A)-[:K]->(b:B) WHERE a.id > 2 RETURN sum(1) AS c"));
