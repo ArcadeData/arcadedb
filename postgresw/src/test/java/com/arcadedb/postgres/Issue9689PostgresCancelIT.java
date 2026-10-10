@@ -106,6 +106,34 @@ class Issue9689PostgresCancelIT extends PostgresWireProtocolTestBase {
     }
   }
 
+  /** The bug behind it all: every connection had pid 0, so a cancel reached whichever one had registered last. */
+  @Test
+  void aCancelReachesItsOwnConnectionAndNoOther() throws Exception {
+    try (final Connection first = connect("root", DEFAULT_PASSWORD_FOR_TESTS, "simple");
+        final Statement firstSt = first.createStatement();
+        final Connection second = connect("root", DEFAULT_PASSWORD_FOR_TESTS, "simple");
+        final Statement secondSt = second.createStatement()) {
+      final int firstPid = backendPid(first);
+      final int secondPid = backendPid(second);
+      assertThat(firstPid).isNotEqualTo(secondPid);
+
+      final CompletableFuture<Void> firstRunning = runAsync(firstSt);
+      final CompletableFuture<Void> secondRunning = runAsync(secondSt);
+      final RunningQuery firstEntry = awaitRunning(firstPid);
+      final RunningQuery secondEntry = awaitRunning(secondPid);
+
+      // The connection registered first is cancelled: the one registered after it, which used to take the cancel, runs on
+      firstSt.cancel();
+      assertCanceled(firstRunning, "the cancelled connection");
+      assertThat(secondEntry.isTerminated()).as("the other connection's statement must keep running").isFalse();
+      assertThat(secondRunning).isNotDone();
+
+      secondSt.cancel();
+      assertCanceled(secondRunning, "the second connection");
+      assertThat(firstEntry.getOutcome()).isEqualTo(RunningQuery.Outcome.TERMINATED);
+    }
+  }
+
   @Test
   void aQueryTimeoutCancelsTheStatementNotTheConnection() throws Exception {
     // pgjdbc enforces setQueryTimeout by sending a CancelRequest when it expires
