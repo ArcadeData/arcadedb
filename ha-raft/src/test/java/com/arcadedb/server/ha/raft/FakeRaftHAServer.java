@@ -89,6 +89,7 @@ public class FakeRaftHAServer extends RaftHAServer {
   private final Setting<Long>                             raftLogStartIndex    = new Setting<>();
   private final Setting<Long>                             quorumTimeout        = new Setting<>();
   private final Setting<Boolean>                          shutdownRequested    = new Setting<>();
+  private final Setting<Boolean>                          removedFromConfig    = new Setting<>();
   private final Setting<Boolean>                          txPreparedAtCapable  = new Setting<>();
   private final Setting<TrustedHttpClientCache>           httpsClients         = new Setting<>();
   private final Setting<Long>                             lastAppliedIndex     = new Setting<>();
@@ -275,6 +276,15 @@ public class FakeRaftHAServer extends RaftHAServer {
   /** How long a replication waits for its quorum; unset, the configured {@code arcadedb.ha.quorumTimeout}. */
   public FakeRaftHAServer quorumTimeout(final long quorumTimeoutMs) {
     this.quorumTimeout.set(quorumTimeoutMs);
+    return this;
+  }
+
+  /**
+   * A server whose own division no longer lists it in the Raft configuration (issue #9510): writers refuse before
+   * submitting. Unset, the real detached server's answer, which is false.
+   */
+  public FakeRaftHAServer removedFromConfiguration(final boolean removed) {
+    this.removedFromConfig.set(removed);
     return this;
   }
 
@@ -562,6 +572,11 @@ public class FakeRaftHAServer extends RaftHAServer {
   @Override
   public boolean isShutdownRequested() {
     return shutdownRequested.orElse(super::isShutdownRequested);
+  }
+
+  @Override
+  public boolean isRemovedFromConfiguration() {
+    return removedFromConfig.orElse(super::isRemovedFromConfiguration);
   }
 
   @Override

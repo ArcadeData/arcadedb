@@ -20,6 +20,7 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONObject;
@@ -305,6 +306,8 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
     if (raftHAServer == null)
       throw new TransactionException("Raft HA server not started");
 
+    refuseWhileRemovedFromConfiguration("user list");
+
     final boolean applied;
     try {
       applied = RaftHAServer.requireTransactionBroker(raftHAServer)
@@ -334,6 +337,8 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
   public boolean replicateSecurityGroups(final String groupsJson, final String expectedFingerprint) {
     if (raftHAServer == null)
       throw new TransactionException("Raft HA server not started");
+
+    refuseWhileRemovedFromConfiguration("group document");
 
     SecurityEntryCapabilityGate.requireEveryPeerCanDecode(server, raftHAServer, RaftLogEntryType.SECURITY_GROUPS_ENTRY,
         "group document");
@@ -367,6 +372,8 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
     if (raftHAServer == null)
       throw new TransactionException("Raft HA server not started");
 
+    refuseWhileRemovedFromConfiguration("API-token document");
+
     SecurityEntryCapabilityGate.requireEveryPeerCanDecode(server, raftHAServer,
         RaftLogEntryType.SECURITY_API_TOKENS_ENTRY, "API-token document");
 
@@ -380,6 +387,32 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
       throw new TransactionException("Error sending security-api-tokens entry via Raft", e);
     }
     return reportSecurityOutcome("API-tokens", applied);
+  }
+
+  /**
+   * Refuses a security entry, retryably, while this node is no longer a member of the Raft configuration (issue #9589,
+   * the security half of #9510).
+   * <p>
+   * A removed node's Raft client still reaches the leader, which accepts an entry from a non-member and commits it on
+   * every member, while this node's own division receives nothing more. A user created, a group changed or an API token
+   * revoked here was therefore in force on every node of the cluster except the one that answered the request, and the
+   * caller waited out the local apply before being told so. Refused before anything is submitted - and before the
+   * #7511 capability gate, whose probe round would be paid for nothing - the caller retries on a member of the cluster,
+   * or here once the node has been added back.
+   * <p>
+   * The seed form (no fingerprint) is refused too, deliberately rather than by accident. Since issues #7531 and #7834
+   * every seed runs on the LEADER's {@code MembershipSecuritySeeder}, never on the node being admitted, so this cannot
+   * refuse a join; a node outside the configuration submitting one would commit documents everywhere but here, exactly
+   * like an operator's change. {@code ServerSecurity.seedSecurityStateClusterWide} reports a refused document as failed
+   * and retries it within its budget.
+   */
+  private void refuseWhileRemovedFromConfiguration(final String document) {
+    final RaftHAServer raft = raftHAServer;
+    if (raft != null && raft.isRemovedFromConfiguration())
+      throw new NeedRetryException("Cannot replicate the security " + document + " from this server: it is not a member "
+          + "of the Raft cluster's configuration any more (it left or was removed), so it receives no entries and the "
+          + "change would apply on every other server but not here. Send the request to a server of the cluster, or add "
+          + "this server back to it");
   }
 
   /**
