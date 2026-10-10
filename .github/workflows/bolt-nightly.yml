@@ -53,7 +53,7 @@ jobs:
       # another one. The Actions cache is a fixed 10 GB per repository with LRU eviction, so a run-scoped
       # entry could be evicted before the consuming job restored it (#5672).
       - name: Upload docker image
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: arcadedb-docker-image
           path: /tmp/arcadedb-image.tar
@@ -67,7 +67,7 @@ jobs:
         run: tar -czf /tmp/arcadedb-m2.tgz -C ~/.m2/repository com/arcadedb
 
       - name: Upload ArcadeDB Maven artifacts
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: arcadedb-maven-artifacts
           path: /tmp/arcadedb-m2.tgz
@@ -100,7 +100,7 @@ jobs:
           java-version: 21
           cache: "maven"
       - name: Download ArcadeDB Maven artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: arcadedb-maven-artifacts
           path: /tmp
@@ -109,7 +109,7 @@ jobs:
           mkdir -p ~/.m2/repository
           tar -xzf /tmp/arcadedb-m2.tgz -C ~/.m2/repository
       - name: Download docker image
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: arcadedb-docker-image
           path: /tmp
@@ -138,7 +138,7 @@ jobs:
             -o "bolt-matrix-java-${{ matrix.version }}.json"
       - name: Upload cell result
         if: success() || failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: bolt-matrix-java-${{ matrix.version }}
           path: bolt-matrix-java-*.json
@@ -154,11 +154,11 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Set up Node
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "24"
       - name: Download docker image
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: arcadedb-docker-image
           path: /tmp
@@ -193,7 +193,7 @@ jobs:
             -o "bolt-matrix-javascript-${{ matrix.driver-version }}.json"
       - name: Upload cell result
         if: success() || failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: bolt-matrix-javascript-${{ matrix.driver-version }}
           path: bolt-matrix-javascript-*.json
@@ -215,7 +215,7 @@ jobs:
       - name: Setup UV package manager
         run: curl -LsSf https://astral.sh/uv/install.sh | sh
       - name: Download docker image
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: arcadedb-docker-image
           path: /tmp
@@ -241,7 +241,7 @@ jobs:
             -o "bolt-matrix-python-${{ matrix.driver-version }}.json"
       - name: Upload cell result
         if: success() || failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: bolt-matrix-python-${{ matrix.driver-version }}
           path: bolt-matrix-python-*.json
@@ -261,7 +261,7 @@ jobs:
         with:
           dotnet-version: "10.0"
       - name: Download docker image
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: arcadedb-docker-image
           path: /tmp
@@ -292,7 +292,7 @@ jobs:
             -o "bolt-matrix-csharp-${{ matrix.driver-version }}.json"
       - name: Upload cell result
         if: success() || failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: bolt-matrix-csharp-${{ matrix.driver-version }}
           path: bolt-matrix-csharp-*.json
@@ -314,7 +314,7 @@ jobs:
           go-version-file: "e2e-go/go.mod"
           cache-dependency-path: "e2e-go/go.sum"
       - name: Download docker image
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: arcadedb-docker-image
           path: /tmp
@@ -348,7 +348,7 @@ jobs:
             -o "bolt-matrix-go-${{ matrix.driver-version }}.json"
       - name: Upload cell result
         if: success() || failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: bolt-matrix-go-${{ matrix.driver-version }}
           path: bolt-matrix-go-*.json
@@ -367,7 +367,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Download all cell artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           path: cells
           pattern: bolt-matrix-*
@@ -386,7 +386,7 @@ jobs:
           has_failures=$(python3 -c "import json; print(str(json.load(open('bolt-compat-matrix.json'))['has_failures']).lower())")
           echo "has-failures=${has_failures}" >> "$GITHUB_OUTPUT"
       - name: Upload compatibility matrix
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: bolt-compat-matrix
           path: bolt-compat-matrix.json
@@ -403,7 +403,7 @@ jobs:
       issues: write
     steps:
       - name: Download compatibility matrix
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         continue-on-error: true
         with:
           name: bolt-compat-matrix
@@ -500,7 +500,7 @@ jobs:
       - name: Install conformance tooling deps
         run: pip install -r bolt/conformance/requirements.txt
       - name: Download compatibility matrix
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         continue-on-error: true
         with:
           name: bolt-compat-matrix
