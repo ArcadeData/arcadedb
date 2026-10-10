@@ -610,7 +610,7 @@ class DeltaOverlay {
         newOverflowCount, newDeltaEdgeCount, newDirtyTypes, newAllDirty, newBaseEdgeValues);
   }
 
-  /** The lightweight additions of one type, per packed pair, in the order they were added. */
+  /** The lightweight additions of one type, per packed pair. Which one a deletion withdraws does not matter: copies are alike. */
   private static Map<Long, ArrayDeque<RID>> indexLightAdditions(final Map<RID, AddedEdge> addedForType) {
     final Map<Long, ArrayDeque<RID>> index = new HashMap<>();
     for (final Map.Entry<RID, AddedEdge> entry : addedForType.entrySet())

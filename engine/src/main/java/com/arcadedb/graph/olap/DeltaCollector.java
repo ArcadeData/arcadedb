@@ -184,7 +184,7 @@ class DeltaCollector
       }
   }
 
-  /** The identity a change of {@code edge} is tracked by: the edge's own RID, or a key of the change's own for a lightweight edge. */
+  /** The identity a change of {@code edge} is tracked by: its own RID, or a key of the change's own for a lightweight edge. */
   private static RID changeKey(final Edge edge) {
     final RID rid = edge.getIdentity();
     return edge instanceof LightEdge ? TxDelta.lightEdgeKey(rid.getBucketId()) : rid;
