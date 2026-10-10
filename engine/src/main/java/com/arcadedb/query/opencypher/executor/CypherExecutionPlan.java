@@ -5965,6 +5965,8 @@ public class CypherExecutionPlan {
   private static List<PathPattern> withWhereEqualities(final List<PathPattern> patterns, final WhereClause where) {
     if (where == null || where.getConditionExpression() == null)
       return patterns;
+    // the first equality of a key is kept: a second one with another value matches nothing, and a proof it misses only
+    // leaves the shape to the row pipeline
     final Map<String, Map<String, Object>> equalities = new HashMap<>();
     for (final BooleanExpression conjunct : CountPushDownPredicates.conjuncts(where.getConditionExpression())) {
       if (!(conjunct instanceof ComparisonExpression comparison) || comparison.getOperator() != ComparisonExpression.Operator.EQUALS)
@@ -8259,20 +8261,10 @@ public class CypherExecutionPlan {
     // The property predicate of every position. A shared endpoint holds what both patterns wrote on it, which the pattern
     // graph has merged already for a split it made, and is merged here for the patterns as written
     final VertexPredicate startPredicate = predicates.predicateFor(startNode);
-    final VertexPredicate[] bwdPredicates = new VertexPredicate[bwdNodes.size()];
-    final VertexPredicate[] fwdPredicates = new VertexPredicate[fwdNodes.size()];
-    for (int i = 0; i < bwdPredicates.length; i++) {
-      final NodePattern node = i == bwdPredicates.length - 1 ? withProbeSide(bwdNodes.get(i), probeNode1, probeNode2) : bwdNodes.get(i);
-      if (node == null)
-        return null;
-      bwdPredicates[i] = predicates.predicateFor(node);
-    }
-    for (int i = 0; i < fwdPredicates.length; i++) {
-      final NodePattern node = i == fwdPredicates.length - 1 ? withProbeSide(fwdNodes.get(i), probeNode1, probeNode2) : fwdNodes.get(i);
-      if (node == null)
-        return null;
-      fwdPredicates[i] = predicates.predicateFor(node);
-    }
+    final VertexPredicate[] bwdPredicates = armPredicates(bwdNodes, probeNode1, probeNode2, predicates);
+    final VertexPredicate[] fwdPredicates = armPredicates(fwdNodes, probeNode1, probeNode2, predicates);
+    if (bwdPredicates == null || fwdPredicates == null)
+      return null;
 
     // Arm reaching probeVar1 and arm reaching probeVar2
     final String[] arm1ET, arm2ET, arm1Labels, arm2Labels;
@@ -8312,6 +8304,22 @@ public class CypherExecutionPlan {
 
     return new PairHashJoinOp(buildStartLabel, startPredicate, arm1ET, arm1Dir, arm1Labels, arm1Predicates,
         arm2ET, arm2Dir, arm2Labels, arm2Predicates, probeEdgeType, probeDirection);
+  }
+
+  /**
+   * The predicate of each node an arm reaches, its last one being the shared endpoint with what the probe pattern wrote on
+   * it; null when the two writings of that endpoint cannot be said as one node.
+   */
+  private static VertexPredicate[] armPredicates(final List<NodePattern> reached, final NodePattern probeNode1,
+      final NodePattern probeNode2, final CountPushDownPredicates predicates) {
+    final VertexPredicate[] result = new VertexPredicate[reached.size()];
+    for (int i = 0; i < result.length; i++) {
+      final NodePattern node = i == result.length - 1 ? withProbeSide(reached.get(i), probeNode1, probeNode2) : reached.get(i);
+      if (node == null)
+        return null;
+      result[i] = predicates.predicateFor(node);
+    }
+    return result;
   }
 
   /**

@@ -211,6 +211,25 @@ class Issue9608PropertyPredicatePairAndAntiJoinTest extends TestHelper {
     return rows;
   }
 
+  /** An inline value contradicting a WHERE literal, a property some vertices lack, and a test for its absence. */
+  @Test
+  void conflictingAndMissingValuesKeepTheCount() {
+    populate(11);
+    database.transaction(() -> database.command("sql", "UPDATE Message REMOVE lang WHERE kind = 'Post'"));
+    for (final String query : new String[] {
+        Q2_PROPERTIES.replace("(comment:Message {kind: 'Comment'})", "(comment:Message {kind: 'Post'})") + " WHERE comment.kind = 'Comment'",
+        Q2_PROPERTIES.replace("(post:Message {kind: 'Post'})", "(post:Message {kind: 'Post', lang: 'en'})"),
+        Q2_PROPERTIES + " WHERE post.lang IS NULL AND comment.lang = 'en'",
+        Q8_PROPERTIES.replace("(message:Message)", "(message:Message {lang: 'it'})") + Q8_NOT,
+        Q8_PROPERTIES + Q8_NOT + " AND message.lang IS NULL" }) {
+      final long expected = count(query + " RETURN sum(1) AS n");
+      assertThat(count(query + " RETURN count(*) AS n")).as(query).isEqualTo(expected);
+    }
+    // the predicates that remain per vertex still take the push-downs
+    assertThat(pushDown(Q2_PROPERTIES + " WHERE post.lang IS NULL RETURN count(*) AS n")).contains("COUNT PAIR JOIN");
+    assertThat(pushDown(Q8_PROPERTIES + Q8_NOT + " AND message.lang IS NULL RETURN count(*) AS n")).contains("COUNT ANTI-JOIN CHAIN");
+  }
+
   /** Predicates no per-vertex filter can express leave the shapes to the row pipeline, with the same count. */
   @Test
   void predicatesThatAreNotPerVertexStayExact() {
