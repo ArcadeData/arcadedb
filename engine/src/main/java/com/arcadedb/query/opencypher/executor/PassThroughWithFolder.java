@@ -67,6 +67,10 @@ final class PassThroughWithFolder {
 
   /**
    * The statement as a count push-down reads it.
+   * <p>
+   * A function of the statement's text alone: it reads no schema, data or parameter, which is what lets the result be
+   * kept on the cached statement for every later execution ({@code SimpleCypherStatement.getCountPushDownForm()}, issue
+   * #9652). A fold that came to depend on anything else would have to stop being kept there.
    *
    * @return the statement itself when it holds no {@code WITH}, the folded statement when every {@code WITH} is a
    * pass-through, null when one is not or when a name could not be kept apart
