@@ -46,7 +46,14 @@ import java.util.logging.Level;
  * <p>
  * <b>What it does not cover.</b> TLS connections, whose engine must not be read on the I/O thread while a worker writes
  * through it, HTTP/2 streams, a request still reading its body, and a client that already pipelined its next request:
- * for those it does not arm, and the request runs as before.
+ * for those it does not arm, and the request runs as before. A client that half-closes its side of the connection after
+ * sending the request and still waits for the response cannot be told from one that left, and is taken for one that
+ * left; {@code arcadedb.server.httpTerminateOnClientDisconnect=false} turns the watch off for such clients.
+ * <p>
+ * <b>Why the swap is safe.</b> Undertow suspends reads on the connection once it has parsed the request and resumes them
+ * only when the exchange completes, which is after {@link #disarm()}: the watch is disarmed, under the same monitor its
+ * reads take, before the response is written. No read of the watch can therefore overlap Undertow's own, and bytes the
+ * watch did read are back in the connection before Undertow looks for the next request.
  * <p>
  * Costs one listener swap per request and nothing while the client is quiet: the selector wakes the watch only when the
  * client sends or closes.

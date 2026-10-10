@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.http.handler;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.exception.QueryTerminatedException;
 import com.arcadedb.query.RunningQuery;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -72,6 +73,26 @@ class Issue9689HttpRunningQueryTest extends BaseGraphServerTest {
     watch.assertGaveUpWithin(10_000, "a statement stopped when its client leaves, against one that runs for 16 s");
     assertThat(entry.getOutcome()).isEqualTo(RunningQuery.Outcome.TERMINATED);
     assertThat(entry.getTerminatedBy()).isEqualTo("client disconnected");
+  }
+
+  @Test
+  void theWatchCanBeTurnedOffForClientsThatHalfClose() throws Exception {
+    getServer(0).getConfiguration().setValue(GlobalConfiguration.SERVER_HTTP_TERMINATE_ON_CLIENT_DISCONNECT, false);
+    try {
+      final RunningQuery entry;
+      try (final Socket socket = connect()) {
+        send(socket, command(LONG_CYPHER));
+        entry = awaitRunning();
+        // A client that half-closes after its request, still reading: with the watch off the statement goes on
+        socket.shutdownOutput();
+        Thread.sleep(1_000);
+        assertThat(entry.isTerminated()).as("the watch is off: nothing terminates the statement").isFalse();
+        entry.terminate("root");
+        assertThat(readResponse(socket.getInputStream())).startsWith("HTTP/1.1 409");
+      }
+    } finally {
+      getServer(0).getConfiguration().setValue(GlobalConfiguration.SERVER_HTTP_TERMINATE_ON_CLIENT_DISCONNECT, true);
+    }
   }
 
   @Test

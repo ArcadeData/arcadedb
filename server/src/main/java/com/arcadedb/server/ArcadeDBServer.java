@@ -1901,7 +1901,6 @@ public class ArcadeDBServer {
     return httpServer;
   }
 
-  /** The statements this server is running (issue #9680). */
   private static RunningQueryRegistry newRunningQueryRegistry() {
     final RunningQueryRegistry registry = new RunningQueryRegistry();
     // The one rule every surface listing or terminating statements applies - HTTP, Cypher SHOW/TERMINATE TRANSACTIONS,
@@ -1910,6 +1909,7 @@ public class ArcadeDBServer {
     return registry;
   }
 
+  /** The statements this server is running (issue #9680). */
   public RunningQueryRegistry getRunningQueries() {
     return runningQueries;
   }

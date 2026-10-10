@@ -4924,6 +4924,12 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    */
   private void relayTermination(final HttpClient client, final String leaderServerUrl, final String clusterToken,
       final RunningQuery runningQuery) {
+    if (runningQuery.getUser() == null) {
+      // Nobody to terminate it as: fail closed rather than relay as root. Every statement a client sends has a user
+      LogManager.instance().log(this, Level.WARNING,
+          "Cannot relay the termination of query %s to the leader: the statement has no user", runningQuery.getId());
+      return;
+    }
     try {
       final String body = new JSONObject().put("command", "terminate query " + runningQuery.getId()).put("wait", 0).toString();
       final HttpRequest request = HttpRequest.newBuilder().uri(URI.create(leaderServerUrl)).timeout(Duration.ofSeconds(10))
@@ -4931,7 +4937,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
           .header("X-ArcadeDB-Cluster-Token", clusterToken)//
           // The statement's own user: who may stop it there as here. The authority of whoever terminated it was
           // checked on this node, against the same entry
-          .header("X-ArcadeDB-Forwarded-User", runningQuery.getUser() != null ? runningQuery.getUser() : "root")//
+          .header("X-ArcadeDB-Forwarded-User", runningQuery.getUser())//
           .POST(HttpRequest.BodyPublishers.ofString(body)).build();
       client.sendAsync(request, HttpResponse.BodyHandlers.discarding()).whenComplete((response, error) -> {
         if (error != null || response.statusCode() != 200)

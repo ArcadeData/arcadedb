@@ -22,13 +22,15 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
+import com.arcadedb.query.RunningQuery;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 /**
  * PostgreSQL's backend signalling functions (issue #9689), so a client stops another connection's statement the way it
  * would on PostgreSQL:
  * <ul>
- * <li>{@code pg_backend_pid()}: the process id of the calling connection, the one its BackendKeyData carried;</li>
+ * <li>{@code pg_backend_pid()}: the process id of the calling connection, the one its BackendKeyData carried, also from
+ * work of its statement that runs on another thread;</li>
  * <li>{@code pg_cancel_backend(pid)}: stops the statement that connection is running, which fails with
  * {@code 57014 query_canceled} - what the connection's own {@code CancelRequest} does;</li>
  * <li>{@code pg_terminate_backend(pid)}: stops its statement and closes the connection, rolling back its transaction.</li>
@@ -73,7 +75,18 @@ public final class PostgresBackendFunctions {
     @Override
     public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
         final CommandContext context) {
-      return Thread.currentThread() instanceof PostgresNetworkExecutor executor ? executor.getProcessId() : null;
+      if (Thread.currentThread() instanceof PostgresNetworkExecutor executor)
+        return executor.getProcessId();
+      // Work of a Postgres statement that runs on another thread (a parallel step, a script on the polyglot pool) carries
+      // the statement's entry, and the entry the connection's process id
+      final RunningQuery statement = context != null ? context.getRunningQuery() : RunningQuery.current();
+      if (statement != null && "postgres".equals(statement.getProtocol()) && statement.getConnectionId() != null)
+        try {
+          return Integer.parseInt(statement.getConnectionId());
+        } catch (final NumberFormatException e) {
+          return null;
+        }
+      return null;
     }
 
     @Override

@@ -263,7 +263,8 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
       if (registersRunningQuery())
         runningQuery = registerRunningQuery(exchange, user, database != null ? database.getName() : null,
             activeSession != null ? activeSession.id : null, activeSession != null ? activeSession.getTag() : null);
-      if (runningQuery != null)
+      if (runningQuery != null && httpServer.getServer().getConfiguration()
+          .getValueAsBoolean(GlobalConfiguration.SERVER_HTTP_TERMINATE_ON_CLIENT_DISCONNECT))
         // A client that goes away while the statement runs terminates it: nobody is left to read the answer (issue #9689)
         disconnectWatch = HttpClientDisconnectWatch.arm(exchange, runningQuery);
       if (activeSession != null) {
