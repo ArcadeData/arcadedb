@@ -104,8 +104,10 @@ public class CypherStatementCache {
    * @throws CommandParsingException if the query is invalid
    */
   public Lookup<ParsedQuery> getParameterized(final String query) {
-    return cache.lookup(normalize(query),
-        database == null || database.getConfiguration().getValueAsBoolean(GlobalConfiguration.QUERY_LITERAL_PARAMETERIZATION));
+    // a cache with no database (a syntax-only use) follows the JVM-wide default, like the SQL one
+    return cache.lookup(normalize(query), database == null ?
+        GlobalConfiguration.QUERY_LITERAL_PARAMETERIZATION.getValueAsBoolean() :
+        database.getConfiguration().getValueAsBoolean(GlobalConfiguration.QUERY_LITERAL_PARAMETERIZATION));
   }
 
   // Strip trailing semicolons - Neo4j clients (e.g., Neo4j Desktop) commonly append them
