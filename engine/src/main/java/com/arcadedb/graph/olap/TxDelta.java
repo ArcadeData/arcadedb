@@ -31,6 +31,9 @@ import java.util.concurrent.atomic.AtomicLong;
  * Not thread-safe — accessed only by the owning transaction thread.
  */
 class TxDelta {
+  // Numbers every lightweight edge change, see lightEdgeKey()
+  private static final AtomicLong LIGHT_EDGE_CHANGES = new AtomicLong();
+
   final List<VertexDelta>          addedVertices    = new ArrayList<>();
   final Set<RID>                   deletedVertices  = new HashSet<>();
   final List<EdgeDelta>            addedEdges       = new ArrayList<>();
@@ -165,6 +168,4 @@ class TxDelta {
   static long lightEdgeChangesSoFar() {
     return LIGHT_EDGE_CHANGES.get();
   }
-
-  private static final AtomicLong LIGHT_EDGE_CHANGES = new AtomicLong();
 }
