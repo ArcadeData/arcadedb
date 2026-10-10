@@ -1443,6 +1443,31 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     return total;
   }
 
+  /**
+   * Read off the base slices, one per concrete edge type, so it costs O(types) rather than a pass over the nodes. While an
+   * overlay serves committed changes the slices are not the whole graph, and the answer is -1: the caller then sums
+   * {@link #countEdges} per node, which the overlay does answer for.
+   */
+  @Override
+  public long countAllEdges(final String... requestedEdgeTypes) {
+    final Snapshot snap = checkBuilt();
+    if (hasActiveOverlay(snap))
+      return -1;
+
+    final String[] edgeTypes = resolveEdgeTypes(requestedEdgeTypes);
+    // A type named twice, or a type and one of its sub-types, is still one set of edges
+    final Collection<String> types = edgeTypes != null && edgeTypes.length > 0 ?
+        new LinkedHashSet<>(Arrays.asList(edgeTypes)) :
+        snap.csrPerType.keySet();
+    long total = 0;
+    for (final String type : types) {
+      final CSRAdjacencyIndex csr = snap.csrPerType.get(type);
+      if (csr != null)
+        total += csr.getEdgeCount();
+    }
+    return total;
+  }
+
   private long countEdgesOfType(final Snapshot snap, final int nodeId, final Vertex.DIRECTION direction,
       final String edgeType) {
     final CSRAdjacencyIndex csr = snap.csrPerType.get(edgeType);

@@ -193,7 +193,9 @@ class Issue9283SelfLoopCountPushDownTest extends TestHelper {
       expected[i] = bruteForceChain((String[]) chains[i][1], (String[]) chains[i][2], (Vertex.DIRECTION[]) chains[i][3],
           (Integer) chains[i][4], (Integer) chains[i][5]);
       assertThat(expected[i]).as("the graph exercises %s", chains[i][0]).isPositive();
-      assertThat(plan(chains[i][0] + " RETURN count(*) AS n")).as("plan of %s", chains[i][0]).contains("COUNT CHAIN PATHS");
+      // one hop between two unconstrained nodes is the edge count of its type (issue #9600)
+      assertThat(plan(chains[i][0] + " RETURN count(*) AS n")).as("plan of %s", chains[i][0])
+          .contains(((String[]) chains[i][1]).length == 2 && ((String[]) chains[i][1])[0] == null ? "COUNT EDGES" : "COUNT CHAIN PATHS");
       assertThat(countMatch((String) chains[i][0])).as("no view: %s", chains[i][0]).isEqualTo(expected[i]);
     }
     withView(() -> {

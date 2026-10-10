@@ -388,18 +388,27 @@ class GAVEligibilityTest {
   }
 
   @Test
-  void countPushDownNotUsedWithEdgeVariable() {
-    // Named edge variable prevents count-push-down
-    final ResultSet result = database.query("opencypher",
-        "PROFILE MATCH (:Person)-[r:KNOWS]->(:Person) RETURN count(*) AS count");
+  void countPushDownTakesAnEdgeVariableNothingElseReads() {
+    // A relationship named once and read by nothing but count() binds every row: the count is count(*) (issue #9600)
+    for (final String count : new String[] { "count(*)", "count(r)" }) {
+      final String query = "MATCH (:Person)-[r:KNOWS]->(:Person) RETURN " + count + " AS count";
+      try (final ResultSet result = database.query("opencypher", "PROFILE " + query)) {
+        final long value = ((Number) result.next().getProperty("count")).longValue();
+        assertThat(result.getExecutionPlan().get().prettyPrint(0, 2)).as(query).contains("COUNT CHAIN PATHS");
+        try (final ResultSet pipeline = database.query("opencypher", "MATCH (:Person)-[r:KNOWS]->(:Person) RETURN sum(1) AS count")) {
+          assertThat(value).as(query).isEqualTo(((Number) pipeline.next().getProperty("count")).longValue());
+        }
+      }
+    }
 
-    while (result.hasNext())
-      result.next();
-
-    final String planString = result.getExecutionPlan().get().prettyPrint(0, 2);
-    // Should NOT use count-push-down due to edge variable
-    assertThat(planString).doesNotContain("COUNT CHAIN PATHS");
-    result.close();
+    // ...but not one an inline predicate reads, nor one named twice
+    for (final String query : new String[] { "MATCH (:Person)-[r:KNOWS WHERE r.since > 0]->(:Person) RETURN count(r) AS count",
+        "MATCH (:Person)-[r:KNOWS]->(:Person), (:Person)-[r]->(:Person) RETURN count(*) AS count" })
+      try (final ResultSet result = database.query("opencypher", "PROFILE " + query)) {
+        while (result.hasNext())
+          result.next();
+        assertThat(result.getExecutionPlan().get().prettyPrint(0, 2)).as(query).doesNotContain("COUNT CHAIN PATHS");
+      }
   }
 
   // --- Triangle counting optimization (Q3) ---

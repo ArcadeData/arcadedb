@@ -25,6 +25,7 @@ import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.function.Consumer;
 
 /**
  * Every variable name a statement could read, and whether that list is known to be the whole of it. Not the
@@ -140,24 +141,22 @@ public final class CypherReferencedVariables {
    * {@link #referencesAny} reports as "reads everything".
    */
   public static CypherReferencedVariables of(final Expression expression) {
-    if (expression == null)
-      return UNKNOWN;
-
-    final Collector collector = new Collector();
-    CypherExpressionWalker.walk(expression, collector);
-    if (!collector.complete)
-      return UNKNOWN;
-
-    return new CypherReferencedVariables(Collections.unmodifiableSet(collector.names), true);
+    return expression == null ? UNKNOWN : collect(collector -> CypherExpressionWalker.walk(expression, collector));
   }
 
-  /** The same as {@link #of(Expression)} for a predicate, such as one conjunct of a {@code WHERE}. */
+  /** {@link #of(Expression)}, for a predicate: a {@code WHERE} condition. */
   public static CypherReferencedVariables of(final BooleanExpression predicate) {
-    if (predicate == null)
-      return UNKNOWN;
+    return predicate == null ? UNKNOWN : collect(collector -> CypherExpressionWalker.walk(predicate, collector));
+  }
 
+  /** {@link #of(Expression)}, for a graph pattern: the names it binds or joins on, and those its inline expressions read. */
+  public static CypherReferencedVariables of(final PathPattern pattern) {
+    return pattern == null ? UNKNOWN : collect(collector -> CypherExpressionWalker.walk(pattern, collector));
+  }
+
+  private static CypherReferencedVariables collect(final Consumer<Collector> walk) {
     final Collector collector = new Collector();
-    CypherExpressionWalker.walk(predicate, collector);
+    walk.accept(collector);
     if (!collector.complete)
       return UNKNOWN;
 

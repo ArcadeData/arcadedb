@@ -37,6 +37,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
+import java.util.function.ToLongFunction;
 
 /**
  * Count operator for two-pattern pair-join queries (Q2).
@@ -81,6 +82,36 @@ public final class PairHashJoinOp implements CountOp {
   @Override
   public String[] edgeTypes() {
     return allEdgeTypes;
+  }
+
+  /** The average number of relationships of a type a vertex of a label has in a direction, every vertex for no label. */
+  @FunctionalInterface
+  public interface FanOut {
+    double of(String fromLabel, String edgeType, Vertex.DIRECTION direction);
+  }
+
+  /**
+   * How many endpoint pairs the build phase makes, estimated from the statistics: the start label's vertices times the fan-out
+   * of every hop of both arms, from the label each hop leaves. Each pair is then probed, so this is what tells two splits of
+   * one cycle apart (issue #9599); only the ratio between two estimates means anything.
+   *
+   * @param vertices the vertices of a label, every vertex for null
+   */
+  public double estimatedBuildPairs(final ToLongFunction<String> vertices, final FanOut fanOut) {
+    return vertices.applyAsLong(buildStartLabel)
+        * armFanOut(arm1EdgeTypes, arm1Directions, arm1IntermediateLabels, fanOut)
+        * armFanOut(arm2EdgeTypes, arm2Directions, arm2IntermediateLabels, fanOut);
+  }
+
+  private double armFanOut(final String[] types, final Vertex.DIRECTION[] directions, final String[] reachedLabels,
+      final FanOut fanOut) {
+    double product = 1;
+    String from = buildStartLabel;
+    for (int i = 0; i < types.length; i++) {
+      product *= fanOut.of(from, types[i], directions[i]);
+      from = reachedLabels[i];
+    }
+    return product;
   }
 
   /** The build phase walks out from the build-start label; with none there is no set of start nodes to walk from. */
