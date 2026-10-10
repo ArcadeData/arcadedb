@@ -60,6 +60,10 @@ public class CoreApiSpec implements OpenApiContributor {
   // Grafana and Prometheus operations too.
   private static final String SESSION_EXPIRED_HEADER = SpecBuilders.SESSION_EXPIRED_HEADER;
   private static final String COMMIT_INDEX_HEADER = "X-ArcadeDB-Commit-Index";
+  /** The 409 a query or command answers when it was stopped by 'terminate query' (issue #9680). */
+  private static final String QUERY_TERMINATED_409_DESCRIPTION = """
+      Query terminated: the statement was stopped by 'terminate query', 'terminate queries' or 'terminate transaction' \
+      (POST /api/v1/server) and what it wrote was rolled back. Not retryable: somebody stopped this work on purpose""";
   private static final String STREAMED_RETRY_AFTER = AbstractServerHttpHandler.STREAMED_RETRY_AFTER_MEMBER;
 
   // Issue #8062. Set by DatabaseAbstractHandler on any session-bound request whose transaction published a
@@ -706,11 +710,6 @@ public class CoreApiSpec implements OpenApiContributor {
   private ApiResponses createGetQueryResponses() {
     return createQueryResponses(false);
   }
-
-  /** The 409 a query or command answers when it was stopped by 'terminate query' (issue #9680). */
-  private static final String QUERY_TERMINATED_409_DESCRIPTION = """
-      Query terminated: the statement was stopped by 'terminate query', 'terminate queries' or 'terminate transaction' \
-      (POST /api/v1/server) and what it wrote was rolled back. Not retryable: somebody stopped this work on purpose""";
 
   private ApiResponses createQueryResponses(final boolean sessionAware) {
     final ApiResponses responses = new ApiResponses();
