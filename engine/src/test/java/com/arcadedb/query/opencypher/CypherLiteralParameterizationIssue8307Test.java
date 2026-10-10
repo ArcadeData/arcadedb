@@ -289,6 +289,22 @@ class CypherLiteralParameterizationIssue8307Test extends TestHelper {
   }
 
   @Test
+  void theDisjointnessProofReadsTheParametersOfEachExecution() {
+    // Two hops can bind the same edge only when their start vertices are one: with $x <> $y the inline maps prove them apart,
+    // with $x = $y they do not and relationship uniqueness drops the row. The proof reads the bound values, so a plan built for
+    // the first pair must not answer for the second.
+    final String cypher = "MATCH (a:Person {id: $x})-[:KNOWS]->(b), (c:Person {id: $y})-[:KNOWS]->(d) RETURN count(*) AS n";
+    for (int i = 0; i < 2; i++) {
+      try (final ResultSet rs = database.query("opencypher", cypher, Map.of("x", 1, "y", 2))) {
+        assertThat(rs.next().<Long>getProperty("n")).isEqualTo(1L);
+      }
+      try (final ResultSet rs = database.query("opencypher", cypher, Map.of("x", 3, "y", 3))) {
+        assertThat(rs.next().<Long>getProperty("n")).as("one edge cannot be bound twice").isEqualTo(0L);
+      }
+    }
+  }
+
+  @Test
   void aShapeSeenOnceRunsAsWritten() {
     // a workload that never repeats a shape pays one parse per text, never a second one for a statement nobody reuses
     final Lookup<ParsedQuery> first = db().getCypherStatementCache().getParameterized("MATCH (p:Person {id: 11}) RETURN p.name AS once");
