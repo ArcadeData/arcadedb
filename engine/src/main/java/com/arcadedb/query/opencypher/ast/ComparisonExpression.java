@@ -164,6 +164,11 @@ public class ComparisonExpression implements BooleanExpression {
     return text != null ? text : operand;
   }
 
+  /**
+   * Compares two already evaluated values with this operator's Cypher semantics, without the declared-STRING coercion of
+   * issue #9695, which needs the row the operands were read from: a caller that evaluated this comparison's own operands
+   * uses {@link #evaluateWithValues(Object, Object, Result)}.
+   */
   public Object evaluateWithValues(final Object leftValue, final Object rightValue) {
     return compareValuesTernary(leftValue, rightValue);
   }
