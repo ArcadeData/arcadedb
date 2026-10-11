@@ -164,7 +164,16 @@ class Issue9738GAVFusedChainCountTest {
         TWO_HOPS + "WITH a, c WITH a, count(*) AS n RETURN a.pid AS a, n ORDER BY a",//
         TWO_HOPS + "WITH a, b, c WITH count(*) AS n RETURN n",//
         TWO_HOPS + "WITH DISTINCT a, c RETURN count(*) AS n",//
-        TWO_HOPS + "RETURN a.pid AS a, b.pid AS b, c.pid AS c ORDER BY a, b, c");
+        TWO_HOPS + "RETURN a.pid AS a, b.pid AS b, c.pid AS c ORDER BY a, b, c",//
+        // The RETURN's own modifiers still apply to the rows a fused count answers
+        TWO_HOPS + "RETURN count(*) AS n SKIP 1",//
+        TWO_HOPS + "RETURN count(*) AS n LIMIT 0",//
+        TWO_HOPS + "RETURN DISTINCT count(*) AS n",//
+        TWO_HOPS + "RETURN DISTINCT a, count(*) AS n ORDER BY n DESC, a.pid LIMIT 3",//
+        TWO_HOPS + "RETURN a, count(*) AS n ORDER BY n, a.pid SKIP 2 LIMIT 4",//
+        TWO_HOPS + "WITH a, count(*) AS n WHERE n > 20 RETURN a.pid AS a, n ORDER BY a",//
+        // A cycle back to the source is never one fused chain: its last hop expands INTO a bound vertex
+        "MATCH (a:P)-[:K]->(b:P)-[:K]->(a) RETURN count(*) AS n");
     final List<List<String>> expected = new ArrayList<>();
     for (final String query : queries)
       expected.add(rows(query));
@@ -192,6 +201,49 @@ class Issue9738GAVFusedChainCountTest {
     final List<String> withView = rows(count);
     database.command("sql", "DROP GRAPH ANALYTICAL VIEW v9738");
     assertThat(withView).isEqualTo(rows(count));
+  }
+
+  @Test
+  void sourcesTheViewDoesNotMapAreCountedOnTheirRecords() {
+    buildSmallGraph();
+    database.command("sql", "CREATE GRAPH ANALYTICAL VIEW v9738 VERTEX TYPES (P, Q) EDGE TYPES (K) PROPERTIES (pid) "
+        + "UPDATE MODE OFF");
+    final GraphAnalyticalView view = GraphAnalyticalViewRegistry.get(database, "v9738");
+    assertThat(view.awaitReady(60, TimeUnit.SECONDS)).isTrue();
+    // Kept in use while stale: the vertices created after the build are sources the view does not map
+    view.setUseWhenStale(true);
+    database.transaction(() -> {
+      final List<Vertex> old = new ArrayList<>();
+      try (final ResultSet rs = database.query("sql", "SELECT FROM P WHERE pid < 6 ORDER BY pid")) {
+        while (rs.hasNext())
+          old.add(rs.next().getVertex().get());
+      }
+      MutableVertex previous = null;
+      for (int i = 0; i < 4; i++) {
+        final MutableVertex x = database.newVertex("P").set("pid", 500 + i).save();
+        x.newEdge("K", old.get(i));
+        x.newEdge("K", old.get(i + 1));
+        if (previous != null)
+          x.newEdge("K", previous);
+        previous = x;
+      }
+    });
+
+    final List<String> queries = List.of(//
+        TWO_HOPS + "RETURN count(*) AS n",//
+        TWO_HOPS + "WHERE c.pid > 10 RETURN count(*) AS n",//
+        "MATCH (a:P)-[:K]->(b:P)-[:K]->(c:P)-[:K]->(d:P) RETURN count(*) AS n",//
+        "MATCH (a:P)-[:K]->(b:P)-[:K]->(c:P)-[:K]->(d:P) WHERE d.pid < 30 RETURN count(*) AS n",//
+        TWO_HOPS + "RETURN a.pid AS a, count(*) AS n ORDER BY a",//
+        TWO_HOPS + "RETURN a.pid AS a, c.pid AS c ORDER BY a, c");
+    assertThat(plan(queries.get(0))).contains("fused count(*)");
+    final List<List<String>> withView = new ArrayList<>();
+    for (final String query : queries)
+      withView.add(rows(query));
+
+    database.command("sql", "DROP GRAPH ANALYTICAL VIEW v9738");
+    for (int i = 0; i < queries.size(); i++)
+      assertThat(withView.get(i)).as(queries.get(i)).isEqualTo(rows(queries.get(i)));
   }
 
   private void buildGraph(final int vertices, final int degree) {
