@@ -143,7 +143,7 @@ class Issue9714RepeatedLiteralTextLookupTest extends TestHelper {
   void repeatedQueriesAnswerTheirOwnValues() {
     for (int round = 0; round < 3; round++)
       for (final long a : new long[] { 3, 77, 50 })
-        try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM V WHERE a >= " + a)) {
+        try (final ResultSet rs = database.query("sql", "SELECT count(@rid) AS c FROM V WHERE a >= " + a)) {
           assertThat(rs.next().<Long>getProperty("c")).as("round %d, a >= %d", round, a).isEqualTo(100 - a);
         }
   }
