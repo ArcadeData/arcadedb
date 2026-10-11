@@ -260,6 +260,9 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
    * ({@link #withIgnoreIfExists}) with the index already on those properties. Told apart here rather than by comparing
    * the returned name with the requested one: concurrent creators of an unnamed index all derive the same name, and every
    * one of them used to report the single index only one of them built as its own (issue #9741).
+   * <p>
+   * State of THIS builder instance, reset by every {@code create()}: read it on the same thread, right after the call.
+   * A builder is not meant to be shared between threads.
    */
   public boolean isBuilt() {
     return built;
@@ -299,15 +302,11 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
     final LocalSchema schema = database.getSchema().getEmbedded();
 
     final LocalDocumentType type = schema.getType(metadata.typeName);
-    // Non-null only on the replacement path below: the definition to put back if the new index cannot be built.
-    ReplacedIndexDefinition replaced = null;
-
+    // Non-null only on the replacement path: the index to replace, dropped under the lock further down.
     final TypeIndex existingTypeIndex = findIndexOnProperties(type);
-    if (existingTypeIndex != null) {
-      replaced = decideOverExistingIndex(existingTypeIndex);
-      if (replaced == null)
-        return existingTypeIndex;
-    }
+    if (existingTypeIndex != null && !decideOverExistingIndex(existingTypeIndex, true))
+      return existingTypeIndex;
+    final boolean replacing = existingTypeIndex != null;
 
     if (metadata.propertyNames.isEmpty())
       throw new DatabaseMetadataException(
@@ -421,9 +420,9 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
     if (sortedBuild)
       validateSortedBuildPreconditions();
 
-    // Last thing before the build: everything above can still refuse the request (an undeclared property, a BY ITEM on
-    // a non-LIST, a sorted build on a replicated database), and none of those refusals may cost the caller the index it
-    // already had.
+    // The replaced index is dropped as the last thing before the build, under the lock below: everything above can still
+    // refuse the request (an undeclared property, a BY ITEM on a non-LIST, a sorted build on a replicated database), and
+    // none of those refusals may cost the caller the index it already had.
     //
     // NOT ATOMIC, and deliberately so. The drop is its own committed schema change - LocalSchema.dropIndex wraps itself
     // in recordFileChanges, and so does the build below - so the two cannot be rolled back as one. The window is
@@ -434,8 +433,8 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
     // LocalDocumentType.indexesByProperties cannot represent - one index per property set is the invariant.
     //
     // Only an explicit withReplaceIfIncompatible reaches here, so nothing is exposed to this window without asking.
-    if (replaced != null)
-      existingTypeIndex.drop();
+    // Set once the replaced index has been dropped: the definition to put back if the new index cannot be built.
+    final ReplacedIndexDefinition[] replaced = new ReplacedIndexDefinition[1];
 
     // Asked here because below this line there is ALWAYS a transaction, and the answer is about the one that was
     // already there (issue #6324, item 1). See IndexBuilder#buildSharesCallerTransaction.
@@ -444,7 +443,6 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
     final TypeIndex created;
     // Set when another creator built an index on these properties after the lookup above (issue #9741, below)
     final TypeIndex[] builtConcurrently = new TypeIndex[1];
-    final boolean replacing = replaced != null;
     // The barrier of #6281, paid at the top of this method, covers what the async side wrote BEFORE the build. This
     // covers what it would write DURING it (issue #6303, item 2), and only the first half was ever here:
     // LocalDocumentType.addIndexInternal registers the index before the scan, so a record saved AFTER that point
@@ -465,12 +463,22 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
         // found nothing there and then built one each, one after the other: the type ended up with one sub-index per
         // creator on every bucket, all fed by every write (issue #9741). Every build runs inside this write lock, so an
         // index found here is complete, and the request is decided over it exactly as if it had been there all along.
-        // Not on the replacement path, which has just dropped the type's own index: a parent's index on the same
-        // properties must not stand in for the replacement that was explicitly asked for.
-        if (!replacing) {
-          builtConcurrently[0] = findIndexOnProperties(type);
-          if (builtConcurrently[0] != null)
+        //
+        // The replacement is decided here too. Only the type's OWN index counts on that path - a parent's index on the
+        // same properties must not stand in for the replacement that was explicitly asked for - and it is dropped only
+        // if it is still the very index the decision above was made over. Concurrent replacers all found that one
+        // before the first of them dropped it, and dropping an index twice is a no-op, so dropping it outside the lock
+        // let every one of them go on to build its own; the later ones now find the first one's replacement instead.
+        final TypeIndex current = replacing ? type.getIndexByProperties(metadata.propertyNames) : findIndexOnProperties(type);
+        if (current != null) {
+          if (current != existingTypeIndex) {
+            builtConcurrently[0] = current;
             return null;
+          }
+          // Recorded only once dropped: a refused drop takes nothing away, so there is nothing to put back
+          final ReplacedIndexDefinition definition = ReplacedIndexDefinition.of(current);
+          current.drop();
+          replaced[0] = definition;
         }
 
         if (sortedBuild) {
@@ -547,13 +555,13 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
       if (cleanupIndexes(schema, indexes, e)
           && (recoveryMarker[0] == null || recoveryMarker[0].baselineRestored(database)))
         clearRecoveryMarker(recoveryMarker[0], e);
-      restoreReplacedIndex(replaced, e);
+      restoreReplacedIndex(replaced[0], e);
       throw e;
     } catch (final Throwable e) {
       if (cleanupIndexes(schema, indexes, e)
           && (recoveryMarker[0] == null || recoveryMarker[0].baselineRestored(database)))
         clearRecoveryMarker(recoveryMarker[0], e);
-      restoreReplacedIndex(replaced, e);
+      restoreReplacedIndex(replaced[0], e);
       // Carry the root cause into the message: this exception is what the SQL/HTTP layers report back, and
       // without the reason a configuration mistake (a missing vector 'dimensions', an incompatible property
       // type, ...) reaches the user as a bare "Error on creating index" with nowhere to go (issue #5607).
@@ -567,8 +575,7 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
     // the request, rather than wrapped as a failed build. A replacement is never decided over an index another creator
     // has just built: dropping that one is not what either request asked for.
     if (builtConcurrently[0] != null) {
-      if (decideOverExistingIndex(builtConcurrently[0]) != null)
-        throw conflictWithExistingIndex(builtConcurrently[0], indexType, unique, metadata.typeName, metadata.propertyNames);
+      decideOverExistingIndex(builtConcurrently[0], false);
       return builtConcurrently[0];
     }
 
@@ -607,11 +614,12 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
   }
 
   /**
-   * Decides a request over {@code existingTypeIndex}, an index already on the requested properties: answers null when
-   * that index answers the request, the definition to drop when an explicit {@link #withReplaceIfIncompatible} replaces
-   * it, and throws otherwise.
+   * Decides a request over {@code existingTypeIndex}, an index already on the requested properties: answers false when
+   * that index answers the request, true when an explicit {@link #withReplaceIfIncompatible} replaces it and
+   * {@code replacementAllowed}, and throws otherwise - with the same message whichever path asks.
    */
-  private ReplacedIndexDefinition decideOverExistingIndex(final TypeIndex existingTypeIndex) {
+  private boolean decideOverExistingIndex(final TypeIndex existingTypeIndex,
+      final boolean replacementAllowed) {
     // "Ignore if exists" means the caller can live with what is already there - but only when what is already there
     // provides what was asked for. A mismatch used to DROP the existing index and rebuild it with the requested
     // definition: on an inherited index that wiped the parent type's index and left an orphan entry in the schema
@@ -666,12 +674,12 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
       throw conflictWithExistingIndexName(existingTypeIndex, indexName, metadata.typeName, metadata.propertyNames);
 
     if (satisfied && ignoreIfExists)
-      return null;
+      return false;
 
-    if (!satisfied && replaceIfIncompatible && existingTypeIndex.getTypeName().equals(metadata.typeName))
-      // Own index, and the caller explicitly asked to replace what does not fit. Recorded here and dropped further
-      // down, once everything that could still refuse the request has had its say.
-      return ReplacedIndexDefinition.of(existingTypeIndex);
+    if (!satisfied && replaceIfIncompatible && replacementAllowed && existingTypeIndex.getTypeName().equals(metadata.typeName))
+      // Own index, and the caller explicitly asked to replace what does not fit. Dropped by create() under the write
+      // lock, once everything that could still refuse the request has had its say.
+      return true;
     else if (!satisfied && (ignoreIfExists || replaceIfIncompatible))
       throw conflictWithExistingIndex(existingTypeIndex, indexType, unique, metadata.typeName, metadata.propertyNames,
           settingMismatches);

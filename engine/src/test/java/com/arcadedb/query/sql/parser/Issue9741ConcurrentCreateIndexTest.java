@@ -25,6 +25,8 @@ import com.arcadedb.query.sql.antlr.SQLAntlrParser;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.TypeIndexBuilder;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
@@ -133,6 +135,49 @@ class Issue9741ConcurrentCreateIndexTest extends TestHelper {
       assertThat(index.isUnique()).isTrue();
       assertThatThrownBy(() -> database.transaction(() -> database.command("sql", "INSERT INTO V SET a = 't', b = 's7', c = 'm'")))
           .isInstanceOf(DuplicatedKeyException.class);
+    }
+  }
+
+  /**
+   * Concurrent replacers of an incompatible index - Cypher's CREATE CONSTRAINT upgrading a plain index - all found the old
+   * index before the first one dropped it, and dropping twice is a no-op, so every one of them went on to build its own.
+   */
+  @Test
+  void concurrentReplacersBuildOneIndex() throws Exception {
+    final int threads = 8;
+    for (int round = 0; round < 3; round++) {
+      if (database.getSchema().existsType("V"))
+        database.getSchema().dropType("V");
+      createAndFillType(5_000);
+      database.getSchema().buildTypeIndex("V", new String[] { "b" }).withType(Schema.INDEX_TYPE.LSM_TREE).withUnique(false).create();
+
+      final CyclicBarrier barrier = new CyclicBarrier(threads);
+      final ConcurrentLinkedQueue<Throwable> failures = new ConcurrentLinkedQueue<>();
+      final ConcurrentLinkedQueue<Boolean> built = new ConcurrentLinkedQueue<>();
+      final Thread[] workers = new Thread[threads];
+      for (int i = 0; i < threads; i++) {
+        workers[i] = new Thread(() -> {
+          try {
+            final TypeIndexBuilder builder = database.getSchema().buildTypeIndex("V", new String[] { "b" });
+            builder.withType(Schema.INDEX_TYPE.LSM_TREE).withUnique(true).withIgnoreIfExists(true).withReplaceIfIncompatible(true);
+            barrier.await(30, TimeUnit.SECONDS);
+            assertThat(builder.create().isUnique()).isTrue();
+            built.add(builder.isBuilt());
+          } catch (final Throwable e) {
+            failures.add(e);
+          }
+        });
+        workers[i].start();
+      }
+      for (final Thread worker : workers)
+        worker.join(TimeUnit.MINUTES.toMillis(2));
+
+      assertThat(failures).isEmpty();
+      final TypeIndex index = (TypeIndex) database.getSchema().getIndexByName("V[b]");
+      assertThat(index.isUnique()).isTrue();
+      assertThat(database.getSchema().getType("V").getAllIndexes(false)).hasSize(1);
+      assertThat(index.getIndexesOnBuckets()).hasSize(database.getSchema().getType("V").getBuckets(false).size());
+      assertThat(built.stream().filter(Boolean::booleanValue).count()).isEqualTo(1L);
     }
   }
 
