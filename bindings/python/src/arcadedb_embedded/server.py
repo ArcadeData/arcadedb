@@ -4,6 +4,7 @@ ArcadeDB Python Bindings - Server Management
 ArcadeDB server for HTTP API and Studio web interface.
 """
 
+import functools
 import os
 from typing import Any, Dict, Optional
 
@@ -25,27 +26,25 @@ def _config_key(key: str) -> str:
 _ALL_INTERFACES = ("0.0.0.0", "::")  # nosec B104 - compared, not bound
 
 
+@functools.lru_cache(maxsize=1)
 def _all_interfaces_host_settings():
     """The keys of every listener bind host that defaults to all interfaces.
 
     The Postgres, Redis, Bolt, Mongo and gRPC hosts today: a ``*.host``
     setting whose engine default is an all-interfaces address (``"0.0.0.0"``,
-    or ``"::"`` for IPv6). The HTTP host is set separately and is left out.
-    A listener whose engine default is already narrower (loopback) keeps it:
-    it is not the exposure this guards against. test_server_wire_protocols
-    pins the discovered set, so a change in it shows up there.
+    or ``"::"`` for IPv6). The HTTP host (``httpIncomingHost``) does not
+    match and is set separately. A listener whose engine default is already
+    narrower (loopback) keeps it: it is not the exposure this guards against.
+    test_server_wire_protocols pins the discovered set, so a change in it
+    shows up there. Resolved once per process: the settings are fixed.
     """
     GlobalConfiguration = jpype.JClass("com.arcadedb.GlobalConfiguration")
     keys = []
     for setting in GlobalConfiguration.values():
         key = str(setting.getKey())
-        if (
-            key.endswith(".host")
-            and key != "arcadedb.server.httpIncomingHost"
-            and str(setting.getDefValue()) in _ALL_INTERFACES
-        ):
+        if key.endswith(".host") and str(setting.getDefValue()) in _ALL_INTERFACES:
             keys.append(key)
-    return keys
+    return tuple(keys)
 
 
 class ArcadeDBServer:
