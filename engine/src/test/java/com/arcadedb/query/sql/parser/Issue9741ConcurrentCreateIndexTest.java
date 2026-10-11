@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.sql.antlr.SQLAntlrParser;
@@ -210,6 +211,14 @@ class Issue9741ConcurrentCreateIndexTest extends TestHelper {
     assertThat(createIndex.typeName.getStringValue()).isEqualTo("$t");
     assertThat(createIndex.name).isNull();
     assertThat(database.getSchema().existsIndex("Fresh[p]")).isTrue();
+
+    // An undefined variable names no type: refused with a message that says so, for each statement shape
+    assertThatThrownBy(() -> createIndex.execute(database, (Map<String, Object>) null, new BasicCommandContext(), false))
+        .isInstanceOf(CommandExecutionException.class).hasMessageContaining("'$t'").hasMessageContaining("not defined");
+    assertThatThrownBy(() -> createProperty.execute(database, (Map<String, Object>) null, new BasicCommandContext(), false))
+        .isInstanceOf(CommandExecutionException.class).hasMessageContaining("not defined");
+    assertThatThrownBy(() -> createType.execute(database, (Map<String, Object>) null, new BasicCommandContext(), false))
+        .isInstanceOf(CommandExecutionException.class).hasMessageContaining("not defined");
   }
 
   private static BasicCommandContext contextWith(final String variable, final Object value) {

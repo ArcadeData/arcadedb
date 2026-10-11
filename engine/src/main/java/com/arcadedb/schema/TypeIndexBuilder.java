@@ -316,7 +316,9 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
         break;
       } catch (final IndexException e) {
         // Read without the lock, so a concurrent replacer can drop the index while it is being decided over (issue
-        // #9741): look again, and find its replacement or nothing. Any other refusal is the answer.
+        // #9741): look again, and find its replacement or nothing. Any other refusal is the answer. Each retry follows a
+        // drop that really happened, and the next lookup sees either nothing or the index built in its place, so the loop
+        // ends as soon as replacers stop dropping.
         if (found.isValid())
           throw e;
       }
@@ -684,10 +686,10 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
     //
     // The other production caller that sets a name on a TYPE index is {@code RebuildIndexStatement}, which carries
     // the logical index's own name across the rebuild (issue #5791). It never meets this check: it drops the index
-    // first, inside the same {@code executeLockingFiles} closure, so the lookup above finds nothing on those
+    // first, inside the same {@code executeLockingFiles} closure, so the lookup in create() finds nothing on those
     // properties by the time create() runs. The one shape that still reaches here - a type whose OWN index was just
     // dropped while a parent type indexes the same properties - was already refused before this check existed, by
-    // the unguarded branch further down; only the message it is refused with changes.
+    // the unguarded branch below; only the message it is refused with changes.
     if (satisfied && indexName != null && !indexName.isEmpty() && !indexName.equals(existingTypeIndex.getName()))
       throw conflictWithExistingIndexName(existingTypeIndex, indexName, metadata.typeName, metadata.propertyNames);
 
