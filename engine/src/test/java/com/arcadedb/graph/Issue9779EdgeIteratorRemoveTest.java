@@ -336,12 +336,10 @@ class Issue9779EdgeIteratorRemoveTest {
               target = farEnd(it.next());
             it.remove();
             removed[0] = target;
-            try {
-              while (it.hasNext())
-                it.next();
-            } catch (final ConcurrentModificationException e) {
-              // THE ITERATOR'S VIEW OF THE LIST WENT STALE: REFUSING TO GO ON IS THE CONTRACT
-            }
+            // THE LISTENER CHANGED THE ONE SEGMENT THE ITERATOR STANDS ON: ITS VIEW IS STALE, AND IT REFUSES TO GO ON
+            assertThat(catchThrowable(it::hasNext)).isInstanceOf(ConcurrentModificationException.class);
+            assertThat(catchThrowable(it::next)).isInstanceOf(ConcurrentModificationException.class);
+            assertThat(catchThrowable(it::remove)).isInstanceOf(ConcurrentModificationException.class);
           });
         } finally {
           database.getEvents().unregisterListener(listener);
