@@ -8098,6 +8098,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * A restricted search (issue #8002) is asked to fill a fixed set of groups, so there is no group count to widen: only
    * the members per group are.
    * <p>
+   * Cost: one stored-vector read per candidate, at most {@code limit * groupSize * BINARY_RERANK_OVERSAMPLE^2} of them on the
+   * first attempt (the walk clamps its rows to the vectors the index holds), against {@code k * BINARY_RERANK_OVERSAMPLE}
+   * for the ungrouped search: both caps can pick the wrong rows, so both are widened.
+   * <p>
    * A candidate whose record is gone by the time it is rescored is dropped, and when that leaves the answer short of
    * its groups while the widened walk stopped before it had seen everything it could reach (see
    * {@link GroupedCandidates#truncated}), the walk is asked again with a wider budget, for the reason issue #9396 gives
@@ -8106,6 +8110,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
   private List<Pair<RID, Float>> rerankedGroupedSearch(final float[] queryVector, final int limit, final int groupSize,
       final int efSearch, final Set<RID> allowedRIDs, final Function<RID, Object> groupKeyResolver,
       final Set<Object> onlyGroups, final float maxDistance) {
+    final VectorFloat<?> query = vts.createFloatVector(queryVector);
     long oversample = BINARY_RERANK_OVERSAMPLE;
     List<Pair<RID, Float>> answer = Collections.emptyList();
     for (int attempt = 0; attempt < BINARY_RERANK_MAX_ATTEMPTS; attempt++) {
@@ -8121,7 +8126,6 @@ public class LSMVectorIndex implements Index, IndexInternal {
       final int total = approximate.size();
       final float[] distances = new float[total];
       final int[] positions = new int[total];
-      final VectorFloat<?> query = vts.createFloatVector(queryVector);
       int rescored = 0;
       for (int i = 0; i < total; i++) {
         final float[] stored = readRecordVectorArray(approximate.get(i).getFirst());

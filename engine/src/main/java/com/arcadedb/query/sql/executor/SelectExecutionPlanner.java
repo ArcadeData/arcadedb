@@ -5046,7 +5046,7 @@ public class SelectExecutionPlanner {
       final Schema.INDEX_TYPE type = index.getType();
       return type != null && type.isExactKeyLookup();
     } catch (final IndexException e) {
-      // gone meanwhile: not a candidate either way
+      // The index went away meanwhile: answering true removes it from the candidates, where it does not belong anyway
       return true;
     }
   }
