@@ -36,7 +36,7 @@ import java.util.logging.Level;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-final class ChannelReopenLog {
+public final class ChannelReopenLog {
   static final long SEVERE_INTERVAL_NANOS = TimeUnit.MINUTES.toNanos(1);
 
   private static final long NEVER = Long.MIN_VALUE;
@@ -49,7 +49,7 @@ final class ChannelReopenLog {
   // volatile ONLY SO getTotal() CAN BE READ WITHOUT THE MONITOR
   private volatile long         total           = 0;
 
-  ChannelReopenLog() {
+  public ChannelReopenLog() {
     this(System::nanoTime);
   }
 
@@ -63,7 +63,7 @@ final class ChannelReopenLog {
    * @return the number of earlier reopens folded into this report when it must be logged at {@link Level#SEVERE}
    * (0 for the first one), or -1 when it must be logged at {@link Level#FINE}
    */
-  synchronized long record() {
+  public synchronized long record() {
     ++total;
     final long now = nanoClock.getAsLong();
     if (lastSevereNanos == NEVER || now - lastSevereNanos >= SEVERE_INTERVAL_NANOS) {
