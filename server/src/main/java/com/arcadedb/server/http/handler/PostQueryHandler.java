@@ -32,6 +32,10 @@ public class PostQueryHandler extends PostCommandHandler {
   /**
    * Not what {@link PostCommandHandler} answers: a query cannot write, so its failure leaves nothing half applied in the caller's
    * transaction and rolling it back would only destroy what the caller wrote before (issue #9784). Same as {@code GET /query}.
+   * <p>
+   * The invariant this relies on: {@code database.query} accepts idempotent statements only, so nothing in the session
+   * transaction can be half applied by a failing request here. A subclass that can write must answer true again, because there
+   * would be no rollback to clean up after it.
    */
   @Override
   protected boolean rollsBackSessionTransactionOnFailure() {
