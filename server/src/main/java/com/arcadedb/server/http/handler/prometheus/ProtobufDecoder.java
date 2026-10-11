@@ -130,6 +130,10 @@ public final class ProtobufDecoder {
       readVarint();
       break;
     case WIRETYPE_FIXED64:
+      // bounds-checked like every other arm: an unchecked jump past the end ended the decode loop as if the message
+      // were complete, so a truncated body decoded to an empty request instead of failing (issue #9624)
+      if (offset + 8 > data.length)
+        throw new IllegalStateException("Truncated fixed64");
       offset += 8;
       break;
     case WIRETYPE_LENGTH_DELIMITED:

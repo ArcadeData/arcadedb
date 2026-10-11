@@ -29,6 +29,7 @@ import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.RequestBodyTooLargeException;
+import com.arcadedb.server.http.handler.prometheus.PrometheusTypes;
 import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.Label;
 import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.LabelMatcher;
 import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.MatchType;
@@ -40,6 +41,7 @@ import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.Sample;
 import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.TimeSeries;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
+import io.undertow.util.Headers;
 import io.undertow.util.HttpString;
 import org.xerial.snappy.Snappy;
 
@@ -95,6 +97,13 @@ public class PostPrometheusReadHandler extends AbstractBinaryHttpHandler {
   protected ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user,
       final Database db, final JSONObject payload) throws Exception {
 
+    // A request naming another protobuf message in its Content-Type is refused with the 415 the remote-write
+    // specification gives that case, rather than decoded in a schema it is not in (issue #9624)
+    final String protoMessage = PrometheusTypes.protoMessage(exchange.getRequestHeaders().getFirst(Headers.CONTENT_TYPE));
+    if (protoMessage != null && !ReadRequest.PROTO_MESSAGE.equals(protoMessage))
+      return new ExecutionResponse(415, new JSONObject().put("error", "Unsupported remote-read protobuf message '" + protoMessage
+          + "': this endpoint implements " + ReadRequest.PROTO_MESSAGE).toString());
+
     // THIS request's bytes, off the exchange rather than off a field shared with every concurrent request; see
     // AbstractBinaryHttpHandler.RAW_BINARY_PAYLOAD and issue #7683.
     final byte[] rawBytes = rawBytes(exchange);
@@ -114,7 +123,14 @@ public class PostPrometheusReadHandler extends AbstractBinaryHttpHandler {
       return new ExecutionResponse(400, "{ \"error\" : \"Invalid Snappy-compressed data\"}");
     }
 
-    final ReadRequest readRequest = ReadRequest.decode(decompressed);
+    // A malformed body is the client's mistake, not a server fault: answered 400 like the invalid Snappy data above,
+    // rather than letting the decoder's IllegalStateException reach the 500 arm of the error classification (issue #9624)
+    final ReadRequest readRequest;
+    try {
+      readRequest = ReadRequest.decode(decompressed);
+    } catch (final IllegalStateException e) {
+      return new ExecutionResponse(400, new JSONObject().put("error", "Malformed protobuf " + ReadRequest.PROTO_MESSAGE + ": " + e.getMessage()).toString());
+    }
     final DatabaseInternal database = (DatabaseInternal) db;
 
     // The hard ceiling this endpoint never consulted (issue #7663). One budget for the WHOLE response: a
