@@ -177,14 +177,17 @@ final class PostgresTransactionStatement {
               "transaction isolation level \"serializable\" is not supported by this server: transactions run at \"read committed\" or \"repeatable read\"",
               PostgresSessionSettings.SQLSTATE_FEATURE_NOT_SUPPORTED));
       // READ UNCOMMITTED behaves as READ COMMITTED, as in PostgreSQL
-      default -> new PostgresTransactionStatement(PostgresPortal.TransactionControl.BEGIN, Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED,
-          tag, null);
+      case "read committed", "read uncommitted" ->
+          new PostgresTransactionStatement(PostgresPortal.TransactionControl.BEGIN, Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED, tag,
+              null);
+      default -> throw new IllegalStateException("Unmapped transaction isolation level '" + isolationName + "'");
     };
   }
 
   private static PostgresTransactionStatement end(final PostgresPortal.TransactionControl control, final String keyword,
       final String rest) {
     final String tag = control.name();
+    // The split allocates, which is fine: only a statement whose first word is a transaction keyword gets this far
     final String[] tokens = rest.isEmpty() ? new String[0] : WHITESPACE.split(rest);
     int i = 0;
     if (i < tokens.length && ("WORK".equals(tokens[i]) || "TRANSACTION".equals(tokens[i])))
