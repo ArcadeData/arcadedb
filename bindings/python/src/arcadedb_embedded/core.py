@@ -13,7 +13,7 @@ from typing import Any, List, Optional
 
 import jpype
 
-from .exceptions import ArcadeDBError
+from .exceptions import ArcadeDBError, _retry_verdict
 from .graph import Document, Edge, Vertex
 from .graph_batch import GraphBatch
 from .importer import ImportResult
@@ -388,11 +388,19 @@ class Database:
         concurrent-modification conflicts.
 
         Mirrors the Java API's ``database.transaction(lambda)`` semantics: on
-        ``ConcurrentModificationException`` / ``NeedRetryException`` the
-        transaction is rolled back and ``fn`` is re-executed, with linear
-        backoff. The ``with db.transaction():`` context manager cannot retry
-        (a ``with`` block can't be re-entered), so use this for contended
-        multi-threaded writes.
+        a ``NeedRetryException`` - ``ConcurrentModificationException``,
+        ``LockTimeoutException`` and every other subclass, found by Java type
+        anywhere in the error's cause chain - the transaction is rolled back
+        and ``fn`` is re-executed, with linear backoff, or after the wait the
+        refusing side asked for when that is longer. A
+        ``DuplicatedKeyException`` is retried once, as the engine does: a
+        genuine duplicate fails the same way every time, and one retry covers
+        the duplicate raised by racing a concurrent commit. A block that
+        already made part of its work durable (a statement with a ``BATCH``
+        boundary) is never re-run: the conflict is raised, because a replay
+        would apply that part twice. The ``with db.transaction():`` context
+        manager cannot retry (a ``with`` block can't be re-entered), so use
+        this for contended multi-threaded writes.
 
         Args:
             fn: Zero-argument callable executed inside the transaction.
@@ -404,8 +412,10 @@ class Database:
         """
         import time as _time
 
+        duplicated_key_retried = False
         for attempt in range(retries + 1):
             self.begin()
+            tx_at_start, commits_at_start = self._transaction_commit_mark()
             try:
                 result = fn()
                 self.commit()
@@ -423,16 +433,50 @@ class Database:
                         self.rollback()
                 except Exception:  # nosec B110 - best-effort rollback before retry
                     pass
-                if isinstance(e, ArcadeDBError):
-                    msg = str(e)
-                    retryable = (
-                        "ConcurrentModificationException" in msg
-                        or "NeedRetryException" in msg
-                    )
-                    if retryable and attempt < retries:
-                        _time.sleep(backoff_s * (attempt + 1))
-                        continue
-                raise
+                if attempt >= retries or not isinstance(e, Exception):
+                    raise
+                # By Java TYPE, as LocalDatabase.transaction() decides. The
+                # message used to be searched for two class names, so every
+                # other NeedRetryException subclass - a LockTimeoutException
+                # from a contended commit first of all - escaped on its first
+                # attempt with the budget untouched (#9629).
+                kind, retry_after_ms = _retry_verdict(e)
+                if kind is None:
+                    raise
+                if kind == "duplicated_key":
+                    if duplicated_key_retried:
+                        raise
+                    duplicated_key_retried = True
+                # #7916: the rollback above cannot take back what a BATCH
+                # boundary already committed, and a replay would apply it twice
+                # and report clean success.
+                if self._partially_committed(tx_at_start, commits_at_start):
+                    raise
+                _time.sleep(max(backoff_s * (attempt + 1), retry_after_ms / 1000.0))
+
+    def _transaction_commit_mark(self):
+        """The current transaction and its commit count, for _partially_committed."""
+        try:
+            tx = self._java_db.getTransactionIfExists()
+            return tx, (int(tx.getCommitCount()) if tx is not None else 0)
+        except Exception:  # nosec B110 - a wrapper without the accessor: no witness
+            return None, 0
+
+    @staticmethod
+    def _partially_committed(tx_at_start, commits_at_start) -> bool:
+        """Whether the transaction published part of its work since the mark.
+
+        The same witness LocalDatabase.transaction() uses
+        (TransactionContext.isPartiallyCommitted): a statement with an explicit
+        BATCH boundary commits and re-begins on the same context, so the
+        context's commit count moves while the transaction stays active.
+        """
+        if tx_at_start is None:
+            return False
+        try:
+            return int(tx_at_start.getCommitCount()) != commits_at_start
+        except Exception:  # nosec B110 - no witness: behave as before #7916
+            return False
 
     def begin(self):
         """Begin a transaction."""

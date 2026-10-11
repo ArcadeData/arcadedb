@@ -172,7 +172,16 @@ public class JSONObject implements Map<String, Object> {
       else
         // SAVE AS STRING
         object.addProperty(name, dateFormat.format(date.toInstant().atZone(ZoneId.systemDefault())));
-    } else if (value instanceof LocalDate localDate) {
+    }
+    // arcadedb.dateTimeImplementation / dateImplementation = java.util.Calendar: the same instant a Date holds, so the
+    // same number. It fell to the default branch and was written as its toString(), a dump of every field (#9630)
+    case Calendar calendar -> {
+      if (dateFormatAsString == null)
+        object.addProperty(name, calendar.getTimeInMillis());
+      else
+        object.addProperty(name, dateFormat.format(calendar.toInstant().atZone(calendar.getTimeZone().toZoneId())));
+    }
+    case LocalDate localDate -> {
       if (dateFormatAsString == null)
         // SAVE AS TIMESTAMP: a DATE is a calendar day, anchored at UTC midnight so the number never depends on the JVM time zone (#9037)
         object.addProperty(name, localDate.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli());
@@ -852,49 +861,33 @@ public class JSONObject implements Map<String, Object> {
   }
 
   protected static JsonElement objectToElement(final Object object) {
-    if (object == null)
-      return JsonNull.INSTANCE;
-    else if (object instanceof JsonElement jsonElement)
-      return jsonElement;
-    else if (object instanceof String string)
-      return new JsonPrimitive(string);
-    else if (object instanceof Number number)
-      return isNonFinite(number) ? JsonNull.INSTANCE : new JsonPrimitive(number);
-    else if (object instanceof Boolean boolean1)
-      return new JsonPrimitive(boolean1);
-    else if (object instanceof Character character)
-      return new JsonPrimitive(character);
-    else if (object instanceof JSONObject nObject)
-      return nObject.getInternal();
-    else if (object instanceof JSONArray array)
-      return array.getInternal();
-    else if (object instanceof Collection collection)
-      return new JSONArray(collection).getInternal();
-    else if (object instanceof Object[] objects)
-      return new JSONArray(objects).getInternal();
-    else if (object instanceof Map map)
-      return new JSONObject(map).getInternal();
-    else if (object instanceof Document document)
-      return document.toJSON(false).getInternal();
-    else if (object instanceof Identifiable identifiable)
-      return new JsonPrimitive(identifiable.getIdentity().toString());
-    else if (object instanceof Enum<?> enumValue)
-      return new JsonPrimitive(enumValue.name());
-    else if (object.getClass().isArray())
-      return primitiveArrayToElement(object);
-    else if (object instanceof Date date)
-      return new JsonPrimitive(date.getTime());
-    else if (object instanceof LocalDate localDate)
-      return new JsonPrimitive(localDate.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli());
-    else if (object instanceof TemporalAccessor temporalAccessor) {
-      final Long timestamp = DateUtils.dateTimeToTimestamp(temporalAccessor, ChronoUnit.MILLIS);
-      return timestamp != null ? new JsonPrimitive(timestamp) : new JsonPrimitive(temporalAccessor.toString());
-    } else if (object instanceof Duration duration)
-      return new JsonPrimitive(duration.toSeconds() + (duration.toNanosPart() / 1_000_000_000.0));
-    else if (object instanceof Class<?> clazz)
-      return new JsonPrimitive(clazz.getName());
-    else
-      return new JsonPrimitive(object.toString());
+    return switch (object) {
+      case null -> JsonNull.INSTANCE;
+      case JsonElement jsonElement -> jsonElement;
+      case String string -> new JsonPrimitive(string);
+      case Number number -> isNonFinite(number) ? JsonNull.INSTANCE : new JsonPrimitive(number);
+      case Boolean boolean1 -> new JsonPrimitive(boolean1);
+      case Character character -> new JsonPrimitive(character);
+      case JSONObject nObject -> nObject.getInternal();
+      case JSONArray array -> array.getInternal();
+      case Collection collection -> new JSONArray(collection).getInternal();
+      case Object[] objects -> new JSONArray(objects).getInternal();
+      case Map map -> new JSONObject(map).getInternal();
+      case Document document -> document.toJSON(false).getInternal();
+      case Identifiable identifiable -> new JsonPrimitive(identifiable.getIdentity().toString());
+      case Enum<?> enumValue -> new JsonPrimitive(enumValue.name());
+      case Object o when o.getClass().isArray() -> primitiveArrayToElement(o);
+      case Date date -> new JsonPrimitive(date.getTime());
+      case Calendar calendar -> new JsonPrimitive(calendar.getTimeInMillis());
+      case LocalDate localDate -> new JsonPrimitive(localDate.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli());
+      case TemporalAccessor temporalAccessor -> {
+        final Long timestamp = DateUtils.dateTimeToTimestamp(temporalAccessor, ChronoUnit.MILLIS);
+        yield timestamp != null ? new JsonPrimitive(timestamp) : new JsonPrimitive(temporalAccessor.toString());
+      }
+      case Duration duration -> new JsonPrimitive(duration.toSeconds() + (duration.toNanosPart() / 1_000_000_000.0));
+      case Class<?> clazz -> new JsonPrimitive(clazz.getName());
+      default -> new JsonPrimitive(object.toString());
+    };
   }
 
   private JsonElement getElement(final String name) {

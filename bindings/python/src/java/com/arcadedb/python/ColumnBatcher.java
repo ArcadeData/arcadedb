@@ -38,6 +38,8 @@ public final class ColumnBatcher {
   private static long toEpochMillis(final Object v) {
     if (v instanceof java.util.Date d)
       return d.getTime();
+    if (v instanceof java.util.Calendar c)
+      return c.getTimeInMillis();
     if (v instanceof java.time.LocalDateTime ldt)
       return ldt.toInstant(java.time.ZoneOffset.UTC).toEpochMilli();
     if (v instanceof java.time.LocalDate ld)
@@ -115,7 +117,7 @@ public final class ColumnBatcher {
           t = "f8";
         else if (v instanceof Boolean)
           t = "b1";
-        else if (v instanceof java.util.Date || v instanceof java.time.LocalDateTime
+        else if (v instanceof java.util.Date || v instanceof java.util.Calendar || v instanceof java.time.LocalDateTime
             || v instanceof java.time.LocalDate || v instanceof java.time.Instant
             || v instanceof java.time.ZonedDateTime || v instanceof java.time.OffsetDateTime)
           t = "dt";
