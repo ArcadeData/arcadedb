@@ -298,16 +298,16 @@ public final class PropagateChainOp implements CountOp {
         for (int j = lastView.offset(node), end = lastView.offsetEnd(node); j < end; j++)
           if (undirected && nbrs[j] == node)
             ++selfEntries;
-          else if (targetBuckets.contains(provider.getRID(nbrs[j]).getBucketId()))
+          else if (targetBuckets.contains(provider.getBucketId(nbrs[j])))
             total++;
         // AN UNDIRECTED SELF LOOP IS TWO ENTRIES OF THE MERGED RANGE AND ONE RELATIONSHIP (ISSUES #8750, #9540)
-        if (selfEntries > 0 && targetBuckets.contains(provider.getRID(node).getBucketId()))
+        if (selfEntries > 0 && targetBuckets.contains(provider.getBucketId(node)))
           total += selfEntries / 2;
       }
     } else {
       for (final int node : frontier)
         for (final int neighbor : CSRCountUtils.hopNeighborIds(provider, node, directions[lastHop], edgeTypes[lastHop]))
-          if (targetBuckets.contains(provider.getRID(neighbor).getBucketId()))
+          if (targetBuckets.contains(provider.getBucketId(neighbor)))
             total++;
     }
     return total;
@@ -840,7 +840,7 @@ public final class PropagateChainOp implements CountOp {
       guard.checkPeriodically(v);
       if (!provider.isNodeLive(v))
         continue;
-      bucketIds[v] = provider.getRID(v).getBucketId();
+      bucketIds[v] = provider.getBucketId(v);
     }
     return bucketIds;
   }

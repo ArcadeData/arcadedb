@@ -185,7 +185,7 @@ public final class PairHashJoinOp implements CountOp {
       guard.checkPeriodically(v);
       if (!provider.isNodeLive(v))
         continue;
-      bucketIds[v] = provider.getRID(v).getBucketId();
+      bucketIds[v] = provider.getBucketId(v);
     }
 
     // A single-hop arm's only label filter sits on its endpoint, which is the one hop it has. arm1 is single-hop

@@ -27,6 +27,7 @@ import com.arcadedb.graph.olap.GraphAlgorithms;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.IteratorResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -38,10 +39,10 @@ import com.arcadedb.query.QueryEngineManager;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.NoSuchElementException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
 
@@ -59,6 +60,9 @@ import java.util.concurrent.Future;
  * Memory: O(max_fanout) per source vertex for the traversal stack.
  * GC pressure: near-zero (only int[] arrays reused from CSR slices).
  * <p>
+ * The rows are handed out in bounded rounds rather than collected for the whole walk, and a count(*) fused into the
+ * chain builds no row at all: neither holds heap in proportion to the number of paths (issue #9738).
+ * <p>
  * Cypher binds a relationship at most once per MATCH clause. The hops that could collide are walked one adjacency
  * slice per edge type and orientation, so every entry of their stack names one relationship, and a candidate is refused
  * when an earlier hop of its clause stands on the same one (issue #8394). An undirected hop meets a self-loop in both
@@ -67,6 +71,11 @@ import java.util.concurrent.Future;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class GAVFusedChainOperator extends AbstractPhysicalOperator {
+  // Below this many sources the walk runs on the calling thread
+  private static final int PARALLEL_THRESHOLD = 8192;
+  // The paths each walker turns into rows per round of the row path: what bounds the rows held at once (issue #9738)
+  private static final int ROWS_PER_ROUND     = 16_384;
+
   private final GraphTraversalProvider provider;
 
   // Source variable (bound by the child operator, e.g., NodeByLabelScan)
@@ -138,7 +147,7 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
    * Enables fused aggregation: the parallel DFS counts per group internally
    * instead of producing individual rows. The downstream GroupByAggregationStep is bypassed.
    *
-   * @param groupKeyVariables  variables to group by (must be materialized)
+   * @param groupKeyVariables  variables to group by, bound by the chain (at most 2; none for one count over every path)
    * @param groupKeyOutputNames output aliases for each grouping key
    * @param countOutputName    output alias for count(*)
    */
@@ -221,67 +230,133 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
       return executeWithFusedAggregation(sourceNodeIds, totalSources, parallelism, chunkSize,
           hopViews, trackedTypes, chainLength, db, context, guard, unmappedRows);
 
-    // Parallel DFS: each thread processes a chunk of source vertices with its own stack
-    @SuppressWarnings("unchecked")
-    final List<Result>[] threadResults = new List[Math.min(parallelism, Math.max(1, (totalSources + chunkSize - 1) / chunkSize))];
+    // One walker per thread, each over a contiguous slice of the sources, resumed round after round (issue #9738)
+    final int walkerCount = totalSources < PARALLEL_THRESHOLD ? 1 :
+        Math.min(parallelism, Math.max(1, (totalSources + chunkSize - 1) / chunkSize));
+    final ChainWalker[] walkers = new ChainWalker[walkerCount];
+    for (int t = 0; t < walkerCount; t++) {
+      final int start = walkerCount == 1 ? 0 : Math.min(t * chunkSize, totalSources);
+      final int end = walkerCount == 1 ? totalSources : Math.min(start + chunkSize, totalSources);
+      walkers[t] = new ChainWalker(sourceNodeIds, start, end, hopViews, trackedTypes, chainLength, guard, false);
+    }
+    return new StreamingRows(walkers, outputNames, db, context, unmappedRows);
+  }
 
-    final int threadCount;
-    if (totalSources < 8192) {
-      // Below threshold: single-threaded
-      threadResults[0] = new ArrayList<>();
-      traverseChunk(sourceNodeIds, 0, totalSources, hopViews, trackedTypes, chainLength, outputNames, db, context, guard,
-          threadResults[0]);
-      threadCount = 1;
-    } else {
-      // Parallel execution using shared query worker pool
-      final ExecutorService executor = QueryEngineManager.getInstance().getExecutorService();
-      final Future<?>[] futures = new Future<?>[threadResults.length];
-      int launched = 0;
-      for (int t = 0; t < threadResults.length; t++) {
-        final int start = t * chunkSize;
-        final int end = Math.min(start + chunkSize, totalSources);
-        if (start >= totalSources)
-          break;
-        threadResults[t] = new ArrayList<>();
-        final int threadIdx = t;
-        futures[t] = executor.submit(() ->
-            traverseChunk(sourceNodeIds, start, end, hopViews, trackedTypes, chainLength, outputNames, db, context, guard,
-                threadResults[threadIdx]));
-        launched++;
-      }
-      // #4951: awaitFutures throws on interrupt (cancelling the outstanding chunks) instead of returning,
-      // so a killed/timed-out query can never merge partial per-thread results as a complete answer.
-      // #6568: it also RECLAIMS, which is what lets this fan-out submit EVERY chunk - unlike parallelForRange
-      // and PartitionedTriangleOp, which keep chunk 0 on the caller for latency. A chunk still queued when the
-      // wait begins is run here rather than waited for, so the caller can never park behind busy workers.
-      GraphAlgorithms.awaitFutures(futures, launched);
-      threadCount = launched;
+  /**
+   * The rows of the walk, produced in rounds: each round resumes every unfinished walker for at most
+   * {@link #ROWS_PER_ROUND} paths, in parallel when there is more than one, and the rows are handed out before the next
+   * round starts. The heap the rows take is bounded by one round, whatever the number of paths, and a consumer that
+   * stops early (a LIMIT) stops the walk with it (issue #9738). Between two rounds no task is in flight, so a result set
+   * that is abandoned without being closed holds no worker. With one walker the rows come in source order.
+   */
+  private final class StreamingRows implements ResultSet {
+    private final ChainWalker[]  walkers;
+    private final List<Result>[] buffers;
+    private final boolean[]      finished;
+    private final String[]       outputNames;
+    private final Database       database;
+    private final CommandContext context;
+    private       List<Result>   unmappedRows;
+    private       int            unfinished;
+    private       int            buffer;
+    private       int            position;
+
+    @SuppressWarnings("unchecked")
+    private StreamingRows(final ChainWalker[] walkers, final String[] outputNames, final Database database,
+        final CommandContext context, final List<Result> unmappedRows) {
+      this.walkers = walkers;
+      this.buffers = new List[walkers.length];
+      this.finished = new boolean[walkers.length];
+      this.outputNames = outputNames;
+      this.database = database;
+      this.context = context;
+      this.unmappedRows = unmappedRows;
+      this.unfinished = walkers.length;
+      for (int t = 0; t < walkers.length; t++)
+        buffers[t] = new ArrayList<>();
+      this.buffer = walkers.length;
     }
 
-    // Merge thread-local results into a single iterator
-    final List<Result> merged = new ArrayList<>();
-    for (int t = 0; t < threadCount; t++)
-      if (threadResults[t] != null)
-        merged.addAll(threadResults[t]);
-    if (unmappedRows != null)
-      merged.addAll(unmappedRows);
-
-    final Iterator<Result> mergedIter = merged.iterator();
-    return new ResultSet() {
-      @Override
-      public boolean hasNext() {
-        return mergedIter.hasNext();
+    @Override
+    public boolean hasNext() {
+      while (true) {
+        if (buffer < buffers.length) {
+          if (position < buffers[buffer].size())
+            return true;
+          buffers[buffer].clear();
+          ++buffer;
+          position = 0;
+          continue;
+        }
+        if (unfinished > 0) {
+          walkRound();
+          continue;
+        }
+        if (unmappedRows != null && !unmappedRows.isEmpty()) {
+          // The sources the view does not map come last, as one more buffer
+          buffers[0] = unmappedRows;
+          unmappedRows = null;
+          buffer = 0;
+          position = 0;
+          continue;
+        }
+        return false;
       }
+    }
 
-      @Override
-      public Result next() {
-        return mergedIter.next();
-      }
+    @Override
+    public Result next() {
+      if (!hasNext())
+        throw new NoSuchElementException();
+      return buffers[buffer].get(position++);
+    }
 
-      @Override
-      public void close() {
+    @Override
+    public void close() {
+      unfinished = 0;
+      unmappedRows = null;
+      for (int t = 0; t < buffers.length; t++)
+        buffers[t] = new ArrayList<>(0);
+      buffer = buffers.length;
+    }
+
+    private void walkRound() {
+      int pending = 0;
+      int last = -1;
+      for (int t = 0; t < walkers.length; t++)
+        if (!finished[t]) {
+          ++pending;
+          last = t;
+        }
+      if (pending == 1)
+        walkSlice(last);
+      else {
+        final ExecutorService executor = QueryEngineManager.getInstance().getExecutorService();
+        final Future<?>[] futures = new Future<?>[pending];
+        int launched = 0;
+        for (int t = 0; t < walkers.length; t++)
+          if (!finished[t]) {
+            final int walker = t;
+            futures[launched++] = executor.submit(() -> walkSlice(walker));
+          }
+        // #4951: awaitFutures throws on interrupt (cancelling the outstanding slices) instead of returning, so a killed
+        // or timed-out query never hands out a partial round as a complete one. #6568: it also RECLAIMS a slice still
+        // queued, so the caller never parks behind busy workers.
+        GraphAlgorithms.awaitFutures(futures, launched);
       }
-    };
+      unfinished = 0;
+      for (final boolean done : finished)
+        if (!done)
+          ++unfinished;
+      buffer = 0;
+      position = 0;
+    }
+
+    private void walkSlice(final int walker) {
+      final List<Result> output = buffers[walker];
+      finished[walker] = walkers[walker].walk(ROWS_PER_ROUND,
+          (stackNodeId, paths) -> emitResult(stackNodeId, outputNames, database, context, output));
+    }
   }
 
   /**
@@ -289,6 +364,9 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
    * and accumulates counts per group using a thread-local HashMap&lt;long, long&gt;.
    * Zero GAVVertex/GAVResult allocation during traversal — pure int operations.
    * Thread-local maps are merged after all threads complete.
+   * <p>
+   * With no grouping key the count is a plain {@code long} per thread, and the answer is one row even when no path
+   * matches (issue #9738).
    */
   private ResultSet executeWithFusedAggregation(final int[] sourceNodeIds, final int totalSources,
       final int parallelism, final int chunkSize, final NeighborView[] hopViews, final TrackedTypes trackedTypes,
@@ -312,13 +390,15 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
     }
 
     final int numThreads = Math.min(parallelism, Math.max(1, (totalSources + chunkSize - 1) / chunkSize));
-    @SuppressWarnings("unchecked")
+    final boolean grouped = groupKeySlots.length > 0;
     final LongLongHashMap[] threadMaps = new LongLongHashMap[numThreads];
-    if (totalSources < 8192) {
+    final long[] threadTotals = new long[numThreads];
+    if (totalSources < PARALLEL_THRESHOLD) {
       // Single-threaded
-      threadMaps[0] = new LongLongHashMap();
+      if (grouped)
+        threadMaps[0] = new LongLongHashMap();
       aggregateChunk(sourceNodeIds, 0, totalSources, hopViews, trackedTypes, chainLength, groupKeySlots, db, context, guard,
-          threadMaps[0]);
+          threadMaps[0], threadTotals, 0);
     } else {
       // Parallel using shared query worker pool
       final ExecutorService executor = QueryEngineManager.getInstance().getExecutorService();
@@ -329,17 +409,28 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
         final int end = Math.min(start + chunkSize, totalSources);
         if (start >= totalSources)
           break;
-        threadMaps[t] = new LongLongHashMap();
+        if (grouped)
+          threadMaps[t] = new LongLongHashMap();
         final int threadIdx = t;
         futures[t] = executor.submit(() ->
             aggregateChunk(sourceNodeIds, start, end, hopViews, trackedTypes, chainLength, groupKeySlots, db, context, guard,
-                threadMaps[threadIdx]));
+                threadMaps[threadIdx], threadTotals, threadIdx));
         launched++;
       }
       // #4951: awaitFutures throws on interrupt (cancelling the outstanding chunks) instead of returning,
       // so a killed/timed-out query can never merge partial per-thread maps as a complete answer.
-      // #6568: and it reclaims a still-queued chunk instead of parking on it - see the note on the DFS path.
+      // #6568: and it reclaims a still-queued chunk instead of parking on it - see the note on the row path.
       GraphAlgorithms.awaitFutures(futures, launched);
+    }
+
+    if (!grouped) {
+      // The sources the view does not map were expanded and filtered already: each of their rows is one path
+      long total = unmappedRows != null ? unmappedRows.size() : 0;
+      for (final long threadTotal : threadTotals)
+        total += threadTotal;
+      final ResultInternal result = new ResultInternal();
+      result.setProperty(countOutputName, total);
+      return new IteratorResultSet(List.<Result>of(result).iterator());
     }
 
     // Merge thread-local maps (zero boxing — primitive long operations)
@@ -412,12 +503,7 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
         results.add(result);
       }
 
-    final Iterator<Result> iter = results.iterator();
-    return new ResultSet() {
-      @Override public boolean hasNext() { return iter.hasNext(); }
-      @Override public Result next() { return iter.next(); }
-      @Override public void close() { }
-    };
+    return new IteratorResultSet(results.iterator());
   }
 
   /**
@@ -451,11 +537,16 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
 
   /**
    * Aggregating DFS for a chunk of sources. Pure int operations — zero object allocation
-   * during traversal. Counts are accumulated in the thread-local map.
+   * during traversal. Counts are accumulated in the thread-local map, or in {@code totals[slot]} with no grouping key.
+   * <p>
+   * When nothing reads the last hop's target - no grouping key on it, no filter, no label, no relationship to keep
+   * apart from the others, no self-loop to take once - every entry of its adjacency slice is one path, and the slice is
+   * counted whole instead of walked.
    */
   private void aggregateChunk(final int[] sourceNodeIds, final int start, final int end,
       final NeighborView[] hopViews, final TrackedTypes trackedTypes, final int chainLength, final int[] groupKeySlots,
-      final Database db, final CommandContext context, final WorkGuard guard, final LongLongHashMap counts) {
+      final Database db, final CommandContext context, final WorkGuard guard, final LongLongHashMap counts,
+      final long[] totals, final int slot) {
 
     // Pre-allocate reusable filter objects ONCE per thread (zero per-path allocation)
     final Object[] filterValues;
@@ -469,76 +560,126 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
       filterResult = null;
     }
 
-    walkChunk(sourceNodeIds, start, end, hopViews, trackedTypes, chainLength, guard, stackNodeId -> {
-      // Evaluate pushed filter using reusable GAVResult — only nodeId updated per path
-      if (filterResult != null) {
-        int slot = 0;
-        if (materializeVariable[0])
-          filterValues[slot++] = makeReference(stackNodeId[0], db);
-        for (int i = 0; i < hopTargetVariables.length; i++)
-          if (hopTargetVariables[i] != null && materializeVariable[i + 1])
-            filterValues[slot++] = makeReference(stackNodeId[i + 1], db);
-        if (!Boolean.TRUE.equals(pushedFilter.evaluate(filterResult, context)))
-          return;
-      }
+    final int last = chainLength - 1;
+    boolean countLastHopWhole = pushedFilter == null && hopTargetBucketIds[last] == null
+        && (hopTracked == null || !hopTracked[last]) && hopDirections[last] != Vertex.DIRECTION.BOTH;
+    for (final int groupKeySlot : groupKeySlots)
+      if (groupKeySlot == chainLength)
+        countLastHopWhole = false;
 
-      // Pack grouping key nodeIds into a single long (supports up to 2 int keys)
-      long packedKey = 0;
-      if (groupKeySlots.length == 2)
-        packedKey = ((long) stackNodeId[groupKeySlots[0]] << 32) | (stackNodeId[groupKeySlots[1]] & 0xFFFFFFFFL);
-      else if (groupKeySlots.length == 1)
-        packedKey = stackNodeId[groupKeySlots[0]];
+    final long[] total = new long[1];
+    new ChainWalker(sourceNodeIds, start, end, hopViews, trackedTypes, chainLength, guard, countLastHopWhole)
+        .walk(Long.MAX_VALUE, (stackNodeId, paths) -> {
+          // Evaluate pushed filter using reusable GAVResult — only nodeId updated per path
+          if (filterResult != null) {
+            int filterSlot = 0;
+            if (materializeVariable[0])
+              filterValues[filterSlot++] = makeReference(stackNodeId[0], db);
+            for (int i = 0; i < hopTargetVariables.length; i++)
+              if (hopTargetVariables[i] != null && materializeVariable[i + 1])
+                filterValues[filterSlot++] = makeReference(stackNodeId[i + 1], db);
+            if (!Boolean.TRUE.equals(pushedFilter.evaluate(filterResult, context)))
+              return;
+          }
 
-      // Increment count — zero boxing, zero allocation (primitive long → long)
-      counts.increment(packedKey);
-    });
+          if (counts == null) {
+            total[0] += paths;
+            return;
+          }
+
+          // Pack grouping key nodeIds into a single long (supports up to 2 int keys)
+          long packedKey = 0;
+          if (groupKeySlots.length == 2)
+            packedKey = ((long) stackNodeId[groupKeySlots[0]] << 32) | (stackNodeId[groupKeySlots[1]] & 0xFFFFFFFFL);
+          else if (groupKeySlots.length == 1)
+            packedKey = stackNodeId[groupKeySlots[0]];
+
+          // Increment count — zero boxing, zero allocation (primitive long → long)
+          if (paths == 1)
+            counts.increment(packedKey);
+          else
+            counts.add(packedKey, paths);
+        });
+    totals[slot] = total[0];
   }
 
   /**
-   * Traverses a chunk of source vertices through the multi-hop chain.
-   * Each call has its own DFS stack — safe for parallel execution with no shared mutable state.
+   * Receives complete paths: {@code stackNodeId[0]} is the source, {@code stackNodeId[i + 1]} the target of hop i. When a
+   * walker counts its last hop whole, one call stands for {@code paths} paths that differ only in the last target, which
+   * is then not set.
    */
-  private void traverseChunk(final int[] sourceNodeIds, final int start, final int end,
-      final NeighborView[] hopViews, final TrackedTypes trackedTypes, final int chainLength, final String[] outputNames,
-      final Database db, final CommandContext context, final WorkGuard guard, final List<Result> output) {
-    walkChunk(sourceNodeIds, start, end, hopViews, trackedTypes, chainLength, guard,
-        stackNodeId -> emitResult(stackNodeId, outputNames, db, context, output));
-  }
-
-  /** Receives every complete path: {@code stackNodeId[0]} is the source, {@code stackNodeId[i + 1]} the target of hop i. */
   @FunctionalInterface
   private interface PathVisitor {
-    void visit(int[] stackNodeId);
+    void visit(int[] stackNodeId, int paths);
   }
 
   /**
-   * The DFS both the row-producing and the aggregating paths run. Each call has its own stack, so chunks can be walked
-   * in parallel with no shared mutable state.
+   * The DFS both the row-producing and the aggregating paths run, over one contiguous slice of the sources. It can stop
+   * after a number of paths and resume where it stopped, which is what lets the row path hand its rows out in bounded
+   * rounds (issue #9738). Each walker has its own stack, so walkers can run in parallel with no shared mutable state; a
+   * walker is only ever run by one thread at a time.
    */
-  private void walkChunk(final int[] sourceNodeIds, final int start, final int end, final NeighborView[] hopViews,
-      final TrackedTypes trackedTypes, final int chainLength, final WorkGuard guard, final PathVisitor visitor) {
-    // Per-thread DFS stack (allocated once, reused across all sources in this chunk)
-    final int[] stackNodeId = new int[chainLength + 1];
-    final int[] stackCursor = new int[chainLength];
-    final int[] stackEnd = new int[chainLength];
-    final int[][] fallbackNeighbors = new int[chainLength][];
+  private final class ChainWalker {
+    private final int[]            sourceNodeIds;
+    private final int              end;
+    private final NeighborView[]   hopViews;
+    private final int              chainLength;
+    private final WorkGuard        guard;
+    private final boolean          countLastHopWhole;
+    // Per-walker DFS stack (allocated once, reused across all sources of the slice)
+    private final int[]            stackNodeId;
+    private final int[]            stackCursor;
+    private final int[]            stackEnd;
+    private final int[][]          fallbackNeighbors;
     // Undirected untracked hops: how many entries equal to the hop's own vertex were met, to take each self-loop once
-    final int[] selfLoopEntries = new int[chainLength];
-    final TrackedAdjacency tracked = trackedTypes != null ? new TrackedAdjacency(trackedTypes, chainLength) : null;
-
+    private final int[]            selfLoopEntries;
+    private final TrackedAdjacency tracked;
+    private       int              next;
+    private       int              depth = -1;
     // One supernode's DFS can dwarf the whole chunk, so the per-source check alone would leave the abort
     // latency proportional to the largest fan-out. The counter climbs across sources on purpose: throttling
     // per DFS step is what bounds the latency by a fixed amount of work instead (issue #6266).
-    int steps = 0;
+    private       int              steps;
 
-    for (int s = start; s < end; s++) {
-      guard.check();
-      final int sourceNodeId = sourceNodeIds[s];
-      stackNodeId[0] = sourceNodeId;
-      initHop(hopViews, fallbackNeighbors, tracked, stackCursor, stackEnd, selfLoopEntries, 0, sourceNodeId);
-      int depth = 0;
+    private ChainWalker(final int[] sourceNodeIds, final int start, final int end, final NeighborView[] hopViews,
+        final TrackedTypes trackedTypes, final int chainLength, final WorkGuard guard, final boolean countLastHopWhole) {
+      this.sourceNodeIds = sourceNodeIds;
+      this.next = start;
+      this.end = end;
+      this.hopViews = hopViews;
+      this.chainLength = chainLength;
+      this.guard = guard;
+      this.countLastHopWhole = countLastHopWhole;
+      this.stackNodeId = new int[chainLength + 1];
+      this.stackCursor = new int[chainLength];
+      this.stackEnd = new int[chainLength];
+      this.fallbackNeighbors = new int[chainLength][];
+      this.selfLoopEntries = new int[chainLength];
+      this.tracked = trackedTypes != null ? new TrackedAdjacency(trackedTypes, chainLength) : null;
+    }
 
-      while (depth >= 0) {
+    /**
+     * Walks until the visitor was called {@code maxVisits} times or the slice is exhausted.
+     *
+     * @return true once every path of the slice was visited
+     */
+    private boolean walk(final long maxVisits, final PathVisitor visitor) {
+      long visits = 0;
+      while (true) {
+        if (depth < 0) {
+          if (next >= end)
+            return true;
+          if (visits >= maxVisits)
+            return false;
+          guard.check();
+          final int sourceNodeId = sourceNodeIds[next++];
+          stackNodeId[0] = sourceNodeId;
+          depth = 0;
+          if (enterHop(sourceNodeId, visitor))
+            ++visits;
+          continue;
+        }
+
         guard.checkPeriodically(++steps);
         if (stackCursor[depth] >= stackEnd[depth]) {
           depth--;
@@ -573,25 +714,43 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
           continue;
         }
 
-        // Target label filter
-        if (hopTargetBucketIds[depth] != null) {
-          final RID rid = provider.getRID(neighborId);
-          if (rid == null || !matchesBuckets(rid.getBucketId(), hopTargetBucketIds[depth])) {
-            stackCursor[depth]++;
-            continue;
-          }
+        // Target label filter: read from the view's bucket table, building no RID per neighbour (issue #9738)
+        if (hopTargetBucketIds[depth] != null && !matchesBuckets(provider.getBucketId(neighborId), hopTargetBucketIds[depth])) {
+          stackCursor[depth]++;
+          continue;
         }
 
         stackNodeId[depth + 1] = neighborId;
 
         if (depth == chainLength - 1) {
-          visitor.visit(stackNodeId);
+          visitor.visit(stackNodeId, 1);
           stackCursor[depth]++;
+          if (++visits >= maxVisits)
+            return false;
         } else {
           depth++;
-          initHop(hopViews, fallbackNeighbors, tracked, stackCursor, stackEnd, selfLoopEntries, depth, neighborId);
+          if (enterHop(neighborId, visitor) && ++visits >= maxVisits)
+            return false;
         }
       }
+    }
+
+    /**
+     * Positions hop {@code depth} on the adjacency of {@code nodeId}. A last hop counted whole is visited and left at
+     * once: the cursor is moved to the end of its slice.
+     *
+     * @return true when the visitor was called
+     */
+    private boolean enterHop(final int nodeId, final PathVisitor visitor) {
+      initHop(hopViews, fallbackNeighbors, tracked, stackCursor, stackEnd, selfLoopEntries, depth, nodeId);
+      if (!countLastHopWhole || depth != chainLength - 1)
+        return false;
+      final int paths = stackEnd[depth] - stackCursor[depth];
+      stackCursor[depth] = stackEnd[depth];
+      if (paths <= 0)
+        return false;
+      visitor.visit(stackNodeId, paths);
+      return true;
     }
   }
 
@@ -876,6 +1035,11 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
     sb.append(", hops=").append(hopDirections.length);
     if (hopTracked != null)
       sb.append(", unique relationships");
+    if (groupKeyVariables != null) {
+      sb.append(", fused count(*) AS ").append(countOutputName);
+      if (groupKeyVariables.length > 0)
+        sb.append(" BY ").append(String.join(", ", groupKeyVariables));
+    }
     sb.append(", cost=").append(String.format(Locale.US, "%.2f", estimatedCost));
     sb.append(", rows=").append(estimatedCardinality);
     sb.append("]\n");
@@ -892,5 +1056,17 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
 
   public int getChainLength() {
     return hopDirections.length;
+  }
+
+  /** True when {@code variable} is the chain's source or the target of one of its hops: bound on every path it walks. */
+  public boolean bindsVariable(final String variable) {
+    if (variable == null)
+      return false;
+    if (variable.equals(sourceVariable))
+      return true;
+    for (final String target : hopTargetVariables)
+      if (variable.equals(target))
+        return true;
+    return false;
   }
 }

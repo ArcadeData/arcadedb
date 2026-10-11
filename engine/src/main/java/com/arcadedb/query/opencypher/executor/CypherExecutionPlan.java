@@ -922,6 +922,18 @@ public class CypherExecutionPlan {
     }
 
     if (canUseOptimizedPhysicalPlan()) {
+      // Not a second optimization: buildExecutionStepsWithOptimizer wraps THIS plan's physicalPlan - the same
+      // instance the text below is printed from - so the structured steps and the text cannot describe two
+      // different plans. Built BEFORE the operators are printed: building the steps can fold an aggregation into
+      // the operators (a fused chain counting its paths, issue #9738), which the operators' text must show.
+      Exception stepsFailure = null;
+      if (countPushDown == null)
+        try {
+          describedSteps = stepChainOf(stepsForDescription());
+        } catch (final Exception e) {
+          stepsFailure = e;
+        }
+
       explainOutput.append(countPushDown != null
           ? "Using Cost-Based Query Optimizer (superseded by the count push-down above)\n\n"
           : "Using Cost-Based Query Optimizer\n\n");
@@ -931,15 +943,11 @@ public class CypherExecutionPlan {
       explainOutput.append(String.format(Locale.ROOT, "Total Estimated Cost: %.2f\n", physicalPlan.getTotalEstimatedCost()));
       explainOutput.append(String.format(Locale.ROOT, "Total Estimated Rows: %d\n", physicalPlan.getTotalEstimatedCardinality()));
       if (countPushDown == null) {
-        // Not a second optimization: buildExecutionStepsWithOptimizer wraps THIS plan's physicalPlan - the same
-        // instance the text above is printed from - so the structured steps and the text cannot describe two
-        // different plans.
-        try {
-          describedSteps = stepChainOf(stepsForDescription());
+        if (stepsFailure == null)
           appendStepsAfterTheOptimizedMatch(explainOutput, describedSteps);
-        } catch (final Exception e) {
+        else {
           explainOutput.append("\n");
-          appendPlanBuildFailure(explainOutput, e);
+          appendPlanBuildFailure(explainOutput, stepsFailure);
         }
       }
     } else if (isUnion()) {
@@ -1550,7 +1558,10 @@ public class CypherExecutionPlan {
           statement.getClausesInOrder(), statement.getReturnClause(), currentStep, context);
       if (countOpt != null) {
         currentStep = countOpt;
-      } else if (statement.getReturnClause().hasAggregations()) {
+      } else if (statement.getReturnClause().hasAggregations()
+          && !tryFuseAggregationIntoChain(statement.getReturnClause().getReturnItems(), currentStep)) {
+        // A step aggregates the rows, unless the fused chain counts its paths itself and answers them (issue #9738)
+
         // One row per edge of a one-hop pattern, read from a Graph Analytical View instead of the operators (#8335)
         final AbstractExecutionStep gavScan = tryGAVOneHopScan(context);
         if (gavScan != null)
@@ -1570,7 +1581,7 @@ public class CypherExecutionPlan {
           aggStep.setPrevious(currentStep);
           currentStep = aggStep;
         }
-      } else {
+      } else if (!statement.getReturnClause().hasAggregations()) {
         // Use regular projection for non-aggregation expressions
         final ProjectReturnStep returnStep = new ProjectReturnStep(statement.getReturnClause(), context,
             functionFactory);
@@ -2198,7 +2209,7 @@ public class CypherExecutionPlan {
     if (withClause.hasAggregations()) {
       if (withClause.hasNonAggregations()) {
         // Try to fuse aggregation into the GAVFusedChainOperator for parallel count(*)
-        if (!tryFuseAggregationIntoChain(withClause, currentStep)) {
+        if (!tryFuseAggregationIntoChain(withClause.getItems(), currentStep)) {
           // Fallback: GROUP BY aggregation (implicit grouping)
           final GroupByAggregationStep groupByStep =
               new GroupByAggregationStep(
@@ -2207,8 +2218,8 @@ public class CypherExecutionPlan {
           groupByStep.setPrevious(currentStep);
           currentStep = groupByStep;
         }
-      } else {
-        // Pure aggregation (no grouping)
+      } else if (!tryFuseAggregationIntoChain(withClause.getItems(), currentStep)) {
+        // Pure aggregation (no grouping), unless the fused chain counts its paths itself (issue #9738)
         final AggregationStep aggStep =
             new AggregationStep(
                 new ReturnClause(withClause.getItems(), false),
@@ -4825,31 +4836,44 @@ public class CypherExecutionPlan {
    * @return optimized CountEdgesReturnStep if pattern matches, null otherwise
    */
   /**
-   * Tries to fuse a GROUP BY count(*) aggregation into the GAVFusedChainOperator.
+   * Tries to fuse a count(*) aggregation, grouped or not, into the GAVFusedChainOperator.
    * When successful, the chain aggregates internally in parallel — bypassing the
-   * single-threaded GroupByAggregationStep entirely.
+   * single-threaded GroupByAggregationStep / AggregationStep entirely, and building no row per path (issue #9738).
+   * <p>
+   * The chain must feed the aggregation directly: a step between them (a WITH projection, an UNWIND, a filter) would
+   * read the chain's rows, which a fused chain no longer produces. The items must be exactly one non-DISTINCT count of
+   * {@code *} or of a variable the chain binds (never null on a path, so it counts every path), and at most two grouping
+   * keys, each a variable the chain binds.
    *
-   * @return true if fused successfully, false to fall back to GroupByAggregationStep
+   * @param items the items of the WITH or RETURN clause aggregating the chain's rows
+   *
+   * @return true if fused successfully, false to fall back to GroupByAggregationStep / AggregationStep
    */
-  private boolean tryFuseAggregationIntoChain(final WithClause withClause,
+  private boolean tryFuseAggregationIntoChain(final List<ReturnClause.ReturnItem> items,
       final AbstractExecutionStep currentStep) {
-    if (physicalPlan == null || !(physicalPlan.getRootOperator() instanceof GAVFusedChainOperator))
+    if (physicalPlan == null || !(physicalPlan.getRootOperator() instanceof GAVFusedChainOperator chain)
+        || !(currentStep instanceof OptimizedMatchStep))
       return false;
 
-    // Check WITH items: need non-aggregated grouping keys + exactly one count(*) or count(var)
+    // Check items: grouping keys bound by the chain + exactly one count(*) or count(var)
     final List<String> groupVarNames = new ArrayList<>();
     final List<String> groupOutputNames = new ArrayList<>();
     String countOutput = null;
     int aggCount = 0;
 
-    for (final var item : withClause.getItems()) {
+    for (final ReturnClause.ReturnItem item : items) {
       final Expression expr = item.getExpression();
       if (expr.isAggregation() && expr instanceof FunctionCallExpression funcExpr) {
-        if (!"count".equals(funcExpr.getFunctionName()) || funcExpr.isDistinct())
+        if (!"count".equals(funcExpr.getFunctionName()) || funcExpr.isDistinct() || funcExpr.getArguments().size() != 1)
+          return false;
+        // count(expr) counts the paths where expr is not null: only * and the chain's own variables are never null
+        final Expression argument = funcExpr.getArguments().get(0);
+        if (!(argument instanceof StarExpression)
+            && !(argument instanceof VariableExpression varArg && chain.bindsVariable(varArg.getVariableName())))
           return false;
         aggCount++;
         countOutput = item.getOutputName();
-      } else if (expr instanceof VariableExpression varExpr) {
+      } else if (expr instanceof VariableExpression varExpr && chain.bindsVariable(varExpr.getVariableName())) {
         groupVarNames.add(varExpr.getVariableName());
         groupOutputNames.add(item.getOutputName() != null ? item.getOutputName() : varExpr.getVariableName());
       } else
@@ -4859,7 +4883,6 @@ public class CypherExecutionPlan {
     if (aggCount != 1 || countOutput == null || groupVarNames.size() > 2)
       return false; // only support 1-2 grouping keys packed into a long
 
-    final GAVFusedChainOperator chain = (GAVFusedChainOperator) physicalPlan.getRootOperator();
     chain.setFusedAggregation(
         groupVarNames.toArray(new String[0]),
         groupOutputNames.toArray(new String[0]),
