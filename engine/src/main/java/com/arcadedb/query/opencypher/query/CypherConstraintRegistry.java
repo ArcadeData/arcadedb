@@ -65,6 +65,10 @@ import java.util.logging.Level;
  */
 final class CypherConstraintRegistry {
   static final String KEY_PREFIX = "cypher.constraint.";
+  // One monitor per open database, held only by the constraint statements themselves: never the schema's own monitor, which
+  // the schema takes internally while it changes files. Weakly keyed by the database instance, so a database closed or
+  // dropped takes its monitor with it
+  private static final Map<Database, Object> LOCKS = Collections.synchronizedMap(new WeakHashMap<>());
 
   /** Changes the declared type of a property, keeping the rest of its declaration: the engine's retype. */
   @FunctionalInterface
@@ -91,10 +95,6 @@ final class CypherConstraintRegistry {
   record Entry(String name, ConstraintKind kind, List<String> properties, String index, List<String> declared, String propertyType) {
   }
 
-  // One monitor per open database, held only by the constraint statements themselves: never the schema's own monitor, which
-  // the schema takes internally while it changes files. Weakly keyed by the database instance, so a database closed or
-  // dropped takes its monitor with it
-  private static final Map<Database, Object> LOCKS = Collections.synchronizedMap(new WeakHashMap<>());
 
   private CypherConstraintRegistry() {
   }
