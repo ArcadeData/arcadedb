@@ -248,6 +248,32 @@ class Issue9747BareSchemaSaveReplicationIT extends BaseRaftHATest {
             "partitioned"));
   }
 
+  /**
+   * The needsRepartition flag: set by a strategy change on a populated type, cleared by REBUILD TYPE. A follower that kept
+   * it set would decline to prune the type's queries after a failover; one that never got it would prune over records
+   * the old strategy placed.
+   */
+  @Test
+  void needsRepartitionFlagReachesEveryNode() throws Exception {
+    final Database leader = leader();
+    leader.command("sql", "CREATE DOCUMENT TYPE NR BUCKETS 2");
+    leader.command("sql", "CREATE PROPERTY NR.tenant STRING");
+    leader.command("sql", "CREATE INDEX ON NR (tenant) UNIQUE");
+    leader.transaction(() -> {
+      for (int i = 0; i < 10; i++)
+        leader.newDocument("NR").set("tenant", "t" + i).save();
+    });
+    assertClusterConsistency();
+
+    leader.command("sql", "ALTER TYPE NR BucketSelectionStrategy `partitioned('tenant')`");
+    assertOnEveryNode(schema -> assertThat(schema.getType("NR").isNeedsRepartition()).isTrue(), file -> {
+    });
+
+    leader.command("sql", "REBUILD TYPE NR WITH repartition = true");
+    assertOnEveryNode(schema -> assertThat(schema.getType("NR").isNeedsRepartition()).isFalse(), file -> {
+    });
+  }
+
   private Database leader() {
     final int leaderIndex = findLeaderIndex();
     assertThat(leaderIndex).isGreaterThanOrEqualTo(0);
