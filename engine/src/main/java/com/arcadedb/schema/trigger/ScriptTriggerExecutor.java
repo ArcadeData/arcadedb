@@ -21,7 +21,9 @@ package com.arcadedb.schema.trigger;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.exception.QueryTerminatedException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.RunningQuery;
 import com.arcadedb.query.polyglot.GraalPolyglotEngine;
 import com.arcadedb.query.polyglot.HostClassLookupFilter;
 import com.arcadedb.query.polyglot.PolyglotEngineManager;
@@ -93,8 +95,9 @@ public class ScriptTriggerExecutor implements TriggerExecutor {
         scriptEngine.setAttribute("$oldRecord", oldRecord);
       }
 
-      // Execute the script
-      final Value result = scriptEngine.eval(script);
+      // Execute the script, interrupted if the statement firing the trigger is terminated (issue #9689)
+      final GraalPolyglotEngine engine = scriptEngine;
+      final Value result = engine.runTerminable(RunningQuery.current(), "the trigger", () -> engine.eval(script));
 
       // If script returns a boolean false, abort the operation
       if (result != null && result.isBoolean() && !result.asBoolean()) {
@@ -102,6 +105,9 @@ public class ScriptTriggerExecutor implements TriggerExecutor {
       }
 
       return true;
+    } catch (final QueryTerminatedException e) {
+      // Stopped on request: not a fault of the trigger
+      throw e;
     } catch (final PolyglotException e) {
       LogManager.instance().log(this, Level.SEVERE, "Error executing JavaScript trigger '%s': %s", e, triggerName,
           GraalPolyglotEngine.endUserMessage(e, true));
@@ -132,9 +138,13 @@ public class ScriptTriggerExecutor implements TriggerExecutor {
       scriptEngine.setAttribute("rid", rid);
       scriptEngine.setAttribute("$rid", rid);
 
-      final Value result = scriptEngine.eval(script);
+      final GraalPolyglotEngine engine = scriptEngine;
+      final Value result = engine.runTerminable(RunningQuery.current(), "the trigger", () -> engine.eval(script));
 
       return result == null || !result.isBoolean() || result.asBoolean();
+    } catch (final QueryTerminatedException e) {
+      // Stopped on request: not a fault of the trigger
+      throw e;
     } catch (final PolyglotException e) {
       LogManager.instance().log(this, Level.SEVERE, "Error executing JavaScript trigger '%s': %s", e, triggerName,
           GraalPolyglotEngine.endUserMessage(e, true));

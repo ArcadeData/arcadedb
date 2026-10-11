@@ -24,9 +24,11 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.exception.QueryTerminatedException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.OperationType;
 import com.arcadedb.query.QueryEngine;
+import com.arcadedb.query.RunningQuery;
 import com.arcadedb.query.sql.executor.ExecutionPlan;
 import com.arcadedb.query.sql.executor.IteratorResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -84,9 +86,13 @@ public class ArcadeGremlin extends ArcadeQuery {
       // Issue #7408: the plan is collected from the run the caller drains, never from a second one.
       final GremlinExecutionPlan executionPlan = profileExecution ? GremlinExecutionPlan.attach(resultSet) : null;
 
+      // The statement this traversal runs for: its result is iterated after execute() returns, possibly elsewhere (#9689)
+      final RunningQuery runningQuery = RunningQuery.current();
       final IteratorResultSet result = new IteratorResultSet(new Iterator() {
         @Override
         public boolean hasNext() {
+          if (runningQuery != null)
+            runningQuery.checkNotTerminated("the gremlin traversal");
           return resultSet.hasNext();
         }
 
@@ -112,7 +118,14 @@ public class ArcadeGremlin extends ArcadeQuery {
 
       return result;
 
+    } catch (final QueryTerminatedException e) {
+      throw e;
     } catch (final ScriptException e) {
+      // An eager terminal step stopped by a terminate: the termination, not a gremlin failure (issue #9689)
+      int depth = 0;
+      for (Throwable t = e.getCause(); t != null && depth++ < 16; t = t.getCause())
+        if (t instanceof QueryTerminatedException terminated)
+          throw terminated;
       // eval() both builds the traversal and, for eager terminal steps such as .next()/.value(), iterates it.
       // A ScriptException can therefore be either a genuine parse/build failure (e.g. a Groovy closure like
       // `filter { ... }` or any syntax the secure gremlin-lang engine rejects, root cause GremlinParserException)

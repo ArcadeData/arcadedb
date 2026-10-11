@@ -1867,6 +1867,15 @@ public enum GlobalConfiguration {
       Set to 0 or a negative value for unlimited (WARNING: removes the protection). Default is 100""",
       Integer.class, 100),
 
+  SERVER_HTTP_TERMINATE_ON_CLIENT_DISCONNECT("arcadedb.server.httpTerminateOnClientDisconnect", SCOPE.SERVER,
+      """
+      Terminates the statement of an HTTP request whose client closes the connection while it runs, so a client that gives \
+      up (its own deadline, a killed process, curl --max-time) does not leave the server working on an answer nobody will \
+      read (issue #9689). Applies to HTTP/1.x connections without TLS, once the request body has been read. A client that \
+      half-closes its side of the connection after sending the request and still waits for the response is taken for one \
+      that left, as Undertow itself takes it: set to false for such clients. Default is true""",
+      Boolean.class, true),
+
   SERVER_HTTP_BODY_CONTENT_MAX_SIZE("arcadedb.server.httpBodyContentMaxSize", SCOPE.SERVER,
       """
       Maximum size in bytes for HTTP request body content, measured ON THE WIRE. Set to -1 for unlimited size \
