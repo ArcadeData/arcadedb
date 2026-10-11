@@ -120,6 +120,10 @@ class GlobalConfigurationPublishableValueTest {
         .as("only the malformed entry is masked, the ones around it keep their own rule")
         .isEqualTo("Universe[elon:*****];Beta:*****;Gamma");
     assertThat(GlobalConfiguration.SERVER_DEFAULT_DATABASES.publishableValue("Beta")).isEqualTo("Beta");
+    assertThat(GlobalConfiguration.SERVER_DEFAULT_DATABASES.publishableValue("Beta:"))
+        .as("nothing after the ':' is nothing to hide, and '*****' would report a password where none is")
+        .isEqualTo("Beta:");
+    assertThat(GlobalConfiguration.SERVER_DEFAULT_DATABASES.publishableValue("Beta:;Gamma:x")).isEqualTo("Beta:;Gamma:*****");
   }
 
   @Test

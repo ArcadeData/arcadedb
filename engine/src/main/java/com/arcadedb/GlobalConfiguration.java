@@ -4509,7 +4509,8 @@ public enum GlobalConfiguration {
       // unclosed '[' masks the remainder below (issue #9773: the server's own error line quotes this entry). A bare
       // database name, the other way to forget the credentials, carries no ':' and is copied through as written.
       final int separator = databases.indexOf(':', begin);
-      if (separator < 0 || separator >= end) {
+      // NOTHING AFTER THE ':' IS NOTHING TO HIDE, AS FOR AN EMPTY PASSWORD INSIDE A BLOCK
+      if (separator < 0 || separator >= end - 1) {
         redacted.append(databases, begin, end);
         return;
       }
