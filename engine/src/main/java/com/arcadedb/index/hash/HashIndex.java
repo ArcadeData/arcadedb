@@ -743,6 +743,11 @@ public class HashIndex implements IndexInternal {
    * equality test. An index created before this was applied therefore has to be rebuilt to answer for both
    * spellings - and the rebuild surfaces whatever duplicates the constraint had been letting through.
    */
+  @Override
+  public Object[] convertLookupKeys(final Object[] keys) {
+    return convertKeys(keys);
+  }
+
   private Object[] convertKeys(final Object[] keys) {
     if (keys != null) {
       final byte[] keyTypes = bucket.declaredKeyTypes;

@@ -1016,6 +1016,11 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
     return convertKeys(keys);
   }
 
+  @Override
+  public Object[] convertLookupKeys(final Object[] keys) {
+    return convertKeys(keys);
+  }
+
   protected RWLockContext getLock() {
     return lock;
   }

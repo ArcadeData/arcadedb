@@ -630,6 +630,13 @@ public class TypeIndex implements RangeIndex, IndexInternal {
     return getFirstUnderlyingIndex().getKeyTypes();
   }
 
+  /** Every bucket index of this type index converts keys alike: they share the definition. */
+  @Override
+  public Object[] convertLookupKeys(final Object[] keys) {
+    checkIsValid();
+    return getFirstUnderlyingIndex().convertLookupKeys(keys);
+  }
+
   @Override
   public byte[] getBinaryKeyTypes() {
     checkIsValid();
