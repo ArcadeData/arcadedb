@@ -5734,8 +5734,12 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           plainSize = -headSize[0];
         else
           return null;
+        // A single page image is one commit by itself. A size that does not fit the page is not a record to serve
+        final int contentPosition = (int) (headPosition + headSize[1]);
+        if ((long) contentPosition + plainSize > head.getMaxContentSize())
+          return null;
         final Binary plain = new Binary((int) plainSize);
-        plain.append(head.getImmutableView((int) (headPosition + headSize[1]), (int) plainSize));
+        plain.append(head.getImmutableView(contentPosition, (int) plainSize));
         plain.position(0);
         return plain;
       }

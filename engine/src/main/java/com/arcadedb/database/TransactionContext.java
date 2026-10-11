@@ -1116,7 +1116,9 @@ public class TransactionContext implements Transaction {
 
   /**
    * The (page, version) pairs a multi-page record was assembled from the last time this transaction validated it, or
-   * null when it never did (#9070). See {@link #setSnapshotChunkChain}.
+   * null when it never did (#9070). See {@link #setSnapshotChunkChain}. An EMPTY array means the record was read from pages
+   * not all pinned (#9620): it was read in this transaction, but there is no chain to compare a later read with, so it
+   * matches none.
    */
   public long[] getSnapshotChunkChain(final RID rid) {
     return snapshotChunkChains == null ? null : snapshotChunkChains.get(rid);
@@ -1146,6 +1148,10 @@ public class TransactionContext implements Transaction {
    * newest committed images because a page of its chain was pinned by the read of another record before a concurrent
    * commit rewrote it (#9620). The pages stay as they are, so the reads that pinned them stay repeatable, and every later
    * read of this record answers this content.
+   * <p>
+   * The content is held until the transaction ends, like the pages it pins: a REPEATABLE_READ transaction that reads many
+   * large records this way holds each of them once. Refusing the read instead, which is what bounded it before, is the
+   * failure this exists to remove.
    */
   public void setSnapshotRecordContent(final RID rid, final byte[] content) {
     if (snapshotRecordContents == null)
