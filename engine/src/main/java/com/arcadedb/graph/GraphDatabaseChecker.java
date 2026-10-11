@@ -26,8 +26,12 @@ import com.arcadedb.database.Record;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.RepairTransaction;
+import com.arcadedb.exception.DatabaseIsClosedException;
+import com.arcadedb.exception.DatabaseIsReadOnlyException;
+import com.arcadedb.exception.DatabaseOperationInProgressException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
@@ -983,7 +987,8 @@ public class GraphDatabaseChecker {
    * Prunes the adjacency entry the walk stands on. {@code remove()} deletes the edge the entry names and, when that
    * delete fails, keeps the entry and lets the failure out (#9779). For this repair the entry IS the damage, so when the
    * edge cannot be deleted because something else around it is broken, the entry is still taken out, as the iterator
-   * did before #9779. A refused delete and a retryable conflict are not damage, and propagate.
+   * did before #9779. What says nothing about the entry is not damage and propagates: a refused delete, a retryable
+   * conflict (a lock timeout included), a timeout, a database closed or read only under the check, a concurrent operation.
    * <p>
    * A delete that failed half way (the far endpoint disconnected, the record not yet freed) leaves that much applied in
    * the repair transaction. That is trusted, as every other repair here is: the walk goes on over the entries that remain,
@@ -992,7 +997,8 @@ public class GraphDatabaseChecker {
   private static void pruneEntry(final Iterator<Pair<RID, RID>> entries, final RID edgeRID, final CheckReport report) {
     try {
       entries.remove();
-    } catch (final SecurityException | NeedRetryException e) {
+    } catch (final SecurityException | NeedRetryException | TimeoutException | DatabaseIsClosedException
+                   | DatabaseIsReadOnlyException | DatabaseOperationInProgressException e) {
       throw e;
     } catch (final RuntimeException e) {
       if (!(entries instanceof EdgeVertexIterator list))

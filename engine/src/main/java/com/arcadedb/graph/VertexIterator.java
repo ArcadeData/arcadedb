@@ -39,6 +39,7 @@ public class VertexIterator extends ResettableIteratorBase<Vertex> {
 
   @Override
   public boolean hasNext() {
+    checkNotInvalidated();
     if (currentContainer == null)
       return false;
 

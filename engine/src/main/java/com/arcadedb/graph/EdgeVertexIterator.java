@@ -35,6 +35,7 @@ public class EdgeVertexIterator extends ResettableIteratorBase<Pair<RID, RID>> {
 
   @Override
   public boolean hasNext() {
+    checkNotInvalidated();
     if (currentContainer == null)
       return false;
 

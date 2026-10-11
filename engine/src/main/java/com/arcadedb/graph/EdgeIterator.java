@@ -51,6 +51,7 @@ public class EdgeIterator extends ResettableIteratorBase<Edge> {
 
   @Override
   public boolean hasNext() {
+    checkNotInvalidated();
     if (pending)
       return true;
 

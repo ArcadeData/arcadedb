@@ -25,6 +25,8 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.DatabaseChecker;
+import com.arcadedb.event.AfterRecordDeleteListener;
+import com.arcadedb.event.BeforeRecordDeleteListener;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
@@ -36,6 +38,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 
+import java.util.ConcurrentModificationException;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.Map;
@@ -269,6 +272,92 @@ class Issue9779EdgeIteratorRemoveTest {
     for (final RID target : far)
       assertThat(vertex(target).countEdges(Vertex.DIRECTION.IN, "LW")).isEqualTo(removed.contains(target) ? 0 : 1);
     assertCheckIsClean();
+  }
+
+  /** A before-delete listener that vetoes the delete leaves the edge in place on both sides, as with {@code edge.delete()}. */
+  @ParameterizedTest
+  @EnumSource(Walk.class)
+  void aVetoedDeleteKeepsTheEntry(final Walk walk) {
+    connect("HE", 2);
+    final BeforeRecordDeleteListener veto = record -> !(record instanceof Edge);
+    database.getEvents().registerListener(veto);
+    try {
+      database.transaction(() -> {
+        final Iterator<?> it = walk.open(vertex(a), "HE");
+        it.next();
+        it.remove();
+        assertThat(catchThrowable(it::remove)).isInstanceOf(IllegalStateException.class);
+      });
+    } finally {
+      database.getEvents().unregisterListener(veto);
+    }
+    assertConnected("HE", 2);
+    assertCheckIsClean();
+  }
+
+  /**
+   * A delete listener that writes to the walked list while {@code remove()} deletes - a cascade delete of a sibling edge,
+   * a new edge from the same vertex - must not make the positional removal take out the wrong entry or overwrite the
+   * listener's write. The graph stays consistent; an iterator whose view of the list went stale refuses to go on with a
+   * {@link ConcurrentModificationException}, as java.util collections do.
+   */
+  @ParameterizedTest
+  @EnumSource(Walk.class)
+  void aDeleteListenerWritingToTheWalkedListKeepsTheGraphConsistent(final Walk walk) {
+    for (final String type : new String[] { "HE", "LW" })
+      for (final boolean cascade : new boolean[] { true, false }) {
+        connect(type, 3);
+        final boolean[] inListener = { false };
+        final AfterRecordDeleteListener listener = record -> {
+          if (inListener[0] || !(record instanceof Edge))
+            return;
+          inListener[0] = true;
+          try {
+            if (cascade) {
+              // DELETE THE EDGE TO targets[2], WHICHEVER EDGE THE ITERATOR REMOVED
+              for (final Edge edge : vertex(a).getEdges(Vertex.DIRECTION.OUT, type))
+                if (edge.getIn().equals(targets[2])) {
+                  edge.delete();
+                  break;
+                }
+            } else
+              vertex(a).modify().newEdge(type, targets[2]);
+          } finally {
+            inListener[0] = false;
+          }
+        };
+        database.getEvents().registerListener(listener);
+        final RID[] removed = new RID[1];
+        try {
+          database.transaction(() -> {
+            final Iterator<?> it = walk.open(vertex(a), type);
+            RID target = farEnd(it.next());
+            if (target.equals(targets[2]))
+              target = farEnd(it.next());
+            it.remove();
+            removed[0] = target;
+            try {
+              while (it.hasNext())
+                it.next();
+            } catch (final ConcurrentModificationException e) {
+              // THE ITERATOR'S VIEW OF THE LIST WENT STALE: REFUSING TO GO ON IS THE CONTRACT
+            }
+          });
+        } finally {
+          database.getEvents().unregisterListener(listener);
+        }
+
+        // 3 edges, one removed by the iterator, then one more removed (cascade) or added (create) by the listener
+        final long expected = cascade ? 1 : 3;
+        assertThat(vertex(a).countEdges(Vertex.DIRECTION.OUT, type)).as(type + " cascade=" + cascade).isEqualTo(expected);
+        assertThat(countType(type)).isEqualTo(expected);
+        assertThat(vertex(removed[0]).countEdges(Vertex.DIRECTION.IN, type)).isZero();
+        assertThat(vertex(targets[2]).countEdges(Vertex.DIRECTION.IN, type)).isEqualTo(cascade ? 0 : 2);
+        assertCheckIsClean();
+
+        // CLEAN UP FOR THE NEXT ROUND
+        database.transaction(() -> database.command("sql", "DELETE FROM " + type));
+      }
   }
 
   /** A self-loop walked on its OUT side is disconnected from its IN side too: only the walked list is skipped. */
