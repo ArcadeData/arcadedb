@@ -551,8 +551,14 @@ public class PromQLEvaluator {
     final PromQLResult rightResult = evaluate(bin.right(), evalTimeMs, queryStartMs, queryEndMs, stepMs, depth);
 
     // scalar-scalar
-    if (leftResult instanceof ScalarResult ls && rightResult instanceof ScalarResult rs)
+    if (leftResult instanceof ScalarResult ls && rightResult instanceof ScalarResult rs) {
+      // Prometheus refuses a scalar-scalar comparison without `bool`: there is no sample to keep or drop, so only the
+      // 0/1 answer is meaningful and it must be asked for (issue #9723). Checked on the evaluated operands, not in the
+      // parser, because whether an operand is a scalar is not always syntactic (`abs(-1)`, `(1 > bool 0)`).
+      if (bin.op().isComparison() && !bin.returnBool())
+        throw new IllegalArgumentException(SCALAR_COMPARISON_WITHOUT_BOOL);
       return new ScalarResult(applyBinaryOp(bin.op(), ls.value(), rs.value()), evalTimeMs);
+    }
 
     // vector-scalar
     if (leftResult instanceof InstantVector iv && rightResult instanceof ScalarResult rs)
@@ -1052,6 +1058,8 @@ public class PromQLEvaluator {
   }
 
   private static final String METRIC_NAME_LABEL = "__name__";
+  /** Prometheus' own wording, so a client matching on it sees the same error from either server. */
+  private static final String SCALAR_COMPARISON_WITHOUT_BOOL = "comparisons between scalars must use BOOL modifier";
   private static final int    MAX_TYPE_NAME_LENGTH   = 256;
   private static final Pattern VALID_TYPE_NAME_PATTERN = Pattern.compile("[a-zA-Z_][a-zA-Z0-9_]*");
 
