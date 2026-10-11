@@ -260,7 +260,9 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
    * <p>
    * A rebuild of the view between two rounds fails the next one with a {@link NeedRetryException} (see
    * {@link #checkNodeIdSpace(Object)}): unlike a fused count, which is all or nothing, a consumer may by then hold the rows
-   * of the earlier rounds, which were read in one numbering and are right; only the rest of the walk is refused.
+   * of the earlier rounds, which were read in one numbering and are right; only the rest of the walk is refused. Retrying
+   * means running the query again from its first row: a caller that keeps the rows it already had and appends the
+   * retry's would hold those rows twice.
    */
   private final class StreamingRows implements ResultSet {
     private final ChainWalker[]  walkers;
