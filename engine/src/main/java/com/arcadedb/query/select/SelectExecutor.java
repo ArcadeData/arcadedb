@@ -819,6 +819,10 @@ public class SelectExecutor {
           } catch (final IllegalArgumentException e) {
             continue;
           }
+          // A KEY TYPE THAT READS AN UNREADABLE VALUE AS null (A DATE KEY) WOULD PROBE THE NULL KEY, WHOSE ROWS NEVER MATCH
+          // THE VALUE: NOT A KEY OF THE INDEX EITHER
+          if (key == null && item != null)
+            continue;
           if (probed.add(BinaryComparator.canonicalizeForByteEquality(key)))
             keys.add(key);
         }

@@ -274,6 +274,8 @@ public class MultiIndexCursor implements IndexCursor {
 
   @Override
   public void close() {
+    pending = null;
+    pendingKeys = null;
     for (int i = 0; i < cursors.size(); ++i) {
       final IndexCursor cursor = cursors.get(i);
       if (cursor != null) {

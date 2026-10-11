@@ -26,6 +26,7 @@ import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -220,6 +221,39 @@ class Issue9613Issue9614SelectIndexCandidatesTest extends TestHelper {
       assertThat(where(type).property("d").in().value(values).count()).as(kind).isEqualTo(2);
       assertThat(where(type).property("d").in().value(values).limit(2).documents().toList()).as(kind).hasSize(2);
     }
+  }
+
+  @Test
+  void zeroAndNegativeZeroAreOneKey() {
+    database.command("sql", "CREATE DOCUMENT TYPE Dbl");
+    database.command("sql", "CREATE PROPERTY Dbl.d DOUBLE");
+    database.command("sql", "CREATE INDEX ON Dbl (d) NOTUNIQUE");
+    database.transaction(() -> {
+      database.newDocument("Dbl").set("id", "z1").set("d", 0.0d).save();
+      database.newDocument("Dbl").set("id", "z2").set("d", -0.0d).save();
+      database.newDocument("Dbl").set("id", "o1").set("d", 1.0d).save();
+    });
+    final List<Object> values = List.of(0.0d, -0.0d);
+    assertThat(ids(where("Dbl").property("d").in().value(values))).containsExactly("z1", "z2");
+    assertThat(where("Dbl").property("d").in().value(values).count()).isEqualTo(2);
+  }
+
+  @Test
+  void anUnreadableDateDoesNotProbeTheNullKey() {
+    // a DATETIME key reads 'abc' as null: the rows without a date must not answer it, with or without a limit
+    database.command("sql", "CREATE DOCUMENT TYPE Dt");
+    database.command("sql", "CREATE PROPERTY Dt.t DATETIME");
+    database.command("sql", "CREATE INDEX ON Dt (t) NOTUNIQUE NULL_STRATEGY INDEX");
+    final LocalDateTime when = LocalDateTime.of(2026, 1, 1, 10, 0);
+    database.transaction(() -> {
+      for (int i = 0; i < 3; i++)
+        database.newDocument("Dt").set("id", "n" + i).save();
+      database.newDocument("Dt").set("id", "d1").set("t", when).save();
+    });
+    final List<Object> values = List.of("abc", when);
+    assertThat(ids(where("Dt").property("t").in().value(values))).containsExactly("d1");
+    assertThat(ids(where("Dt").property("t").in().value(values).limit(1))).containsExactly("d1");
+    assertThat(where("Dt").property("t").in().value(List.of("abc")).count()).isZero();
   }
 
   @Test
