@@ -145,7 +145,7 @@ class Issue9741ConcurrentCreateIndexTest extends TestHelper {
   @Test
   void concurrentReplacersBuildOneIndex() throws Exception {
     final int threads = 8;
-    for (int round = 0; round < 3; round++) {
+    for (int round = 0; round < 10; round++) {
       if (database.getSchema().existsType("V"))
         database.getSchema().dropType("V");
       createAndFillType(5_000);
