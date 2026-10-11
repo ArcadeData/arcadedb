@@ -407,37 +407,50 @@ public class DateUtils {
    * @throws IllegalArgumentException when the instant is outside what {@code precisionToUse} can represent in a {@code long}
    */
   public static Long dateTimeToTimestampExact(final Database database, final Object value, final ChronoUnit precisionToUse) {
-    final Object temporal = value instanceof String string && !FileUtils.isLong(string) ? parseDateTime(database, string) : value;
-    final Long timestamp = dateTimeToTimestamp(database, temporal, precisionToUse);
-    if (timestamp == null)
-      return null;
-    final Instant instant = switch (temporal) {
-      case Date date -> Instant.ofEpochMilli(date.getTime());
-      case Calendar calendar -> Instant.ofEpochMilli(calendar.getTimeInMillis());
-      case LocalDateTime localDateTime -> localDateTime.toInstant(ZoneOffset.UTC);
-      case LocalDate localDate -> localDate.atStartOfDay(ZoneOffset.UTC).toInstant();
-      case ZonedDateTime zonedDateTime -> zonedDateTime.toInstant();
-      case OffsetDateTime offsetDateTime -> offsetDateTime.toInstant();
-      case Instant i -> i;
-      // a number or a numeric string is already a count in the target unit, which the conversion above read exactly
-      default -> null;
+    // One conversion, done with exact arithmetic: the same epoch counts dateTimeToTimestamp answers wherever those fit a long,
+    // since a write path runs it once per stored value
+    final long unitsPerSecond = switch (precisionToUse) {
+      case SECONDS -> 1L;
+      case MILLIS -> 1_000L;
+      case MICROS -> 1_000_000L;
+      case NANOS -> 1_000_000_000L;
+      default -> 0L;
     };
-    if (instant != null) {
-      final long unitsPerSecond = switch (precisionToUse) {
-        case MILLIS -> 1_000L;
-        case MICROS -> 1_000_000L;
-        case NANOS -> 1_000_000_000L;
-        default -> 1L;
+    if (unitsPerSecond == 0L)
+      return dateTimeToTimestamp(database, value, precisionToUse);
+    try {
+      return switch (value) {
+        case null -> null;
+        // millisecond types: narrowed toward zero as convertTimestamp narrows them, widened exactly
+        case Date date -> millisToUnit(date.getTime(), unitsPerSecond);
+        case Calendar calendar -> millisToUnit(calendar.getTimeInMillis(), unitsPerSecond);
+        case LocalDateTime localDateTime -> secondsToUnit(localDateTime.toEpochSecond(ZoneOffset.UTC), localDateTime.getNano(), unitsPerSecond);
+        case LocalDate localDate -> Math.multiplyExact(Math.multiplyExact(localDate.toEpochDay(), 86_400L), unitsPerSecond);
+        case ZonedDateTime zonedDateTime -> secondsToUnit(zonedDateTime.toEpochSecond(), zonedDateTime.getNano(), unitsPerSecond);
+        case OffsetDateTime offsetDateTime -> secondsToUnit(offsetDateTime.toEpochSecond(), offsetDateTime.getNano(), unitsPerSecond);
+        case Instant instant -> secondsToUnit(instant.getEpochSecond(), instant.getNano(), unitsPerSecond);
+        // already a count in the target unit, as dateTimeToTimestamp reads it
+        case Number number -> numberToEpochUnits(number);
+        case String string -> FileUtils.isLong(string) ? Long.parseLong(string) :
+            dateTimeToTimestampExact(database, parseDateTime(database, string), precisionToUse);
+        default -> null;
       };
-      try {
-        Math.addExact(Math.multiplyExact(instant.getEpochSecond(), unitsPerSecond), instant.getNano() / (1_000_000_000L / unitsPerSecond));
-      } catch (final ArithmeticException e) {
-        throw new IllegalArgumentException(
-            "Date/time value " + value + " is outside the range a " + precisionToUse.toString().toLowerCase(Locale.ENGLISH)
-                + "-precision timestamp can represent");
-      }
+    } catch (final ArithmeticException e) {
+      throw new IllegalArgumentException("Date/time value " + value + " is outside the range a " + precisionToUse.toString()
+          .toLowerCase(Locale.ENGLISH) + "-precision timestamp can represent");
     }
-    return timestamp;
+  }
+
+  /** Epoch seconds plus a nanosecond fraction as a count of the unit {@code unitsPerSecond} names, refusing an overflow. */
+  private static long secondsToUnit(final long epochSecond, final int nanoOfSecond, final long unitsPerSecond) {
+    return Math.addExact(Math.multiplyExact(epochSecond, unitsPerSecond), nanoOfSecond / (1_000_000_000L / unitsPerSecond));
+  }
+
+  /** Epoch millis as a count of the unit {@code unitsPerSecond} names: seconds truncated toward zero, finer units exactly. */
+  private static long millisToUnit(final long millis, final long unitsPerSecond) {
+    if (unitsPerSecond == 1L)
+      return millis / 1_000L;
+    return Math.multiplyExact(millis, unitsPerSecond / 1_000L);
   }
 
   /**
