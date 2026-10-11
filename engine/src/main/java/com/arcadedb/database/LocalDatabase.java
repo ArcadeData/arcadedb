@@ -2012,8 +2012,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   /**
    * Deletes all external-bucket records referenced by the given document's TYPE_EXTERNAL property pointers, in the same
-   * transaction as the primary delete. No-op if the type has no EXTERNAL properties or the document was not loaded with
-   * a buffer.
+   * transaction as the primary delete. No-op if the type that owns the record's bucket never had paired external buckets
+   * or the document was not loaded with a buffer.
    */
   private void cascadeDeleteExternalValues(final Document document) {
     cascadeDeleteExternalValues(document, false);
@@ -2024,10 +2024,10 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    *                without the user-delete permission check, like the primary body (issue #8922)
    */
   private void cascadeDeleteExternalValues(final Document document, final boolean retract) {
-    if (!(document.getType() instanceof LocalDocumentType localType))
-      return;
-    if (!localType.hasExternalProperties())
-      return;
+    // Not pre-gated on document.getType().hasExternalProperties() (issue #9683): that flag reflects the CURRENT schema, so
+    // it skipped the cleanup between setExternal(false) and the REBUILD TYPE that inlines the values, and it is asked of
+    // the type the record is TAGGED with, which a polymorphic scan sets to the queried parent even for a record living
+    // in a subtype bucket. findExistingExternalRids gates itself on hasExternalBuckets() of the type owning the bucket.
     final Map<String, RID> externalRids = serializer.findExistingExternalRids(this, document);
     RuntimeException failure = null;
     for (final RID extRid : externalRids.values()) {

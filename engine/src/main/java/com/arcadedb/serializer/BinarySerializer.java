@@ -1243,6 +1243,23 @@ public class BinarySerializer {
     return properties;
   }
 
+  /**
+   * The type whose schema governs how a record is STORED: the type that owns the record's bucket. This may differ from
+   * {@code record.getType()}: a polymorphic scan ({@code scanType} with polymorphic=true) tags every record with the queried
+   * parent type even when it physically lives in a subtype's bucket, and that parent knows neither the subtype's own
+   * EXTERNAL properties nor its paired external buckets (issue #9683). A record without a bucket (embedded, or not yet
+   * placed) falls back to its own type.
+   */
+  private static DocumentType getStorageType(final Database database, final Document record) {
+    final RID identity = record.getIdentity();
+    if (identity != null && identity.getBucketId() > -1) {
+      final DocumentType ownerType = database.getSchema().getTypeByBucketId(identity.getBucketId());
+      if (ownerType != null)
+        return ownerType;
+    }
+    return record.getType();
+  }
+
   public Binary serializeProperties(final Database database, final Document record, final Binary header, final Binary content) {
     return serializeProperties(database, record, header, content, false);
   }
@@ -1258,7 +1275,10 @@ public class BinarySerializer {
 
     final Map<String, Object> properties = record.propertiesAsMap();
     final Dictionary dictionary = database.getSchema().getDictionary();
-    final DocumentType documentType = record.getType();
+    final DocumentType documentType = getStorageType(database, record);
+    // An embedded document has no bucket of its own, so it has no paired external bucket either: its values are always
+    // written inline, inside the owner record (which may itself keep the whole embedded value in ITS external bucket)
+    final boolean externalize = !readOnly && !(record instanceof EmbeddedDocument);
 
     // In read-only mode no external bucket interactions occur, so we skip the old-buffer scan entirely.
     final Map<String, RID> existingExternalRids = readOnly ? Collections.emptyMap() : findExistingExternalRids(database, record);
@@ -1272,12 +1292,14 @@ public class BinarySerializer {
     final String[] validNames = new String[propertiesSize];
     final Object[] validValues = new Object[propertiesSize];
     final byte[] validTypes = new byte[propertiesSize];
+    final Property[] validDefs = new Property[propertiesSize];
     int validCount = 0;
 
     for (final Map.Entry<String, Object> entry : properties.entrySet()) {
       final String propertyName = entry.getKey();
       final Object value = entry.getValue();
-      final Property propertyType = documentType.getPropertyIfExists(propertyName);
+      // POLYMORPHIC: AN EXTERNAL OR COMPRESSED PROPERTY DECLARED ON A SUPERTYPE APPLIES TO THE SUBTYPE TOO (ISSUE #9683)
+      final Property propertyType = documentType.getPolymorphicPropertyIfExists(propertyName);
       final byte type = BinaryTypes.getTypeFromValue(value, propertyType);
       if (type == -1) {
         // INVALID: SKIP IT
@@ -1290,6 +1312,7 @@ public class BinarySerializer {
       validNames[validCount] = propertyName;
       validValues[validCount] = value;
       validTypes[validCount] = type;
+      validDefs[validCount] = propertyType;
       ++validCount;
     }
 
@@ -1305,9 +1328,9 @@ public class BinarySerializer {
 
       final int startContentPosition = content.position();
 
-      final Property propertyDef = documentType.getPropertyIfExists(propertyName);
+      final Property propertyDef = validDefs[i];
       // ON A READ (readOnly) THE VALUE IS WRITTEN INLINE BY THE else BRANCH BELOW: THE EXTERNAL BUCKET IS NEVER TOUCHED
-      if (propertyDef != null && propertyDef.isExternal() && !readOnly) {
+      if (externalize && propertyDef != null && propertyDef.isExternal()) {
         // NULL is not externalised. set("field", null) is treated semantically the same as remove("field")
         // for storage purposes: we write a TYPE_NULL byte INLINE in the main record and let the orphan-
         // cleanup pass at the end of this method delete any pre-existing external blob (the property is
@@ -1327,13 +1350,8 @@ public class BinarySerializer {
                 "Cannot serialize EXTERNAL property '" + propertyName + "' on type '" + documentType.getName()
                     + "': record has no target bucket. The bucket layer must set a provisional identity before serialize.");
           final int primaryBucketId = identity.getBucketId();
-          // Look up the external bucket via the type that ACTUALLY owns the primary bucket. This may differ from
-          // record.getType(): polymorphic scans (scanType POLYMORPHIC, MATCH, etc.) tag every record with the queried
-          // parent type even when the record physically lives in a subtype's bucket. Trusting documentType in that
-          // case would miss the subtype's external bucket map.
-          final LocalDocumentType ownerType = (LocalDocumentType) database.getSchema().getEmbedded().getTypeByBucketId(primaryBucketId);
-          final Integer extBucketId = (ownerType != null ? ownerType : (LocalDocumentType) documentType)
-              .getExternalBucketIdFor(primaryBucketId);
+          // documentType is the type that owns the primary bucket (see getStorageType), so its map pairs that bucket
+          final Integer extBucketId = ((LocalDocumentType) documentType).getExternalBucketIdFor(primaryBucketId);
           if (extBucketId == null)
             throw new SerializationException(
                 "Cannot serialize EXTERNAL property '" + propertyName + "' on type '" + documentType.getName()
@@ -1624,7 +1642,7 @@ public class BinarySerializer {
       return Collections.emptyMap();
     if (!(record instanceof BaseDocument))
       return Collections.emptyMap();
-    if (!(record.getType() instanceof LocalDocumentType ldt) || !ldt.hasExternalBuckets())
+    if (!(getStorageType(database, record) instanceof LocalDocumentType ldt) || !ldt.hasExternalBuckets())
       return Collections.emptyMap();
     final Binary buf = ((BaseRecord) record).getBuffer();
     if (buf == null)
