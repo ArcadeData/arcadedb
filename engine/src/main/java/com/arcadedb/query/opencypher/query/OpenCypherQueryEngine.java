@@ -662,9 +662,8 @@ public class OpenCypherQueryEngine implements QueryEngine {
     final DocumentType type = schema.getType(typeName);
     final String propName = existing.getName();
     final Database database = schema.getEmbedded().getDatabase();
-    final Type newType = target.type();
 
-    final List<String> notCarried = typeDependentAttributesNotCarried(database, existing, newType, target.replacesOfType());
+    final List<String> notCarried = typeDependentAttributesNotCarried(database, existing, newType);
     if (!notCarried.isEmpty())
       throw refuseRetype(typeName, existing, newType, notCarried, null);
 
@@ -702,12 +701,12 @@ public class OpenCypherQueryEngine implements QueryEngine {
    * described with the reason. An empty list means every one of them, if set, carries over unchanged.
    */
   private static List<String> typeDependentAttributesNotCarried(final Database database, final Property existing,
-      final Type newType, final boolean replacesOfType) {
+      final Type newType) {
     final Type oldType = existing.getType();
     final List<String> notCarried = new ArrayList<>(4);
 
     // the element type of a LIST is the value type of a MAP and nothing else: no other type has elements to constrain
-    if (!replacesOfType && existing.getOfType() != null && !(hasElementType(oldType) && hasElementType(newType)))
+    if (existing.getOfType() != null && !(hasElementType(oldType) && hasElementType(newType)))
       notCarried.add("OF '" + existing.getOfType() + "' (" + newType + " has no element type)");
 
     // a pattern describes text: on any other type it is matched against the value's string form, which is not what it
