@@ -69,7 +69,9 @@ public abstract class LiteralParameterizer<S> {
    * apart from {@link #statements}, so the one-off texts of a workload that writes its values in never push out the statements
    * it keeps re-running. No statement is held here: a hit resolves it in {@link #statements} by its key, which stays the one
    * owner of every statement, and a key no longer there sends the text down the lexing path. The values held here are never
-   * handed out: each hit gets its own copy.
+   * handed out: each hit gets its own copy of the map. The copy is shallow, which is enough because a value is always an
+   * immutable scalar: {@link #literalValue} answers what the parser gives one literal token (a number or a string), never a
+   * collection.
    */
   private final SegmentedLRUCache<String, ExtractedText> parameterizedTexts;
 

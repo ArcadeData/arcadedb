@@ -5707,6 +5707,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * Assembles a record from the newest committed images of its pages, through the page manager alone: no page is pinned
    * or released, so nothing any other read of the transaction relied on moves (#9620). The chain is validated like any
    * read ({@link #validateChainRead}) and walked again when a commit landed under the walk.
+   * <p>
+   * The walk mirrors the one in {@link #loadMultiPageRecord(RID, BasePage, int, long[], boolean)}, chunk layout and trace
+   * included, and must change with it. It is kept apart because that one reads through the transaction, which pins every
+   * page it fetches, and diagnoses a chain it cannot follow, while this one may pin nothing and only gives up.
    *
    * @param headMarker the marker the head chunk carried in the image the caller read. A newest head of the same kind is
    *                   walked as a chain; a head that collapsed back into a plain record (#6178) is that record's content.
