@@ -223,14 +223,24 @@ public class SelectStatement extends Statement {
    * Only the planning and the first batch are covered: an index dropped after the first rows were returned surfaces as the
    * {@link IndexException} of {@code FetchFromIndexStep}, which beats a silently short answer. Before the first row nothing has
    * been returned, so running the statement again is safe (a function with side effects, such as {@code sequence.next()},
-   * would run twice, but the exception comes from the index, before the first row). Every attempt after the first plans
-   * without the cache, which may still hold the stale plan.
+   * would run twice, but the exception comes from the index, before the first row). {@link LocalResultSet} computes the first
+   * row when it is created, so that row is inside the loop. Every attempt after the first plans without the cache, which may
+   * still hold the stale plan.
+   * <p>
+   * Planning again picks the index of the same name when a concurrent DDL recreated it, and a DDL that keeps dropping and
+   * recreating it can take that one away too, attempt after attempt (issue #9615). The last attempt therefore plans without the
+   * indexes of the types it reads, which no DDL can take away under it: a scan answers what the index would have, slower.
    */
   private ResultSet openResultSet(final CommandContext context, final Function<CommandContext, InternalExecutionPlan> firstPlanner) {
     for (int attempt = 1; ; attempt++) {
       InternalExecutionPlan plan = null;
       try {
-        plan = attempt == 1 ? firstPlanner.apply(context) : createExecutionPlanNoCache(context);
+        if (attempt == 1)
+          plan = firstPlanner.apply(context);
+        else if (attempt < STALE_INDEX_PLAN_MAX_ATTEMPTS)
+          plan = createExecutionPlanNoCache(context);
+        else
+          plan = new SelectExecutionPlanner(this).withoutTypeIndexes().createExecutionPlan(context, false);
         return new LocalResultSet(plan);
       } catch (final IndexException e) {
         if (attempt >= STALE_INDEX_PLAN_MAX_ATTEMPTS)

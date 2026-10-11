@@ -172,12 +172,18 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
   /**
    * Called at cloning time. The STORAGE types are what travels between the components of one index: a new file that
    * belongs to an index already on disk (a compacted sub-index, or the mutable a split creates) must keep encoding
-   * keys the way the existing files do, so it inherits them instead of re-deriving them from the schema.
+   * keys the way the existing files do, so it inherits them instead of re-deriving them from the schema. The null strategy
+   * travels the same way (#9717): it is not in any file header, the schema reads it back from the mutable component, so a
+   * new component left on the field default would silently turn an ERROR or INDEX index into a SKIP one, in memory and in
+   * schema.json, at the first compaction.
    */
   protected LSMTreeIndexAbstract(final LSMTreeIndex mainIndex, final DatabaseInternal database, final String name,
       final boolean unique, final String filePath, final String ext, final Type[] keyTypes, final byte[] storageKeyTypes,
-      final int pageSize, final int version) throws IOException {
+      final int pageSize, final int version, final NULL_STRATEGY nullStrategy) throws IOException {
     super(database, name, filePath, TEMP_EXT + ext, ComponentFile.MODE.READ_WRITE, pageSize, version);
+    if (nullStrategy == null)
+      throw new IllegalArgumentException("Index null strategy is null");
+
     this.mainIndex = mainIndex;
     this.serializer = database.getSerializer();
     this.comparator = serializer.getComparator();
@@ -185,6 +191,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
     this.keyTypes = keyTypes;
     this.storageKeyTypes = storageKeyTypes;
     this.binaryKeyTypes = declaredKeyTypes(storageKeyTypes);
+    this.nullStrategy = nullStrategy;
     REMOVED_ENTRY_RID = new RID(-1, -1L);
   }
 
