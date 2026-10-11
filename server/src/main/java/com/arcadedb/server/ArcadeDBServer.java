@@ -247,7 +247,7 @@ public class ArcadeDBServer {
   private             ServerQueryProfiler                   queryProfiler;
   // The statements this server is running, listed and terminated by the "list queries" / "terminate query" commands
   // (issue #9680). One per server rather than per JVM: each node answers for its own work.
-  private final       RunningQueryRegistry                  runningQueries = new RunningQueryRegistry();
+  private final       RunningQueryRegistry                  runningQueries = newRunningQueryRegistry();
   // Admission for backups of a database, shared by every entry point that can start one on this server: the
   // auto-backup schedule, its immediate trigger, and the HTTP "trigger backup" command (issue #6753). Created with
   // the server rather than with the auto-backup plugin, because the HTTP command backs a database up whether or not
@@ -1899,6 +1899,14 @@ public class ArcadeDBServer {
 
   public HttpServer getHttpServer() {
     return httpServer;
+  }
+
+  private static RunningQueryRegistry newRunningQueryRegistry() {
+    final RunningQueryRegistry registry = new RunningQueryRegistry();
+    // The one rule every surface listing or terminating statements applies - HTTP, Cypher SHOW/TERMINATE TRANSACTIONS,
+    // a Postgres pg_cancel_backend: the server administrator sees everything, other users their own (issue #9689)
+    registry.setAdministrator(ServerSecurityUser::isServerAdministrator);
+    return registry;
   }
 
   /** The statements this server is running (issue #9680). */

@@ -27,7 +27,9 @@ import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
 import java.nio.channels.WritableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
@@ -692,5 +694,57 @@ class FileUtilsTest {
     assertThatThrownBy(() -> FileUtils.writeFully(zeroProgressChannel, ByteBuffer.wrap(new byte[] { 1, 2, 3 })))
         .isInstanceOf(IOException.class);
     assertThat(callCount.get()).as("must fail on the first zero-progress call, not retry it").isEqualTo(1);
+  }
+
+  /**
+   * Issue #9640: the positional {@link FileChannel#write(ByteBuffer, long)} is no more obliged to write everything
+   * than the relative one is. {@link FileUtils#writeFully(FileChannel, ByteBuffer, long)} has to keep writing, at the
+   * position the previous call stopped at, until the buffer is drained.
+   */
+  @Test
+  void positionalWriteFullyLoopsThroughAShortWritingFileChannel(@TempDir final Path dir) throws IOException {
+    final byte[] content = "the quick brown fox jumps over the lazy dog".getBytes(StandardCharsets.UTF_8);
+    final File file = dir.resolve("short-write.bin").toFile();
+    try (final RandomAccessFile raf = new RandomAccessFile(file, "rw")) {
+      raf.write(new byte[10]);
+      final ShortTransferFileChannel channel = new ShortTransferFileChannel(raf.getChannel(), 3);
+      final ByteBuffer buffer = ByteBuffer.wrap(content);
+
+      FileUtils.writeFully(channel, buffer, 5);
+
+      assertThat(buffer.hasRemaining()).isFalse();
+      assertThat(channel.shortTransfers.get()).as("the cap must have forced short writes").isGreaterThan(1);
+    }
+    final byte[] onDisk = Files.readAllBytes(file.toPath());
+    assertThat(onDisk).hasSize(5 + content.length);
+    assertThat(Arrays.copyOfRange(onDisk, 5, onDisk.length)).isEqualTo(content);
+  }
+
+  /**
+   * Issue #9640: {@link FileUtils#readFully(FileChannel, ByteBuffer, long)} must keep reading through short reads and
+   * report the bytes it got, stopping short only at the end of the file - where a single unchecked call took
+   * whatever the first read returned as the whole answer.
+   */
+  @Test
+  void positionalReadFullyLoopsThroughAShortReadingFileChannelAndStopsOnlyAtEndOfFile(@TempDir final Path dir)
+      throws IOException {
+    final byte[] content = "the quick brown fox jumps over the lazy dog".getBytes(StandardCharsets.UTF_8);
+    final File file = dir.resolve("short-read.bin").toFile();
+    Files.write(file.toPath(), content);
+    try (final RandomAccessFile raf = new RandomAccessFile(file, "r")) {
+      final ShortTransferFileChannel channel = new ShortTransferFileChannel(raf.getChannel(), 2);
+
+      final ByteBuffer whole = ByteBuffer.allocate(20);
+      assertThat(FileUtils.readFully(channel, whole, 4)).isEqualTo(20);
+      assertThat(whole.array()).isEqualTo(Arrays.copyOfRange(content, 4, 24));
+      assertThat(channel.shortTransfers.get()).as("the cap must have forced short reads").isGreaterThan(1);
+
+      final ByteBuffer pastTheEnd = ByteBuffer.allocate(20);
+      assertThat(FileUtils.readFully(channel, pastTheEnd, content.length - 5)).as("only what the file still holds")
+          .isEqualTo(5);
+
+      assertThat(FileUtils.readFully(channel, ByteBuffer.allocate(4), content.length)).as("nothing at end of file")
+          .isZero();
+    }
   }
 }
