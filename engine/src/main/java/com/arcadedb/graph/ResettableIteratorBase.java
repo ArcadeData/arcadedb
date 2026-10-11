@@ -180,6 +180,8 @@ public abstract class ResettableIteratorBase<T> implements ResettableIterator<T>
     ((DatabaseInternal) target.getDatabase()).updateRecord(target);
     returnedContainer = null;
 
+    // A hasNext() PEEK MAY HAVE MOVED THE CURSOR TO AN OLDER SEGMENT ALREADY: THEN NO POSITION IT HOLDS IS IN THIS ONE,
+    // AND NOTHING NEEDS TO MOVE
     if (container == currentContainer) {
       // GO ON ON THE COPY THAT WAS WRITTEN
       currentContainer = target;
