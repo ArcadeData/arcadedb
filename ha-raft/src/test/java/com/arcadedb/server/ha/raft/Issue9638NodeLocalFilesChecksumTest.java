@@ -83,6 +83,18 @@ class Issue9638NodeLocalFilesChecksumTest {
   }
 
   /**
+   * The documented trade-off of matching by shape: a stray file that takes the engine's own shape is left out too. Pinned
+   * so that narrowing or widening the shape is a decision, not an accident.
+   */
+  @Test
+  void aStrayFileTakingTheGavShapeIsLeftOut(@TempDir final Path dir) throws Exception {
+    Files.writeString(dir.resolve("schema.json"), "{\"types\":[]}");
+    Files.writeString(dir.resolve("gav-notes.csr"), "not written by the engine");
+
+    assertThat(SnapshotManager.computeFileChecksums(dir.toFile())).containsOnlyKeys("schema.json");
+  }
+
+  /**
    * The issue's three-node scenario stated as the property: the leader closed cleanly last with a GAV persisted, one
    * follower closed an hour ago with older statistics, the other got its copy by snapshot install and has neither.
    */

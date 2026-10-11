@@ -239,7 +239,7 @@ public final class SnapshotManager {
     final byte[] buffer = new byte[8192];
     for (final File file : files) {
       final String name = file.getName();
-      if (isNodeLocalScratchFileName(name))
+      if (isNodeLocalFileName(name))
         continue;
 
       final Integer snapshotFileId = snapshotFileIds.get(name);
@@ -341,7 +341,7 @@ public final class SnapshotManager {
    * {@link NodeLocalFiles#isNodeLocalFileName(String)} in the engine, beside the constants their writers build the names
    * from, rather than listed here, so a new engine side file is classified where it is written.
    */
-  private static boolean isNodeLocalScratchFileName(final String name) {
+  private static boolean isNodeLocalFileName(final String name) {
     return name.endsWith(".wal")
         || name.endsWith(".prev.json")
         || name.endsWith(".lock")
