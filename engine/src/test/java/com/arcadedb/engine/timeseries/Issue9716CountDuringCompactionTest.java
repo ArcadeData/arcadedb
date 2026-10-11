@@ -31,8 +31,8 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -119,10 +119,13 @@ class Issue9716CountDuringCompactionTest extends TestHelper {
 
   /**
    * Compacts the type and runs {@code read} on another thread while the first shard's compaction is parked between the
-   * sealed swap and the mutable clear. The hook gives the read a second to answer before letting the compaction go on;
-   * a read that waits on the compaction (the fixed behavior) answers once it has finished.
+   * sealed swap and the mutable clear. The hook holds the compaction there until the read has either answered (the
+   * unfixed behavior: it read both layers without waiting) or parked on a shard's compaction lock (the fixed behavior:
+   * it waits for this compaction and answers once it has finished). Both are observed, not timed, so a slow runner
+   * cannot make the read miss the window. The 30 s bound is a hang guard only.
    */
   private <T> T readDuringCompactionSwap(final Callable<T> read) throws Exception {
+    final TimeSeriesEngine engine = ((LocalTimeSeriesType) database.getSchema().getType("T")).getEngine();
     final ExecutorService reader = Executors.newSingleThreadExecutor();
     final AtomicReference<Future<T>> pending = new AtomicReference<>();
     try {
@@ -131,18 +134,12 @@ class Issue9716CountDuringCompactionTest extends TestHelper {
           return;
         final Future<T> future = reader.submit(read);
         pending.set(future);
-        try {
-          future.get(1, TimeUnit.SECONDS);
-        } catch (final TimeoutException e) {
-          // The read waits for this compaction: let it finish
-        } catch (final InterruptedException e) {
-          Thread.currentThread().interrupt();
-        } catch (final Exception e) {
-          // Surfaced by the get() below
-        }
+        final long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30);
+        while (!future.isDone() && !readerParkedOnACompactionLock(engine) && System.nanoTime() < deadline)
+          Thread.onSpinWait();
       };
 
-      ((LocalTimeSeriesType) database.getSchema().getType("T")).getEngine().compactAll();
+      engine.compactAll();
       TimeSeriesShard.TEST_PHASE4C_AFTER_SWAP_HOOK = null;
 
       assertThat(pending.get()).as("the compaction reached the hook").isNotNull();
@@ -150,5 +147,12 @@ class Issue9716CountDuringCompactionTest extends TestHelper {
     } finally {
       reader.shutdownNow();
     }
+  }
+
+  private static boolean readerParkedOnACompactionLock(final TimeSeriesEngine engine) {
+    for (int s = 0; s < engine.getShardCount(); s++)
+      if (((ReentrantReadWriteLock) engine.getShard(s).getCompactionLock()).hasQueuedThreads())
+        return true;
+    return false;
   }
 }

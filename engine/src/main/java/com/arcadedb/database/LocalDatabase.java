@@ -841,7 +841,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       // Counted OUTSIDE the database read lock (issue #9716): the count waits on each shard's compaction read lock,
       // and a compaction holding that lock's write side commits, which takes the database read lock. Waiting for the
       // compaction lock while holding the database lock would let a close() queued for the write lock in between
-      // park all three. The query paths that read a TimeSeries type take the compaction lock without it, too.
+      // park all three. The query paths that read a TimeSeries type take the compaction lock without it, too. A close()
+      // that lands after this check still races the count, as it races those paths: it fails with the exception below.
+      checkDatabaseIsOpen();
       try {
         return engine.countSamples();
       } catch (final IOException e) {
