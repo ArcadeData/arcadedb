@@ -129,15 +129,8 @@ public class GremlinServerPlugin implements ServerPlugin {
       if (key.startsWith("gremlin."))
         applyServerSetting(settings, key.substring("gremlin.".length()), configuration.getValue(key, null));
 
-    // Production mode conceals the text of an engine failure on every surface (issue #9317). The default WebSocket
-    // channelizer is swapped for one that applies it; another channelizer chosen in gremlin-server.yaml answers with
-    // TinkerPop's own text, which the operator is told about rather than left to discover
-    if (WebSocketChannelizer.class.getName().equals(settings.channelizer))
-      settings.channelizer = ConcealingWebSocketChannelizer.class.getName();
-    else if (server.isProductionMode())
-      LogManager.instance().log(this, Level.WARNING,
-          "Gremlin Server channelizer '%s' does not conceal engine error messages in production mode; use the default channelizer",
-          settings.channelizer);
+    // Production mode conceals the text of an engine failure on every surface (issues #9317, #9639)
+    settings.channelizer = resolveChannelizer(settings.channelizer, server.isProductionMode());
 
     // GremlinServer cannot report an OS-chosen port, so a configured 0 becomes a concrete free port here
     if (settings.port == 0)
@@ -192,6 +185,26 @@ public class GremlinServerPlugin implements ServerPlugin {
         engineNames.addAll(settings.scriptEngines.keySet());
       arcadeGraphManager.bindScriptEnginesLive(gremlinServer.getServerGremlinExecutor().getGremlinExecutor(), engineNames);
     }
+  }
+
+  /**
+   * The channelizer the Gremlin Server is built with. The default WebSocket channelizer (or none) becomes
+   * {@link ConcealingWebSocketChannelizer}, which rewrites every server-failure answer in production mode. Any other
+   * channelizer - TinkerPop's {@code WsAndHttpChannelizer}, {@code HttpChannelizer}, {@code UnifiedChannelizer}, or a
+   * custom class - answers with {@code Throwable.getMessage()}, which for a duplicated key is the customer's stored key
+   * values: in production mode it fails the start, like an invalid {@code gremlin.*} setting does, instead of serving
+   * that text under a setting that promises otherwise (issue #9639). Outside production mode it is used as configured.
+   */
+  static String resolveChannelizer(final String configured, final boolean productionMode) {
+    if (configured == null || configured.isBlank() || WebSocketChannelizer.class.getName().equals(configured.trim()))
+      return ConcealingWebSocketChannelizer.class.getName();
+    if (ConcealingWebSocketChannelizer.class.getName().equals(configured.trim()))
+      return ConcealingWebSocketChannelizer.class.getName();
+    if (productionMode)
+      throw new ServerException("Gremlin Server channelizer '" + configured
+          + "' cannot conceal engine error messages, which 'arcadedb.server.mode=production' requires: use the default channelizer ("
+          + WebSocketChannelizer.class.getName() + ") or run the server in another mode");
+    return configured;
   }
 
   /**
