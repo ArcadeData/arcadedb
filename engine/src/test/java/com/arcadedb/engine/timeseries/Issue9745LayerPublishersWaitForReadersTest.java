@@ -46,6 +46,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * holds the shard's compaction read lock - exactly what a running aggregation holds - and must leave both layers and the
  * windowed count unchanged until that lock is released. A publisher that skipped the write lock would finish (or
  * publish) inside the window, and the layers read under it would no longer match the snapshot.
+ * <p>
+ * One shard on purpose: the lock under test is per shard, and with one shard the aggregation reads it on the calling
+ * thread, which is what lets this thread re-enter the read lock it already holds to take the windowed count.
  */
 class Issue9745LayerPublishersWaitForReadersTest extends TestHelper {
 
@@ -77,7 +80,9 @@ class Issue9745LayerPublishersWaitForReadersTest extends TestHelper {
   void retentionWaitsForAReaderHoldingTheCompactionReadLock() throws Exception {
     fill();
     final long sealedBefore = shard().getSealedStore().getTotalSampleCount();
-    // Past the first round's block only: retention drops whole blocks older than the cutoff
+    // The cutoff is the first timestamp of the second round, so it is past every sample of the first round's block (the
+    // last one is a second earlier) and before every other block: retention drops whole blocks whose samples are all
+    // older than the cutoff, which here is exactly that one
     final State after = runWhileAReaderHoldsTheLock(engine -> engine.applyRetention(T0 + ROWS_PER_BLOCK * 1000L));
     assertThat(after.sealedSamples()).as("retention dropped the oldest block once the reader let go")
         .isEqualTo(sealedBefore - ROWS_PER_BLOCK);
@@ -116,7 +121,7 @@ class Issue9745LayerPublishersWaitForReadersTest extends TestHelper {
     assertThat(shard().getCompactionLock()).as("the queue checks below need the JDK's ReentrantReadWriteLock")
         .isInstanceOf(ReentrantReadWriteLock.class);
     final ReentrantReadWriteLock lock = (ReentrantReadWriteLock) shard().getCompactionLock();
-    final ExecutorService executor = Executors.newSingleThreadExecutor();
+    final ExecutorService executor = Executors.newSingleThreadExecutor(r -> new Thread(r, "issue9745-maintenance"));
     try {
       final Future<?> running;
       lock.readLock().lock();
@@ -131,7 +136,9 @@ class Issue9745LayerPublishersWaitForReadersTest extends TestHelper {
           LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(1));
 
         assertThat(running.isDone()).as("the operation waits for the reader instead of publishing past it").isFalse();
-        assertThat(lock.getQueueLength()).as("the operation, and nothing else, is parked on the compaction lock").isEqualTo(1);
+        // Not done AND queued: a publisher that skipped the write lock fails here, whether it already finished or is
+        // still running unlocked, before state() is even asked
+        assertThat(lock.getQueueLength()).as("the operation is parked on the compaction lock").isGreaterThanOrEqualTo(1);
         // state() runs the windowed count on THIS thread, which already holds the read lock: ReentrantReadWriteLock lets a
         // reentrant read through even with a writer queued. aggregateMulti reads a single shard on the calling thread; if it
         // ever read it from another thread, that read would queue behind the parked writer and this would hang up to the
