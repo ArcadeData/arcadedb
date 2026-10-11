@@ -1292,6 +1292,7 @@ public class PostgresNetworkExecutor extends Thread {
       String commandTag = query.query;
       final String upperCaseText = query.query.toUpperCase(Locale.ENGLISH);
       final PostgresSystemQuery systemQuery = PostgresSystemQuery.parse(query.query);
+      PostgresTransactionStatement transactionStatement;
       if (isSettingCommand(upperCaseText)) {
         // Throws for a SET this server cannot parse or cannot honour, which the catch arms below answer with an
         // ErrorResponse: a CommandComplete SET is only ever sent for a SET that did what it asked (issue #8392)
@@ -1315,16 +1316,13 @@ public class PostgresNetworkExecutor extends Thread {
             createResultSet(systemQuery.columnName, systemQueryValue(systemQuery.function)).iterator());
       else if (upperCaseText.startsWith("SHOW "))
         resultSet = new IteratorResultSet(showResultSet(query.query.substring(5)).iterator());
-      else if (isBeginStatement(upperCaseText)) {
-        applyTransactionControl(PostgresPortal.TransactionControl.BEGIN, null);
-        answersNoRows = true;
-        resultSet = new IteratorResultSet(Collections.emptyIterator());
-      } else if (isCommitStatement(upperCaseText)) {
-        applyTransactionControl(PostgresPortal.TransactionControl.COMMIT, null);
-        answersNoRows = true;
-        resultSet = new IteratorResultSet(Collections.emptyIterator());
-      } else if (isRollbackStatement(upperCaseText)) {
-        applyTransactionControl(PostgresPortal.TransactionControl.ROLLBACK, null);
+      else if ((transactionStatement = PostgresTransactionStatement.parse(upperCaseText)) != null) {
+        // PostgreSQL's own spellings - START TRANSACTION, ABORT, BEGIN <modes>, AND [NO] CHAIN - none of which the SQL
+        // grammar parses (issue #9631). One it cannot honor (READ ONLY, SERIALIZABLE, AND CHAIN) is refused with 0A000
+        // before anything moves
+        transactionStatement.checkSupported();
+        applyTransactionControl(transactionStatement.control, transactionStatement.isolation);
+        commandTag = transactionStatement.tag;
         answersNoRows = true;
         resultSet = new IteratorResultSet(Collections.emptyIterator());
       } else {
@@ -3251,7 +3249,7 @@ public class PostgresNetworkExecutor extends Thread {
       final String portalName = readString();
 
       // Normalized HERE, once, for every branch below and for everything that reads portal.query later (issue
-      // #8245): isBeginStatement()/isCommitStatement()/isRollbackStatement() match by exact string equality, and
+      // #8245): PostgresTransactionStatement.parse() matches whole tokens up to the end of the text, and
       // getTag() reads portal.query for the command tag. The healthy transaction-control branch used to read the
       // raw wire text, so "BEGIN;", "COMMIT;", "\nCOMMIT" or "COMMIT " fell through to sqlEngine.parse(), whose
       // grammar accepts them (parse : statement SEMICOLON? EOF): the ENGINE began/committed/rolled back at
@@ -3303,7 +3301,7 @@ public class PostgresNetworkExecutor extends Thread {
         // queryCommand()'s own aborted-transaction branch, which has no language gate either. No real client
         // sends a transaction-control statement under a non-"sql" language mid-session.
         // portal.query is already trimmed and stripped of a trailing ';' at the top of this method (issue #8245),
-        // which is what isCommitStatement()/isRollbackStatement()'s exact string equality needs here too - a
+        // which is what isTransactionEndStatement()'s token matching needs here too - a
         // client that sends "ROLLBACK;" must not fall through to the silent return below (issue #6548 review
         // follow-up).
         final String abortedUpperCaseText = portal.query.toUpperCase(Locale.ENGLISH);
@@ -3479,14 +3477,16 @@ public class PostgresNetworkExecutor extends Thread {
             // clients actually send BEGIN. SAVEPOINT/RELEASE/SET were already on the right side of this line;
             // these three now join them, and Execute answers them identically either way (the ignoreExecution
             // arm writes the same CommandComplete an empty cachedResultSet produced).
-            if (isBeginStatement(upperCaseText)) {
-              portal.transactionControl = PostgresPortal.TransactionControl.BEGIN;
-              portal.ignoreExecution = true;
-            } else if (isCommitStatement(upperCaseText)) {
-              portal.transactionControl = PostgresPortal.TransactionControl.COMMIT;
-              portal.ignoreExecution = true;
-            } else if (isRollbackStatement(upperCaseText)) {
-              portal.transactionControl = PostgresPortal.TransactionControl.ROLLBACK;
+            // PostgreSQL's own spellings (issue #9631) are recognized by PostgresTransactionStatement: START
+            // TRANSACTION, ABORT, BEGIN <modes>, AND [NO] CHAIN. One this server cannot honor is refused HERE, at
+            // Parse, like a SET it cannot honor, so no statement is registered for it. The query becomes the tag
+            // (START TRANSACTION, or the canonical BEGIN/COMMIT/ROLLBACK), which is what getTag() reads at Execute.
+            final PostgresTransactionStatement transactionStatement = PostgresTransactionStatement.parse(upperCaseText);
+            if (transactionStatement != null) {
+              transactionStatement.checkSupported();
+              portal.transactionControl = transactionStatement.control;
+              portal.isolationLevel = transactionStatement.isolation;
+              portal.query = transactionStatement.tag;
               portal.ignoreExecution = true;
             } else {
               final SQLQueryEngine sqlEngine = (SQLQueryEngine) database.getQueryEngine("sql");
@@ -3723,49 +3723,9 @@ public class PostgresNetworkExecutor extends Thread {
    */
   private static PostgresSessionSettings.Assignment transactionModes(final String query, final String modes,
       final String isolationParameter) {
-    final String[] tokens = TRANSACTION_MODE_SEPARATOR.split(modes.toUpperCase(Locale.ENGLISH));
-    String isolation = null;
-    int i = 0;
-    while (i < tokens.length) {
-      final String token = tokens[i++];
-      switch (token) {
-      case "ISOLATION" -> {
-        if (i >= tokens.length || !"LEVEL".equals(tokens[i++]) || i >= tokens.length)
-          throw syntaxError(query);
-        final String first = tokens[i++];
-        if ("SERIALIZABLE".equals(first))
-          isolation = "serializable";
-        else {
-          if (i >= tokens.length)
-            throw syntaxError(query);
-          final String second = tokens[i++];
-          if ("REPEATABLE".equals(first) && "READ".equals(second))
-            isolation = "repeatable read";
-          else if ("READ".equals(first) && ("COMMITTED".equals(second) || "UNCOMMITTED".equals(second)))
-            isolation = "read " + second.toLowerCase(Locale.ENGLISH);
-          else
-            throw syntaxError(query);
-        }
-      }
-      case "READ" -> {
-        if (i >= tokens.length)
-          throw syntaxError(query);
-        final String access = tokens[i++];
-        if ("ONLY".equals(access))
-          throw new PostgresSessionSettings.SettingException(PostgresSessionSettings.READ_ONLY_NOT_SUPPORTED,
-              PostgresSessionSettings.SQLSTATE_FEATURE_NOT_SUPPORTED);
-        if (!"WRITE".equals(access))
-          throw syntaxError(query);
-      }
-      case "NOT" -> {
-        if (i >= tokens.length || !"DEFERRABLE".equals(tokens[i++]))
-          throw syntaxError(query);
-      }
-      case "DEFERRABLE" -> {
-      }
-      default -> throw syntaxError(query);
-      }
-    }
+    // THE SAME MODE PARSER BEGIN / START TRANSACTION USE (ISSUE #9631), SO BOTH REFUSE THE SAME THINGS THE SAME WAY
+    final String isolation = PostgresTransactionStatement.isolationOfModes(query,
+        TRANSACTION_MODE_SEPARATOR.split(modes.toUpperCase(Locale.ENGLISH)), 0);
     return isolation != null ? new PostgresSessionSettings.Assignment(isolationParameter, isolation, false) : PostgresSessionSettings.Assignment.NO_OP;
   }
 
@@ -4390,12 +4350,12 @@ public class PostgresNetworkExecutor extends Thread {
       return "UPDATE " + resultSetCount;
     } else if (upperCaseText.startsWith("DELETE")) {
       return "DELETE " + resultSetCount;
-    } else if (isBeginStatement(upperCaseText)) {
-      return "BEGIN";
-    } else if (isCommitStatement(upperCaseText)) {
-      return "COMMIT";
-    } else if (isRollbackStatement(upperCaseText)) {
-      return "ROLLBACK";
+    } else if (PostgresTransactionStatement.TAG_START_TRANSACTION.equals(upperCaseText)) {
+      // The one transaction-control tag that is not the statement's first word (issue #9631)
+      return PostgresTransactionStatement.TAG_START_TRANSACTION;
+    } else if ("BEGIN".equals(upperCaseText) || "COMMIT".equals(upperCaseText) || "ROLLBACK".equals(upperCaseText)) {
+      // Every transaction-control statement leaves its canonical tag as the text of the portal or the command tag
+      return upperCaseText;
     } else if (upperCaseText.startsWith("SAVEPOINT ")) {
       return "SAVEPOINT";
     } else if (upperCaseText.startsWith("RELEASE ")) {
@@ -4416,41 +4376,15 @@ public class PostgresNetworkExecutor extends Thread {
   }
 
   /**
-   * Matches a BEGIN statement, including the SQL-standard {@code ... WORK} form alongside the bare and
-   * {@code ... TRANSACTION} forms - the same three-way shape as {@link #isCommitStatement} and
-   * {@link #isRollbackStatement} (issue #6543 review follow-up: PostgreSQL's own grammar is
-   * {@code BEGIN [ WORK | TRANSACTION ]}).
-   */
-  private static boolean isBeginStatement(final String upperCaseText) {
-    return "BEGIN".equals(upperCaseText) || "BEGIN TRANSACTION".equals(upperCaseText) || "BEGIN WORK".equals(upperCaseText);
-  }
-
-  /**
-   * Matches a COMMIT/END statement, the counterpart to the existing BEGIN check (issue #6457). Covers the
-   * SQL-standard {@code ... WORK} form alongside the bare and {@code ... TRANSACTION} forms (issue #6543).
-   */
-  private static boolean isCommitStatement(final String upperCaseText) {
-    return "COMMIT".equals(upperCaseText) || "COMMIT TRANSACTION".equals(upperCaseText) || "COMMIT WORK".equals(upperCaseText) ||
-        "END".equals(upperCaseText) || "END TRANSACTION".equals(upperCaseText) || "END WORK".equals(upperCaseText);
-  }
-
-  /**
-   * Matches a ROLLBACK statement (issue #6457, extended to the extended-query protocol and the
-   * SQL-standard {@code ... WORK} form by issue #6543). Deliberately excludes {@code ROLLBACK TO
-   * <savepoint>}, which the dispatch already routes elsewhere (it does not end the transaction).
-   */
-  private static boolean isRollbackStatement(final String upperCaseText) {
-    return "ROLLBACK".equals(upperCaseText) || "ROLLBACK TRANSACTION".equals(upperCaseText) || "ROLLBACK WORK".equals(upperCaseText);
-  }
-
-  /**
    * True for any statement that ends an explicit transaction block, whichever keyword the client used
-   * (issue #6457). While the transaction is aborted, real Postgres treats all three identically - a plain
-   * rollback - rather than distinguishing COMMIT (which would otherwise try to persist writes that
-   * already failed).
+   * (issue #6457) - COMMIT, END, ROLLBACK, ABORT, with their {@code WORK}/{@code TRANSACTION} and {@code AND NO CHAIN}
+   * forms (issue #9631). While the transaction is aborted, real Postgres treats them all identically - a plain
+   * rollback - rather than distinguishing COMMIT (which would otherwise try to persist writes that already failed).
+   * An {@code AND CHAIN} is not one: this server cannot honor it, so it is refused like any other statement there.
    */
   private static boolean isTransactionEndStatement(final String upperCaseText) {
-    return isCommitStatement(upperCaseText) || isRollbackStatement(upperCaseText);
+    final PostgresTransactionStatement statement = PostgresTransactionStatement.parse(upperCaseText);
+    return statement != null && statement.endsBlock();
   }
 
   private void writeNoData() {
@@ -4522,9 +4456,8 @@ public class PostgresNetworkExecutor extends Thread {
 
   /**
    * Trims a statement's text and strips ONE trailing {@code ';'} (and the whitespace in front of it), the form every
-   * statement matcher of this class expects: {@link #isBeginStatement}, {@link #isCommitStatement} and
-   * {@link #isRollbackStatement} match by exact string equality, and {@link #getTag} derives the command tag from the
-   * text. Shared by the simple-query and the extended-query protocol so the two cannot disagree on what a
+   * statement matcher of this class expects: {@link PostgresTransactionStatement#parse} matches whole tokens up to the
+   * end of the text, and {@link #getTag} derives the command tag from the text. Shared by the simple-query and the extended-query protocol so the two cannot disagree on what a
    * transaction-control statement looks like (issue #8245).
    */
   static String normalizeStatementText(final String text) {
@@ -4837,9 +4770,9 @@ public class PostgresNetworkExecutor extends Thread {
   }
 
   /**
-   * The transaction-control statement the SQL grammar parsed, or null (issue #8273). The exact-text matchers
-   * ({@link #isBeginStatement} and its two siblings) recognize the PostgreSQL spellings the grammar rejects -
-   * {@code BEGIN TRANSACTION}, {@code END}, {@code ... WORK} - while this recognizes every spelling the grammar
+   * The transaction-control statement the SQL grammar parsed, or null (issue #8273). The protocol's own matcher
+   * ({@link PostgresTransactionStatement}) recognizes the PostgreSQL spellings the grammar rejects -
+   * {@code BEGIN TRANSACTION}, {@code END}, {@code ... WORK}, {@code START TRANSACTION}, {@code ABORT} - while this recognizes every spelling the grammar
    * ACCEPTS, which the matchers cannot enumerate: a leading or trailing comment (sqlcommenter, OpenTelemetry and
    * pooler routing hints append one to every statement), a doubled {@code ;}, {@code BEGIN ISOLATION <level>},
    * {@code COMMIT RETRY <n>}. Together they leave no transaction-control text for the engine to execute behind the
