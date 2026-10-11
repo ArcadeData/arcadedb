@@ -28,6 +28,7 @@ import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.IntegralKeyBound;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.SelectExecutionPlanner;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
@@ -53,6 +54,7 @@ import org.apache.tinkerpop.gremlin.util.iterator.EmptyIterator;
 
 import java.util.*;
 import java.util.function.BiPredicate;
+import java.util.logging.Level;
 
 /**
  * Candidate generator for {@code g.V().hasLabel(X).has(key, predicate)} backed by one index. It is a pure candidate
@@ -73,6 +75,8 @@ import java.util.function.BiPredicate;
  *   of the type is always a correct superset. When the index goes away in the middle of a scan, the scan is finished on the
  *   type, skipping the candidates already emitted, so a count stays exact rather than coming back short.</li>
  * </ul>
+ * Like every TinkerPop step, an instance runs on one thread at a time: the index it re-resolves and the bucket filter it caches
+ * are plain fields, so a compiled traversal must not be iterated from two threads at once.
  */
 public class ArcadeFilterByIndexStep<S, E extends Element> extends AbstractStep<S, E> implements AutoCloseable, Configuring {
   /**
@@ -282,6 +286,7 @@ public class ArcadeFilterByIndexStep<S, E extends Element> extends AbstractStep<
         return false;
 
       if (cursor != null) {
+        RuntimeException lost;
         try {
           while (cursor.hasNext()) {
             final Identifiable candidate = cursor.next();
@@ -300,12 +305,14 @@ public class ArcadeFilterByIndexStep<S, E extends Element> extends AbstractStep<
             close();
             return false;
           }
+          lost = null;
         } catch (final RuntimeException e) {
           if (!isLostIndex(cursorIndex, e))
             throw e;
+          lost = e;
         }
         // THE INDEX WAS DROPPED OR REBUILT WHILE IT WAS READ: WHAT IT DID NOT EMIT IS FOUND ON THE TYPE
-        handOverToTypeScan();
+        handOverToTypeScan(lost);
       }
 
       while (typeScan.hasNext()) {
@@ -319,14 +326,21 @@ public class ArcadeFilterByIndexStep<S, E extends Element> extends AbstractStep<
       return false;
     }
 
-    private void handOverToTypeScan() {
-      final IndexCursor lost = cursor;
+    /**
+     * @param cause what the cursor raised, or null when it ended normally after its index changed under it
+     */
+    private void handOverToTypeScan(final RuntimeException cause) {
+      final IndexCursor lostCursor = cursor;
       cursor = null;
       try {
-        lost.close();
+        lostCursor.close();
       } catch (final RuntimeException ignored) {
         // THE CURSOR OF A DROPPED INDEX: NOTHING LEFT TO RELEASE
       }
+      // LOGGED, SO A CURSOR THAT FAILS FOR ANOTHER REASON IS NOT HIDDEN BEHIND A SILENT SCAN OF THE TYPE
+      LogManager.instance().log(ArcadeFilterByIndexStep.this, Level.FINE,
+          "Index '%s' changed while traversal step read it (%s): finishing the scan on type '%s'", cause, cursorIndex.getName(),
+          cause != null ? cause.toString() : "dropped or rebuilt", typeName);
       if (!tracking)
         throw new IndexException("Index '" + cursorIndex.getName() + "' was dropped or rebuilt while the traversal was reading it, "
             + "after more than " + MAX_TRACKED_CANDIDATES + " candidates: run the traversal again");
@@ -397,7 +411,7 @@ public class ArcadeFilterByIndexStep<S, E extends Element> extends AbstractStep<
 
   /** A RID as one long: the bucket in the top 16 bits, the position in the other 48, which no bucket reaches. */
   private static long pack(final RID rid) {
-    return ((long) rid.getBucketId() << 48) ^ rid.getPosition();
+    return ((long) rid.getBucketId() << 48) | rid.getPosition();
   }
 
   public String toString() {
