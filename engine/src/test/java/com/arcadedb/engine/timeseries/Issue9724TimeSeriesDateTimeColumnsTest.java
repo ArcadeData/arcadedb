@@ -201,6 +201,10 @@ class Issue9724TimeSeriesDateTimeColumnsTest extends TestHelper {
     // a date or a datetime in any form is the count it stands for
     assertThat(tag.coerceValue("2023-11-14 22:15:23")).isEqualTo(1_700_000_123L);
     assertThat(tag.coerceValue(LocalDateTime.of(2023, 11, 14, 22, 15, 23))).isEqualTo(1_700_000_123L);
+    // only ASCII digits make a count; anything else that is no date is handed back for the filter to match nothing
+    assertThat(tag.coerceValue("-1")).isEqualTo(-1L);
+    assertThat(tag.coerceValue("\u0661\u0662")).isEqualTo("\u0661\u0662");
+    assertThat(tag.coerceValue("-")).isEqualTo("-");
   }
 
   /** A number is epoch DAYS into a DATE and epoch MILLIS into every DATETIME, as on a document property (issue #9324). */

@@ -320,10 +320,16 @@ public final class ColumnDefinition {
     final int length = text.length();
     if (length == 0)
       return false;
-    for (int i = text.charAt(0) == '-' || text.charAt(0) == '+' ? 1 : 0; i < length; i++)
-      if (!Character.isDigit(text.charAt(i)))
+    // ASCII digits only: the count Long.valueOf reads, never a digit of another script
+    final int start = text.charAt(0) == '-' || text.charAt(0) == '+' ? 1 : 0;
+    if (start == length)
+      return false;
+    for (int i = start; i < length; i++) {
+      final char c = text.charAt(i);
+      if (c < '0' || c > '9')
         return false;
-    return length > 1 || Character.isDigit(text.charAt(0));
+    }
+    return true;
   }
 
   /**
