@@ -92,6 +92,11 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
   private       long            count       = 0;
   private         boolean                                        inited      = false;
   /**
+   * Whether the index is unique, read once when the step starts: {@link GetValueFromIndexEntryStep} asks for every entry, and an
+   * index dropped while it is read makes the answer an exception rather than a fact that cannot change (issue #9615).
+   */
+  private         boolean                                        indexUnique = false;
+  /**
    * Set when a bound the key type of the index cannot hold widened a seek (issue #8970): the entries it returns are then checked
    * against the condition, as a scan evaluates it, before they are handed on.
    */
@@ -196,7 +201,11 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     if (!inited) {
       // What syncPull() does before its first batch: the previous steps set the variables the condition may read
       pullPrevious(context, DEFAULT_FETCH_RECORDS_PER_PULL);
-      init(context.getDatabase());
+      try {
+        init(context.getDatabase());
+      } catch (final IllegalArgumentException e) {
+        throw staleIndexOr(e);
+      }
     }
     if (nextEntry == null)
       fetchNextEntry();
@@ -261,16 +270,20 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
   }
 
   boolean isIndexUnique() {
-    return index != null && index.isUnique();
+    return indexUnique;
   }
 
   /**
    * The file of an index dropped under a lookup or an open cursor is gone for the page manager: "File with id n was not found",
    * an {@link IllegalArgumentException}. When the index is dropped that is what it means, and it is reported as the
    * {@link IndexException} that makes the statement be planned again (issue #9331); otherwise the exception is the caller's own.
+   * <p>
+   * "Dropped" includes a drop still under way (issue #9615): {@code TypeIndex.drop()} deletes the files of the sub-indexes
+   * first and invalidates the index last, so the files are gone during the whole window in which the index still answers as
+   * valid. {@link TypeIndex#isStaleRead} is the one place that knows both.
    */
   private RuntimeException staleIndexOr(final IllegalArgumentException e) {
-    if (index instanceof TypeIndex typeIndex && !typeIndex.isValid() && TypeIndex.isFileNotFound(e))
+    if (TypeIndex.isStaleRead(index, e))
       return new IndexException("Index '" + indexName + "' was dropped or rebuilt while it was being read", e);
     return e;
   }
@@ -302,8 +315,10 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
             // The entries of an index dropped or rebuilt while the cursors were open run out early, with no error of their own: an
             // answer that looks complete and is not (issue #9331). Raised so the statement is planned again, see SelectStatement.
             // A drop landing after the last row but before this read raises it for an answer that was complete: the window is a
-            // few instructions wide, and a statement planned again answers the same rows
-            if (index instanceof TypeIndex typeIndex && !typeIndex.isValid())
+            // few instructions wide, and a statement planned again answers the same rows. Before any entry, a drop that has
+            // only started counts too (issue #9615): it may already have taken the sub-indexes away, and an empty answer is the
+            // one a statement planned again can still replace at no cost to the caller
+            if (index instanceof TypeIndex typeIndex && (!typeIndex.isValid() || (count == 0 && typeIndex.isDropping())))
               throw new IndexException("Index '" + indexName + "' was dropped or rebuilt while it was being read");
             updateIndexStats();
           } else
@@ -414,6 +429,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     // This cursor answers straight from the index, without loading each record through its bucket, so apply the
     // same per-type read check a normal record load would go through.
     SecurityHelper.checkAccessOnIndex((DatabaseInternal) db, index, SecurityDatabaseUser.ACCESS.READ_RECORD);
+    indexUnique = index.isUnique();
     try {
       if (condition == null) {
         processFlatIteration();
@@ -1467,6 +1483,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     count = 0;
 
     inited = false;
+    indexUnique = false;
     verifyKeys = false;
     floatingKeys = FLOATING_KEYS_UNKNOWN;
     keyRow = null;

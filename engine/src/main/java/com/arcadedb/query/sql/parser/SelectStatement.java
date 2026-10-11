@@ -41,7 +41,10 @@ import java.util.function.Function;
 import java.util.logging.Level;
 
 public class SelectStatement extends Statement {
-  /** How many attempts in all a SELECT gets when the index its plan reads is gone by the time it starts (issue #9331). */
+  /**
+   * How many attempts in all a SELECT gets when the index its plan reads is gone by the time it starts (issue #9331). The last
+   * of them plans without the key indexes of the types it reads (issue #9615), see {@link #openResultSet}.
+   */
   private static final int STALE_INDEX_PLAN_MAX_ATTEMPTS = 3;
 
   public FromClause  target;
@@ -223,20 +226,34 @@ public class SelectStatement extends Statement {
    * Only the planning and the first batch are covered: an index dropped after the first rows were returned surfaces as the
    * {@link IndexException} of {@code FetchFromIndexStep}, which beats a silently short answer. Before the first row nothing has
    * been returned, so running the statement again is safe (a function with side effects, such as {@code sequence.next()},
-   * would run twice, but the exception comes from the index, before the first row). Every attempt after the first plans
-   * without the cache, which may still hold the stale plan.
+   * would run twice, but the exception comes from the index, before the first row). {@link LocalResultSet} computes the first
+   * row when it is created, so that row is inside the loop. Every attempt after the first plans without the cache, which may
+   * still hold the stale plan.
+   * <p>
+   * Planning again picks the index of the same name when a concurrent DDL recreated it, and a DDL that keeps dropping and
+   * recreating it can take that one away too, attempt after attempt (issue #9615). The last attempt therefore plans without the
+   * key indexes of the types it reads, which no DDL can take away under it: a scan answers what such an index would have,
+   * slower. A FULL_TEXT, geospatial or vector index stays plannable, since a scan would answer its predicates differently.
    */
   private ResultSet openResultSet(final CommandContext context, final Function<CommandContext, InternalExecutionPlan> firstPlanner) {
     for (int attempt = 1; ; attempt++) {
       InternalExecutionPlan plan = null;
       try {
-        plan = attempt == 1 ? firstPlanner.apply(context) : createExecutionPlanNoCache(context);
+        if (attempt == 1)
+          plan = firstPlanner.apply(context);
+        else if (attempt < STALE_INDEX_PLAN_MAX_ATTEMPTS)
+          plan = createExecutionPlanNoCache(context);
+        else
+          plan = new SelectExecutionPlanner(this).withoutKeyIndexes().createExecutionPlan(context, false);
         return new LocalResultSet(plan);
       } catch (final IndexException e) {
         if (attempt >= STALE_INDEX_PLAN_MAX_ATTEMPTS)
           throw e;
-        LogManager.instance().log(this, Level.INFO, "Planning the statement again after attempt %d, its index was dropped or "
-            + "rebuilt: %s", null, attempt, e.getMessage());
+        // The last attempt reads the types without their key indexes: a full scan, worth a warning to an operator
+        final boolean lastAttemptNext = attempt + 1 >= STALE_INDEX_PLAN_MAX_ATTEMPTS;
+        LogManager.instance().log(this, lastAttemptNext ? Level.WARNING : Level.INFO,
+            "Planning the statement again after attempt %d%s, its index was dropped or rebuilt: %s", null, attempt,
+            lastAttemptNext ? " without the key indexes of its types (a scan)" : "", e.getMessage());
         if (plan != null)
           try {
             plan.close();

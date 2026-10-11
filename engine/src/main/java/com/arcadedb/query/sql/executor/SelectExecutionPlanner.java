@@ -154,9 +154,25 @@ public class SelectExecutionPlanner {
    */
   private              String            rangeMinMaxSource;
   private              String            rangeMinMaxAlias;
+  /**
+   * Set for the last attempt of a statement whose index kept going away while it was planned and read (issue #9615): the plan
+   * then reads the types it targets without their key indexes, which a concurrent DDL cannot take away under it.
+   */
+  private              boolean           withoutKeyIndexes;
 
   public SelectExecutionPlanner(final SelectStatement oSelectStatement) {
     this.statement = oSelectStatement;
+  }
+
+  /**
+   * Plans the statement as if its types had no key index (LSM_TREE, HASH), see {@link #withoutKeyIndexes}: a scan filtered by
+   * the condition answers exactly what such an index would. A FULL_TEXT, geospatial or vector index stays plannable, because
+   * the predicates it answers ({@code CONTAINSTEXT} by analyzer tokens, a shape, a similarity) mean something else on a scan,
+   * and so does an index the statement names ({@code FROM index:...}): there is no other way to answer either.
+   */
+  public SelectExecutionPlanner withoutKeyIndexes() {
+    this.withoutKeyIndexes = true;
+    return this;
   }
 
   private void init(final CommandContext context) {
@@ -5024,6 +5040,17 @@ public class SelectExecutionPlanner {
     LogManager.instance().log(this, Level.FINE, "Index '%s' skipped while planning: %s", index.getName(), e.getMessage());
   }
 
+  /** Whether a scan filtered by the condition answers exactly what {@code index} does, see {@link #withoutKeyIndexes()}. */
+  private static boolean isKeyIndex(final TypeIndex index) {
+    try {
+      final Schema.INDEX_TYPE type = index.getType();
+      return type != null && type.isExactKeyLookup();
+    } catch (final IndexException e) {
+      // The index went away meanwhile: answering true removes it from the candidates, where it does not belong anyway
+      return true;
+    }
+  }
+
   private static boolean isPlannable(final Index index) {
     try {
       if (index instanceof TypeIndex typeIndex)
@@ -5040,8 +5067,11 @@ public class SelectExecutionPlanner {
    * effort: the callers read an index's metadata under a try/catch of IndexException, and any new planner path that reads
    * index metadata must do the same.
    */
-  private static List<TypeIndex> plannableIndexes(final Collection<TypeIndex> indexes) {
-    return TypeIndex.filterReadyForQueries(indexes);
+  private List<TypeIndex> plannableIndexes(final Collection<TypeIndex> indexes) {
+    final List<TypeIndex> ready = TypeIndex.filterReadyForQueries(indexes);
+    if (withoutKeyIndexes)
+      ready.removeIf(SelectExecutionPlanner::isKeyIndex);
+    return ready;
   }
 
   /**
