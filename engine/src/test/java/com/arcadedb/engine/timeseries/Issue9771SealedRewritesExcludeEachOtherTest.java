@@ -24,6 +24,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.schema.LocalTimeSeriesType;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 
@@ -271,6 +272,31 @@ class Issue9771SealedRewritesExcludeEachOtherTest extends TestHelper {
     engine.compactAll();
     assertThat(snapshot().problems()).isEmpty();
     assertThat(snapshot().rows()).isEqualTo(4 * PER_BLOCK);
+  }
+
+  /**
+   * A read lock cannot be upgraded to the write lock a rewrite takes, so a rewrite started by a thread that holds the compaction
+   * read lock would wait for itself for ever. It is refused up front, before the rewrite mutex is taken. The timeout is a hang
+   * detector for the failure this guards against, not a latency claim.
+   */
+  @Test
+  @Timeout(60)
+  void aRewriteStartedWhileHoldingTheCompactionReadLockIsRefusedInsteadOfDeadlocking() throws Exception {
+    createType();
+    final TimeSeriesEngine engine = engine();
+    final TimeSeriesShard shard = engine.getShard(0);
+
+    shard.getCompactionLock().readLock().lock();
+    try {
+      assertThatThrownBy(() -> engine.applyRetention(T0)).isInstanceOf(IllegalStateException.class)
+          .hasMessageContaining("compaction read lock");
+    } finally {
+      shard.getCompactionLock().readLock().unlock();
+    }
+
+    // and nothing was left held: the same call works once the lock is given back
+    engine.applyRetention(T0);
+    assertThat(shard.hasRewriteWaiting()).isFalse();
   }
 
   @FunctionalInterface

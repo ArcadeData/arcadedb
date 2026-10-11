@@ -80,7 +80,7 @@ public class TimeSeriesShard implements AutoCloseable {
   // Read lock: held by scan/iterate (concurrent reads allowed).
   // Write lock: held by compact() to prevent queries from seeing data twice
   // during the window where sealed blocks are written but mutable not yet cleared.
-  private final ReadWriteLock          compactionLock  = new ReentrantReadWriteLock();
+  private final ReentrantReadWriteLock compactionLock  = new ReentrantReadWriteLock();
   // The mutual exclusion of EVERY operation that rewrites this shard's sealed file (issue #9771):
   //  - compact()             (Phases 3 and 4b are lock-free, and they own .ts.sealed.tmp)
   //  - mergeSmallBlocks()    (its own .ts.sealed.merge.tmp, but it installs a directory planned against a snapshot)
@@ -958,6 +958,11 @@ public class TimeSeriesShard implements AutoCloseable {
    * bounded by that compaction.
    */
   void runSealedRewrite(final SealedRewrite rewrite) throws IOException {
+    // A read lock cannot be upgraded: taking the write lock below while this thread holds the read lock would wait for itself
+    // forever. Said out loud, before the mutex is taken, instead of as a hung maintenance thread.
+    if (compactionLock.getReadHoldCount() > 0)
+      throw new IllegalStateException("A rewrite of the sealed file of shard " + shardIndex + " of type '" + typeName
+          + "' was started while holding the compaction read lock, which would wait for itself to release it");
     compactionMutex.lock();
     try {
       compactionLock.writeLock().lock();
