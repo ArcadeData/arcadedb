@@ -306,6 +306,20 @@ class Issue9706ConstraintNamesAndTypedDropTest extends TestHelper {
   }
 
   @Test
+  void generatedNamesOfUnusualIdentifiersRoundTripThroughShowAndDrop() {
+    command("CREATE CONSTRAINT FOR (n:`My Label`) REQUIRE n.`my prop` IS NOT NULL");
+    command("CREATE CONSTRAINT FOR (n:`My Label`) REQUIRE n.`odd``name` IS :: STRING");
+
+    final List<Object> names = names("SHOW CONSTRAINTS");
+    assertThat(names).containsExactly("constraint_My Label_my prop_existence", "constraint_My Label_odd`name_type");
+
+    for (final Object name : names)
+      command("DROP CONSTRAINT `" + ((String) name).replace("`", "``") + "`");
+    assertThat(rows("SHOW CONSTRAINTS")).isEmpty();
+    assertThat(database.getSchema().getType("My Label").getPropertyIfExists("my prop")).isNull();
+  }
+
+  @Test
   void generatedNamesSurviveReopen() {
     command("CREATE CONSTRAINT FOR (n:L) REQUIRE n.p IS :: STRING");
 
