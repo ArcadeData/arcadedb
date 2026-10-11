@@ -221,6 +221,7 @@ public abstract class ResettableIteratorBase<T> implements ResettableIterator<T>
    * back by {@code removed} bytes: an iterator holding the position of an entry it already peeked moves it too.
    */
   protected void entriesShiftedBack(final int removed) {
+    // NOTHING TO MOVE BY DEFAULT: AN ITERATOR THAT DOES NOT PEEK HOLDS NO POSITION BUT THE CURSOR, ALREADY SHIFTED
   }
 
   /** @return false when a before-delete listener vetoed the delete, true when the entry is to be taken out */
