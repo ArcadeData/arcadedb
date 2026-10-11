@@ -33,5 +33,23 @@ public class BreakStatement extends SimpleExecStatement {
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("BREAK");
   }
+
+  /** It used to inherit the base copy(), which throws: any statement holding a BREAK (an IF, a FOREACH) could not be copied (#9650). */
+  @Override
+  public BreakStatement copy() {
+    return new BreakStatement();
+  }
+
+  @Override
+  public boolean equals(final Object o) {
+    if (this == o)
+      return true;
+    return o != null && getClass() == o.getClass();
+  }
+
+  @Override
+  public int hashCode() {
+    return 0;
+  }
 }
 /* JavaCC - OriginalChecksum=7c151cab41b31cd675cea2f3becdc628 (do not edit this line) */

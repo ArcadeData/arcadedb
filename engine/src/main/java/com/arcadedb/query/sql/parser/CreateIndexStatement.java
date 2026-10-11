@@ -212,44 +212,30 @@ public class CreateIndexStatement extends DDLStatement {
   }
 
   /**
-   * Runs the statement with its own {@code typeName} and {@code name} restored afterwards, whichever way
-   * {@link #executeDDLInternal} leaves.
+   * Runs the statement WITHOUT WRITING TO IT: the type a {@code $variable} resolves to and the index name derived for an
+   * unnamed statement live in locals for this execution only.
    * <p>
-   * Both fields are MUTATED during execution - a {@code $variable} type name is replaced by what it resolved to, and
-   * an unnamed statement has {@code name} backfilled with the auto-derived {@code typeName[properties]} form - and a
-   * parsed statement is a CACHED, SHARED object: {@link StatementCache#get} hands the same instance back for the same
-   * text, execution after execution. So a mutation that outlives one execution is read as the statement's own text by
-   * the next.
-   * <p>
-   * There used to be a single {@code typeName = prevName} at the end of the success path, which restored nothing for
-   * any of the {@code return}s and {@code throw}s before it - the {@code IF NOT EXISTS} shortcut chief among them.
-   * A statement whose type name is a variable and whose index already exists therefore kept the FIRST execution's
-   * resolved type, and every later execution silently indexed that type instead of the one the variable now names,
-   * with no error to say so.
+   * A parsed statement is a CACHED, SHARED object: {@link StatementCache#get} hands the same instance to every execution
+   * of the same text, concurrent ones included. Both values used to be written into {@code typeName} and {@code name}
+   * and restored in a {@code finally}, which kept a sequence of executions honest but not two overlapping ones: the
+   * first to finish nulled the derived name under one still building the index, which then failed with a
+   * NullPointerException on {@code name} (issue #9741), and an overlapping {@code $variable} execution could act on the
+   * type another one resolved.
    */
   @Override
   public ResultSet executeDDL(final CommandContext context) {
-    final Identifier declaredTypeName = typeName;
-    final Identifier declaredIndexName = name;
-    try {
-      return executeDDLInternal(context);
-    } finally {
-      typeName = declaredTypeName;
-      name = declaredIndexName;
-    }
-  }
-
-  private ResultSet executeDDLInternal(final CommandContext context) {
     final Database database = context.getDatabase();
 
-    if (typeName.getStringValue().startsWith("$")) {
-      String variable = (String) context.getVariable(typeName.getStringValue());
-      typeName = new Identifier(variable);
-      name = null;
-    }
+    final String typeName;
+    if (this.typeName.getStringValue().startsWith("$")) {
+      final Object resolved = context.getVariable(this.typeName.getStringValue());
+      if (resolved == null)
+        throw new CommandExecutionException("Variable '" + this.typeName.getStringValue() + "' naming the type to index is not defined");
+      typeName = resolved.toString();
+    } else
+      typeName = this.typeName.getStringValue();
 
-    // Capture whether the user supplied a manual TypeIndex name in the statement before the
-    // existsIndex shortcut backfills {@code name} with the auto-derived form. Only the manual
+    // Whether the user supplied a manual TypeIndex name in the statement. Only the manual
     // case must reach the builder via {@link IndexBuilder#withIndexName} (issue #4139); for the
     // auto-derived case the resolution happens in {@link LocalDocumentType#addIndexInternal} so
     // both paths agree on the canonical {@code typeName + "[" + propertyNames + "]"} shape.
@@ -257,12 +243,11 @@ public class CreateIndexStatement extends DDLStatement {
 
     final String[] fields = calculateProperties(context);
 
-    if (name == null)
-      // GENERATE THE NAME AUTOMATICALLY (used only for the existsIndex shortcut below). It must match
-      // the canonical name derived in LocalDocumentType.addIndexInternal, including the BY KEY/VALUE/ITEM
-      // modifier (spaces stripped), otherwise the existsIndex check below never detects a pre-existing
-      // modifier index (issues #4879, #4881).
-      name = new Identifier(typeName.getStringValue() + Arrays.toString(fields).replace(" ", ""));
+    // Without a manual name, GENERATE IT (used only for the existsIndex shortcut below). It must match
+    // the canonical name derived in LocalDocumentType.addIndexInternal, including the BY KEY/VALUE/ITEM
+    // modifier (spaces stripped), otherwise the existsIndex check below never detects a pre-existing
+    // modifier index (issues #4879, #4881).
+    final String indexName = userProvidedName ? name.getValue() : typeName + Arrays.toString(fields).replace(" ", "");
 
     final Schema.INDEX_TYPE indexType;
     boolean unique = false;
@@ -325,12 +310,12 @@ public class CreateIndexStatement extends DDLStatement {
     // whether or not the index it asks for already exists.
     final IndexBuildMode buildMode = readBuildMode(context, indexType);
 
-    if (database.getSchema().existsIndex(name.getValue())) {
+    if (database.getSchema().existsIndex(indexName)) {
       if (ifNotExists) {
         // The name this matched on is derived from the indexed property set alone, so it says nothing about what the
         // index actually does. Answering "already exists" on the name only meant a NOTUNIQUE index reported success to
         // a request for a UNIQUE one, and the migration that asked for the constraint carried on without it (#5675).
-        final Index existing = database.getSchema().getIndexByName(name.getValue());
+        final Index existing = database.getSchema().getIndexByName(indexName);
         final List<String> requestedProperties = List.of(fields);
 
         // Reachable only through a manual index name: the auto-derived form above is built from the type name and the
@@ -346,15 +331,15 @@ public class CreateIndexStatement extends DDLStatement {
         // schema script that names its indexes non-idempotent the moment one of them moved up the hierarchy, which
         // is exactly what IF NOT EXISTS is written to prevent. The relation is checked in one direction only: an
         // index on a SUB type covers strictly fewer buckets than the request, so it does not satisfy it.
-        if (!coversRequestedType(database, existing, typeName.getStringValue())
+        if (!coversRequestedType(database, existing, typeName)
             || !existing.getPropertyNames().equals(requestedProperties))
           throw new IllegalArgumentException(
-              "Cannot create the index '" + name.getValue() + "' on type '" + typeName.getStringValue() + "' properties "
+              "Cannot create the index '" + indexName + "' on type '" + typeName + "' properties "
                   + requestedProperties + " because an index with that name already exists on type '" + existing.getTypeName()
                   + "' properties " + existing.getPropertyNames() + ". Drop it first or choose a different index name");
 
         if (!IndexBuilder.satisfiesRequest(existing, indexType, unique))
-          throw IndexBuilder.conflictWithExistingIndex(existing, indexType, unique, typeName.getStringValue(),
+          throw IndexBuilder.conflictWithExistingIndex(existing, indexType, unique, typeName,
               requestedProperties);
 
         // The existing index is of the right kind; now the settings this statement SPELLED OUT (issue #5765). Only
@@ -370,13 +355,13 @@ public class CreateIndexStatement extends DDLStatement {
           throw new CommandSQLParsingException("Invalid METADATA for " + indexType + " index: " + e.getMessage(), e);
         }
         if (!settingMismatches.isEmpty())
-          throw IndexBuilder.conflictWithExistingIndex(existing, indexType, unique, typeName.getStringValue(),
+          throw IndexBuilder.conflictWithExistingIndex(existing, indexType, unique, typeName,
               requestedProperties, settingMismatches);
 
         final InternalResultSet rs = new InternalResultSet();
         final ResultInternal result = new ResultInternal(context.getDatabase());
         result.setProperty("operation", "create index");
-        result.setProperty("name", name.getValue());
+        result.setProperty("name", indexName);
         result.setProperty("type", indexType);
         result.setProperty("created", false);
         result.setProperty("totalIndexed", 0);
@@ -384,25 +369,26 @@ public class CreateIndexStatement extends DDLStatement {
         rs.add(result);
         return rs;
       } else {
-        throw new CommandExecutionException("Index '" + name + "' already exists");
+        throw new CommandExecutionException("Index '" + indexName + "' already exists");
       }
     }
 
     final AtomicLong total = new AtomicLong();
 
     // What create() answered with: the index this statement built, or - for a guarded request whose NAME did not
-    // exist but whose properties are already indexed - the existing index the builder decided satisfies it. The two
-    // are told apart by the name, see {@link #isNewlyCreated}.
+    // exist but whose properties are already indexed, or whose index a concurrent statement built first - the existing
+    // index the builder decided satisfies it. The builder that ran says which (TypeIndexBuilder.isBuilt()).
     final TypeIndex resultingIndex;
+    final TypeIndexBuilder creator;
 
     // Use unified buildTypeIndex() API for all index types
-    TypeIndexBuilder builder = database.getSchema().buildTypeIndex(typeName.getStringValue(), fields);
+    TypeIndexBuilder builder = database.getSchema().buildTypeIndex(typeName, fields);
     builder = builder.withType(indexType);  // This may return LSMVectorIndexBuilder for LSM_VECTOR
 
     // Only forward the manual TypeIndex name when the user actually wrote one, letting
     // addIndexInternal compute the canonical {@code typeName + "[..]"} shape for the auto-derived case.
-    if (userProvidedName && name != null)
-      builder.withIndexName(name.getValue());
+    if (userProvidedName)
+      builder.withIndexName(indexName);
 
     builder.withIgnoreIfExists(ifNotExists);
     builder.withUnique(unique);
@@ -419,7 +405,7 @@ public class CreateIndexStatement extends DDLStatement {
       // System.out reaches nobody while still costing a flush on the build path (issue #5765).
       if (totalIndexed % 100000 == 0)
         LogManager.instance()
-            .log(this, Level.INFO, "Building index on type '%s': %d records indexed so far", typeName.getStringValue(),
+            .log(this, Level.INFO, "Building index on type '%s': %d records indexed so far", typeName,
                 totalIndexed);
     });
 
@@ -464,11 +450,12 @@ public class CreateIndexStatement extends DDLStatement {
 
       final TypeIndex typeIndex = vectorBuilder.create();
       resultingIndex = typeIndex;
+      creator = vectorBuilder;
 
       // Build the HNSW graph immediately unless explicitly disabled - and only for an index this statement actually
       // created. When create() answered a guarded request with the index already on those properties (issue #5781),
       // rebuilding its graph is work nobody asked for on an index the statement was told to leave alone.
-      if (buildGraphNow && isNewlyCreated(typeIndex, name.getValue()))
+      if (buildGraphNow && vectorBuilder.isBuilt())
         for (final Index idx : typeIndex.getIndexesOnBuckets())
           if (idx instanceof LSMVectorIndex)
             ((LSMVectorIndex) idx).buildVectorGraphNow();
@@ -488,6 +475,7 @@ public class CreateIndexStatement extends DDLStatement {
         throw new CommandSQLParsingException("Invalid METADATA for FULL_TEXT index: " + e.getMessage(), e);
       }
       resultingIndex = ftBuilder.create();
+      creator = ftBuilder;
 
     } else if (indexType == Schema.INDEX_TYPE.LSM_SPARSE_VECTOR) {
       // Builder is already a TypeLSMSparseVectorIndexBuilder after the withType() above, exactly like the three
@@ -504,6 +492,7 @@ public class CreateIndexStatement extends DDLStatement {
         }
       }
       resultingIndex = sparseBuilder.create();
+      creator = sparseBuilder;
 
     } else if (indexType == Schema.INDEX_TYPE.GEOSPATIAL) {
       // Builder is already a TypeGeoIndexBuilder after withType(GEOSPATIAL)
@@ -523,6 +512,7 @@ public class CreateIndexStatement extends DDLStatement {
         }
       }
       resultingIndex = geoBuilder.create();
+      creator = geoBuilder;
 
     } else {
       // Every index type whose settings live in METADATA is handled above. Reaching here with a METADATA clause means
@@ -531,6 +521,7 @@ public class CreateIndexStatement extends DDLStatement {
         throw new CommandSQLParsingException(
             "METADATA is not supported by index type '" + typeAsString + "'");
       resultingIndex = builder.create();
+      creator = builder;
     }
 
     // A guarded statement that named an index NOT yet in the schema gets past the existsIndex shortcut above and
@@ -538,31 +529,18 @@ public class CreateIndexStatement extends DDLStatement {
     // what was asked for (issue #5781). Nothing was created under the requested name, so reporting created=true
     // under that name told the caller its name is now on an index - leaving a later DROP INDEX <name> to fail on a
     // name that never existed. Report the index that actually satisfied the request, under its own name.
-    final boolean created = isNewlyCreated(resultingIndex, name.getValue());
+    final boolean created = creator.isBuilt();
 
     final InternalResultSet rs = new InternalResultSet();
     final ResultInternal result = new ResultInternal(context.getDatabase());
     result.setProperty("operation", "create index");
-    result.setProperty("name", created ? name.getValue() : resultingIndex.getName());
+    result.setProperty("name", created ? indexName : resultingIndex.getName());
     result.setProperty("type", indexType);
     result.setProperty("created", created);
     result.setProperty("totalIndexed", total.get());
 
     rs.add(result);
     return rs;
-  }
-
-  /**
-   * Whether {@code create()} built a new index, as opposed to answering a guarded request with the index already on
-   * those properties. The builder returns that existing index under ITS own name, and an index this statement created
-   * always carries the name the statement asked for - the manual one when written, otherwise the auto-derived
-   * {@code typeName[properties]} form both this method and {@code LocalDocumentType.addIndexInternal} derive.
-   * <p>
-   * A {@code null} answer counts as created: no builder returns one today, and treating an unexpected null as a no-op
-   * would turn a successful statement into a reported one.
-   */
-  private static boolean isNewlyCreated(final TypeIndex index, final String requestedName) {
-    return index == null || index.getName().equals(requestedName);
   }
 
   /**
@@ -618,8 +596,11 @@ public class CreateIndexStatement extends DDLStatement {
       }
       builder.append(")");
     }
-    builder.append(" ");
-    type.toString(params, builder);
+    // The index type is optional in the grammar and refused by validate(), which an EXPLAIN never reaches (issue #9650)
+    if (type != null) {
+      builder.append(" ");
+      type.toString(params, builder);
+    }
 
     // NULL_STRATEGY is only valid in the ON-clause form (typeName != null)
     if (typeName != null && nullStrategy != null) {

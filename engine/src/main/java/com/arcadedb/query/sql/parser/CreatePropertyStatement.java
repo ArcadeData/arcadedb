@@ -61,40 +61,41 @@ public class CreatePropertyStatement extends DDLStatement {
     return true;
   }
 
+  /**
+   * Resolves a {@code $variable} type name into a local, never into {@code typeName}: a parsed statement is cached and
+   * shared by every execution of its text, concurrent ones included, so a resolution written into the field (and put
+   * back afterwards) could be read by an overlapping execution as its own type (issue #9741).
+   */
   @Override
   public ResultSet executeDDL(final CommandContext context) {
+    final String typeName = resolveTypeName(context);
     final ResultInternal result = new ResultInternal(context.getDatabase());
     result.setProperty("operation", "create property");
-    result.setProperty("typeName", typeName.getStringValue());
+    result.setProperty("typeName", typeName);
     result.setProperty("propertyName", propertyName.getStringValue());
     if (ofType != null)
       result.setProperty("of", ofType.getStringValue());
-    executeInternal(context, result);
+    executeResolved(context, typeName, result);
     final InternalResultSet rs = new InternalResultSet();
     rs.add(result);
     return rs;
   }
 
-  private void executeInternal(final CommandContext context, final ResultInternal result) {
-    // A prepared statement is reused, so the type name resolved from a variable is put back on every exit, a refusal included
-    final Identifier prevType = typeName;
-    try {
-      executeResolved(context, result);
-    } finally {
-      typeName = prevType;
-    }
+  private String resolveTypeName(final CommandContext context) {
+    final String declared = typeName.getStringValue();
+    if (!declared.startsWith("$"))
+      return declared;
+    final Object resolved = context.getVariable(declared);
+    if (resolved == null)
+      throw new CommandExecutionException("Variable '" + declared + "' naming the type of the property is not defined");
+    return resolved.toString();
   }
 
-  private void executeResolved(final CommandContext context, final ResultInternal result) {
+  private void executeResolved(final CommandContext context, final String typeName, final ResultInternal result) {
     final Database db = context.getDatabase();
-    if (typeName.getStringValue().startsWith("$")) {
-      String variable = (String) context.getVariable(typeName.getStringValue());
-      typeName = new Identifier(variable);
-    }
-
-    final DocumentType typez = db.getSchema().getType(typeName.getStringValue());
+    final DocumentType typez = db.getSchema().getType(typeName);
     if (typez == null)
-      throw new CommandExecutionException("Type '" + typeName.getStringValue() + "' not found");
+      throw new CommandExecutionException("Type '" + typeName + "' not found");
 
     if (ifNotExists) {
       if (typez.existsPolymorphicProperty(propertyName.getStringValue())) {
@@ -103,7 +104,7 @@ public class CreatePropertyStatement extends DDLStatement {
         return;
       }
     } else if (typez.existsProperty(propertyName.getStringValue()))
-      throw new CommandExecutionException("Property '" + typeName.getStringValue() + "." + propertyName.getStringValue() + "' already exists");
+      throw new CommandExecutionException("Property '" + typeName + "." + propertyName.getStringValue() + "' already exists");
 
     final Type type = Type.valueOf(propertyType.getStringValue().toUpperCase(Locale.ENGLISH));
 

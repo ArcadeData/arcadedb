@@ -34,22 +34,22 @@ public class CreateDocumentTypeStatement extends CreateTypeAbstractStatement {
   }
 
   @Override
-  protected DocumentType createType(final Schema schema) {
+  protected DocumentType createType(final Schema schema, final String typeName) {
     final DocumentType type;
     if (totalBucketNo != null) {
-      var builder = schema.buildDocumentType().withName(name.getStringValue()).withTotalBuckets(totalBucketNo.getValue().intValue());
+      var builder = schema.buildDocumentType().withName(typeName).withTotalBuckets(totalBucketNo.getValue().intValue());
       if (pageSize != null)
         builder = builder.withPageSize(pageSize.getValue().intValue());
       type = builder.create();
     } else {
       if (buckets == null || buckets.isEmpty()) {
         if (pageSize != null)
-          type = schema.buildDocumentType().withName(name.getStringValue()).withPageSize(pageSize.getValue().intValue()).create();
+          type = schema.buildDocumentType().withName(typeName).withPageSize(pageSize.getValue().intValue()).create();
         else
-          type = schema.createDocumentType(name.getStringValue());
+          type = schema.createDocumentType(typeName);
       } else {
         // CHECK THE BUCKETS FIRST
-        var builder = schema.buildDocumentType().withName(name.getStringValue()).withBuckets(getBuckets(schema));
+        var builder = schema.buildDocumentType().withName(typeName).withBuckets(getBuckets(schema));
         if (pageSize != null)
           builder = builder.withPageSize(pageSize.getValue().intValue());
         type = builder.create();

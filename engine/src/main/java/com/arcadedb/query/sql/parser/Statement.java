@@ -73,6 +73,9 @@ public class Statement extends SimpleNode {
    * (REBUILD INDEX, REBUILD TYPE, IMPORT/EXPORT/BACKUP DATABASE). Appends nothing when {@code settings} is empty.
    * Shared so every one of them stays in sync: before this, {@code EXPORT}/{@code BACKUP DATABASE} and
    * {@code REBUILD INDEX} silently dropped their {@code WITH} clause when re-rendered to text (issue #6428).
+   * <p>
+   * Every such map must be insertion-ordered: a {@code HashMap} re-rendered the clause in an arbitrary order, and one that
+   * differed between a statement and its own copy (issue #9650).
    */
   protected static void appendWithSettings(final Map<Expression, Expression> settings, final Map<String, Object> params,
       final StringBuilder builder) {
