@@ -54,6 +54,7 @@ public abstract class IteratorFilterBase<T> extends ResettableIteratorBase<T> {
   }
 
   protected boolean hasNext(final boolean edge) {
+    checkNotInvalidated();
     if (next != null)
       return true;
 

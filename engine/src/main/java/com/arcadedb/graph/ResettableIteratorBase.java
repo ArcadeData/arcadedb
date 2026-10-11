@@ -26,6 +26,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.utility.ResettableIterator;
 
+import java.util.ConcurrentModificationException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 
@@ -45,6 +46,8 @@ public abstract class ResettableIteratorBase<T> implements ResettableIterator<T>
   private         int              returnedEnd;
   private         RID              returnedEdge;
   private         RID              returnedVertex;
+  // SET WHEN THE WALKED LIST WAS CHANGED BY SOMETHING ELSE DURING A remove(): THE ITERATOR'S VIEW OF IT IS STALE
+  private         boolean          invalidated;
 
   protected ResettableIteratorBase(final DatabaseInternal database, final EdgeSegment current) {
     if (current == null)
@@ -122,13 +125,34 @@ public abstract class ResettableIteratorBase<T> implements ResettableIterator<T>
    * @throws UnsupportedOperationException when the iterator does not know whose list it walks
    */
   protected final void removeReturnedEntry(final RID listOwner, final Vertex.DIRECTION listDirection) {
+    checkNotInvalidated();
     if (listOwner == null || listDirection == null)
       throw new UnsupportedOperationException("remove() on an edge list iterator that does not know the vertex it walks");
     if (returnedContainer == null)
       throw new IllegalStateException("No entry to remove: next() has not been called since the last remove()");
 
-    deleteEdgeOfEntry((DatabaseInternal) returnedContainer.getDatabase(), listOwner, listDirection);
-    unlinkReturnedEntry();
+    final EdgeSegment container = returnedContainer;
+    final DatabaseInternal database = (DatabaseInternal) container.getDatabase();
+    final int usedBefore = container.getUsed();
+
+    if (!deleteEdgeOfEntry(database, listOwner, listDirection)) {
+      // VETOED BY A BEFORE-DELETE LISTENER: NOTHING WAS DELETED, SO THE ENTRY STAYS, AS WITH edge.delete()
+      returnedContainer = null;
+      return;
+    }
+
+    // THE DELETE RUNS THE DELETE LISTENERS AND TRIGGERS, AND THOSE CAN WRITE TO THIS VERY LIST (A CASCADE DELETE, A NEW
+    // EDGE). THE POSITION IS TRUSTED ONLY ON THE TRANSACTION'S CURRENT COPY OF THE SEGMENT, AND ONLY IF THAT COPY STILL
+    // HOLDS THE ENTRY THERE WITH NOTHING ELSE MOVED
+    final EdgeSegment current = (EdgeSegment) database.lookupByRID(container.getIdentity(), true);
+    if (current.getUsed() == usedBefore && holdsReturnedEntryAt(current))
+      unlinkReturnedEntry(current);
+    else {
+      removeReturnedEntryByIdentity(current);
+      // THE ITERATOR'S POSITIONS NO LONGER DESCRIBE THE LIST: FAIL FAST, AS java.util COLLECTIONS DO WHEN MODIFIED OUTSIDE
+      // THEIR ITERATOR
+      invalidated = true;
+    }
   }
 
   /**
@@ -136,20 +160,60 @@ public abstract class ResettableIteratorBase<T> implements ResettableIterator<T>
    * {@link #removeReturnedEntry}, for a repair that has to prune an entry whose edge cannot be deleted.
    */
   protected final void unlinkReturnedEntry() {
+    checkNotInvalidated();
     if (returnedContainer == null)
       throw new IllegalStateException("No entry to remove: next() has not been called since the last remove()");
+    unlinkReturnedEntry(returnedContainer);
+  }
 
+  /** Throws when a {@code remove()} found the walked list changed under it, see {@link #removeReturnedEntry}. */
+  protected final void checkNotInvalidated() {
+    if (invalidated)
+      throw new ConcurrentModificationException(
+          "The edge list was modified during remove(), by a delete listener or trigger: open a new iterator to go on walking it");
+  }
+
+  /** Removes the returned entry, by position, from {@code target}: the iterator's own copy of the segment or the transaction's. */
+  private void unlinkReturnedEntry(final EdgeSegment target) {
     final EdgeSegment container = returnedContainer;
-    container.removeEntry(returnedBegin, returnedEnd);
-    ((DatabaseInternal) container.getDatabase()).updateRecord(container);
+    target.removeEntry(returnedBegin, returnedEnd);
+    ((DatabaseInternal) target.getDatabase()).updateRecord(target);
     returnedContainer = null;
 
     if (container == currentContainer) {
+      // GO ON ON THE COPY THAT WAS WRITTEN
+      currentContainer = target;
       // THE ENTRIES AFTER THE REMOVED ONE SHIFTED BACK, THE CURSOR AND ANY ENTRY ALREADY PEEKED WITH THEM
       final int removed = returnedEnd - returnedBegin;
       currentPosition.addAndGet(-removed);
       entriesShiftedBack(removed);
     }
+  }
+
+  private boolean holdsReturnedEntryAt(final EdgeSegment segment) {
+    if (returnedEnd > segment.getUsed())
+      return false;
+    final AtomicInteger position = new AtomicInteger(returnedBegin);
+    return returnedEdge.equals(segment.getRID(position)) && returnedVertex.equals(segment.getRID(position))
+        && position.get() == returnedEnd;
+  }
+
+  /** The returned entry wherever it now is in {@code segment}: entries never move to another segment. */
+  private void removeReturnedEntryByIdentity(final EdgeSegment segment) {
+    returnedContainer = null;
+    final int used = segment.getUsed();
+    final AtomicInteger position = new AtomicInteger(MutableEdgeSegment.CONTENT_START_POSITION);
+    while (position.get() < used) {
+      final int begin = position.get();
+      final RID edge = segment.getRID(position);
+      final RID vertex = segment.getRID(position);
+      if (returnedEdge.equals(edge) && returnedVertex.equals(vertex)) {
+        segment.removeEntry(begin, position.get());
+        ((DatabaseInternal) segment.getDatabase()).updateRecord(segment);
+        return;
+      }
+    }
+    // ALREADY GONE: WHATEVER CHANGED THE LIST TOOK IT OUT TOO
   }
 
   /**
@@ -159,18 +223,18 @@ public abstract class ResettableIteratorBase<T> implements ResettableIterator<T>
   protected void entriesShiftedBack(final int removed) {
   }
 
-  private void deleteEdgeOfEntry(final DatabaseInternal database, final RID listOwner, final Vertex.DIRECTION listDirection) {
+  /** @return false when a before-delete listener vetoed the delete, true when the entry is to be taken out */
+  private boolean deleteEdgeOfEntry(final DatabaseInternal database, final RID listOwner, final Vertex.DIRECTION listDirection) {
     if (returnedEdge.getPosition() < 0) {
       final DocumentType edgeType = database.getSchema().getTypeByBucketId(returnedEdge.getBucketId());
       if (edgeType == null) {
         logStaleEntry(listOwner, listDirection, "its lightweight edge type no longer exists");
-        return;
+        return true;
       }
       final Edge edge = listDirection == Vertex.DIRECTION.OUT ?
           new ImmutableLightEdge(database, edgeType, returnedEdge.getBucketId(), listOwner, returnedVertex) :
           new ImmutableLightEdge(database, edgeType, returnedEdge.getBucketId(), returnedVertex, listOwner);
-      database.deleteEdgeSkippingEndpoint(edge, listOwner, listDirection);
-      return;
+      return database.deleteEdgeSkippingEndpoint(edge, listOwner, listDirection);
     }
 
     final Record record;
@@ -179,15 +243,16 @@ public abstract class ResettableIteratorBase<T> implements ResettableIterator<T>
       record = database.lookupByRID(returnedEdge, true);
     } catch (final RecordNotFoundException e) {
       logStaleEntry(listOwner, listDirection, "its edge record no longer exists");
-      return;
+      return true;
     }
 
     if (record instanceof Edge edge)
       // THE EDGE'S OWN DATABASE HANDLE, SO A WRAPPED INSTANCE (SERVER, REPLICATED) SEES THE DELETE GO THROUGH ITS PIPELINE
-      ((DatabaseInternal) edge.getDatabase()).deleteEdgeSkippingEndpoint(edge, listOwner, listDirection);
-    else
-      // A RECORD THAT IS NOT AN EDGE MUST NOT BE DELETED THROUGH A STALE ENTRY
-      logStaleEntry(listOwner, listDirection, "its slot holds a record that is not an edge");
+      return ((DatabaseInternal) edge.getDatabase()).deleteEdgeSkippingEndpoint(edge, listOwner, listDirection);
+
+    // A RECORD THAT IS NOT AN EDGE MUST NOT BE DELETED THROUGH A STALE ENTRY
+    logStaleEntry(listOwner, listDirection, "its slot holds a record that is not an edge");
+    return true;
   }
 
   /** A stale entry is repaired by the unlink alone; said at FINE so a quiet repair of corruption can still be traced. */

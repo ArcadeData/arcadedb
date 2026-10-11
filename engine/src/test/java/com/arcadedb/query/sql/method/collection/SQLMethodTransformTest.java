@@ -315,8 +315,8 @@ class SQLMethodTransformTest {
       }
 
       @Override
-      public void deleteEdgeSkippingEndpoint(Edge edge, RID skipEndpoint, Vertex.DIRECTION skipDirection) {
-
+      public boolean deleteEdgeSkippingEndpoint(Edge edge, RID skipEndpoint, Vertex.DIRECTION skipDirection) {
+        return true;
       }
 
       @Override

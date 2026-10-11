@@ -263,8 +263,9 @@ public interface DatabaseInternal extends Database {
    * the entry out of it themselves.
    *
    * @param skipDirection the one list of {@code skipEndpoint} to leave alone, or {@code null} for both of them
+   * @return false when a before-delete listener vetoed the delete, so nothing was deleted or disconnected
    */
-  void deleteEdgeSkippingEndpoint(Edge edge, RID skipEndpoint, Vertex.DIRECTION skipDirection);
+  boolean deleteEdgeSkippingEndpoint(Edge edge, RID skipEndpoint, Vertex.DIRECTION skipDirection);
 
   Record invokeAfterReadEvents(Record record);
 

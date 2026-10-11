@@ -1791,11 +1791,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   }
 
   @Override
-  public void deleteEdgeSkippingEndpoint(final Edge edge, final RID skipEndpoint, final Vertex.DIRECTION skipDirection) {
-    executeInReadLock(() -> {
-      deleteRecordNoLock(edge, skipEndpoint, skipDirection);
-      return null;
-    });
+  public boolean deleteEdgeSkippingEndpoint(final Edge edge, final RID skipEndpoint, final Vertex.DIRECTION skipDirection) {
+    return executeInReadLock(() -> deleteRecordNoLock(edge, skipEndpoint, skipDirection));
   }
 
   @Override
