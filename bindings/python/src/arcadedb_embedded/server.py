@@ -15,8 +15,10 @@ from .jvm import start_jvm
 
 
 def _config_key(key: str) -> str:
-    """A Python config key in ArcadeDB's form: ``postgres_port`` ->
-    ``arcadedb.postgres.port``."""
+    """Return a Python config key in ArcadeDB's form.
+
+    ``postgres_port`` becomes ``arcadedb.postgres.port``.
+    """
     return f"arcadedb.{key.replace('_', '.')}"
 
 
