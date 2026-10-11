@@ -131,6 +131,23 @@ class Issue9724TimeSeriesDateTimeColumnsTest extends TestHelper {
   }
 
   @Test
+  void aPreEpochInstantRoundTripsInEveryPrecision() {
+    database.command("sql", "CREATE TIMESERIES TYPE T TIMESTAMP ts TAGS (k DATETIME_NANOS) FIELDS (n DATETIME_NANOS, u DATETIME_MICROS, "
+        + "s DATETIME_SECOND, d DATE)");
+    // before 1970, where a floored division and a truncated one land on different units
+    final LocalDateTime instant = LocalDateTime.of(1969, 12, 31, 23, 59, 59, 999_999_999);
+    database.command("sql", "INSERT INTO T SET ts = 1, k = ?, n = ?, u = ?, s = ?, d = ?", instant, instant, instant, instant, instant);
+    for (int pass = 0; pass < 2; pass++) {
+      assertThat(rows("SELECT k, n, u, s, d FROM T")).containsExactly(
+          "[d=1969-12-31(LocalDate), k=1969-12-31T23:59:59.999999999(LocalDateTime), n=1969-12-31T23:59:59.999999999(LocalDateTime), "
+              + "s=1969-12-31T23:59:59(LocalDateTime), u=1969-12-31T23:59:59.999999(LocalDateTime)]");
+      assertThat(count("SELECT FROM T WHERE k = ?", instant)).isEqualTo(1);
+      assertThat(count("SELECT FROM T WHERE n = ?", instant)).isEqualTo(1);
+      database.command("sql", "COMPACT TIMESERIES TYPE T");
+    }
+  }
+
+  @Test
   void minAndMaxOfADateTimeFieldAndAGroupingDateTimeTagReadAsDateTimes() {
     database.command("sql", "CREATE TIMESERIES TYPE T TIMESTAMP ts TAGS (k DATETIME_MICROS) FIELDS (v DATETIME_NANOS)");
     database.command("sql", "CREATE DOCUMENT TYPE D");
