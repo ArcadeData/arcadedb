@@ -68,7 +68,7 @@ public class PromQLParser {
     try {
     PromQLExpr left = parseAndUnless();
     while (lexer.matchKeyword("or")) {
-      left = new BinaryExpr(left, BinaryOp.OR, parseAndUnless());
+      left = new BinaryExpr(left, rejectBool(BinaryOp.OR), parseAndUnless());
     }
     return left;
     } finally {
@@ -80,9 +80,9 @@ public class PromQLParser {
     PromQLExpr left = parseComparison();
     while (true) {
       if (lexer.matchKeyword("and"))
-        left = new BinaryExpr(left, BinaryOp.AND, parseComparison());
+        left = new BinaryExpr(left, rejectBool(BinaryOp.AND), parseComparison());
       else if (lexer.matchKeyword("unless"))
-        left = new BinaryExpr(left, BinaryOp.UNLESS, parseComparison());
+        left = new BinaryExpr(left, rejectBool(BinaryOp.UNLESS), parseComparison());
       else
         break;
     }
@@ -107,18 +107,34 @@ public class PromQLParser {
         op = BinaryOp.GT;
       else
         break;
-      left = new BinaryExpr(left, op, parseAddSub());
+      // `bool` turns the filter into a 0/1 answer (issue #9644). It must be consumed here, before the right operand:
+      // read as an operand it parses as a metric selector named "bool" and the error lands on the token after it
+      final boolean returnBool = lexer.matchKeyword("bool");
+      left = new BinaryExpr(left, op, parseAddSub(), returnBool);
     }
     return left;
+  }
+
+  /**
+   * Refuses the {@code bool} modifier after an operator that is not a comparison, with the error Prometheus gives,
+   * instead of letting {@code bool} parse as a metric name and failing on the token after it (issue #9644). Called as
+   * the operator argument of {@code new BinaryExpr(left, rejectBool(op), parseX())}: Java evaluates arguments left to
+   * right, so the check runs before the right operand is parsed.
+   */
+  private BinaryOp rejectBool(final BinaryOp op) {
+    final int boolPos = lexer.matchKeywordAt("bool");
+    if (boolPos >= 0)
+      throw new IllegalArgumentException(BinaryExpr.boolOnNonComparisonMessage(op) + " at position " + boolPos);
+    return op;
   }
 
   private PromQLExpr parseAddSub() {
     PromQLExpr left = parseMulDiv();
     while (true) {
       if (lexer.match("+"))
-        left = new BinaryExpr(left, BinaryOp.ADD, parseMulDiv());
+        left = new BinaryExpr(left, rejectBool(BinaryOp.ADD), parseMulDiv());
       else if (lexer.matchMinus())
-        left = new BinaryExpr(left, BinaryOp.SUB, parseMulDiv());
+        left = new BinaryExpr(left, rejectBool(BinaryOp.SUB), parseMulDiv());
       else
         break;
     }
@@ -129,11 +145,11 @@ public class PromQLParser {
     PromQLExpr left = parseUnary();
     while (true) {
       if (lexer.match("*"))
-        left = new BinaryExpr(left, BinaryOp.MUL, parseUnary());
+        left = new BinaryExpr(left, rejectBool(BinaryOp.MUL), parseUnary());
       else if (lexer.match("/"))
-        left = new BinaryExpr(left, BinaryOp.DIV, parseUnary());
+        left = new BinaryExpr(left, rejectBool(BinaryOp.DIV), parseUnary());
       else if (lexer.match("%"))
-        left = new BinaryExpr(left, BinaryOp.MOD, parseUnary());
+        left = new BinaryExpr(left, rejectBool(BinaryOp.MOD), parseUnary());
       else
         break;
     }
@@ -151,7 +167,7 @@ public class PromQLParser {
       if (++parseDepth > MAX_PARSE_DEPTH)
         throw new IllegalArgumentException("PromQL expression exceeds maximum nesting depth of " + MAX_PARSE_DEPTH);
       try {
-        left = new BinaryExpr(left, BinaryOp.POW, parseUnary()); // right-associative
+        left = new BinaryExpr(left, rejectBool(BinaryOp.POW), parseUnary()); // right-associative
       } finally {
         parseDepth--;
       }
@@ -470,6 +486,13 @@ public class PromQLParser {
         return false;
       pos = end;
       return true;
+    }
+
+    /** Like {@link #matchKeyword} but returns the position the keyword started at, or {@code -1} when it does not match. */
+    int matchKeywordAt(final String keyword) {
+      skipWhitespace();
+      final int start = pos;
+      return matchKeyword(keyword) ? start : -1;
     }
 
     void expect(final String s) {
