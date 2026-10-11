@@ -377,4 +377,59 @@ public abstract class SQLFunctionVectorAbstract extends SQLFunctionAbstract {
     throw new CommandSQLParsingException(
         "Option 'filter' for function '" + functionName + "' must contain RIDs, got: " + item.getClass().getSimpleName());
   }
+
+  /**
+   * One grouped search-and-emit pass, asking each index for {@code fetchGroups} groups of {@code fetchGroupSize} members
+   * and capping the answer at the caller's own group budget. Adds to {@code staleSkipped[0]} every candidate whose
+   * record no longer resolved at emit time.
+   */
+  @FunctionalInterface
+  protected interface GroupedSearchPass {
+    ArrayList<Object> run(int fetchGroups, int fetchGroupSize, int[] staleSkipped);
+  }
+
+  /**
+   * The candidate budget of a grouped search, as the memory guard of {@code vector.neighbors} and
+   * {@code vector.sparseNeighbors} measures it (issue #4071): five candidates per member slot.
+   */
+  protected static long groupedFetchBudget(final int groups, final int groupSize) {
+    return Math.max((long) groups * groupSize * 5L, (long) groups);
+  }
+
+  /**
+   * Runs a grouped search, topping up an answer that a stale candidate left short (issue #9697, the grouped twin of
+   * #9368 / #9692). A record deleted by a commit that overlaps the search can still be in an index's answer; the emit
+   * skips it, which can cost a group one member or a whole group its place - and the index files a record it can no
+   * longer resolve under the null group, where it takes a group slot of its own. Each stale record therefore needs at
+   * most one more group and one more member per group, so a short answer re-runs the pass with both budgets widened by
+   * the stale count.
+   * <p>
+   * Stops when the answer is full ({@code groups * groupSize} rows), when no stale candidate was seen, when the next
+   * budget would exceed {@code maxFetchCandidates}, or when a wider pass answered no more rows than the one before:
+   * the corpus or allow-list has nothing more to give. In that last case the fresher answer is returned unless a delete
+   * landing between the passes made it the smaller one, so the older answer that wins can hold a record deleted since -
+   * the same best-effort contract as any answer read without a snapshot.
+   */
+  protected static ArrayList<Object> searchGroupedWithStaleTopUp(final int groups, final int groupSize,
+      final int maxFetchCandidates, final GroupedSearchPass pass) {
+    final long fullAnswer = (long) groups * groupSize;
+    int fetchGroups = groups;
+    int fetchGroupSize = groupSize;
+    ArrayList<Object> best = null;
+    while (true) {
+      final int[] staleSkipped = new int[1];
+      final ArrayList<Object> result = pass.run(fetchGroups, fetchGroupSize, staleSkipped);
+      if (best != null && result.size() <= best.size())
+        return result.size() < best.size() ? best : result;
+      best = result;
+      if (result.size() >= fullAnswer || staleSkipped[0] == 0)
+        return result;
+      final int nextGroups = fetchGroups + staleSkipped[0];
+      final int nextGroupSize = fetchGroupSize + staleSkipped[0];
+      if (groupedFetchBudget(nextGroups, nextGroupSize) > maxFetchCandidates)
+        return result;
+      fetchGroups = nextGroups;
+      fetchGroupSize = nextGroupSize;
+    }
+  }
 }

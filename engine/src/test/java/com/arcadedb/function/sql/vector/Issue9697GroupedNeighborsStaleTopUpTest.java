@@ -25,8 +25,11 @@ import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -42,7 +45,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * group its place.
  * <p>
  * Records {@code 2g} and {@code 2g + 1} form group {@code g}, ordered nearest-first, so {@code k = 3, groupSize = 2}
- * answers the first three groups. The records are removed from the bucket only, leaving their index entries behind,
+ * answers the first three groups. Every case runs over one bucket and over two. The records are removed from the bucket only, leaving their index entries behind,
  * which is the state a search sees between a commit's record delete and its index update. The sparse index runs with
  * exact rescoring off ({@code rescoreOversample: 0}) so it hands the stale RIDs over as they are, which isolates the SQL
  * layer from the index-level top-up of #9692.
@@ -52,30 +55,39 @@ class Issue9697GroupedNeighborsStaleTopUpTest extends TestHelper {
 
   @Override
   protected void beginTest() {
-    database.command("sql", "CREATE DOCUMENT TYPE Dense BUCKETS 1");
-    database.command("sql", "CREATE PROPERTY Dense.pid INTEGER");
-    database.command("sql", "CREATE PROPERTY Dense.grp INTEGER");
-    database.command("sql", "CREATE PROPERTY Dense.vector ARRAY_OF_FLOATS");
-    database.command("sql", "CREATE INDEX ON Dense (vector) LSM_VECTOR METADATA { \"dimensions\": 2, \"similarity\": \"EUCLIDEAN\" }");
+    // One bucket answers from a single index; two route every query through the multi-index merge and the #8002
+    // second phase, which the top-up has to widen as well. Insertion alternates buckets, so the two members of a group
+    // land in different ones.
+    for (final int buckets : new int[] { 1, 2 }) {
+      final String dense = "Dense" + buckets;
+      database.command("sql", "CREATE DOCUMENT TYPE " + dense + " BUCKETS " + buckets);
+      database.command("sql", "CREATE PROPERTY " + dense + ".pid INTEGER");
+      database.command("sql", "CREATE PROPERTY " + dense + ".grp INTEGER");
+      database.command("sql", "CREATE PROPERTY " + dense + ".vector ARRAY_OF_FLOATS");
+      database.command("sql",
+          "CREATE INDEX ON " + dense + " (vector) LSM_VECTOR METADATA { \"dimensions\": 2, \"similarity\": \"EUCLIDEAN\" }");
 
-    database.command("sql", "CREATE DOCUMENT TYPE Sparse BUCKETS 1");
-    database.command("sql", "CREATE PROPERTY Sparse.pid INTEGER");
-    database.command("sql", "CREATE PROPERTY Sparse.grp INTEGER");
-    database.command("sql", "CREATE PROPERTY Sparse.tokens ARRAY_OF_INTEGERS");
-    database.command("sql", "CREATE PROPERTY Sparse.weights ARRAY_OF_FLOATS");
-    database.command("sql", "CREATE INDEX ON Sparse (tokens, weights) LSM_SPARSE_VECTOR METADATA { dimensions: 16, rescoreOversample: 0 }");
+      final String sparse = "Sparse" + buckets;
+      database.command("sql", "CREATE DOCUMENT TYPE " + sparse + " BUCKETS " + buckets);
+      database.command("sql", "CREATE PROPERTY " + sparse + ".pid INTEGER");
+      database.command("sql", "CREATE PROPERTY " + sparse + ".grp INTEGER");
+      database.command("sql", "CREATE PROPERTY " + sparse + ".tokens ARRAY_OF_INTEGERS");
+      database.command("sql", "CREATE PROPERTY " + sparse + ".weights ARRAY_OF_FLOATS");
+      database.command("sql",
+          "CREATE INDEX ON " + sparse + " (tokens, weights) LSM_SPARSE_VECTOR METADATA { dimensions: 16, rescoreOversample: 0 }");
 
-    database.transaction(() -> {
-      for (int i = 0; i < COUNT; i++) {
-        database.newDocument("Dense").set("pid", i, "grp", i / 2, "vector", new float[] { i, 0f }).save();
-        database.newDocument("Sparse").set("pid", i, "grp", i / 2, "tokens", new int[] { 0 }, "weights",
-            new float[] { 1.0f - i * 0.01f }).save();
-      }
-    });
+      database.transaction(() -> {
+        for (int i = 0; i < COUNT; i++) {
+          database.newDocument(dense).set("pid", i, "grp", i / 2, "vector", new float[] { i, 0f }).save();
+          database.newDocument(sparse).set("pid", i, "grp", i / 2, "tokens", new int[] { 0 }, "weights",
+              new float[] { 1.0f - i * 0.01f }).save();
+        }
+      });
 
-    // Build the dense graph now: a lazy build validates every record and would drop the ones a test removes below.
-    final LSMVectorIndex lsm = (LSMVectorIndex) ((TypeIndex) database.getSchema().getIndexByName("Dense[vector]")).getIndexesOnBuckets()[0];
-    assertThat(lsm.findNeighborsFromVector(new float[] { 0f, 0f }, 10)).hasSize(10);
+      // Build every dense graph now: a lazy build validates every record and would drop the ones a test removes below.
+      for (final var sub : ((TypeIndex) database.getSchema().getIndexByName(dense + "[vector]")).getIndexesOnBuckets())
+        assertThat(((LSMVectorIndex) sub).findNeighborsFromVector(new float[] { 0f, 0f }, 10)).isNotEmpty();
+    }
   }
 
   @Override
@@ -84,40 +96,65 @@ class Issue9697GroupedNeighborsStaleTopUpTest extends TestHelper {
     return false;
   }
 
-  @Test
-  void denseGroupWhoseNearestMemberIsStaleKeepsItsPlace() {
-    removeFromBucketOnly("Dense", 1);
-    assertThat(densePids(3, 2)).containsExactly(1, 2, 3, 4, 5);
+  @ParameterizedTest
+  @ValueSource(ints = { 1, 2 })
+  void denseGroupWhoseNearestMemberIsStaleKeepsItsPlace(final int buckets) {
+    removeFromBucketOnly("Dense" + buckets, 1);
+    assertThat(densePids(buckets, 3, 2, null)).containsExactly(1, 2, 3, 4, 5);
   }
 
-  @Test
-  void denseWholeStaleGroupsAreReplacedByTheNextOnes() {
-    removeFromBucketOnly("Dense", 4);
-    assertThat(densePids(3, 2)).containsExactly(4, 5, 6, 7, 8, 9);
+  @ParameterizedTest
+  @ValueSource(ints = { 1, 2 })
+  void denseWholeStaleGroupsAreReplacedByTheNextOnes(final int buckets) {
+    removeFromBucketOnly("Dense" + buckets, 4);
+    assertThat(densePids(buckets, 3, 2, null)).containsExactly(4, 5, 6, 7, 8, 9);
   }
 
-  @Test
-  void denseShortCorpusStillAnswersWhatItHas() {
-    removeFromBucketOnly("Dense", COUNT - 4);
-    assertThat(densePids(3, 2)).containsExactly(56, 57, 58, 59);
+  @ParameterizedTest
+  @ValueSource(ints = { 1, 2 })
+  void denseShortCorpusStillAnswersWhatItHas(final int buckets) {
+    removeFromBucketOnly("Dense" + buckets, COUNT - 4);
+    assertThat(densePids(buckets, 3, 2, null)).containsExactly(56, 57, 58, 59);
   }
 
-  @Test
-  void sparseGroupWhoseNearestMemberIsStaleKeepsItsPlace() {
-    removeFromBucketOnly("Sparse", 1);
-    assertThat(sparsePids(3, 2)).containsExactly(1, 2, 3, 4, 5);
+  @ParameterizedTest
+  @ValueSource(ints = { 1, 2 })
+  void denseAllowListWithStaleEntriesIsToppedUpWithinTheList(final int buckets) {
+    final List<RID> allowed = rids("Dense" + buckets, 10);
+    removeFromBucketOnly("Dense" + buckets, 1);
+    assertThat(densePids(buckets, 3, 2, allowed)).containsExactly(1, 2, 3, 4, 5);
+    // An allow-list that cannot fill the groups once its stale entry is gone answers what it has, and terminates.
+    assertThat(densePids(buckets, 3, 2, allowed.subList(0, 4))).containsExactly(1, 2, 3);
   }
 
-  @Test
-  void sparseWholeStaleGroupsAreReplacedByTheNextOnes() {
-    removeFromBucketOnly("Sparse", 4);
-    assertThat(sparsePids(3, 2)).containsExactly(4, 5, 6, 7, 8, 9);
+  @ParameterizedTest
+  @ValueSource(ints = { 1, 2 })
+  void sparseGroupWhoseNearestMemberIsStaleKeepsItsPlace(final int buckets) {
+    removeFromBucketOnly("Sparse" + buckets, 1);
+    assertThat(sparsePids("Sparse" + buckets, 3, 2, null)).containsExactly(1, 2, 3, 4, 5);
   }
 
-  @Test
-  void sparseShortCorpusStillAnswersWhatItHas() {
-    removeFromBucketOnly("Sparse", COUNT - 4);
-    assertThat(sparsePids(3, 2)).containsExactly(56, 57, 58, 59);
+  @ParameterizedTest
+  @ValueSource(ints = { 1, 2 })
+  void sparseWholeStaleGroupsAreReplacedByTheNextOnes(final int buckets) {
+    removeFromBucketOnly("Sparse" + buckets, 4);
+    assertThat(sparsePids("Sparse" + buckets, 3, 2, null)).containsExactly(4, 5, 6, 7, 8, 9);
+  }
+
+  @ParameterizedTest
+  @ValueSource(ints = { 1, 2 })
+  void sparseShortCorpusStillAnswersWhatItHas(final int buckets) {
+    removeFromBucketOnly("Sparse" + buckets, COUNT - 4);
+    assertThat(sparsePids("Sparse" + buckets, 3, 2, null)).containsExactly(56, 57, 58, 59);
+  }
+
+  @ParameterizedTest
+  @ValueSource(ints = { 1, 2 })
+  void sparseAllowListWithStaleEntriesIsToppedUpWithinTheList(final int buckets) {
+    final List<RID> allowed = rids("Sparse" + buckets, 10);
+    removeFromBucketOnly("Sparse" + buckets, 1);
+    assertThat(sparsePids("Sparse" + buckets, 3, 2, allowed)).containsExactly(1, 2, 3, 4, 5);
+    assertThat(sparsePids("Sparse" + buckets, 3, 2, allowed.subList(0, 4))).containsExactly(1, 2, 3);
   }
 
   /**
@@ -146,7 +183,7 @@ class Issue9697GroupedNeighborsStaleTopUpTest extends TestHelper {
     final Thread reader = new Thread(() -> {
       try {
         while (!stop.get()) {
-          if (sparsePids("Live", 3, 2).size() < 6)
+          if (sparsePids("Live", 3, 2, null).size() < 6)
             shortAnswers.incrementAndGet();
           probes.incrementAndGet();
         }
@@ -181,37 +218,44 @@ class Issue9697GroupedNeighborsStaleTopUpTest extends TestHelper {
     assertThat(shortAnswers.get()).as("grouped probes answering fewer than 3 full groups out of " + probes.get()).isZero();
   }
 
-  private void removeFromBucketOnly(final String type, final int count) {
-    final List<RID> stale = new ArrayList<>();
-    try (final ResultSet rs = database.query("sql", "SELECT @rid AS rid FROM " + type + " WHERE pid < " + count)) {
-      rs.forEachRemaining(r -> stale.add(r.getProperty("rid")));
+  /** The RIDs of the {@code count} nearest records, ordered by pid. */
+  private List<RID> rids(final String type, final int count) {
+    final List<RID> rids = new ArrayList<>();
+    try (final ResultSet rs = database.query("sql", "SELECT @rid AS rid FROM " + type + " WHERE pid < " + count + " ORDER BY pid")) {
+      rs.forEachRemaining(r -> rids.add(r.getProperty("rid")));
     }
-    assertThat(stale).hasSize(count);
+    assertThat(rids).hasSize(count);
+    return rids;
+  }
+
+  private void removeFromBucketOnly(final String type, final int count) {
+    final List<RID> stale = rids(type, count);
     database.transaction(() -> {
       for (final RID rid : stale)
         ((LocalBucket) database.getSchema().getBucketById(rid.getBucketId())).deleteRecord(rid);
     });
   }
 
-  private List<Integer> densePids(final int k, final int groupSize) {
+  private List<Integer> densePids(final int buckets, final int k, final int groupSize, final List<RID> filter) {
     final List<Integer> pids = new ArrayList<>();
+    final Map<String, Object> params = new HashMap<>();
+    params.put("v", new float[] { 0f, 0f });
+    params.put("filter", filter);
     try (final ResultSet rs = database.query("sql",
-        "SELECT pid FROM (SELECT expand(`vector.neighbors`('Dense[vector]', :v, " + k + ", { groupBy: 'grp', groupSize: " + groupSize
-            + " })))", Map.of("v", new float[] { 0f, 0f }))) {
+        "SELECT pid FROM (SELECT expand(`vector.neighbors`('Dense" + buckets + "[vector]', :v, " + k + ", { groupBy: 'grp', groupSize: "
+            + groupSize + (filter != null ? ", filter: :filter" : "") + " })))", params)) {
       rs.forEachRemaining(r -> pids.add(r.getProperty("pid")));
     }
     return pids;
   }
 
-  private List<Integer> sparsePids(final int k, final int groupSize) {
-    return sparsePids("Sparse", k, groupSize);
-  }
-
-  private List<Integer> sparsePids(final String type, final int k, final int groupSize) {
+  private List<Integer> sparsePids(final String type, final int k, final int groupSize, final List<RID> filter) {
     final List<Integer> pids = new ArrayList<>();
+    final Map<String, Object> params = new HashMap<>();
+    params.put("filter", filter);
     try (final ResultSet rs = database.query("sql",
         "SELECT pid FROM (SELECT expand(`vector.sparseNeighbors`('" + type + "[tokens,weights]', [0], [1.0], " + k
-            + ", { groupBy: 'grp', groupSize: " + groupSize + " })))")) {
+            + ", { groupBy: 'grp', groupSize: " + groupSize + (filter != null ? ", filter: :filter" : "") + " })))", params)) {
       rs.forEachRemaining(r -> pids.add(r.getProperty("pid")));
     }
     return pids;

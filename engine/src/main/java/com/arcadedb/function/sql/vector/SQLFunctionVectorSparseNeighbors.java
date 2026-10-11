@@ -219,14 +219,12 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
     // sub-index could have given more (one that returned fewer candidates than asked has nothing left), ask again with
     // a wider fetch so a stale entry costs a candidate and not an answer row. Bounded by MAX_FETCH_CANDIDATES.
     //
-    // The grouped path has the same hole one level up (issue #9697), the same way the dense function's does: `k` is a
-    // group budget there, so a stale record can cost a group one member, or a whole group its place - and the index
-    // files a record it can no longer resolve under the null group, where it takes a group slot of its own. Each stale
-    // record needs at most one more group and one more member per group, so a short grouped answer re-runs the
-    // per-bucket grouped search and the #8002 second phase with both budgets widened by the stale count. It stops once
-    // a pass answers no more rows than the one before, which is a corpus or allow-list that has nothing more to give.
+    // The grouped path has the same hole one level up (issue #9697), where `k` is a group budget: each pass re-runs the
+    // per-bucket grouped search and the #8002 second phase - see searchGroupedWithStaleTopUp.
     if (groupBy != null)
-      return searchGroupedWithTopUp(indexes, queryIndices, queryValues, k, allowedRIDs, groupBy, groupSize, minScore, context);
+      return searchGroupedWithStaleTopUp(k, groupSize, MAX_FETCH_CANDIDATES,
+          (fetchGroups, fetchGroupSize, staleSkipped) -> searchAndEmit(indexes, queryIndices, queryValues, k, fetchGroups,
+              allowedRIDs, groupBy, fetchGroupSize, groupSize, minScore, context, staleSkipped, null));
 
     int fetchK = k;
     while (true) {
@@ -240,41 +238,11 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
     }
   }
 
-  private ArrayList<Object> searchGroupedWithTopUp(final List<LSMSparseVectorIndex> indexes, final int[] queryIndices,
-      final float[] queryValues, final int k, final Set<RID> allowedRIDs, final String groupBy, final int groupSize,
-      final float minScore, final CommandContext context) {
-    final long fullAnswer = (long) k * groupSize;
-    int fetchGroups = k;
-    int fetchGroupSize = groupSize;
-    ArrayList<Object> best = null;
-    while (true) {
-      final int[] staleSkipped = new int[1];
-      final ArrayList<Object> result = searchAndEmit(indexes, queryIndices, queryValues, k, fetchGroups, allowedRIDs, groupBy,
-          fetchGroupSize, groupSize, minScore, context, staleSkipped, new boolean[1]);
-      // A pass that did not grow the answer means the wider budget found nothing more: stop, on the fresher answer
-      // unless a delete landing in between made it the smaller one.
-      if (best != null && result.size() <= best.size())
-        return result.size() < best.size() ? best : result;
-      best = result;
-      if (result.size() >= fullAnswer || staleSkipped[0] == 0)
-        return result;
-      final int nextGroups = fetchGroups + staleSkipped[0];
-      final int nextGroupSize = fetchGroupSize + staleSkipped[0];
-      if (groupedFetchBudget(nextGroups, nextGroupSize) > MAX_FETCH_CANDIDATES)
-        return result;
-      fetchGroups = nextGroups;
-      fetchGroupSize = nextGroupSize;
-    }
-  }
-
-  private static long groupedFetchBudget(final int groups, final int groupSize) {
-    return Math.max((long) groups * groupSize * 5L, (long) groups);
-  }
-
   /**
    * One search and emit pass. {@code fetchK} and {@code fetchGroupSize} size what the sub-indexes are asked for:
    * candidates on the plain path, the group budget and the per-group cap on the grouped one. The answer is always
-   * capped at the caller's own {@code k} rows, or {@code k} groups of {@code groupSize}.
+   * capped at the caller's own {@code k} rows, or {@code k} groups of {@code groupSize}. {@code saturated} is only
+   * tracked, and only non-null, on the plain path.
    */
   private ArrayList<Object> searchAndEmit(final List<LSMSparseVectorIndex> indexes, final int[] queryIndices,
       final float[] queryValues, final int k, final int fetchK, final Set<RID> allowedRIDs, final String groupBy,
@@ -333,7 +301,7 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
       // Any sub-index at its budget may hold more, so the answer as a whole can grow. Over several sub-indexes this can
       // re-run a search whose stale row came from one that was not saturated: wasted work, never a wrong answer, and
       // bounded by MAX_FETCH_CANDIDATES - the same trade the dense function makes (#9368).
-      if (groupBy == null && partial.size() >= fetchK)
+      if (saturated != null && partial.size() >= fetchK)
         saturated[0] = true;
     }
 
