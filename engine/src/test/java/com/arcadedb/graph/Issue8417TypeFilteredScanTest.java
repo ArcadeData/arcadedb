@@ -205,8 +205,8 @@ class Issue8417TypeFilteredScanTest {
     database.transaction(() -> {
       final RID headRID = ((VertexInternal) ids[0].asVertex()).getInEdgesHeadChunk();
       final VertexIteratorFilter it = new VertexIteratorFilter((DatabaseInternal) database,
-          (EdgeSegment) database.lookupByRID(headRID, true), new String[] { "Parent" });
-      // remove() unlinks the entry the iterator returned last, which the skip must keep pointing at
+          (EdgeSegment) database.lookupByRID(headRID, true), new String[] { "Parent" }, ids[0], Vertex.DIRECTION.IN);
+      // remove() deletes the edge of the entry the iterator returned last, which the skip must keep pointing at
       assertThat(it.next().getIdentity()).isEqualTo(ids[1]);
       it.remove();
       assertThat(it.hasNext()).isFalse();
@@ -215,6 +215,8 @@ class Issue8417TypeFilteredScanTest {
       final Vertex unit = ids[0].asVertex();
       assertThat(unit.countEdges(Vertex.DIRECTION.IN, "Parent")).isZero();
       assertThat(unit.countEdges(Vertex.DIRECTION.IN, "Case_unit")).isEqualTo(HUB);
+      // the edge is deleted, not only unlinked from the walked list (#9779)
+      assertThat(ids[1].asVertex().countEdges(Vertex.DIRECTION.OUT, "Parent")).isZero();
     });
   }
 

@@ -33,10 +33,20 @@ public abstract class IteratorFilterBase<T> extends ResettableIteratorBase<T> {
   // ENTRY OF ANOTHER TYPE COSTS NEITHER AN RID DECODE NOR A BOXED LOOKUP (#8417)
   protected final EdgeBucketMask validBuckets;
   protected       int            fullStackTracePrinted = 0;
+  // THE VERTEX AND DIRECTION OF THE LIST WALKED, FOR remove(). NULL WHEN THE CALLER DID NOT SAY: remove() IS THEN UNSUPPORTED
+  private final   RID              listOwner;
+  private final   Vertex.DIRECTION listDirection;
 
   protected IteratorFilterBase(final DatabaseInternal database, final EdgeSegment current, final String[] edgeTypes) {
+    this(database, current, edgeTypes, null, null);
+  }
+
+  protected IteratorFilterBase(final DatabaseInternal database, final EdgeSegment current, final String[] edgeTypes,
+      final RID listOwner, final Vertex.DIRECTION listDirection) {
     super(database, current);
     validBuckets = EdgeBucketMask.of(database, edgeTypes);
+    this.listOwner = listOwner;
+    this.listDirection = listDirection;
   }
 
   /**
@@ -126,13 +136,26 @@ public abstract class IteratorFilterBase<T> extends ResettableIteratorBase<T> {
       LogManager.instance().log(this, Level.WARNING, "Error on loading edge %s. Skip it. Error: %s", edge, e.getMessage());
   }
 
+  /** To call from {@code next()} once {@code hasNext()} has stopped on the entry it hands out. */
+  protected final void entryReturned() {
+    entryReturned(currentContainer, lastElementPosition, currentPosition.get(), nextEdge, nextVertex);
+  }
+
+  /**
+   * Deletes the edge of the entry the last {@code next()} returned, see {@link ResettableIteratorBase#removeReturnedEntry}.
+   * It used to take the entry out of the list and nothing else (#9779): no {@code DELETE_RECORD} check, the edge record
+   * left alive and the far endpoint's list still pointing at it.
+   */
   @Override
   public void remove() {
-    if (currentContainer != null) {
-      currentContainer.removeEntry(lastElementPosition, currentPosition.get());
-      database.updateRecord(currentContainer);
-      currentPosition.set(lastElementPosition);
-    }
+    removeReturnedEntry(listOwner, listDirection);
+  }
+
+  @Override
+  protected void entriesShiftedBack(final int removed) {
+    if (next != null)
+      // THE ENTRY hasNext() ALREADY PEEKED FOLLOWS THE REMOVED ONE IN THE SAME SEGMENT
+      lastElementPosition -= removed;
   }
 
   public RID getNextVertex() {

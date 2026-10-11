@@ -26,6 +26,7 @@ import com.arcadedb.database.Record;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.RepairTransaction;
+import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
@@ -978,6 +979,25 @@ public class GraphDatabaseChecker {
     }
   }
 
+  /**
+   * Prunes the adjacency entry the walk stands on. {@code remove()} deletes the edge the entry names and, when that
+   * delete fails, keeps the entry and lets the failure out (#9779). For this repair the entry IS the damage, so when the
+   * edge cannot be deleted because something else around it is broken, the entry is still taken out, as the iterator
+   * did before #9779. A refused delete and a retryable conflict are not damage, and propagate.
+   */
+  private static void pruneEntry(final Iterator<Pair<RID, RID>> entries, final RID edgeRID, final CheckReport report) {
+    try {
+      entries.remove();
+    } catch (final SecurityException | NeedRetryException e) {
+      throw e;
+    } catch (final RuntimeException e) {
+      if (!(entries instanceof EdgeVertexIterator list))
+        throw e;
+      report.warn("edge " + edgeRID + " could not be deleted, removing its entry only (error: " + describe(e) + ")");
+      list.removeEntryKeepingEdge();
+    }
+  }
+
   private static Edge asEdgeOrDanglingEntry(final RID edgeRID) {
     try {
       return edgeRID.asEdge(true);
@@ -1207,7 +1227,7 @@ public class GraphDatabaseChecker {
             }
 
             if (fix && removeEntry) {
-              in.remove();
+              pruneEntry(in, edgeRID, report);
               // EVERY image, not just this vertex's (#6062). The remove is not local to the list being walked:
               // EdgeVertexIterator.remove() DELETES the edge record first, and GraphEngine.deleteEdge takes the
               // edge out of BOTH endpoints' lists - so a prune here can change a list this cache holds an image of,
@@ -1457,7 +1477,7 @@ public class GraphDatabaseChecker {
             }
 
             if (fix && removeEntry) {
-              out.remove();
+              pruneEntry(out, edgeRID, report);
               // See the twin in checkIncomingEdges: the prune deletes the edge record, so it can change any list
               // this cache holds an image of, and every image is dropped rather than guessed at (#6062).
               probeCache.clear();

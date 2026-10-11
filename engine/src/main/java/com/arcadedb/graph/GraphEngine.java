@@ -856,37 +856,44 @@ public class GraphEngine {
    * that window a retry instead.
    */
   public void deleteEdge(final Edge edge) {
-    deleteEdge(edge, null);
+    deleteEdge(edge, null, null);
   }
 
   /**
-   * {@link #deleteEdge(Edge)} for a caller that is about to drop one endpoint's edge list WHOLESALE, so the removal
-   * of this edge from that list would be pure waste (#5760).
+   * {@link #deleteEdge(Edge)} for a caller that takes care of one endpoint's edge list ITSELF, so removing this edge
+   * from that list here would be pure waste or, worse, a second removal of the same entry.
    * <p>
    * NOT a general-purpose "delete an edge but keep one side attached" entry point, and it cannot become one: the
-   * only reason skipping is sound is that the caller destroys the skipped list immediately afterwards. Pass a
-   * {@code skipEndpoint} whose list SURVIVES and the result is a back-reference to a deleted edge - precisely the
-   * corruption #5670 exists to prevent. It is public only because {@code LocalDatabase} dispatches to it from
-   * another package; the sole legitimate caller is {@link #deleteVertex}, and a new one has to satisfy that same
-   * "the skipped list is about to be dropped" precondition.
-   * <p>
-   * {@code skipEndpoint} is the RID of a vertex whose edge list must NOT be touched. One of an edge's two
-   * endpoints is always the vertex being deleted, and disconnecting it means walking the chain from the head
-   * probing each chunk for the entry, anchoring the chunk that holds it, compacting it, and writing it back -
-   * per edge, over a list that
-   * {@link #deleteRemainingChunks} deletes in its entirety a moment later. Skipping it removes the work rather than
-   * making it cheaper.
+   * only reason skipping is sound is that the caller handles the skipped list right afterwards. Pass a
+   * {@code skipEndpoint} whose list SURVIVES with the entry in it and the result is a back-reference to a deleted edge -
+   * precisely the corruption #5670 exists to prevent. It is public only because {@code LocalDatabase} dispatches to it
+   * from another package. Two callers satisfy the precondition, each in its own way:
+   * <ul>
+   * <li>{@link #deleteVertex} (#5760), with {@code skipDirection == null}: the skipped lists are dropped WHOLESALE a
+   * moment later. One of an edge's two endpoints is always the vertex being deleted, and disconnecting it means
+   * walking the chain from the head probing each chunk for the entry, anchoring the chunk that holds it, compacting it,
+   * and writing it back - per edge, over a list that {@link #deleteRemainingChunks} deletes in its entirety a moment
+   * later. Skipping it removes the work rather than making it cheaper.</li>
+   * <li>{@code Iterator.remove()} of the edge-list iterators (#9779), with the direction of the list being walked: the
+   * iterator takes out the very entry it stands on, by position, once this delete has succeeded. Letting this method
+   * remove it too, by RID, removed it a second time: once the iterator's own copy of the segment was the
+   * transaction's, its positional removal took out the entry AFTER it, dropping a sibling edge.</li>
+   * </ul>
    * <p>
    * Matched by RID against the endpoint recorded ON THE EDGE, not by which list the edge was found in: an entry
-   * whose {@code out}/{@code in} does NOT name the vertex being deleted is a reference into somebody else's list
+   * whose {@code out}/{@code in} does NOT name the skipped vertex is a reference into somebody else's list
    * and is disconnected normally.
    * <p>
-   * A SELF-LOOP therefore skips BOTH sides, which is correct for the same reason as one side: {@code A -> A} is
-   * reachable from both of A's lists and both are dropped. What is NOT skipped is the self-side READ - the strict
-   * collection walk in {@link #deleteEdgesOf} that refuses to delete a vertex whose own list is not fully readable
-   * (#5670/#5680) - because that walk is what decides which edges exist to disconnect at all.
+   * With {@code skipDirection == null} a SELF-LOOP skips BOTH sides, which is correct for the vertex delete for the
+   * same reason as one side: {@code A -> A} is reachable from both of A's lists and both are dropped. With a direction
+   * only that side is skipped: an iterator walks ONE of A's lists, and the other one still holds the loop. What is NOT
+   * skipped is the self-side READ - the strict collection walk in {@link #deleteEdgesOf} that refuses to delete a
+   * vertex whose own list is not fully readable (#5670/#5680) - because that walk is what decides which edges exist to
+   * disconnect at all.
+   *
+   * @param skipDirection the one list of {@code skipEndpoint} to leave alone, or {@code null} for both of them
    */
-  public void deleteEdge(final Edge edge, final RID skipEndpoint) {
+  public void deleteEdge(final Edge edge, final RID skipEndpoint, final Vertex.DIRECTION skipDirection) {
     final Database database = edge.getDatabase();
     if (edge.getType() instanceof EdgeType edgeType && !edgeType.isBidirectional()) {
       final TransactionContext tx = this.database.getTransactionIfExists();
@@ -895,8 +902,8 @@ public class GraphEngine {
         changes.edgeDeleted(edge.getIdentity());
     }
 
-    disconnectEndpoint(edge, Vertex.DIRECTION.OUT, skipEndpoint);
-    disconnectEndpoint(edge, Vertex.DIRECTION.IN, skipEndpoint);
+    disconnectEndpoint(edge, Vertex.DIRECTION.OUT, skipEndpoint, skipDirection);
+    disconnectEndpoint(edge, Vertex.DIRECTION.IN, skipEndpoint, skipDirection);
 
     final RID edgeRID = edge.getIdentity();
     if (edgeRID != null && !(edge instanceof LightEdge))
@@ -924,11 +931,12 @@ public class GraphEngine {
   }
 
   /**
-   * Removes {@code edge} from the edge list of its endpoint in {@code direction}, unless that endpoint is the one
-   * the caller is dropping wholesale (see {@link #deleteEdge(Edge, RID)}).
+   * Removes {@code edge} from the edge list of its endpoint in {@code direction}, unless that list is the one the
+   * caller handles itself (see {@link #deleteEdge(Edge, RID, Vertex.DIRECTION)}).
    */
-  private void disconnectEndpoint(final Edge edge, final Vertex.DIRECTION direction, final RID skipEndpoint) {
-    if (skipEndpoint != null && skipEndpoint.equals(
+  private void disconnectEndpoint(final Edge edge, final Vertex.DIRECTION direction, final RID skipEndpoint,
+      final Vertex.DIRECTION skipDirection) {
+    if (skipEndpoint != null && (skipDirection == null || skipDirection == direction) && skipEndpoint.equals(
         direction == Vertex.DIRECTION.OUT ? edge.getOut() : edge.getIn()))
       return;
 
@@ -1223,7 +1231,7 @@ public class GraphEngine {
    * #5760 removes the two costs this method used to pay for the walk, both of which fall out of ONE observation:
    * the vertex's own lists are dropped wholesale at the end, so nothing this method does to them is worth doing.
    * <ul>
-   *   <li>Each edge is disconnected from its FAR endpoint only ({@link #deleteEdge(Edge, RID)}). The self side was
+   *   <li>Each edge is disconnected from its FAR endpoint only ({@link #deleteEdge(Edge, RID, Vertex.DIRECTION)}). The self side was
    *   a chain walk, a chunk anchor, a compaction and a write-back per edge, over a list
    *   {@link #deleteRemainingChunks} deletes entirely moments later.</li>
    *   <li>The walk STREAMS. It used to materialise every edge into an {@code ArrayList} first, and had to: the
@@ -1658,7 +1666,7 @@ public class GraphEngine {
    * edge the vertex has and deleted in a second pass. The second pass was not a style choice: while the removals
    * still disconnected each edge from THIS vertex too, they relinked and deleted chunks underneath the iterator,
    * and a single pass would have been a walk over a list being restructured. It is
-   * {@link #deleteEdge(Edge, RID)} skipping this vertex that makes one pass legal - the deletions below now write
+   * {@link #deleteEdge(Edge, RID, Vertex.DIRECTION)} skipping this vertex that makes one pass legal - the deletions below now write
    * the FAR endpoints' lists and the edge records, never this list - and the accumulator, one live object per edge
    * held for the whole delete, goes away with it.
    * <p>
@@ -1843,7 +1851,7 @@ public class GraphEngine {
   /**
    * Deletes one edge of a vertex that is itself being deleted: the full record deletion (index cleanup, external
    * values, delete events) with the disconnection from {@code vertex} skipped - see
-   * {@link #deleteEdge(Edge, RID)} for why, and {@link #deleteEdgesOf} for why this is not inside the walk's
+   * {@link #deleteEdge(Edge, RID, Vertex.DIRECTION)} for why, and {@link #deleteEdgesOf} for why this is not inside the walk's
    * {@code try}.
    * <p>
    * Routed through the edge's OWN database handle rather than this engine's, so a wrapped instance
@@ -1852,7 +1860,7 @@ public class GraphEngine {
    */
   private void deleteEdgeOfDeletedVertex(final Edge edge, final VertexInternal vertex, final boolean force) {
     try {
-      ((DatabaseInternal) edge.getDatabase()).deleteEdgeSkippingEndpoint(edge, vertex.getIdentity());
+      ((DatabaseInternal) edge.getDatabase()).deleteEdgeSkippingEndpoint(edge, vertex.getIdentity(), null);
     } catch (final RecordNotFoundException e) {
       // ALREADY DELETED, IGNORE IT
     } catch (final BrokenChunkChainException e) {

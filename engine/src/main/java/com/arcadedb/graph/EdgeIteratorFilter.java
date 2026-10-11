@@ -44,7 +44,7 @@ public class EdgeIteratorFilter extends IteratorFilterBase<Edge> {
 
   public EdgeIteratorFilter(final DatabaseInternal database, final Vertex vertex, final Vertex.DIRECTION direction,
       final EdgeSegment current, final String[] edgeTypes, final boolean endpointsFromList) {
-    super(database, current, edgeTypes);
+    super(database, current, edgeTypes, vertex.getIdentity(), direction);
     this.direction = direction;
     this.vertex = vertex;
     this.endpointsFromList = endpointsFromList;
@@ -62,6 +62,7 @@ public class EdgeIteratorFilter extends IteratorFilterBase<Edge> {
     if (next == null)
       throw new NoSuchElementException();
 
+    entryReturned();
     try {
       if (next.getPosition() < 0) {
         // LIGHTWEIGHT EDGE
