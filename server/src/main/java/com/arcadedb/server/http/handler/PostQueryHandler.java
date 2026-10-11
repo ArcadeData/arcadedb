@@ -30,6 +30,15 @@ public class PostQueryHandler extends PostCommandHandler {
   }
 
   /**
+   * Not what {@link PostCommandHandler} answers: a query cannot write, so its failure leaves nothing half applied in the caller's
+   * transaction and rolling it back would only destroy what the caller wrote before (issue #9784). Same as {@code GET /query}.
+   */
+  @Override
+  protected boolean rollsBackSessionTransactionOnFailure() {
+    return false;
+  }
+
+  /**
    * A query is run on this node and never forwarded whole, so a write it issues from inside - through a function it
    * calls - is a part of the request and must not relay the client's key or body (issues #8347, #8359).
    */

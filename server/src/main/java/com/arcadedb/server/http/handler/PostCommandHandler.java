@@ -37,6 +37,7 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ForwardedRequestIdContext;
 import com.arcadedb.server.http.HttpServer;
+import com.arcadedb.server.http.RequestRefusedBeforeExecutionException;
 import com.arcadedb.server.monitor.QueryProfile;
 import com.arcadedb.server.monitor.ServerQueryProfiler;
 import com.arcadedb.server.security.ServerSecurityUser;
@@ -238,7 +239,7 @@ public class PostCommandHandler extends AbstractQueryHandler {
     if (streaming) {
       ndJsonRowSerializer(serializer, includeTypeHints);
       if (profileExecution != null)
-        throw new IllegalArgumentException("'profileExecution' reports the plan and the timings in the response "
+        throw new RequestRefusedBeforeExecutionException("'profileExecution' reports the plan and the timings in the response "
             + "envelope, which the streaming encoding does not have: request it with 'Accept: application/json'");
     }
 

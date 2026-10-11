@@ -1312,8 +1312,9 @@ public class TimeSeriesEngine implements AutoCloseable {
       db.runWithCompactionReplication(() -> {
         for (final TimeSeriesShard shard : shards) {
           final TimeSeriesSealedStore sealed = shard.getSealedStore();
-          shard.getCompactionLock().writeLock().lock();
-          try {
+          // The shard decides what a rewrite of its sealed file must exclude (issue #9771): compaction does not hold the
+          // compaction lock for the part of its work that owns the temp file, so that lock alone does not keep it off.
+          shard.runSealedRewrite(() -> {
             final int blocksBefore = sealed.getBlockCount();
             final long samplesBefore = sealed.getTotalSampleCount();
             work.apply(shard);
@@ -1322,9 +1323,7 @@ public class TimeSeriesEngine implements AutoCloseable {
             if (sealed.getBlockCount() != blocksBefore || sealed.getTotalSampleCount() != samplesBefore)
               db.recordTimeSeriesSealedChange(typeName, shard.getShardIndex(), sealed.getSealedFileName(),
                   sealed.readWholeSealedFile());
-          } finally {
-            shard.getCompactionLock().writeLock().unlock();
-          }
+          });
         }
         return true;
       });

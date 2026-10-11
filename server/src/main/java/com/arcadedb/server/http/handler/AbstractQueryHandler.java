@@ -41,6 +41,7 @@ import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
+import com.arcadedb.server.http.RequestRefusedBeforeExecutionException;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.util.Headers;
 
@@ -286,7 +287,7 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
    */
   protected static JsonSerializer ndJsonRowSerializer(final String serializer, final boolean includeTypeHints) {
     if ("graph".equals(serializer) || "studio".equals(serializer))
-      throw new IllegalArgumentException("Serializer '" + serializer + "' aggregates the whole result into a single "
+      throw new RequestRefusedBeforeExecutionException("Serializer '" + serializer + "' aggregates the whole result into a single "
           + "graph document and has no row stream: request it with 'Accept: application/json', or stream with "
           + "serializer 'record'");
 
@@ -969,7 +970,7 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
     }
 
     if (!idempotent)
-      throw new IllegalArgumentException("The streaming encoding is available only for a read-only statement, "
+      throw new RequestRefusedBeforeExecutionException("The streaming encoding is available only for a read-only statement, "
           + "because its rows reach the client before the statement has finished: run this one with "
           + "'Accept: application/json'");
   }

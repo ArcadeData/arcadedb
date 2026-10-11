@@ -266,7 +266,8 @@ public class HttpSession implements QuerySession {
         // ALREADY HOLDS `lock` HERE, AND ReentrantLock.lockInterruptibly() CHECKS Thread.interrupted() BEFORE
         // ITS REENTRANT FAST PATH - IF THIS THREAD'S INTERRUPT FLAG IS SET, cancel() WOULD THROW
         // InterruptedException AND SILENTLY SKIP THE ROLLBACK
-        if (rollbackOnFailure) {
+        // A REQUEST REFUSED BEFORE ANYTHING REACHED THE ENGINE LEAVES THE TRANSACTION AS IT WAS: THERE IS NOTHING IN IT TO DISTRUST (issue #9784)
+        if (rollbackOnFailure && !(e instanceof RequestRefusedBeforeExecutionException)) {
           final boolean wasActive = transaction != null && transaction.isActive();
           final boolean hadChanges = wasActive && transaction.hasChanges();
           final boolean rolledBack = rollbackIfActive();
