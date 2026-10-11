@@ -126,20 +126,24 @@ class Issue8572NativeTemporalIndexTest extends TestHelper {
       LSM_TREE
       HASH
       """)
-  void uniqueIndexRefusesTheSameInstantInTwoOffsets(final String algorithm) {
+  void uniqueIndexTellsTheSameInstantInTwoOffsetsApart(final String algorithm) {
+    // The same instant in two offsets is two values in openCypher, and to the row filter (issue #9648): the unique index
+    // takes both, and refuses only the same value written twice
     database.getSchema().createVertexType("U").createProperty("p", Type.OFFSET_TIME);
     database.getSchema().createTypeIndex(Schema.INDEX_TYPE.valueOf(algorithm), true, "U", "p");
     database.transaction(() -> database.newVertex("U").set("p", OffsetTime.of(10, 0, 0, 0, ZoneOffset.ofHours(2))).save());
-    assertThatThrownBy(
-        () -> database.transaction(() -> database.newVertex("U").set("p", OffsetTime.of(8, 0, 0, 0, ZoneOffset.UTC)).save()))
+    database.transaction(() -> database.newVertex("U").set("p", OffsetTime.of(8, 0, 0, 0, ZoneOffset.UTC)).save());
+    assertThatThrownBy(() -> database.transaction(
+        () -> database.newVertex("U").set("p", OffsetTime.of(10, 0, 0, 0, ZoneOffset.ofHours(2))).save()))
         .isInstanceOf(DuplicatedKeyException.class);
 
     database.getSchema().createVertexType("Z").createProperty("p", Type.ZONED_DATETIME);
     database.getSchema().createTypeIndex(Schema.INDEX_TYPE.valueOf(algorithm), true, "Z", "p");
     database.transaction(
         () -> database.newVertex("Z").set("p", ZonedDateTime.parse("2024-01-01T12:00:00+01:00")).save());
+    database.transaction(() -> database.newVertex("Z").set("p", ZonedDateTime.parse("2024-01-01T11:00:00Z")).save());
     assertThatThrownBy(() -> database.transaction(
-        () -> database.newVertex("Z").set("p", ZonedDateTime.parse("2024-01-01T11:00:00Z")).save()))
+        () -> database.newVertex("Z").set("p", ZonedDateTime.parse("2024-01-01T12:00:00+01:00")).save()))
         .isInstanceOf(DuplicatedKeyException.class);
   }
 

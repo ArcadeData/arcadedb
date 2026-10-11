@@ -770,6 +770,11 @@ public class HashIndex implements IndexInternal {
     return null;
   }
 
+  @Override
+  public Object[] convertLookupKeys(final Object[] keys) {
+    return convertKeys(keys);
+  }
+
   private void checkIsValid() {
     if (!valid)
       throw new IndexException("Hash index '" + name + "' is not valid. Probably has been dropped or rebuilt");

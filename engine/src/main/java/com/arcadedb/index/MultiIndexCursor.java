@@ -19,14 +19,22 @@
 package com.arcadedb.index;
 
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.RID;
 import com.arcadedb.index.lsm.LSMTreeIndexMutable;
 import com.arcadedb.serializer.BinaryComparator;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.NoSuchElementException;
+import java.util.Set;
 
+/**
+ * Merges several index cursors into one, by key or as a plain union, optionally capped and optionally returning each record
+ * once. In the distinct mode {@link #hasNext()} pulls ahead to the next record not yet returned and buffers it, so
+ * {@link #getKeys()} and {@link #getRecord()} describe the record of the last {@link #next()}, never the buffered one.
+ */
 public class MultiIndexCursor implements IndexCursor {
   private final List<IndexCursor>  cursors;
   private final int                limit;
@@ -38,14 +46,24 @@ public class MultiIndexCursor implements IndexCursor {
   private final boolean            ascendingOrder;
   // #8153: false FOR A PLAIN UNION OF CHILDREN THAT MAY COME FROM DIFFERENT INDEXES, WHOSE KEYS ARE NOT COMPARABLE
   private final boolean            ordered;
-  private       int                browsed         = 0;
+  // #9614: THE RECORDS ALREADY HANDED OUT, WHEN THE CHILDREN CAN YIELD THE SAME RECORD TWICE; null OTHERWISE
+  private final Set<RID>           returned;
+  private       int                browsed = 0;
   private       Object[]           nextKeys;
-  private       int                nextCursorIndex = -1;
+  private       Object[]           pulledKeys;
   private       Identifiable       currentRecord;
   private       List<Identifiable> cursorsNextValues;
+  // THE NEXT DISTINCT RECORD, ALREADY PULLED BY hasNext() TO KNOW IT IS NOT A DUPLICATE
+  private       Identifiable       pending;
+  private       Object[]           pendingKeys;
 
   public MultiIndexCursor(final List<IndexCursor> cursors, final int limit, final boolean ascendingOrder) {
     this(cursors, limit, ascendingOrder, true);
+  }
+
+  public MultiIndexCursor(final List<IndexCursor> cursors, final int limit, final boolean ascendingOrder,
+      final boolean ordered) {
+    this(cursors, limit, ascendingOrder, ordered, false);
   }
 
   /**
@@ -53,13 +71,17 @@ public class MultiIndexCursor implements IndexCursor {
    *                return the union of the children one after another, without comparing their keys - the only sound
    *                choice when they come from different indexes, like the leaves of an {@code or} over different
    *                properties (#8153)
+   * @param distinct true to return each record once even when several children yield it, like the probes of two values
+   *                 that are one key to the index (#9614). A duplicate is skipped without counting against {@code limit}.
+   *                 Costs a set of the records returned, so it is only asked for when the children can overlap
    */
   public MultiIndexCursor(final List<IndexCursor> cursors, final int limit, final boolean ascendingOrder,
-      final boolean ordered) {
+      final boolean ordered, final boolean distinct) {
     this.cursors = cursors;
     this.limit = limit;
     this.ascendingOrder = ascendingOrder;
     this.ordered = ordered;
+    this.returned = distinct ? new HashSet<>() : null;
     try {
       // #8153: FROM THE FIRST CHILD THAT CARRIES KEY TYPES, NOT BLINDLY FROM THE FIRST ONE: A KEY-LESS CHILD (AN EMPTY
       // CURSOR, OR ANY CURSOR THAT DOES NOT KNOW ITS INDEX) USED TO HAND THE MERGE AN EMPTY keyTypes ARRAY, AND THE
@@ -81,6 +103,7 @@ public class MultiIndexCursor implements IndexCursor {
     this.limit = limit;
     this.ascendingOrder = ascendingOrder;
     this.ordered = true;
+    this.returned = null;
     try {
       for (final Index i : indexes) {
         if (!(i instanceof RangeIndex))
@@ -103,6 +126,7 @@ public class MultiIndexCursor implements IndexCursor {
     this.limit = limit;
     this.ascendingOrder = ascendingOrder;
     this.ordered = true;
+    this.returned = null;
     try {
       for (final Index i : indexes) {
         if (!(i instanceof RangeIndex))
@@ -136,6 +160,43 @@ public class MultiIndexCursor implements IndexCursor {
     if (limit > -1 && browsed >= limit)
       return false;
 
+    if (returned == null)
+      return anyChildLeft();
+
+    // #9614: A DUPLICATE IS SKIPPED HERE, BEFORE IT IS HANDED OUT, SO IT NEITHER REACHES THE CALLER NOR BURNS THE CAP
+    while (pending == null) {
+      if (!anyChildLeft())
+        return false;
+      final Identifiable candidate = pull();
+      if (returned.add(candidate.getIdentity())) {
+        pending = candidate;
+        pendingKeys = pulledKeys;
+      }
+    }
+    return true;
+  }
+
+  @Override
+  public Identifiable next() {
+    final Identifiable nextValue;
+    if (returned == null) {
+      nextValue = pull();
+      nextKeys = pulledKeys;
+    } else {
+      if (!hasNext())
+        throw new NoSuchElementException();
+      nextValue = pending;
+      nextKeys = pendingKeys;
+      pending = null;
+      pendingKeys = null;
+    }
+
+    ++browsed;
+    currentRecord = nextValue;
+    return nextValue;
+  }
+
+  private boolean anyChildLeft() {
     for (int i = 0; i < cursors.size(); ++i) {
       final IndexCursor cursor = cursors.get(i);
       if (cursor == null)
@@ -146,14 +207,16 @@ public class MultiIndexCursor implements IndexCursor {
       cursor.close();
       cursors.set(i, null);
     }
-
     return false;
   }
 
-  @Override
-  public Identifiable next() {
-    nextCursorIndex = -1;
-    nextKeys = null;
+  /**
+   * The next entry of the merge, whether or not it was already returned, with its keys in {@link #pulledKeys}. Counts
+   * nothing against the cap: only what {@link #next()} hands out does.
+   */
+  private Identifiable pull() {
+    int nextCursorIndex = -1;
+    pulledKeys = null;
 
     for (int i = 0; i < cursors.size(); ++i) {
 
@@ -171,7 +234,7 @@ public class MultiIndexCursor implements IndexCursor {
 
       if (nextCursorIndex == -1) {
         nextCursorIndex = i;
-        nextKeys = cursor.getKeys();
+        pulledKeys = cursor.getKeys();
         if (!ordered)
           // UNION: DRAIN THE FIRST LIVE CHILD BEFORE MOVING TO THE NEXT
           break;
@@ -180,16 +243,16 @@ public class MultiIndexCursor implements IndexCursor {
 
       // #8153: THE MERGE'S OWN COMPARATOR, SAMPLED WITH keyTypes FROM THE SAME CHILD, RATHER THAN THIS CHILD'S, WHICH A
       // KEY-LESS CURSOR ANSWERS WITH null
-      final int cmp = LSMTreeIndexMutable.compareKeys(comparator, keyTypes, cursor.getKeys(), nextKeys);
+      final int cmp = LSMTreeIndexMutable.compareKeys(comparator, keyTypes, cursor.getKeys(), pulledKeys);
       if (ascendingOrder) {
         if (cmp < 0) {
           nextCursorIndex = i;
-          nextKeys = cursor.getKeys();
+          pulledKeys = cursor.getKeys();
         }
       } else {
         if (cmp > 0) {
           nextCursorIndex = i;
-          nextKeys = cursor.getKeys();
+          pulledKeys = cursor.getKeys();
         }
       }
     }
@@ -197,10 +260,7 @@ public class MultiIndexCursor implements IndexCursor {
     if (nextCursorIndex < 0)
       throw new NoSuchElementException();
 
-    ++browsed;
-
     final Identifiable nextValue = cursorsNextValues.set(nextCursorIndex, null);
-    currentRecord = nextValue;
 
     // #5635: refill this cursor's lookahead slot. An IndexCursor whose hasNext() answered true always yields a
     // non-null element, so a live cursor's slot is never left empty - which used to happen with the optimistic
@@ -214,6 +274,8 @@ public class MultiIndexCursor implements IndexCursor {
 
   @Override
   public void close() {
+    pending = null;
+    pendingKeys = null;
     for (int i = 0; i < cursors.size(); ++i) {
       final IndexCursor cursor = cursors.get(i);
       if (cursor != null) {
