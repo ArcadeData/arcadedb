@@ -16,10 +16,9 @@ any ``NeedRetryException`` anywhere in the cause chain is retried, a
 import threading
 import time
 
+import arcadedb_embedded as arcadedb
 import jpype
 import pytest
-
-import arcadedb_embedded as arcadedb
 from arcadedb_embedded import ArcadeDBError
 
 
