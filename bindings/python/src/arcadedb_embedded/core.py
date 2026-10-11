@@ -13,7 +13,7 @@ from typing import Any, List, Optional
 
 import jpype
 
-from ._logging import get_logger, log_swallowed_exception
+from ._logging import get_logger
 from .exceptions import ArcadeDBError, _retry_verdict
 from .graph import Document, Edge, Vertex
 from .graph_batch import GraphBatch
@@ -469,7 +469,11 @@ class Database:
         except Exception:  # a wrapper without the accessor: no witness
             # Observable, not silent: without the witness a block that crossed a
             # BATCH boundary would be replayed (#7916).
-            log_swallowed_exception(_LOGGER, "reading the transaction commit mark")
+            _LOGGER.warning(
+                "Cannot read the transaction commit mark: a block that commits"
+                " part of its work (BATCH n) would be replayed on retry",
+                exc_info=True,
+            )
             return None, 0
 
     @staticmethod
@@ -486,7 +490,11 @@ class Database:
         try:
             return int(tx_at_start.getCommitCount()) != commits_at_start
         except Exception:  # no witness: behave as before #7916
-            log_swallowed_exception(_LOGGER, "reading the transaction commit count")
+            _LOGGER.warning(
+                "Cannot read the transaction commit count: a block that commits"
+                " part of its work (BATCH n) would be replayed on retry",
+                exc_info=True,
+            )
             return False
 
     def begin(self):
