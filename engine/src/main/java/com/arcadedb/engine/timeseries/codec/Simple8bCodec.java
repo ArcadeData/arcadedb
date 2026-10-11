@@ -155,7 +155,7 @@ public final class Simple8bCodec {
    *               {@code null} when every sample has a value. A bitmap with no bit set is the same as {@code null}
    */
   public static byte[] encode(final long[] values, final long[] nulls) {
-    if (nulls == null || values == null || values.length == 0 || !anyBitSet(nulls))
+    if (nulls == null || values == null || values.length == 0 || !anyBitSet(nulls, values.length))
       return encode(values);
 
     final byte[] payload = encode(values);
@@ -211,10 +211,15 @@ public final class Simple8bCodec {
     return (int) (((long) count + 63) >>> 6);
   }
 
-  private static boolean anyBitSet(final long[] bits) {
-    for (final long word : bits)
+  /** Whether any of the first {@code count} bits is set: a bit past the last sample stands for no sample, so it is ignored. */
+  private static boolean anyBitSet(final long[] bits, final int count) {
+    final int words = bitmapWords(count);
+    final int tail = count & 63;
+    for (int w = 0; w < words && w < bits.length; w++) {
+      final long word = w == words - 1 && tail != 0 ? bits[w] & ((1L << tail) - 1) : bits[w];
       if (word != 0)
         return true;
+    }
     return false;
   }
 
