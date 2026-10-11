@@ -140,7 +140,9 @@ class Issue9627AiGatewayUnboundedReadTest extends BaseGraphServerTest {
 
     final Answer answer = post("/chat/stream", chatRequest());
 
-    assertThat(answer.status).isGreaterThanOrEqualTo(400);
+    // The body cut at the cap is no JSON: the refusal still reads as a token problem, with the default code
+    assertThat(answer.status).isEqualTo(502);
+    assertThat(new JSONObject(answer.body).getString("code", "")).isEqualTo("token_invalid");
     assertThat(gateway.floodSent("/api/chat")).isLessThan(FLOOD / 2);
   }
 
@@ -213,6 +215,26 @@ class Issue9627AiGatewayUnboundedReadTest extends BaseGraphServerTest {
     assertThat(answer.status).isEqualTo(500);
     assertThat(new JSONObject(answer.body).getString("error", "")).startsWith("Activation failed").contains("KB");
     assertThat(gateway.floodSent("/api/activate")).isLessThan(FLOOD / 2);
+  }
+
+  @Test
+  void aBufferedChatUnauthorizedWithANonJsonBodyKeepsTheTokenCode() throws Exception {
+    startGateway((path, out, sent) -> {
+      write(out, "HTTP/1.1 401 Unauthorized\r\nContent-Type: text/plain\r\nContent-Length: 4\r\n\r\nnope");
+    });
+
+    final Answer answer = post("/chat", chatRequest());
+
+    assertThat(answer.status).isEqualTo(502);
+    assertThat(new JSONObject(answer.body).getString("code", "")).isEqualTo("token_invalid");
+  }
+
+  /** An error body goes into a message or a log line only as its start. */
+  @Test
+  void anErrorBodyIsExcerptedForMessages() {
+    assertThat(AiChatHandler.excerpt("short")).isEqualTo("short");
+    assertThat(AiChatHandler.excerpt(null)).isEmpty();
+    assertThat(AiChatHandler.excerpt("x".repeat(CAP))).hasSize(AiChatHandler.MAX_ERROR_EXCERPT_CHARS + 3).endsWith("...");
   }
 
   /** The cap leaves an ordinary answer alone. */

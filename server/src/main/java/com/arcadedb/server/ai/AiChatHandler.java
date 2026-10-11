@@ -109,6 +109,28 @@ public class AiChatHandler extends AbstractServerHttpHandler {
   /** The most of a refusal's body that is read on a streamed call, as {@link SupportPortalClient#openStream} does. */
   static final int MAX_ERROR_BODY_BYTES = 64 * 1024;
 
+  /** The most of a gateway's error body that goes into an exception message or a log line. */
+  static final int MAX_ERROR_EXCERPT_CHARS = 1024;
+
+  /** The start of a gateway's error body, for a message or a log line: the body itself is peer text of up to the cap. */
+  static String excerpt(final String body) {
+    if (body == null)
+      return "";
+    return body.length() <= MAX_ERROR_EXCERPT_CHARS ? body : body.substring(0, MAX_ERROR_EXCERPT_CHARS) + "...";
+  }
+
+  /**
+   * The JSON body of a 401/403 of the gateway, or an empty object when it is not one (a body cut at the cap, or plain text), so
+   * the caller falls back to its default {@code code} and message instead of failing on the parse.
+   */
+  static JSONObject refusalBody(final String body) {
+    try {
+      return new JSONObject(body);
+    } catch (final RuntimeException e) {
+      return new JSONObject();
+    }
+  }
+
   /** A buffered answer of the gateway, cancelled once it exceeds {@link #maxResponseBytes}. */
   static HttpResponse.BodyHandler<String> limitedBody() {
     final long max = maxResponseBytes;
@@ -306,8 +328,7 @@ public class AiChatHandler extends AbstractServerHttpHandler {
 
     if (response.statusCode() == 401 || response.statusCode() == 403) {
       try (InputStream body = responseBody) {
-        final String bodyStr = new String(body.readNBytes(MAX_ERROR_BODY_BYTES), StandardCharsets.UTF_8);
-        final JSONObject errBody = new JSONObject(bodyStr);
+        final JSONObject errBody = refusalBody(new String(body.readNBytes(MAX_ERROR_BODY_BYTES), StandardCharsets.UTF_8));
         final String code = errBody.getString("code", "token_invalid");
         final String errorMsg = errBody.getString("error", "Invalid or expired subscription token");
         final JSONObject errorResponse = new JSONObject();
@@ -320,7 +341,7 @@ public class AiChatHandler extends AbstractServerHttpHandler {
     if (response.statusCode() != 200) {
       try (InputStream body = responseBody) {
         final String bodyStr = new String(body.readNBytes(MAX_ERROR_BODY_BYTES), StandardCharsets.UTF_8);
-        throw new RuntimeException("Gateway returned status " + response.statusCode() + ": " + bodyStr);
+        throw new RuntimeException("Gateway returned status " + response.statusCode() + ": " + excerpt(bodyStr));
       }
     }
 
@@ -718,7 +739,7 @@ public class AiChatHandler extends AbstractServerHttpHandler {
           toolResultTimeoutMs);
       if (resp.statusCode() != 200) {
         LogManager.instance().log(this, Level.WARNING,
-            "AI gateway tool_result POST returned %d: %s", resp.statusCode(), resp.body());
+            "AI gateway tool_result POST returned %d: %s", resp.statusCode(), excerpt(resp.body()));
       }
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.WARNING,
@@ -781,7 +802,7 @@ public class AiChatHandler extends AbstractServerHttpHandler {
 
     if (response.statusCode() == 401 || response.statusCode() == 403) {
       // Parse the gateway error to get the specific code (token_invalid, token_expired, etc.)
-      final JSONObject errBody = new JSONObject(response.body());
+      final JSONObject errBody = refusalBody(response.body());
       final String code = errBody.getString("code", "token_invalid");
       final String errorMsg = errBody.getString("error", "Invalid or expired subscription token");
       final JSONObject errorResponse = new JSONObject();
@@ -791,7 +812,7 @@ public class AiChatHandler extends AbstractServerHttpHandler {
     }
 
     if (response.statusCode() != 200)
-      throw new RuntimeException("Gateway returned status " + response.statusCode() + ": " + response.body());
+      throw new RuntimeException("Gateway returned status " + response.statusCode() + ": " + excerpt(response.body()));
 
     return new JSONObject(response.body());
   }
