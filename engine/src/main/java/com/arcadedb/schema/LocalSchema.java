@@ -1406,6 +1406,9 @@ public class LocalSchema implements Schema {
    */
   public void markTemporalStorageNative() {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_DATABASE_SETTINGS);
+    // Read outside the write lock on purpose: two callers racing past it both set the same value, one save more. And no
+    // reset on a failed session: past the callback the leader holds the change and the HA session handles a change it
+    // could not publish (issue #9558); putting the flag back would only make memory disagree with this node's file
     if (!legacyTemporalText)
       return;
     recordFileChanges(() -> {
