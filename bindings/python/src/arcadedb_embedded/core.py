@@ -27,6 +27,29 @@ from .vector import to_java_float_array
 
 _LOGGER = get_logger(__name__)
 
+_COMMIT_WITNESS_WARNED = False
+
+
+def _warn_no_commit_witness(what):
+    """Warn, once per process, that the #7916 partial-commit witness is missing.
+
+    The cause is structural (a database wrapper without the accessor), so it
+    would repeat on every attempt of every retry loop; once says it, and DEBUG
+    keeps every occurrence with its traceback.
+    """
+    global _COMMIT_WITNESS_WARNED
+    if not _COMMIT_WITNESS_WARNED:
+        _COMMIT_WITNESS_WARNED = True
+        _LOGGER.warning(
+            "Cannot read the transaction commit %s: a block that commits part of"
+            " its work (BATCH n) would be replayed on retry",
+            what,
+            exc_info=True,
+        )
+    else:
+        _LOGGER.debug("Cannot read the transaction commit %s", what, exc_info=True)
+
+
 try:  # optional; hoisted to module scope to keep it out of per-call hot paths
     import numpy as _np
 except ImportError:  # pragma: no cover - numpy is an optional dependency
@@ -469,11 +492,7 @@ class Database:
         except Exception:  # a wrapper without the accessor: no witness
             # Observable, not silent: without the witness a block that crossed a
             # BATCH boundary would be replayed (#7916).
-            _LOGGER.warning(
-                "Cannot read the transaction commit mark: a block that commits"
-                " part of its work (BATCH n) would be replayed on retry",
-                exc_info=True,
-            )
+            _warn_no_commit_witness("mark")
             return None, 0
 
     @staticmethod
@@ -490,11 +509,7 @@ class Database:
         try:
             return int(tx_at_start.getCommitCount()) != commits_at_start
         except Exception:  # no witness: behave as before #7916
-            _LOGGER.warning(
-                "Cannot read the transaction commit count: a block that commits"
-                " part of its work (BATCH n) would be replayed on retry",
-                exc_info=True,
-            )
+            _warn_no_commit_witness("count")
             return False
 
     def begin(self):
