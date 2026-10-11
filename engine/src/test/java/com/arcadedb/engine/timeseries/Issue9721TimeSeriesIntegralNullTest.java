@@ -175,6 +175,33 @@ class Issue9721TimeSeriesIntegralNullTest extends TestHelper {
   }
 
   @Test
+  void theMissingSamplesSurviveEveryRouteToASealedBlock() throws Exception {
+    database.command("sql", "CREATE TIMESERIES TYPE T TIMESTAMP ts TAGS (host STRING) FIELDS (l LONG, i INTEGER, s SHORT, b BYTE, "
+        + "o BOOLEAN, d DOUBLE) SHARDS 1");
+    database.command("sql", "CREATE DOCUMENT TYPE D");
+    final TimeSeriesEngine engine = ((LocalTimeSeriesType) database.getSchema().getType("T")).getEngine();
+    // several small compactions, each sealing a block with missing samples, then a merge of those blocks into one, then a
+    // downsampling pass: every route that rewrites a sealed block has to carry the null bitmap through
+    for (int round = 0; round < 6; round++) {
+      load(round * 15, round * 15 + 15);
+      engine.compactAll();
+    }
+    assertThat(engine.getShard(0).getSealedStore().getBlockCount()).isGreaterThan(1);
+    engine.mergeSmallBlocks();
+    assertThat(engine.getShard(0).getSealedStore().getBlockCount()).isEqualTo(1);
+
+    final String[] queries = { "SELECT min(l) AS a, max(l) AS b, count(l) AS c, avg(l) AS d, sum(l) AS e FROM X",
+        "SELECT min(i) AS a, count(i) AS c, avg(i) AS d FROM X", "SELECT count(s) AS c, count(b) AS c2, count(o) AS c3 FROM X",
+        "SELECT host, min(l) AS a, count(l) AS c FROM X GROUP BY host ORDER BY host" };
+    for (final String sql : queries)
+      assertThat(rows(sql.replace("FROM X", "FROM T"))).as(sql).isEqualTo(rows(sql.replace("FROM X", "FROM D")));
+    assertThat(rows("SELECT l, i, s, b, o FROM T ORDER BY ts")).isEqualTo(rows("SELECT l, i, s, b, o FROM D ORDER BY ts"));
+    try (final ResultSet check = database.command("sql", "CHECK DATABASE DEEP")) {
+      assertThat(check.next().<Collection<?>>getProperty("corruptedTimeSeries")).isEmpty();
+    }
+  }
+
+  @Test
   void aNullBitmapSurvivesTheSimple8bRoundTrip() throws Exception {
     final long[] values = new long[200];
     final long[] nulls = new long[Simple8bCodec.bitmapWords(values.length)];
