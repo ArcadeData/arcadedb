@@ -2024,10 +2024,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    *                without the user-delete permission check, like the primary body (issue #8922)
    */
   private void cascadeDeleteExternalValues(final Document document, final boolean retract) {
-    // Not pre-gated on document.getType().hasExternalProperties() (issue #9683): that flag reflects the CURRENT schema, so
-    // it skipped the cleanup between setExternal(false) and the REBUILD TYPE that inlines the values, and it is asked of
-    // the type the record is TAGGED with, which a polymorphic scan sets to the queried parent even for a record living
-    // in a subtype bucket. findExistingExternalRids gates itself on hasExternalBuckets() of the type owning the bucket.
+    // No hasExternalProperties() pre-gate (#9683): it is false between setExternal(false) and REBUILD TYPE, and wrong for a
+    // record a polymorphic scan tagged with its parent type. findExistingExternalRids gates on the bucket owner instead.
     final Map<String, RID> externalRids = serializer.findExistingExternalRids(this, document);
     RuntimeException failure = null;
     for (final RID extRid : externalRids.values()) {

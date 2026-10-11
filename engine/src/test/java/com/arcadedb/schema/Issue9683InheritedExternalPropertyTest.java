@@ -24,6 +24,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.Bucket;
+import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
@@ -210,6 +211,82 @@ class Issue9683InheritedExternalPropertyTest extends TestHelper {
     database.transaction(() -> rid.asDocument().delete());
 
     assertThat(externalCount("Doc")).isZero();
+  }
+
+  @Test
+  void settingAnInheritedExternalValueToNullReleasesTheExternalRecord() {
+    createParentWithExternalAndChild();
+    final RID child = saveDocument("Child", BIG);
+    assertThat(externalCount("Child")).isEqualTo(1L);
+
+    database.transaction(() -> child.asDocument().modify().set("blob", null).save());
+
+    assertThat(externalCount("Child")).isZero();
+    database.transaction(() -> assertThat(child.asDocument(true).getString("blob")).isNull());
+  }
+
+  /** Every primary bucket of a multi-bucket subtype has its own paired bucket, and each one receives its records' values. */
+  @Test
+  void everyBucketOfAMultiBucketChildUsesItsOwnPairedBucket() {
+    final DocumentType parent = database.getSchema().createDocumentType("Parent", 1);
+    parent.createProperty("blob", Type.STRING).setExternal(true);
+    final DocumentType child = database.getSchema().buildDocumentType().withName("Child").withSuperType("Parent")
+        .withTotalBuckets(3).create();
+
+    final List<Bucket> buckets = child.getBuckets(false);
+    final List<RID> rids = new ArrayList<>();
+    database.transaction(() -> {
+      for (int i = 0; i < 9; i++)
+        rids.add(database.newDocument("Child").set("blob", BIG + i).save(buckets.get(i % 3).getName()).getIdentity());
+    });
+
+    for (int i = 0; i < 9; i++)
+      assertExternal(rids.get(i), BIG + i);
+    for (final Bucket primary : buckets) {
+      final Integer extId = ((LocalDocumentType) child).getExternalBucketIdFor(primary.getFileId());
+      assertThat(database.getSchema().getBucketById(extId).count()).as("paired bucket of %s", primary.getName()).isEqualTo(3L);
+    }
+  }
+
+  /** The compression declared on the supertype's property applies to the subtype's external values too. */
+  @Test
+  void inheritedCompressionIsAppliedToTheSubtypeExternalValue() {
+    final DocumentType parent = database.getSchema().createDocumentType("Parent", 1);
+    parent.createProperty("blob", Type.STRING).setExternal(true).setCompression("lz4");
+    database.getSchema().buildDocumentType().withName("Child").withSuperType("Parent").withTotalBuckets(1).create();
+
+    final String redundant = "the quick brown fox jumps over the lazy dog ".repeat(200);
+    final RID child = saveDocument("Child", redundant);
+
+    assertExternal(child, redundant);
+    database.transaction(() -> {
+      final RID extRid = ((DatabaseInternal) database).getSerializer().findExistingExternalRids(database, child.asDocument(true))
+          .get("blob");
+      final LocalBucket extBucket = (LocalBucket) database.getSchema().getBucketById(extRid.getBucketId());
+      assertThat(extBucket.getRecord(extRid).size()).as("the external value is LZ4-compressed").isLessThan(redundant.length() / 2);
+    });
+  }
+
+  /**
+   * A type that declared its own {@code blob} before being linked to the parent keeps its own declaration: the subtype's
+   * inline property shadows the parent's EXTERNAL one.
+   */
+  @Test
+  void subtypeOwnPropertyShadowsTheInheritedExternalOne() {
+    final DocumentType parent = database.getSchema().createDocumentType("Parent", 1);
+    parent.createProperty("blob", Type.STRING).setExternal(true);
+    final DocumentType child = database.getSchema().createDocumentType("Child", 1);
+    child.createProperty("blob", Type.STRING);
+    database.command("sql", "ALTER TYPE Child SUPERTYPE +Parent");
+
+    final RID rid = saveDocument("Child", BIG);
+
+    database.transaction(() -> {
+      final Document doc = rid.asDocument(true);
+      assertThat(((DatabaseInternal) database).getSerializer().findExistingExternalRids(database, doc)).isEmpty();
+      assertThat(doc.getString("blob")).isEqualTo(BIG);
+    });
+    assertThat(externalCount("Child")).isZero();
   }
 
   /**

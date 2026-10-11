@@ -1248,16 +1248,20 @@ public class BinarySerializer {
    * {@code record.getType()}: a polymorphic scan ({@code scanType} with polymorphic=true) tags every record with the queried
    * parent type even when it physically lives in a subtype's bucket, and that parent knows neither the subtype's own
    * EXTERNAL properties nor its paired external buckets (issue #9683). A record without a bucket (embedded, or not yet
-   * placed) falls back to its own type.
+   * placed) falls back to its own type. A type without subtypes can only be tagged on its own records, so it answers
+   * without the (boxing) bucket-map lookup: that is the common case on the write path.
    */
   private static DocumentType getStorageType(final Database database, final Document record) {
+    final DocumentType recordType = record.getType();
+    if (recordType instanceof LocalDocumentType localType && !localType.hasSubTypes())
+      return recordType;
     final RID identity = record.getIdentity();
     if (identity != null && identity.getBucketId() > -1) {
       final DocumentType ownerType = database.getSchema().getTypeByBucketId(identity.getBucketId());
       if (ownerType != null)
         return ownerType;
     }
-    return record.getType();
+    return recordType;
   }
 
   public Binary serializeProperties(final Database database, final Document record, final Binary header, final Binary content) {
