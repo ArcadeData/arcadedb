@@ -38,6 +38,7 @@ import com.arcadedb.security.SecurityDatabaseUser;
 
 import java.lang.reflect.InvocationTargetException;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
 
@@ -46,7 +47,7 @@ public class ImportDatabaseStatement extends SimpleExecStatement {
   public          Url                         url;
   protected       Expression                  key;
   protected       Expression                  value;
-  public final    Map<Expression, Expression> settings = new HashMap<>();
+  public final    Map<Expression, Expression> settings = new LinkedHashMap<>();
 
   public ImportDatabaseStatement() {
   }

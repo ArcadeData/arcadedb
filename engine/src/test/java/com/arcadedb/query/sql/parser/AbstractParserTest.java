@@ -20,15 +20,36 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.query.sql.antlr.SQLAntlrParser;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
 
 public abstract class AbstractParserTest {
 
+  /**
+   * Parses {@code query}, renders it, and parses the rendering again. Every statement through here is also held to the
+   * round-trip contract a cached, copied and re-rendered statement relies on (issue #9650, after twelve issues filed one
+   * class at a time on this shape): the rendering is stable across a re-parse, and {@code copy()} is equal to its original,
+   * hashes the same and renders the same.
+   */
   protected SimpleNode checkRightSyntax(final String query) {
     final SimpleNode result = checkSyntax(query, true);
+    final String rendered = render(result);
+    final SimpleNode reparsed = checkSyntax(rendered, true);
+
+    assertThat(render(reparsed)).as("re-render of %s", query).isEqualTo(rendered);
+
+    final Statement copy = ((Statement) result).copy();
+    assertThat(render(copy)).as("render of the copy of %s", query).isEqualTo(rendered);
+    assertThat(copy).as("copy of %s", query).isEqualTo(result);
+    assertThat(copy.hashCode()).as("hash of the copy of %s", query).isEqualTo(result.hashCode());
+
+    return reparsed;
+  }
+
+  private static String render(final SimpleNode node) {
     final StringBuilder builder = new StringBuilder();
-    result.toString(null, builder);
-    return checkSyntax(builder.toString(), true);
+    node.toString(null, builder);
+    return builder.toString();
   }
 
   protected SimpleNode checkRightSyntaxServer(final String query) {

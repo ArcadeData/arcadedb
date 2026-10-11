@@ -73,7 +73,7 @@ public class RebuildTypeStatement extends DDLStatement {
 
   public Identifier                  typeName;
   public boolean                     polymorphic = false;
-  public final Map<Expression, Expression> settings = new HashMap<>();
+  public final Map<Expression, Expression> settings = new LinkedHashMap<>();
 
   public RebuildTypeStatement() {
   }
