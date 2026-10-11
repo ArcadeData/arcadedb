@@ -30,6 +30,11 @@ import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.Set;
 
+/**
+ * Merges several index cursors into one, by key or as a plain union, optionally capped and optionally returning each record
+ * once. In the distinct mode {@link #hasNext()} pulls ahead to the next record not yet returned and buffers it, so
+ * {@link #getKeys()} and {@link #getRecord()} describe the record of the last {@link #next()}, never the buffered one.
+ */
 public class MultiIndexCursor implements IndexCursor {
   private final List<IndexCursor>  cursors;
   private final int                limit;
