@@ -80,7 +80,8 @@ class Issue9639GremlinChannelizerProductionModeTest {
     assertThatThrownBy(() -> GremlinServerPlugin.resolveChannelizer(channelizer.getName(), true))
         .isInstanceOf(ServerException.class)
         .hasMessageContaining(channelizer.getName())
-        .hasMessageContaining("production");
+        .hasMessageContaining("production")
+        .hasMessageContaining("gremlin.channelizer");
   }
 
   @Test
@@ -88,6 +89,14 @@ class Issue9639GremlinChannelizerProductionModeTest {
     assertThatThrownBy(() -> GremlinServerPlugin.resolveChannelizer("com.example.MyChannelizer", true))
         .isInstanceOf(ServerException.class)
         .hasMessageContaining("com.example.MyChannelizer");
+  }
+
+  @Test
+  void aChannelizerNameIsTrimmed() {
+    assertThat(GremlinServerPlugin.resolveChannelizer(" " + WebSocketChannelizer.class.getName() + " ", true))
+        .isEqualTo(ConcealingWebSocketChannelizer.class.getName());
+    assertThat(GremlinServerPlugin.resolveChannelizer(" " + HttpChannelizer.class.getName() + " ", false))
+        .isEqualTo(HttpChannelizer.class.getName());
   }
 
   @ParameterizedTest

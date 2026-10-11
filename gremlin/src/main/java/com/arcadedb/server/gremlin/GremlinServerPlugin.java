@@ -193,18 +193,22 @@ public class GremlinServerPlugin implements ServerPlugin {
    * channelizer - TinkerPop's {@code WsAndHttpChannelizer}, {@code HttpChannelizer}, {@code UnifiedChannelizer}, or a
    * custom class - answers with {@code Throwable.getMessage()}, which for a duplicated key is the customer's stored key
    * values: in production mode it fails the start, like an invalid {@code gremlin.*} setting does, instead of serving
-   * that text under a setting that promises otherwise (issue #9639). Outside production mode it is used as configured.
+   * that text under a setting that promises otherwise (issue #9639). Outside production mode it is used as configured, with a
+   * WARNING that production mode will refuse it.
    */
   static String resolveChannelizer(final String configured, final boolean productionMode) {
-    if (configured == null || configured.isBlank() || WebSocketChannelizer.class.getName().equals(configured.trim()))
-      return ConcealingWebSocketChannelizer.class.getName();
-    if (ConcealingWebSocketChannelizer.class.getName().equals(configured.trim()))
-      return ConcealingWebSocketChannelizer.class.getName();
+    final String channelizer = configured != null ? configured.trim() : "";
+    final String concealing = ConcealingWebSocketChannelizer.class.getName();
+    if (channelizer.isEmpty() || channelizer.equals(WebSocketChannelizer.class.getName()) || channelizer.equals(concealing))
+      return concealing;
     if (productionMode)
-      throw new ServerException("Gremlin Server channelizer '" + configured
-          + "' cannot conceal engine error messages, which 'arcadedb.server.mode=production' requires: use the default channelizer ("
+      throw new ServerException("Gremlin Server channelizer '" + channelizer
+          + "' (selected by 'channelizer' in gremlin-server.yaml or the 'gremlin.channelizer' setting) cannot conceal engine error messages, which 'arcadedb.server.mode=production' requires: use the default channelizer ("
           + WebSocketChannelizer.class.getName() + ") or run the server in another mode");
-    return configured;
+    LogManager.instance().log(GremlinServerPlugin.class, Level.WARNING,
+        "Gremlin Server channelizer '%s' does not conceal engine error messages: the server will refuse to start with it in production mode",
+        null, channelizer);
+    return channelizer;
   }
 
   /**
