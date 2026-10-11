@@ -30,6 +30,7 @@ import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.SplittableRandom;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -168,6 +169,28 @@ class Issue9718TimeSeriesExactIntegralAggregatesTest extends TestHelper {
     result.accumulateRow(0L, new double[] { 0, 1 }, new long[] { (1L << 60) + 1, 0 });
     assertThat(result.getExactValue(0L, 0)).isEqualTo((1L << 60) + 1);
     assertThat(result.getValue(0L, 1)).isEqualTo(2.0);
+  }
+
+  @Test
+  void theExactSumAgreesWithBigIntegerOverRandomLongsAndTheLimits() {
+    final SplittableRandom random = new SplittableRandom(9718L);
+    final long[] limits = { Long.MIN_VALUE, Long.MIN_VALUE + 1, -1L, 0L, 1L, Long.MAX_VALUE - 1, Long.MAX_VALUE };
+    for (int round = 0; round < 200; round++) {
+      final long[] acc = new long[2];
+      final long[] other = new long[2];
+      BigInteger expected = BigInteger.ZERO;
+      final int samples = 1 + random.nextInt(300);
+      for (int i = 0; i < samples; i++) {
+        final long v = random.nextInt(4) == 0 ? limits[random.nextInt(limits.length)] : random.nextLong();
+        // half folded one by one, half into a second accumulator merged at the end, as shards are
+        ExactLongSum.add(i % 2 == 0 ? acc : other, 0, v);
+        expected = expected.add(BigInteger.valueOf(v));
+      }
+      ExactLongSum.add(acc, 0, other[0], other[1]);
+      assertThat(ExactLongSum.toBigInteger(acc[0], acc[1])).as("round " + round).isEqualTo(expected);
+      assertThat(ExactLongSum.fitsLong(acc[0], acc[1])).isEqualTo(expected.bitLength() < 64);
+      assertThat(ExactLongSum.truncatedAverage(acc[0], acc[1], samples)).isEqualTo(expected.divide(BigInteger.valueOf(samples)).longValue());
+    }
   }
 
   @Test
