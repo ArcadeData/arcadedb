@@ -26,16 +26,13 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.query.opencypher.ast.*;
 import com.arcadedb.query.opencypher.grammar.Cypher25Lexer;
 import com.arcadedb.query.opencypher.grammar.Cypher25Parser;
-import com.arcadedb.query.opencypher.temporal.CypherDate;
-import com.arcadedb.query.opencypher.temporal.CypherLocalDateTime;
 import com.arcadedb.query.opencypher.temporal.CypherTemporalValue;
 import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 
-import java.time.LocalDate;
-import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.Calendar;
 import java.util.LinkedHashMap;
 
 import org.antlr.v4.runtime.CharStreams;
@@ -1650,9 +1647,9 @@ class CypherExpressionBuilder {
         return PropertyAccessExpression.readLinkedProperty(rid, propertyName);
 
       // Handle Document types
-      if (baseValue instanceof Document) {
-        return ((Document) baseValue).get(propertyName);
-      }
+      // Read like the variable-bound access path, so a temporal is the Cypher type its schema declares (issue #9647)
+      if (baseValue instanceof Document document)
+        return TemporalUtil.convertFromStorage(document, propertyName);
 
       // Handle Map types
       if (baseValue instanceof Map) {
@@ -1668,11 +1665,12 @@ class CypherExpressionBuilder {
       if (baseValue instanceof CypherTemporalValue) {
         return ((CypherTemporalValue) baseValue).getTemporalProperty(propertyName);
       }
-      if (baseValue instanceof LocalDate) {
-        return new CypherDate((LocalDate) baseValue).getTemporalProperty(propertyName);
-      }
-      if (baseValue instanceof LocalDateTime) {
-        return new CypherLocalDateTime((LocalDateTime) baseValue).getTemporalProperty(propertyName);
+      // A native temporal (a parameter, a value read off a map): every class fromCoreJavaType wraps, java.util.Calendar
+      // included (issue #9647), where only LocalDate and LocalDateTime used to be accepted
+      if (TemporalUtil.isNativeTemporal(baseValue)) {
+        final Object coerced = TemporalUtil.fromCoreJavaType(baseValue);
+        if (coerced instanceof CypherTemporalValue temporal)
+          return temporal.getTemporalProperty(propertyName);
       }
 
       // Type validation: property access only works on property-bearing types. Primitive types

@@ -26,6 +26,7 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinaryComparator;
 
 import java.util.Arrays;
+import java.util.Calendar;
 import java.util.Set;
 
 public class QueryOperatorEquals {
@@ -35,6 +36,15 @@ public class QueryOperatorEquals {
 
     if (left == right)
       return true;
+
+    // A java.util.Calendar (a supported arcadedb.dateImplementation / dateTimeImplementation, or a parameter) is its
+    // instant on either side, as the index key and BinaryComparator.compareTo read it. Its runtime class GregorianCalendar
+    // is no conversion target, so a scan of a DATE column answered nothing where the index answered the row, and
+    // Calendar.equals() also compares the zone, so two Calendars at one instant were not equal (issue #9647)
+    if (left instanceof Calendar calendar)
+      left = calendar.getTime();
+    if (right instanceof Calendar calendar)
+      right = calendar.getTime();
 
     if (left.getClass().equals(right.getClass()))
       // SAME TYPE, NO CONVERSION
