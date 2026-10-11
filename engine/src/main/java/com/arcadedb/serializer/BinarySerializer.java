@@ -1285,7 +1285,9 @@ public class BinarySerializer {
     final boolean externalize = !readOnly && !(record instanceof EmbeddedDocument);
 
     // In read-only mode no external bucket interactions occur, so we skip the old-buffer scan entirely.
-    final Map<String, RID> existingExternalRids = readOnly ? Collections.emptyMap() : findExistingExternalRids(database, record);
+    final Map<String, RID> existingExternalRids = readOnly ?
+        Collections.emptyMap() :
+        findExistingExternalRids(database, record, documentType);
     // Track which existing external RIDs we re-used (kept) so we can delete the rest as orphans below. An entry is
     // orphaned when the property is no longer EXTERNAL (toggled off via ALTER), was renamed, or was dropped entirely.
     final Set<String> consumedExternalProperties = existingExternalRids.isEmpty() ? null : new HashSet<>();
@@ -1355,7 +1357,9 @@ public class BinarySerializer {
                     + "': record has no target bucket. The bucket layer must set a provisional identity before serialize.");
           final int primaryBucketId = identity.getBucketId();
           // documentType is the type that owns the primary bucket (see getStorageType), so its map pairs that bucket
-          final Integer extBucketId = ((LocalDocumentType) documentType).getExternalBucketIdFor(primaryBucketId);
+          final Integer extBucketId = documentType instanceof LocalDocumentType localType ?
+              localType.getExternalBucketIdFor(primaryBucketId) :
+              null;
           if (extBucketId == null)
             throw new SerializationException(
                 "Cannot serialize EXTERNAL property '" + propertyName + "' on type '" + documentType.getName()
@@ -1641,12 +1645,18 @@ public class BinarySerializer {
    * the (very common) update hot path of plain-vanilla types.
    */
   public Map<String, RID> findExistingExternalRids(final Database database, final Document record) {
+    return findExistingExternalRids(database, record, getStorageType(database, record));
+  }
+
+  /** @param storageType the type owning the record's bucket, as {@link #getStorageType} resolves it */
+  private Map<String, RID> findExistingExternalRids(final Database database, final Document record,
+      final DocumentType storageType) {
     final RID identity = record.getIdentity();
     if (identity == null)
       return Collections.emptyMap();
     if (!(record instanceof BaseDocument))
       return Collections.emptyMap();
-    if (!(getStorageType(database, record) instanceof LocalDocumentType ldt) || !ldt.hasExternalBuckets())
+    if (!(storageType instanceof LocalDocumentType ldt) || !ldt.hasExternalBuckets())
       return Collections.emptyMap();
     final Binary buf = ((BaseRecord) record).getBuffer();
     if (buf == null)
