@@ -419,3 +419,23 @@ def test_a_protocol_host_overrides_the_server_host_for_that_protocol_only(tmp_pa
             ), "Redis left loopback without being asked to"
     finally:
         server.stop()
+
+
+def test_the_host_reaches_exactly_the_listener_bind_settings():
+    """The settings `host` is applied to are discovered, not listed (#9632).
+
+    Pinned so a drift is seen: a new listener whose host defaults to all
+    interfaces joins this set (and so follows `host`), and a non-listener
+    setting that happened to match the pattern would show up here too.
+    """
+    from arcadedb_embedded.jvm import start_jvm
+    from arcadedb_embedded.server import _all_interfaces_host_settings
+
+    start_jvm()
+    assert set(_all_interfaces_host_settings()) == {
+        "arcadedb.postgres.host",
+        "arcadedb.redis.host",
+        "arcadedb.bolt.host",
+        "arcadedb.mongo.host",
+        "arcadedb.grpc.host",
+    }

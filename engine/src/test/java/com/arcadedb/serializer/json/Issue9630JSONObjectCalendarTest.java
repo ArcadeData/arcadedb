@@ -64,9 +64,17 @@ class Issue9630JSONObjectCalendarTest {
     assertThat(json.getJSONObject("map").getLong("ts")).isEqualTo(MILLIS);
   }
 
+  /**
+   * With a date format set, a Calendar is written as the Date it holds would be, whatever zone the calendar carries: the
+   * same instant must not become two different strings depending on which of the two configured classes holds it.
+   */
   @Test
-  void calendarFollowsTheDateFormatWhenOneIsSet() {
-    final JSONObject json = new JSONObject().setDateFormat("yyyy-MM-dd HH:mm:ss.SSS").put("ts", (Object) calendar("UTC"));
-    assertThat(json.getString("ts")).isEqualTo("2024-03-15 14:30:45.123");
+  void calendarFollowsTheDateFormatExactlyAsADate() {
+    for (final String zone : new String[] { "UTC", "Asia/Tokyo", "America/New_York" }) {
+      final JSONObject json = new JSONObject().setDateFormat("yyyy-MM-dd HH:mm:ss.SSS").put("ts", (Object) calendar(zone))
+          .put("date", (Object) new Date(MILLIS));
+      assertThat(json.getString("ts")).as(zone).isEqualTo(json.getString("date"));
+      assertThat(json.getString("ts")).as(zone).matches("2024-03-1[45] \\d\\d:\\d\\d:45\\.123");
+    }
   }
 }
