@@ -1058,10 +1058,11 @@ public class PromQLEvaluator {
   }
 
   private static final String METRIC_NAME_LABEL = "__name__";
-  /** Prometheus' own wording, so a client matching on it sees the same error from either server. */
-  private static final String SCALAR_COMPARISON_WITHOUT_BOOL = "comparisons between scalars must use BOOL modifier";
   private static final int    MAX_TYPE_NAME_LENGTH   = 256;
   private static final Pattern VALID_TYPE_NAME_PATTERN = Pattern.compile("[a-zA-Z_][a-zA-Z0-9_]*");
+
+  /** Prometheus' own wording, so a client matching on it sees the same error from either server. */
+  private static final String SCALAR_COMPARISON_WITHOUT_BOOL = "comparisons between scalars must use BOOL modifier";
 
   public static String sanitizeTypeName(final String name) {
     final String sanitized = name.replace('.', '_').replace('-', '_').replace(':', '_');

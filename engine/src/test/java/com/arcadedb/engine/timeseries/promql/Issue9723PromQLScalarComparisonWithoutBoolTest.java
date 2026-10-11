@@ -80,7 +80,7 @@ class Issue9723PromQLScalarComparisonWithoutBoolTest extends TestHelper {
       try (final ResultSet rs = database.command("sql", "RETURN promql('1 > 0', 6000)")) {
         rs.hasNext();
       }
-    }).hasStackTraceContaining(MESSAGE);
+    }).isInstanceOf(IllegalArgumentException.class).hasMessageContaining(MESSAGE);
   }
 
   @Test
