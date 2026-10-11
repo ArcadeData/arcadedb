@@ -32,8 +32,11 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.Pair;
 import org.junit.jupiter.api.Test;
 
+import java.util.HashSet;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -47,7 +50,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class Issue9715EmptyEdgeSegmentTest extends TestHelper {
-  private static final String COUNT = "MATCH (a:P {name: 'A'})-[:K]->(b:P) RETURN count(*) AS n";
+  private static final String COUNT     = "MATCH (a:P {name: 'A'})-[:K]->(b:P) RETURN count(*) AS n";
+  // every matched row materialized, so no count push-down can answer it from a counter
+  private static final String ROW_COUNT = "MATCH (a:P {name: 'A'})-[r:K]->(b:P) WITH a, r, b RETURN count(r) AS n";
 
   private RID   a;
   private RID[] targets;
@@ -102,6 +107,54 @@ class Issue9715EmptyEdgeSegmentTest extends TestHelper {
     }
     assertThat(longestRunOfEmptySegments()).as("empty segments in a row in the OUT list").isGreaterThanOrEqualTo(2);
     assertEveryReaderSeesEdges(4);
+  }
+
+  /**
+   * CHECK DATABASE FIX prunes a dangling entry through the iterator's remove(). A hasNext() between next() and remove() can
+   * already have stepped over the empty segment into an older one: the entry must still be taken out of the segment it came
+   * from, and the older segment left alone.
+   */
+  @Test
+  void removeAfterHasNextSteppedOverAnEmptySegmentPrunesTheReturnedEntry() throws Exception {
+    try (final GraphBatch batch = database.batch().build()) {
+      batch.newEdge(a, "K", targets[2]);
+      batch.newEdge(a, "K", targets[3]);
+    }
+
+    // the head segment holds two entries: the second one returned becomes dangling, its edge record deleted behind the list
+    Iterator<Pair<RID, RID>> it = outList().entryIterator();
+    it.next();
+    final RID dangling = it.next().getFirst();
+    final RID danglingTarget = database.lookupByRID(dangling, true).asEdge().getIn();
+    database.transaction(() -> database.getSchema().getBucketById(dangling.getBucketId()).deleteRecord(dangling));
+
+    database.transaction(() -> {
+      final Iterator<Pair<RID, RID>> walk = outList().entryIterator();
+      walk.next();
+      assertThat(walk.next().getFirst()).isEqualTo(dangling);
+      assertThat(walk.hasNext()).as("the oldest segment, past the empty one").isTrue();
+      walk.remove();
+      assertThat(walk.next().getSecond()).isEqualTo(targets[0]);
+      assertThat(walk.hasNext()).isFalse();
+    });
+
+    // the dangling entry is gone, every other one is still there
+    final Set<RID> neighbours = new HashSet<>();
+    for (it = outList().entryIterator(); it.hasNext(); )
+      neighbours.add(it.next().getSecond());
+    final Set<RID> expected = new HashSet<>(List.of(targets[0], targets[2], targets[3]));
+    expected.remove(danglingTarget);
+    assertThat(neighbours).isEqualTo(expected);
+    // only the list walked is pruned: the far vertex's IN list still names the deleted record, for CHECK DATABASE to report
+    assertThat(vertexA().countEdges(Vertex.DIRECTION.OUT, "K")).isEqualTo(2);
+
+    // which the fix prunes, leaving the database clean for the integrity check after the test
+    database.command("sql", "CHECK DATABASE FIX").close();
+    assertEveryReaderSeesEdges(2);
+  }
+
+  private EdgeLinkedList outList() {
+    return ((DatabaseInternal) database).getGraphEngine().getEdgeHeadChunk((VertexInternal) vertexA(), Vertex.DIRECTION.OUT);
   }
 
   @Test
@@ -159,8 +212,15 @@ class Issue9715EmptyEdgeSegmentTest extends TestHelper {
     return database.lookupByRID(a, true).asVertex();
   }
 
+  /** The count of matched edges, asserted equal whether a counter or the matched rows answer it. */
   private long count() {
-    try (final ResultSet rs = database.query("opencypher", COUNT)) {
+    final long counted = count(COUNT);
+    assertThat(count(ROW_COUNT)).as(ROW_COUNT).isEqualTo(counted);
+    return counted;
+  }
+
+  private long count(final String query) {
+    try (final ResultSet rs = database.query("opencypher", query)) {
       return ((Number) rs.next().getProperty("n")).longValue();
     }
   }
