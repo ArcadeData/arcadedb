@@ -157,6 +157,50 @@ class Issue9633BinaryGroupedRerankTest extends TestHelper {
     assertThat(restricted.getFirst().getSecond()).isCloseTo(0f, within(1e-5f));
   }
 
+  /**
+   * The members that hold a group's slots are its nearest on the stored vectors, not on the graph's approximation. Every
+   * member of the near group has the sign pattern of the query, so the one-bit codes cannot tell them apart and the graph
+   * hands them over in an order that has nothing to do with their real distance. They are inserted farthest first, so a
+   * cap applied in that order keeps the wrong two.
+   */
+  @Test
+  void theNearestStoredVectorsWinTheGroupCap() {
+    database.command("sql", "CREATE DOCUMENT TYPE Q BUCKETS 1");
+    database.command("sql", "CREATE PROPERTY Q.grp STRING");
+    database.command("sql", "CREATE PROPERTY Q.rank INTEGER");
+    database.command("sql", "CREATE PROPERTY Q.embedding ARRAY_OF_FLOATS");
+
+    final Random random = new Random(9633);
+    final float[] query = new float[DIM];
+    for (int i = 0; i < DIM; i++)
+      query[i] = 1f + random.nextFloat();
+
+    final int members = 8;
+    database.transaction(() -> {
+      // The near group: the query plus noise that grows with the rank and never flips a sign. Farthest first
+      for (int rank = members; rank >= 1; rank--) {
+        final float[] v = new float[DIM];
+        for (int i = 0; i < DIM; i++)
+          v[i] = query[i] + (random.nextFloat() - 0.5f) * 0.1f * rank;
+        database.newDocument("Q").set("grp", "near", "rank", rank, "embedding", v).save();
+      }
+      // Far groups: mixed signs, so they never compete with the near group
+      for (int g = 0; g < 30; g++)
+        for (int m = 0; m < 3; m++)
+          database.newDocument("Q").set("grp", "far" + g, "rank", 0, "embedding", unit(random)).save();
+    });
+    database.command("sql", "CREATE INDEX ON Q (embedding) LSM_VECTOR METADATA { \"dimensions\": " + DIM
+        + ", \"similarity\": \"EUCLIDEAN\", \"beamWidth\": 100, \"quantization\": \"BINARY\" }");
+
+    final List<Integer> ranks = new ArrayList<>();
+    try (final ResultSet rs = database.query("sql",
+        "SELECT rank FROM (SELECT expand(`vector.neighbors`('Q[embedding]', ?, 1, { groupBy: 'grp', groupSize: 2 })))", query)) {
+      while (rs.hasNext())
+        ranks.add(rs.next().getProperty("rank"));
+    }
+    assertThat(ranks).containsExactly(1, 2);
+  }
+
   private void createCorpus(final int records, final int groupModulo) {
     database.command("sql", "CREATE DOCUMENT TYPE P BUCKETS 1");
     database.command("sql", "CREATE PROPERTY P.pid INTEGER");
