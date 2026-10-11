@@ -43,7 +43,7 @@ import java.util.logging.Level;
 public class SelectStatement extends Statement {
   /**
    * How many attempts in all a SELECT gets when the index its plan reads is gone by the time it starts (issue #9331). The last
-   * of them plans without the indexes of the types it reads (issue #9615), see {@link #openResultSet}.
+   * of them plans without the key indexes of the types it reads (issue #9615), see {@link #openResultSet}.
    */
   private static final int STALE_INDEX_PLAN_MAX_ATTEMPTS = 3;
 
@@ -232,7 +232,8 @@ public class SelectStatement extends Statement {
    * <p>
    * Planning again picks the index of the same name when a concurrent DDL recreated it, and a DDL that keeps dropping and
    * recreating it can take that one away too, attempt after attempt (issue #9615). The last attempt therefore plans without the
-   * indexes of the types it reads, which no DDL can take away under it: a scan answers what the index would have, slower.
+   * key indexes of the types it reads, which no DDL can take away under it: a scan answers what such an index would have,
+   * slower. A FULL_TEXT, geospatial or vector index stays plannable, since a scan would answer its predicates differently.
    */
   private ResultSet openResultSet(final CommandContext context, final Function<CommandContext, InternalExecutionPlan> firstPlanner) {
     for (int attempt = 1; ; attempt++) {
@@ -243,15 +244,16 @@ public class SelectStatement extends Statement {
         else if (attempt < STALE_INDEX_PLAN_MAX_ATTEMPTS)
           plan = createExecutionPlanNoCache(context);
         else
-          plan = new SelectExecutionPlanner(this).withoutTypeIndexes().createExecutionPlan(context, false);
+          plan = new SelectExecutionPlanner(this).withoutKeyIndexes().createExecutionPlan(context, false);
         return new LocalResultSet(plan);
       } catch (final IndexException e) {
         if (attempt >= STALE_INDEX_PLAN_MAX_ATTEMPTS)
           throw e;
-        // The last attempt reads the types without their indexes: a full scan, worth telling an operator about
-        LogManager.instance().log(this, Level.INFO, "Planning the statement again after attempt %d%s, its index was dropped or "
-                + "rebuilt: %s", null, attempt,
-            attempt + 1 >= STALE_INDEX_PLAN_MAX_ATTEMPTS ? " without the indexes of its types (a scan)" : "", e.getMessage());
+        // The last attempt reads the types without their key indexes: a full scan, worth a warning to an operator
+        final boolean lastAttemptNext = attempt + 1 >= STALE_INDEX_PLAN_MAX_ATTEMPTS;
+        LogManager.instance().log(this, lastAttemptNext ? Level.WARNING : Level.INFO,
+            "Planning the statement again after attempt %d%s, its index was dropped or rebuilt: %s", null, attempt,
+            lastAttemptNext ? " without the key indexes of its types (a scan)" : "", e.getMessage());
         if (plan != null)
           try {
             plan.close();
