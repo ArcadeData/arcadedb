@@ -302,11 +302,29 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
     final LocalSchema schema = database.getSchema().getEmbedded();
 
     final LocalDocumentType type = schema.getType(metadata.typeName);
-    // Non-null only on the replacement path: the index to replace, dropped under the lock further down.
-    final TypeIndex existingTypeIndex = findIndexOnProperties(type);
-    if (existingTypeIndex != null && !decideOverExistingIndex(existingTypeIndex, true))
-      return existingTypeIndex;
-    final boolean replacing = existingTypeIndex != null;
+    // The index already on these properties, if any, and whether this request replaces it (dropped under the lock below)
+    TypeIndex found;
+    boolean replace;
+    while (true) {
+      found = findIndexOnProperties(type);
+      if (found == null) {
+        replace = false;
+        break;
+      }
+      try {
+        replace = decideOverExistingIndex(found, true);
+        break;
+      } catch (final IndexException e) {
+        // Read without the lock, so a concurrent replacer can drop the index while it is being decided over (issue
+        // #9741): look again, and find its replacement or nothing. Any other refusal is the answer.
+        if (found.isValid())
+          throw e;
+      }
+    }
+    if (!replace && found != null)
+      return found;
+    final TypeIndex existingTypeIndex = found;
+    final boolean replacing = replace;
 
     if (metadata.propertyNames.isEmpty())
       throw new DatabaseMetadataException(
