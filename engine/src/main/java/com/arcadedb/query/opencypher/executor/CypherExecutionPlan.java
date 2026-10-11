@@ -928,8 +928,8 @@ public class CypherExecutionPlan {
       explainOutput.append("Physical Plan:\n");
       explainOutput.append(physicalPlan.getRootOperator().explain(0));
       explainOutput.append("\n");
-      explainOutput.append(String.format("Total Estimated Cost: %.2f\n", physicalPlan.getTotalEstimatedCost()));
-      explainOutput.append(String.format("Total Estimated Rows: %d\n", physicalPlan.getTotalEstimatedCardinality()));
+      explainOutput.append(String.format(Locale.ROOT, "Total Estimated Cost: %.2f\n", physicalPlan.getTotalEstimatedCost()));
+      explainOutput.append(String.format(Locale.ROOT, "Total Estimated Rows: %d\n", physicalPlan.getTotalEstimatedCardinality()));
       if (countPushDown == null) {
         // Not a second optimization: buildExecutionStepsWithOptimizer wraps THIS plan's physicalPlan - the same
         // instance the text above is printed from - so the structured steps and the text cannot describe two
@@ -1199,11 +1199,11 @@ public class CypherExecutionPlan {
     profileOutput.append("========================\n\n");
     if (Boolean.TRUE.equals(context.getVariable(CommandContext.CSR_ACCELERATED_VAR)))
       profileOutput.append("CSR-accelerated via Graph Analytical View\n");
-    profileOutput.append(String.format("Execution Time: %.3f ms\n", elapsedNanos / 1_000_000.0));
-    profileOutput.append(String.format("Rows Returned: %d\n", rowCount));
+    profileOutput.append(String.format(Locale.ROOT, "Execution Time: %.3f ms\n", elapsedNanos / 1_000_000.0));
+    profileOutput.append(String.format(Locale.ROOT, "Rows Returned: %d\n", rowCount));
 
     if (errorMessage != null)
-      profileOutput.append(String.format("\nError: %s\n", errorMessage));
+      profileOutput.append(String.format(Locale.ROOT, "\nError: %s\n", errorMessage));
 
     // Collect execution steps for structured plan data
     final List<ExecutionStep> executionSteps = stepChainOf(rootStep);
@@ -1220,8 +1220,8 @@ public class CypherExecutionPlan {
           ? "\nExecution Plan (Cost-Based Optimizer, superseded by the count push-down above):\n"
           : "\nExecution Plan (Cost-Based Optimizer):\n");
       profileOutput.append(physicalPlan.getRootOperator().explain(0));
-      profileOutput.append(String.format("\nEstimated Cost: %.2f\n", physicalPlan.getTotalEstimatedCost()));
-      profileOutput.append(String.format("Estimated Rows: %d\n", physicalPlan.getTotalEstimatedCardinality()));
+      profileOutput.append(String.format(Locale.ROOT, "\nEstimated Cost: %.2f\n", physicalPlan.getTotalEstimatedCost()));
+      profileOutput.append(String.format(Locale.ROOT, "Estimated Rows: %d\n", physicalPlan.getTotalEstimatedCardinality()));
       if (!countPushedDown)
         appendStepsAfterTheOptimizedMatch(profileOutput, executionSteps);
     } else if (!countPushedDown) {
