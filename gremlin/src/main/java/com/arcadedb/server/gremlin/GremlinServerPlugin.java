@@ -202,9 +202,9 @@ public class GremlinServerPlugin implements ServerPlugin {
     if (channelizer.isEmpty() || channelizer.equals(WebSocketChannelizer.class.getName()) || channelizer.equals(concealing))
       return concealing;
     if (productionMode)
-      throw new ServerException("Gremlin Server channelizer '" + channelizer
-          + "' (selected by 'channelizer' in gremlin-server.yaml or the 'gremlin.channelizer' setting) cannot conceal engine error messages, which 'arcadedb.server.mode=production' requires: use the default channelizer ("
-          + WebSocketChannelizer.class.getName() + ") or run the server in another mode");
+      throw new ServerException("Gremlin Server channelizer '" + channelizer + "' (selected by 'channelizer' in gremlin-server.yaml"
+          + " or the 'gremlin.channelizer' setting) cannot conceal engine error messages, which 'arcadedb.server.mode=production'"
+          + " requires: use the default channelizer (" + WebSocketChannelizer.class.getName() + ") or run the server in another mode");
     LogManager.instance().log(GremlinServerPlugin.class, Level.WARNING,
         "Gremlin Server channelizer '%s' does not conceal engine error messages: the server will refuse to start with it in production mode",
         null, channelizer);
