@@ -303,28 +303,22 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
 
     final LocalDocumentType type = schema.getType(metadata.typeName);
     // The index already on these properties, if any, and whether this request replaces it (dropped under the lock below)
-    TypeIndex found;
-    boolean replace;
-    while (true) {
-      found = findIndexOnProperties(type);
-      if (found == null) {
-        replace = false;
-        break;
-      }
+    TypeIndex found = findIndexOnProperties(type);
+    boolean replace = false;
+    if (found != null) {
       try {
         replace = decideOverExistingIndex(found, true);
-        break;
       } catch (final IndexException e) {
-        // Read without the lock, so a concurrent replacer can drop the index while it is being decided over (issue
-        // #9741): look again, and find its replacement or nothing. Any other refusal is the answer. Each retry follows a
-        // drop that really happened, and the next lookup sees either nothing or the index built in its place, so the loop
-        // ends as soon as replacers stop dropping.
-        if (found.isValid())
+        // Read without the lock, so a concurrent replacer can be dropping the index while it is decided over here (issue
+        // #9741). It stays registered - dropping, then invalid - until that drop completes under the schema write lock, so
+        // the request is decided there instead, over whatever replaced it or over nothing. Any other refusal is the answer.
+        if (found.isValid() && !found.isDropping())
           throw e;
+        found = null;
       }
+      if (found != null && !replace)
+        return found;
     }
-    if (!replace && found != null)
-      return found;
     final TypeIndex existingTypeIndex = found;
     final boolean replacing = replace;
 
