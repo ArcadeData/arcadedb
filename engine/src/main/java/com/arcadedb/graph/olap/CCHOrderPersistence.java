@@ -21,6 +21,7 @@ package com.arcadedb.graph.olap;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.DataEncryption;
+import com.arcadedb.engine.NodeLocalFiles;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.FileUtils;
 
@@ -52,7 +53,8 @@ import java.util.zip.CRC32;
 final class CCHOrderPersistence {
   private static final int    MAGIC          = 0x4343484F; // "CCHO"
   private static final int    FORMAT_VERSION = 1;
-  private static final String FILE_EXTENSION = ".cchorder";
+  // NODE-LOCAL (#9638): DECLARED IN NodeLocalFiles SO A CROSS-NODE CHECKSUM LEAVES THE FILE OUT
+  private static final String FILE_EXTENSION = NodeLocalFiles.CCH_ORDER_FILE_EXTENSION;
 
   private CCHOrderPersistence() {
   }

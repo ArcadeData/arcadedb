@@ -32,6 +32,7 @@ import com.arcadedb.engine.Dictionary;
 import com.arcadedb.engine.ErrorRecordCallback;
 import com.arcadedb.engine.FileManager;
 import com.arcadedb.engine.LocalBucket;
+import com.arcadedb.engine.NodeLocalFiles;
 import com.arcadedb.engine.PageManager;
 import com.arcadedb.engine.PageVersionReservations;
 import com.arcadedb.engine.PageSnapshot;
@@ -3414,7 +3415,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    * {@link #performRecovery()} once the schema is loaded.
    */
   private boolean prepareRecovery() throws IOException {
-    lockFile = new File(databasePath + "/database.lck");
+    lockFile = new File(databasePath + "/" + NodeLocalFiles.DATABASE_LOCK_FILE_NAME);
 
     if (lockFile.exists()) {
       if (mode == ComponentFile.MODE.READ_ONLY) {

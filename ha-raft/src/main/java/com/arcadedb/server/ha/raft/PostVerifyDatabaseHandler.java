@@ -618,7 +618,7 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
    * worth having - but it is reported as incomplete sealed-store coverage rather than passed off as a full one.
    * <p>
    * Both page-file enumerations skip an index-compaction temporary (#7955). This handler reads the REGISTERED files
-   * rather than the directory, so none of the scratch families {@code SnapshotManager.isNodeLocalScratchFileName}
+   * rather than the directory, so none of the scratch families {@code SnapshotManager.isNodeLocalFileName}
    * excludes can reach it - a {@code .tmp} or a {@code .ts.sealed.incoming} is never a {@code ComponentFile}. A
    * {@code temp_*} compaction output is the one exception: {@code PaginatedComponent}'s constructor registers it,
    * so it is in {@code getFiles()} and in every window opened while the compaction runs, and only on the node doing
