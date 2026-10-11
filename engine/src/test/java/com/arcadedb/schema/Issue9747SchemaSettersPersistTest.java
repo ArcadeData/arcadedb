@@ -19,12 +19,14 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
 
 import java.time.ZoneId;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #9747, the embedded side: the schema writers now apply their change inside a schema recording session instead of
@@ -111,6 +113,31 @@ class Issue9747SchemaSettersPersistTest extends TestHelper {
     schema.setZoneId(ZoneId.of("Asia/Tokyo"));
     ((LocalDocumentType) schema.getType("N")).setNeedsRepartition(false);
 
+    assertThat(schema.getVersion()).isEqualTo(version);
+    assertThat(schema.isDirty()).isFalse();
+  }
+
+  /**
+   * Validation runs before the session opens: a refused value leaves the schema, its version and schema.json as they
+   * were, and nothing is shipped.
+   */
+  @Test
+  void aRefusedValueTouchesNothing() {
+    database.command("sql", "CREATE DOCUMENT TYPE R");
+    database.command("sql", "CREATE PROPERTY R.b BOOLEAN");
+    database.command("sql", "CREATE VERTEX TYPE RV");
+    database.command("sql", "CREATE EDGE TYPE RE");
+    database.transaction(() -> database.newVertex("RV").save().newEdge("RE", database.newVertex("RV").save()));
+
+    final LocalSchema schema = database.getSchema().getEmbedded();
+    final long version = schema.getVersion();
+
+    final Property b = schema.getType("R").getProperty("b");
+    assertThatThrownBy(() -> b.setMin("1")).isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> ((LocalEdgeType) schema.getType("RE")).setLightweight(true)).isInstanceOf(SchemaException.class);
+
+    assertThat(b.getMin()).isNull();
+    assertThat(((LocalEdgeType) schema.getType("RE")).isLightweight()).isFalse();
     assertThat(schema.getVersion()).isEqualTo(version);
     assertThat(schema.isDirty()).isFalse();
   }
