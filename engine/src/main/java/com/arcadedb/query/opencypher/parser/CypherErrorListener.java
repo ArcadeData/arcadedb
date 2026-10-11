@@ -29,6 +29,7 @@ import org.antlr.v4.runtime.atn.ATN;
 import org.antlr.v4.runtime.misc.IntervalSet;
 
 import java.util.List;
+import java.util.Locale;
 
 /**
  * Custom ANTLR error listener that converts parsing errors to CommandParsingException.
@@ -52,7 +53,7 @@ public class CypherErrorListener extends BaseErrorListener {
   public void syntaxError(final Recognizer<?, ?> recognizer, final Object offendingSymbol, final int line,
       final int charPositionInLine, final String msg, final RecognitionException e) {
 
-    final String errorMsg = String.format("Syntax error at line %d:%d - %s", line, charPositionInLine,
+    final String errorMsg = String.format(Locale.ROOT, "Syntax error at line %d:%d - %s", line, charPositionInLine,
         describe(recognizer, msg, e));
     throw new CommandParsingException(errorMsg, e);
   }

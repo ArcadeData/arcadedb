@@ -23,6 +23,7 @@ import com.arcadedb.query.opencypher.optimizer.RangePredicate;
 import com.arcadedb.query.opencypher.optimizer.statistics.IndexStatistics;
 
 import java.util.List;
+import java.util.Locale;
 
 /**
  * Result of anchor selection algorithm.
@@ -278,7 +279,7 @@ public class AnchorSelection {
         }
       }
     }
-    sb.append(", cost=").append(String.format("%.2f", estimatedCost));
+    sb.append(", cost=").append(String.format(Locale.ROOT, "%.2f", estimatedCost));
     sb.append(", cardinality=").append(estimatedCardinality);
     sb.append('}');
     return sb.toString();
