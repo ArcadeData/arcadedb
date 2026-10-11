@@ -190,6 +190,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   private static final   int                       CHAIN_TRACE_REFRESHABLE          = 4;
   /** No page the read walked has moved since: the chain is trivially the one that was read. */
   private static final   int                       CHAIN_READ_UNCHANGED             = 0;
+  // #9620: the snapshot chain of a record read from pages not all pinned. Matches no traced chain, and still says the record
+  // was read in the transaction
+  private static final   long[]                    NO_SNAPSHOT_CHAIN                = new long[0];
   /** A page the read walked has moved, but not one byte this record owns on it: the read stands (#6217). */
   private static final   int                       CHAIN_READ_REVALIDATED           = 1;
   /** The record itself moved under the read: what was assembled may be a mix of two commits, so it is thrown away. */
@@ -5550,8 +5553,12 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           verdict = CHAIN_READ_UNCHANGED;
         else {
           verdict = validateChainReadAgainstOneCommit(chainTrace, chunks, record, lastNextChunkPointer, headMarker);
-          if (verdict != CHAIN_READ_CHANGED && repeatableRead && isChainPinnedWhole(walkTransaction, chainTrace, chunks))
-            walkTransaction.setSnapshotChunkChain(originalRID, pagesAndVersions(chainTrace, chunks));
+          if (verdict != CHAIN_READ_CHANGED && repeatableRead)
+            // #9620: a chain read from pages not all pinned (a page past the component's page count is never pinned) is no
+            // snapshot to compare against, but it is a read: the record is no longer one the transaction owes no image of
+            walkTransaction.setSnapshotChunkChain(originalRID, isChainPinnedWhole(walkTransaction, chainTrace, chunks) ?
+                    pagesAndVersions(chainTrace, chunks) :
+                    NO_SNAPSHOT_CHAIN);
         }
         if (verdict == CHAIN_READ_REVALIDATED)
           database.getPageManager().incrementChunkChainReadRevalidations();
@@ -5814,6 +5821,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       return verdict;
 
     try {
+      // executeInLock rethrows a RuntimeException as it is and wraps a checked one, the IOException of a page load, as its cause
       return (Integer) pageManager.executeInLock(
               () -> validateChainRead(chainTrace, chunks, record, lastNextChunkPointer, headMarker, false));
     } catch (final RuntimeException e) {
