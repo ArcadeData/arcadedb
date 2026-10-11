@@ -1179,11 +1179,25 @@ public class ServerControlPlane {
     database.saveConfiguration();
   }
 
+  /**
+   * Stores one server setting the operator sets while the server runs. A declared setting is parsed first and then
+   * offered to the plugins, any of which can refuse a value its running state cannot honour, before anything is
+   * stored (issue #9749: a Gremlin Server channelizer that cannot conceal engine error text refuses a switch to
+   * production mode).
+   */
   public void setServerSetting(final String key, final String value) {
-    applySetting(server.getConfiguration(), key, value);
     final String name = FileUtils.getStringContent(key.trim());
     final GlobalConfiguration setting = GlobalConfiguration.findByKey(name);
-    server.markOperatorSetting(setting != null ? setting.getKey() : name);
+    if (setting == null) {
+      applySetting(server.getConfiguration(), key, value);
+      server.markOperatorSetting(name);
+      return;
+    }
+
+    final Object coerced = coerceSetting(setting, value);
+    server.checkServerSettingChange(setting, coerced);
+    server.getConfiguration().setValue(setting.getKey(), coerced);
+    server.markOperatorSetting(setting.getKey());
   }
 
   /**
@@ -1228,14 +1242,22 @@ public class ServerControlPlane {
       return;
     }
 
-    if (value.isEmpty() && setting.getType() != String.class)
-      throw new IllegalArgumentException(
-          "'value' must not be empty for setting '" + setting.getKey() + "' of type " + setting.getType().getSimpleName());
-
     // setValue also runs the side effect of a declared SCOPE.SERVER setting, so one whose effect is not a value
     // somebody later reads - arcadedb.server.logFormat swapping the console formatter - takes effect here too
     // rather than being stored and ignored (issue #7121).
-    configuration.setValue(setting.getKey(), setting.coerceFromAdminCommand(value));
+    configuration.setValue(setting.getKey(), coerceSetting(setting, rawValue));
+  }
+
+  /**
+   * The value of a "set ... setting" command parsed to {@code setting}'s type: the quotes stripped, an empty value
+   * refused for any type but {@code String}, the rest through {@link GlobalConfiguration#coerceFromAdminCommand(Object)}.
+   */
+  private static Object coerceSetting(final GlobalConfiguration setting, final String rawValue) {
+    final String value = FileUtils.getStringContent(rawValue.trim());
+    if (value.isEmpty() && setting.getType() != String.class)
+      throw new IllegalArgumentException(
+          "'value' must not be empty for setting '" + setting.getKey() + "' of type " + setting.getType().getSimpleName());
+    return setting.coerceFromAdminCommand(value);
   }
 
   // ---------------------------------------------------------------------------------------------

@@ -391,6 +391,19 @@ public class ArcadeDBServer {
     return configuration;
   }
 
+  /**
+   * Asks every plugin whether {@code setting} may take {@code value} while the server runs, before an operator's change
+   * is stored (see {@link ServerPlugin#checkServerSettingChange}). The first refusal propagates to the caller.
+   *
+   * @throws IllegalArgumentException when a plugin refuses the change
+   */
+  public void checkServerSettingChange(final GlobalConfiguration setting, final Object value) {
+    if (pluginManager == null)
+      return;
+    for (final ServerPlugin plugin : pluginManager.getPlugins())
+      plugin.checkServerSettingChange(setting, value);
+  }
+
   /** The configured {@code arcadedb.server.mode}: {@code development}, {@code test} or {@code production}. */
   public String getMode() {
     return configuration.getValueAsString(GlobalConfiguration.SERVER_MODE);
