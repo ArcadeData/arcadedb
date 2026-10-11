@@ -27,6 +27,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.Calendar;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -88,10 +89,16 @@ public final class RowBatcher {
    * Result.toJSON() and a DATETIME (a UTC wall clock) are written in UTC, so the same row read twice gave two integers
    * and decoded to the previous day east of UTC. A DATE is written as midnight UTC here, at the top level and inside a
    * list or map. A collection without a LocalDate is returned as it is.
+   * <p>
+   * A java.util.Calendar (arcadedb.dateTimeImplementation / dateImplementation) is written as its epoch milliseconds, as
+   * a java.util.Date is. The engine's JSONObject wrote it as its toString() before #9630, and this bridge runs against
+   * whatever engine the wheel bundles, so it does not rely on that fix.
    */
   private static Object utcDates(final Object value) {
     if (value instanceof LocalDate date)
       return date.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli();
+    if (value instanceof Calendar calendar)
+      return calendar.getTimeInMillis();
     if (value instanceof List<?> list) {
       List<Object> copy = null;
       for (int i = 0; i < list.size(); i++) {

@@ -21,7 +21,15 @@ import java.io.ByteArrayOutputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
+import java.time.ZonedDateTime;
 import java.util.ArrayList;
+import java.util.Calendar;
+import java.util.Date;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -36,17 +44,19 @@ public final class ColumnBatcher {
   /** Wall-clock-consistent epoch millis: naive temporals are read as UTC so
    * numpy's (naive) datetime64 shows the same wall-clock the record carries. */
   private static long toEpochMillis(final Object v) {
-    if (v instanceof java.util.Date d)
+    if (v instanceof Date d)
       return d.getTime();
-    if (v instanceof java.time.LocalDateTime ldt)
-      return ldt.toInstant(java.time.ZoneOffset.UTC).toEpochMilli();
-    if (v instanceof java.time.LocalDate ld)
-      return ld.atStartOfDay().toInstant(java.time.ZoneOffset.UTC).toEpochMilli();
-    if (v instanceof java.time.Instant i)
+    if (v instanceof Calendar c)
+      return c.getTimeInMillis();
+    if (v instanceof LocalDateTime ldt)
+      return ldt.toInstant(ZoneOffset.UTC).toEpochMilli();
+    if (v instanceof LocalDate ld)
+      return ld.atStartOfDay().toInstant(ZoneOffset.UTC).toEpochMilli();
+    if (v instanceof Instant i)
       return i.toEpochMilli();
-    if (v instanceof java.time.ZonedDateTime z)
+    if (v instanceof ZonedDateTime z)
       return z.toInstant().toEpochMilli();
-    if (v instanceof java.time.OffsetDateTime o)
+    if (v instanceof OffsetDateTime o)
       return o.toInstant().toEpochMilli();
     throw new IllegalArgumentException("not a temporal: " + v.getClass());
   }
@@ -115,9 +125,9 @@ public final class ColumnBatcher {
           t = "f8";
         else if (v instanceof Boolean)
           t = "b1";
-        else if (v instanceof java.util.Date || v instanceof java.time.LocalDateTime
-            || v instanceof java.time.LocalDate || v instanceof java.time.Instant
-            || v instanceof java.time.ZonedDateTime || v instanceof java.time.OffsetDateTime)
+        else if (v instanceof Date || v instanceof Calendar || v instanceof LocalDateTime
+            || v instanceof LocalDate || v instanceof Instant
+            || v instanceof ZonedDateTime || v instanceof OffsetDateTime)
           t = "dt";
         else if (v instanceof String || v instanceof Character)
           t = "str";

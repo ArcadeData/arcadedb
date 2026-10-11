@@ -4,6 +4,7 @@ ArcadeDB Python Bindings - Server Management
 ArcadeDB server for HTTP API and Studio web interface.
 """
 
+import functools
 import os
 from typing import Any, Dict, Optional
 
@@ -12,6 +13,38 @@ import jpype
 from .core import Database
 from .exceptions import ArcadeDBError
 from .jvm import start_jvm
+
+
+def _config_key(key: str) -> str:
+    """Return a Python config key in ArcadeDB's form.
+
+    ``postgres_port`` becomes ``arcadedb.postgres.port``.
+    """
+    return f"arcadedb.{key.replace('_', '.')}"
+
+
+_ALL_INTERFACES = ("0.0.0.0", "::")  # nosec B104 - compared, not bound
+
+
+@functools.lru_cache(maxsize=1)
+def _all_interfaces_host_settings():
+    """The keys of every listener bind host that defaults to all interfaces.
+
+    The Postgres, Redis, Bolt, Mongo and gRPC hosts today: a ``*.host``
+    setting whose engine default is an all-interfaces address (``"0.0.0.0"``,
+    or ``"::"`` for IPv6). The HTTP host (``httpIncomingHost``) does not
+    match and is set separately. A listener whose engine default is already
+    narrower (loopback) keeps it: it is not the exposure this guards against.
+    test_server_wire_protocols pins the discovered set, so a change in it
+    shows up there. Resolved once per process: the settings are fixed.
+    """
+    GlobalConfiguration = jpype.JClass("com.arcadedb.GlobalConfiguration")
+    keys = []
+    for setting in GlobalConfiguration.values():
+        key = str(setting.getKey())
+        if key.endswith(".host") and str(setting.getDefValue()) in _ALL_INTERFACES:
+            keys.append(key)
+    return tuple(keys)
 
 
 class ArcadeDBServer:
@@ -33,11 +66,15 @@ class ArcadeDBServer:
                 production)
             config: Optional configuration dictionary with keys like:
                 - http_port: HTTP API port (default: 2480)
-                - host: Host to bind to (default: "localhost"). Pass "0.0.0.0"
-                    explicitly to expose the server on all IPv4 interfaces, or
-                    "::" for all IPv6 interfaces. Earlier versions defaulted to
-                    "0.0.0.0"; the default was tightened to loopback in the
-                    Python bindings v0.x security cleanup.
+                - host: Host every listener binds to (default: "localhost"):
+                    the HTTP server and every wire protocol plugin enabled
+                    below (Postgres, Redis, Bolt). Pass "0.0.0.0" explicitly to
+                    expose the server on all IPv4 interfaces, or "::" for all
+                    IPv6 interfaces. Earlier versions defaulted to "0.0.0.0";
+                    the default was tightened to loopback in the Python
+                    bindings v0.x security cleanup. A per-protocol key
+                    (``postgres_host``, ``redis_host``, ``bolt_host``) overrides
+                    it for that protocol alone.
                 - mode: Server mode (default: development)
 
                 Any other key is forwarded to ArcadeDB as
@@ -55,6 +92,9 @@ class ArcadeDBServer:
                 Redis is ``com.arcadedb.redis.RedisProtocolPlugin`` with
                 ``redis_port``, Bolt is
                 ``com.arcadedb.bolt.BoltProtocolPlugin`` with ``bolt_port``.
+                Each listens on ``host`` like the HTTP server does, so the
+                example above is reachable from this machine only; add
+                ``"postgres_host": "0.0.0.0"`` to expose that one protocol.
                 Mongo, gRPC and Raft replication are NOT bundled: their jars
                 are excluded to keep the wheel installable, so this server is
                 single-node by construction.
@@ -100,6 +140,19 @@ class ArcadeDBServer:
         host = self._config.get("host", "localhost")
         context_config.setValue("arcadedb.server.httpIncomingHost", host)
 
+        # ...and that means EVERY listener, not the HTTP one alone (#9632). A
+        # wire protocol plugin reads its own host setting, whose engine default
+        # is "0.0.0.0", so enabling Postgres the way the docstring shows put it
+        # on every interface of a server the caller had kept local. The
+        # settings are found by what they are - a listener's bind host that
+        # defaults to all interfaces - rather than listed, so a plugin added to
+        # the wheel later is covered without anyone remembering this line. A
+        # per-protocol key in config (postgres_host, ...) still wins below.
+        explicit_keys = {_config_key(key) for key in self._config}
+        for key in _all_interfaces_host_settings():
+            if key not in explicit_keys:
+                context_config.setValue(key, host)
+
         http_port = self._config.get("http_port", 2480)
         context_config.setValue("arcadedb.server.httpIncomingPort", http_port)
 
@@ -109,9 +162,7 @@ class ArcadeDBServer:
             # docstring, so it was accepted and dropped without a word. It is
             # gone from both: ArcadeDB has no binary port to set.
             if key not in ["mode", "host", "http_port"]:
-                # Convert Python config keys to ArcadeDB config format
-                config_key = f"arcadedb.{key.replace('_', '.')}"
-                context_config.setValue(config_key, value)
+                context_config.setValue(_config_key(key), value)
 
         # Create server instance
         self._java_server = JavaArcadeDBServer(context_config)

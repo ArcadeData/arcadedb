@@ -11,12 +11,13 @@
  *   {"\u0001": ["n", "1.25"]}                      BigDecimal (Decimal)
  *   {"\u0001": ["i", "123..."]}                    BigInteger
  *   {"\u0001": ["D", "2020-01-01"]}                LocalDate
- *   {"\u0001": ["T", "2020-01-01T12:00:00.000000"]}                 LocalDateTime (microseconds)
+ *   {"\u0001": ["T", "2020-01-01T12:00:00.000000"]}                 LocalDateTime (microseconds), and java.util.Date and
+ *                                                                   java.util.Calendar as their UTC wall clock (#9630)
  *   {"\u0001": ["Z", "2020-01-01T12:00:00.000000+00:00"]}           Instant, ZonedDateTime, OffsetDateTime (UTC)
  *   {"\u0001": ["s", [..]]}                        Set
  *   {"\u0001": ["x", index]}                       anything else: the engine's own object, taken from the side
  *                                                  array and converted by Python exactly as before (RIDs, embedded
- *                                                  documents, vertices, java.util.Date, NaN and the infinities, maps
+ *                                                  documents, vertices, NaN and the infinities, maps
  *                                                  with non-String keys, large float[], ...)
  *   {"\u0001": ["r", index]}                       a whole row whose property name is the tag key (never in practice)
  *
@@ -42,7 +43,9 @@ import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.util.ArrayList;
+import java.util.Calendar;
 import java.util.Collection;
+import java.util.Date;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -138,6 +141,10 @@ public final class TypedRows {
       final Instant instant = odt.toInstant();
       appendDateTime(sb, "Z", LocalDateTime.ofEpochSecond(instant.getEpochSecond(), instant.getNano(), ZoneOffset.UTC),
           "+00:00", value, side);
+    } else if (value instanceof Date date) {
+      appendEpochMillis(sb, date.getTime(), value, side);
+    } else if (value instanceof Calendar calendar) {
+      appendEpochMillis(sb, calendar.getTimeInMillis(), value, side);
     } else if (value instanceof Map<?, ?> map) {
       for (final Object key : map.keySet())
         if (!(key instanceof String k) || TAG.equals(k)) {
@@ -229,6 +236,18 @@ public final class TypedRows {
     pad(sb, dt.getMinute(), 2).append(':');
     pad(sb, dt.getSecond(), 2).append('.');
     pad(sb, dt.getNano() / 1000, 6).append(suffix).append("\"]}");
+  }
+
+  /**
+   * A java.util.Date or java.util.Calendar (arcadedb.dateTimeImplementation / dateImplementation) holds an instant, and
+   * the engine stores DATETIME as a UTC wall clock: written as that wall clock, the same one a LocalDateTime carries and
+   * the columnar readers report. Python read it with datetime.fromtimestamp(), which applies the host's time zone, so the
+   * value moved by the host's UTC offset and a DATE could land on the previous day (#9630).
+   */
+  private static void appendEpochMillis(final StringBuilder sb, final long millis, final Object original,
+      final List<Object> side) {
+    appendDateTime(sb, "T", LocalDateTime.ofEpochSecond(Math.floorDiv(millis, 1000L), Math.floorMod(millis, 1000) * 1_000_000,
+        ZoneOffset.UTC), "", original, side);
   }
 
   private static void appendDate(final StringBuilder sb, final int year, final int month, final int day) {

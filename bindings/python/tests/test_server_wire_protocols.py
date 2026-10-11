@@ -281,3 +281,161 @@ def test_bolt_wire_answers_a_cypher_query(wire_server):
     finally:
         driver.close()
     assert any(r.get("name") == "alpha" for r in got), got
+
+
+# ---------------------------------------------------------------------------
+# Where the wire listeners bind (#9632)
+#
+# The server's `host` (loopback by default) used to reach the HTTP listener
+# only. Each wire plugin reads its own host setting, whose engine default is
+# "0.0.0.0", so the wire_server fixture above - and the docstring's own
+# example - ran Postgres, Redis and Bolt on every interface of a server the
+# caller had kept local. Every other test here connects to 127.0.0.1, which
+# succeeds whether a listener is bound to loopback or to everything, so none
+# of them could see it.
+
+WIRE_HOST_SETTINGS = {
+    "postgres": "POSTGRES_HOST",
+    "redis": "REDIS_HOST",
+    "bolt": "BOLT_HOST",
+}
+
+
+def _bound_hosts(server):
+    """The host each wire plugin reads: the server's own configuration."""
+    import jpype
+
+    settings = jpype.JClass("com.arcadedb.GlobalConfiguration")
+    configuration = server._java_server.getConfiguration()
+    return {
+        name: str(configuration.getValueAsString(getattr(settings, setting)))
+        for name, setting in WIRE_HOST_SETTINGS.items()
+    }
+
+
+def _non_loopback_ipv4():
+    """An address of this machine that is not loopback, or None when it has none.
+
+    connect() on a UDP socket sends nothing; it only picks the interface a
+    packet to that address would leave from.
+    """
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("192.0.2.1", 9))  # TEST-NET-1, never routed
+            address = s.getsockname()[0]
+    except OSError:
+        return None
+    unspecified = "0.0.0.0"  # nosec B104 - compared, not bound
+    if address.startswith("127.") or address == unspecified:
+        return None
+    return address
+
+
+def _accepts(address, port):
+    try:
+        with socket.create_connection((address, port), timeout=2):
+            return True
+    except OSError:
+        return False
+
+
+def test_wire_listeners_stay_on_loopback_by_default(wire_server):
+    server, ports = wire_server
+    assert _bound_hosts(server) == {
+        "postgres": "localhost",
+        "redis": "localhost",
+        "bolt": "localhost",
+    }
+    for name in ("postgres", "redis", "bolt"):
+        assert _wait(ports[name]), f"{name} never bound its port on loopback"
+
+    # The behaviour itself, wherever the machine has an address to test it on.
+    address = _non_loopback_ipv4()
+    if address is not None:
+        for name in ("http", "postgres", "redis", "bolt"):
+            assert not _accepts(
+                address, ports[name]
+            ), f"{name} answers on {address}, not on loopback only"
+
+
+def test_host_applies_to_every_wire_listener(tmp_path):
+    from arcadedb_embedded import create_server
+
+    ports = _free_ports("http", "postgres", "redis", "bolt")
+    server = create_server(
+        root_path=str(tmp_path / "databases"),
+        root_password=ROOT_PASSWORD,
+        config={
+            "host": "127.0.0.1",
+            "http_port": ports["http"],
+            "server_plugins": ",".join([PG_PLUGIN, REDIS_PLUGIN, BOLT_PLUGIN]),
+            "postgres_port": ports["postgres"],
+            "redis_port": ports["redis"],
+            "bolt_port": ports["bolt"],
+        },
+    )
+    server.start()
+    try:
+        assert _bound_hosts(server) == {
+            "postgres": "127.0.0.1",
+            "redis": "127.0.0.1",
+            "bolt": "127.0.0.1",
+        }
+        for name in ("postgres", "redis", "bolt"):
+            assert _wait(ports[name]), f"{name} never bound its port on 127.0.0.1"
+    finally:
+        server.stop()
+
+
+def test_a_protocol_host_overrides_the_server_host_for_that_protocol_only(tmp_path):
+    from arcadedb_embedded import create_server
+
+    ports = _free_ports("http", "postgres", "redis")
+    server = create_server(
+        root_path=str(tmp_path / "databases"),
+        root_password=ROOT_PASSWORD,
+        config={
+            "http_port": ports["http"],
+            "server_plugins": ",".join([PG_PLUGIN, REDIS_PLUGIN]),
+            "postgres_port": ports["postgres"],
+            "postgres_host": "0.0.0.0",  # nosec B104 - the override under test
+            "redis_port": ports["redis"],
+        },
+    )
+    server.start()
+    try:
+        hosts = _bound_hosts(server)
+        assert hosts["postgres"] == "0.0.0.0"  # nosec B104 - compared, not bound
+        assert hosts["redis"] == "localhost"
+        assert _wait(ports["postgres"]) and _wait(ports["redis"])
+
+        address = _non_loopback_ipv4()
+        if address is not None:
+            assert _accepts(
+                address, ports["postgres"]
+            ), "the explicit postgres_host did not expose Postgres"
+            assert not _accepts(
+                address, ports["redis"]
+            ), "Redis left loopback without being asked to"
+    finally:
+        server.stop()
+
+
+def test_the_host_reaches_exactly_the_listener_bind_settings():
+    """The settings `host` is applied to are discovered, not listed (#9632).
+
+    Pinned so a drift is seen: a new listener whose host defaults to all
+    interfaces joins this set (and so follows `host`), and a non-listener
+    setting that happened to match the pattern would show up here too.
+    """
+    from arcadedb_embedded.jvm import start_jvm
+    from arcadedb_embedded.server import _all_interfaces_host_settings
+
+    start_jvm()
+    assert set(_all_interfaces_host_settings()) == {
+        "arcadedb.postgres.host",
+        "arcadedb.redis.host",
+        "arcadedb.bolt.host",
+        "arcadedb.mongo.host",
+        "arcadedb.grpc.host",
+    }
