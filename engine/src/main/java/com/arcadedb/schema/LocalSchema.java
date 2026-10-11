@@ -1382,8 +1382,13 @@ public class LocalSchema implements Schema {
     return zoneId;
   }
 
+  /**
+   * Saved with the schema and, under HA, replicated with it (issue #9747): see {@link #publishSetting(Runnable)}.
+   */
   public void setZoneId(final ZoneId zoneId) {
-    this.zoneId = zoneId;
+    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_DATABASE_SETTINGS);
+    if (!Objects.equals(this.zoneId, zoneId))
+      publishSetting(() -> this.zoneId = zoneId);
   }
 
   /**
@@ -1425,7 +1430,8 @@ public class LocalSchema implements Schema {
   @Override
   public void setDateFormat(final String dateFormat) {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_DATABASE_SETTINGS);
-    this.dateFormat = dateFormat;
+    if (!Objects.equals(this.dateFormat, dateFormat))
+      publishSetting(() -> this.dateFormat = dateFormat);
   }
 
   @Override
@@ -1436,7 +1442,21 @@ public class LocalSchema implements Schema {
   @Override
   public void setDateTimeFormat(final String dateTimeFormat) {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_DATABASE_SETTINGS);
-    this.dateTimeFormat = dateTimeFormat;
+    if (!Objects.equals(this.dateTimeFormat, dateTimeFormat))
+      publishSetting(() -> this.dateTimeFormat = dateTimeFormat);
+  }
+
+  /**
+   * Applies a change to a setting kept in {@code schema.json} inside a schema recording session (issue #9747). The
+   * session saves the file on its way out and, under HA, is what ships the schema to the followers: these setters used
+   * to save nothing at all, and {@code ALTER DATABASE}'s bare save that followed them rewrote the leader's file only,
+   * so every follower kept answering with the previous date format or zone.
+   */
+  private void publishSetting(final Runnable change) {
+    recordFileChanges(() -> {
+      change.run();
+      return null;
+    });
   }
 
   @Override
@@ -1448,11 +1468,15 @@ public class LocalSchema implements Schema {
   @Override
   public void setExtension(final String name, final JSONObject value) {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
-    if (value == null)
-      extensions.remove(name);
-    else
-      extensions.put(name, value);
-    saveConfiguration();
+    // Inside a schema recording session, not followed by a bare saveConfiguration(): under HA only the session ships the
+    // schema, so the extension existed on the leader alone (issue #9747)
+    recordFileChanges(() -> {
+      if (value == null)
+        extensions.remove(name);
+      else
+        extensions.put(name, value);
+      return null;
+    });
   }
 
   @Override

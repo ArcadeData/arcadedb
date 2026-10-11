@@ -1319,24 +1319,21 @@ public class LocalDocumentType implements DocumentType {
    * of the public {@link com.arcadedb.schema.DocumentType} interface so user-level SQL can't reach
    * it directly. Persisted to {@code schema.json} only when {@code true}.
    * <p>
-   * When the value transitions, {@link LocalSchema#saveConfiguration} is invoked so the change
-   * survives a server restart. During schema load that call is a no-op (the schema's own
-   * {@code readingFromFile} guard postpones the write), so this is safe to call regardless of
-   * the load state.
+   * When the value transitions it is flipped inside a schema recording session, which saves {@code schema.json} so the
+   * change survives a restart and, under HA, ships it to the followers (issue #9747). During schema load the session is
+   * a plain call, so this is safe to call regardless of the load state.
    *
-   * @return {@code true} when the value transitioned and the schema was therefore saved. Lets a caller that was
-   * going to save anyway skip a second full rewrite of {@code schema.json} in the same call; every other caller is
-   * free to ignore it.
+   * @return {@code true} when this call flipped the value
    */
   public boolean setNeedsRepartition(final boolean needsRepartition) {
-    // CAS guarantees that the save fires exactly once per real transition: only the thread that
-    // observes the opposite value and successfully flips it proceeds; any concurrent caller
-    // requesting the same target value either loses the race (CAS returns false) or finds the
-    // value already at the target. Both cases skip the {@code schema.saveConfiguration()} call.
-    if (!this.needsRepartition.compareAndSet(!needsRepartition, needsRepartition))
+    // A value already at the target is not a schema change and opens no session. Two callers racing past this check
+    // both open one; the CAS inside lets only one of them flip the flag.
+    if (this.needsRepartition.get() == needsRepartition)
       return false;
-    schema.saveConfiguration();
-    return true;
+    // Flipped inside a schema recording session rather than followed by a bare saveConfiguration(): under HA only the
+    // session ships the schema, so a REBUILD TYPE that cleared the flag on the leader left every follower declining to
+    // prune the type's queries (issue #9747). Nested in the frame of a bucket add or drop, the outermost frame saves.
+    return schema.<Boolean>recordFileChanges(() -> this.needsRepartition.compareAndSet(!needsRepartition, needsRepartition));
   }
 
   /**
@@ -1370,21 +1367,31 @@ public class LocalDocumentType implements DocumentType {
     lastRepartitionWarnMs.set(value);
   }
 
+  /**
+   * Persists the strategy (issue #5637) by assigning it inside one schema recording session, which saves
+   * {@code schema.json} and, under HA, ships it to the followers. The bare save this method used to end with rewrote the
+   * leader's file only, so a partitioned type stayed round-robin on every follower, and on the node that became leader
+   * after a failover (issue #9747). While the schema is read back the value assigned is the one just read, and nothing
+   * is saved.
+   * <p>
+   * The session saves even when the strategy is unchanged, on purpose: re-issuing the same
+   * {@code ALTER TYPE ... BucketSelectionStrategy} is the operator's way of forcing the in-memory strategy back onto
+   * disk after a save that failed (saveConfiguration() logs an IOException and returns), and a skip-if-unchanged guard
+   * would turn that repair into a silent no-op.
+   */
   @Override
   public DocumentType setBucketSelectionStrategy(final BucketSelectionStrategy selectionStrategy) {
-    return setBucketSelectionStrategy(selectionStrategy, true);
+    checkForSchemaMutation();
+    if (schema.isReadingFromFile())
+      return applyBucketSelectionStrategy(selectionStrategy);
+    return recordFileChanges(() -> applyBucketSelectionStrategy(selectionStrategy));
   }
 
   /**
-   * @param persistOnItsOwn {@code false} for a caller that is already inside a {@link LocalSchema#recordFileChanges}
-   *                        block, which saves the schema when it completes. That save carries the strategy just as
-   *                        this method's own would - the field is assigned before either runs - so persisting here
-   *                        as well would rewrite {@code schema.json} twice for one operation. Every caller that is
-   *                        the whole operation passes {@code true}: the point of issue #5637 is that this mutator
-   *                        must not depend on somebody else writing for it.
+   * Assigns the strategy without saving: the caller is either inside a {@link LocalSchema#recordFileChanges} block, which
+   * saves the schema when it completes, or the schema load.
    */
-  private DocumentType setBucketSelectionStrategy(final BucketSelectionStrategy selectionStrategy,
-      final boolean persistOnItsOwn) {
+  private DocumentType applyBucketSelectionStrategy(final BucketSelectionStrategy selectionStrategy) {
     checkForSchemaMutation();
     // Bind and vet the strategy BEFORE publishing it (issue #7119). The field is read lock-free by
     // getBucketIdByRecord/getBucketIndexByKeys, so assigning first would let a concurrent insert reach a strategy
@@ -1415,43 +1422,13 @@ public class LocalDocumentType implements DocumentType {
     // LocalSchema right after this call, and {@code hasAnyRecord()} would walk every bucket
     // and call {@code count()} (per-bucket I/O) producing a value that's about to be
     // overwritten anyway.
-    boolean alreadySaved = false;
     if (!schema.isReadingFromFile()
         && selectionStrategy instanceof PartitionedBucketSelectionStrategy newPartitioned
         && partitionShapeChanged(previous, newPartitioned)
         && hasAnyRecord())
-      // Use the typed setter so the schema-save-on-transition contract fires consistently with
-      // every other site that mutates this flag. Direct field assignment would only work because
-      // the wrapping DDL happens to save the schema afterward; relying on that is brittle.
-      // Its answer says whether that contract already wrote the file, which is the same write the
-      // block below would make - the strategy field was assigned before this, so the flag's save
-      // carries it. Only a real transition saves, so this stays false when the flag was already set.
-      alreadySaved = setNeedsRepartition(true);
-
-    // Persist the strategy itself (issue #5637). This is the one schema mutator that used to leave the write to
-    // somebody else - every sibling either calls saveConfiguration() directly (setAliases, LocalProperty's setters)
-    // or goes through recordFileChanges, which calls it - so a type partitioned by `ALTER TYPE ...
-    // BucketSelectionStrategy` and nothing else reopened as round-robin. That is worse than an unsuitable partition
-    // being accepted: a correctly configured type lost its pruning across a restart AND started placing new records
-    // round-robin among rows the partition hash had placed, with nothing said anywhere. The flag ABOUT the
-    // partitioning persisted (see setNeedsRepartition above) while the partitioning did not.
-    //
-    // Skipped while the schema is being read back, where the value being assigned is the one just read from
-    // schema.json: saveConfiguration() would only mark the schema dirty, and LocalSchema flushes that at the end of
-    // load, rewriting an identical file on every single open of any partitioned database.
-    //
-    // Deliberately NOT also skipped when the new strategy is equivalent to the previous one, which several sibling
-    // mutators do guard on. Re-issuing the same `ALTER TYPE ... BucketSelectionStrategy` is the operator's way of
-    // forcing the in-memory strategy back onto disk, and the two can genuinely diverge: saveConfiguration() reports
-    // an IOException by logging SEVERE and returning, so a transient disk failure leaves a type partitioned in
-    // memory and round-robin in schema.json - exactly the shape this issue is about. A skip-if-unchanged guard would
-    // read the in-memory value, conclude nothing changed, and turn that repair into a silent no-op. The cost of not
-    // guarding is one rewrite of schema.json per redundant DDL statement, on a path measured in statements per
-    // database lifetime. What IS skipped are two writes that would be redundant within one operation rather than
-    // across two DDL statements: the one the needsRepartition flip just made in this same call, and the one an
-    // enclosing recordFileChanges block is going to make on its way out (see persistOnItsOwn).
-    if (!schema.isReadingFromFile() && !alreadySaved && persistOnItsOwn)
-      schema.saveConfiguration();
+      // The typed setter, so the flag moves the same way at every site that mutates it. Nested in the enclosing
+      // recording session, which saves it with the strategy.
+      setNeedsRepartition(true);
 
     return this;
   }
@@ -2745,7 +2722,7 @@ public class LocalDocumentType implements DocumentType {
     // Neither is a CommandParsingException, so the HTTP status is unchanged too. (AlterTypeStatement's one catch
     // names both, but it guards the BucketSelectionStrategy branch, not this.)
     if (!superType.getBucketSelectionStrategy().getName().equalsIgnoreCase(getBucketSelectionStrategy().getName()))
-      setBucketSelectionStrategy(superType.getBucketSelectionStrategy().copy(), false);
+      applyBucketSelectionStrategy(superType.getBucketSelectionStrategy().copy());
   }
 
   /**

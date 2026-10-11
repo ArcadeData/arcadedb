@@ -334,9 +334,17 @@ public class LocalTimeSeriesType extends LocalDocumentType implements TimeSeries
     return downsamplingTiers;
   }
 
+  /**
+   * Inside a schema recording session, which saves {@code schema.json} and, under HA, ships it to the followers: the
+   * bare save {@code ALTER TIMESERIES TYPE} used to follow this with rewrote the leader's file only (issue #9747).
+   */
   public void setDownsamplingTiers(final List<DownsamplingTier> tiers) {
     checkForSchemaMutation();
-    this.downsamplingTiers = tiers != null ? List.copyOf(tiers) : List.of();
+    final List<DownsamplingTier> newTiers = tiers != null ? List.copyOf(tiers) : List.of();
+    recordFileChanges(() -> {
+      this.downsamplingTiers = newTiers;
+      return null;
+    });
   }
 
   @Override
