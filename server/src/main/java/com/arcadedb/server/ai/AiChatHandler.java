@@ -31,12 +31,12 @@ import com.arcadedb.server.http.handler.ExecutionResponse;
 import com.arcadedb.server.info.SchemaInfo;
 import com.arcadedb.server.info.ServerInfo;
 import com.arcadedb.server.security.ServerSecurityUser;
+import com.arcadedb.server.support.SupportLineReader;
 import com.arcadedb.server.support.SupportPortalClient;
 import com.arcadedb.server.support.SupportPortalException;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.util.HttpString;
 
-import java.io.BufferedReader;
 import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
@@ -98,6 +98,22 @@ public class AiChatHandler extends AbstractServerHttpHandler {
    * relies on the module's tests not running in parallel.
    */
   static volatile long streamSilenceMs = 5 * 60_000L;
+
+  /**
+   * The most of a buffered answer of the gateway that is read, body of a refusal included: the request deadline bounds the time,
+   * not the bytes, and 120 seconds of bytes on a LAN is no bound on a heap (issue #9627). Same cap as the support calls to the
+   * portal. Mutable and package-private only so a test can shorten it; JVM-wide, so such a test restores it afterwards.
+   */
+  static volatile long maxResponseBytes = SupportPortalClient.MAX_RESPONSE_BYTES;
+
+  /** The most of a refusal's body that is read on a streamed call, as {@link SupportPortalClient#openStream} does. */
+  static final int MAX_ERROR_BODY_BYTES = 64 * 1024;
+
+  /** A buffered answer of the gateway, cancelled once it exceeds {@link #maxResponseBytes}. */
+  static HttpResponse.BodyHandler<String> limitedBody() {
+    final long max = maxResponseBytes;
+    return info -> new SupportPortalClient.LimitedStringBody(max, "The AI gateway");
+  }
 
   private static final byte[] HEARTBEAT_FRAME = ": keepalive\n\n".getBytes(StandardCharsets.UTF_8);
 
@@ -290,7 +306,7 @@ public class AiChatHandler extends AbstractServerHttpHandler {
 
     if (response.statusCode() == 401 || response.statusCode() == 403) {
       try (InputStream body = responseBody) {
-        final String bodyStr = new String(body.readAllBytes(), StandardCharsets.UTF_8);
+        final String bodyStr = new String(body.readNBytes(MAX_ERROR_BODY_BYTES), StandardCharsets.UTF_8);
         final JSONObject errBody = new JSONObject(bodyStr);
         final String code = errBody.getString("code", "token_invalid");
         final String errorMsg = errBody.getString("error", "Invalid or expired subscription token");
@@ -303,7 +319,7 @@ public class AiChatHandler extends AbstractServerHttpHandler {
 
     if (response.statusCode() != 200) {
       try (InputStream body = responseBody) {
-        final String bodyStr = new String(body.readAllBytes(), StandardCharsets.UTF_8);
+        final String bodyStr = new String(body.readNBytes(MAX_ERROR_BODY_BYTES), StandardCharsets.UTF_8);
         throw new RuntimeException("Gateway returned status " + response.statusCode() + ": " + bodyStr);
       }
     }
@@ -321,7 +337,9 @@ public class AiChatHandler extends AbstractServerHttpHandler {
     boolean finished = false;
 
     try (InputStream body = responseBody;
-         BufferedReader reader = new BufferedReader(new InputStreamReader(body, StandardCharsets.UTF_8))) {
+         InputStreamReader input = new InputStreamReader(body, StandardCharsets.UTF_8)) {
+      // Each line capped (issue #9627): the silence bound does not end a gateway that keeps sending without a newline
+      final SupportLineReader reader = SupportLineReader.failingOver(input, AiPortalChat.maxEventChars);
       String line;
       while ((line = reader.readLine()) != null) {
         if (line.startsWith(":")) {
@@ -696,7 +714,7 @@ public class AiChatHandler extends AbstractServerHttpHandler {
           .POST(HttpRequest.BodyPublishers.ofString(body.toString()))
           .timeout(Duration.ofMillis(toolResultTimeoutMs))
           .build();
-      final HttpResponse<String> resp = BoundedHttpExchange.send(HTTP_CLIENT, req, HttpResponse.BodyHandlers.ofString(),
+      final HttpResponse<String> resp = BoundedHttpExchange.send(HTTP_CLIENT, req, limitedBody(),
           toolResultTimeoutMs);
       if (resp.statusCode() != 200) {
         LogManager.instance().log(this, Level.WARNING,
@@ -759,8 +777,7 @@ public class AiChatHandler extends AbstractServerHttpHandler {
         .timeout(Duration.ofMillis(gatewayTimeoutMs))//
         .build();
 
-    final HttpResponse<String> response = BoundedHttpExchange.send(HTTP_CLIENT, request,
-        HttpResponse.BodyHandlers.ofString(), gatewayTimeoutMs);
+    final HttpResponse<String> response = BoundedHttpExchange.send(HTTP_CLIENT, request, limitedBody(), gatewayTimeoutMs);
 
     if (response.statusCode() == 401 || response.statusCode() == 403) {
       // Parse the gateway error to get the specific code (token_invalid, token_expired, etc.)

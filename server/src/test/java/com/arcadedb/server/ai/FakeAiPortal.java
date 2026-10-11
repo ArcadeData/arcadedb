@@ -29,10 +29,12 @@ import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
 
 /**
@@ -60,6 +62,10 @@ final class FakeAiPortal implements AutoCloseable {
   volatile Function<JSONObject, List<JSONObject>> script = body -> answer("hello", List.of());
   /** True when the stream has to be cut after its first line (no done). */
   volatile boolean cutStream;
+  /** Bytes of one line without a newline the stream sends before the script's envelopes (issue #9627), 0 for none. */
+  volatile long newlineFreeBytes;
+  /** How many of {@link #newlineFreeBytes} the reader took before it closed the stream. */
+  final AtomicLong newlineFreeBytesSent = new AtomicLong();
 
   private final Undertow server;
 
@@ -172,6 +178,16 @@ final class FakeAiPortal implements AutoCloseable {
       exchange.getResponseHeaders().put(new HttpString("Content-Type"), "application/x-ndjson");
       exchange.startBlocking();
       final List<JSONObject> lines = script.apply(turn);
+      if (newlineFreeBytes > 0) {
+        final byte[] chunk = new byte[64 * 1024];
+        Arrays.fill(chunk, (byte) 'a');
+        for (long left = newlineFreeBytes; left > 0; left -= chunk.length) {
+          final int n = (int) Math.min(chunk.length, left);
+          exchange.getOutputStream().write(chunk, 0, n);
+          newlineFreeBytesSent.addAndGet(n);
+        }
+        exchange.getOutputStream().write('\n');
+      }
       long seq = 1;
       for (final JSONObject line : lines) {
         line.put("seq", seq++);

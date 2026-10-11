@@ -102,7 +102,7 @@ public class AiActivateHandler extends AbstractServerHttpHandler {
           .build();
 
       final HttpResponse<String> response = BoundedHttpExchange.send(HTTP_CLIENT, request,
-          HttpResponse.BodyHandlers.ofString(), gatewayTimeoutMs);
+          AiChatHandler.limitedBody(), gatewayTimeoutMs);
 
       if (response.statusCode() != 200) {
         String errorMsg = "Activation failed";

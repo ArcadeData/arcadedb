@@ -305,4 +305,40 @@ class AiPortalChatTest {
     assertThat(client.stop("turn-9")).isTrue();
     assertThat(portal.stops).containsExactly("turn-9");
   }
+
+  /**
+   * Issue #9627: the turn was read with {@code BufferedReader.readLine()}, which accumulates a line until it meets a newline, and
+   * the silence bound does not end a stream that keeps sending. A portal that streams a line without one filled the heap. The line
+   * is now capped: an over-long one ends the turn as a portal error, and the stream is closed instead of being read to its end.
+   */
+  @Test
+  void aTurnLineLongerThanTheCapEndsTheTurnInsteadOfFillingTheHeap() {
+    final long sent = 32L * 1024 * 1024;
+    portal.newlineFreeBytes = sent;
+    final int saved = AiPortalChat.maxEventChars;
+    AiPortalChat.maxEventChars = 64 * 1024;
+    try {
+      assertThatThrownBy(() -> new AiPortalChat(client, 5_000).run(request(), new RecordingTools(), sink))
+          .isInstanceOf(SupportPortalException.class)
+          .satisfies(e -> assertThat(((SupportPortalException) e).getCode()).isEqualTo("portal_error"))
+          .hasMessageContaining("longer than");
+    } finally {
+      AiPortalChat.maxEventChars = saved;
+    }
+    // The reader closed the stream at the cap: the portal could not deliver the rest of the line
+    assertThat(portal.newlineFreeBytesSent.get()).isLessThan(sent / 2);
+  }
+
+  @Test
+  void aTurnLineUpToTheCapIsReadAsBefore() throws IOException {
+    portal.script = body -> FakeAiPortal.answer("x".repeat(10_000), List.of());
+    final int saved = AiPortalChat.maxEventChars;
+    AiPortalChat.maxEventChars = 64 * 1024;
+    try {
+      final AiPortalChat.Answer answer = new AiPortalChat(client, 5_000).run(request(), new RecordingTools(), sink);
+      assertThat(answer.response()).hasSize(10_000);
+    } finally {
+      AiPortalChat.maxEventChars = saved;
+    }
+  }
 }
