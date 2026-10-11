@@ -155,6 +155,16 @@ public interface GraphTraversalProvider {
   }
 
   /**
+   * The numbering the dense node IDs belong to: the same object, by identity, for as long as every ID handed out keeps
+   * naming the same record. A rebuild that numbers the nodes afresh answers a different one; IDs appended for new
+   * vertices keep it. A walk that spans time - a result streamed in rounds - compares it before handing out what it read,
+   * so it never mixes IDs of two numberings, which would answer the wrong records without failing (issue #9738).
+   */
+  default Object getNodeIdSpace() {
+    return this;
+  }
+
+  /**
    * Returns neighbor dense node IDs for a given node, direction, and edge types.
    * This is the primary acceleration method — O(1) array access vs O(n) linked list traversal.
    */

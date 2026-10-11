@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.graph.GraphBatch;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
@@ -39,6 +40,7 @@ import java.util.Random;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression test for GitHub issue #9738: with a Graph Analytical View, {@code MATCH (a)-[:K]->(b)-[:K]->(c) RETURN
@@ -55,6 +57,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class Issue9738GAVFusedChainCountTest {
   private static final String DB_PATH  = "./target/databases/issue-9738-gav-fused-count";
   private static final String TWO_HOPS = "MATCH (a:P)-[:K]->(b:P)-[:K]->(c:P) ";
+  private static final String MIXED    = "MATCH (a:P)-[:K]->(b:P)-[:L]->(c:P) ";
   private static final long   MB       = 1024L * 1024L;
 
   private Database database;
@@ -155,6 +158,18 @@ class Issue9738GAVFusedChainCountTest {
         "MATCH (a:P)-[:K]-(b:P)-[:K]-(c:P) RETURN count(*) AS n",//
         "MATCH (a:P)-[r1:K]->(b:P)-[r2:K]->(c:P) RETURN count(*) AS n",//
         "MATCH (a:P)-[:K]->(b:P)<-[:K]-(c:P) RETURN count(*) AS n",//
+        // Two edge types: no relationship to keep apart, the hops walk their slices untracked
+        MIXED + "RETURN count(*) AS n",//
+        MIXED + "WITH b, count(*) AS n RETURN b.pid AS b, n ORDER BY b",//
+        MIXED + "RETURN a, b, count(*) AS n ORDER BY a.pid, b.pid",//
+        MIXED + "RETURN c, count(*) AS n ORDER BY c.pid",//
+        MIXED + "WHERE c.pid > 10 RETURN count(*) AS n",//
+        "MATCH (a:P)-[:K]->(b:P)-[:L]->(c:Q) RETURN count(*) AS n",//
+        "MATCH (a:P)-[:K]->(b:P)-[:L]-(c:P) RETURN count(*) AS n",//
+        "MATCH (a:P)-[:L]->(b:P)<-[:L]-(c:P) RETURN count(*) AS n",//
+        "MATCH (a:P)-[:K]->(b:P) MATCH (b)-[:L]->(c:P) RETURN count(*) AS n",//
+        "MATCH (a:P)-[:K]->(b:P)-[:K]->(c:P)-[:L]->(d:P) RETURN a, count(*) AS n ORDER BY a.pid",//
+        MIXED + "RETURN a.pid AS a, b.pid AS b, c.pid AS c ORDER BY a, b, c",//
         TWO_HOPS + "RETURN a.pid AS a, count(*) AS n ORDER BY a",//
         TWO_HOPS + "RETURN a, count(*) AS n ORDER BY n DESC, a.pid LIMIT 5",//
         TWO_HOPS + "RETURN a.pid AS a, c.pid AS c, count(*) AS n ORDER BY a, c",//
@@ -183,6 +198,10 @@ class Issue9738GAVFusedChainCountTest {
       assertThat(rows(queries.get(i))).as(queries.get(i)).isEqualTo(expected.get(i));
     assertThat(plan(TWO_HOPS + "RETURN count(*) AS n")).contains("fused count(*)");
     assertThat(plan(TWO_HOPS + "RETURN count(c.name) AS n")).doesNotContain("fused count");
+    // Two edge types keep no relationship apart: the fused count walks untracked hops (an ungrouped count of that shape
+    // never reaches the chain, the CSR count push-down answers it first)
+    assertThat(plan(MIXED + "RETURN a, b, count(*) AS n")).contains("fused count(*) AS n BY a, b")
+        .doesNotContain("unique relationships");
     assertThat(plan(TWO_HOPS + "WITH count(*) AS n RETURN n")).contains("fused count(*) AS n");
     assertThat(plan(TWO_HOPS + "RETURN a, count(*) AS n")).contains("fused count(*) AS n BY a");
     // The chain feeds a projection, not the aggregation
@@ -204,9 +223,41 @@ class Issue9738GAVFusedChainCountTest {
   }
 
   @Test
+  void aRebuildWhileTheRowsStreamFailsTheQueryInsteadOfMixingNumberings() {
+    // 2,000 x 10 x 10 = 200,000 paths: many rounds of the single walker
+    buildGraph(2_000, 10);
+    createView();
+    final String query = TWO_HOPS + "RETURN a, c";
+    assertThat(plan(query)).contains("GAVFusedChain");
+
+    long rows = 0;
+    try (final ResultSet rs = database.query("opencypher", query)) {
+      assertThat(rs.hasNext()).isTrue();
+      rs.next();
+      ++rows;
+      // A rebuild numbers the nodes afresh: the walk's IDs would name other records in the new numbering
+      database.command("sql", "REBUILD GRAPH ANALYTICAL VIEW v9738");
+      assertThat(GraphAnalyticalViewRegistry.get(database, "v9738").awaitReady(60, TimeUnit.SECONDS)).isTrue();
+      assertThatThrownBy(() -> {
+        long served = 0;
+        while (rs.hasNext()) {
+          rs.next();
+          ++served;
+        }
+        // Reached only when every row of the walk was buffered before the rebuild
+        throw new AssertionError(served + " more rows served across the rebuild");
+      }).isInstanceOf(NeedRetryException.class).hasMessageContaining("rebuilt");
+    }
+
+    // Run again, the query answers from the new numbering
+    assertThat(scalar(TWO_HOPS + "RETURN count(*) AS n", "n")).isEqualTo(twoHopPaths());
+    assertThat(rows).isEqualTo(1);
+  }
+
+  @Test
   void sourcesTheViewDoesNotMapAreCountedOnTheirRecords() {
     buildSmallGraph();
-    database.command("sql", "CREATE GRAPH ANALYTICAL VIEW v9738 VERTEX TYPES (P, Q) EDGE TYPES (K) PROPERTIES (pid) "
+    database.command("sql", "CREATE GRAPH ANALYTICAL VIEW v9738 VERTEX TYPES (P, Q) EDGE TYPES (K, L) PROPERTIES (pid) "
         + "UPDATE MODE OFF");
     final GraphAnalyticalView view = GraphAnalyticalViewRegistry.get(database, "v9738");
     assertThat(view.awaitReady(60, TimeUnit.SECONDS)).isTrue();
@@ -285,6 +336,13 @@ class Issue9738GAVFusedChainCountTest {
       vertices[5].newEdge("K", vertices[5]);
       vertices[6].newEdge("K", vertices[8]);
       vertices[6].newEdge("K", vertices[8]);
+      // A second type, so a chain mixing the two has no relationship to keep apart: its last hop is counted whole
+      for (int i = 0; i < vertices.length; i += 2)
+        for (int k = 0; k < 3; k++)
+          vertices[i].newEdge("L", vertices[random.nextInt(vertices.length)]);
+      vertices[8].newEdge("L", vertices[8]);
+      vertices[8].newEdge("L", vertices[9]);
+      vertices[8].newEdge("L", vertices[9]);
     });
   }
 
@@ -296,10 +354,11 @@ class Issue9738GAVFusedChainCountTest {
     database.getSchema().createVertexType("P");
     database.getSchema().createVertexType("Q").addSuperType("P");
     database.getSchema().createEdgeType("K");
+    database.getSchema().createEdgeType("L");
   }
 
   private void createView() {
-    database.command("sql", "CREATE GRAPH ANALYTICAL VIEW v9738 VERTEX TYPES (P, Q) EDGE TYPES (K) PROPERTIES (pid) "
+    database.command("sql", "CREATE GRAPH ANALYTICAL VIEW v9738 VERTEX TYPES (P, Q) EDGE TYPES (K, L) PROPERTIES (pid) "
         + "UPDATE MODE SYNCHRONOUS");
     final GraphAnalyticalView view = GraphAnalyticalViewRegistry.get(database, "v9738");
     assertThat(view.awaitReady(60, TimeUnit.SECONDS)).isTrue();

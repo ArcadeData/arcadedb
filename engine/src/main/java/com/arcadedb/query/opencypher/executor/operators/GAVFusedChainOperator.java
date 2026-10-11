@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher.executor.operators;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.graph.GAVVertex;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.NeighborView;
@@ -177,6 +178,8 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
     // Built once on the calling thread and handed to the workers: reading the deadline from the shared context
     // inside each chunk would have every worker race to publish the same lazily-computed value (issue #6266).
     final WorkGuard guard = WorkGuard.forCommandDeadline(context);
+    // Taken before any node ID is read: every ID of this execution must belong to this numbering
+    final Object nodeIdSpace = provider.getNodeIdSpace();
     final ResultSet inputResults = child.execute(context, nRecords);
     final Database db = context.getDatabase();
     final int chainLength = hopDirections.length;
@@ -228,7 +231,7 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
     // If fused aggregation is enabled, use the parallel aggregating path
     if (groupKeyVariables != null)
       return executeWithFusedAggregation(sourceNodeIds, totalSources, parallelism, chunkSize,
-          hopViews, trackedTypes, chainLength, db, context, guard, unmappedRows);
+          hopViews, trackedTypes, chainLength, db, context, guard, unmappedRows, nodeIdSpace);
 
     // One walker per thread, each over a contiguous slice of the sources, resumed round after round (issue #9738)
     final int walkerCount = totalSources < PARALLEL_THRESHOLD ? 1 :
@@ -237,9 +240,9 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
     for (int t = 0; t < walkerCount; t++) {
       final int start = walkerCount == 1 ? 0 : Math.min(t * chunkSize, totalSources);
       final int end = walkerCount == 1 ? totalSources : Math.min(start + chunkSize, totalSources);
-      walkers[t] = new ChainWalker(sourceNodeIds, start, end, hopViews, trackedTypes, chainLength, guard, false);
+      walkers[t] = new ChainWalker(sourceNodeIds, start, end, hopViews, trackedTypes, chainLength, guard);
     }
-    return new StreamingRows(walkers, outputNames, db, context, unmappedRows);
+    return new StreamingRows(walkers, outputNames, db, context, unmappedRows, nodeIdSpace);
   }
 
   /**
@@ -247,7 +250,13 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
    * {@link #ROWS_PER_ROUND} paths, in parallel when there is more than one, and the rows are handed out before the next
    * round starts. The heap the rows take is bounded by one round, whatever the number of paths, and a consumer that
    * stops early (a LIMIT) stops the walk with it (issue #9738). Between two rounds no task is in flight, so a result set
-   * that is abandoned without being closed holds no worker. With one walker the rows come in source order.
+   * that is abandoned without being closed holds no worker.
+   * <p>
+   * The bound is per walker: a round holds at most {@code walkers x ROWS_PER_ROUND} rows. Every walker does the same
+   * amount of work per round, whatever the degrees of its sources, so a skewed slice does not leave the others idle
+   * until it ends; only its last round is shorter. With one walker the rows come in source order; with several they
+   * interleave round by round, which no consumer relies on (Cypher rows have no order without ORDER BY, and the planner
+   * never answers an ORDER BY from the index order through a fused chain).
    */
   private final class StreamingRows implements ResultSet {
     private final ChainWalker[]  walkers;
@@ -256,6 +265,7 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
     private final String[]       outputNames;
     private final Database       database;
     private final CommandContext context;
+    private final Object         nodeIdSpace;
     private       List<Result>   unmappedRows;
     private       int            unfinished;
     private       int            buffer;
@@ -263,13 +273,14 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
 
     @SuppressWarnings("unchecked")
     private StreamingRows(final ChainWalker[] walkers, final String[] outputNames, final Database database,
-        final CommandContext context, final List<Result> unmappedRows) {
+        final CommandContext context, final List<Result> unmappedRows, final Object nodeIdSpace) {
       this.walkers = walkers;
       this.buffers = new List[walkers.length];
       this.finished = new boolean[walkers.length];
       this.outputNames = outputNames;
       this.database = database;
       this.context = context;
+      this.nodeIdSpace = nodeIdSpace;
       this.unmappedRows = unmappedRows;
       this.unfinished = walkers.length;
       for (int t = 0; t < walkers.length; t++)
@@ -283,7 +294,8 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
         if (unfinished > 0)
           walkRound();
         else if (unmappedRows != null && !unmappedRows.isEmpty()) {
-          // The sources the view does not map come last, as one more buffer
+          // The sources the view does not map come last, as one more buffer. Slot 0 is free to take it: every walker
+          // has finished, so no round will write its buffer again, and every buffer was drained to get here
           buffers[0] = unmappedRows;
           unmappedRows = null;
           buffer = 0;
@@ -317,8 +329,8 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
     public void close() {
       unfinished = 0;
       unmappedRows = null;
-      for (int t = 0; t < buffers.length; t++)
-        buffers[t] = new ArrayList<>(0);
+      // Never read again (buffer is past the last one), so the rows go now rather than with the result set
+      Arrays.fill(buffers, List.of());
       buffer = buffers.length;
     }
 
@@ -360,6 +372,8 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
         // queued, so the caller never parks behind busy workers.
         GraphAlgorithms.awaitFutures(futures, launched);
       }
+      // The walkers resume on the node IDs the rounds before read: a rebuild in between numbered the nodes afresh
+      checkNodeIdSpace(nodeIdSpace);
       unfinished = 0;
       for (final boolean done : finished)
         if (!done)
@@ -371,7 +385,7 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
     private void walkSlice(final int walker) {
       final List<Result> output = buffers[walker];
       finished[walker] = walkers[walker].walk(ROWS_PER_ROUND,
-          (stackNodeId, paths) -> emitResult(stackNodeId, outputNames, database, context, output));
+          stackNodeId -> emitResult(stackNodeId, outputNames, database, context, output));
     }
   }
 
@@ -387,7 +401,7 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
   private ResultSet executeWithFusedAggregation(final int[] sourceNodeIds, final int totalSources,
       final int parallelism, final int chunkSize, final NeighborView[] hopViews, final TrackedTypes trackedTypes,
       final int chainLength, final Database db, final CommandContext context, final WorkGuard guard,
-      final List<Result> unmappedRows) {
+      final List<Result> unmappedRows, final Object nodeIdSpace) {
 
     // Resolve which nodeId slot each group key variable maps to:
     // sourceVariable = slot 0, hopTargetVariables[i] = slot i+1
@@ -438,6 +452,7 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
       // #6568: and it reclaims a still-queued chunk instead of parking on it - see the note on the row path.
       GraphAlgorithms.awaitFutures(futures, launched);
     }
+    checkNodeIdSpace(nodeIdSpace);
 
     if (!grouped) {
       // The sources the view does not map were expanded and filtered already: each of their rows is one path
@@ -523,6 +538,17 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
   }
 
   /**
+   * Refuses what a walk read when the provider numbered its nodes afresh since the walk started: the walk's node IDs,
+   * read in the old numbering, would be answered by the new one as other records, and its labels, RIDs and counts would
+   * be wrong without any error. The query is safe to run again, on the new numbering.
+   */
+  private void checkNodeIdSpace(final Object nodeIdSpace) {
+    if (provider.getNodeIdSpace() != nodeIdSpace)
+      throw new NeedRetryException("Graph Analytical View '" + provider.getName()
+          + "' was rebuilt while the query walked it: run the query again");
+  }
+
+  /**
    * Expands the sources the view does not map through a fresh copy of the hops this chain replaced, which walk their
    * edge records, and applies the filter pushed into the chain. The copies enforce relationship uniqueness with the
    * same labels the fused walk compares (issue #8394).
@@ -554,10 +580,6 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
   /**
    * Aggregating DFS for a chunk of sources. Pure int operations — zero object allocation
    * during traversal. Counts are accumulated in the thread-local map, or in {@code totals[slot]} with no grouping key.
-   * <p>
-   * When nothing reads the last hop's target - no grouping key on it, no filter, no label, no relationship to keep
-   * apart from the others, no self-loop to take once - every entry of its adjacency slice is one path, and the slice is
-   * counted whole instead of walked.
    */
   private void aggregateChunk(final int[] sourceNodeIds, final int start, final int end,
       final NeighborView[] hopViews, final TrackedTypes trackedTypes, final int chainLength, final int[] groupKeySlots,
@@ -576,16 +598,9 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
       filterResult = null;
     }
 
-    final int last = chainLength - 1;
-    boolean countLastHopWhole = pushedFilter == null && hopTargetBucketIds[last] == null
-        && (hopTracked == null || !hopTracked[last]) && hopDirections[last] != Vertex.DIRECTION.BOTH;
-    for (final int groupKeySlot : groupKeySlots)
-      if (groupKeySlot == chainLength)
-        countLastHopWhole = false;
-
     final long[] total = new long[1];
-    new ChainWalker(sourceNodeIds, start, end, hopViews, trackedTypes, chainLength, guard, countLastHopWhole)
-        .walk(Long.MAX_VALUE, (stackNodeId, paths) -> {
+    new ChainWalker(sourceNodeIds, start, end, hopViews, trackedTypes, chainLength, guard)
+        .walk(Long.MAX_VALUE, stackNodeId -> {
           // Evaluate pushed filter using reusable GAVResult — only nodeId updated per path
           if (filterResult != null) {
             int filterSlot = 0;
@@ -599,7 +614,7 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
           }
 
           if (counts == null) {
-            total[0] += paths;
+            ++total[0];
             return;
           }
 
@@ -611,22 +626,15 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
             packedKey = stackNodeId[groupKeySlots[0]];
 
           // Increment count — zero boxing, zero allocation (primitive long → long)
-          if (paths == 1)
-            counts.increment(packedKey);
-          else
-            counts.add(packedKey, paths);
+          counts.increment(packedKey);
         });
     totals[slot] = total[0];
   }
 
-  /**
-   * Receives complete paths: {@code stackNodeId[0]} is the source, {@code stackNodeId[i + 1]} the target of hop i. When a
-   * walker counts its last hop whole, one call stands for {@code paths} paths that differ only in the last target, which
-   * is then not set.
-   */
+  /** Receives every complete path: {@code stackNodeId[0]} is the source, {@code stackNodeId[i + 1]} the target of hop i. */
   @FunctionalInterface
   private interface PathVisitor {
-    void visit(int[] stackNodeId, int paths);
+    void visit(int[] stackNodeId);
   }
 
   /**
@@ -641,7 +649,6 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
     private final NeighborView[]   hopViews;
     private final int              chainLength;
     private final WorkGuard        guard;
-    private final boolean          countLastHopWhole;
     // Per-walker DFS stack (allocated once, reused across all sources of the slice)
     private final int[]            stackNodeId;
     private final int[]            stackCursor;
@@ -658,14 +665,13 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
     private       int              steps;
 
     private ChainWalker(final int[] sourceNodeIds, final int start, final int end, final NeighborView[] hopViews,
-        final TrackedTypes trackedTypes, final int chainLength, final WorkGuard guard, final boolean countLastHopWhole) {
+        final TrackedTypes trackedTypes, final int chainLength, final WorkGuard guard) {
       this.sourceNodeIds = sourceNodeIds;
       this.next = start;
       this.end = end;
       this.hopViews = hopViews;
       this.chainLength = chainLength;
       this.guard = guard;
-      this.countLastHopWhole = countLastHopWhole;
       this.stackNodeId = new int[chainLength + 1];
       this.stackCursor = new int[chainLength];
       this.stackEnd = new int[chainLength];
@@ -675,24 +681,23 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
     }
 
     /**
-     * Walks until the visitor was called {@code maxVisits} times or the slice is exhausted.
+     * Walks until {@code maxPaths} paths were visited or the slice is exhausted.
      *
      * @return true once every path of the slice was visited
      */
-    private boolean walk(final long maxVisits, final PathVisitor visitor) {
-      long visits = 0;
+    private boolean walk(final long maxPaths, final PathVisitor visitor) {
+      long paths = 0;
       while (true) {
         if (depth < 0) {
           if (next >= end)
             return true;
-          if (visits >= maxVisits)
+          if (paths >= maxPaths)
             return false;
           guard.check();
           final int sourceNodeId = sourceNodeIds[next++];
           stackNodeId[0] = sourceNodeId;
           depth = 0;
-          if (enterHop(sourceNodeId, visitor))
-            ++visits;
+          initHop(hopViews, fallbackNeighbors, tracked, stackCursor, stackEnd, selfLoopEntries, 0, sourceNodeId);
           continue;
         }
 
@@ -739,34 +744,15 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
         stackNodeId[depth + 1] = neighborId;
 
         if (depth == chainLength - 1) {
-          visitor.visit(stackNodeId, 1);
+          visitor.visit(stackNodeId);
           stackCursor[depth]++;
-          if (++visits >= maxVisits)
+          if (++paths >= maxPaths)
             return false;
         } else {
           depth++;
-          if (enterHop(neighborId, visitor) && ++visits >= maxVisits)
-            return false;
+          initHop(hopViews, fallbackNeighbors, tracked, stackCursor, stackEnd, selfLoopEntries, depth, neighborId);
         }
       }
-    }
-
-    /**
-     * Positions hop {@code depth} on the adjacency of {@code nodeId}. A last hop counted whole is visited and left at
-     * once: the cursor is moved to the end of its slice.
-     *
-     * @return true when the visitor was called
-     */
-    private boolean enterHop(final int nodeId, final PathVisitor visitor) {
-      initHop(hopViews, fallbackNeighbors, tracked, stackCursor, stackEnd, selfLoopEntries, depth, nodeId);
-      if (!countLastHopWhole || depth != chainLength - 1)
-        return false;
-      final int paths = stackEnd[depth] - stackCursor[depth];
-      stackCursor[depth] = stackEnd[depth];
-      if (paths <= 0)
-        return false;
-      visitor.visit(stackNodeId, paths);
-      return true;
     }
   }
 
