@@ -41,6 +41,7 @@ import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * Regression test for GitHub issue #9738: with a Graph Analytical View, {@code MATCH (a)-[:K]->(b)-[:K]->(c) RETURN
@@ -72,6 +73,7 @@ class Issue9738GAVFusedChainCountTest {
 
   @Test
   void plainCountOverTwoHopsAllocatesNothingPerPath() {
+    assumeAllocationCounters();
     // 5,000 sources x 20 x 20 = 2,000,000 paths: one row per path costs well over 100 MB of allocations
     buildGraph(5_000, 20);
     createView();
@@ -89,6 +91,7 @@ class Issue9738GAVFusedChainCountTest {
 
   @Test
   void limitOverTwoHopsStopsWalkingOnceServed() {
+    assumeAllocationCounters();
     buildGraph(5_000, 20);
     createView();
     final String query = TWO_HOPS + "RETURN a, c LIMIT 10";
@@ -255,6 +258,27 @@ class Issue9738GAVFusedChainCountTest {
   }
 
   @Test
+  void bucketOfEveryNodeIsTheBucketOfItsRid() {
+    buildSmallGraph();
+    createView();
+    final GraphAnalyticalView view = GraphAnalyticalViewRegistry.get(database, "v9738");
+    final int built = view.getNodeIdUpperBound();
+    // Appended past the built mapping by the synchronous overlay
+    database.transaction(() -> {
+      for (int i = 0; i < 3; i++)
+        database.newVertex(i % 2 == 0 ? "Q" : "P").set("pid", 700 + i).save();
+    });
+    final int bound = view.getNodeIdUpperBound();
+    assertThat(bound).isGreaterThan(built);
+
+    // Past the bound too: no RID, no bucket
+    for (int nodeId = 0; nodeId < bound + 3; nodeId++) {
+      final RID rid = view.getRID(nodeId);
+      assertThat(view.getBucketId(nodeId)).as("node %d", nodeId).isEqualTo(rid != null ? rid.getBucketId() : -1);
+    }
+  }
+
+  @Test
   void sourcesTheViewDoesNotMapAreCountedOnTheirRecords() {
     buildSmallGraph();
     database.command("sql", "CREATE GRAPH ANALYTICAL VIEW v9738 VERTEX TYPES (P, Q) EDGE TYPES (K, L) PROPERTIES (pid) "
@@ -406,6 +430,12 @@ class Issue9738GAVFusedChainCountTest {
       }
     }
     return rows;
+  }
+
+  /** The allocation tests read the per-thread allocation counter of HotSpot-derived JVMs; elsewhere they are skipped. */
+  private static void assumeAllocationCounters() {
+    assumeTrue(ManagementFactory.getThreadMXBean() instanceof ThreadMXBean bean && bean.isThreadAllocatedMemorySupported()
+        && bean.isThreadAllocatedMemoryEnabled(), "per-thread allocation counters not available on this JVM");
   }
 
   private static long allocatedBytes() {

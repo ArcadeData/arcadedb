@@ -257,6 +257,10 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
    * until it ends; only its last round is shorter. With one walker the rows come in source order; with several they
    * interleave round by round, which no consumer relies on (Cypher rows have no order without ORDER BY, and the planner
    * never answers an ORDER BY from the index order through a fused chain).
+   * <p>
+   * A rebuild of the view between two rounds fails the next one with a {@link NeedRetryException} (see
+   * {@link #checkNodeIdSpace(Object)}): unlike a fused count, which is all or nothing, a consumer may by then hold the rows
+   * of the earlier rounds, which were read in one numbering and are right; only the rest of the walk is refused.
    */
   private final class StreamingRows implements ResultSet {
     private final ChainWalker[]  walkers;
@@ -372,6 +376,8 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
         // queued, so the caller never parks behind busy workers.
         GraphAlgorithms.awaitFutures(futures, launched);
       }
+      // finished[] and the buffers were written by the workers: Future.get() in awaitFutures, which also covers a slice
+      // reclaimed and run on this thread, is what makes those writes visible here.
       // The walkers resume on the node IDs the rounds before read: a rebuild in between numbered the nodes afresh
       checkNodeIdSpace(nodeIdSpace);
       unfinished = 0;
