@@ -240,6 +240,14 @@ class Issue9721TimeSeriesIntegralNullTest extends TestHelper {
   }
 
   @Test
+  void bitsPastTheLastSampleAreNotEncoded() throws Exception {
+    final long[] values = { 1, 2, 3 };
+    final byte[] tidy = Simple8bCodec.encode(values, new long[] { 0b010L });
+    assertThat(Simple8bCodec.encode(values, new long[] { 0b010L | (1L << 40) })).containsExactly(tidy);
+    assertThat(Simple8bCodec.nulls(tidy)).containsExactly(0b010L);
+  }
+
+  @Test
   void aCorruptNullableHeaderIsRefusedBeforeAnythingIsAllocated() {
     // the nullable marker followed by a count whose bitmap the buffer cannot hold: refused, not a 256 MB array or a wrapped size
     for (final int count : new int[] { Integer.MAX_VALUE, Integer.MAX_VALUE - 10, 1_000_000 }) {
