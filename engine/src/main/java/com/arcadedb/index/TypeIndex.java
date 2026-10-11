@@ -842,14 +842,15 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   /**
    * Whether {@code e}, raised by a read of {@code index}, is how the read fails when a concurrent DDL dropped or rebuilt the
    * index under it: an {@link IndexException}, or the page manager's "File with id n was not found" ({@link #isFileNotFound})
-   * once the index is no longer valid. A reader that has not returned anything yet can then read without the index (a scan,
+   * once the index is no longer valid or a drop of it is under way. A reader that has not returned anything yet can then read without the index (a scan,
    * or another index on the same properties) instead of failing (issues #9331, #9651). Any other exception is the caller's.
    */
   public static boolean isStaleRead(final Index index, final RuntimeException e) {
     if (e instanceof IndexException)
       return true;
+    // a drop under way removes the sub-index files while the index still answers as valid
     return e instanceof IllegalArgumentException iae && isFileNotFound(iae) && !(index instanceof TypeIndex typeIndex
-        && typeIndex.isValid());
+        && typeIndex.isValid() && !typeIndex.dropping);
   }
 
   /**

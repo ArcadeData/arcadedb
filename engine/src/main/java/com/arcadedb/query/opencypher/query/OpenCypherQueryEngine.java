@@ -1022,18 +1022,27 @@ public class OpenCypherQueryEngine implements QueryEngine {
         if (value == null || IsTypedExpression.conforms(value, cypherType))
           continue;
 
-        final DocumentType type = schema.getType(typeName);
-        for (final String undeclared : declared)
-          if (type.existsProperty(undeclared))
-            type.dropProperty(undeclared);
-        for (final String retyped : previous.keySet()) {
-          final JSONObject old = previous.getJSONObject(retyped);
-          retypeProperty(schema, typeName, type.getProperty(retyped),
-              new DeclaredType(Type.valueOf(old.getString("type")), old.getString("of", null), true));
-        }
-        throw new CommandExecutionException(
+        // the refusal is what the caller has to see: an undo step that fails is attached to it, never thrown in its place
+        final CommandExecutionException refusal = new CommandExecutionException(
             "Cannot require " + typeName + "." + propertyName + " IS :: " + cypherType + ": record " + document.getIdentity()
                 + " holds " + value + " (" + CypherFunctionHelper.cypherTypeName(value) + ")");
+        final DocumentType type = schema.getType(typeName);
+        for (final String undeclared : declared)
+          try {
+            if (type.existsProperty(undeclared))
+              type.dropProperty(undeclared);
+          } catch (final RuntimeException e) {
+            refusal.addSuppressed(e);
+          }
+        for (final String retyped : previous.keySet())
+          try {
+            final JSONObject old = previous.getJSONObject(retyped);
+            retypeProperty(schema, typeName, type.getProperty(retyped),
+                new DeclaredType(Type.valueOf(old.getString("type")), old.getString("of", null), true));
+          } catch (final RuntimeException e) {
+            refusal.addSuppressed(e);
+          }
+        throw refusal;
       }
     }
   }
