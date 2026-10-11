@@ -185,6 +185,13 @@ class Issue9724TimeSeriesDateTimeColumnsTest extends TestHelper {
     assertThat(count("SELECT FROM T")).isZero();
     assertThat(count("SELECT FROM D")).isZero();
 
+    // a FILTER with such an instant is not an error: no row can hold it, so it matches nothing, on a tag and on a field
+    database.command("sql", "CREATE TIMESERIES TYPE F TIMESTAMP ts TAGS (k DATETIME_NANOS) FIELDS (n DATETIME_NANOS)");
+    database.command("sql", "INSERT INTO F SET ts = 1, k = '2262-04-11 23:47:16', n = '2262-04-11 23:47:16'");
+    assertThat(count("SELECT FROM F WHERE k = '2500-01-01 00:00:00'")).isZero();
+    assertThat(count("SELECT FROM F WHERE n = '2500-01-01 00:00:00'")).isZero();
+    assertThat(count("SELECT FROM F WHERE k = '2262-04-11 23:47:16'")).isEqualTo(1);
+
     // the limits themselves are representable and stored as they are
     database.command("sql", "INSERT INTO T SET ts = 1, host = 'a', n = '2262-04-11 23:47:16.854775807'");
     assertThat(rows("SELECT n FROM T")).containsExactly("[n=2262-04-11T23:47:16.854775807(LocalDateTime)]");
