@@ -21,6 +21,8 @@ package com.arcadedb.query.select;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Document;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -197,5 +199,42 @@ class Issue9613Issue9614SelectIndexCandidatesTest extends TestHelper {
     // the residual filter is case sensitive: 'A' matches nothing, 'a' its two records, once each
     assertThat(ids(where("Ci").property("s").in().value(List.of("A", "a")))).containsExactly("a1", "a2");
     assertThat(where("Ci").property("s").in().value(List.of("A", "a")).count()).isEqualTo(2);
+  }
+
+  @Test
+  void emptyAndUnreadableInListsMatchNothingOnEveryIndexKind() {
+    load("Lsm", "CREATE INDEX ON %T (n) NOTUNIQUE", LETTERS);
+    load("Hash", "CREATE INDEX ON %T (n) NOTUNIQUE_HASH", LETTERS);
+    for (final String type : List.of("Lsm", "Hash")) {
+      assertThat(where(type).property("n").in().value(List.of()).count()).as(type + " IN []").isZero();
+      assertThat(where(type).property("n").in().value(List.of()).documents().toList()).as(type + " IN []").isEmpty();
+      assertThat(where(type).property("n").in().value(List.of("abc", "x1")).count()).as(type + " unreadable").isZero();
+      assertThat(where(type).property("n").in().value(List.of("abc", "x1")).limit(1).documents().toList()).as(type + " unreadable")
+          .isEmpty();
+      // an unreadable value next to readable ones only drops itself
+      assertThat(ids(where(type).property("n").in().value(List.of("abc", 3)))).as(type + " mixed").containsExactly("c1");
+    }
+  }
+
+  @Test
+  void bytesKeysThatAreEqualReturnEachRecordOnce() {
+    // a byte[] key has an identity equals(), so two equal arrays are two probes of one key: the merge returns each record once,
+    // and a duplicate does not count against the limit
+    for (final String type : List.of("BinIdx", "BinPlain")) {
+      database.getSchema().createDocumentType(type).createProperty("b", Type.BINARY);
+      database.transaction(() -> {
+        database.newDocument(type).set("id", "x1").set("b", new byte[] { 1, 2 }).save();
+        database.newDocument(type).set("id", "x2").set("b", new byte[] { 1, 2 }).save();
+        database.newDocument(type).set("id", "y1").set("b", new byte[] { 3 }).save();
+      });
+    }
+    database.getSchema().getType("BinIdx").createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "b");
+
+    final List<Object> values = List.of(new byte[] { 1, 2 }, new byte[] { 1, 2 }, new byte[] { 3 });
+    final List<String> expected = ids(where("BinPlain").property("b").in().value(values));
+    assertThat(expected).containsExactly("x1", "x2", "y1");
+    assertThat(ids(where("BinIdx").property("b").in().value(values))).isEqualTo(expected);
+    assertThat(where("BinIdx").property("b").in().value(values).count()).isEqualTo(3);
+    assertThat(where("BinIdx").property("b").in().value(values).limit(3).documents().toList()).hasSize(3);
   }
 }
