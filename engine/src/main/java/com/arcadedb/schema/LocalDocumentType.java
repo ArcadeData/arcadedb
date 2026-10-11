@@ -1392,7 +1392,6 @@ public class LocalDocumentType implements DocumentType {
    * saves the schema when it completes, or the schema load.
    */
   private DocumentType applyBucketSelectionStrategy(final BucketSelectionStrategy selectionStrategy) {
-    checkForSchemaMutation();
     // Bind and vet the strategy BEFORE publishing it (issue #7119). The field is read lock-free by
     // getBucketIdByRecord/getBucketIndexByKeys, so assigning first would let a concurrent insert reach a strategy
     // whose bucket count is still 0 (ThreadBucketSelectionStrategy divides by it) or whose type is still null
