@@ -84,7 +84,8 @@ final class ObjectColumnsRowSource implements TimeSeriesRowSource {
     if (kind == TimeSeriesBatch.KIND_BOOLEAN)
       return Boolean.TRUE.equals(value) ? 1L : 0L;
     if (value == null)
-      // The absent marker on a floating-point column, zero elsewhere: see TimeSeriesBatch.rawNull (issue #7743).
+      // The absent marker on a floating-point column, zero elsewhere - where isNull() says the value is absent (issue #9721)
+      // to a bucket whose rows can say so: see TimeSeriesBatch.rawNull (issue #7743).
       return TimeSeriesBatch.rawNull(kind);
 
     final Number number = (Number) value;
@@ -96,6 +97,11 @@ final class ObjectColumnsRowSource implements TimeSeriesRowSource {
       case TimeSeriesBatch.KIND_BYTE -> number.byteValue();
       default -> number.longValue();
     };
+  }
+
+  @Override
+  public boolean isNull(final int row, final int columnIndex) {
+    return columnValues[columnIndex][row] == null && TimeSeriesBatch.tracksNull(kinds[columnIndex]);
   }
 
   @Override

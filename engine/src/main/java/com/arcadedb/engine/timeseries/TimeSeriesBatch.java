@@ -20,6 +20,7 @@ package com.arcadedb.engine.timeseries;
 
 import com.arcadedb.schema.Type;
 
+import java.util.Arrays;
 import java.util.List;
 
 /**
@@ -45,9 +46,9 @@ import java.util.List;
  * </pre>
  * Column indexes are ordinals among the <b>non-timestamp</b> columns of the type, the same order
  * used by the {@code Object[][]} form of the append API. A column left untouched on a row reads back as
- * what a {@code null} reads back as on that column - the absent marker where it can carry one, zero
- * elsewhere - which is the same thing the {@code Object[][]} path stores for a {@code null} (issue #7743,
- * see {@link #rawNull}).
+ * what a {@code null} reads back as on that column - the absent marker on a floating-point column, and on an
+ * integral, boolean or datetime one a sample with no value ({@link #isNull}, issue #9721) - which is the same
+ * thing the {@code Object[][]} path stores for a {@code null} (issue #7743, see {@link #rawNull}).
  * <p>
  * A batch is a plain buffer with no synchronization: fill it on one thread, then append it.
  * {@link #clear()} makes it reusable across batches without reallocating the column arrays.
@@ -88,6 +89,12 @@ public class TimeSeriesBatch implements TimeSeriesRowSource {
   private final int[]              absentMarkerColumns;
   private       long[]             timestamps;
   private final long[][]           rawValues;
+  /**
+   * Per column whose absence is not a value ({@link #tracksNull}), a bitmap of the rows a value was SET on (issue #9721); null for
+   * every other column. A set bit is a value, so a row nothing was written to is absent without any work on the row itself:
+   * {@link #clear()} zeroes the words it used, and a fresh row lies past them.
+   */
+  private final long[][]           present;
   private final String[][]         stringValues;
   private       int                size;
   // Rows written by a previous fill, i.e. the prefix whose column slots still hold stale values and
@@ -110,6 +117,7 @@ public class TimeSeriesBatch implements TimeSeriesRowSource {
     this.kinds = new byte[valueColumns];
     this.nullRaw = new long[valueColumns];
     this.rawValues = new long[valueColumns][];
+    this.present = new long[valueColumns][];
     this.stringValues = new String[valueColumns][];
 
     final int initialCapacity = Math.max(1, capacity);
@@ -129,6 +137,8 @@ public class TimeSeriesBatch implements TimeSeriesRowSource {
         stringValues[colIdx] = new String[initialCapacity];
       else
         rawValues[colIdx] = new long[initialCapacity];
+      if (tracksNull(kind))
+        present[colIdx] = new long[bitmapWords(initialCapacity)];
       colIdx++;
     }
 
@@ -154,9 +164,10 @@ public class TimeSeriesBatch implements TimeSeriesRowSource {
 
     // Two reasons to fill the row in: a refilled batch must not leak the previous fill's value into a column the
     // caller skips, and a column the caller never sets must read back as what a null reads back as - the absent
-    // marker where the column can carry one, zero elsewhere (issue #7743). The second reason applies to a fresh
-    // row too, which is why the cheap "only stale rows" test is not the whole condition; a batch with no
-    // floating-point column has nothing to write into a fresh row and skips the loop as it always did.
+    // marker where the column can carry one, zero elsewhere, where the missing presence bit says there is no value
+    // (issues #7743, #9721). The second reason applies to a fresh row too, which is why the cheap "only stale rows"
+    // test is not the whole condition; a batch with no floating-point column has nothing to write into a fresh row and
+    // skips the loop as it always did. The presence bits need no work here: clear() zeroed every word a fill used.
     if (row < staleRows) {
       // A refilled row: every column has to be reset, whatever its null reads back as.
       for (int c = 0; c < columns.length; c++) {
@@ -183,10 +194,33 @@ public class TimeSeriesBatch implements TimeSeriesRowSource {
    */
   public void clear() {
     staleRows = Math.max(staleRows, size);
+    final int words = bitmapWords(size);
+    for (final long[] bits : present)
+      if (bits != null)
+        Arrays.fill(bits, 0, words, 0L);
     size = 0;
   }
 
+  /**
+   * Whether a column of this kind has no value of its own to spend on absence, so its absence is tracked per row (issue #9721):
+   * the integral, boolean and datetime kinds. A floating-point column stores the NaN marker and a text column the empty string.
+   */
+  static boolean tracksNull(final byte kind) {
+    return kind == KIND_LONG || kind == KIND_INTEGER || kind == KIND_SHORT || kind == KIND_BYTE || kind == KIND_BOOLEAN;
+  }
+
+  private static int bitmapWords(final int rows) {
+    return (rows + 63) >>> 6;
+  }
+
+  private void markPresent(final int row, final int columnIndex) {
+    final long[] bits = present[columnIndex];
+    if (bits != null)
+      bits[row >>> 6] |= 1L << row;
+  }
+
   public void setDouble(final int row, final int columnIndex, final double value) {
+    markPresent(row, columnIndex);
     rawColumn(columnIndex)[row] = switch (kinds[columnIndex]) {
       case KIND_DOUBLE -> Double.doubleToRawLongBits(value);
       case KIND_FLOAT -> Float.floatToRawIntBits((float) value);
@@ -196,6 +230,7 @@ public class TimeSeriesBatch implements TimeSeriesRowSource {
   }
 
   public void setFloat(final int row, final int columnIndex, final float value) {
+    markPresent(row, columnIndex);
     rawColumn(columnIndex)[row] = switch (kinds[columnIndex]) {
       case KIND_FLOAT -> Float.floatToRawIntBits(value);
       case KIND_DOUBLE -> Double.doubleToRawLongBits(value);
@@ -205,6 +240,7 @@ public class TimeSeriesBatch implements TimeSeriesRowSource {
   }
 
   public void setLong(final int row, final int columnIndex, final long value) {
+    markPresent(row, columnIndex);
     rawColumn(columnIndex)[row] = switch (kinds[columnIndex]) {
       case KIND_DOUBLE -> Double.doubleToRawLongBits(value);
       case KIND_FLOAT -> Float.floatToRawIntBits(value);
@@ -252,12 +288,16 @@ public class TimeSeriesBatch implements TimeSeriesRowSource {
       stringValues[columnIndex][row] = value != null ? value.toString() : null;
       return;
     }
-    if (kind == KIND_BOOLEAN) {
-      rawValues[columnIndex][row] = Boolean.TRUE.equals(value) ? 1L : 0L;
-      return;
-    }
     if (value == null) {
       rawValues[columnIndex][row] = rawNull(kind);
+      final long[] bits = present[columnIndex];
+      if (bits != null)
+        bits[row >>> 6] &= ~(1L << row);
+      return;
+    }
+    markPresent(row, columnIndex);
+    if (kind == KIND_BOOLEAN) {
+      rawValues[columnIndex][row] = Boolean.TRUE.equals(value) ? 1L : 0L;
       return;
     }
 
@@ -283,8 +323,8 @@ public class TimeSeriesBatch implements TimeSeriesRowSource {
    * exists to hold.
    * <p>
    * Every other numeric column stores zero for it, because an integer has no value outside its own range to
-   * spend on absence and a validity bitmap is not part of the format. That is the pre-existing behaviour, kept
-   * deliberately: a null in a {@code LONG} column still reads back as a real 0 on both layers.
+   * spend on absence: what says the zero is no measurement is the row's null bitmap (issue #9721), fed by
+   * {@link #isNull}. A type created before that format has no bitmap and still reads such a null back as a real 0.
    */
   static long rawNull(final byte kind) {
     return switch (kind) {
@@ -321,6 +361,12 @@ public class TimeSeriesBatch implements TimeSeriesRowSource {
     return stringValues[columnIndex][row];
   }
 
+  @Override
+  public boolean isNull(final int row, final int columnIndex) {
+    final long[] bits = present[columnIndex];
+    return bits != null && (bits[row >>> 6] & (1L << row)) == 0;
+  }
+
   private long[] rawColumn(final int columnIndex) {
     final long[] column = rawValues[columnIndex];
     if (column == null)
@@ -345,6 +391,8 @@ public class TimeSeriesBatch implements TimeSeriesRowSource {
         System.arraycopy(stringValues[c], 0, grown, 0, size);
         stringValues[c] = grown;
       }
+      if (present[c] != null && present[c].length < bitmapWords(newCapacity))
+        present[c] = Arrays.copyOf(present[c], bitmapWords(newCapacity));
     }
   }
 

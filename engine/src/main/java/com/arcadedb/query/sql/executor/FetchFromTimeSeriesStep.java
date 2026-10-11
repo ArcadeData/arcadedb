@@ -182,6 +182,11 @@ public class FetchFromTimeSeriesStep extends AbstractExecutionStep {
               if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP && value instanceof Long)
                 value = DateUtils.dateTime(context.getDatabase(), (Long) value, ChronoUnit.MILLIS, LocalDateTime.class,
                     ChronoUnit.MILLIS);
+              // Issue #9725: every other DATE/DATETIME column holds an epoch count in its own unit, handed back as the object a
+              // document property of the same type reads as. As the raw count it could not be written back by INSERT, which
+              // reads a number as epoch millis, nor matched by the literal that wrote it
+              else if (value instanceof Long epoch && col.isTemporal())
+                value = col.temporalOf(context.getDatabase(), epoch);
 
               // The absent marker becomes SQL NULL at the SQL boundary (issue #7743). NaN is what the storage
               // layers use for "no measurement here" - it is what a null field value is stored as on a

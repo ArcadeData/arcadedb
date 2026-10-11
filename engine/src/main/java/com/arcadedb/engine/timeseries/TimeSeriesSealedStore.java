@@ -50,6 +50,7 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.IdentityHashMap;
 import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -79,7 +80,9 @@ import java.util.zip.CRC32;
  * <p>
  * Block entry layout:
  * - magic "TSB3" (4), minTs (8), maxTs (8), sampleCount (4), blockId (8), colSizes (4*colCount)
- * - numericColCount (4), [min (8) + max (8) + sum (8) + count (8)] * numericColCount (schema order, no colIdx)
+ * - numericColCount (4), per numeric column in schema order (no colIdx):
+ *   GORILLA_XOR: min (8) + max (8) + sum (8) as doubles + count (8)
+ *   SIMPLE8B:    min (8) + max (8) + sumLo (8) + sumHi (8) + count (8), all longs (TSB4)
  * - tag metadata: tagColCount (2), per TAG column: distinctCount (2), per value: len (2) + UTF-8 bytes
  * - compressed column data bytes
  * - blockCRC32 (4) — CRC32 of everything from blockMagic to end of compressed data
@@ -97,12 +100,22 @@ import java.util.zip.CRC32;
  * the reason it is on DISK rather than in a counter is that the directory is rebuilt wholesale by a reload - an HA
  * follower installing the leader's sealed file - and an identity a reload invents is no identity at all.
  * <p>
+ * "TSB4" (issues #9720, #9721) is "TSB3" whose statistics of a {@code SIMPLE8B} column - the integral, boolean and datetime
+ * types - are EXACT: the extremes as longs, the total as a 128-bit integer ({@link ExactLongSum}) and the count of the samples
+ * that carry a value. A double holds every integer only up to 2^53, so the TSB3 statistics of a column of epoch nanoseconds or
+ * 64-bit ids were rounded, and the aggregation push-down answered from them, or had to decode every block to be exact. A
+ * {@code GORILLA_XOR} column keeps the double quadruple. A {@code SIMPLE8B} column of a TSB4 block may also carry a null
+ * bitmap (see {@link Simple8bCodec}), for the samples a client wrote with no value. The statistics of an older block's integral
+ * column are exact whenever its doubles prove it (see {@link #exactFromDoubles}); the others take the decompressing path until
+ * the next rewrite of the block, which writes TSB4.
+ * <p>
  * The file header's version byte is what refuses a file to a build that predates a layout: version 1 (issue #7089)
  * says "blocks are self-describing, TSBL or TSB2", and a version-0 file, which can only hold TSBL blocks, is read
  * as it stands and stamped 1 the next time its header is rewritten. Version 2 (issue #8043) says a block may also
  * be TSB3, and IS a refusal rather than a courtesy: a build that does not know the magic stops its directory scan
  * at the first such block, which is indistinguishable from an empty store - so a file this build writes must be
- * refused by an older one loudly, at the header, instead of read as holding nothing.
+ * refused by an older one loudly, at the header, instead of read as holding nothing. Version 3 (issues #9720, #9721) says a
+ * block may be TSB4, for the same reason.
  * <p>
  * <b>High-Availability / Replication note:</b>
  * Sealed store files ({@code .ts.sealed}) are written via {@link RandomAccessFile} and
@@ -124,19 +137,25 @@ import java.util.zip.CRC32;
  */
 public class TimeSeriesSealedStore implements AutoCloseable {
 
-  public static final  int CURRENT_VERSION  = 2;
+  public static final  int CURRENT_VERSION  = 3;
   private static final int MAGIC_VALUE       = 0x54534958; // "TSIX"
   // "TSBL": the layout every block had before issue #7089, whose statistics section is a [min, max, sum] triplet.
   private static final int BLOCK_MAGIC_VALUE    = 0x5453424C;
   // "TSB2": the layout of issue #7089, whose statistics section is a [min, max, sum, count] quadruple.
   private static final int BLOCK_MAGIC_VALUE_V2 = 0x54534232;
-  // "TSB3": the current layout, TSB2 plus the block's own identity (issue #8043). See BlockEntry.blockId.
+  // "TSB3": TSB2 plus the block's own identity (issue #8043). See BlockEntry.blockId.
   private static final int BLOCK_MAGIC_VALUE_V3 = 0x54534233;
+  // "TSB4": the current layout, TSB3 with exact statistics for a SIMPLE8B column (issues #9720, #9721).
+  private static final int BLOCK_MAGIC_VALUE_V4 = 0x54534234;
   // Bytes the identity takes in a TSB3 block record, between the sample count and the column sizes.
   private static final int BLOCK_ID_BYTES       = 8;
   // Bytes one column's statistics take in each layout.
   private static final int LEGACY_STATS_BYTES   = 8 + 8 + 8;
   private static final int STATS_BYTES          = 8 + 8 + 8 + 8;
+  // Bytes a SIMPLE8B column's exact statistics take in a TSB4 block: min, max, the two words of the sum, count.
+  private static final int INTEGRAL_STATS_BYTES = 8 + 8 + 8 + 8 + 8;
+  // The largest magnitude up to which a double holds every integer.
+  private static final double EXACT_INTEGRAL_DOUBLE = 0x1p53;
   private static final int HEADER_SIZE       = 27;
   // Shared with DeltaOfDeltaCodec and GorillaXORCodec: all three validate/use the same limit
   private static final int MAX_BLOCK_SIZE    = DeltaOfDeltaCodec.MAX_BLOCK_SIZE;
@@ -340,6 +359,13 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     final double[] columnMaxs;   // per-column max
     final double[] columnSums;   // per-column sum of the REAL (non-NaN) samples, NaN when there is none
     final long[]   columnCounts; // per-column count of the REAL (non-NaN) samples, or COUNT_UNKNOWN (see below)
+    // Per SIMPLE8B column, the EXACT statistics of the samples that carry a value (issue #9720): the extremes, and the 128-bit
+    // total as its low and high word. Meaningful where exactStats says so; columnMins/Maxs/Sums are their nearest doubles.
+    final long[]    exactMins;
+    final long[]    exactMaxs;
+    final long[]    exactSumsLo;
+    final long[]    exactSumsHi;
+    final boolean[] exactStats;
     // indexed by schema column index, null for non-TAG columns. IMMUTABLE: loadDirectory shares one array between every
     // block that declares the same values (issue #8793), so nothing may write into it
     String[][]     tagDistinctValues;
@@ -418,19 +444,23 @@ public class TimeSeriesSealedStore implements AutoCloseable {
      * {@link #recordWrittenCRC(int)}, together with the CRC it is a shortcut for, so a write path that forgets to
      * record one cannot silently inherit the other.
      */
-    BlockEntry(final long minTs, final long maxTs, final int sampleCount, final int columnCount,
-        final double[] mins, final double[] maxs, final double[] sums, final long[] counts, final long blockStartOffset,
-        final long blockId) {
+    BlockEntry(final long minTs, final long maxTs, final int sampleCount, final int columnCount, final BlockStats stats,
+        final long blockStartOffset, final long blockId) {
       this.blockId = blockId;
       this.minTimestamp = minTs;
       this.maxTimestamp = maxTs;
       this.sampleCount = sampleCount;
       this.columnOffsets = new long[columnCount];
       this.columnSizes = new int[columnCount];
-      this.columnMins = mins;
-      this.columnMaxs = maxs;
-      this.columnSums = sums;
-      this.columnCounts = counts;
+      this.columnMins = stats.mins();
+      this.columnMaxs = stats.maxs();
+      this.columnSums = stats.sums();
+      this.columnCounts = stats.counts();
+      this.exactMins = stats.exactMins() != null ? stats.exactMins() : new long[columnCount];
+      this.exactMaxs = stats.exactMaxs() != null ? stats.exactMaxs() : new long[columnCount];
+      this.exactSumsLo = stats.exactSumsLo() != null ? stats.exactSumsLo() : new long[columnCount];
+      this.exactSumsHi = stats.exactSumsHi() != null ? stats.exactSumsHi() : new long[columnCount];
+      this.exactStats = stats.exact() != null ? stats.exact() : new boolean[columnCount];
       this.blockStartOffset = blockStartOffset;
       this.crcValidated = false;
     }
@@ -528,47 +558,12 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     try {
       final int colCount = columns.size();
 
-      // Count the columns that carry a statistics triplet. Keyed off the codec, never off the VALUE of the
-      // declared minimum: a NaN minimum is a legitimate declaration ("this column holds no real sample", the
-      // absent marker of issue #7043), and treating it as "this column has no statistics section" would drop a
-      // triplet the reader still expects and shift every following column's statistics onto the wrong column.
-      int numericColCount = 0;
-      for (int c = 0; c < colCount; c++)
-        if (hasNumericStats(c))
-          numericColCount++;
-
-      // Build tag metadata section
-      final byte[] tagMeta = buildTagMetadata(tagDistinctValues, colCount);
-
-      // Block header: magic(4) + minTs(8) + maxTs(8) + sampleCount(4) + blockId(8) + colSizes(4*colCount)
-      //              + numericColCount(4) + [min(8) + max(8) + sum(8) + count(8)] * numericColCount
-      //              + tag metadata
+      // A SIMPLE8B column gets exact statistics (issue #9720): proven by the declared doubles, or computed from its values
+      final BlockStats stats = withExactIntegralStats(new BlockStats(columnMins, columnMaxs, columnSums, columnCounts), compressedColumns);
       final long blockId = newBlockId();
-      final int statsSize = 4 + STATS_BYTES * numericColCount;
-      final int metaSize = 4 + 8 + 8 + 4 + BLOCK_ID_BYTES + 4 * colCount + statsSize + tagMeta.length;
-      final ByteBuffer metaBuf = ByteBuffer.allocate(metaSize);
-      metaBuf.putInt(BLOCK_MAGIC_VALUE_V3);
-      metaBuf.putLong(minTs);
-      metaBuf.putLong(maxTs);
-      metaBuf.putInt(sampleCount);
-      metaBuf.putLong(blockId);
-      for (final byte[] col : compressedColumns)
-        metaBuf.putInt(col.length);
-
-      // Write stats section (schema order, no colIdx — iterate columns, skip non-numeric)
-      metaBuf.putInt(numericColCount);
-      for (int c = 0; c < colCount; c++) {
-        if (hasNumericStats(c)) {
-          metaBuf.putDouble(columnMins[c]);
-          metaBuf.putDouble(columnMaxs[c]);
-          metaBuf.putDouble(columnSums[c]);
-          metaBuf.putLong(columnCounts[c]);
-        }
-      }
-
-      // Write tag metadata
-      metaBuf.put(tagMeta);
-      metaBuf.flip();
+      final ByteBuffer metaBuf = blockMeta(sampleCount, minTs, maxTs, blockId, compressedColumns, stats,
+          buildTagMetadata(tagDistinctValues, colCount));
+      final int metaSize = metaBuf.limit();
 
       // Compute CRC32 over meta + compressed data
       // Use metaBuf.limit() (not .array().length) since the backing array may be larger after flip
@@ -585,8 +580,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
       // #6360 item 3: the offset is given to the entry rather than patched onto it afterwards, so the entry
       // describes where its block is no matter which side of a restart wrote it.
-      final BlockEntry entry = new BlockEntry(minTs, maxTs, sampleCount, colCount, columnMins, columnMaxs, columnSums,
-          columnCounts, blockStart, blockId);
+      final BlockEntry entry = new BlockEntry(minTs, maxTs, sampleCount, colCount, stats, blockStart, blockId);
       entry.tagDistinctValues = tagDistinctValues;
       // Write compressed column data
       for (int c = 0; c < colCount; c++) {
@@ -1932,6 +1926,12 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
     final double[] rowValues = new double[reqCount];
     final long[] rowCounts = new long[reqCount];
+    // Per request, whether the result keeps it exact (issues #9718, #9720): an integral column's MIN/MAX/SUM/AVG, answered from
+    // the block's exact statistics or folded from its values as longs, never through a double
+    final boolean[] exact = exactFlags(result, reqCount);
+    final long[] exactValues = new long[reqCount];
+    final long[] exactHigh = new long[reqCount];
+    final long[] exactOut = new long[2];
     // Per schema column, the count of real samples in the segment the vectorized path is on (-1 = not yet counted).
     final long[] presentBySchemaCol = new long[columns.size()];
 
@@ -1984,7 +1984,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         // usable sum nor a count of its real samples, so every request over that column but COUNT has to come
         // from the values: SUM/AVG for the value itself, MIN/MAX for the count recorded next to it.
         if (tagMatch == BlockMatchResult.FAST_PATH && fieldMatch == FieldFilter.BlockMatch.ALL
-            && entry.minTimestamp >= fromTs && entry.maxTimestamp <= toTs && !needsValues(entry, requests, schemaColIndices)) {
+            && entry.minTimestamp >= fromTs && entry.maxTimestamp <= toTs && !needsValues(entry, requests, schemaColIndices, exact)) {
           // Without a bucket interval the whole range is one bucket, which every block fits (issue #9612)
           final long blockMinBucket = bucketed ? TimeBucketGrid.bucketStart(entry.minTimestamp, bucketIntervalMs, bucketOffsetMs) : singleBucketTs;
           if (!bucketed || blockMinBucket == TimeBucketGrid.bucketStart(entry.maxTimestamp, bucketIntervalMs, bucketOffsetMs)) {
@@ -2005,9 +2005,11 @@ public class TimeSeriesSealedStore implements AutoCloseable {
                 };
                 // The samples that CONTRIBUTED: the real ones, which is what AVG divides by (issue #7089).
                 rowCounts[r] = entry.columnCounts[sci];
+                if (exact[r])
+                  blockExactStat(entry, sci, requests.get(r).type(), exactValues, exactHigh, r);
               }
             }
-            result.accumulateBlockStats(blockMinBucket, rowValues, rowCounts);
+            result.accumulateBlockStats(blockMinBucket, rowValues, rowCounts, exactValues, exactHigh);
             continue;
           }
         }
@@ -2030,11 +2032,20 @@ public class TimeSeriesSealedStore implements AutoCloseable {
           metrics.addDecompTs(System.nanoTime() - t0);
 
         // Decompress only the columns needed by the requests (deduplicated)
-        // Use reusable buffer for the first column; allocate for additional distinct columns
+        // Use reusable buffer for the first column; allocate for additional distinct columns. An exact request reads its column
+        // as longs, nulls included (issues #9720, #9721)
         final double[][] decompressedCols = new double[columns.size()][];
+        final IntegralColumn[] integralCols = new IntegralColumn[columns.size()];
         boolean reusableValBufferUsed = false;
         for (int r = 0; r < reqCount; r++) {
-          if (!isCount[r] && decompressedCols[schemaColIndices[r]] == null) {
+          if (exact[r]) {
+            if (integralCols[schemaColIndices[r]] == null) {
+              t0 = metrics != null ? System.nanoTime() : 0;
+              integralCols[schemaColIndices[r]] = IntegralColumn.decode(sliceColumn(blockData, entry, schemaColIndices[r]));
+              if (metrics != null)
+                metrics.addDecompVal(System.nanoTime() - t0);
+            }
+          } else if (!isCount[r] && decompressedCols[schemaColIndices[r]] == null) {
             t0 = metrics != null ? System.nanoTime() : 0;
             final byte[] colBytes = sliceColumn(blockData, entry, schemaColIndices[r]);
             final ColumnDefinition col = columns.get(schemaColIndices[r]);
@@ -2090,8 +2101,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
                 selected[kept++] = selected[s];
             count = kept;
           }
-          accumulateSelectedRows(selected, count, timestamps, decompressedCols, schemaColIndices, isCount, requests, bucketIntervalMs,
-              bucketOffsetMs, singleBucketTs, result);
+          accumulateSelectedRows(selected, count, timestamps, decompressedCols, integralCols, schemaColIndices, isCount, exact, requests,
+              bucketIntervalMs, bucketOffsetMs, singleBucketTs, result);
         } else {
           // Vectorized path: find contiguous segments within each bucket and use SIMD ops. Without a bucket interval the
           // whole clipped range is one segment of the single bucket (issue #9612)
@@ -2125,6 +2136,9 @@ public class TimeSeriesSealedStore implements AutoCloseable {
             for (int r = 0; r < reqCount; r++) {
               if (isCount[r]) {
                 result.accumulateSingleStat(bucketTs, r, segLen, segLen);
+              } else if (exact[r]) {
+                final long present = exactStat(integralCols[schemaColIndices[r]], null, segStart, segEnd, requests.get(r).type(), exactOut);
+                result.accumulateSingleStat(bucketTs, r, 0.0, present, exactOut[0], exactOut[1]);
               } else {
                 final int sci = schemaColIndices[r];
                 final double[] colData = decompressedCols[sci];
@@ -2159,9 +2173,11 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * {@link TimeSeriesNaN}.
    */
   private static void accumulateSelectedRows(final int[] selected, final int count, final long[] timestamps, final double[][] columnsBySchema,
-      final int[] schemaColIndices, final boolean[] isCount, final List<MultiColumnAggregationRequest> requests, final long bucketIntervalMs,
-      final long bucketOffsetMs, final long singleBucketTs, final MultiColumnAggregationResult result) {
+      final IntegralColumn[] integralBySchema, final int[] schemaColIndices, final boolean[] isCount, final boolean[] exact,
+      final List<MultiColumnAggregationRequest> requests, final long bucketIntervalMs, final long bucketOffsetMs, final long singleBucketTs,
+      final MultiColumnAggregationResult result) {
     final int reqCount = requests.size();
+    final long[] exactOut = new long[2];
     int segStart = 0;
     while (segStart < count) {
       final long bucketTs;
@@ -2180,6 +2196,11 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       for (int r = 0; r < reqCount; r++) {
         if (isCount[r]) {
           result.accumulateSingleStat(bucketTs, r, segEnd - segStart, segEnd - segStart);
+          continue;
+        }
+        if (exact[r]) {
+          final long present = exactStat(integralBySchema[schemaColIndices[r]], selected, segStart, segEnd, requests.get(r).type(), exactOut);
+          result.accumulateSingleStat(bucketTs, r, 0.0, present, exactOut[0], exactOut[1]);
           continue;
         }
         final double[] values = columnsBySchema[schemaColIndices[r]];
@@ -2215,6 +2236,75 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   }
 
   /**
+   * Per request, whether {@code result} keeps it exact (see {@link MultiColumnAggregationResult}).
+   */
+  private static boolean[] exactFlags(final MultiColumnAggregationResult result, final int reqCount) {
+    final boolean[] exact = new boolean[reqCount];
+    for (int r = 0; r < reqCount; r++)
+      exact[r] = result.isExact(r);
+    return exact;
+  }
+
+  /**
+   * The exact statistic an exact request reads off a block's header (issue #9720): the extreme for a MIN/MAX, the two words of
+   * the total for a SUM/AVG, written into {@code values[r]} and {@code high[r]}.
+   */
+  private static void blockExactStat(final BlockEntry entry, final int schemaCol, final AggregationType type, final long[] values,
+      final long[] high, final int r) {
+    switch (type) {
+    case MIN -> {
+      values[r] = entry.exactMins[schemaCol];
+      high[r] = 0L;
+    }
+    case MAX -> {
+      values[r] = entry.exactMaxs[schemaCol];
+      high[r] = 0L;
+    }
+    default -> {
+      values[r] = entry.exactSumsLo[schemaCol];
+      high[r] = entry.exactSumsHi[schemaCol];
+    }
+    }
+  }
+
+  /**
+   * Folds rows {@code [from, to)} of an integral column - or, with {@code selected}, the rows {@code selected[from..to)} - for
+   * one exact request (issues #9718, #9720): the extreme for a MIN/MAX into {@code out[0]}, the 128-bit total for a SUM/AVG into
+   * {@code out[0]} and {@code out[1]}. A sample with no value (issue #9721) is skipped.
+   *
+   * @return how many samples carried a value, i.e. contributed
+   */
+  private static long exactStat(final IntegralColumn column, final int[] selected, final int from, final int to, final AggregationType type,
+      final long[] out) {
+    final long[] values = column.values;
+    long count = 0;
+    out[0] = 0L;
+    out[1] = 0L;
+    if (type == AggregationType.MIN || type == AggregationType.MAX) {
+      final boolean min = type == AggregationType.MIN;
+      long extreme = 0L;
+      for (int k = from; k < to; k++) {
+        final int i = selected != null ? selected[k] : k;
+        if (column.isNull(i))
+          continue;
+        final long v = values[i];
+        if (count++ == 0 || (min ? v < extreme : v > extreme))
+          extreme = v;
+      }
+      out[0] = extreme;
+      return count;
+    }
+    for (int k = from; k < to; k++) {
+      final int i = selected != null ? selected[k] : k;
+      if (column.isNull(i))
+        continue;
+      ExactLongSum.add(out, 0, values[i]);
+      count++;
+    }
+    return count;
+  }
+
+  /**
    * What a block's statistics prove about {@code fieldFilter} (issue #9612): {@code NONE} when one condition cannot be met
    * by any of its samples, {@code ALL} when every condition is met by all of them, {@code SOME} otherwise.
    */
@@ -2222,8 +2312,12 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     FieldFilter.BlockMatch match = FieldFilter.BlockMatch.ALL;
     for (final FieldFilter.Condition condition : fieldFilter.getConditions()) {
       final int schemaIdx = findNonTsColumnSchemaIndex(condition.columnIndex());
-      final FieldFilter.BlockMatch one = FieldFilter.blockMatch(condition, entry.columnMins[schemaIdx], entry.columnMaxs[schemaIdx],
-          entry.columnCounts[schemaIdx], entry.sampleCount);
+      // An integral condition over exact statistics compares longs (issue #9720); otherwise the doubles, conservatively
+      final FieldFilter.BlockMatch one = condition.integral() && entry.exactStats[schemaIdx]
+          ? FieldFilter.blockMatchExact(condition, entry.exactMins[schemaIdx], entry.exactMaxs[schemaIdx], entry.columnCounts[schemaIdx],
+          entry.sampleCount)
+          : FieldFilter.blockMatch(condition, entry.columnMins[schemaIdx], entry.columnMaxs[schemaIdx], entry.columnCounts[schemaIdx],
+              entry.sampleCount);
       if (one == FieldFilter.BlockMatch.NONE)
         return one;
       if (one == FieldFilter.BlockMatch.SOME)
@@ -2299,7 +2393,13 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
     final double[] rowValues = new double[reqCount];
     final long[] rowCounts = new long[reqCount];
+    // Exact requests (issues #9718, #9720), as in aggregateMultiBlocks; every group's result is built with the same flags
+    final boolean[] exact = result.exactFlags(reqCount);
+    final long[] exactValues = new long[reqCount];
+    final long[] exactHigh = new long[reqCount];
+    final long[] rowLongs = new long[reqCount];
     final double[][] decompressedCols = new double[columns.size()][];
+    final IntegralColumn[] integralCols = new IntegralColumn[columns.size()];
     // Reused by every block of the scan: groupFor only reads the tuple it is given and copies it when the group is new
     final String[] wholeBlockGroup = new String[groupCount];
     final String[][] dictionaries = new String[groupCount][];
@@ -2341,7 +2441,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         }
 
         if (singleGroup && tagMatch == BlockMatchResult.FAST_PATH && fieldMatch == FieldFilter.BlockMatch.ALL
-            && entry.minTimestamp >= fromTs && entry.maxTimestamp <= toTs && !needsValues(entry, requests, schemaColIndices)) {
+            && entry.minTimestamp >= fromTs && entry.maxTimestamp <= toTs && !needsValues(entry, requests, schemaColIndices, exact)) {
           final long blockMinBucket = bucketIntervalMs > 0 ? TimeBucketGrid.bucketStart(entry.minTimestamp, bucketIntervalMs, bucketOffsetMs) : singleBucketTs;
           if (bucketIntervalMs <= 0 || blockMinBucket == TimeBucketGrid.bucketStart(entry.maxTimestamp, bucketIntervalMs, bucketOffsetMs)) {
             if (metrics != null)
@@ -2359,9 +2459,11 @@ public class TimeSeriesSealedStore implements AutoCloseable {
                   case COUNT -> entry.sampleCount;
                 };
                 rowCounts[r] = entry.columnCounts[sci];
+                if (exact[r])
+                  blockExactStat(entry, sci, requests.get(r).type(), exactValues, exactHigh, r);
               }
             }
-            result.groupFor(wholeBlockGroup).accumulateBlockStats(blockMinBucket, rowValues, rowCounts);
+            result.groupFor(wholeBlockGroup).accumulateBlockStats(blockMinBucket, rowValues, rowCounts, exactValues, exactHigh);
             continue;
           }
         }
@@ -2380,8 +2482,12 @@ public class TimeSeriesSealedStore implements AutoCloseable {
           metrics.addDecompTs(System.nanoTime() - t0);
 
         Arrays.fill(decompressedCols, null);
+        Arrays.fill(integralCols, null);
         for (int r = 0; r < reqCount; r++)
-          if (!isCount[r] && decompressedCols[schemaColIndices[r]] == null) {
+          if (exact[r]) {
+            if (integralCols[schemaColIndices[r]] == null)
+              integralCols[schemaColIndices[r]] = IntegralColumn.decode(sliceColumn(blockData, entry, schemaColIndices[r]));
+          } else if (!isCount[r] && decompressedCols[schemaColIndices[r]] == null) {
             t0 = metrics != null ? System.nanoTime() : 0;
             decompressedCols[schemaColIndices[r]] = decompressDoubleColumnFromBytes(
                 sliceColumn(blockData, entry, schemaColIndices[r]), schemaColIndices[r]);
@@ -2460,10 +2566,20 @@ public class TimeSeriesSealedStore implements AutoCloseable {
             }
           }
 
-          for (int r = 0; r < reqCount; r++)
-            rowValues[r] = isCount[r] ? 1.0 : decompressedCols[schemaColIndices[r]][i];
+          for (int r = 0; r < reqCount; r++) {
+            if (isCount[r])
+              rowValues[r] = 1.0;
+            else if (exact[r]) {
+              // the long itself, and a double that only says whether the row has one
+              final IntegralColumn column = integralCols[schemaColIndices[r]];
+              final boolean absent = column.isNull(i);
+              rowValues[r] = absent ? TimeSeriesNaN.ABSENT : 0.0;
+              rowLongs[r] = column.values[i];
+            } else
+              rowValues[r] = decompressedCols[schemaColIndices[r]][i];
+          }
           group.accumulateRow(bucketIntervalMs > 0 ? TimeBucketGrid.bucketStart(reusableTsBuf[i], bucketIntervalMs, bucketOffsetMs) : singleBucketTs,
-              rowValues);
+              rowValues, rowLongs);
         }
         if (metrics != null)
           metrics.addAccum(System.nanoTime() - t0);
@@ -2675,6 +2791,16 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     final Map<List<Object>, Map<Long, double[]>> groupedData = new HashMap<>(); // tagKey -> (bucketTs -> [sum0, count0, sum1, count1, ...])
     final int numFields = numericColIndices.size();
     final int accSize = numFields * 2; // sum + count per numeric field
+    // An integral field is averaged exactly, as longs (issue #9718): the double sum rounded a total past 2^53, and the mean of
+    // such samples - epoch nanoseconds, 64-bit ids - came out as a different sample. Per (tagKey, bucket), parallel to the
+    // double accumulator, the two words of the total of every integral field.
+    final boolean[] integralField = new boolean[numFields];
+    boolean anyIntegralField = false;
+    for (int n = 0; n < numFields; n++) {
+      integralField[n] = columns.get(numericColIndices.get(n)).storesExactIntegers();
+      anyIntegralField |= integralField[n];
+    }
+    final Map<double[], long[]> exactSums = anyIntegralField ? new IdentityHashMap<>() : null;
 
     for (final BlockEntry entry : toDownsample) {
       final long[] timestamps = decompressTimestamps(entry, tsColIdx);
@@ -2691,11 +2817,15 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         tagData[t] = decodeColumn(columns.get(ci), readBytes(entry.columnOffsets[ci], entry.columnSizes[ci]));
       }
 
-      // Decompress numeric columns
+      // Decompress numeric columns: an integral one as longs, nulls included
       final double[][] numData = new double[numFields][];
+      final IntegralColumn[] intData = new IntegralColumn[numFields];
       for (int n = 0; n < numFields; n++) {
         final int ci = numericColIndices.get(n);
-        numData[n] = decompressDoubleColumn(entry, ci);
+        if (integralField[n])
+          intData[n] = (IntegralColumn) rawColumnValues(entry, ci);
+        else
+          numData[n] = decompressDoubleColumn(entry, ci);
       }
 
       // Group samples by (tagValues list, bucketTs)
@@ -2715,6 +2845,13 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         // The downsampled value is the mean of the REAL samples (issue #7089): a NaN sample neither poisons the
         // sum nor counts toward the denominator, the same policy the aggregation push-down applies.
         for (int n = 0; n < numFields; n++) {
+          if (integralField[n]) {
+            if (intData[n].isNull(i))
+              continue;
+            ExactLongSum.add(exactSums.computeIfAbsent(acc, k -> new long[accSize]), n * 2, intData[n].values[i]);
+            acc[n * 2 + 1] += 1.0;
+            continue;
+          }
           final double v = numData[n][i];
           if (Double.isNaN(v))
             continue;
@@ -2741,6 +2878,13 @@ public class TimeSeriesSealedStore implements AutoCloseable {
           row[tagColIndices.get(t)] = tagParts.get(t);
         for (int n = 0; n < numFields; n++) {
           final double count = acc[n * 2 + 1];
+          if (integralField[n]) {
+            // The exact mean of the samples that carry a value, truncated toward zero as the double mean's long was, and a
+            // sample with no value - not a zero - when none did (issue #9721)
+            final long[] exactAcc = exactSums.get(acc);
+            row[numericColIndices.get(n)] = count > 0 ? ExactLongSum.truncatedAverage(exactAcc[n * 2], exactAcc[n * 2 + 1], (long) count) : null;
+            continue;
+          }
           // A bucket that held no real sample is downsampled to the absent marker, not to a zero that would read
           // as a measurement.
           row[numericColIndices.get(n)] = count > 0 ? acc[n * 2] / count : TimeSeriesNaN.ABSENT;
@@ -2770,13 +2914,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         chunkTs[i] = (long) newSamples.get(chunkStart + i)[tsColIdx];
 
       // Per-column stats
-      final double[] mins = new double[colCount];
-      final double[] maxs = new double[colCount];
-      final double[] sums = new double[colCount];
-      final long[] counts = new long[colCount];
-      Arrays.fill(mins, Double.NaN);
-      Arrays.fill(maxs, Double.NaN);
-      Arrays.fill(sums, Double.NaN);
+      final StatsBuilder stats = new StatsBuilder(columns);
 
       final byte[][] compressedCols = new byte[colCount][];
       for (int c = 0; c < colCount; c++) {
@@ -2789,13 +2927,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
           compressedCols[c] = compressColumn(columns.get(c), chunkValues);
 
           // Compute stats for numeric columns
-          if (hasNumericStats(c)) {
-            final double[] stats = reduceNumericStats(columns.get(c), chunkValues);
-            mins[c] = stats[0];
-            maxs[c] = stats[1];
-            sums[c] = stats[2];
-            counts[c] = (long) stats[3];
-          }
+          if (hasNumericStats(c))
+            stats.add(c, chunkValues);
         }
       }
 
@@ -2814,7 +2947,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
       newBlocksCompressed.add(compressedCols);
       newBlocksMeta.add(new long[] { chunkTs[0], chunkTs[chunkLen - 1], chunkLen });
-      newBlocksStats.add(new BlockStats(mins, maxs, sums, counts));
+      newBlocksStats.add(stats.build());
       newBlocksTagDV.add(chunkTagDV);
       chunkStart = chunkEnd;
     }
@@ -3063,13 +3196,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
               canonical.putIfAbsent(v, v);
 
     final byte[][] compressedCols = new byte[colCount][];
-    final double[] mins = new double[colCount];
-    final double[] maxs = new double[colCount];
-    final double[] sums = new double[colCount];
-    final long[] counts = new long[colCount];
-    Arrays.fill(mins, Double.NaN);
-    Arrays.fill(maxs, Double.NaN);
-    Arrays.fill(sums, Double.NaN);
+    final StatsBuilder stats = new StatsBuilder(columns);
     final String[][] tagDistinctValues = new String[colCount][];
     for (int c = 0; c < colCount; c++) {
       final ColumnDefinition column = columns.get(c);
@@ -3085,13 +3212,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
           return false;
       }
       compressedCols[c] = compressColumn(column, values[c]);
-      if (hasNumericStats(c)) {
-        final double[] stats = reduceNumericStats(column, values[c]);
-        mins[c] = stats[0];
-        maxs[c] = stats[1];
-        sums[c] = stats[2];
-        counts[c] = (long) stats[3];
-      }
+      if (hasNumericStats(c))
+        stats.add(c, values[c]);
       if (column.getRole() == ColumnDefinition.ColumnRole.TAG) {
         final LinkedHashSet<String> distinctSet = new LinkedHashSet<>();
         for (final Object v : values[c]) {
@@ -3103,8 +3225,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       }
     }
 
-    final BlockEntry merged = writeNewBlockToFile(tempFile, total, ts[0], ts[total - 1], compressedCols,
-        new BlockStats(mins, maxs, sums, counts), colCount, tagDistinctValues, newBlockId());
+    final BlockEntry merged = writeNewBlockToFile(tempFile, total, ts[0], ts[total - 1], compressedCols, stats.build(), colCount,
+        tagDistinctValues, newBlockId());
     merged.downsampledGranularityMs = run.getFirst().downsampledGranularityMs;
     target.add(merged);
     recordMergeLink(links, merged, run, order);
@@ -3286,26 +3408,29 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   }
 
   /**
-   * Writes a single block to a temp file and returns the resulting {@link BlockEntry}.
-   * Does NOT modify {@link #blockDirectory} or the global min/max timestamps —
-   * callers are responsible for those updates.
+   * The metadata record of a block in the current ("TSB4") layout, flipped and ready to write: magic, timestamps, sample count,
+   * identity, column sizes, the statistics of every numeric column - exact longs for a SIMPLE8B one, doubles for a GORILLA_XOR
+   * one - and the tag metadata. The one writer of the record, shared by {@link #appendBlock} and {@link #writeNewBlockToFile}.
+   * <p>
+   * Which columns carry statistics is keyed off the codec ({@link #hasNumericStats}), never off the VALUE of the declared
+   * minimum: a NaN minimum is a legitimate declaration ("this column holds no real sample", the absent marker of issue #7043),
+   * and treating it as "this column has no statistics section" would drop an entry the reader still expects and shift every
+   * following column's statistics onto the wrong column.
    */
-  private BlockEntry writeNewBlockToFile(final RandomAccessFile tempFile, final int sampleCount,
-      final long minTs, final long maxTs, final byte[][] compressedCols, final BlockStats stats,
-      final int colCount, final String[][] tagDistinctValues, final long blockId) throws IOException {
-
-    // Same codec-keyed rule as writeBlock() - see the comment there.
+  private ByteBuffer blockMeta(final int sampleCount, final long minTs, final long maxTs, final long blockId,
+      final byte[][] compressedCols, final BlockStats stats, final byte[] tagMeta) {
+    final int colCount = columns.size();
     int numericColCount = 0;
+    int statsBytes = 0;
     for (int c = 0; c < colCount; c++)
-      if (hasNumericStats(c))
+      if (hasNumericStats(c)) {
         numericColCount++;
+        statsBytes += columns.get(c).storesExactIntegers() ? INTEGRAL_STATS_BYTES : STATS_BYTES;
+      }
 
-    final byte[] tagMeta = buildTagMetadata(tagDistinctValues, colCount);
-
-    final int statsSize = 4 + STATS_BYTES * numericColCount;
-    final int metaSize = 4 + 8 + 8 + 4 + BLOCK_ID_BYTES + 4 * colCount + statsSize + tagMeta.length;
+    final int metaSize = 4 + 8 + 8 + 4 + BLOCK_ID_BYTES + 4 * colCount + 4 + statsBytes + tagMeta.length;
     final ByteBuffer metaBuf = ByteBuffer.allocate(metaSize);
-    metaBuf.putInt(BLOCK_MAGIC_VALUE_V3);
+    metaBuf.putInt(BLOCK_MAGIC_VALUE_V4);
     metaBuf.putLong(minTs);
     metaBuf.putLong(maxTs);
     metaBuf.putInt(sampleCount);
@@ -3314,15 +3439,197 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       metaBuf.putInt(col.length);
     metaBuf.putInt(numericColCount);
     for (int c = 0; c < colCount; c++) {
-      if (hasNumericStats(c)) {
+      if (!hasNumericStats(c))
+        continue;
+      if (columns.get(c).storesExactIntegers()) {
+        metaBuf.putLong(stats.exactMins()[c]);
+        metaBuf.putLong(stats.exactMaxs()[c]);
+        metaBuf.putLong(stats.exactSumsLo()[c]);
+        metaBuf.putLong(stats.exactSumsHi()[c]);
+      } else {
         metaBuf.putDouble(stats.mins()[c]);
         metaBuf.putDouble(stats.maxs()[c]);
         metaBuf.putDouble(stats.sums()[c]);
-        metaBuf.putLong(stats.counts()[c]);
       }
+      metaBuf.putLong(stats.counts()[c]);
     }
     metaBuf.put(tagMeta);
     metaBuf.flip();
+    return metaBuf;
+  }
+
+  /**
+   * {@code stats} with exact statistics for every SIMPLE8B column (issue #9720): kept where they are already exact, proven
+   * from the declared doubles where those prove them ({@link #exactFromDoubles}), and computed from the column's values
+   * otherwise. Every block a write path produces goes through here, so a TSB4 record never carries an integral column whose
+   * statistics are not exact - whichever path built them, and whether the block is new or an older one being rewritten.
+   */
+  private BlockStats withExactIntegralStats(final BlockStats stats, final byte[][] compressedCols) throws IOException {
+    StatsBuilder builder = null;
+    for (int c = 0; c < columns.size(); c++) {
+      if (!hasNumericStats(c) || !columns.get(c).storesExactIntegers() || (stats.exact() != null && stats.exact()[c]))
+        continue;
+      if (builder == null)
+        builder = new StatsBuilder(columns, stats);
+      final long[] proven = exactFromDoubles(stats.mins()[c], stats.maxs()[c], stats.sums()[c], stats.counts()[c]);
+      if (proven != null)
+        builder.setExact(c, proven[0], proven[1], proven[2], proven[3], proven[4]);
+      else
+        builder.addIntegral(c, IntegralColumn.decode(compressedCols[c]));
+    }
+    return builder != null ? builder.build() : stats;
+  }
+
+  /**
+   * The exact statistics {@code {min, max, sumLo, sumHi, count}} of an integral column that a block's DOUBLE statistics prove,
+   * or {@code null} when they prove nothing (issue #9720). A double holds every integer of magnitude below 2^53 and rounding is
+   * monotonic, so extremes below it in magnitude are the stored longs; and a column of {@code count} samples none past the
+   * larger extreme in magnitude has partial sums bounded by {@code count} times it - below 2^53, every one of them, and so the
+   * total, was added exactly. A count unknown (a legacy block, see {@link BlockEntry#COUNT_UNKNOWN}) proves nothing.
+   */
+  static long[] exactFromDoubles(final double min, final double max, final double sum, final long count) {
+    if (count == 0)
+      return new long[] { 0L, 0L, 0L, 0L, 0L };
+    if (count < 0 || Double.isNaN(min) || Double.isNaN(max) || Double.isNaN(sum))
+      return null;
+    final double magnitude = Math.max(Math.abs(min), Math.abs(max));
+    if (!(magnitude < EXACT_INTEGRAL_DOUBLE) || !((double) count * magnitude < EXACT_INTEGRAL_DOUBLE) || min != Math.rint(min)
+        || max != Math.rint(max) || sum != Math.rint(sum))
+      return null;
+    final long total = (long) sum;
+    return new long[] { (long) min, (long) max, total, total >> 63, count };
+  }
+
+  /**
+   * Builds the statistics of a block, column by column, from the values a write path holds: exact longs for a SIMPLE8B column
+   * (issue #9720), the NaN-policy doubles of {@link #reduceNumericStats(ColumnDefinition, Object[])} for a GORILLA_XOR one. A
+   * column nothing is added for declares no statistics (NaN and zero), which is what a non-numeric column declares.
+   */
+  static final class StatsBuilder {
+    private final List<ColumnDefinition> columns;
+    private final double[]               mins;
+    private final double[]               maxs;
+    private final double[]               sums;
+    private final long[]                 counts;
+    private final long[]                 exactMins;
+    private final long[]                 exactMaxs;
+    private final long[]                 exactSumsLo;
+    private final long[]                 exactSumsHi;
+    private final boolean[]              exact;
+
+    StatsBuilder(final List<ColumnDefinition> columns) {
+      final int colCount = columns.size();
+      this.columns = columns;
+      this.mins = new double[colCount];
+      this.maxs = new double[colCount];
+      this.sums = new double[colCount];
+      this.counts = new long[colCount];
+      Arrays.fill(mins, Double.NaN);
+      Arrays.fill(maxs, Double.NaN);
+      Arrays.fill(sums, Double.NaN);
+      this.exactMins = new long[colCount];
+      this.exactMaxs = new long[colCount];
+      this.exactSumsLo = new long[colCount];
+      this.exactSumsHi = new long[colCount];
+      this.exact = new boolean[colCount];
+    }
+
+    /** A builder starting from {@code stats}, copied, so the original is never written. */
+    StatsBuilder(final List<ColumnDefinition> columns, final BlockStats stats) {
+      this.columns = columns;
+      this.mins = stats.mins().clone();
+      this.maxs = stats.maxs().clone();
+      this.sums = stats.sums().clone();
+      this.counts = stats.counts().clone();
+      final int colCount = columns.size();
+      this.exactMins = stats.exactMins() != null ? stats.exactMins().clone() : new long[colCount];
+      this.exactMaxs = stats.exactMaxs() != null ? stats.exactMaxs().clone() : new long[colCount];
+      this.exactSumsLo = stats.exactSumsLo() != null ? stats.exactSumsLo().clone() : new long[colCount];
+      this.exactSumsHi = stats.exactSumsHi() != null ? stats.exactSumsHi().clone() : new long[colCount];
+      this.exact = stats.exact() != null ? stats.exact().clone() : new boolean[colCount];
+    }
+
+    /** The statistics of column {@code c} from the values a write path holds, {@code null} being a sample with no value. */
+    void add(final int c, final Object[] values) {
+      final ColumnDefinition column = columns.get(c);
+      if (column.storesExactIntegers()) {
+        long min = 0;
+        long max = 0;
+        long count = 0;
+        final long[] sum = new long[2];
+        for (final Object value : values) {
+          if (value == null)
+            continue;
+          final long v = ColumnDefinition.integerValueOf(value);
+          if (count == 0 || v < min)
+            min = v;
+          if (count == 0 || v > max)
+            max = v;
+          ExactLongSum.add(sum, 0, v);
+          count++;
+        }
+        setExact(c, min, max, sum[0], sum[1], count);
+      } else {
+        final double[] stats = reduceNumericStats(column, values);
+        mins[c] = stats[0];
+        maxs[c] = stats[1];
+        sums[c] = stats[2];
+        counts[c] = (long) stats[3];
+        exact[c] = false;
+      }
+    }
+
+    /** The exact statistics of the decoded integral column {@code values}. */
+    void addIntegral(final int c, final IntegralColumn values) {
+      long min = 0;
+      long max = 0;
+      long count = 0;
+      final long[] sum = new long[2];
+      for (int i = 0; i < values.size(); i++) {
+        if (values.isNull(i))
+          continue;
+        final long v = values.values[i];
+        if (count == 0 || v < min)
+          min = v;
+        if (count == 0 || v > max)
+          max = v;
+        ExactLongSum.add(sum, 0, v);
+        count++;
+      }
+      setExact(c, min, max, sum[0], sum[1], count);
+    }
+
+    /** Sets exact statistics, and the doubles nearest to them, which every double reader of the block sees. */
+    void setExact(final int c, final long min, final long max, final long sumLo, final long sumHi, final long count) {
+      exactMins[c] = min;
+      exactMaxs[c] = max;
+      exactSumsLo[c] = sumLo;
+      exactSumsHi[c] = sumHi;
+      exact[c] = true;
+      counts[c] = count;
+      mins[c] = count > 0 ? (double) min : Double.NaN;
+      maxs[c] = count > 0 ? (double) max : Double.NaN;
+      sums[c] = count > 0 ? ExactLongSum.toDouble(sumLo, sumHi) : Double.NaN;
+    }
+
+    BlockStats build() {
+      return new BlockStats(mins, maxs, sums, counts, exactMins, exactMaxs, exactSumsLo, exactSumsHi, exact);
+    }
+  }
+
+  /**
+   * Writes a single block to a temp file and returns the resulting {@link BlockEntry}.
+   * Does NOT modify {@link #blockDirectory} or the global min/max timestamps —
+   * callers are responsible for those updates.
+   */
+  private BlockEntry writeNewBlockToFile(final RandomAccessFile tempFile, final int sampleCount,
+      final long minTs, final long maxTs, final byte[][] compressedCols, final BlockStats stats,
+      final int colCount, final String[][] tagDistinctValues, final long blockId) throws IOException {
+
+    final BlockStats exactStats = withExactIntegralStats(stats, compressedCols);
+    final ByteBuffer metaBuf = blockMeta(sampleCount, minTs, maxTs, blockId, compressedCols, exactStats,
+        buildTagMetadata(tagDistinctValues, colCount));
+    final int metaSize = metaBuf.limit();
 
     // Use metaBuf.limit() (not .array().length) since the backing array may be larger after flip
     final CRC32 crc = new CRC32();
@@ -3336,8 +3643,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
     // #6360 item 3: the temp file becomes the live file by an atomic move, so an offset into it is the offset the
     // block will have - exactly as the column offsets set below already are.
-    final BlockEntry newEntry = new BlockEntry(minTs, maxTs, sampleCount, colCount, stats.mins(), stats.maxs(),
-        stats.sums(), stats.counts(), blockStart, blockId);
+    final BlockEntry newEntry = new BlockEntry(minTs, maxTs, sampleCount, colCount, exactStats, blockStart, blockId);
     newEntry.tagDistinctValues = tagDistinctValues;
     for (int c = 0; c < colCount; c++) {
       newEntry.columnOffsets[c] = dataOffset;
@@ -3595,10 +3901,18 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         yield GorillaXORCodec.encode(doubles);
       }
       case SIMPLE8B -> {
+        // A null is a sample with no value: a zero the block's null bitmap marks absent (issue #9721)
         final long[] longs = new long[values.length];
-        for (int i = 0; i < values.length; i++)
-          longs[i] = ColumnDefinition.integerValueOf(values[i]);
-        yield Simple8bCodec.encode(longs);
+        long[] nulls = null;
+        for (int i = 0; i < values.length; i++) {
+          if (values[i] == null) {
+            if (nulls == null)
+              nulls = new long[Simple8bCodec.bitmapWords(values.length)];
+            nulls[i >>> 6] |= 1L << i;
+          } else
+            longs[i] = ColumnDefinition.integerValueOf(values[i]);
+        }
+        yield Simple8bCodec.encode(longs, nulls);
       }
       case DICTIONARY -> {
         final String[] strings = new String[values.length];
@@ -4069,11 +4383,11 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         switch (column.getCompressionHint()) {
         case GORILLA_XOR -> checkNumericColumn(where, entry, c, column, GorillaXORCodec.decode(compressed), problems);
         case SIMPLE8B -> {
-          final long[] longs = Simple8bCodec.decode(compressed);
-          final double[] doubles = new double[longs.length];
-          for (int i = 0; i < longs.length; i++)
-            doubles[i] = longs[i];
-          checkNumericColumn(where, entry, c, column, doubles, problems);
+          final IntegralColumn integral = IntegralColumn.decode(compressed);
+          if (entry.exactStats[c])
+            checkIntegralColumn(where, entry, c, column, integral, problems);
+          else
+            checkNumericColumn(where, entry, c, column, integralAsDoubles(integral), problems);
         }
         case DICTIONARY -> checkDictionaryColumn(where, entry, c, column, DictionaryCodec.decode(compressed), problems);
         default -> {
@@ -4161,7 +4475,12 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   /**
    * The statistics a block declares for every column, in schema order; non-numeric columns hold NaN and zero.
    */
-  record BlockStats(double[] mins, double[] maxs, double[] sums, long[] counts) {
+  record BlockStats(double[] mins, double[] maxs, double[] sums, long[] counts, long[] exactMins, long[] exactMaxs,
+                    long[] exactSumsLo, long[] exactSumsHi, boolean[] exact) {
+    /** Double statistics only: a writer proves or computes the exact ones of every SIMPLE8B column (withExactIntegralStats). */
+    BlockStats(final double[] mins, final double[] maxs, final double[] sums, final long[] counts) {
+      this(mins, maxs, sums, counts, null, null, null, null, null);
+    }
   }
 
   /**
@@ -4174,7 +4493,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     double[] sums = entry.columnSums;
     long[] counts = entry.columnCounts;
     for (int c = 0; c < columns.size(); c++) {
-      if (counts[c] != BlockEntry.COUNT_UNKNOWN)
+      // an integral column is recomputed exactly below whatever it declares
+      if (counts[c] != BlockEntry.COUNT_UNKNOWN || (hasNumericStats(c) && columns.get(c).storesExactIntegers()))
         continue;
       if (sums == entry.columnSums) {
         sums = sums.clone();
@@ -4184,7 +4504,9 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       sums[c] = stats[2];
       counts[c] = (long) stats[3];
     }
-    return new BlockStats(entry.columnMins, entry.columnMaxs, sums, counts);
+    // The exact statistics of the integral columns where the block has them; withExactIntegralStats completes the others
+    return withExactIntegralStats(new BlockStats(entry.columnMins, entry.columnMaxs, sums, counts, entry.exactMins, entry.exactMaxs,
+        entry.exactSumsLo, entry.exactSumsHi, entry.exactStats), compressedCols);
   }
 
   /**
@@ -4195,23 +4517,27 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * is cheaper than two.
    */
   private static boolean needsValues(final BlockEntry entry, final List<MultiColumnAggregationRequest> requests,
-      final int[] schemaColIndices) {
+      final int[] schemaColIndices, final boolean[] exact) {
     for (int r = 0; r < requests.size(); r++)
       if (requests.get(r).type() != AggregationType.COUNT
-          && entry.columnCounts[schemaColIndices[r]] == BlockEntry.COUNT_UNKNOWN)
+          && (entry.columnCounts[schemaColIndices[r]] == BlockEntry.COUNT_UNKNOWN
+          // an exact request over an older block whose doubles do not prove its integral statistics (issue #9720)
+          || (exact[r] && !entry.exactStats[schemaColIndices[r]])))
         return true;
     return false;
   }
 
   private static boolean isBlockMagic(final int magic) {
-    return magic == BLOCK_MAGIC_VALUE || magic == BLOCK_MAGIC_VALUE_V2 || magic == BLOCK_MAGIC_VALUE_V3;
+    return magic == BLOCK_MAGIC_VALUE || magic == BLOCK_MAGIC_VALUE_V2 || magic == BLOCK_MAGIC_VALUE_V3
+        || magic == BLOCK_MAGIC_VALUE_V4;
   }
 
   /**
    * {@link #reduceNumericStats(double[])} over the boxed values a write path holds, unboxed exactly the way
    * {@link #compressColumn} unboxes them so the statistics describe the bytes that get written. Which is why it
-   * takes the column: a null is the absent marker on a floating-point column and a zero on every other, and the
-   * declared minimum has to agree with the encoder about that (issue #7743).
+   * takes the column: a null is absent on every column - the NaN itself on a floating-point one (issue #7743), a zero the
+   * block's null bitmap marks on an integral one (issue #9721) - and the declared minimum has to agree with the encoder about
+   * that. An integral column's write path goes through {@link StatsBuilder}, which keeps its statistics exact.
    */
   static double[] reduceNumericStats(final ColumnDefinition col, final Object[] values) {
     final double[] unboxed = new double[values.length];
@@ -4283,6 +4609,40 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     else if (Math.abs(sum - declaredSum) > SUM_RELATIVE_TOLERANCE * Math.max(1.0, Math.abs(sum)))
       problems.add(where + " declares sum " + declaredSum + " for column '" + column.getName()
           + "' but its values add up to " + sum + ": an aggregation answered from this block would be wrong");
+  }
+
+  /**
+   * Reconciles an integral column's decoded values against the EXACT statistics the block declares for it (issue #9720): the
+   * numbers the aggregation push-down answers a MIN/MAX/SUM/AVG of the column from, so they have to be the values, exactly.
+   */
+  private void checkIntegralColumn(final String where, final BlockEntry entry, final int colIdx, final ColumnDefinition column,
+      final IntegralColumn values, final List<String> problems) {
+    if (values.size() != entry.sampleCount) {
+      problems.add(where + " declares " + entry.sampleCount + " sample(s) but column '" + column.getName() + "' decodes to "
+          + values.size());
+      return;
+    }
+    final StatsBuilder recomputed = new StatsBuilder(columns);
+    recomputed.addIntegral(colIdx, values);
+    final BlockStats stats = recomputed.build();
+    final long count = stats.counts()[colIdx];
+    if (entry.columnCounts[colIdx] != count) {
+      problems.add(where + " declares " + entry.columnCounts[colIdx] + " sample(s) with a value for column '" + column.getName()
+          + "' but its values hold " + count + ": an aggregation answered from this block would be wrong");
+      return;
+    }
+    if (count == 0)
+      return;
+    if (entry.exactMins[colIdx] != stats.exactMins()[colIdx])
+      problems.add(where + " declares min " + entry.exactMins[colIdx] + " for column '" + column.getName() + "' but its values start at "
+          + stats.exactMins()[colIdx] + ": an aggregation answered from this block would be wrong");
+    if (entry.exactMaxs[colIdx] != stats.exactMaxs()[colIdx])
+      problems.add(where + " declares max " + entry.exactMaxs[colIdx] + " for column '" + column.getName() + "' but its values reach "
+          + stats.exactMaxs()[colIdx] + ": an aggregation answered from this block would be wrong");
+    if (entry.exactSumsLo[colIdx] != stats.exactSumsLo()[colIdx] || entry.exactSumsHi[colIdx] != stats.exactSumsHi()[colIdx])
+      problems.add(where + " declares sum " + ExactLongSum.toNumber(entry.exactSumsLo[colIdx], entry.exactSumsHi[colIdx]) + " for column '"
+          + column.getName() + "' but its values add up to " + ExactLongSum.toNumber(stats.exactSumsLo()[colIdx], stats.exactSumsHi()[colIdx])
+          + ": an aggregation answered from this block would be wrong");
   }
 
   /**
@@ -4922,7 +5282,9 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       final boolean legacyStats = blockMagic == BLOCK_MAGIC_VALUE;
       final int statsBytes = legacyStats ? LEGACY_STATS_BYTES : STATS_BYTES;
       // ... and whether the record carries the block's own identity (issue #8043).
-      final boolean carriesBlockId = blockMagic == BLOCK_MAGIC_VALUE_V3;
+      final boolean carriesBlockId = blockMagic == BLOCK_MAGIC_VALUE_V3 || blockMagic == BLOCK_MAGIC_VALUE_V4;
+      // ... and whether a SIMPLE8B column's statistics are exact longs (issue #9720).
+      final boolean exactIntegralStats = blockMagic == BLOCK_MAGIC_VALUE_V4;
       final int baseMetaSize = shortestBaseMetaSize + (carriesBlockId ? BLOCK_ID_BYTES : 0);
       if (readSize < baseMetaSize)
         break; // a TSB3 record the file ends in the middle of: the same unfinished write a short read means
@@ -4955,16 +5317,19 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       final int numericColCount = numBuf.getInt();
       statsPos += 4;
 
-      final double[] mins = new double[colCount];
-      final double[] maxs = new double[colCount];
-      final double[] sums = new double[colCount];
-      final long[] counts = new long[colCount];
-      Arrays.fill(mins, Double.NaN);
-      Arrays.fill(maxs, Double.NaN);
-      Arrays.fill(sums, Double.NaN);
+      final StatsBuilder stats = new StatsBuilder(columns);
+      final double[] mins = stats.mins;
+      final double[] maxs = stats.maxs;
+      final double[] sums = stats.sums;
+      final long[] counts = stats.counts;
 
       if (numericColCount > 0) {
-        final int statsSize = statsBytes * numericColCount;
+        int statsSize = 0;
+        for (int c = 0, n = 0; c < colCount && n < numericColCount; c++)
+          if (hasNumericStats(c)) {
+            statsSize += exactIntegralStats && columns.get(c).storesExactIntegers() ? INTEGRAL_STATS_BYTES : statsBytes;
+            n++;
+          }
         final ByteBuffer statsBuf = ByteBuffer.allocate(statsSize);
         if (FileUtils.readFully(indexChannel, statsBuf, statsPos) < statsSize)
           break;
@@ -4977,6 +5342,15 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         for (int c = 0; c < colCount && numericIdx < numericColCount; c++) {
           if (!hasNumericStats(c))
             continue;
+          if (exactIntegralStats && columns.get(c).storesExactIntegers()) {
+            final long min = statsBuf.getLong();
+            final long max = statsBuf.getLong();
+            final long sumLo = statsBuf.getLong();
+            final long sumHi = statsBuf.getLong();
+            stats.setExact(c, min, max, sumLo, sumHi, statsBuf.getLong());
+            numericIdx++;
+            continue;
+          }
           mins[c] = statsBuf.getDouble();
           maxs[c] = statsBuf.getDouble();
           sums[c] = statsBuf.getDouble();
@@ -4988,6 +5362,12 @@ public class TimeSeriesSealedStore implements AutoCloseable {
             counts[c] = Double.isNaN(sums[c]) ? BlockEntry.COUNT_UNKNOWN : sampleCount;
           else
             counts[c] = statsBuf.getLong();
+          // An older block's integral column: exact where its doubles prove it, otherwise its exact requests decode it
+          if (columns.get(c).storesExactIntegers()) {
+            final long[] proven = exactFromDoubles(mins[c], maxs[c], sums[c], counts[c]);
+            if (proven != null)
+              stats.setExact(c, proven[0], proven[1], proven[2], proven[3], proven[4]);
+          }
           numericIdx++;
         }
         statsPos += statsSize;
@@ -5039,8 +5419,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         }
       }
 
-      final BlockEntry entry = new BlockEntry(minTs, maxTs, sampleCount, colCount, mins, maxs, sums, counts, pos,
-          blockId);
+      final BlockEntry entry = new BlockEntry(minTs, maxTs, sampleCount, colCount, stats.build(), pos, blockId);
       entry.tagDistinctValues = blockTagDistinctValues;
       long dataPos = tagEndPos;
       for (int c = 0; c < colCount; c++) {
@@ -5168,14 +5547,9 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     if (col.getCompressionHint() == TimeSeriesCodec.GORILLA_XOR)
       return GorillaXORCodec.decode(compressed);
 
-    // For SIMPLE8B encoded longs, convert to doubles
-    if (col.getCompressionHint() == TimeSeriesCodec.SIMPLE8B) {
-      final long[] longs = Simple8bCodec.decode(compressed);
-      final double[] result = new double[longs.length];
-      for (int i = 0; i < longs.length; i++)
-        result[i] = longs[i];
-      return result;
-    }
+    // For SIMPLE8B encoded longs, convert to doubles: a sample with no value is the absent marker (issue #9721)
+    if (col.getCompressionHint() == TimeSeriesCodec.SIMPLE8B)
+      return integralAsDoubles(IntegralColumn.decode(compressed));
 
     throw new IllegalArgumentException(
         "decodeDoubleColumn: codec " + col.getCompressionHint() + " is not a numeric codec (column " + schemaColIdx + ")");
@@ -5191,10 +5565,10 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   private static final class RawColumn {
     private final ColumnDefinition col;
     private final double[]         doubles;
-    private final long[]           longs;
+    private final IntegralColumn   longs;
     private final String[]         strings;
 
-    private RawColumn(final ColumnDefinition col, final double[] doubles, final long[] longs, final String[] strings) {
+    private RawColumn(final ColumnDefinition col, final double[] doubles, final IntegralColumn longs, final String[] strings) {
       this.col = col;
       this.doubles = doubles;
       this.longs = longs;
@@ -5209,7 +5583,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       if (doubles != null)
         return col.boxDouble(doubles[i]);
       if (longs != null)
-        return col.boxRaw(longs[i]);
+        return longs.isNull(i) ? null : col.boxRaw(longs.values[i]);
       if (strings != null)
         return col.boxString(strings[i]);
       return null;
@@ -5217,8 +5591,9 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   }
 
   /**
-   * One column of a block decoded by its own codec, unboxed: a {@code double[]} for {@code GORILLA_XOR}, a {@code long[]}
-   * for {@code SIMPLE8B}, a {@code String[]} for {@code DICTIONARY}. Through the decoded-column cache, which holds exactly
+   * One column of a block decoded by its own codec, unboxed: a {@code double[]} for {@code GORILLA_XOR}, an
+   * {@link IntegralColumn} for {@code SIMPLE8B} (its values and the samples that carry none, issue #9721), a {@code String[]}
+   * for {@code DICTIONARY}. Through the decoded-column cache, which holds exactly
    * that array.
    */
   private Object rawColumnValues(final BlockEntry entry, final int schemaColIdx) throws IOException {
@@ -5227,7 +5602,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       final byte[] compressed = readBytes(entry.columnOffsets[schemaColIdx], entry.columnSizes[schemaColIdx]);
       values = switch (columns.get(schemaColIdx).getCompressionHint()) {
         case GORILLA_XOR -> GorillaXORCodec.decode(compressed);
-        case SIMPLE8B -> Simple8bCodec.decode(compressed);
+        case SIMPLE8B -> IntegralColumn.decode(compressed);
         case DICTIONARY -> DictionaryCodec.decode(compressed);
         default -> null;
       };
@@ -5270,7 +5645,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
       result.add(switch (col.getCompressionHint()) {
         case GORILLA_XOR -> new RawColumn(col, (double[]) values, null, null);
-        case SIMPLE8B -> new RawColumn(col, null, (long[]) values, null);
+        case SIMPLE8B -> new RawColumn(col, null, (IntegralColumn) values, null);
         case DICTIONARY -> new RawColumn(col, null, null, (String[]) values);
         default -> new RawColumn(col, null, null, null);
       });
@@ -5370,10 +5745,10 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         yield boxed;
       }
       case SIMPLE8B -> {
-        final long[] vals = Simple8bCodec.decode(compressed);
-        final Object[] boxed = new Object[vals.length];
-        for (int i = 0; i < vals.length; i++)
-          boxed[i] = col.boxRaw(vals[i]);
+        final IntegralColumn vals = IntegralColumn.decode(compressed);
+        final Object[] boxed = new Object[vals.size()];
+        for (int i = 0; i < boxed.length; i++)
+          boxed[i] = vals.isNull(i) ? null : col.boxRaw(vals.values[i]);
         yield boxed;
       }
       case DICTIONARY -> {
@@ -5603,16 +5978,23 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     if (col.getCompressionHint() == TimeSeriesCodec.GORILLA_XOR)
       return GorillaXORCodec.decode(compressed);
 
-    if (col.getCompressionHint() == TimeSeriesCodec.SIMPLE8B) {
-      final long[] longs = Simple8bCodec.decode(compressed);
-      final double[] result = new double[longs.length];
-      for (int i = 0; i < longs.length; i++)
-        result[i] = longs[i];
-      return result;
-    }
+    if (col.getCompressionHint() == TimeSeriesCodec.SIMPLE8B)
+      return integralAsDoubles(IntegralColumn.decode(compressed));
 
     throw new IllegalArgumentException(
         "decompressDoubleColumnFromBytes: codec " + col.getCompressionHint() + " is not a numeric codec (column " + schemaColIdx + ")");
+  }
+
+  /**
+   * An integral column as doubles, a sample with no value as {@link TimeSeriesNaN#ABSENT} (issue #9721), which every aggregate
+   * reading doubles skips.
+   */
+  private static double[] integralAsDoubles(final IntegralColumn column) {
+    final long[] longs = column.values;
+    final double[] result = new double[longs.length];
+    for (int i = 0; i < longs.length; i++)
+      result[i] = column.isNull(i) ? TimeSeriesNaN.ABSENT : longs[i];
+    return result;
   }
 
   private int findTimestampColumnIndex() {

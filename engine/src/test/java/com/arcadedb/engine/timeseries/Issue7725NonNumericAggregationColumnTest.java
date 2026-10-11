@@ -60,14 +60,15 @@ class Issue7725NonNumericAggregationColumnTest extends TestHelper {
 
   /**
    * The reported branch. A boolean is one or zero - what the sealed layer's {@code SIMPLE8B} column holds - a
-   * null is zero, because that is what BOTH sealing codecs write for it, and anything that is not a measurement
+   * null is absent, because both sealing codecs mark it so (issue #9721), and anything that is not a measurement
    * at all is {@link TimeSeriesNaN#ABSENT}, which every aggregate skips, rather than a measurement of zero.
    */
   @Test
   void aMutableSampleIsUnboxedTheWayTheSealedLayerUnboxesIt() {
     assertThat(TimeSeriesNaN.asMeasurement(Boolean.TRUE)).as("what SIMPLE8B stores for true").isEqualTo(1.0);
     assertThat(TimeSeriesNaN.asMeasurement(Boolean.FALSE)).isEqualTo(0.0);
-    assertThat(TimeSeriesNaN.asMeasurement(null)).as("both sealing codecs write a null out as zero").isEqualTo(0.0);
+    // a row hands a null back for a sample with no value, which both layers mark absent (issues #7743, #9721)
+    assertThat(TimeSeriesNaN.asMeasurement(null)).as("a sample with no value is absent").isNaN();
     assertThat(TimeSeriesNaN.asMeasurement(42)).isEqualTo(42.0);
     assertThat(TimeSeriesNaN.asMeasurement(2.5f)).isEqualTo(2.5);
     assertThat(TimeSeriesNaN.asMeasurement(Double.NaN)).as("an absent sample stays absent").isNaN();

@@ -85,14 +85,11 @@ public final class TimeSeriesNaN {
    * class's policy is a MEASUREMENT of zero: it enters the SUM and drags the AVG toward it, where
    * {@link #ABSENT} would have been skipped by every aggregate.
    * <p>
-   * {@code null} is zero rather than absent, and that is not a policy choice made here: it is what the column
-   * STORES for it, so answering anything else would recreate the very disagreement this method exists to remove.
-   * Since issue #7743 that answer depends on the column and is decided before the value ever reaches this method:
-   * a floating-point column writes a null out as {@link #ABSENT} on both layers - {@link TimeSeriesBatch#rawNull}
-   * on the mutable page, {@link ColumnDefinition#storedNumericValueOf} in the {@code GORILLA_XOR} encoder and in
-   * the block statistics - so a null measurement arrives here as a NaN {@link Double} and is skipped by every
-   * aggregate, which is what a client saying "no measurement here" asked for. Every other numeric column has no
-   * value to spend on absence, writes the null out as a real zero, and reads it back through this arm.
+   * {@code null} is {@link #ABSENT}: it is what a row hands back for a sample that carries no value. A floating-point
+   * column never hands one back - it stores the NaN itself, so a null measurement arrives here as a NaN {@link Double} -
+   * and since issue #9721 an integral column of a type whose rows carry a null bitmap does, on both layers: the mutable
+   * row reads its bit, and a sealed block's {@code SIMPLE8B} column carries the same bitmap. A type created before that
+   * format still stores a null integral value as a real zero, which arrives here as the zero it is.
    * <p>
    * The remaining arm - a value that is neither null, a boolean nor a number - is a column the sealed layer
    * cannot read as a number at all ({@code DICTIONARY} and {@code DELTA_OF_DELTA} have no numeric decoder, and
@@ -102,7 +99,7 @@ public final class TimeSeriesNaN {
    */
   public static double asMeasurement(final Object value) {
     if (value == null)
-      return 0.0;
+      return ABSENT;
     if (value instanceof final Number n)
       return n.doubleValue();
     if (value instanceof final Boolean b)

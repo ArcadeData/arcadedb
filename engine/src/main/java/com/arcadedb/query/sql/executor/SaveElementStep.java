@@ -42,7 +42,6 @@ import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.schema.Type;
 import com.arcadedb.security.SecurityDatabaseUser;
-import com.arcadedb.utility.DateUtils;
 
 import java.io.IOException;
 import java.time.Instant;
@@ -281,7 +280,7 @@ public class SaveElementStep extends AbstractExecutionStep {
       if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP) {
         timestamps[0] = toEpochMs(value, zoneId);
       } else {
-        columnValues[colIdx][0] = convertValue(context.getDatabase(), col.getName(), value, col.getDataType());
+        columnValues[colIdx][0] = convertValue(context.getDatabase(), col, value);
         colIdx++;
       }
     }
@@ -345,10 +344,10 @@ public class SaveElementStep extends AbstractExecutionStep {
     throw new CommandExecutionException("Cannot convert to timestamp: " + (value != null ? value.getClass().getName() : "null"));
   }
 
-  private static Object convertValue(final Database database, final String columnName, final Object value,
-      final Type targetType) {
+  private static Object convertValue(final Database database, final ColumnDefinition column, final Object value) {
     if (value == null)
       return null;
+    final Type targetType = column.getDataType();
     return switch (targetType) {
       // A Float widens through its decimal form, as Type.convert() already does: .doubleValue() would persist the
       // single precision rounding error into the DOUBLE property, where it outlives the statement (issue #7609).
@@ -361,29 +360,14 @@ public class SaveElementStep extends AbstractExecutionStep {
       case SHORT -> value instanceof Number n ? n.shortValue() : Short.parseShort(value.toString());
       // The engine stores a datetime column as an epoch count in the column's own unit and casts it to Number, while
       // the document layer has already turned the property into the temporal object its declared type calls for
-      // (issue #9643). Encode it exactly as the binary serializer encodes the same value on a document property:
-      // DATE as epoch days, the DATETIME family in the precision the type names. The same literal therefore means the
-      // same instant on a TimeSeries column as on a document property, numbers included: those are epoch MILLIS for
-      // every DATETIME precision and epoch DAYS for a DATE, as Type.convert reads them (issue #9324).
-      case DATETIME, DATETIME_SECOND, DATETIME_MICROS, DATETIME_NANOS -> {
-        final Long epoch;
+      // (issue #9643). Encoded exactly as the binary serializer encodes the same value on a document property, by the
+      // one conversion the tag push-down uses too (issue #9724): DATE as epoch days, the DATETIME family in the precision
+      // the type names, an instant that precision cannot hold refused rather than saturated (issue #9725).
+      case DATE, DATETIME, DATETIME_SECOND, DATETIME_MICROS, DATETIME_NANOS -> {
         try {
-          epoch = DateUtils.dateTimeToTimestamp(database, value, DateUtils.getPrecisionFromType(targetType));
+          yield column.epochOf(database, value);
         } catch (final IllegalArgumentException e) {
-          throw unconvertibleDateTime(columnName, value, targetType, e);
-        }
-        // dateTimeToTimestamp answers null for a type it cannot read: refuse it rather than store the absent marker
-        if (epoch == null)
-          throw unconvertibleDateTime(columnName, value, targetType, null);
-        yield epoch;
-      }
-      case DATE -> {
-        try {
-          // dateToEpochDays reads every temporal and Number but not text, which dateTimeToTimestamp parses itself:
-          // a String is parsed to a LocalDate first, through the same chain the document layer uses
-          yield DateUtils.dateToEpochDays(value instanceof String ? Type.convert(database, value, LocalDate.class) : value);
-        } catch (final IllegalArgumentException e) {
-          throw unconvertibleDateTime(columnName, value, targetType, e);
+          throw unconvertibleDateTime(column.getName(), value, targetType, e);
         }
       }
       // DECIMAL needs no branch of its own: Type.convert()'s BigDecimal case already builds it with

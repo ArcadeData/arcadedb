@@ -53,6 +53,8 @@ public final class GroupedAggregationResult {
   private final long                                        firstBucket;
   private final long                                        bucketIntervalMs;
   private final int                                         window;
+  // per request, whether it is exact (issues #9718, #9720): every group's result is built with it
+  private final boolean[]                                   exact;
   private final Map<GroupKey, MultiColumnAggregationResult> groups = new LinkedHashMap<>();
   private final GroupKey                                    probe  = new GroupKey();
   private       int                                         bucketCeiling;
@@ -63,10 +65,19 @@ public final class GroupedAggregationResult {
    */
   GroupedAggregationResult(final List<MultiColumnAggregationRequest> requests, final long firstBucket, final long bucketIntervalMs,
       final int window) {
+    this(requests, firstBucket, bucketIntervalMs, window, null);
+  }
+
+  /**
+   * @param exact per request, whether it is exact (see {@link MultiColumnAggregationResult}); {@code null} for none
+   */
+  GroupedAggregationResult(final List<MultiColumnAggregationRequest> requests, final long firstBucket, final long bucketIntervalMs,
+      final int window, final boolean[] exact) {
     this.requests = requests;
     this.firstBucket = firstBucket;
     this.bucketIntervalMs = bucketIntervalMs;
     this.window = window > 0 && window <= MAX_FLAT_WINDOW_PER_GROUP ? window : 0;
+    this.exact = exact;
   }
 
   /**
@@ -104,11 +115,22 @@ public final class GroupedAggregationResult {
     if (result == null) {
       // Flat only while the groups so far still fit the slot budget; the first group to cross it, and every later one, is map mode
       result = window > 0 && (long) (groups.size() + 1) * window <= MAX_FLAT_SLOTS
-          ? new MultiColumnAggregationResult(requests, firstBucket, bucketIntervalMs, window)
-          : new MultiColumnAggregationResult(requests);
+          ? new MultiColumnAggregationResult(requests, firstBucket, bucketIntervalMs, window, exact)
+          : new MultiColumnAggregationResult(requests, exact);
       groups.put(new GroupKey().set(values.clone()), result);
     }
     return result;
+  }
+
+  /**
+   * Per request, whether every group keeps it exact (see {@link MultiColumnAggregationResult}).
+   */
+  boolean[] exactFlags(final int requestCount) {
+    final boolean[] flags = new boolean[requestCount];
+    if (exact != null)
+      for (int r = 0; r < requestCount && r < exact.length; r++)
+        flags[r] = exact[r] && requests.get(r).type() != AggregationType.COUNT;
+    return flags;
   }
 
   /** How many distinct tag combinations were seen. */

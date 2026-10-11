@@ -268,6 +268,23 @@ public final class FieldFilter {
   }
 
   /**
+   * What a block's EXACT integral statistics prove about one integral condition (issue #9720): a block written since that issue
+   * keeps the minimum and the maximum of an integral column as longs, so the comparison needs none of the rounding care above.
+   *
+   * @param present how many of the block's samples carry a value, {@code < 0} when unknown
+   */
+  static BlockMatch blockMatchExact(final Condition condition, final long min, final long max, final long present, final int samples) {
+    assert condition.integral : "exact statistics answer an integral condition only";
+    if (present == 0)
+      return BlockMatch.NONE;
+    if (condition.matchesNothing() || max < condition.lowLong || min > condition.highLong)
+      return BlockMatch.NONE;
+    if (present < 0)
+      return BlockMatch.SOME;
+    return min >= condition.lowLong && max <= condition.highLong && present == samples ? BlockMatch.ALL : BlockMatch.SOME;
+  }
+
+  /**
    * Whether a stat EQUAL to {@code bound} as a double proves the value is on the bound's side of it: true when the bound and
    * its neighbours are all exact doubles, so no value past the bound rounds onto it. The LONG decides, since its double may
    * already be rounded, and the range is open because at 2^53 the neighbour outside it rounds onto the bound itself.
@@ -278,8 +295,9 @@ public final class FieldFilter {
 
   /**
    * Keeps, out of the rows {@code [from, to)}, those whose values pass every condition, writing their indices into
-   * {@code selected} in ascending order. {@code columns[c]} holds the decoded values of condition {@code c}'s column: a
-   * {@code long[]} for an integral condition, a {@code double[]} otherwise.
+   * {@code selected} in ascending order. {@code columns[c]} holds the decoded values of condition {@code c}'s column: an
+   * {@link IntegralColumn} for an integral condition, whose absent samples never match (issue #9721), a {@code double[]}
+   * otherwise.
    *
    * @return how many indices were written
    */
@@ -288,10 +306,16 @@ public final class FieldFilter {
     int count = 0;
     final Condition first = conditions.getFirst();
     if (first.integral) {
-      final long[] values = (long[]) columns[0];
-      for (int i = from; i < to; i++)
-        if (first.matches(values[i]))
-          selected[count++] = i;
+      final IntegralColumn column = (IntegralColumn) columns[0];
+      final long[] values = column.values;
+      if (column.nulls == null) {
+        for (int i = from; i < to; i++)
+          if (first.matches(values[i]))
+            selected[count++] = i;
+      } else
+        for (int i = from; i < to; i++)
+          if (!column.isNull(i) && first.matches(values[i]))
+            selected[count++] = i;
     } else {
       final double[] values = (double[]) columns[0];
       for (int i = from; i < to; i++)
@@ -302,9 +326,10 @@ public final class FieldFilter {
       final Condition condition = conditions.get(c);
       int kept = 0;
       if (condition.integral) {
-        final long[] values = (long[]) columns[c];
+        final IntegralColumn column = (IntegralColumn) columns[c];
+        final long[] values = column.values;
         for (int s = 0; s < count; s++)
-          if (condition.matches(values[selected[s]]))
+          if (!column.isNull(selected[s]) && condition.matches(values[selected[s]]))
             selected[kept++] = selected[s];
       } else {
         final double[] values = (double[]) columns[c];
@@ -325,7 +350,11 @@ public final class FieldFilter {
     assert !conditions.isEmpty() : "a FieldFilter is never empty";
     for (int c = 0; c < conditions.size(); c++) {
       final Condition condition = conditions.get(c);
-      if (condition.integral ? !condition.matches(((long[]) columns[c])[row]) : !condition.matches(((double[]) columns[c])[row]))
+      if (condition.integral) {
+        final IntegralColumn column = (IntegralColumn) columns[c];
+        if (column.isNull(row) || !condition.matches(column.values[row]))
+          return false;
+      } else if (!condition.matches(((double[]) columns[c])[row]))
         return false;
     }
     return true;

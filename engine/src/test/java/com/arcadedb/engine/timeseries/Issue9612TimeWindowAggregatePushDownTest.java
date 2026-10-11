@@ -250,7 +250,7 @@ class Issue9612TimeWindowAggregatePushDownTest extends TestHelper {
   }
 
   @Test
-  void anIntegralTotalPastWhatADoubleHoldsExactlyStaysADouble() {
+  void anIntegralTotalPastWhatADoubleHoldsExactlyIsAnExactLong() {
     database.command("sql", "CREATE TIMESERIES TYPE T TIMESTAMP ts TAGS (host STRING) FIELDS (ui LONG) SHARDS 1");
     final long big = 1L << 60;
     database.transaction(() -> {
@@ -258,11 +258,11 @@ class Issue9612TimeWindowAggregatePushDownTest extends TestHelper {
         database.command("sql", "INSERT INTO T SET ts = ?, host = 'a', ui = ?", T0 + s * 1_000L, big + s);
     });
     database.command("sql", "COMPACT TIMESERIES TYPE T");
-    // the engine accumulates in doubles, so a total past 2^53 may have been rounded: it is not handed back as an exact Long.
-    // A max is a sample of the column, which an ungrouped aggregate answers exactly (issue #9710)
+    // an integral column is aggregated as longs with a 128-bit total (issue #9718), so a total past 2^53 is the exact Long the
+    // generic plan answers, and a max is the sample of the column (issues #9710, #9720)
     try (final ResultSet rs = database.query("sql", "SELECT sum(ui) AS s, max(ui) AS m, count(*) AS c FROM T")) {
       final Result r = rs.next();
-      assertThat(r.<Object>getProperty("s")).isInstanceOf(Double.class);
+      assertThat(r.<Object>getProperty("s")).isEqualTo(3 * big + 3);
       assertThat(r.<Object>getProperty("m")).isEqualTo(big + 2);
       assertThat(r.<Long>getProperty("c")).isEqualTo(3L);
     }
@@ -494,12 +494,13 @@ class Issue9612TimeWindowAggregatePushDownTest extends TestHelper {
     final long[] l = { 10, 20, 30, 40, 50, 30 };
     final int[] selected = new int[d.length];
     // rows 1 and 3 pass both; 0 fails d > 2, 2 is absent, 4 fails l <= 40, and 5 is outside the range handed in
-    final int count = FieldFilter.select(filter.getConditions(), new Object[] { d, l }, 0, 5, selected);
+    final IntegralColumn longs = new IntegralColumn(l, null);
+    final int count = FieldFilter.select(filter.getConditions(), new Object[] { d, longs }, 0, 5, selected);
     assertThat(count).isEqualTo(2);
     assertThat(selected[0]).isEqualTo(1);
     assertThat(selected[1]).isEqualTo(3);
     for (int i = 0; i < 5; i++)
-      assertThat(FieldFilter.matchesAt(filter.getConditions(), new Object[] { d, l }, i)).isEqualTo(i == 1 || i == 3);
+      assertThat(FieldFilter.matchesAt(filter.getConditions(), new Object[] { d, longs }, i)).isEqualTo(i == 1 || i == 3);
   }
 
   @Test

@@ -83,8 +83,9 @@ public class TimeSeriesEngine implements AutoCloseable {
   /**
    * @param mutableFormatVersion the type's stored mutable row format version. Version 0 keeps TAG
    *                             STRING columns inline; version 1 and above dictionary-encode them
-   *                             into a 4-byte id (issue #5519). It comes from the schema so a
-   *                             database written by an older build keeps its layout.
+   *                             into a 4-byte id (issue #5519); version 2 and above give a row a
+   *                             null bitmap (issue #9721). It comes from the schema so a database
+   *                             written by an older build keeps its layout.
    */
   public TimeSeriesEngine(final DatabaseInternal database, final String typeName,
       final List<ColumnDefinition> columns, final int shardCount,
@@ -109,7 +110,7 @@ public class TimeSeriesEngine implements AutoCloseable {
       // One dictionary per type, resolved before the shards so every shard shares the same id space.
       this.tagDictionary = TimeSeriesTagDictionary.openOrCreate(database, typeName, columns, mutableFormatVersion);
       for (int i = 0; i < shardCount; i++)
-        shards[i] = new TimeSeriesShard(database, typeName, i, columns, compactionBucketIntervalMs, tagDictionary);
+        shards[i] = new TimeSeriesShard(database, typeName, i, columns, compactionBucketIntervalMs, tagDictionary, mutableFormatVersion);
     } catch (final Exception e) {
       shardExecutor.shutdownNow();
       // Release the shards that were successfully created - their sealed stores only, NOT their mutable buckets.
@@ -756,6 +757,8 @@ public class TimeSeriesEngine implements AutoCloseable {
       columnIndices[r] = requests.get(r).columnIndex();
       isCount[r] = requests.get(r).type() == AggregationType.COUNT;
     }
+    // Requests over an integral column are kept exact, as longs (issues #9718, #9720)
+    final boolean[] exact = exactRequests(requests);
 
     // Process sealed stores in parallel when there are multiple shards with data. Without a bucket interval the answer is one
     // bucket, which each shard accumulates in a map-mode result of its own (issue #9612). The work goes to this engine's own
@@ -786,8 +789,8 @@ public class TimeSeriesEngine implements AutoCloseable {
           futures[s] = CompletableFuture.supplyAsync(() -> {
             try {
               final MultiColumnAggregationResult shardResult = bucketed
-                  ? new MultiColumnAggregationResult(requests, firstBucket, bucketIntervalMs, maxBuckets)
-                  : new MultiColumnAggregationResult(requests);
+                  ? new MultiColumnAggregationResult(requests, firstBucket, bucketIntervalMs, maxBuckets, exact)
+                  : new MultiColumnAggregationResult(requests, exact);
               // Each shard stops at the ceiling on its own. Buckets only ever union across shards, so a shard
               // that has passed it guarantees the merged total has too (issue #7724).
               //
@@ -827,6 +830,7 @@ public class TimeSeriesEngine implements AutoCloseable {
         // Process mutable buckets on the calling thread (has both transaction context and the
         // compaction read locks acquired above, so compaction cannot clear mutable data now)
         final double[] rowValues = new double[reqCount];
+        final long[] rowLongs = new long[reqCount];
         for (final TimeSeriesShard shard : shards) {
           if (result.isOverBucketCeiling())
             break;
@@ -841,9 +845,11 @@ public class TimeSeriesEngine implements AutoCloseable {
               continue;
             final long ts = (long) row[0];
             final long bucketTs = bucketed ? TimeBucketGrid.bucketStart(ts, bucketIntervalMs, bucketOffsetMs) : singleBucketTs;
-            for (int r = 0; r < reqCount; r++)
+            for (int r = 0; r < reqCount; r++) {
               rowValues[r] = mutableSample(row, columnIndices[r], isCount[r]);
-            result.accumulateRow(bucketTs, rowValues);
+              rowLongs[r] = exact[r] ? exactSample(row, columnIndices[r]) : 0L;
+            }
+            result.accumulateRow(bucketTs, rowValues, rowLongs);
           }
         }
 
@@ -859,11 +865,12 @@ public class TimeSeriesEngine implements AutoCloseable {
     } else {
       // Sequential path: single shard or no flat mode
       final MultiColumnAggregationResult result = maxBuckets > 0
-          ? new MultiColumnAggregationResult(requests, firstBucket, bucketIntervalMs, maxBuckets)
-          : new MultiColumnAggregationResult(requests);
+          ? new MultiColumnAggregationResult(requests, firstBucket, bucketIntervalMs, maxBuckets, exact)
+          : new MultiColumnAggregationResult(requests, exact);
       result.setBucketCeiling(bucketCeiling);
 
       final double[] rowValues = new double[reqCount];
+      final long[] rowLongs = new long[reqCount];
 
       for (final TimeSeriesShard shard : shards) {
         if (result.isOverBucketCeiling())
@@ -887,10 +894,12 @@ public class TimeSeriesEngine implements AutoCloseable {
             final long ts = (long) row[0];
             final long bucketTs = bucketed ? TimeBucketGrid.bucketStart(ts, bucketIntervalMs, bucketOffsetMs) : singleBucketTs;
 
-            for (int r = 0; r < reqCount; r++)
+            for (int r = 0; r < reqCount; r++) {
               rowValues[r] = mutableSample(row, columnIndices[r], isCount[r]);
+              rowLongs[r] = exact[r] ? exactSample(row, columnIndices[r]) : 0L;
+            }
 
-            result.accumulateRow(bucketTs, rowValues);
+            result.accumulateRow(bucketTs, rowValues, rowLongs);
           }
         } finally {
           shard.getCompactionLock().readLock().unlock();
@@ -952,6 +961,8 @@ public class TimeSeriesEngine implements AutoCloseable {
       isCount[r] = requests.get(r).type() == AggregationType.COUNT;
     }
 
+    final boolean[] exact = exactRequests(requests);
+
     // Row position of each grouping column: a mutable row is the timestamp followed by every other column in schema order
     final int[] groupRowIndices = new int[groupColumns.length];
     for (int g = 0; g < groupColumns.length; g++)
@@ -976,7 +987,7 @@ public class TimeSeriesEngine implements AutoCloseable {
             shardMetrics[s] = shardMetric;
           futures[s] = CompletableFuture.supplyAsync(() -> {
             try {
-              final GroupedAggregationResult shardResult = new GroupedAggregationResult(requests, firstBucket, bucketIntervalMs, buckets);
+              final GroupedAggregationResult shardResult = new GroupedAggregationResult(requests, firstBucket, bucketIntervalMs, buckets, exact);
               shardResult.setBucketCeiling(bucketCeiling);
               shard.getSealedStore()
                   .aggregateGroupedBlocks(fromTs, toTs, requests, bucketIntervalMs, bucketOffsetMs, groupColumns, shardResult, shardMetric, tagFilter,
@@ -1001,17 +1012,17 @@ public class TimeSeriesEngine implements AutoCloseable {
           result.mergeFrom(futures[s].join());
         for (final TimeSeriesShard shard : shards)
           if (!result.isOverBucketCeiling())
-            accumulateMutableGroups(shard, fromTs, toTs, requests, columnIndices, isCount, bucketIntervalMs, bucketOffsetMs, singleBucketTs,
-                groupRowIndices, tagFilter, fieldFilter, metrics, result);
+            accumulateMutableGroups(shard, fromTs, toTs, requests, columnIndices, isCount, exact, bucketIntervalMs, bucketOffsetMs,
+                singleBucketTs, groupRowIndices, tagFilter, fieldFilter, metrics, result);
       } else {
-        result = new GroupedAggregationResult(requests, firstBucket, bucketIntervalMs, buckets);
+        result = new GroupedAggregationResult(requests, firstBucket, bucketIntervalMs, buckets, exact);
         result.setBucketCeiling(bucketCeiling);
         final TimeSeriesShard shard = shards[0];
         shard.getSealedStore()
             .aggregateGroupedBlocks(fromTs, toTs, requests, bucketIntervalMs, bucketOffsetMs, groupColumns, result, metrics, tagFilter, fieldFilter);
         if (!result.isOverBucketCeiling())
-          accumulateMutableGroups(shard, fromTs, toTs, requests, columnIndices, isCount, bucketIntervalMs, bucketOffsetMs, singleBucketTs,
-              groupRowIndices, tagFilter, fieldFilter, metrics, result);
+          accumulateMutableGroups(shard, fromTs, toTs, requests, columnIndices, isCount, exact, bucketIntervalMs, bucketOffsetMs,
+              singleBucketTs, groupRowIndices, tagFilter, fieldFilter, metrics, result);
       }
     } finally {
       for (int s = 0; s < shardCount; s++)
@@ -1024,11 +1035,12 @@ public class TimeSeriesEngine implements AutoCloseable {
 
   /** Folds the rows still in a shard's mutable bucket into a grouped aggregation. */
   private void accumulateMutableGroups(final TimeSeriesShard shard, final long fromTs, final long toTs,
-      final List<MultiColumnAggregationRequest> requests, final int[] columnIndices, final boolean[] isCount, final long bucketIntervalMs,
-      final long bucketOffsetMs, final long singleBucketTs, final int[] groupRowIndices, final TagFilter tagFilter,
+      final List<MultiColumnAggregationRequest> requests, final int[] columnIndices, final boolean[] isCount, final boolean[] exact,
+      final long bucketIntervalMs, final long bucketOffsetMs, final long singleBucketTs, final int[] groupRowIndices, final TagFilter tagFilter,
       final FieldFilter fieldFilter, final AggregationMetrics metrics, final GroupedAggregationResult result) throws IOException {
     final int reqCount = requests.size();
     final double[] rowValues = new double[reqCount];
+    final long[] rowLongs = new long[reqCount];
     // One array for every row: groupFor only reads it, and copies it when the group is new
     final String[] values = new String[groupRowIndices.length];
     final Iterator<Object[]> mutableIter = shard.getMutableBucket().iterateRange(fromTs, toTs, null, metrics);
@@ -1049,11 +1061,13 @@ public class TimeSeriesEngine implements AutoCloseable {
         values[g] = tag != null ? tag.toString() : "";
       }
 
-      for (int r = 0; r < reqCount; r++)
+      for (int r = 0; r < reqCount; r++) {
         rowValues[r] = mutableSample(row, columnIndices[r], isCount[r]);
+        rowLongs[r] = exact[r] ? exactSample(row, columnIndices[r]) : 0L;
+      }
       final long ts = (long) row[0];
       result.groupFor(values).accumulateRow(bucketIntervalMs > 0 ? TimeBucketGrid.bucketStart(ts, bucketIntervalMs, bucketOffsetMs) : singleBucketTs,
-          rowValues);
+          rowValues, rowLongs);
     }
   }
 
@@ -1131,6 +1145,45 @@ public class TimeSeriesEngine implements AutoCloseable {
    *                flat array
    */
   private record BucketWindow(long firstBucket, int buckets) {
+  }
+
+  /**
+   * Per request, whether it is kept EXACT (issues #9718, #9720): a MIN/MAX/SUM/AVG over a column that stores exact integers -
+   * the integral, boolean and datetime types - whose answer a double would round past 2^53.
+   */
+  boolean[] exactRequests(final List<MultiColumnAggregationRequest> requests) {
+    final boolean[] exact = new boolean[requests.size()];
+    for (int r = 0; r < requests.size(); r++) {
+      final MultiColumnAggregationRequest request = requests.get(r);
+      if (request.type() == AggregationType.COUNT)
+        continue;
+      final ColumnDefinition column = rowColumn(request.columnIndex());
+      exact[r] = column != null && column.storesExactIntegers();
+    }
+    return exact;
+  }
+
+  /**
+   * The column at position {@code rowIndex} of an engine row - the timestamp at 0, then every other column in schema order - or
+   * {@code null} for a position that names none.
+   */
+  private ColumnDefinition rowColumn(final int rowIndex) {
+    int nonTs = 0;
+    for (final ColumnDefinition column : columns) {
+      if (column.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
+        continue;
+      if (++nonTs == rowIndex)
+        return column;
+    }
+    return null;
+  }
+
+  /**
+   * The {@code long} one MUTABLE row contributes to an exact request: the sample itself, read only when
+   * {@link #mutableSample} says the row has one (issue #9721).
+   */
+  private static long exactSample(final Object[] row, final int columnIndex) {
+    return columnIndex < row.length && row[columnIndex] != null ? ColumnDefinition.integerValueOf(row[columnIndex]) : 0L;
   }
 
   /**
