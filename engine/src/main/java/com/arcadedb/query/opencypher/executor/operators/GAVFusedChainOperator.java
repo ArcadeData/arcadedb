@@ -350,7 +350,10 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
     private void walkRound() {
       try {
         walkPendingSlices();
-      } catch (final RuntimeException | Error e) {
+      } catch (final RuntimeException e) {
+        close();
+        throw asRetryIfRenumbered(nodeIdSpace, e);
+      } catch (final Error e) {
         close();
         throw e;
       }
@@ -433,34 +436,38 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
     final boolean grouped = groupKeySlots.length > 0;
     final LongLongHashMap[] threadMaps = new LongLongHashMap[numThreads];
     final long[] threadTotals = new long[numThreads];
-    if (totalSources < PARALLEL_THRESHOLD) {
-      // Single-threaded
-      if (grouped)
-        threadMaps[0] = new LongLongHashMap();
-      aggregateChunk(sourceNodeIds, 0, totalSources, hopViews, trackedTypes, chainLength, groupKeySlots, db, context, guard,
-          threadMaps[0], threadTotals, 0);
-    } else {
-      // Parallel using shared query worker pool
-      final ExecutorService executor = QueryEngineManager.getInstance().getExecutorService();
-      final Future<?>[] futures = new Future<?>[numThreads];
-      int launched = 0;
-      for (int t = 0; t < numThreads; t++) {
-        final int start = t * chunkSize;
-        final int end = Math.min(start + chunkSize, totalSources);
-        if (start >= totalSources)
-          break;
+    try {
+      if (totalSources < PARALLEL_THRESHOLD) {
+        // Single-threaded
         if (grouped)
-          threadMaps[t] = new LongLongHashMap();
-        final int threadIdx = t;
-        futures[t] = executor.submit(() ->
-            aggregateChunk(sourceNodeIds, start, end, hopViews, trackedTypes, chainLength, groupKeySlots, db, context, guard,
-                threadMaps[threadIdx], threadTotals, threadIdx));
-        launched++;
+          threadMaps[0] = new LongLongHashMap();
+        aggregateChunk(sourceNodeIds, 0, totalSources, hopViews, trackedTypes, chainLength, groupKeySlots, db, context, guard,
+            threadMaps[0], threadTotals, 0);
+      } else {
+        // Parallel using shared query worker pool
+        final ExecutorService executor = QueryEngineManager.getInstance().getExecutorService();
+        final Future<?>[] futures = new Future<?>[numThreads];
+        int launched = 0;
+        for (int t = 0; t < numThreads; t++) {
+          final int start = t * chunkSize;
+          final int end = Math.min(start + chunkSize, totalSources);
+          if (start >= totalSources)
+            break;
+          if (grouped)
+            threadMaps[t] = new LongLongHashMap();
+          final int threadIdx = t;
+          futures[t] = executor.submit(() ->
+              aggregateChunk(sourceNodeIds, start, end, hopViews, trackedTypes, chainLength, groupKeySlots, db, context, guard,
+                  threadMaps[threadIdx], threadTotals, threadIdx));
+          launched++;
+        }
+        // #4951: awaitFutures throws on interrupt (cancelling the outstanding chunks) instead of returning,
+        // so a killed/timed-out query can never merge partial per-thread maps as a complete answer.
+        // #6568: and it reclaims a still-queued chunk instead of parking on it - see the note on the row path.
+        GraphAlgorithms.awaitFutures(futures, launched);
       }
-      // #4951: awaitFutures throws on interrupt (cancelling the outstanding chunks) instead of returning,
-      // so a killed/timed-out query can never merge partial per-thread maps as a complete answer.
-      // #6568: and it reclaims a still-queued chunk instead of parking on it - see the note on the row path.
-      GraphAlgorithms.awaitFutures(futures, launched);
+    } catch (final RuntimeException e) {
+      throw asRetryIfRenumbered(nodeIdSpace, e);
     }
     checkNodeIdSpace(nodeIdSpace);
 
@@ -554,8 +561,21 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
    */
   private void checkNodeIdSpace(final Object nodeIdSpace) {
     if (provider.getNodeIdSpace() != nodeIdSpace)
-      throw new NeedRetryException("Graph Analytical View '" + provider.getName()
-          + "' was rebuilt while the query walked it: run the query again");
+      throw renumbered(null);
+  }
+
+  /**
+   * A walk that failed while the provider numbered its nodes afresh failed on IDs of the old numbering read in the new one
+   * (an ID past the new mapping, say): it is the rebuild the caller has to hear about, as the retry it calls for, not
+   * whatever the stale ID broke.
+   */
+  private RuntimeException asRetryIfRenumbered(final Object nodeIdSpace, final RuntimeException failure) {
+    return failure instanceof NeedRetryException || provider.getNodeIdSpace() == nodeIdSpace ? failure : renumbered(failure);
+  }
+
+  private NeedRetryException renumbered(final Throwable cause) {
+    final String message = "Graph Analytical View '" + provider.getName() + "' was rebuilt while the query walked it: run the query again";
+    return cause != null ? new NeedRetryException(message, cause) : new NeedRetryException(message);
   }
 
   /**

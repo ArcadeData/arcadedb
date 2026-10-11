@@ -1558,29 +1558,31 @@ public class CypherExecutionPlan {
           statement.getClausesInOrder(), statement.getReturnClause(), currentStep, context);
       if (countOpt != null) {
         currentStep = countOpt;
-      } else if (statement.getReturnClause().hasAggregations()
-          && !tryFuseAggregationIntoChain(statement.getReturnClause().getReturnItems(), currentStep)) {
-        // A step aggregates the rows, unless the fused chain counts its paths itself and answers them (issue #9738).
-        // One row per edge of a one-hop pattern, read from a Graph Analytical View instead of the operators (#8335)
-        final AbstractExecutionStep gavScan = tryGAVOneHopScan(context);
-        if (gavScan != null)
-          currentStep = gavScan;
+      } else if (statement.getReturnClause().hasAggregations()) {
+        // The fused chain counts its paths itself and answers the aggregated rows: no step aggregates them (issue #9738)
+        final boolean fusedIntoChain = tryFuseAggregationIntoChain(statement.getReturnClause().getReturnItems(), currentStep);
+        if (!fusedIntoChain) {
+          // One row per edge of a one-hop pattern, read from a Graph Analytical View instead of the operators (#8335)
+          final AbstractExecutionStep gavScan = tryGAVOneHopScan(context);
+          if (gavScan != null)
+            currentStep = gavScan;
 
-        // Check if there are also non-aggregated expressions (implicit GROUP BY)
-        if (statement.getReturnClause().hasNonAggregations()) {
-          // Use GROUP BY aggregation step (implicit grouping)
-          final GroupByAggregationStep groupByAggStep =
-              new GroupByAggregationStep(
-                  statement.getReturnClause(), context, functionFactory);
-          groupByAggStep.setPrevious(currentStep);
-          currentStep = groupByAggStep;
-        } else {
-          // Use aggregation step for pure aggregations (no grouping)
-          final AggregationStep aggStep = new AggregationStep(statement.getReturnClause(), context, functionFactory);
-          aggStep.setPrevious(currentStep);
-          currentStep = aggStep;
+          // Check if there are also non-aggregated expressions (implicit GROUP BY)
+          if (statement.getReturnClause().hasNonAggregations()) {
+            // Use GROUP BY aggregation step (implicit grouping)
+            final GroupByAggregationStep groupByAggStep =
+                new GroupByAggregationStep(
+                    statement.getReturnClause(), context, functionFactory);
+            groupByAggStep.setPrevious(currentStep);
+            currentStep = groupByAggStep;
+          } else {
+            // Use aggregation step for pure aggregations (no grouping)
+            final AggregationStep aggStep = new AggregationStep(statement.getReturnClause(), context, functionFactory);
+            aggStep.setPrevious(currentStep);
+            currentStep = aggStep;
+          }
         }
-      } else if (!statement.getReturnClause().hasAggregations()) {
+      } else {
         // Use regular projection for non-aggregation expressions
         final ProjectReturnStep returnStep = new ProjectReturnStep(statement.getReturnClause(), context,
             functionFactory);
@@ -4815,26 +4817,6 @@ public class CypherExecutionPlan {
   }
 
   /**
-   * Attempts to optimize MATCH + RETURN count() into a direct countEdges() call.
-   * <p>
-   * Detects pattern:
-   * MATCH (p:Label)-[:TYPE]->(x) RETURN expr(p) AS alias, count(x) AS cnt
-   * <p>
-   * Replaces MatchRelationshipStep + GroupByAggregationStep with CountEdgesReturnStep,
-   * avoiding materialization of all target vertices.
-   * <p>
-   * Requirements:
-   * - Exactly one MATCH clause (non-optional) with exactly one single-hop relationship
-   * - No WHERE clause on the MATCH
-   * - RETURN has exactly one count() aggregation on the target variable
-   * - count() is not DISTINCT
-   * - Target variable is not used in grouping expressions
-   * - No relationship property filters
-   * - No target node property filters
-   *
-   * @return optimized CountEdgesReturnStep if pattern matches, null otherwise
-   */
-  /**
    * Tries to fuse a count(*) aggregation, grouped or not, into the GAVFusedChainOperator.
    * When successful, the chain aggregates internally in parallel — bypassing the
    * single-threaded GroupByAggregationStep / AggregationStep entirely, and building no row per path (issue #9738).
@@ -5057,6 +5039,26 @@ public class CypherExecutionPlan {
     return ids;
   }
 
+  /**
+   * Attempts to optimize MATCH + RETURN count() into a direct countEdges() call.
+   * <p>
+   * Detects pattern:
+   * MATCH (p:Label)-[:TYPE]->(x) RETURN expr(p) AS alias, count(x) AS cnt
+   * <p>
+   * Replaces MatchRelationshipStep + GroupByAggregationStep with CountEdgesReturnStep,
+   * avoiding materialization of all target vertices.
+   * <p>
+   * Requirements:
+   * - Exactly one MATCH clause (non-optional) with exactly one single-hop relationship
+   * - No WHERE clause on the MATCH
+   * - RETURN has exactly one count() aggregation on the target variable
+   * - count() is not DISTINCT
+   * - Target variable is not used in grouping expressions
+   * - No relationship property filters
+   * - No target node property filters
+   *
+   * @return optimized CountEdgesReturnStep if pattern matches, null otherwise
+   */
   private AbstractExecutionStep tryOptimizeMatchCountReturn(
       final List<ClauseEntry> clausesInOrder,
       final ReturnClause returnClause,
