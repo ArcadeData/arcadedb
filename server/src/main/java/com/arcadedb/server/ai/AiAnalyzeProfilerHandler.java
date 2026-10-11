@@ -237,10 +237,10 @@ public class AiAnalyzeProfilerHandler extends AbstractServerHttpHandler {
         .build();
 
     final HttpResponse<String> response = BoundedHttpExchange.send(HTTP_CLIENT, request,
-        HttpResponse.BodyHandlers.ofString(), gatewayTimeoutMs);
+        AiChatHandler.limitedBody(), gatewayTimeoutMs);
 
     if (response.statusCode() == 401 || response.statusCode() == 403) {
-      final JSONObject errBody = new JSONObject(response.body());
+      final JSONObject errBody = AiChatHandler.refusalBody(response.body());
       final String code = errBody.getString("code", "token_invalid");
       final String errorMsg = errBody.getString("error", "Invalid or expired subscription token");
       final JSONObject errorResponse = new JSONObject();
@@ -250,8 +250,8 @@ public class AiAnalyzeProfilerHandler extends AbstractServerHttpHandler {
     }
 
     if (response.statusCode() != 200)
-      throw new RuntimeException("Gateway returned status " + response.statusCode() + ": " + response.body());
+      throw new RuntimeException("Gateway returned status " + response.statusCode() + ": " + AiChatHandler.excerpt(response.body()));
 
-    return new JSONObject(response.body());
+    return AiChatHandler.parseAnswer(response.body());
   }
 }

@@ -503,23 +503,33 @@ public class SupportPortalClient {
     return bytes;
   }
 
-  /** The portal answered with more bytes than {@link #MAX_RESPONSE_BYTES}. */
-  static final class ResponseTooLargeException extends IOException {
-    ResponseTooLargeException(final long max) {
-      super("The support portal answered with more than " + (max >> 10) + " KB, which this server does not read");
+  /** The peer answered with more bytes than the limit of its {@link LimitedStringBody}. */
+  public static final class ResponseTooLargeException extends IOException {
+    ResponseTooLargeException(final String peer, final long max) {
+      super(peer + " answered with more than " + (max >> 10) + " KB, which this server does not read");
     }
   }
 
-  /** The body as a UTF-8 string, cancelled as soon as it exceeds the limit. */
-  static final class LimitedStringBody implements HttpResponse.BodySubscriber<String> {
-    private final long                                                max;
-    private final ByteArrayOutputStream                       out    = new ByteArrayOutputStream();
-    private final CompletableFuture<String>      result = new CompletableFuture<>();
-    private       Flow.Subscription              subscription;
-    private       long                                                size;
+  /**
+   * The body as a UTF-8 string, cancelled as soon as it exceeds the limit. Also used by the AI Assistant for the answers of its
+   * gateway (issue #9627), so every buffered answer this server reads from ArcadeData's services carries a byte cap.
+   */
+  public static final class LimitedStringBody implements HttpResponse.BodySubscriber<String> {
+    private final long                      max;
+    private final String                    peer;
+    private final ByteArrayOutputStream     out    = new ByteArrayOutputStream();
+    private final CompletableFuture<String> result = new CompletableFuture<>();
+    private       Flow.Subscription         subscription;
+    private       long                      size;
 
     LimitedStringBody(final long max) {
+      this(max, "The support portal");
+    }
+
+    /** @param peer who answers, as the start of the error message ("The AI gateway") */
+    public LimitedStringBody(final long max, final String peer) {
       this.max = max;
+      this.peer = peer;
     }
 
     @Override
@@ -541,7 +551,7 @@ public class SupportPortalClient {
         size += buffer.remaining();
         if (size > max) {
           subscription.cancel();
-          result.completeExceptionally(new ResponseTooLargeException(max));
+          result.completeExceptionally(new ResponseTooLargeException(peer, max));
           return;
         }
         final byte[] chunk = new byte[buffer.remaining()];
