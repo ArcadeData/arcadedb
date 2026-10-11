@@ -80,7 +80,6 @@ public final class GroupedAggregationResult {
     this.exact = exact;
   }
 
-
   /**
    * The tag values of one group, in the order the query listed the grouping columns. A lookup reuses one mutable instance
    * ({@link #probe}) instead of allocating a key per row; only a group that is new is stored under a key of its own.
@@ -123,7 +122,6 @@ public final class GroupedAggregationResult {
     return result;
   }
 
-  /** How many distinct tag combinations were seen. */
   /**
    * Per request, whether every group keeps it exact (see {@link MultiColumnAggregationResult}).
    */
@@ -135,6 +133,7 @@ public final class GroupedAggregationResult {
     return flags;
   }
 
+  /** How many distinct tag combinations were seen. */
   public int getGroupCount() {
     return groups.size();
   }
