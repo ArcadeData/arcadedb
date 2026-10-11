@@ -826,20 +826,6 @@ public class OpenCypherQueryEngine implements QueryEngine {
       throw new SchemaException("Constraint '" + constraintName + "' already exists");
     }
 
-    // For TYPED constraints, resolve the target type first so properties are created with the correct type
-    final boolean isTyped = ddl.getConstraintKind() == CypherDDLStatement.ConstraintKind.TYPED;
-    final DeclaredType explicitPropertyType = isTyped ? mapCypherType(ddl.getTypedName()) : null;
-
-    // A property has one declared type, so a type constraint that disagrees with one already in place is refused, as in
-    // Neo4j, rather than silently replacing it (#9706). Checked before anything is created, like the name.
-    if (isTyped && schema.existsType(typeName)) {
-      final String conflicting = CypherConstraintRegistry.findConflictingTyped(schema.getType(typeName), ddl.getPropertyNames(),
-          explicitPropertyType.type(), explicitPropertyType.ofType());
-      if (conflicting != null)
-        throw new SchemaException("Constraint '" + conflicting + "' already requires another type of " + typeName + "."
-            + String.join(", " + typeName + ".", ddl.getPropertyNames()) + ": drop it before requiring IS :: " + ddl.getTypedName());
-    }
-
     autoCreateDDLType(schema, ddl, typeName);
 
     // An existence constraint over a node that lacks the property is refused, as Neo4j does (#9112): the node would stay
@@ -962,8 +948,6 @@ public class OpenCypherQueryEngine implements QueryEngine {
         Property prop = schema.getType(typeName).getPropertyIfExists(propName);
         if (prop == null) {
           prop = schema.getType(typeName).createProperty(propName, Type.STRING);
-          declared.add(propName);
-        }
         if (!prop.isMandatory()) {
           prop.setMandatory(true);
           ownedMandatory.add(propName);
@@ -977,6 +961,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
 
     case TYPED:
       // Property type already set above; for IF NOT EXISTS, silently succeed if property already has the correct type
+      changed = typedChanged;
       if (typedChanged)
         requireStoredValuesConform(schema, typeName, propertyNames, ddl.getTypedName(), declared, previous);
       changed = typedChanged;
@@ -988,63 +973,10 @@ public class OpenCypherQueryEngine implements QueryEngine {
       throw new IllegalStateException("Unhandled constraint kind: " + ddl.getConstraintKind());
     }
 
-    // An IF NOT EXISTS that found the constraint already in place is a no-op and claims no name, as in Neo4j. A constraint
-    // without a name is recorded under the one it is listed with (#9706), unless it changed nothing - what it requires was
-    // there already and is listed as it was - or a constraint requiring the same is recorded already
-    final DocumentType constrained = schema.getType(typeName);
-    final Type recordedType = isTyped ? explicitPropertyType.type() : null;
-    final String recordedOfType = isTyped ? explicitPropertyType.ofType() : null;
-    String recordAs = constraintName;
-    if (recordAs == null && changed && CypherConstraintRegistry.findEquivalent(constrained, kind, ddl.getPropertyNames(), recordedType,
-        recordedOfType) == null)
-      recordAs = CypherConstraintRegistry.freeGeneratedName(schema, typeName, kind, ddl.getPropertyNames());
-    if (recordAs != null && (changed || !ddl.isIfNotExists()))
-      CypherConstraintRegistry.register(constrained, recordAs, kind, propertyNames,
-          new CypherConstraintRegistry.Ownership(ownedIndex, ownedMandatory, declared, previous, recordedType, recordedOfType,
-              isTyped ? ddl.getTypedName().toString() : null));
-  }
-
-  /**
-   * Refuses a property type constraint that a stored record already violates, as Neo4j does, and puts back the declarations the
-   * statement made. The declaration check of the retype accepts any value the new type can convert ({@code 86400} for a
-   * DURATION, {@code '12'} for an INTEGER), but nothing rewrites the stored value: the record would keep a value its own
-   * constraint answers false for ({@code n.d IS :: DURATION}). So every stored value is read as Cypher reads it and asked
-   * {@code IS :: type}, in one scan of the type.
-   */
-  private void requireStoredValuesConform(final Schema schema, final String typeName, final String[] propertyNames,
-      final CypherTypeName cypherType, final List<String> declared, final JSONObject previous) {
-    final Iterator<Record> records = database.iterateType(typeName, true);
-    while (records.hasNext()) {
-      if (!(records.next() instanceof Document document))
-        continue;
-      for (final String propertyName : propertyNames) {
-        final Object value = TemporalUtil.convertFromStorage(document, propertyName);
-        if (value == null || IsTypedExpression.conforms(value, cypherType))
-          continue;
-
-        // the refusal is what the caller has to see: an undo step that fails is attached to it, never thrown in its place
-        final CommandExecutionException refusal = new CommandExecutionException(
-            "Cannot require " + typeName + "." + propertyName + " IS :: " + cypherType + ": record " + document.getIdentity()
-                + " holds " + value + " (" + CypherFunctionHelper.cypherTypeName(value) + ")");
-        final DocumentType type = schema.getType(typeName);
-        for (final String undeclared : declared)
-          try {
-            if (type.existsProperty(undeclared))
-              type.dropProperty(undeclared);
-          } catch (final RuntimeException e) {
-            refusal.addSuppressed(e);
-          }
-        for (final String retyped : previous.keySet())
-          try {
-            final JSONObject old = previous.getJSONObject(retyped);
-            retypeProperty(schema, typeName, type.getProperty(retyped),
-                new DeclaredType(Type.valueOf(old.getString("type")), old.getString("of", null), true));
-          } catch (final RuntimeException e) {
-            refusal.addSuppressed(e);
-          }
-        throw refusal;
-      }
-    }
+    // An IF NOT EXISTS that found the constraint already in place is a no-op and claims no name, as in Neo4j
+    if (constraintName != null && (changed || !ddl.isIfNotExists()))
+      CypherConstraintRegistry.register(schema.getType(typeName), constraintName, ddl.getConstraintKind(), propertyNames,
+          ownedIndex, ownedMandatory);
   }
 
   /**
@@ -1320,38 +1252,23 @@ public class OpenCypherQueryEngine implements QueryEngine {
   }
 
   /**
-   * Drops a constraint by the name {@code SHOW CONSTRAINTS} lists it under, undoing what its {@code CREATE CONSTRAINT}
-   * created (#9646, #9706): the name the statement gave it, or the one generated for it when it gave none. The name of a
-   * unique index drops the constraint that created it, or the index alone when no recorded constraint did. A requirement
-   * declared outside Cypher (a MANDATORY flag, a declared type) is listed and dropped under its generated name too. Any other
-   * name raises unless {@code IF EXISTS} is given.
+   * Drops a constraint by the name {@code CREATE CONSTRAINT <name>} gave it, undoing what that statement created (#9646).
+   * A name that is no constraint's but is an index's still drops that index, which is how an unnamed constraint is
+   * dropped. Any other name raises unless {@code IF EXISTS} is given.
    */
   private void executeDropConstraint(final CypherDDLStatement ddl, final Schema schema, final QueryStatistics stats) {
     final String constraintName = ddl.getConstraintName();
-    if (CypherConstraintRegistry.drop(schema, constraintName, this::retypeForConstraintDrop)) {
+    if (CypherConstraintRegistry.drop(schema, constraintName)) {
       stats.incConstraintsRemoved();
       return;
     }
     if (schema.existsIndex(constraintName)) {
-      final String owner = CypherConstraintRegistry.findIndexOwner(schema, constraintName);
-      if (owner != null)
-        CypherConstraintRegistry.drop(schema, owner, this::retypeForConstraintDrop);
-      else
-        schema.dropIndex(constraintName);
-      stats.incConstraintsRemoved();
-      return;
-    }
-    if (CypherSchemaCommands.dropUnrecordedConstraint(schema, constraintName)) {
+      schema.dropIndex(constraintName);
       stats.incConstraintsRemoved();
       return;
     }
     if (!ddl.isIfExists())
       throw new SchemaException("Constraint '" + constraintName + "' does not exist");
-  }
-
-  /** Puts back the declaration a type constraint replaced, through the same checks as the retype that replaced it. */
-  private void retypeForConstraintDrop(final DocumentType type, final Property property, final Type newType, final String newOfType) {
-    retypeProperty(type.getSchema(), type.getName(), property, new DeclaredType(newType, newOfType, true));
   }
 
   private void executeCreateIndex(final CypherDDLStatement ddl, final Schema schema, final QueryStatistics stats) {
