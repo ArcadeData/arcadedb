@@ -41,7 +41,10 @@ import java.util.function.Function;
 import java.util.logging.Level;
 
 public class SelectStatement extends Statement {
-  /** How many attempts in all a SELECT gets when the index its plan reads is gone by the time it starts (issue #9331). */
+  /**
+   * How many attempts in all a SELECT gets when the index its plan reads is gone by the time it starts (issue #9331). The last
+   * of them plans without the indexes of the types it reads (issue #9615), see {@link #openResultSet}.
+   */
   private static final int STALE_INDEX_PLAN_MAX_ATTEMPTS = 3;
 
   public FromClause  target;
