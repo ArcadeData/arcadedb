@@ -65,7 +65,7 @@ public class EdgeVertexIterator extends ResettableIteratorBase<Pair<RID, RID>> {
     entryReturned(currentContainer, begin, currentPosition.get(), edgeRID, vertexRID);
 
     ++browsed;
-    return new Pair(edgeRID, vertexRID);
+    return new Pair<>(edgeRID, vertexRID);
   }
 
   /** See {@link ResettableIteratorBase#removeReturnedEntry}: the refusal of the delete reaches the caller (#9779). */
