@@ -22,6 +22,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.engine.NodeLocalFiles;
 import com.arcadedb.engine.TransactionManager;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.vector.LSMVectorIndex;
@@ -55,8 +56,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class Issue9751VectorSideFilesChecksumTest {
 
-  private static final int    DIMENSIONS = 16;
-  private static final int    VECTORS    = 400;
+  private static final int DIMENSIONS = 16;
+  private static final int VECTORS    = 400;
 
   private final PostVerifyDatabaseHandler handler = new PostVerifyDatabaseHandler(null, null);
 
@@ -142,6 +143,11 @@ class Issue9751VectorSideFilesChecksumTest {
     assertThat(names).as("and its ordinal map").anyMatch(n -> n.endsWith("." + LSMVectorIndexOrdinalMapFile.FILE_EXT));
     assertThat(names).as("and the product quantization").anyMatch(n -> n.endsWith("." + LSMVectorIndexPQFile.FILE_EXT));
     assertThat(names).as("the clean close wrote the recency marker").contains(TransactionManager.LAST_TX_ID_FILE_NAME);
+
+    // THE PRODUCTION PREDICATE AGREES WITH THIS TEST'S INDEPENDENT ORACLE ON EVERY NAME THE WRITERS ACTUALLY PRODUCED
+    for (final String name : names)
+      assertThat(NodeLocalFiles.isVectorGraphFileName(name)).as("isVectorGraphFileName('%s')", name)
+          .isEqualTo(isNodeLocalVectorFile(name));
 
     final Map<String, Long> checksums = SnapshotManager.computeFileChecksums(new File(path));
     for (final String name : checksums.keySet())

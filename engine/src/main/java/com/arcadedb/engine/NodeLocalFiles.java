@@ -46,9 +46,8 @@ import com.arcadedb.schema.LocalSchema;
  * #8905), from the vectors the index pages DO replicate, so the graph pages carry different bytes on every node - the
  * JVector build is parallel and not deterministic - and the PQ codebooks are trained from the same node-local pass.
  * The three plain side files are not shipped by a snapshot at all; the {@code .vecgraph} component is (it is a
- * registered page file), but a follower that installs it receives no manifest beside it, so it cannot vouch for the
- * pages and rebuilds its own graph on first use anyway. A divergence in any of them is a cache that differs, never data
- * that does: the vectors themselves live in the index's own pages, which ARE compared.</li>
+ * registered page file), without the manifest beside it (issue #9758). A divergence in any of them is a cache that
+ * differs, never data that does: the vectors themselves live in the index's own pages, which ARE compared.</li>
  * <li>{@link TransactionManager#LAST_TX_ID_FILE_NAME}: the recency marker, holding the highest transaction id this
  * node had assigned the last time it rotated its WAL or closed (issue #5277). A snapshot ships a synthesized copy, but
  * on a live node the file is rewritten at moments that are this node's own, so two healthy peers at the same commit
@@ -72,9 +71,13 @@ public final class NodeLocalFiles {
    * True when {@code fileName} (a name, never a path) is one of the node-local files above. Matched by exact name or by
    * the full prefix-plus-extension shape, never by a substring, so a component file of a type named {@code gav-x} or
    * {@code statistics} is still data: a component file's name always ends with its own extension, and the only component
-   * extension matched below is the vector graph's own {@code .vecgraph}. The shapes describe the files the engine itself creates; a user file dropped into the directory that
-   * happens to take one of them (say {@code gav-notes.csr}) is left out too, which is harmless because nothing in the
-   * database reads or ships it.
+   * extension matched below is the vector graph's own {@code .vecgraph}. The shapes describe the files the engine
+   * itself creates; a user file dropped into the directory that happens to take one of them (say {@code gav-notes.csr})
+   * is left out too, which is harmless because nothing in the database reads or ships it.
+   * <p>
+   * <b>"Node-local" answers "may two healthy copies differ here?", not "is it shipped?".</b> The {@code .vecgraph}
+   * component and {@code last-tx-id.bin} are both node-local and both carried by an HA snapshot, so a caller deciding
+   * what to SHIP or BACK UP must not use this method to skip files.
    */
   public static boolean isNodeLocalFileName(final String fileName) {
     return fileName.equals(LocalSchema.STATISTICS_FILE_NAME)
