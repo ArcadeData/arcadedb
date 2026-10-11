@@ -1454,8 +1454,14 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    */
   @Override
   public Object getNodeIdSpace() {
-    final Snapshot snap = snapshot;
-    return snap != null ? snap.nodeMapping : this;
+    // Resolved as every read resolves it: a view restored from disk on first use publishes its snapshot only then, and a
+    // token taken before would not match the mapping the walk then reads, failing it for nothing
+    try {
+      return checkBuilt().nodeMapping;
+    } catch (final IllegalStateException e) {
+      // Never built: there is no ID to read either, so any token is as good
+      return this;
+    }
   }
 
   // --- Node type queries ---
