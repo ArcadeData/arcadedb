@@ -8151,6 +8151,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
       final boolean dropped = rescored < total;
       if (groups.isFull() || !candidates.truncated || !dropped || oversample > Integer.MAX_VALUE / BINARY_RERANK_OVERSAMPLE)
         break;
+      // Caps that already cover every vector of the index cannot be widened into more candidates, as in findNeighborsFromVector
+      if ((long) candidateGroups * candidateGroupSize >= (long) vectorIndex().size() + deltaVectors.size())
+        break;
       oversample *= BINARY_RERANK_OVERSAMPLE;
     }
     return answer;
