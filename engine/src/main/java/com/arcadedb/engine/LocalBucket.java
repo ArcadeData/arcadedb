@@ -198,7 +198,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   /** Pages an insert tries before opening a new one when running transactions have taken the room it found (#9694). */
   private static final   int                       MAX_INSERT_PAGE_ATTEMPTS         = 3;
   /** Queued pages one allocation measures and lists again at most (#9694). */
-  private static final   int                       MAX_PAGES_RELISTED_PER_ALLOCATION = 8;
+  private static final   int                       MAX_RELISTS_PER_ALLOCATION       = 4;
   private static final   long                      MAX_TIMEOUT_GATHER_STATS         = 5000L;
   private static final   int                       GATHER_STATS_MIN_SPACE_PERC      = 10;
   /**
@@ -3276,7 +3276,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * anyway, measures it (see {@link #relistQueuedPages}).
    */
   private void relistPage(final int pageNumber) {
-    if (reuseSpaceMode.ordinal() >= REUSE_SPACE_MODE.HIGH.ordinal())
+    // Same mode the allocator reads freeSpaceInPages from, so a page delisted there is listed again there too
+    if (reuseSpaceMode.ordinal() >= REUSE_SPACE_MODE.MEDIUM.ordinal())
       pagesToRelist.add(pageNumber);
   }
 
@@ -3293,9 +3294,12 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     // Bounded per allocation, which holds the monitor every other allocation of this bucket waits on: the rest stays
     // queued for the next one
     int measured = 0;
-    for (final Iterator<Integer> it = pagesToRelist.iterator(); it.hasNext() && measured < MAX_PAGES_RELISTED_PER_ALLOCATION; ) {
+    for (final Iterator<Integer> it = pagesToRelist.iterator(); it.hasNext() && measured < MAX_RELISTS_PER_ALLOCATION; ) {
       final int pageNumber = it.next();
       it.remove();
+      // Dropped rather than kept queued when there is nothing to do now - already listed, the map full, or the page
+      // still being created by another transaction (whose own writes list it): it is a hint, and the next gather
+      // measures every page anyway
       if (freeSpaceInPages.containsKey(pageNumber) || freeSpaceInPages.size() >= MAX_PAGES_GATHER_STATS
               || isNewPageOfAnotherTransaction(pageNumber, tx))
         continue;
@@ -3327,9 +3331,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     // commits would succeed and overwrite each other's records).
     final int pageNumber = reservedPageCounter.getAndIncrement();
     final MutablePage page = tx.addPage(new PageId(database, file.getFileId(), pageNumber), pageSize);
-    // Registered before anything is written on the page, so before its creator can list it in freeSpaceInPages
-    inFlightNewPages.put(pageNumber, tx);
+    // Registered before anything is written on the page, so before its creator can list it in freeSpaceInPages. Tracked
+    // first: an entry the transaction does not track would never be released
     tx.trackNewPageReservation(this, pageNumber);
+    inFlightNewPages.put(pageNumber, tx);
     return page;
   }
 
