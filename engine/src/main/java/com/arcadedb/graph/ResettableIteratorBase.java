@@ -22,10 +22,12 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.utility.ResettableIterator;
 
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.logging.Level;
 
 public abstract class ResettableIteratorBase<T> implements ResettableIterator<T> {
   protected final DatabaseInternal database;
@@ -160,9 +162,10 @@ public abstract class ResettableIteratorBase<T> implements ResettableIterator<T>
   private void deleteEdgeOfEntry(final DatabaseInternal database, final RID listOwner, final Vertex.DIRECTION listDirection) {
     if (returnedEdge.getPosition() < 0) {
       final DocumentType edgeType = database.getSchema().getTypeByBucketId(returnedEdge.getBucketId());
-      if (edgeType == null)
-        // A LIGHTWEIGHT ENTRY OF A TYPE THAT NO LONGER EXISTS
+      if (edgeType == null) {
+        logStaleEntry(listOwner, listDirection, "its lightweight edge type no longer exists");
         return;
+      }
       final Edge edge = listDirection == Vertex.DIRECTION.OUT ?
           new ImmutableLightEdge(database, edgeType, returnedEdge.getBucketId(), listOwner, returnedVertex) :
           new ImmutableLightEdge(database, edgeType, returnedEdge.getBucketId(), returnedVertex, listOwner);
@@ -175,14 +178,23 @@ public abstract class ResettableIteratorBase<T> implements ResettableIterator<T>
       // LOADED, NOT LAZY: A LAZY HANDLE DOES NOT PROVE THE RECORD EXISTS, AND THE DELETE READS THE CONTENT ANYWAY
       record = database.lookupByRID(returnedEdge, true);
     } catch (final RecordNotFoundException e) {
-      // THE EDGE RECORD IS GONE: THE ENTRY IS STALE
+      logStaleEntry(listOwner, listDirection, "its edge record no longer exists");
       return;
     }
 
     if (record instanceof Edge edge)
       // THE EDGE'S OWN DATABASE HANDLE, SO A WRAPPED INSTANCE (SERVER, REPLICATED) SEES THE DELETE GO THROUGH ITS PIPELINE
       ((DatabaseInternal) edge.getDatabase()).deleteEdgeSkippingEndpoint(edge, listOwner, listDirection);
-    // ELSE THE SLOT HOLDS A RECORD THAT IS NOT AN EDGE: IT MUST NOT BE DELETED THROUGH A STALE ENTRY
+    else
+      // A RECORD THAT IS NOT AN EDGE MUST NOT BE DELETED THROUGH A STALE ENTRY
+      logStaleEntry(listOwner, listDirection, "its slot holds a record that is not an edge");
+  }
+
+  /** A stale entry is repaired by the unlink alone; said at FINE so a quiet repair of corruption can still be traced. */
+  private void logStaleEntry(final RID listOwner, final Vertex.DIRECTION listDirection, final String reason) {
+    LogManager.instance()
+        .log(this, Level.FINE, "Removing edge entry %s from the %s list of vertex %s without a delete: %s", returnedEdge, listDirection,
+            listOwner, reason);
   }
 
   /**

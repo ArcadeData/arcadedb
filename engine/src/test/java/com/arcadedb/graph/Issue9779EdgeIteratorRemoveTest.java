@@ -227,6 +227,50 @@ class Issue9779EdgeIteratorRemoveTest {
     assertCheckIsClean();
   }
 
+  /**
+   * The same over a list of many segments, removing every other element after a {@code hasNext()}: the peek lands in the
+   * next segment at each segment's last entry, where the cursor fix-up must not apply, and in the same segment everywhere
+   * else, where it must.
+   */
+  @ParameterizedTest
+  @EnumSource(Walk.class)
+  void peekThenRemoveAcrossSegmentBoundariesDeletesExactlyTheReturnedEdges(final Walk walk) {
+    final int degree = 300;
+    final RID[] far = new RID[degree];
+    database.transaction(() -> {
+      for (int i = 0; i < degree; i++) {
+        far[i] = database.newVertex("V").set("id", "f" + i).save().getIdentity();
+        vertex(a).modify().newEdge("LW", far[i]);
+      }
+    });
+    final EdgeSegment head = (EdgeSegment) database.lookupByRID(((VertexInternal) vertex(a)).getOutEdgesHeadChunk(), true);
+    assertThat(head.getPrevious()).as("the list spans several segments").isNotNull();
+
+    final Set<RID> removed = new HashSet<>();
+    final Set<RID> visited = new HashSet<>();
+    database.transaction(() -> {
+      final Iterator<?> it = walk.open(vertex(a), "LW");
+      boolean remove = true;
+      while (it.hasNext()) {
+        final RID target = farEnd(it.next());
+        assertThat(visited.add(target)).as("each edge is visited once").isTrue();
+        if (remove) {
+          it.hasNext();
+          it.remove();
+          removed.add(target);
+        }
+        remove = !remove;
+      }
+    });
+
+    assertThat(visited).hasSize(degree);
+    assertThat(removed).hasSize(degree / 2);
+    assertThat(vertex(a).countEdges(Vertex.DIRECTION.OUT, "LW")).isEqualTo(degree / 2);
+    for (final RID target : far)
+      assertThat(vertex(target).countEdges(Vertex.DIRECTION.IN, "LW")).isEqualTo(removed.contains(target) ? 0 : 1);
+    assertCheckIsClean();
+  }
+
   /** A self-loop walked on its OUT side is disconnected from its IN side too: only the walked list is skipped. */
   @Test
   void removingASelfLoopClearsBothListsOfTheVertex() {

@@ -98,7 +98,8 @@ class Issue8417TypeFilteredScanTest {
       final AtomicInteger decodes = new AtomicInteger();
 
       final List<RID> vertices = new ArrayList<>();
-      new VertexIteratorFilter((DatabaseInternal) database, countingHead(ids[0], decodes), new String[] { "Parent" })
+      new VertexIteratorFilter((DatabaseInternal) database, countingHead(ids[0], decodes), new String[] { "Parent" }, ids[0],
+          Vertex.DIRECTION.IN)
           .forEachRemaining(v -> vertices.add(v.getIdentity()));
       assertThat(vertices).containsExactly(ids[1]);
       assertThat(decodes.get()).isEqualTo(2);
@@ -113,7 +114,8 @@ class Issue8417TypeFilteredScanTest {
 
       decodes.set(0);
       final List<Pair<RID, RID>> entries = new ArrayList<>();
-      new EdgeVertexIteratorFilter((DatabaseInternal) database, countingHead(ids[0], decodes), new String[] { "Parent" })
+      new EdgeVertexIteratorFilter((DatabaseInternal) database, countingHead(ids[0], decodes), new String[] { "Parent" }, ids[0],
+          Vertex.DIRECTION.IN)
           .forEachRemaining(entries::add);
       assertThat(entries).hasSize(1);
       assertThat(entries.getFirst().getFirst()).isEqualTo(ids[2]);

@@ -25,10 +25,6 @@ import com.arcadedb.utility.Pair;
 import java.util.NoSuchElementException;
 
 public class EdgeVertexIteratorFilter extends IteratorFilterBase<Pair<RID, RID>> {
-  public EdgeVertexIteratorFilter(final DatabaseInternal database, final EdgeSegment current, final String[] edgeTypes) {
-    super(database, current, edgeTypes);
-  }
-
   /** With the vertex and direction of the list walked, so {@link #remove()} can delete the edge of the entry. */
   public EdgeVertexIteratorFilter(final DatabaseInternal database, final EdgeSegment current, final String[] edgeTypes,
       final RID vertex, final Vertex.DIRECTION direction) {

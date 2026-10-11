@@ -27,10 +27,6 @@ import java.util.NoSuchElementException;
 import java.util.logging.Level;
 
 public class VertexIteratorFilter extends IteratorFilterBase<Vertex> {
-  public VertexIteratorFilter(final DatabaseInternal database, final EdgeSegment current, final String[] edgeTypes) {
-    super(database, current, edgeTypes);
-  }
-
   /** With the vertex and direction of the list walked, so {@link #remove()} can delete the edge of the entry. */
   public VertexIteratorFilter(final DatabaseInternal database, final EdgeSegment current, final String[] edgeTypes,
       final RID vertex, final Vertex.DIRECTION direction) {
