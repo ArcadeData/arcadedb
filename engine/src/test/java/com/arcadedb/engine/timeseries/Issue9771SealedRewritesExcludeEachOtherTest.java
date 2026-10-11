@@ -30,6 +30,7 @@ import org.junit.jupiter.params.provider.EnumSource;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -117,17 +118,19 @@ class Issue9771SealedRewritesExcludeEachOtherTest extends TestHelper {
     thread.start();
   }
 
-  /** Waits until the thread has finished or has been parked (on a lock) for long enough to be certain it is not running. */
-  private static void awaitFinishedOrParked(final Thread thread) throws InterruptedException {
+  /**
+   * Waits until the thread has finished or is queued on the shard's rewrite mutex, and says which. A thread that is merely parked
+   * on something else would not do: the claim is that the second rewrite reached the mutex and waits there. The bound is a hang
+   * detector, not a latency claim.
+   */
+  private static boolean awaitQueuedOnTheMutex(final TimeSeriesShard shard, final Thread thread) throws InterruptedException {
     final long deadline = System.nanoTime() + 20_000_000_000L;
-    int parked = 0;
     while (thread.isAlive() && System.nanoTime() < deadline) {
-      final Thread.State state = thread.getState();
-      parked = state == Thread.State.WAITING || state == Thread.State.TIMED_WAITING || state == Thread.State.BLOCKED ? parked + 1 : 0;
-      if (parked >= 10)
-        return;
-      Thread.sleep(20);
+      if (shard.hasRewriteWaiting())
+        return true;
+      Thread.sleep(5);
     }
+    return false;
   }
 
   private record Snapshot(int blocks, long samples, int rows, List<String> problems) {
@@ -151,6 +154,7 @@ class Issue9771SealedRewritesExcludeEachOtherTest extends TestHelper {
 
     final Thread[] holder = new Thread[1];
     final AtomicReference<Throwable> failure = new AtomicReference<>();
+    final AtomicBoolean queuedOnTheMutex = new AtomicBoolean();
     final DatabaseInternal db = (DatabaseInternal) database;
     TimeSeriesShard.TEST_PRE_PHASE4C_HOOK = () -> {
       TimeSeriesShard.TEST_PRE_PHASE4C_HOOK = null;
@@ -162,7 +166,7 @@ class Issue9771SealedRewritesExcludeEachOtherTest extends TestHelper {
         }
       });
       try {
-        awaitFinishedOrParked(holder[0]);
+        queuedOnTheMutex.set(awaitQueuedOnTheMutex(engine.getShard(0), holder[0]));
       } catch (final InterruptedException e) {
         Thread.currentThread().interrupt();
       }
@@ -171,6 +175,7 @@ class Issue9771SealedRewritesExcludeEachOtherTest extends TestHelper {
     engine.compactAll();
 
     assertThat(holder[0]).as("the hook must have started the second rewrite").isNotNull();
+    assertThat(queuedOnTheMutex.get()).as("the second rewrite must wait for the compaction on the shard's rewrite mutex").isTrue();
     holder[0].join(60_000);
     assertThat(holder[0].isAlive()).as("the second rewrite must finish once the compaction is done").isFalse();
     assertThat(failure.get()).as("the second rewrite must not fail").isNull();
