@@ -185,6 +185,19 @@ class Issue9718TimeSeriesExactIntegralAggregatesTest extends TestHelper {
     ExactLongSum.add(acc, 0, other[0], other[1]);
     assertThat(ExactLongSum.toNumber(acc[0], acc[1])).isEqualTo(4L);
     assertThat(ExactLongSum.truncatedAverage(-7L, -1L, 2)).isEqualTo(-3L);
+    // the boundary of the long range: two Long.MAX_VALUE add up to 2^64 - 2, past it, and average back to Long.MAX_VALUE
+    final long[] max = new long[2];
+    ExactLongSum.add(max, 0, Long.MAX_VALUE);
+    ExactLongSum.add(max, 0, Long.MAX_VALUE);
+    assertThat(ExactLongSum.fitsLong(max[0], max[1])).isFalse();
+    assertThat(ExactLongSum.truncatedAverage(max[0], max[1], 2)).isEqualTo(Long.MAX_VALUE);
+    assertThat(ExactLongSum.average(max[0], max[1], 2)).isEqualTo((double) Long.MAX_VALUE);
+    final long[] min = new long[2];
+    ExactLongSum.add(min, 0, Long.MIN_VALUE);
+    ExactLongSum.add(min, 0, Long.MIN_VALUE + 1);
+    // -2^63 + 0.5, truncated toward zero
+    assertThat(ExactLongSum.truncatedAverage(min[0], min[1], 2)).isEqualTo(Long.MIN_VALUE + 1);
+    assertThat(ExactLongSum.toNumber(min[0], min[1])).isEqualTo(new BigDecimal(BigInteger.valueOf(Long.MIN_VALUE).multiply(BigInteger.TWO).add(BigInteger.ONE)));
   }
 
   @Test

@@ -23,10 +23,17 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Type;
+import com.arcadedb.utility.DateUtils;
 import org.junit.jupiter.api.Test;
 
+import java.time.Instant;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.ZoneOffset;
+import java.time.ZonedDateTime;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -182,6 +189,24 @@ class Issue9724TimeSeriesDateTimeColumnsTest extends TestHelper {
   /** A number is epoch DAYS into a DATE and epoch MILLIS into every DATETIME, as on a document property (issue #9324). */
   private static Object literalFor(final Object literal, final int type) {
     return literal instanceof Long && TYPES[type].equals("DATE") ? (Object) 19_675L : literal;
+  }
+
+  @Test
+  void theStrictConversionAnswersWhatTheSaturatingOneDoesWhereverItFits() {
+    final Object[] values = { new Date(-1_500L), new Date(1_700_000_123_456L), LocalDateTime.of(1969, 12, 31, 23, 59, 59, 999_999_999),
+        LocalDateTime.of(2023, 11, 14, 22, 15, 23, 123_456_789), LocalDate.of(1900, 1, 1),
+        Instant.ofEpochSecond(-5, 1), ZonedDateTime.of(2262, 4, 11, 23, 47, 16, 854_775_807, ZoneOffset.UTC),
+        1_700_000_123_456L, "1700000123456", "2023-11-14 22:15:23.123456789" };
+    for (final ChronoUnit unit : new ChronoUnit[] { ChronoUnit.SECONDS,
+        ChronoUnit.MILLIS, ChronoUnit.MICROS, ChronoUnit.NANOS })
+      for (final Object value : values)
+        assertThat(DateUtils.dateTimeToTimestampExact(database, value, unit)).as(value + " in " + unit)
+            .isEqualTo(DateUtils.dateTimeToTimestamp(database, value, unit));
+    // past the range: refused rather than the saturated value
+    assertThatThrownBy(() -> DateUtils.dateTimeToTimestampExact(database, LocalDateTime.of(2262, 4, 11, 23, 47, 16, 854_775_808),
+        ChronoUnit.NANOS)).isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> DateUtils.dateTimeToTimestampExact(database, LocalDate.of(1600, 1, 1),
+        ChronoUnit.NANOS)).isInstanceOf(IllegalArgumentException.class);
   }
 
   private long count(final String sql, final Object... args) {
