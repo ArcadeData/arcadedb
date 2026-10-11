@@ -22,12 +22,18 @@ def _config_key(key: str) -> str:
     return f"arcadedb.{key.replace('_', '.')}"
 
 
+_ALL_INTERFACES = ("0.0.0.0", "::")  # nosec B104 - compared, not bound
+
+
 def _all_interfaces_host_settings():
     """The keys of every listener bind host that defaults to all interfaces.
 
     The Postgres, Redis, Bolt, Mongo and gRPC hosts today: a ``*.host``
-    setting whose engine default is ``"0.0.0.0"``. The HTTP host is set
-    separately and is left out.
+    setting whose engine default is an all-interfaces address (``"0.0.0.0"``,
+    or ``"::"`` for IPv6). The HTTP host is set separately and is left out.
+    A listener whose engine default is already narrower (loopback) keeps it:
+    it is not the exposure this guards against. test_server_wire_protocols
+    pins the discovered set, so a change in it shows up there.
     """
     GlobalConfiguration = jpype.JClass("com.arcadedb.GlobalConfiguration")
     keys = []
@@ -36,8 +42,7 @@ def _all_interfaces_host_settings():
         if (
             key.endswith(".host")
             and key != "arcadedb.server.httpIncomingHost"
-            and str(setting.getDefValue())
-            == "0.0.0.0"  # nosec B104 - compared, not bound
+            and str(setting.getDefValue()) in _ALL_INTERFACES
         ):
             keys.append(key)
     return keys
