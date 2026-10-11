@@ -389,6 +389,50 @@ public class DateUtils {
   }
 
   /**
+   * {@link #dateTimeToTimestamp(Database, Object, ChronoUnit)} for a value about to be STORED: an instant the precision
+   * cannot represent is refused rather than saturated to {@link Long#MAX_VALUE}/{@link Long#MIN_VALUE} (issue #9725).
+   * <p>
+   * The saturating conversion exists for comparisons (issue #5625): two instants both past the representable range still
+   * order correctly against everything inside it. Stored, the same saturated value is a different instant - a DATETIME_NANOS
+   * property set to the year 2500 read back as 2262-04-11 - so a write path asks this one, and the caller gets the error.
+   *
+   * @throws IllegalArgumentException when the instant is outside what {@code precisionToUse} can represent in a {@code long}
+   */
+  public static Long dateTimeToTimestampExact(final Database database, final Object value, final ChronoUnit precisionToUse) {
+    final Object temporal = value instanceof String string && !FileUtils.isLong(string) ? parseDateTime(database, string) : value;
+    final Long timestamp = dateTimeToTimestamp(database, temporal, precisionToUse);
+    if (timestamp == null)
+      return null;
+    final Instant instant = switch (temporal) {
+      case Date date -> Instant.ofEpochMilli(date.getTime());
+      case Calendar calendar -> Instant.ofEpochMilli(calendar.getTimeInMillis());
+      case LocalDateTime localDateTime -> localDateTime.toInstant(ZoneOffset.UTC);
+      case LocalDate localDate -> localDate.atStartOfDay(ZoneOffset.UTC).toInstant();
+      case ZonedDateTime zonedDateTime -> zonedDateTime.toInstant();
+      case OffsetDateTime offsetDateTime -> offsetDateTime.toInstant();
+      case Instant i -> i;
+      // a number or a numeric string is already a count in the target unit, which the conversion above read exactly
+      default -> null;
+    };
+    if (instant != null) {
+      final long unitsPerSecond = switch (precisionToUse) {
+        case MILLIS -> 1_000L;
+        case MICROS -> 1_000_000L;
+        case NANOS -> 1_000_000_000L;
+        default -> 1L;
+      };
+      try {
+        Math.addExact(Math.multiplyExact(instant.getEpochSecond(), unitsPerSecond), instant.getNano() / (1_000_000_000L / unitsPerSecond));
+      } catch (final ArithmeticException e) {
+        throw new IllegalArgumentException(
+            "Date/time value " + value + " is outside the range a " + precisionToUse.toString().toLowerCase(Locale.ENGLISH)
+                + "-precision timestamp can represent");
+      }
+    }
+    return timestamp;
+  }
+
+  /**
    * THE one converter from any of the engine's date/time representations to epoch milliseconds. Accepts everything
    * {@link #dateTimeToTimestamp(Object, ChronoUnit)} accepts - {@link Date}, {@link Calendar}, {@link LocalDateTime},
    * {@link LocalDate}, {@link ZonedDateTime}, {@link OffsetDateTime}, {@link Instant}, {@link Number} and a

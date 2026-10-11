@@ -212,6 +212,8 @@ final class TimeSeriesDecodedColumnCache {
   private static long sizeOf(final Object array) {
     if (array instanceof long[] a)
       return 16L + 8L * a.length;
+    if (array instanceof IntegralColumn column)
+      return 32L + 16L + 8L * column.values.length + (column.nulls != null ? 16L + 8L * column.nulls.length : 0L);
     if (array instanceof double[] a)
       return 16L + 8L * a.length;
     if (array instanceof String[] a)

@@ -35,6 +35,13 @@ import java.util.Map;
  * In flat mode the pre-allocated window is only as good as the caller's range estimate, so a bucket
  * that falls outside it is parked in a lazily created overflow map rather than discarded: an
  * under-sized window then costs a little speed, never a sample (issue #6937).
+ * <p>
+ * <b>Exact requests</b> (issues #9718, #9720). A request over a column that stores exact integers - an integral, boolean or
+ * datetime column, see {@link ColumnDefinition#storesExactIntegers()} - can be declared EXACT at construction. Its MIN/MAX is
+ * then kept as a {@code long} and its SUM/AVG total as a 128-bit integer ({@link ExactLongSum}), fed by the {@code long}
+ * overloads of the accumulation methods, and read back through {@link #getExactValue}: a double holds every integer only up
+ * to 2^53, so the double lane answered a {@code LONG} column of epoch nanoseconds, 64-bit ids or hashes with a rounded value.
+ * {@link #getValue} still answers such a request, as the nearest double.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -45,10 +52,15 @@ public final class MultiColumnAggregationResult {
 
   private final int               requestCount;
   private final AggregationType[] types;
+  /** Per request, whether it is exact (see the class comment); {@code null} when none is. */
+  private final boolean[]         exact;
 
   // --- Map mode (fallback) ---
   private final Map<Long, double[]> valuesByBucket;
   private final Map<Long, long[]>   countsByBucket;
+  // Per bucket, two longs per request for the exact lane: the MIN/MAX value or the low word of the SUM/AVG total, then its
+  // high word. Only when a request is exact.
+  private final Map<Long, long[]>   exactByBucket;
   private final List<Long>          orderedBuckets;
 
   // --- Flat mode ---
@@ -58,6 +70,7 @@ public final class MultiColumnAggregationResult {
   private final int       maxBuckets;
   private       double[][] flatValues;   // [bucketIdx][requestIdx]
   private       long[][]   flatCounts;   // [bucketIdx][requestIdx]
+  private       long[][]   flatExact;    // [bucketIdx][2 * requestIdx (+1)], only when a request is exact
   private       boolean[]  bucketUsed;   // whether this bucket has been touched
   private       List<Long> cachedBucketTimestamps; // cached result for flat mode
 
@@ -68,6 +81,12 @@ public final class MultiColumnAggregationResult {
   // Lazily allocated, so a correctly sized flat result pays nothing.
   private Map<Long, double[]> overflowValues;
   private Map<Long, long[]>   overflowCounts;
+  private Map<Long, long[]>   overflowExact;
+
+  // The bucket the last resolve() found or created: its three arrays. A result is filled by one thread at a time.
+  private double[] curValues;
+  private long[]   curCounts;
+  private long[]   curExact;
 
   // --- Response ceiling (issue #7724) ---
   // The number of buckets the caller will accept, 0 for no ceiling, and the running count of the buckets
@@ -82,12 +101,23 @@ public final class MultiColumnAggregationResult {
    * Map-mode constructor (original behavior).
    */
   public MultiColumnAggregationResult(final List<MultiColumnAggregationRequest> requests) {
+    this(requests, (boolean[]) null);
+  }
+
+  /**
+   * Map-mode constructor with exact requests.
+   *
+   * @param exact per request, whether it is exact (see the class comment); {@code null} for none
+   */
+  public MultiColumnAggregationResult(final List<MultiColumnAggregationRequest> requests, final boolean[] exact) {
     this.requestCount = requests.size();
     this.types = new AggregationType[requestCount];
     for (int i = 0; i < requestCount; i++)
       types[i] = requests.get(i).type();
+    this.exact = normalizeExact(exact, types);
     this.valuesByBucket = new HashMap<>();
     this.countsByBucket = new HashMap<>();
+    this.exactByBucket = this.exact != null ? new HashMap<>() : null;
     this.orderedBuckets = new ArrayList<>();
     this.flatMode = false;
     this.firstBucketTs = 0;
@@ -107,10 +137,21 @@ public final class MultiColumnAggregationResult {
    */
   public MultiColumnAggregationResult(final List<MultiColumnAggregationRequest> requests,
       final long firstBucketTs, final long bucketIntervalMs, final int maxBuckets) {
+    this(requests, firstBucketTs, bucketIntervalMs, maxBuckets, null);
+  }
+
+  /**
+   * Flat-mode constructor with exact requests.
+   *
+   * @param exact per request, whether it is exact (see the class comment); {@code null} for none
+   */
+  public MultiColumnAggregationResult(final List<MultiColumnAggregationRequest> requests,
+      final long firstBucketTs, final long bucketIntervalMs, final int maxBuckets, final boolean[] exact) {
     this.requestCount = requests.size();
     this.types = new AggregationType[requestCount];
     for (int i = 0; i < requestCount; i++)
       types[i] = requests.get(i).type();
+    this.exact = normalizeExact(exact, types);
 
     if (maxBuckets > MAX_FLAT_BUCKETS) {
       // Fall back to map mode to avoid OOM
@@ -120,6 +161,7 @@ public final class MultiColumnAggregationResult {
       this.maxBuckets = 0;
       this.valuesByBucket = new HashMap<>();
       this.countsByBucket = new HashMap<>();
+      this.exactByBucket = this.exact != null ? new HashMap<>() : null;
       this.orderedBuckets = new ArrayList<>();
     } else {
       this.flatMode = true;
@@ -128,12 +170,38 @@ public final class MultiColumnAggregationResult {
       this.maxBuckets = maxBuckets;
       this.flatValues = new double[maxBuckets][];
       this.flatCounts = new long[maxBuckets][];
+      this.flatExact = this.exact != null ? new long[maxBuckets][] : null;
       this.bucketUsed = new boolean[maxBuckets];
       this.valuesByBucket = null;
       this.countsByBucket = null;
+      this.exactByBucket = null;
       this.orderedBuckets = null;
     }
   }
+
+  /**
+   * The exact flags as kept: {@code null} when no request is exact, and never for a COUNT, which counts rows whatever the column.
+   */
+  private static boolean[] normalizeExact(final boolean[] exact, final AggregationType[] types) {
+    if (exact == null)
+      return null;
+    boolean any = false;
+    final boolean[] kept = new boolean[types.length];
+    for (int i = 0; i < types.length && i < exact.length; i++) {
+      kept[i] = exact[i] && types[i] != AggregationType.COUNT;
+      any |= kept[i];
+    }
+    return any ? kept : null;
+  }
+
+  /**
+   * Whether request {@code requestIndex} is exact (see the class comment).
+   */
+  public boolean isExact(final int requestIndex) {
+    return exact != null && exact[requestIndex];
+  }
+
+
 
   /**
    * Returns whether this result uses flat array mode.
@@ -148,58 +216,28 @@ public final class MultiColumnAggregationResult {
    * Accumulates a value for request at the given index into the given bucket.
    */
   public void accumulate(final long bucketTs, final int requestIndex, final double value) {
-    if (flatMode) {
-      final int idx = flatIndex(bucketTs);
-      if (!ensureFlatBucket(idx)) {
-        accumulateInPlace(overflowValuesFor(bucketTs), overflowCounts.get(bucketTs), requestIndex, value);
-        return;
-      }
-      accumulateInPlace(flatValues[idx], flatCounts[idx], requestIndex, value);
-    } else {
-      double[] vals = valuesByBucket.get(bucketTs);
-      if (vals == null) {
-        vals = newInitializedValues();
-        final long[] counts = new long[requestCount];
-        valuesByBucket.put(bucketTs, vals);
-        countsByBucket.put(bucketTs, counts);
-        orderedBuckets.add(bucketTs);
-      }
-      accumulateInPlace(vals, countsByBucket.get(bucketTs), requestIndex, value);
-    }
+    resolve(bucketTs);
+    accumulateInPlace(curValues, curCounts, curExact, requestIndex, value, (long) value);
   }
 
   /**
    * Batch accumulate for all requests in a single row.
    */
   public void accumulateRow(final long bucketTs, final double[] values) {
-    if (flatMode) {
-      final int idx = flatIndex(bucketTs);
-      final double[] vals;
-      final long[] counts;
-      if (ensureFlatBucket(idx)) {
-        vals = flatValues[idx];
-        counts = flatCounts[idx];
-      } else {
-        vals = overflowValuesFor(bucketTs);
-        counts = overflowCounts.get(bucketTs);
-      }
-      for (int i = 0; i < requestCount; i++)
-        accumulateInPlace(vals, counts, i, values[i]);
-    } else {
-      double[] vals = valuesByBucket.get(bucketTs);
-      long[] counts;
-      if (vals == null) {
-        vals = newInitializedValues();
-        counts = new long[requestCount];
-        valuesByBucket.put(bucketTs, vals);
-        countsByBucket.put(bucketTs, counts);
-        orderedBuckets.add(bucketTs);
-      } else {
-        counts = countsByBucket.get(bucketTs);
-      }
-      for (int i = 0; i < requestCount; i++)
-        accumulateInPlace(vals, counts, i, values[i]);
-    }
+    accumulateRow(bucketTs, values, null);
+  }
+
+  /**
+   * Batch accumulate for all requests in a single row, with the exact value of every exact request.
+   *
+   * @param values      per request, the sample as a double: {@link TimeSeriesNaN#ABSENT} when the row carries no value for it
+   * @param exactValues per request, the sample as a {@code long}, read for an exact request whose double is not absent; may be
+   *                    {@code null} when no request is exact
+   */
+  public void accumulateRow(final long bucketTs, final double[] values, final long[] exactValues) {
+    resolve(bucketTs);
+    for (int i = 0; i < requestCount; i++)
+      accumulateInPlace(curValues, curCounts, curExact, i, values[i], exactValues != null ? exactValues[i] : (long) values[i]);
   }
 
   /**
@@ -209,27 +247,21 @@ public final class MultiColumnAggregationResult {
    *                     rows for a COUNT request, its real (non-NaN) samples for every other one
    */
   public void accumulateBlockStats(final long bucketTs, final double[] values, final long[] sampleCounts) {
-    if (flatMode) {
-      final int idx = flatIndex(bucketTs);
-      if (!ensureFlatBucket(idx)) {
-        accumulateBlockStatsInPlace(overflowValuesFor(bucketTs), overflowCounts.get(bucketTs), values, sampleCounts);
-        return;
-      }
-      accumulateBlockStatsInPlace(flatValues[idx], flatCounts[idx], values, sampleCounts);
-    } else {
-      double[] vals = valuesByBucket.get(bucketTs);
-      long[] counts;
-      if (vals == null) {
-        vals = newInitializedValues();
-        counts = new long[requestCount];
-        valuesByBucket.put(bucketTs, vals);
-        countsByBucket.put(bucketTs, counts);
-        orderedBuckets.add(bucketTs);
-      } else {
-        counts = countsByBucket.get(bucketTs);
-      }
-      accumulateBlockStatsInPlace(vals, counts, values, sampleCounts);
-    }
+    accumulateBlockStats(bucketTs, values, sampleCounts, null, null);
+  }
+
+  /**
+   * Same as above with the exact statistics of every exact request (see the class comment).
+   *
+   * @param exactValues per request, the exact MIN/MAX, or the low word of the exact SUM; {@code null} when no request is exact
+   * @param exactHigh   per request, the high word of the exact SUM; {@code null} when no request is exact
+   */
+  public void accumulateBlockStats(final long bucketTs, final double[] values, final long[] sampleCounts, final long[] exactValues,
+      final long[] exactHigh) {
+    resolve(bucketTs);
+    for (int i = 0; i < requestCount; i++)
+      accumulateStatInPlace(curValues, curCounts, curExact, i, values[i], sampleCounts[i],
+          exactValues != null ? exactValues[i] : (long) values[i], exactHigh != null ? exactHigh[i] : ((long) values[i]) >> 63);
   }
 
   /**
@@ -244,27 +276,87 @@ public final class MultiColumnAggregationResult {
    */
   public void accumulateSingleStat(final long bucketTs, final int requestIndex,
       final double value, final long count) {
+    accumulateSingleStat(bucketTs, requestIndex, value, count, (long) value, ((long) value) >> 63);
+  }
+
+  /**
+   * Same as above for an exact request: {@code exactValue} is the MIN/MAX, or the low word of the SUM, and {@code exactHigh} the
+   * high word of the SUM.
+   */
+  public void accumulateSingleStat(final long bucketTs, final int requestIndex, final double value, final long count,
+      final long exactValue, final long exactHigh) {
+    resolve(bucketTs);
+    accumulateStatInPlace(curValues, curCounts, curExact, requestIndex, value, count, exactValue, exactHigh);
+  }
+
+  /**
+   * Points {@link #curValues}/{@link #curCounts}/{@link #curExact} at the bucket {@code bucketTs} lands in, creating it on first
+   * use: a flat slot, an overflow entry for a flat result's out-of-window bucket (issue #6937), or a map entry.
+   */
+  private void resolve(final long bucketTs) {
     if (flatMode) {
       final int idx = flatIndex(bucketTs);
-      if (!ensureFlatBucket(idx)) {
-        accumulateStatInPlace(overflowValuesFor(bucketTs), overflowCounts.get(bucketTs), requestIndex, value, count);
-        return;
-      }
-      accumulateStatInPlace(flatValues[idx], flatCounts[idx], requestIndex, value, count);
-    } else {
-      double[] vals = valuesByBucket.get(bucketTs);
-      long[] counts;
-      if (vals == null) {
-        vals = newInitializedValues();
-        counts = new long[requestCount];
-        valuesByBucket.put(bucketTs, vals);
-        countsByBucket.put(bucketTs, counts);
-        orderedBuckets.add(bucketTs);
+      if (ensureFlatBucket(idx)) {
+        curValues = flatValues[idx];
+        curCounts = flatCounts[idx];
+        curExact = flatExact != null ? flatExact[idx] : null;
       } else {
-        counts = countsByBucket.get(bucketTs);
+        curValues = overflowValuesFor(bucketTs);
+        curCounts = overflowCounts.get(bucketTs);
+        curExact = overflowExact != null ? overflowExact.get(bucketTs) : null;
       }
-      accumulateStatInPlace(vals, counts, requestIndex, value, count);
+      return;
     }
+    double[] vals = valuesByBucket.get(bucketTs);
+    if (vals == null) {
+      vals = newInitializedValues();
+      valuesByBucket.put(bucketTs, vals);
+      countsByBucket.put(bucketTs, new long[requestCount]);
+      if (exactByBucket != null)
+        exactByBucket.put(bucketTs, newExactValues());
+      orderedBuckets.add(bucketTs);
+    }
+    curValues = vals;
+    curCounts = countsByBucket.get(bucketTs);
+    curExact = exactByBucket != null ? exactByBucket.get(bucketTs) : null;
+  }
+
+  /**
+   * The value array of an existing bucket, {@code null} when the bucket does not exist. A lookup only: the read methods use it, so
+   * that reading a result never moves the cursor {@link #resolve} keeps for the accumulation.
+   */
+  private double[] valuesOf(final long bucketTs) {
+    if (flatMode) {
+      final int idx = flatIndex(bucketTs);
+      if (idx >= 0 && idx < maxBuckets && bucketUsed[idx])
+        return flatValues[idx];
+      return overflowValues != null ? overflowValues.get(bucketTs) : null;
+    }
+    return valuesByBucket.get(bucketTs);
+  }
+
+  /** The count array of an existing bucket, see {@link #valuesOf}. */
+  private long[] countsOf(final long bucketTs) {
+    if (flatMode) {
+      final int idx = flatIndex(bucketTs);
+      if (idx >= 0 && idx < maxBuckets && bucketUsed[idx])
+        return flatCounts[idx];
+      return overflowCounts != null ? overflowCounts.get(bucketTs) : null;
+    }
+    return countsByBucket.get(bucketTs);
+  }
+
+  /** The exact array of an existing bucket, see {@link #valuesOf}; {@code null} too when no request is exact. */
+  private long[] exactOf(final long bucketTs) {
+    if (exact == null)
+      return null;
+    if (flatMode) {
+      final int idx = flatIndex(bucketTs);
+      if (idx >= 0 && idx < maxBuckets && bucketUsed[idx])
+        return flatExact[idx];
+      return overflowExact != null ? overflowExact.get(bucketTs) : null;
+    }
+    return exactByBucket.get(bucketTs);
   }
 
   // ---- Finalize & query ----
@@ -277,7 +369,8 @@ public final class MultiColumnAggregationResult {
   public void finalizeAvg() {
     if (flatMode) {
       for (int i = 0; i < requestCount; i++) {
-        if (types[i] == AggregationType.AVG) {
+        // an exact AVG is divided when it is read: its total is the exact lane's, and the double lane holds nothing for it
+        if (types[i] == AggregationType.AVG && !isExact(i)) {
           for (int b = 0; b < maxBuckets; b++) {
             if (bucketUsed[b] && flatCounts[b][i] > 0)
               flatValues[b][i] = flatValues[b][i] / flatCounts[b][i];
@@ -292,7 +385,7 @@ public final class MultiColumnAggregationResult {
       }
     } else {
       for (int i = 0; i < requestCount; i++) {
-        if (types[i] == AggregationType.AVG) {
+        if (types[i] == AggregationType.AVG && !isExact(i)) {
           for (final Map.Entry<Long, double[]> entry : valuesByBucket.entrySet()) {
             final long[] counts = countsByBucket.get(entry.getKey());
             if (counts[i] > 0)
@@ -347,19 +440,36 @@ public final class MultiColumnAggregationResult {
    * for the same reason {@link #newInitializedValues()} seeds it with a number.
    */
   public double getValue(final long bucketTs, final int requestIndex) {
-    if (flatMode) {
-      final int idx = flatIndex(bucketTs);
-      if (idx >= 0 && idx < maxBuckets && bucketUsed[idx])
-        return flatValues[idx][requestIndex];
-      final double[] overflow = overflowValues != null ? overflowValues.get(bucketTs) : null;
-      if (overflow != null)
-        return overflow[requestIndex];
-      return noBucketValue(requestIndex);
+    if (!isExact(requestIndex)) {
+      final double[] vals = valuesOf(bucketTs);
+      return vals != null ? vals[requestIndex] : noBucketValue(requestIndex);
     }
-    final double[] vals = valuesByBucket.get(bucketTs);
-    if (vals == null)
-      return noBucketValue(requestIndex);
-    return vals[requestIndex];
+    // An exact request, as the nearest double of the exact answer
+    final Number value = getExactValue(bucketTs, requestIndex);
+    return value != null ? value.doubleValue() : TimeSeriesNaN.ABSENT;
+  }
+
+  /**
+   * The exact answer of an exact request in a bucket (issues #9718, #9720), or {@code null} when no sample contributed to it
+   * (or the bucket does not exist): MIN/MAX as the {@link Long} sample, SUM as a {@link Long} when the total fits one and an exact
+   * {@link java.math.BigDecimal} otherwise, AVG as the {@link Double} the generic {@code avg()} computes from that total.
+   *
+   * @throws IllegalStateException when the request is not exact
+   */
+  public Number getExactValue(final long bucketTs, final int requestIndex) {
+    if (!isExact(requestIndex))
+      throw new IllegalStateException("Aggregation request " + requestIndex + " is not exact");
+    final long[] counts = countsOf(bucketTs);
+    if (counts == null || counts[requestIndex] == 0)
+      return null;
+    final long[] ex = exactOf(bucketTs);
+    final long value = ex[requestIndex * 2];
+    return switch (types[requestIndex]) {
+      case MIN, MAX -> value;
+      case SUM -> ExactLongSum.toNumber(value, ex[requestIndex * 2 + 1]);
+      case AVG -> ExactLongSum.average(value, ex[requestIndex * 2 + 1], counts[requestIndex]);
+      case COUNT -> counts[requestIndex];
+    };
   }
 
   /**
@@ -448,7 +558,14 @@ public final class MultiColumnAggregationResult {
         final long[] oCounts = other.flatCounts[b];
         final double[] tVals = flatValues[b];
         final long[] tCounts = flatCounts[b];
+        final long[] oExact = other.flatExact != null ? other.flatExact[b] : null;
+        final long[] tExact = flatExact != null ? flatExact[b] : null;
         for (int i = 0; i < requestCount; i++) {
+          if (isExact(i)) {
+            mergeExact(tExact, tCounts, oExact, oCounts[i], i);
+            tCounts[i] += oCounts[i];
+            continue;
+          }
           switch (types[i]) {
           case MIN:
             tVals[i] = TimeSeriesNaN.min(tVals[i], oVals[i]);
@@ -472,22 +589,52 @@ public final class MultiColumnAggregationResult {
       // flatIndex() gives the same answer here and they necessarily re-overflow into this result's own
       // map; going through the by-timestamp accumulator is what puts them there and merges duplicates.
       if (other.overflowValues != null)
-        for (final Map.Entry<Long, double[]> entry : other.overflowValues.entrySet()) {
-          final long bucketTs = entry.getKey();
-          final double[] oVals = entry.getValue();
-          final long[] oCounts = other.overflowCounts.get(bucketTs);
-          for (int i = 0; i < requestCount; i++)
-            accumulateStatInPlaceByTs(bucketTs, i, oVals[i], oCounts[i]);
-        }
+        for (final Map.Entry<Long, double[]> entry : other.overflowValues.entrySet())
+          mergeBucket(entry.getKey(), entry.getValue(), other.overflowCounts.get(entry.getKey()),
+              other.overflowExact != null ? other.overflowExact.get(entry.getKey()) : null);
     } else {
-      // Fallback: merge map-mode results
-      for (final long bucketTs : other.getBucketTimestamps()) {
-        for (int i = 0; i < requestCount; i++) {
-          final double oVal = other.getValue(bucketTs, i);
-          final long oCount = other.getCount(bucketTs, i);
-          accumulateStatInPlaceByTs(bucketTs, i, oVal, oCount);
-        }
-      }
+      // Fallback: merge map-mode results, bucket by bucket, from the other result's own arrays
+      for (final long bucketTs : other.getBucketTimestamps())
+        mergeBucket(bucketTs, other.valuesOf(bucketTs), other.countsOf(bucketTs), other.exactOf(bucketTs));
+    }
+  }
+
+  /**
+   * Folds one bucket of another result into this one: its statistics for every request, exact ones through the exact lane.
+   */
+  private void mergeBucket(final long bucketTs, final double[] oVals, final long[] oCounts, final long[] oExact) {
+    resolve(bucketTs);
+    for (int i = 0; i < requestCount; i++) {
+      if (isExact(i)) {
+        mergeExact(curExact, curCounts, oExact, oCounts[i], i);
+        curCounts[i] += oCounts[i];
+      } else
+        accumulateStatInPlace(curValues, curCounts, curExact, i, oVals[i], oCounts[i], 0L, 0L);
+    }
+  }
+
+  /**
+   * Folds the exact accumulator of request {@code i} of another bucket, which {@code otherCount} samples contributed to, into
+   * {@code target}, whose count has not been updated yet.
+   */
+  private void mergeExact(final long[] target, final long[] targetCounts, final long[] other, final long otherCount, final int i) {
+    if (otherCount == 0 || other == null)
+      return;
+    foldExact(target, targetCounts[i], i, other[i * 2], other[i * 2 + 1]);
+  }
+
+  /**
+   * Folds a statistic into the exact accumulator of request {@code i}, which {@code countSoFar} samples contributed to until now:
+   * the extreme for a MIN/MAX, the 128-bit total {@code (value, high)} for a SUM/AVG.
+   */
+  private void foldExact(final long[] target, final long countSoFar, final int i, final long value, final long high) {
+    final int at = i * 2;
+    switch (types[i]) {
+    case MIN -> target[at] = countSoFar == 0 ? value : Math.min(target[at], value);
+    case MAX -> target[at] = countSoFar == 0 ? value : Math.max(target[at], value);
+    case SUM, AVG -> ExactLongSum.add(target, at, value, high);
+    default -> {
+    }
     }
   }
 
@@ -523,12 +670,16 @@ public final class MultiColumnAggregationResult {
     if (overflowValues == null) {
       overflowValues = new HashMap<>();
       overflowCounts = new HashMap<>();
+      if (exact != null)
+        overflowExact = new HashMap<>();
     }
     double[] vals = overflowValues.get(bucketTs);
     if (vals == null) {
       vals = newInitializedValues();
       overflowValues.put(bucketTs, vals);
       overflowCounts.put(bucketTs, new long[requestCount]);
+      if (overflowExact != null)
+        overflowExact.put(bucketTs, newExactValues());
       cachedBucketTimestamps = null; // invalidate cache
     }
     return vals;
@@ -549,6 +700,8 @@ public final class MultiColumnAggregationResult {
       flatUsedBuckets++;
       flatValues[idx] = newInitializedValues();
       flatCounts[idx] = new long[requestCount];
+      if (flatExact != null)
+        flatExact[idx] = newExactValues();
       cachedBucketTimestamps = null; // invalidate cache
     }
     return true;
@@ -583,38 +736,57 @@ public final class MultiColumnAggregationResult {
     return vals;
   }
 
-  private void accumulateInPlace(final double[] vals, final long[] counts, final int idx, final double value) {
+  private long[] newExactValues() {
+    return new long[requestCount * 2];
+  }
+
+  /**
+   * Folds one sample of request {@code idx}: {@code value} as a double, {@link TimeSeriesNaN#ABSENT} when the row has none, and
+   * {@code exactValue} as the {@code long} an exact request folds instead.
+   */
+  private void accumulateInPlace(final double[] vals, final long[] counts, final long[] ex, final int idx, final double value,
+      final long exactValue) {
+    if (types[idx] == AggregationType.COUNT) {
+      vals[idx] += 1;
+      counts[idx]++;
+      return;
+    }
+    if (isExact(idx)) {
+      if (TimeSeriesNaN.isAbsent(value))
+        return;
+      foldExact(ex, counts[idx], idx, exactValue, exactValue >> 63);
+      counts[idx]++;
+      return;
+    }
     switch (types[idx]) {
     case SUM:
     case AVG:
       vals[idx] = TimeSeriesNaN.sum(vals[idx], counts[idx], value);
       break;
-    case COUNT:
-      vals[idx] += 1;
-      counts[idx]++;
-      return;
     case MIN:
       vals[idx] = TimeSeriesNaN.min(vals[idx], value);
       break;
     case MAX:
       vals[idx] = TimeSeriesNaN.max(vals[idx], value);
       break;
+    default:
+      break;
     }
     counts[idx] = TimeSeriesNaN.countIfPresent(counts[idx], value);
   }
 
   /**
-   * @param sampleCounts per request, the number of samples that contributed to {@code values[i]}: the block's
-   *                     rows for a COUNT request, its real samples for every other one (issue #7089)
+   * Folds a statistic of {@code count} samples into request {@code requestIndex}: {@code value} for the double lane, and the exact
+   * {@code (exactValue, exactHigh)} for an exact request, which a statistic of no sample leaves untouched.
    */
-  private void accumulateBlockStatsInPlace(final double[] vals, final long[] counts,
-      final double[] values, final long[] sampleCounts) {
-    for (int i = 0; i < requestCount; i++)
-      accumulateStatInPlace(vals, counts, i, values[i], sampleCounts[i]);
-  }
-
-  private void accumulateStatInPlace(final double[] vals, final long[] counts,
-      final int requestIndex, final double value, final long count) {
+  private void accumulateStatInPlace(final double[] vals, final long[] counts, final long[] ex,
+      final int requestIndex, final double value, final long count, final long exactValue, final long exactHigh) {
+    if (isExact(requestIndex)) {
+      if (count > 0)
+        foldExact(ex, counts[requestIndex], requestIndex, exactValue, exactHigh);
+      counts[requestIndex] += count;
+      return;
+    }
     switch (types[requestIndex]) {
     case MIN:
       vals[requestIndex] = TimeSeriesNaN.min(vals[requestIndex], value);
@@ -631,30 +803,5 @@ public final class MultiColumnAggregationResult {
       break;
     }
     counts[requestIndex] += count;
-  }
-
-  private void accumulateStatInPlaceByTs(final long bucketTs, final int requestIndex,
-      final double value, final long count) {
-    if (flatMode) {
-      final int idx = flatIndex(bucketTs);
-      if (!ensureFlatBucket(idx)) {
-        accumulateStatInPlace(overflowValuesFor(bucketTs), overflowCounts.get(bucketTs), requestIndex, value, count);
-        return;
-      }
-      accumulateStatInPlace(flatValues[idx], flatCounts[idx], requestIndex, value, count);
-    } else {
-      double[] vals = valuesByBucket.get(bucketTs);
-      long[] counts;
-      if (vals == null) {
-        vals = newInitializedValues();
-        counts = new long[requestCount];
-        valuesByBucket.put(bucketTs, vals);
-        countsByBucket.put(bucketTs, counts);
-        orderedBuckets.add(bucketTs);
-      } else {
-        counts = countsByBucket.get(bucketTs);
-      }
-      accumulateStatInPlace(vals, counts, requestIndex, value, count);
-    }
   }
 }

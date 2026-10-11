@@ -28,7 +28,6 @@ import com.arcadedb.engine.timeseries.MultiColumnAggregationResult;
 import com.arcadedb.engine.timeseries.TagFilter;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
 import com.arcadedb.engine.timeseries.TimeSeriesNaN;
-import com.arcadedb.engine.timeseries.TimeSeriesRowVisitor;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.schema.LocalTimeSeriesType;
@@ -40,7 +39,6 @@ import java.io.IOException;
 import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
@@ -71,8 +69,6 @@ public class AggregateFromTimeSeriesStep extends AbstractExecutionStep {
   private       Iterator<ResultInternal>           resultIterator;
   private       boolean                            fetched = false;
   private       AggregationMetrics                 aggregationMetrics;
-  /** The largest magnitude up to which a double holds every integer: 2^53. */
-  private static final double MAX_EXACT_INTEGRAL_DOUBLE = 0x1p53;
   /** The non-timestamp columns in schema order, the numbering an engine row uses past its timestamp; built on first use. */
   private       ColumnDefinition[]                 nonTsColumns;
 
@@ -220,7 +216,6 @@ public class AggregateFromTimeSeriesStep extends AbstractExecutionStep {
             final Object[] values = new Object[requests.size()];
             for (int i = 0; i < values.length; i++)
               values[i] = aggregateValue(aggResult, requests.get(i), bucketTs, i);
-            replaceRoundedLongExtremes(engine, values);
             final ResultInternal row = new ResultInternal(context.getDatabase());
             for (final OutputColumn output : outputs)
               row.setProperty(output.name(), values[output.index()]);
@@ -318,9 +313,36 @@ public class AggregateFromTimeSeriesStep extends AbstractExecutionStep {
     if (req.type() == AggregationType.COUNT)
       // a Long, as SQLFunctionCount answers on the generic path (issue #8915)
       return (long) value;
+    if (aggResult.isExact(i))
+      return exactLikeTheGenericPlan(req, aggResult.getExactValue(bucketTs, i));
     if (TimeSeriesNaN.isAbsent(value) && aggResult.getCount(bucketTs, i) == 0)
       return null;
     return typedLikeTheGenericPlan(req, value);
+  }
+
+  /**
+   * The exact answer of a request over an integral, boolean or datetime column (issues #9718, #9720), in the Java type the
+   * generic aggregation answers: {@code min}/{@code max} return a sample of the column - its declared integral type, a Boolean, or
+   * the date/time object a row of the column carries (issue #9725) - {@code sum} adds samples with {@code Type.increment}, which
+   * keeps a total of ints an Integer until it overflows, then a Long, then a BigDecimal, and {@code avg} is a Double. The engine
+   * kept the value as a long, or its total as a 128-bit integer, so nothing here was ever rounded through a double.
+   *
+   * @param exact what the engine answered, {@code null} when no sample contributed: NULL, as on the generic plan
+   */
+  private Object exactLikeTheGenericPlan(final MultiColumnAggregationRequest req, final Number exact) {
+    if (exact == null)
+      return null;
+    final ColumnDefinition column = requestColumn(req);
+    if (column == null)
+      return exact;
+    return switch (req.type()) {
+      case MIN, MAX -> column.isTemporal() ? column.temporalOf(context.getDatabase(), exact.longValue()) : column.boxRaw(exact.longValue());
+      case SUM -> switch (column.getDataType()) {
+        case INTEGER, SHORT, BYTE -> exact instanceof Long l && l >= Integer.MIN_VALUE && l <= Integer.MAX_VALUE ? (Object) l.intValue() : exact;
+        default -> exact;
+      };
+      default -> exact;
+    };
   }
 
   /**
@@ -337,125 +359,8 @@ public class AggregateFromTimeSeriesStep extends AbstractExecutionStep {
     final ColumnDefinition column = requestColumn(req);
     if (column == null)
       return value;
-    return switch (column.getDataType()) {
-      case LONG -> integralOrDouble(value, false);
-      case INTEGER, SHORT, BYTE -> req.type() == AggregationType.SUM
-          // a total of ints is an int until it overflows, then a long, as Type.increment widens it
-          ? integralOrDouble(value, true)
-          // a sample of the column, so it fits the column's type
-          : column.boxRaw((long) value);
-      case FLOAT -> (float) value;
-      default -> value;
-    };
-  }
-
-  /**
-   * The integral value an engine double stands for, as an Integer when {@code preferInt} and it fits one, else as a Long - or the
-   * double itself past 2^53 in magnitude, where a double no longer holds every integer: the engine accumulates in doubles, so a
-   * total that large may have been rounded, and handing it back as a Long would dress a rounded total up as an exact one.
-   */
-  private static Object integralOrDouble(final double value, final boolean preferInt) {
-    if (Math.abs(value) > MAX_EXACT_INTEGRAL_DOUBLE)
-      return value;
-    if (preferInt && value >= Integer.MIN_VALUE && value <= Integer.MAX_VALUE)
-      return (int) value;
-    return (long) value;
-  }
-
-  /**
-   * Replaces, in the answer of an ungrouped aggregate, every {@code min}/{@code max} of a LONG column the engine's double may have
-   * rounded with the stored long (issue #9710). The generic plan answers a sample of the column, exactly, and an ungrouped
-   * aggregate ran the generic plan until its push-down (issue #9612, PR #9688), so that is what it must still answer.
-   * <p>
-   * Rounding to a double is monotonic and 2^53 is a double, so a stored long of magnitude at least 2^53 never rounds below it:
-   * an engine extreme under 2^53 in magnitude is the stored long, exactly, and only one at or past it needs the stored value.
-   * For those the step runs ONE row scan over the same range and filters the engine aggregated, and folds the exact extremes of
-   * every such request at once. A LONG column is a SIMPLE8B column, whose samples come back as {@code Long}s.
-   * <p>
-   * <b>Cost.</b> The scan decodes every block of the range, as the generic plan did before the push-down, but only the columns it needs:
-   * without a field filter it projects just the recounted columns; with one it lets the engine filter (block statistics, then
-   * the primitive columns) before a row is built. A column whose values are routinely past 2^53 - epoch nanoseconds, 64-bit ids -
-   * therefore takes this path on every {@code min}/{@code max}, which is the exact answer's price until the engine keeps integral
-   * statistics as longs.
-   * <p>
-   * <b>Consistency.</b> The scan is a second read, so on a range still being written it may see samples the aggregation did not
-   * (or, past a retention pass, miss some): the recounted extremes then describe a slightly different row set than the
-   * {@code count(*)} next to them. A TimeSeries read is not a snapshot across calls, and a request the scan found no sample for
-   * keeps the engine's answer rather than turning into NULL.
-   */
-  private void replaceRoundedLongExtremes(final TimeSeriesEngine engine, final Object[] values) throws IOException {
-    int recounted = 0;
-    final int[] recount = new int[values.length];
-    for (int i = 0; i < values.length; i++) {
-      final MultiColumnAggregationRequest req = requests.get(i);
-      if ((req.type() != AggregationType.MIN && req.type() != AggregationType.MAX) || !(values[i] instanceof Number n)
-          || !(Math.abs(n.doubleValue()) >= MAX_EXACT_INTEGRAL_DOUBLE))
-        continue;
-      final ColumnDefinition column = requestColumn(req);
-      if (column != null && column.getDataType() == Type.LONG)
-        recount[recounted++] = i;
-    }
-    if (recounted == 0)
-      return;
-
-    // per recounted request: its position in the scanned row, and whether it is a MIN
-    final int count = recounted;
-    final int[] positions = new int[count];
-    final boolean[] isMin = new boolean[count];
-    final long[] extremes = new long[count];
-    final boolean[] seen = new boolean[count];
-    final int[] projection;
-    if (fieldFilter == null) {
-      // project only the recounted columns, in NON-timestamp indices: the row is { timestamp, projected columns... }
-      final int[] columns = new int[count];
-      int projected = 0;
-      for (int r = 0; r < count; r++) {
-        final int nonTsIdx = requests.get(recount[r]).columnIndex() - 1;
-        int at = -1;
-        for (int c = 0; c < projected; c++)
-          if (columns[c] == nonTsIdx) {
-            at = c;
-            break;
-          }
-        if (at < 0) {
-          at = projected;
-          columns[projected++] = nonTsIdx;
-        }
-        positions[r] = 1 + at;
-      }
-      projection = projected == columns.length ? columns : Arrays.copyOf(columns, projected);
-    } else {
-      projection = null;
-      for (int r = 0; r < count; r++)
-        positions[r] = requests.get(recount[r]).columnIndex();
-    }
-    for (int r = 0; r < count; r++)
-      isMin[r] = requests.get(recount[r]).type() == AggregationType.MIN;
-
-    final TimeSeriesRowVisitor fold = row -> {
-      for (int r = 0; r < count; r++) {
-        if (positions[r] >= row.length || !(row[positions[r]] instanceof Long sample))
-          continue;
-        final long value = sample;
-        if (!seen[r]) {
-          extremes[r] = value;
-          seen[r] = true;
-        } else if (isMin[r] ? value < extremes[r] : value > extremes[r])
-          extremes[r] = value;
-      }
-      return true;
-    };
-    if (fieldFilter == null)
-      engine.forEachRow(fromTs, toTs, projection, tagFilter, aggregationMetrics, fold);
-    else {
-      // the engine evaluates the field filter on block statistics and primitive columns before it builds a row
-      final Iterator<Object[]> rows = engine.iterateQuery(fromTs, toTs, null, tagFilter, fieldFilter, aggregationMetrics);
-      while (rows.hasNext())
-        fold.visit(rows.next());
-    }
-    for (int r = 0; r < count; r++)
-      if (seen[r])
-        values[recount[r]] = extremes[r];
+    // An integral column's requests are exact (exactLikeTheGenericPlan), so only the floating-point types are left here
+    return column.getDataType() == Type.FLOAT ? (Object) (float) value : (Object) value;
   }
 
   /** The column a request aggregates: its index is a position in the engine row, where 0 is the timestamp. */
@@ -520,13 +425,22 @@ public class AggregateFromTimeSeriesStep extends AbstractExecutionStep {
           switch (output.kind()) {
           case BUCKET ->
               row.setProperty(output.name(), DateUtils.dateTime(context.getDatabase(), bucketTs, ChronoUnit.MILLIS, LocalDateTime.class, ChronoUnit.MILLIS));
-          case TAG -> row.setProperty(output.name(), groupDefinitions[output.index()].boxString(tags[output.index()]));
+          case TAG -> row.setProperty(output.name(), tagValue(groupDefinitions[output.index()], tags[output.index()], context));
           case AGGREGATE -> row.setProperty(output.name(), aggregateValue(aggResult, requests.get(output.index()), bucketTs, output.index()));
           }
         rowCount++;
         return row;
       }
     };
+  }
+
+  /**
+   * A grouping tag's value as a row of the type carries it: its declared type, and for a DATE/DATETIME tag the date/time object
+   * the row path hands back (issue #9725) rather than the epoch count the dictionary stores.
+   */
+  private static Object tagValue(final ColumnDefinition column, final String stored, final CommandContext context) {
+    final Object value = column.boxString(stored);
+    return value instanceof Long epoch && column.isTemporal() ? column.temporalOf(context.getDatabase(), epoch) : value;
   }
 
   @Override

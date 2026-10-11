@@ -61,7 +61,8 @@ import java.util.concurrent.atomic.AtomicLong;
  * - [0..1]   sample count in page (short, read as unsigned with &amp; 0xFFFF)
  * - [2..9]   min timestamp in page (long)
  * - [10..17] max timestamp in page (long)
- * - [18..]   row data: fixed-size rows [timestamp(8)|col1|col2|...]
+ * - [18..]   row data: fixed-size rows [timestamp(8)|nullBitmap|col1|col2|...]
+ *            nullBitmap: format version 2 only, ceil(n/8) bytes for the n nullable columns (none when n = 0)
  *            TAG STRING columns: a 4-byte {@link TimeSeriesTagDictionary} id (format version 1)
  *            other STRING columns: 2-byte length prefix + up to MAX_STRING_BYTES payload
  * <p>
@@ -72,6 +73,12 @@ import java.util.concurrent.atomic.AtomicLong;
  * schema to a 72-byte stride and ~900 rows per page. Both layouts are readable; which one a bucket
  * uses is decided by whether a dictionary was handed to it, which the schema's
  * {@code mutableFormatVersion} determines, so a database written by an older build keeps working.
+ * <p>
+ * Version 2 (issue #9721) puts a null bitmap after the timestamp: one bit per fixed-width column that has no value of its own
+ * to spend on absence - the integral, boolean and datetime ones - set when the sample carries no value for it. A version-1 row
+ * stores such a null as a real zero, which every aggregate then counted as a measurement. The bitmap is present only when the
+ * type has such a column, so an all-floating-point or all-text schema keeps the version-1 stride. A type keeps the version it
+ * was created with: the stride of its existing pages is that version's.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -90,7 +97,12 @@ public class TimeSeriesBucket extends PaginatedComponent {
    */
   public static final int VERSION_DICTIONARY_TAGS = 1;
 
-  public static final  int CURRENT_VERSION = VERSION_DICTIONARY_TAGS;
+  /**
+   * Mutable row format that carries a null bitmap for the integral, boolean and datetime columns (issue #9721).
+   */
+  public static final int VERSION_NULL_BITMAP = 2;
+
+  public static final  int CURRENT_VERSION = VERSION_NULL_BITMAP;
   /**
    * Width of a dictionary-encoded TAG column in the row stride.
    */
@@ -125,6 +137,16 @@ public class TimeSeriesBucket extends PaginatedComponent {
   // a cold open builds a column-less stub through the component factory, and the shard supplies both
   // the columns and the dictionary once the type is known.
   private TimeSeriesTagDictionary tagDictionary;
+  // The type's mutable row format version: whether a row carries a null bitmap (VERSION_NULL_BITMAP) is decided by it.
+  private int                     formatVersion = CURRENT_VERSION;
+  // Where the first value column starts inside a row: past the timestamp and the null bitmap, if any.
+  private int                     valuesOffset  = 8;
+  // Width of the null bitmap of a row, 0 when the row has none.
+  private int                     nullBitmapBytes;
+  // Indexed by the ordinal among non-timestamp columns: the column's bit in the null bitmap, or -1 when it has none.
+  private int[]                   nullBits;
+  // Per-row scratch for the null bitmap the append loop writes; a component is appended to by one transaction at a time.
+  private byte[]                  nullBitmapScratch;
   // Indexed by the ordinal among non-timestamp columns: whether that column is a 4-byte dictionary id.
   private boolean[]                     dictEncoded;
   // The ordinals of the dictionary-encoded columns, so the ingest path can walk only those.
@@ -197,9 +219,20 @@ public class TimeSeriesBucket extends PaginatedComponent {
    */
   public TimeSeriesBucket(final DatabaseInternal database, final String name, final String filePath,
       final List<ColumnDefinition> columns, final TimeSeriesTagDictionary tagDictionary) throws IOException {
+    this(database, name, filePath, columns, tagDictionary, CURRENT_VERSION);
+  }
+
+  /**
+   * Creates a new TimeSeries bucket in the given mutable row format.
+   *
+   * @param formatVersion the type's mutable row format version, which decides whether a row carries a null bitmap (issue #9721)
+   */
+  public TimeSeriesBucket(final DatabaseInternal database, final String name, final String filePath,
+      final List<ColumnDefinition> columns, final TimeSeriesTagDictionary tagDictionary, final int formatVersion) throws IOException {
     super(database, name, filePath, BUCKET_EXT, ComponentFile.MODE.READ_WRITE,
         database.getConfiguration().getValueAsInteger(GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE), CURRENT_VERSION);
     this.tagDictionary = tagDictionary;
+    this.formatVersion = formatVersion;
     resolveLayout(columns);
     // Note: initHeaderPage() is NOT called here.
     // TimeSeriesShard calls it in a self-contained nested transaction after registering the
@@ -229,7 +262,16 @@ public class TimeSeriesBucket extends PaginatedComponent {
    * deliberately not possible - the stride and the dictionary have to agree.
    */
   public void setColumns(final List<ColumnDefinition> columns, final TimeSeriesTagDictionary tagDictionary) {
+    setColumns(columns, tagDictionary, CURRENT_VERSION);
+  }
+
+  /**
+   * Same as above, in the type's own mutable row format version, which decides whether a row carries a null bitmap (issue
+   * #9721). The stride depends on it, so it travels with the columns.
+   */
+  public void setColumns(final List<ColumnDefinition> columns, final TimeSeriesTagDictionary tagDictionary, final int formatVersion) {
     this.tagDictionary = tagDictionary;
+    this.formatVersion = formatVersion;
     resolveLayout(columns);
   }
 
@@ -260,10 +302,29 @@ public class TimeSeriesBucket extends PaginatedComponent {
       colIdx++;
     }
 
+    // The null bitmap (format version 2, issue #9721): one bit per fixed-width column with no value of its own to spend on
+    // absence. A dictionary id is never one of them - a null tag is the empty string, which the dictionary already holds
+    this.nullBits = new int[valueColumnCount];
+    Arrays.fill(nullBits, -1);
+    int nullable = 0;
+    if (formatVersion >= VERSION_NULL_BITMAP) {
+      colIdx = 0;
+      for (final ColumnDefinition col : columns) {
+        if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
+          continue;
+        if (!dictEncoded[colIdx] && col.getFixedSize() > 0 && TimeSeriesBatch.tracksNull(columnKinds[colIdx]))
+          nullBits[colIdx] = nullable++;
+        colIdx++;
+      }
+    }
+    this.nullBitmapBytes = (nullable + 7) >>> 3;
+    this.nullBitmapScratch = new byte[nullBitmapBytes];
+    this.valuesOffset = 8 + nullBitmapBytes;
+
     this.dictColumns = new int[dictCount];
     this.dictColumnRowOffsets = new int[dictCount];
     int d = 0;
-    int rowOffset = 8;
+    int rowOffset = valuesOffset;
     colIdx = 0;
     for (final ColumnDefinition col : columns) {
       if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
@@ -362,8 +423,10 @@ public class TimeSeriesBucket extends PaginatedComponent {
       final long timestamp = source.getTimestamp(i);
       final int rowOffset = DATA_ROWS_OFFSET + samplesInPage * rowSize;
       dataPage.writeLong(rowOffset, timestamp);
+      if (nullBitmapBytes > 0)
+        Arrays.fill(nullBitmapScratch, (byte) 0);
 
-      int colOffset = rowOffset + 8;
+      int colOffset = rowOffset + valuesOffset;
       int colIdx = 0;
       for (int c = 0; c < columnCount; c++) {
         final ColumnDefinition col = columns.get(c);
@@ -377,12 +440,21 @@ public class TimeSeriesBucket extends PaginatedComponent {
           // Every value was interned above, so this lookup always resolves.
           dataPage.writeInt(colOffset, tagDictionary.getId(source.getStringValue(i, colIdx)));
           colOffset += DICT_ID_SIZE;
-        } else if (fixedSize > 0)
-          colOffset += writeRawValue(dataPage, colOffset, fixedSize, source.getRawValue(i, colIdx));
-        else
+        } else if (fixedSize > 0) {
+          final int nullBit = nullBits[colIdx];
+          if (nullBit >= 0 && source.isNull(i, colIdx)) {
+            // No value: the bit says so, and the slot holds a zero no reader takes for a measurement (issue #9721)
+            nullBitmapScratch[nullBit >>> 3] |= (byte) (1 << (nullBit & 7));
+            colOffset += writeRawValue(dataPage, colOffset, fixedSize, 0L);
+          } else
+            colOffset += writeRawValue(dataPage, colOffset, fixedSize, source.getRawValue(i, colIdx));
+        } else
           colOffset += writeStringValue(dataPage, colOffset, col, source.getStringValue(i, colIdx));
         colIdx++;
       }
+      // Written on every row, not only on a row with a null: a data page is reused after compaction and holds old bytes
+      if (nullBitmapBytes > 0)
+        dataPage.writeByteArray(rowOffset + 8, nullBitmapScratch);
 
       samplesInPage++;
       if (timestamp < pageMinTs)
@@ -862,7 +934,7 @@ public class TimeSeriesBucket extends PaginatedComponent {
    */
   private boolean matchesTagFilter(final BasePage page, final int rowOffset, final TagMatcher[] matchers) {
     for (final TagMatcher matcher : matchers) {
-      int colOffset = rowOffset + 8;
+      int colOffset = rowOffset + valuesOffset;
       int colIdx = 0;
       ColumnDefinition target = null;
       for (int c = 0; c < columns.size(); c++) {
@@ -890,7 +962,7 @@ public class TimeSeriesBucket extends PaginatedComponent {
       else if (matcher.utf8Values != null && target.getDataType() == Type.STRING) {
         if (!matchesUtf8(page, colOffset, matcher.utf8Values))
           return false;
-      } else if (!matcher.values.contains(readColumnValue(page, colOffset, target, colIdx)))
+      } else if (!matcher.values.contains(isNullAt(page, rowOffset, colIdx) ? null : readColumnValue(page, colOffset, target, colIdx)))
         return false;
     }
     return true;
@@ -1013,7 +1085,7 @@ public class TimeSeriesBucket extends PaginatedComponent {
    * Walks the row's stored columns to the one at ordinal {@code columnIndex}, the way {@link #matchesTagFilter} does.
    */
   private int columnOffset(final BasePage page, final int rowOffset, final int columnIndex) {
-    int colOffset = rowOffset + 8;
+    int colOffset = rowOffset + valuesOffset;
     int colIdx = 0;
     for (int c = 0; c < columns.size(); c++) {
       final ColumnDefinition col = columns.get(c);
@@ -1718,31 +1790,40 @@ public class TimeSeriesBucket extends PaginatedComponent {
 
     if (columnIndices == null) {
       // Read all columns
-      int colOffset = rowOffset + 8;
+      int colOffset = rowOffset + valuesOffset;
       int colIdx = 0;
       for (int c = 0; c < columns.size(); c++) {
         if (columns.get(c).getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
           continue;
-        result[colIdx + 1] = readColumnValue(page, colOffset, columns.get(c), colIdx);
+        result[colIdx + 1] = isNullAt(page, rowOffset, colIdx) ? null : readColumnValue(page, colOffset, columns.get(c), colIdx);
         colOffset += getColumnStorageSize(page, colOffset, columns.get(c), colIdx);
         colIdx++;
       }
     } else {
       // Read specific columns by index
-      int colOffset = rowOffset + 8;
+      int colOffset = rowOffset + valuesOffset;
       int colIdx = 0;
       int resultIdx = 1;
       for (int c = 0; c < columns.size(); c++) {
         if (columns.get(c).getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
           continue;
         if (isInArray(colIdx, columnIndices)) {
-          result[resultIdx++] = readColumnValue(page, colOffset, columns.get(c), colIdx);
+          result[resultIdx++] = isNullAt(page, rowOffset, colIdx) ? null : readColumnValue(page, colOffset, columns.get(c), colIdx);
         }
         colOffset += getColumnStorageSize(page, colOffset, columns.get(c), colIdx);
         colIdx++;
       }
     }
     return result;
+  }
+
+  /**
+   * Whether the row at {@code rowOffset} carries no value for the column at ordinal {@code colIdx}: its bit in the row's null
+   * bitmap (format version 2, issue #9721). Always false for a column without a bit and for a row format without a bitmap.
+   */
+  private boolean isNullAt(final BasePage page, final int rowOffset, final int colIdx) {
+    final int nullBit = nullBits[colIdx];
+    return nullBit >= 0 && (page.readByte(rowOffset + 8 + (nullBit >>> 3)) & (1 << (nullBit & 7))) != 0;
   }
 
   /**
@@ -1785,7 +1866,7 @@ public class TimeSeriesBucket extends PaginatedComponent {
    * its neighbours (the defect behind issue #5475).
    */
   private int calculateRowSize(final List<ColumnDefinition> columns) {
-    int size = 8; // timestamp (always 8 bytes)
+    int size = valuesOffset; // timestamp (always 8 bytes) and the null bitmap, if any
     int colIdx = 0;
     for (final ColumnDefinition col : columns) {
       if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
