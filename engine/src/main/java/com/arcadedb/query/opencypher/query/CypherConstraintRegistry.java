@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.query.opencypher.ast.CypherDDLStatement.ConstraintKind;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
@@ -35,6 +36,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.WeakHashMap;
+import java.util.logging.Level;
 
 /**
  * Remembers what a Cypher constraint created, so {@code DROP CONSTRAINT <name>} can undo exactly that (#9646, #9706).
@@ -97,7 +99,11 @@ final class CypherConstraintRegistry {
   private CypherConstraintRegistry() {
   }
 
-  /** The monitor that serializes the constraint statements of a database, so checking a name and recording it are one step. */
+  /**
+   * The monitor that serializes the constraint statements of a database, so checking a name and recording it are one step.
+   * It is local to this JVM, which is enough: a constraint statement changes the schema, so in an HA cluster a replica forwards
+   * it to the leader and only the leader runs it, and the replicas receive the recorded entries with the schema.
+   */
   static Object lockFor(final Database database) {
     return LOCKS.computeIfAbsent(database instanceof DatabaseInternal internal ? internal.getEmbedded() : database, k -> new Object());
   }
@@ -271,6 +277,8 @@ final class CypherConstraintRegistry {
     final JSONObject entry = entry(type, key);
     if (entry == null) {
       // unreadable: it can be forgotten, but there is nothing it can be trusted to undo
+      LogManager.instance().log(CypherConstraintRegistry.class, Level.WARNING,
+          "Constraint '%s' on type '%s' has an unreadable record: dropping its name without undoing anything", name, type.getName());
       type.setCustomValue(key, null);
       return true;
     }
@@ -330,8 +338,12 @@ final class CypherConstraintRegistry {
       return;
     for (final String propertyName : previous.keySet()) {
       final Property property = type.getPropertyIfExists(propertyName);
-      if (property == null || !sameDeclaration(declared, property.getType(), property.getOfType()))
+      if (property == null || !sameDeclaration(declared, property.getType(), property.getOfType())) {
+        LogManager.instance().log(CypherConstraintRegistry.class, Level.FINE,
+            "Type constraint on '%s.%s': the property no longer has the type the constraint declared, so the declaration it "
+                + "replaced is not restored", type.getName(), propertyName);
         continue;
+      }
       final JSONObject old = previous.getJSONObject(propertyName, null);
       final Type oldType = old != null ? typeOf(old.getString("type", null)) : null;
       if (oldType == null)

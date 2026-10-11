@@ -26,11 +26,13 @@ import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -275,6 +277,7 @@ class Issue9706ConstraintNamesAndTypedDropTest extends TestHelper {
   }
 
   @Test
+  @Timeout(value = 2, unit = TimeUnit.MINUTES)
   void concurrentUnnamedConstraintsAreRecordedOnceEachUnderDistinctNames() throws Exception {
     database.getSchema().createVertexType("L");
     final String[] statements = { "CREATE CONSTRAINT FOR (n:L) REQUIRE n.p IS NOT NULL",
