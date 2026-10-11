@@ -119,7 +119,7 @@ class Issue9717CompactionNullStrategyTest extends TestHelper {
   }
 
   private long countWhere(final String condition) {
-    try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM " + TYPE_NAME + " WHERE " + condition)) {
+    try (final ResultSet rs = database.query("sql", "SELECT count() AS c FROM " + TYPE_NAME + " WHERE " + condition)) {
       return rs.next().<Number>getProperty("c").longValue();
     }
   }

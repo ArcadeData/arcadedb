@@ -8092,11 +8092,16 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * fetches {@code k * BINARY_RERANK_OVERSAMPLE} candidates - and with no distance bound, since an approximate
    * distance cannot be compared with an exact one. Every candidate is then rescored on its stored float vector, and
    * the real cap and the real bound are applied to that rank-ordered list. The group key of each candidate is the one
-   * the walk already resolved, so no record is resolved twice for it.
+   * the walk already resolved, so no record is resolved twice for it, and the exact distances are ranked in primitive
+   * arrays through a {@link ScoredCandidateCursor}, which allocates nothing per candidate.
+   * <p>
+   * A restricted search (issue #8002) is asked to fill a fixed set of groups, so there is no group count to widen: only
+   * the members per group are.
    * <p>
    * A candidate whose record is gone by the time it is rescored is dropped, and when that leaves the answer short of
-   * its groups while the widened walk itself had filled up, the walk is asked again with a wider budget, for the
-   * reason issue #9396 gives in {@link #findNeighborsFromVector}.
+   * its groups while the widened walk stopped before it had seen everything it could reach (see
+   * {@link GroupedCandidates#truncated}), the walk is asked again with a wider budget, for the reason issue #9396 gives
+   * in {@link #findNeighborsFromVector}.
    */
   private List<Pair<RID, Float>> rerankedGroupedSearch(final float[] queryVector, final int limit, final int groupSize,
       final int efSearch, final Set<RID> allowedRIDs, final Function<RID, Object> groupKeyResolver,
@@ -8109,24 +8114,42 @@ public class LSMVectorIndex implements Index, IndexInternal {
       final int candidateGroupSize = (int) Math.min(Integer.MAX_VALUE, groupSize * oversample);
 
       final GroupedCandidates candidates = new GroupedCandidates(limit);
+      // In admission order, aligned with candidates.groupKeys: the walk leaves them unsorted for this caller
       final List<Pair<RID, Float>> approximate = groupedSearch(queryVector, candidateGroups, candidateGroupSize, efSearch,
           allowedRIDs, groupKeyResolver, onlyGroups, Float.POSITIVE_INFINITY, candidates);
-      final List<Pair<RID, Float>> exact = rerankOnStoredVectors(queryVector, approximate, Integer.MAX_VALUE);
+
+      final int total = approximate.size();
+      final float[] distances = new float[total];
+      final int[] positions = new int[total];
+      final VectorFloat<?> query = vts.createFloatVector(queryVector);
+      int rescored = 0;
+      for (int i = 0; i < total; i++) {
+        final float[] stored = readRecordVectorArray(approximate.get(i).getFirst());
+        if (stored == null)
+          continue; // the record is gone: its approximate distance cannot be ranked against the exact ones
+        distances[rescored] = scoreToDistance(metadata.similarityFunction,
+            metadata.similarityFunction.compare(query, vts.createFloatVector(stored)));
+        positions[rescored] = i;
+        rescored++;
+      }
 
       final GroupAdmissionState groups =
           onlyGroups == null ? new GroupAdmissionState(limit, groupSize) : new GroupAdmissionState(onlyGroups, groupSize);
-      answer = new ArrayList<>((int) Math.min(exact.size(), (long) limit * groupSize));
-      for (final Pair<RID, Float> candidate : exact) {
-        if (groups.isFull() || candidate.getSecond() >= maxDistance)
+      answer = new ArrayList<>((int) Math.min(rescored, (long) limit * groupSize));
+      final ScoredCandidateCursor exact = new ScoredCandidateCursor(distances, positions, rescored);
+      while (!exact.isEmpty() && !groups.isFull()) {
+        final float distance = exact.peekDistance();
+        if (distance >= maxDistance)
           break;
-        if (groups.admit(candidates.groupKeys.get(candidate.getFirst())))
-          answer.add(candidate);
+        final int position = exact.poll();
+        if (groups.admit(candidates.groupKeys.get(position)))
+          answer.add(new Pair<>(approximate.get(position).getFirst(), distance));
       }
 
-      // Short only because rescoring dropped records the widened walk had found: ask again past them. A walk that did
-      // not fill its widened caps already gave everything it could reach, and a wider cap would not add a candidate.
-      final boolean dropped = exact.size() < approximate.size();
-      if (groups.isFull() || !candidates.full || !dropped || oversample > Integer.MAX_VALUE / BINARY_RERANK_OVERSAMPLE)
+      // Short only because rescoring dropped records the widened walk had found: ask again past them. A walk that saw
+      // everything it could reach already gave every candidate there is, and a wider cap would not add one.
+      final boolean dropped = rescored < total;
+      if (groups.isFull() || !candidates.truncated || !dropped || oversample > Integer.MAX_VALUE / BINARY_RERANK_OVERSAMPLE)
         break;
       oversample *= BINARY_RERANK_OVERSAMPLE;
     }
@@ -8134,14 +8157,20 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
-   * What the widened walk of {@link #rerankedGroupedSearch} hands back besides its rows: the group key it resolved for
-   * each of them, and whether it filled its widened caps. {@code requestedGroups} is the caller's own {@code limit},
-   * the one the "short of limit" metrics are about, not the widened cap the walk ran with.
+   * What the widened walk of {@link #rerankedGroupedSearch} hands back besides its rows. {@code requestedGroups} is the
+   * caller's own {@code limit}, the one the "short of limit" metrics are about, not the widened cap the walk ran with.
    */
   private static final class GroupedCandidates {
-    private final int                  requestedGroups;
-    private final HashMap<RID, Object> groupKeys = new HashMap<>();
-    private       boolean              full;
+    private final int          requestedGroups;
+    /** The group key of each row the walk admitted, in admission order: the walk's rows are left in that order too. */
+    private final List<Object> groupKeys = new ArrayList<>();
+    /**
+     * Whether the walk stopped before it had seen every candidate it could reach: a widened cap turned away a candidate
+     * of a group it could have held, the caps filled, or the candidate budget ended the walk. Only then can a wider walk
+     * find candidates this one did not offer. Not set by a cap alone that is not the reason: a key outside the groups of a
+     * restricted search is refused whatever the cap.
+     */
+    private       boolean      truncated;
 
     private GroupedCandidates(final int requestedGroups) {
       this.requestedGroups = requestedGroups;
@@ -8348,6 +8377,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
           metrics.incrementGroupedSearchesMergingDelta();
 
         final List<Pair<RID, Float>> results = state.finish();
+        if (candidates != null && !graphExhausted)
+          candidates.truncated = true;
 
         // A restricted search is asked about groups this index may not hold at all, so coming back short is its normal
         // outcome and says nothing about efSearch. A walk widened for the BINARY rerank is measured against the groups
@@ -8541,6 +8572,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
     private final Set<RID>               allowedRIDs;
     private final Function<RID, Object>  groupKeyResolver;
     private final GroupAdmissionState    groups;
+    private final Set<Object>            onlyGroups;
     /** Rows at or beyond this distance are never admitted (issue #8002); positive infinity for no bound. */
     private final float                  maxDistance;
     private final List<Pair<RID, Float>> results;
@@ -8571,6 +8603,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
         final VectorFloat<?> queryVectorFloat, final List<DeltaVectorEntry> deltaSnapshot,
         final GroupedCandidates rerankCandidates) {
       this.allowedRIDs = allowedRIDs;
+      this.onlyGroups = onlyGroups;
       this.rerankCandidates = rerankCandidates;
       this.groupKeyResolver = groupKeyResolver;
       this.groups = onlyGroups == null ? new GroupAdmissionState(limit, groupSize) : new GroupAdmissionState(onlyGroups, groupSize);
@@ -8645,15 +8678,17 @@ public class LSMVectorIndex implements Index, IndexInternal {
       }
       if (!groups.admit(groupKey)) {
         groupFull++;
+        // A cap, not the restriction to a group set, turned the candidate away: a wider cap would have kept it
+        if (rerankCandidates != null && (onlyGroups == null || onlyGroups.contains(groupKey)))
+          rerankCandidates.truncated = true;
         return;
       }
 
       if (admitted != null)
         admitted.add(rid);
-      final RID bound = bindRid(rid);
-      results.add(new Pair<>(bound, distance));
+      results.add(new Pair<>(bindRid(rid), distance));
       if (rerankCandidates != null)
-        rerankCandidates.groupKeys.put(bound, groupKey);
+        rerankCandidates.groupKeys.add(groupKey);
     }
 
     /**
@@ -8691,8 +8726,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
      * is free.
      */
     private List<Pair<RID, Float>> finish() {
-      if (rerankCandidates != null)
-        rerankCandidates.full = groups.isFull();
+      if (rerankCandidates != null) {
+        if (groups.isFull())
+          rerankCandidates.truncated = true;
+        // Left in admission order, aligned with rerankCandidates.groupKeys: the rerank orders them on exact distances
+        return results;
+      }
       results.sort(Comparator.comparing(Pair::getSecond));
       return results;
     }

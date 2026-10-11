@@ -19,7 +19,13 @@
 package com.arcadedb.query.select;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.query.sql.executor.BasicCommandContext;
+import com.arcadedb.query.sql.executor.InternalExecutionPlan;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.executor.SelectExecutionPlanner;
+import com.arcadedb.query.sql.parser.LocalResultSet;
+import com.arcadedb.query.sql.parser.SelectStatement;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -110,6 +116,51 @@ class Issue9615StaleIndexBeforeFirstRowTest extends TestHelper {
 
     assertThat(answered.get()).isGreaterThan(0);
     assertThat(failuresBeforeFirstRow).as("statements answered: " + answered.get() + ", short: " + shortAnswers.get()).isEmpty();
+  }
+
+  /**
+   * The last attempt of a statement whose index kept going away plans without the indexes of its types: a range, an equality and
+   * an ORDER BY on the indexed property are then answered by a scan, with the same rows.
+   */
+  @Test
+  void theLastAttemptPlansWithoutTypeIndexesAndAnswersTheSameRows() {
+    database.command("sql", "CREATE DOCUMENT TYPE Person BUCKETS 8");
+    database.command("sql", "CREATE PROPERTY Person.id LONG");
+    database.command("sql", "CREATE INDEX ON Person (id) NOTUNIQUE");
+    database.transaction(() -> {
+      for (long i = 0; i < 500; i++)
+        database.newDocument("Person").set("id", i).save();
+    });
+
+    for (final String sql : new String[] { "SELECT FROM Person WHERE id >= 100 AND id < 150", "SELECT FROM Person WHERE id = 42",
+        "SELECT FROM Person WHERE id >= 10 AND id < 20 ORDER BY id DESC" }) {
+      final SelectStatement statement = (SelectStatement) ((DatabaseInternal) database).getStatementCache().get(sql);
+
+      final BasicCommandContext withIndex = new BasicCommandContext();
+      withIndex.setDatabase(database);
+      final InternalExecutionPlan indexed = statement.createExecutionPlanNoCache(withIndex);
+      assertThat(indexed.prettyPrint(0, 2)).as(sql).contains("FETCH FROM INDEX");
+
+      final BasicCommandContext withoutIndex = new BasicCommandContext();
+      withoutIndex.setDatabase(database);
+      final InternalExecutionPlan scan = new SelectExecutionPlanner(statement).withoutTypeIndexes()
+          .createExecutionPlan(withoutIndex, false);
+      assertThat(scan.prettyPrint(0, 2)).as(sql).doesNotContain("FETCH FROM INDEX");
+
+      assertThat(ids(new LocalResultSet(scan))).as(sql).containsExactlyElementsOf(ids(new LocalResultSet(indexed)));
+    }
+  }
+
+  private static List<Long> ids(final ResultSet rs) {
+    final List<Long> ids = new ArrayList<>();
+    try (rs) {
+      while (rs.hasNext())
+        ids.add(rs.next().<Long>getProperty("id"));
+    }
+    if (ids.size() > 1 && ids.getFirst() > ids.getLast())
+      return ids; // the ORDER BY DESC case: the order is part of the answer
+    ids.sort(null);
+    return ids;
   }
 
   private static String describe(final Throwable e) {
