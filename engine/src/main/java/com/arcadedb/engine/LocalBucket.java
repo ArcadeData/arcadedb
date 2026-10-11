@@ -197,6 +197,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   private static final   int                       MAX_PAGES_GATHER_STATS           = 100;
   /** Pages an insert tries before opening a new one when running transactions have taken the room it found (#9694). */
   private static final   int                       MAX_INSERT_PAGE_ATTEMPTS         = 3;
+  /** Queued pages one allocation measures and lists again at most (#9694). */
+  private static final   int                       MAX_PAGES_RELISTED_PER_ALLOCATION = 8;
   private static final   long                      MAX_TIMEOUT_GATHER_STATS         = 5000L;
   private static final   int                       GATHER_STATS_MIN_SPACE_PERC      = 10;
   /**
@@ -3288,12 +3290,16 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       return;
     final TransactionContext tx = database.getTransaction();
     final int usableSpaceInPage = getPageSize() - BasePage.PAGE_HEADER_SIZE - contentHeaderSize;
-    for (final Iterator<Integer> it = pagesToRelist.iterator(); it.hasNext(); ) {
+    // Bounded per allocation, which holds the monitor every other allocation of this bucket waits on: the rest stays
+    // queued for the next one
+    int measured = 0;
+    for (final Iterator<Integer> it = pagesToRelist.iterator(); it.hasNext() && measured < MAX_PAGES_RELISTED_PER_ALLOCATION; ) {
       final int pageNumber = it.next();
       it.remove();
       if (freeSpaceInPages.containsKey(pageNumber) || freeSpaceInPages.size() >= MAX_PAGES_GATHER_STATS
               || isNewPageOfAnotherTransaction(pageNumber, tx))
         continue;
+      ++measured;
       try {
         final BasePage page = tx.getPage(new PageId(database, file.getFileId(), pageNumber), pageSize);
         final short recordCountInPage = page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
@@ -3304,6 +3310,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           freeSpaceInPages.put(pageNumber, freeSpace);
       } catch (final Exception e) {
         // Only a hint: the next gather measures the page anyway
+        LogManager.instance().log(this, Level.FINE, "Unable to measure page %d of bucket '%s' to list it again", e, pageNumber,
+                componentName);
       }
     }
   }
