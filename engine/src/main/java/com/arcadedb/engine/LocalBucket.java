@@ -275,6 +275,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   // freeSpaceInPages, and page numbers are committed out of order, so other transactions could otherwise read it as an
   // empty page below their horizon and claim the slots its creator already wrote. Released when the creator ends.
   private final          Map<Integer, TransactionContext> inFlightNewPages          = new ConcurrentHashMap<>();
+  // #9694: pages whose reservations are gone and that wait to be measured and listed in freeSpaceInPages again by the
+  // next allocation; filled from transaction teardown, which must not read pages (see relistPage()).
+  private final          Set<Integer>              pagesToRelist                    = ConcurrentHashMap.newKeySet();
   private final          REUSE_SPACE_MODE          reuseSpaceMode;
   // #4958: both fields are read/written outside the freeSpaceInPages monitor on some paths (delete,
   // updatePageStatistics), so they must be safe on their own: volatile timestamp + atomic counter.
@@ -541,6 +544,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     gatherResumePage = 0;
     insertReservations.clear();
     inFlightNewPages.clear();
+    pagesToRelist.clear();
   }
 
   public int getMaxRecordsInPage() {
@@ -3265,34 +3269,42 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   }
 
   /**
-   * Lists a page in freeSpaceInPages again after the reservations that hid its room are gone (#9694), with the free
-   * tail measured on its committed image and under the same thresholds {@link #updatePageStatistics} applies: a page
-   * that is still full stays out, and the statistics never advertise room the page does not have.
+   * Queues a page to be listed in freeSpaceInPages again after the reservations that hid its room are gone (#9694).
+   * Called from transaction teardown, so it only records the page number: the next allocation, which reads pages
+   * anyway, measures it (see {@link #relistQueuedPages}).
    */
   private void relistPage(final int pageNumber) {
-    if (reuseSpaceMode.ordinal() < REUSE_SPACE_MODE.HIGH.ordinal())
-      return;
-    final int freeSpace;
-    try {
-      final BasePage page = database.getPageManager()
-              .getImmutablePage(new PageId(database, file.getFileId(), pageNumber), pageSize, false, false);
-      if (page == null)
-        return;
-      final short recordCountInPage = page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
-      if (recordCountInPage >= maxRecordsInPage)
-        return;
-      freeSpace = page.getMaxContentSize() - findContentInsertionOffset(page, recordCountInPage);
-    } catch (final Exception e) {
-      // Only a hint: the next gather measures the page anyway
-      return;
-    }
+    if (reuseSpaceMode.ordinal() >= REUSE_SPACE_MODE.HIGH.ordinal())
+      pagesToRelist.add(pageNumber);
+  }
 
-    final int usableSpaceInPage = getPageSize() - BasePage.PAGE_HEADER_SIZE - contentHeaderSize;
-    if (freeSpace <= MINIMUM_SPACE_LEFT_IN_PAGE || freeSpace * 100 / usableSpaceInPage <= GATHER_STATS_MIN_SPACE_PERC)
+  /**
+   * Lists the pages {@link #relistPage} queued, each with the free tail measured on the page and under the same
+   * thresholds {@link #updatePageStatistics} applies: a page that is still full stays out, and the statistics never
+   * advertise room the page does not have. Runs inside an allocation, holding the freeSpaceInPages monitor.
+   */
+  private void relistQueuedPages() {
+    if (pagesToRelist.isEmpty())
       return;
-    synchronized (freeSpaceInPages) {
-      if (!freeSpaceInPages.containsKey(pageNumber) && freeSpaceInPages.size() < MAX_PAGES_GATHER_STATS)
-        freeSpaceInPages.put(pageNumber, freeSpace);
+    final TransactionContext tx = database.getTransaction();
+    final int usableSpaceInPage = getPageSize() - BasePage.PAGE_HEADER_SIZE - contentHeaderSize;
+    for (final Iterator<Integer> it = pagesToRelist.iterator(); it.hasNext(); ) {
+      final int pageNumber = it.next();
+      it.remove();
+      if (freeSpaceInPages.containsKey(pageNumber) || freeSpaceInPages.size() >= MAX_PAGES_GATHER_STATS
+              || isNewPageOfAnotherTransaction(pageNumber, tx))
+        continue;
+      try {
+        final BasePage page = tx.getPage(new PageId(database, file.getFileId(), pageNumber), pageSize);
+        final short recordCountInPage = page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
+        if (recordCountInPage >= maxRecordsInPage)
+          continue;
+        final int freeSpace = page.getMaxContentSize() - findContentInsertionOffset(page, recordCountInPage);
+        if (freeSpace > MINIMUM_SPACE_LEFT_IN_PAGE && freeSpace * 100 / usableSpaceInPage > GATHER_STATS_MIN_SPACE_PERC)
+          freeSpaceInPages.put(pageNumber, freeSpace);
+      } catch (final Exception e) {
+        // Only a hint: the next gather measures the page anyway
+      }
     }
   }
 
@@ -3337,6 +3349,18 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   /** How many pages of this bucket are owned by a running transaction (issue #9694). Package-private: for tests only. */
   int getInFlightNewPagesForTesting() {
     return inFlightNewPages.size();
+  }
+
+  /** The pages queued by {@link #relistPage}, not measured yet (issue #9694). Package-private: for tests only. */
+  Set<Integer> getPagesToRelistForTesting() {
+    return Set.copyOf(pagesToRelist);
+  }
+
+  /** Runs what the next allocation would: measures and lists the queued pages (issue #9694). For tests only. */
+  void relistQueuedPagesForTesting() {
+    synchronized (freeSpaceInPages) {
+      relistQueuedPages();
+    }
   }
 
   /**
@@ -6896,6 +6920,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           throws IOException {
     if (reuseSpaceMode.ordinal() >= REUSE_SPACE_MODE.MEDIUM.ordinal()) {
       synchronized (freeSpaceInPages) {
+        relistQueuedPages();
         if (freeSpaceInPages.isEmpty())
           gatherPageStatistics();
 

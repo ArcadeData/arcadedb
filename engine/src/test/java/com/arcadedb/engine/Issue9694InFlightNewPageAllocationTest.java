@@ -294,7 +294,8 @@ class Issue9694InFlightNewPageAllocationTest extends TestHelper {
   /**
    * The page an insert was turned away from is taken out of the free-space map, because the room its committed image
    * shows is promised to running transactions. When those give it back - here by rolling back - the page must be
-   * listed again, not left unlisted until the next statistics gather.
+   * listed again, not left unlisted until the next statistics gather. The release only queues it (transaction
+   * teardown must not read pages); the next allocation measures it and lists the room it really has.
    */
   @Test
   void aPageTakenOutOfTheFreeSpaceMapIsListedAgainWhenItsReservationsAreReleased() {
@@ -312,14 +313,19 @@ class Issue9694InFlightNewPageAllocationTest extends TestHelper {
     assertThat(bucket.getListedFreeSpacePagesForTesting()).doesNotContain(0);
 
     database.rollback();
-    assertThat(bucket.getListedFreeSpacePagesForTesting()).as("page 0 after its reservations were released").contains(0);
+    assertThat(bucket.getPagesToRelistForTesting()).as("page 0 queued once its reservations were released").containsExactly(0);
 
-    // The entry is an upper bound: the next insert reads the page and lands on it
     database.begin();
-    final RID next = database.newDocument(TYPE).set("owner", "next").save().getIdentity();
-    database.commit();
-    assertThat(next.getPosition() / bucket.getMaxRecordsInPage()).isZero();
-    database.transaction(() -> assertThat(scanCount()).isEqualTo(11));
+    try {
+      bucket.relistQueuedPagesForTesting();
+    } finally {
+      database.rollback();
+    }
+    assertThat(bucket.getPagesToRelistForTesting()).isEmpty();
+    assertThat(bucket.getListedFreeSpacePagesForTesting()).as("page 0 after the next allocation measured it").contains(0);
+    // Measured, not the whole page: ten small records are on it
+    final int usableSpaceInPage = bucket.getPageSize() - BasePage.PAGE_HEADER_SIZE - bucket.contentHeaderSize;
+    assertThat(bucket.getFreeSpaceHintForPage(0)).isPositive().isLessThan(usableSpaceInPage);
   }
 
   /** Counts by scanning the records: {@code countType} and {@code count(*)} read the bucket's cached counter. */
