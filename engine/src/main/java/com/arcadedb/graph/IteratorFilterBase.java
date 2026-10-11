@@ -33,13 +33,10 @@ public abstract class IteratorFilterBase<T> extends ResettableIteratorBase<T> {
   // ENTRY OF ANOTHER TYPE COSTS NEITHER AN RID DECODE NOR A BOXED LOOKUP (#8417)
   protected final EdgeBucketMask validBuckets;
   protected       int            fullStackTracePrinted = 0;
-  // THE VERTEX AND DIRECTION OF THE LIST WALKED, FOR remove(). NULL WHEN THE CALLER DID NOT SAY: remove() IS THEN UNSUPPORTED
+  // THE VERTEX AND DIRECTION OF THE LIST WALKED, FOR remove(). A CONSTRUCTOR ARGUMENT RATHER THAN AN OPTION, SO AN ITERATOR
+  // THAT COULD ONLY UNLINK THE WALKED SIDE CANNOT BE BUILT (#9779)
   private final   RID              listOwner;
   private final   Vertex.DIRECTION listDirection;
-
-  protected IteratorFilterBase(final DatabaseInternal database, final EdgeSegment current, final String[] edgeTypes) {
-    this(database, current, edgeTypes, null, null);
-  }
 
   protected IteratorFilterBase(final DatabaseInternal database, final EdgeSegment current, final String[] edgeTypes,
       final RID listOwner, final Vertex.DIRECTION listDirection) {

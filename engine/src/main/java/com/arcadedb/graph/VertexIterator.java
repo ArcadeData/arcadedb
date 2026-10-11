@@ -25,13 +25,9 @@ import com.arcadedb.exception.RecordNotFoundException;
 import java.util.NoSuchElementException;
 
 public class VertexIterator extends ResettableIteratorBase<Vertex> {
-  // THE VERTEX AND DIRECTION OF THE LIST WALKED, FOR remove(). NULL WHEN THE CALLER DID NOT SAY: remove() IS THEN UNSUPPORTED
+  // THE VERTEX AND DIRECTION OF THE LIST WALKED, FOR remove()
   private final RID              vertex;
   private final Vertex.DIRECTION direction;
-
-  public VertexIterator(final DatabaseInternal database, final EdgeSegment current) {
-    this(database, current, null, null);
-  }
 
   /** With the vertex and direction of the list walked, so {@link #remove()} can delete the edge of the entry. */
   public VertexIterator(final DatabaseInternal database, final EdgeSegment current, final RID vertex,

@@ -984,6 +984,10 @@ public class GraphDatabaseChecker {
    * delete fails, keeps the entry and lets the failure out (#9779). For this repair the entry IS the damage, so when the
    * edge cannot be deleted because something else around it is broken, the entry is still taken out, as the iterator
    * did before #9779. A refused delete and a retryable conflict are not damage, and propagate.
+   * <p>
+   * A delete that failed half way (the far endpoint disconnected, the record not yet freed) leaves that much applied in
+   * the repair transaction. That is trusted, as every other repair here is: the walk goes on over the entries that remain,
+   * and a far endpoint left without its back-reference is what the back-reference arm of this same check repairs.
    */
   private static void pruneEntry(final Iterator<Pair<RID, RID>> entries, final RID edgeRID, final CheckReport report) {
     try {
