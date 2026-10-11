@@ -37,6 +37,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@link ConcurrentModificationException}, and every later read in the same transaction must answer the same way. It used
  * to return the new record once (assembled from a head the transaction did not hold) and then a mix of the pinned old
  * head with the new tails that first read had pinned.
+ * <p>
+ * Since #9620 a transaction that never read the record is served its complete new version, which every later read of the
+ * transaction answers again: the refusal is kept for a record the transaction did read.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -47,26 +50,27 @@ class Issue9070RepeatableReadNeighbourPinnedHeadTest extends BucketPageLayoutTes
   /** The reported case: the other transaction rewrites both the head chunk and the continuation chunks. */
   @Test
   void headPinnedByNeighbourReadIsNeverTorn() {
-    assertNeighbourPinnedHeadReadIsRefused(OLD_SIZE, NEW_SIZE, 'y');
+    assertNeighbourPinnedHeadReadServesTheNewVersion(OLD_SIZE, NEW_SIZE, 'y');
   }
 
   /** Only the head chunk changes (same length, same filler): the continuation chunks are byte-identical. */
   @Test
   void headOnlyChangePinnedByNeighbourReadIsNeverTorn() {
-    assertNeighbourPinnedHeadReadIsRefused(OLD_SIZE, OLD_SIZE, 'x');
+    assertNeighbourPinnedHeadReadServesTheNewVersion(OLD_SIZE, OLD_SIZE, 'x');
   }
 
   /** The same with a chain of several continuation chunks, on several pages. */
   @Test
   void longChainPinnedByNeighbourReadIsNeverTorn() {
-    assertNeighbourPinnedHeadReadIsRefused(250_000, 250_001, 'y');
+    assertNeighbourPinnedHeadReadServesTheNewVersion(250_000, 250_001, 'y');
   }
 
   /**
    * Every page of the record is pinned before its first read, but by reads of other records made on both sides of the
    * commit that rewrote it: the head page by the read of a neighbour before the commit, the continuation page by the
    * read of a record that lives on it after the commit. A chain whose pages merely happen to all be pinned is not a
-   * snapshot, and must not be returned as one.
+   * snapshot, and must not be returned as one: the transaction never read the record, so it is served the new version
+   * whole (#9620), at every read, and the pins taken by the earlier reads stay.
    */
   @Test
   void chainPinnedByNeighboursOnBothSidesOfACommitIsNeverTorn() {
@@ -89,10 +93,12 @@ class Issue9070RepeatableReadNeighbourPinnedHeadTest extends BucketPageLayoutTes
       // pins page 1, with the new continuation chunk, after the commit
       assertThat(database.lookupByRID(onTailPage[0], true).asDocument().getString("s")).isEqualTo("tail page");
 
-      // the old head cannot be completed (its tail chunk is gone) and the transaction holds no newer head: refused
-      assertThat(readConsistentOrRefusal(rids[1])).isEqualTo("CME");
-      assertThat(isPinned(bucket, 1)).as("a pin taken by an earlier read is not released by the failed one").isTrue();
-      assertThat(readConsistentOrRefusal(rids[1])).as("a second read must answer as the first").isEqualTo("CME");
+      // the old head cannot be completed (its tail chunk is gone): the newest committed version, whole
+      assertThat(readConsistentOrRefusal(rids[1])).isEqualTo("v=1 s=" + OLD_SIZE + "y");
+      assertThat(isPinned(bucket, 0)).as("the pin taken by the read of the neighbour stays").isTrue();
+      assertThat(isPinned(bucket, 1)).as("a pin taken by an earlier read is not released by the read").isTrue();
+      ((DatabaseInternal) database).getTransaction().removeRecordFromCache(rids[1]);
+      assertThat(readConsistentOrRefusal(rids[1])).as("a second read must answer as the first").isEqualTo("v=1 s=" + OLD_SIZE + "y");
     } finally {
       database.rollback();
     }
@@ -210,9 +216,10 @@ class Issue9070RepeatableReadNeighbourPinnedHeadTest extends BucketPageLayoutTes
   /**
    * The head page is pinned by the read of the neighbour, the continuation pages are not pinned at all. Once the large
    * record is rewritten its old version cannot be completed (the old tail chunks are gone) and the transaction holds no
-   * newer head, so every read in the transaction is refused, and the failed reads leave no pin behind.
+   * newer head. The transaction never read the record, so it is served the new version whole (#9620), every later read
+   * answers the same even once the record cache is emptied, and no page is pinned or released for it.
    */
-  private void assertNeighbourPinnedHeadReadIsRefused(final int oldSize, final int newSize, final char newFiller) {
+  private void assertNeighbourPinnedHeadReadServesTheNewVersion(final int oldSize, final int newSize, final char newFiller) {
     final RID[] rids = createSmallAndLarge(oldSize);
     final LocalBucket bucket = bucketOf("Doc");
     final int pages = bucket.getTotalPages();
@@ -223,10 +230,13 @@ class Issue9070RepeatableReadNeighbourPinnedHeadTest extends BucketPageLayoutTes
 
       rewriteLarge(rids[1], newSize, newFiller);
 
-      assertThat(readConsistentOrRefusal(rids[1])).isEqualTo("CME");
+      final String served = "v=1 s=" + newSize + newFiller;
+      assertThat(readConsistentOrRefusal(rids[1])).isEqualTo(served);
       for (int page = 1; page < pages; page++)
-        assertThat(isPinned(bucket, page)).as("page " + page + " pinned by the failed read only").isFalse();
-      assertThat(readConsistentOrRefusal(rids[1])).as("a second read must answer as the first").isEqualTo("CME");
+        assertThat(isPinned(bucket, page)).as("page " + page + " pinned by the failed walk only").isFalse();
+      assertThat(isPinned(bucket, 0)).as("the pin taken by the read of the neighbour stays").isTrue();
+      ((DatabaseInternal) database).getTransaction().removeRecordFromCache(rids[1]);
+      assertThat(readConsistentOrRefusal(rids[1])).as("a second read must answer as the first").isEqualTo(served);
       assertThat(database.lookupByRID(rids[0], true).asDocument().getInteger("v")).isEqualTo(0);
     } finally {
       database.rollback();
