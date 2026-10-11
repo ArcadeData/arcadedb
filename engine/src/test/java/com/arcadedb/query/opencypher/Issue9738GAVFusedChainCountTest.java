@@ -258,6 +258,28 @@ class Issue9738GAVFusedChainCountTest {
   }
 
   @Test
+  void aViewRestoredOnFirstUseAfterAReopenServesTheWalkWithoutARetry() {
+    buildSmallGraph();
+    final List<String> queries = List.of(//
+        TWO_HOPS + "RETURN a, count(*) AS n ORDER BY a.pid",//
+        TWO_HOPS + "RETURN a.pid AS a, c.pid AS c ORDER BY a, c");
+    final List<List<String>> expected = new ArrayList<>();
+    for (final String query : queries)
+      expected.add(rows(query));
+    createView();
+
+    // Reopened, the view is restored from disk only when something first asks for it: the walk's numbering is the
+    // restored one, never the empty view's
+    database.close();
+    database = new DatabaseFactory(DB_PATH).open();
+    for (int i = 0; i < queries.size(); i++) {
+      assertThat(plan(queries.get(i))).as(queries.get(i)).contains("GAVFusedChain");
+      assertThat(rows(queries.get(i))).as(queries.get(i)).isEqualTo(expected.get(i));
+    }
+    assertThat(GraphAnalyticalViewRegistry.get(database, "v9738").isRestoredFromPersistedCsr()).isTrue();
+  }
+
+  @Test
   void bucketOfEveryNodeIsTheBucketOfItsRid() {
     buildSmallGraph();
     createView();
@@ -271,6 +293,7 @@ class Issue9738GAVFusedChainCountTest {
     final int bound = view.getNodeIdUpperBound();
     assertThat(bound).isGreaterThan(built);
 
+    assertThat(view.getBucketId(-1)).isEqualTo(-1);
     // Past the bound too: no RID, no bucket
     for (int nodeId = 0; nodeId < bound + 3; nodeId++) {
       final RID rid = view.getRID(nodeId);

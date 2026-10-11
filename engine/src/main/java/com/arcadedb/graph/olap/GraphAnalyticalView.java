@@ -1439,6 +1439,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
 
   @Override
   public int getBucketId(final int nodeId) {
+    if (nodeId < 0)
+      return -1;
     final Snapshot snap = checkBuilt();
     if (nodeId >= snap.nodeMapping.size()) {
       final DeltaOverlay ov = snap.overlay;
