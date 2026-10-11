@@ -325,9 +325,8 @@ def _non_loopback_ipv4():
             address = s.getsockname()[0]
     except OSError:
         return None
-    if (
-        address.startswith("127.") or address == "0.0.0.0"
-    ):  # nosec B104 - compared, not bound
+    unspecified = "0.0.0.0"  # nosec B104 - compared, not bound
+    if address.startswith("127.") or address == unspecified:
         return None
     return address
 
