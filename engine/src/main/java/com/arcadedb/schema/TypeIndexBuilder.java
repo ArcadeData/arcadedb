@@ -457,6 +457,8 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
     final TypeIndex created;
     // Set when another creator built an index on these properties after the lookup above (issue #9741, below)
     final TypeIndex[] builtConcurrently = new TypeIndex[1];
+    // The refusal decided over that index, carried out of the build's try so it is not wrapped as a failed build
+    final RuntimeException[] refusedOverConcurrent = new RuntimeException[1];
     // The barrier of #6281, paid at the top of this method, covers what the async side wrote BEFORE the build. This
     // covers what it would write DURING it (issue #6303, item 2), and only the first half was ever here:
     // LocalDocumentType.addIndexInternal registers the index before the scan, so a record saved AFTER that point
@@ -486,7 +488,15 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
         final TypeIndex current = replacing ? type.getIndexByProperties(metadata.propertyNames) : findIndexOnProperties(type);
         if (current != null) {
           if (current != existingTypeIndex) {
-            builtConcurrently[0] = current;
+            // Decided here, under the lock, so no other replacer can drop the index while it is decided over. A
+            // replacement is never decided over an index another creator has just built: dropping that one is not what
+            // either request asked for.
+            try {
+              decideOverExistingIndex(current, false);
+              builtConcurrently[0] = current;
+            } catch (final RuntimeException refusal) {
+              refusedOverConcurrent[0] = refusal;
+            }
             return null;
           }
           // Recorded only once dropped: a refused drop takes nothing away, so there is nothing to put back
@@ -560,7 +570,7 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
         emitSortedBuildMetrics(completed);
       }
 
-      if (builtConcurrently[0] == null) {
+      if (builtConcurrently[0] == null && refusedOverConcurrent[0] == null) {
         created = type.getIndexByProperties(metadata.propertyNames);
         built = true;
       } else
@@ -585,13 +595,12 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
       type.endIndexConstruction(metadata.propertyNames);
     }
 
-    // Decided outside the build's try, so a refusal reaches the caller exactly as it does when the index was there before
-    // the request, rather than wrapped as a failed build. A replacement is never decided over an index another creator
-    // has just built: dropping that one is not what either request asked for.
-    if (builtConcurrently[0] != null) {
-      decideOverExistingIndex(builtConcurrently[0], false);
+    // Thrown outside the build's try, so a refusal reaches the caller exactly as it does when the index was there before
+    // the request, rather than wrapped as a failed build
+    if (refusedOverConcurrent[0] != null)
+      throw refusedOverConcurrent[0];
+    if (builtConcurrently[0] != null)
       return builtConcurrently[0];
-    }
 
     // An index is half of what decides whether a partition is any use, so one created after the strategy was assigned
     // can undo the check that accepted it: recollating the partition index COLLATE CI makes it unprunable, and an
