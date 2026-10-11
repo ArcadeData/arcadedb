@@ -57,6 +57,8 @@ final class ScanPropertyHashIndex {
   private final Map<Object, Object> byKey       = new HashMap<>();
   private final List<RID>           nonIntegral = new ArrayList<>();
   private       int                 hashed;
+  /** Whether any record holds a text, the only key an integer's digits can be found under. */
+  private       boolean             anyText;
 
   /** Drains {@code scan}, loading each record's {@code propertyName}; {@code guard} enforces the command deadline. The records' order is kept within a key. */
   ScanPropertyHashIndex(final Iterator<Identifiable> scan, final String propertyName, final WorkGuard guard) {
@@ -75,9 +77,10 @@ final class ScanPropertyHashIndex {
 
       final RID rid = record.getIdentity();
       hashed++;
-      if (value instanceof String)
+      if (value instanceof String) {
         put(value, rid);
-      else if (isIntegral(value))
+        anyText = true;
+      } else if (isIntegral(value))
         put(((Number) value).longValue(), rid);
       else if (value instanceof Number)
         nonIntegral.add(rid);
@@ -114,7 +117,7 @@ final class ScanPropertyHashIndex {
 
   /**
    * The records that may equal {@code expected} (a supported value), in scan order within a key (a numeric lookup lists the
-   * exact matches first, then the non-integral numbers), or null when the hash
+   * exact matches first, then the texts spelling the number, then the non-integral numbers), or null when the hash
    * cannot answer cheaply - a numeric lookup against a type holding many non-integral numbers - and the caller must scan.
    */
   @SuppressWarnings("unchecked")
@@ -124,20 +127,29 @@ final class ScanPropertyHashIndex {
       return null;
 
     final Object exact = byKey.get(text ? expected : (Object) ((Number) expected).longValue());
-    if (text || nonIntegral.isEmpty()) {
+    // An integer written into a property declared STRING is stored as its digits ('1' for 1), and the pattern that wrote it
+    // has to find it again (issue #9695): those records are candidates too. The caller's re-check keeps a schemaless '1' out
+    final Object digits = text || !anyText ? null : byKey.get(expected.toString());
+    if (text || nonIntegral.isEmpty() && digits == null) {
       if (exact == null)
         return Collections.emptyIterator();
       return exact instanceof List ? (Iterator<Identifiable>) (Iterator<?>) ((List<RID>) exact).iterator()
           : Collections.<Identifiable>singletonList((RID) exact).iterator();
     }
 
-    final List<Identifiable> merged = new ArrayList<>(nonIntegral.size() + 1);
-    if (exact instanceof List)
-      merged.addAll((List<RID>) exact);
-    else if (exact != null)
-      merged.add((RID) exact);
+    final List<Identifiable> merged = new ArrayList<>(nonIntegral.size() + 2);
+    addAll(merged, exact);
+    addAll(merged, digits);
     merged.addAll(nonIntegral);
     return merged.iterator();
+  }
+
+  @SuppressWarnings("unchecked")
+  private static void addAll(final List<Identifiable> merged, final Object bucket) {
+    if (bucket instanceof List)
+      merged.addAll((List<RID>) bucket);
+    else if (bucket != null)
+      merged.add((RID) bucket);
   }
 
   private static boolean isIntegral(final Object value) {

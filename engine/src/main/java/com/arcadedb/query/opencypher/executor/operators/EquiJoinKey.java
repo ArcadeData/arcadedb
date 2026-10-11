@@ -106,9 +106,15 @@ public record EquiJoinKey(Expression left, Expression right, boolean viaEvaluato
   public static Object canonicalValue(final Object value) {
     if (value == null)
       return NO_MATCH;
-    if (value instanceof String string)
+    if (value instanceof String string) {
       // A string spelling a RID equals the number id() encodes it to
-      return RID.is(string) ? UNHASHABLE : string;
+      if (RID.is(string))
+        return UNHASHABLE;
+      // A property declared STRING holds the text of a number or a boolean written into it, which = finds again with that
+      // number or boolean (issue #9695): such a text shares their key. Two texts that differ but spell the same number
+      // ('5', '5.0') share it too, which only lets through a pair the comparison above the join then rejects
+      return textKey(string);
+    }
     if (value instanceof Number number) {
       final double d = number instanceof Float f ? Type.widenFloat(f) : number.doubleValue();
       if (Double.isNaN(d))
@@ -122,5 +128,61 @@ public record EquiJoinKey(Expression left, Expression right, boolean viaEvaluato
       return rid != null ? rid : UNHASHABLE;
     }
     return UNHASHABLE;
+  }
+
+  /**
+   * The key of a text: the key of the number or boolean it spells, or the text itself. A text is only parsed when it has
+   * the exact shape of a number's text ({@code -?digits(.digits)?(E-?digits)?}, what a number is stored as), so an
+   * ordinary text costs a character scan that stops at the first character out of place and never a thrown exception,
+   * and an integer's digits are read as a long without a parse at all.
+   */
+  private static Object textKey(final String text) {
+    final int length = text.length();
+    if (length == 0)
+      return text;
+    final char first = text.charAt(0);
+    if (first == 't' && text.equals("true") || first == 'f' && text.equals("false"))
+      return Boolean.valueOf(text);
+    if (text.equals("Infinity") || text.equals("-Infinity"))
+      return Double.parseDouble(text);
+
+    final int start = first == '-' ? 1 : 0;
+    int i = digits(text, start);
+    if (i == start)
+      return text; // no leading digit
+    final int integralEnd = i;
+    if (i < length && text.charAt(i) == '.') {
+      final int fraction = digits(text, i + 1);
+      if (fraction == i + 1)
+        return text; // a dot with no digit after it
+      i = fraction;
+    }
+    if (i < length && text.charAt(i) == 'E') {
+      final int exponentStart = i + 1 < length && text.charAt(i + 1) == '-' ? i + 2 : i + 1;
+      final int exponent = digits(text, exponentStart);
+      if (exponent == exponentStart)
+        return text; // an E with no digit after it
+      i = exponent;
+    }
+    if (i != length)
+      return text;
+
+    final double d;
+    if (integralEnd == length && length - start <= 18) {
+      // Up to 18 digits always fit a long; the key of a number is its double, like canonicalValue's
+      long value = 0;
+      for (int k = start; k < length; k++)
+        value = value * 10 + (text.charAt(k) - '0');
+      d = start == 1 ? -(double) value : (double) value;
+    } else
+      d = Double.parseDouble(text); // the shape was checked: this cannot throw
+    return d == 0.0 ? 0.0 : d;
+  }
+
+  /** The index just past the run of decimal digits starting at {@code from}. */
+  private static int digits(final String text, int from) {
+    while (from < text.length() && text.charAt(from) >= '0' && text.charAt(from) <= '9')
+      from++;
+    return from;
   }
 }

@@ -102,13 +102,13 @@ class Issue9334MergeZonedDatetimeTest {
 
   @Test
   void mergeOnIndexedStringPropertyAgreesWithMatch() {
-    // A declared STRING property holds the datetime's text, which no MATCH equals a temporal to: MERGE does not match it
-    // either, so it creates rather than firing ON MATCH on a node the same pattern cannot find (issue #9693)
+    // A declared STRING property holds the datetime's text, and MATCH compares the operand with the text it would be stored
+    // as (issue #9695): MERGE agrees with it (issue #9693), so it matches the node instead of duplicating it
     try (final ResultSet rs = database.query("cypher", "MATCH (p:S {d: datetime('2021-06-15T12:30:00Z')}) RETURN count(p) AS c")) {
-      assertThat(((Number) rs.next().getProperty("c")).longValue()).isEqualTo(0L);
+      assertThat(((Number) rs.next().getProperty("c")).longValue()).isEqualTo(1L);
     }
     database.transaction(() -> database.command("cypher", "MERGE (p:S {d: datetime('2021-06-15T12:30:00Z')})"));
-    assertThat(count("S")).isEqualTo(2L);
+    assertThat(count("S")).isEqualTo(1L);
   }
 
   @Test
@@ -160,5 +160,7 @@ class Issue9334MergeZonedDatetimeTest {
     database.transaction(() -> database.command("cypher", "CREATE (:T2 {d: '2021-06-15T12:30:00.000Z'})"));
     database.transaction(() -> database.command("cypher", "MERGE (p:T2 {d: datetime('2021-06-15T12:30:00Z')})"));
     assertThat(count("T2")).as("MATCH keeps the text and does not match it either: a second node").isEqualTo(2L);
+    database.transaction(() -> database.command("cypher", "MERGE (p:T2 {d: datetime('2021-06-15T12:30:00Z')})"));
+    assertThat(count("T2")).as("the node MERGE created is found again (issue #9695)").isEqualTo(2L);
   }
 }
