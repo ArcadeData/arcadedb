@@ -92,8 +92,9 @@ class Issue9714RepeatedLiteralTextLookupTest extends TestHelper {
     // with extraction off the text is cached as written, never served from the remembered extraction
     assertThat(cache.lookup("SELECT count(*) AS c FROM V WHERE a = 5", false).parameters()).isNull();
 
+    // clear() forgets the remembered texts with the statements: the text is lexed and parsed again, never served stale
     cache.clear();
-    cache.lookup(text, true);
+    assertThat(cache.lookup(text, true).statement()).isNotSameAs(second.statement());
     assertThat(cache.scans).isEqualTo(scansToBuild + 2);
   }
 
