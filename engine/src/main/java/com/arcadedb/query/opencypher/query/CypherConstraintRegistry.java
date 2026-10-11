@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.query;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.opencypher.ast.CypherDDLStatement.ConstraintKind;
@@ -30,8 +31,10 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.Map;
+import java.util.WeakHashMap;
 
 /**
  * Remembers what a Cypher constraint created, so {@code DROP CONSTRAINT <name>} can undo exactly that (#9646, #9706).
@@ -86,16 +89,17 @@ final class CypherConstraintRegistry {
   record Entry(String name, ConstraintKind kind, List<String> properties, String index, List<String> declared, String propertyType) {
   }
 
-  // One monitor per database, held only by the constraint statements themselves: never the schema's own monitor, which the
-  // schema takes internally while it changes files
-  private static final ConcurrentHashMap<String, Object> LOCKS = new ConcurrentHashMap<>();
+  // One monitor per open database, held only by the constraint statements themselves: never the schema's own monitor, which
+  // the schema takes internally while it changes files. Weakly keyed by the database instance, so a database closed or
+  // dropped takes its monitor with it
+  private static final Map<Database, Object> LOCKS = Collections.synchronizedMap(new WeakHashMap<>());
 
   private CypherConstraintRegistry() {
   }
 
   /** The monitor that serializes the constraint statements of a database, so checking a name and recording it are one step. */
   static Object lockFor(final Database database) {
-    return LOCKS.computeIfAbsent(database.getDatabasePath(), k -> new Object());
+    return LOCKS.computeIfAbsent(database instanceof DatabaseInternal internal ? internal.getEmbedded() : database, k -> new Object());
   }
 
   /**
