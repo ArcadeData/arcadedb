@@ -1439,6 +1439,16 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     return snap.nodeMapping.getBucketId(snap.nodeMapping.getBucketIdx(nodeId));
   }
 
+  /**
+   * The node mapping of the snapshot being served: a rebuild publishes a new one, while the delta overlay of a
+   * synchronous update keeps it and appends the IDs of new vertices past it.
+   */
+  @Override
+  public Object getNodeIdSpace() {
+    final Snapshot snap = snapshot;
+    return snap != null ? snap.nodeMapping : this;
+  }
+
   // --- Node type queries ---
 
   /**
