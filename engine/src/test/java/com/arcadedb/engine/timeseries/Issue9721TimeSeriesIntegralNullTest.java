@@ -27,12 +27,15 @@ import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Iterator;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #9721: a LONG/INTEGER (and SHORT, BYTE, BOOLEAN, DATETIME) TimeSeries field written without a value read back as 0, so
@@ -217,6 +220,17 @@ class Issue9721TimeSeriesIntegralNullTest extends TestHelper {
     // without an absent sample the layout is the one every older block has
     assertThat(Simple8bCodec.encode(values, new long[nulls.length])).containsExactly(Simple8bCodec.encode(values));
     assertThat(Simple8bCodec.nulls(Simple8bCodec.encode(values))).isNull();
+  }
+
+  @Test
+  void aCorruptNullableHeaderIsRefusedBeforeAnythingIsAllocated() {
+    // the nullable marker followed by a count whose bitmap the buffer cannot hold: refused, not a 256 MB array or a wrapped size
+    for (final int count : new int[] { Integer.MAX_VALUE, Integer.MAX_VALUE - 10, 1_000_000 }) {
+      final byte[] corrupt = ByteBuffer.allocate(16).putInt(Integer.MIN_VALUE).putInt(count).array();
+      assertThatThrownBy(() -> Simple8bCodec.nulls(corrupt)).as("count " + count).isInstanceOf(IOException.class);
+      assertThatThrownBy(() -> Simple8bCodec.decode(corrupt)).as("count " + count).isInstanceOf(IOException.class);
+    }
+    assertThat(Simple8bCodec.bitmapWords(Integer.MAX_VALUE)).isEqualTo(33_554_432);
   }
 
   @Test
