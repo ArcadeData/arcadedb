@@ -120,6 +120,7 @@ class Issue9639GremlinChannelizerProductionModeTest {
   }
 
   private static void assertRefused(final GremlinServerPlugin plugin, final String channelizer) {
+    // stopService() on a plugin whose start was refused must be a no-op: the PluginManager stops a failed plugin too
     try {
       assertThatThrownBy(plugin::startService).isInstanceOf(ServerException.class).hasMessageContaining(channelizer)
           .hasMessageContaining("production");
@@ -153,16 +154,36 @@ class Issue9639GremlinChannelizerProductionModeTest {
   }
 
   @Test
+  void theDefaultChannelizerStillStartsInProductionMode() {
+    final ContextConfiguration configuration = new ContextConfiguration();
+    configuration.setValue(GlobalConfiguration.SERVER_MODE, "production");
+    configuration.setValue("gremlin.channelizer", WebSocketChannelizer.class.getName());
+    assertStarts(newPlugin(configuration));
+  }
+
+  @Test
+  void theConcealingChannelizerNamedExplicitlyStillStartsInProductionMode() {
+    final ContextConfiguration configuration = new ContextConfiguration();
+    configuration.setValue(GlobalConfiguration.SERVER_MODE, "production");
+    configuration.setValue("gremlin.channelizer", ConcealingWebSocketChannelizer.class.getName());
+    assertStarts(newPlugin(configuration));
+  }
+
+  private static void assertStarts(final GremlinServerPlugin plugin) {
+    try {
+      plugin.startService();
+      assertThat(plugin.isActive()).isTrue();
+      assertThat(plugin.getAdvertisedPorts()).containsKey("gremlin");
+    } finally {
+      plugin.stopService();
+    }
+  }
+
+  @Test
   void aChannelizerThatCannotConcealStillStartsInDevelopmentMode() {
     final ContextConfiguration configuration = new ContextConfiguration();
     configuration.setValue(GlobalConfiguration.SERVER_MODE, "development");
     configuration.setValue("gremlin.channelizer", WsAndHttpChannelizer.class.getName());
-    final GremlinServerPlugin plugin = newPlugin(configuration);
-    try {
-      plugin.startService();
-      assertThat(plugin.isActive()).isTrue();
-    } finally {
-      plugin.stopService();
-    }
+    assertStarts(newPlugin(configuration));
   }
 }

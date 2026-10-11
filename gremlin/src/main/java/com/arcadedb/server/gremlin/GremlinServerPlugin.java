@@ -193,8 +193,8 @@ public class GremlinServerPlugin implements ServerPlugin {
    * channelizer - TinkerPop's {@code WsAndHttpChannelizer}, {@code HttpChannelizer}, {@code UnifiedChannelizer}, or a
    * custom class - answers with {@code Throwable.getMessage()}, which for a duplicated key is the customer's stored key
    * values: in production mode it fails the start, like an invalid {@code gremlin.*} setting does, instead of serving
-   * that text under a setting that promises otherwise (issue #9639). Outside production mode it is used as configured, with a
-   * WARNING that production mode will refuse it.
+   * that text under a setting that promises otherwise (issue #9639). Outside production mode it is used as configured,
+   * with a WARNING that production mode will refuse it.
    */
   static String resolveChannelizer(final String configured, final boolean productionMode) {
     final String channelizer = configured != null ? configured.trim() : "";
