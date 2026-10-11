@@ -1590,7 +1590,8 @@ public class TransactionContext implements Transaction {
    */
   public void trackInsertSlotReservation(final LocalBucket bucket, final int pageNumber, final int slot) {
     // A negative slot would be read back as NEW_PAGE_RESERVATION and release the wrong thing (#9694)
-    assert slot >= 0 : "invalid insert slot " + slot + " on page " + pageNumber;
+    if (slot < 0)
+      throw new IllegalArgumentException("Invalid insert slot " + slot + " on page " + pageNumber);
     trackReservation(bucket, pageNumber, slot);
   }
 
