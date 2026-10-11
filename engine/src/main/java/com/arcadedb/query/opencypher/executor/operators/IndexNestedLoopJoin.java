@@ -33,6 +33,7 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
@@ -100,6 +101,8 @@ public class IndexNestedLoopJoin extends AbstractPhysicalOperator {
       private boolean   inheritedIndex;
       private boolean   wholeKey;
       private Type[]    keyTypes;
+      // Per key: whether the indexed property is declared STRING, where a boolean equals the text it was stored as
+      private boolean[] declaredText;
       private Schema    schema;
 
       private Result                         currentLeft;
@@ -152,6 +155,12 @@ public class IndexNestedLoopJoin extends AbstractPhysicalOperator {
         inheritedIndex = Labels.isInheritedIndex(index, label);
         wholeKey = keys.length == index.getPropertyNames().size();
         keyTypes = index.getKeyTypes();
+        declaredText = new boolean[keys.length];
+        final DocumentType indexedType = schema.existsType(index.getTypeName()) ? schema.getType(index.getTypeName()) : null;
+        for (int i = 0; i < keys.length && indexedType != null; i++) {
+          final Property property = indexedType.getPolymorphicPropertyIfExists(indexProperties.get(i));
+          declaredText[i] = property != null && property.getType() == Type.STRING;
+        }
         leftResults = child.execute(context, nRecords);
       }
 
@@ -203,6 +212,9 @@ public class IndexNestedLoopJoin extends AbstractPhysicalOperator {
         KeyUse use = KeyUse.SEEK;
         for (int i = 0; i < keys.length; i++) {
           key[i] = keys[i].evaluateLeft(currentLeft, context);
+          // A boolean is stored in a property declared STRING as "true" or "false": that text is the key (issue #9695)
+          if (declaredText[i] && key[i] instanceof Boolean b)
+            key[i] = b.toString();
           final KeyUse keyUse = keyUse(key[i], keyTypes[i]);
           if (keyUse == KeyUse.NONE)
             // The WHERE cannot hold for this left row
@@ -272,9 +284,11 @@ public class IndexNestedLoopJoin extends AbstractPhysicalOperator {
     case STRING:
       if (value instanceof String)
         return KeyUse.SEEK;
+      // No text equals a boolean where nothing is declared; a declared one arrives here as its stored text
       if (value instanceof Boolean)
         return KeyUse.NONE;
-      // A number equals a string spelling the RID it encodes
+      // A number equals a string spelling the RID it encodes as well as the text it was stored as in a property declared
+      // STRING (issue #9695): no single text key covers both, so the label is read and the comparison decides
       return KeyUse.SCAN;
     case BYTE:
     case SHORT:
