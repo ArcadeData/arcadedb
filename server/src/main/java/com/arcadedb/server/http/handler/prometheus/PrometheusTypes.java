@@ -32,30 +32,81 @@ public final class PrometheusTypes {
   private PrometheusTypes() {
   }
 
-  // ---- WriteRequest (field 1 = repeated TimeSeries timeseries) ----
+  /**
+   * The {@code proto=} parameter of a request {@code Content-Type}, which is how Prometheus remote write 2.0 names the
+   * message a body is encoded in (issue #9624), or null when the header or the parameter is absent. The parameter name is
+   * matched case-insensitively and surrounding quotes are removed from its value. An empty value names no message, so it
+   * is answered as absent: the body is then decoded as the endpoint's own message, and a 2.0 body is still caught by
+   * {@link WriteRequest#hasRecognizedContent()}.
+   */
+  public static String protoMessage(final String contentType) {
+    // the common case, a 1.0 sender's bare "application/x-protobuf", returns before allocating anything
+    if (contentType == null || contentType.indexOf(';') < 0)
+      return null;
+    final String[] parts = contentType.split(";");
+    for (int i = 1; i < parts.length; i++) {
+      final String param = parts[i].trim();
+      final int eq = param.indexOf('=');
+      if (eq < 0 || !"proto".equalsIgnoreCase(param.substring(0, eq).trim()))
+        continue;
+      String value = param.substring(eq + 1).trim();
+      if (value.length() >= 2 && value.charAt(0) == '"' && value.charAt(value.length() - 1) == '"')
+        value = value.substring(1, value.length() - 1).trim();
+      return value.isEmpty() ? null : value;
+    }
+    return null;
+  }
+
+  // ---- WriteRequest (field 1 = repeated TimeSeries timeseries, field 3 = repeated MetricMetadata metadata) ----
 
   public static final class WriteRequest {
+    /** The message a remote write 1.0 sender names in {@code Content-Type: application/x-protobuf;proto=...}. */
+    public static final String PROTO_MESSAGE = "prometheus.WriteRequest";
+
     private final List<TimeSeries> timeSeries;
+    private final boolean          recognizedContent;
 
     public WriteRequest(final List<TimeSeries> timeSeries) {
+      this(timeSeries, !timeSeries.isEmpty());
+    }
+
+    private WriteRequest(final List<TimeSeries> timeSeries, final boolean recognizedContent) {
       this.timeSeries = timeSeries;
+      this.recognizedContent = recognizedContent;
     }
 
     public List<TimeSeries> getTimeSeries() {
       return timeSeries;
     }
 
+    /**
+     * Whether the decoded body carried at least one field a remote write 1.0 {@code WriteRequest} defines: a series
+     * (field 1) or a metric metadata entry (field 3, which Prometheus sends in requests of their own, with no series).
+     * A non-empty body with neither is not a 1.0 request at all - a remote write 2.0 {@code Request} reserves fields 1
+     * to 3 precisely so that a 1.0 parser finds nothing in it (issue #9624).
+     */
+    public boolean hasRecognizedContent() {
+      return recognizedContent;
+    }
+
     public static WriteRequest decode(final byte[] data) {
       final ProtobufDecoder decoder = new ProtobufDecoder(data);
       final List<TimeSeries> series = new ArrayList<>();
+      boolean metadata = false;
       while (decoder.hasRemaining()) {
         final int tag = decoder.readTag();
-        if (ProtobufDecoder.fieldNumber(tag) == 1 && ProtobufDecoder.wireType(tag) == ProtobufDecoder.WIRETYPE_LENGTH_DELIMITED)
+        final int field = ProtobufDecoder.fieldNumber(tag);
+        final int wire = ProtobufDecoder.wireType(tag);
+        if (field == 1 && wire == ProtobufDecoder.WIRETYPE_LENGTH_DELIMITED)
           series.add(TimeSeries.decode(decoder.readLengthDelimited()));
-        else
-          decoder.skipField(ProtobufDecoder.wireType(tag));
+        else {
+          // metadata is not stored, only noticed: it is what makes a series-less body a valid 1.0 request
+          if (field == 3 && wire == ProtobufDecoder.WIRETYPE_LENGTH_DELIMITED)
+            metadata = true;
+          decoder.skipField(wire);
+        }
       }
-      return new WriteRequest(series);
+      return new WriteRequest(series, metadata || !series.isEmpty());
     }
 
     public byte[] encode() {
@@ -185,6 +236,9 @@ public final class PrometheusTypes {
   // ---- ReadRequest (field 1 = repeated Query queries) ----
 
   public static final class ReadRequest {
+    /** The message a remote read sender would name in {@code Content-Type: application/x-protobuf;proto=...}. */
+    public static final String PROTO_MESSAGE = "prometheus.ReadRequest";
+
     private final List<Query> queries;
 
     public ReadRequest(final List<Query> queries) {

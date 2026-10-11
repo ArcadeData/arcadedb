@@ -33,12 +33,14 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.RequestBodyTooLargeException;
+import com.arcadedb.server.http.handler.prometheus.PrometheusTypes;
 import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.Label;
 import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.Sample;
 import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.TimeSeries;
 import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.WriteRequest;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
+import io.undertow.util.Headers;
 import io.undertow.util.HttpString;
 
 import java.util.Arrays;
@@ -123,6 +125,14 @@ public class PostPrometheusWriteHandler extends AbstractBinaryHttpHandler {
 
     exchange.getResponseHeaders().put(new HttpString("X-Prometheus-Remote-Write-Version"), "0.1.0");
 
+    // Remote write 2.0 names its message in the Content-Type (issue #9624). A receiver that cannot parse the message
+    // named there must answer 415, which is what makes a 2.0 sender fall back to 1.0; decoding the 2.0 body as a 1.0
+    // WriteRequest finds no series in it, and the 204 that used to follow made the sender drop the batch as delivered.
+    final String protoMessage = PrometheusTypes.protoMessage(exchange.getRequestHeaders().getFirst(Headers.CONTENT_TYPE));
+    if (protoMessage != null && !WriteRequest.PROTO_MESSAGE.equals(protoMessage))
+      return new ExecutionResponse(415, new JSONObject().put("error", "Unsupported remote-write protobuf message '" + protoMessage
+          + "': this endpoint implements " + WriteRequest.PROTO_MESSAGE + " (remote write 1.0)").toString());
+
     // THIS request's bytes, off the exchange rather than off a field shared with every concurrent request; see
     // AbstractBinaryHttpHandler.RAW_BINARY_PAYLOAD and issue #7683. Prometheus remote-write is exactly the
     // path where that matters: several shippers pointed at one endpoint is the normal deployment.
@@ -144,10 +154,25 @@ public class PostPrometheusWriteHandler extends AbstractBinaryHttpHandler {
       return new ExecutionResponse(400, "{ \"error\" : \"Invalid Snappy-compressed data\"}");
     }
 
-    // Decode protobuf WriteRequest
-    final WriteRequest writeRequest = WriteRequest.decode(decompressed);
-    if (writeRequest.getTimeSeries().isEmpty())
+    // Decode protobuf WriteRequest. The decoder signals a malformed body with IllegalStateException, which no arm of
+    // the error classification maps, so it would be answered 500 and logged as a server fault (issue #9624): it is the
+    // client's mistake, the same class as the invalid Snappy data answered 400 just above.
+    final WriteRequest writeRequest;
+    try {
+      writeRequest = WriteRequest.decode(decompressed);
+    } catch (final IllegalStateException e) {
+      return new ExecutionResponse(400, new JSONObject().put("error", "Malformed protobuf " + WriteRequest.PROTO_MESSAGE + ": " + e.getMessage()).toString());
+    }
+    if (writeRequest.getTimeSeries().isEmpty()) {
+      // An empty request, or one carrying only metric metadata, is a legitimate 1.0 no-op. A non-empty body with no 1.0
+      // field at all is a message in another schema - a 2.0 Request sent without the proto= parameter - and answering
+      // 204 would make the sender discard it as delivered (issue #9624).
+      if (decompressed.length > 0 && !writeRequest.hasRecognizedContent())
+        return new ExecutionResponse(400, new JSONObject().put("error", "The body carries no " + WriteRequest.PROTO_MESSAGE
+            + " field (remote write 1.0): if it is a remote write 2.0 io.prometheus.write.v2.Request, configure the sender for 1.0")
+            .toString());
       return new ExecutionResponse(204, "");
+    }
 
     final DatabaseInternal database = (DatabaseInternal) db;
 
