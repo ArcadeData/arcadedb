@@ -41,6 +41,7 @@ import com.arcadedb.engine.WALFile;
 import com.arcadedb.engine.WALFileFactory;
 import com.arcadedb.engine.WALFileFactoryEmbedded;
 import com.arcadedb.engine.timeseries.TimeSeriesBucket;
+import com.arcadedb.engine.timeseries.TimeSeriesEngine;
 import com.arcadedb.engine.timeseries.TimeSeriesTagDictionary;
 import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.exception.BrokenChunkChainException;
@@ -819,18 +820,14 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   public long countType(final String typeName, final boolean polymorphic) {
     stats.countType.incrementAndGet();
 
-    return (Long) executeInReadLock((Callable<Object>) () -> {
+    final Object counted = executeInReadLock((Callable<Object>) () -> {
       final DocumentType type = schema.getType(typeName);
 
       // TimeSeries types store data in their own engine, not in regular buckets
       if (type instanceof LocalTimeSeriesType tsType) {
         // Counting samples never loads a record through a bucket, so apply the equivalent per-type read check here.
         checkPermissionsOnType(typeName, SecurityDatabaseUser.ACCESS.READ_RECORD);
-        try {
-          return tsType.requireEngine().countSamples();
-        } catch (final IOException e) {
-          throw new DatabaseOperationException("Error counting TimeSeries samples for type '" + typeName + "'", e);
-        }
+        return tsType.requireEngine();
       }
 
       long total = 0;
@@ -839,6 +836,21 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
       return total;
     });
+
+    if (counted instanceof TimeSeriesEngine engine) {
+      // Counted OUTSIDE the database read lock (issue #9716): the count waits on each shard's compaction read lock,
+      // and a compaction holding that lock's write side commits, which takes the database read lock. Waiting for the
+      // compaction lock while holding the database lock would let a close() queued for the write lock in between
+      // park all three. The query paths that read a TimeSeries type take the compaction lock without it, too. A close()
+      // that lands after this check still races the count, as it races those paths: it fails with the exception below.
+      checkDatabaseIsOpen();
+      try {
+        return engine.countSamples();
+      } catch (final IOException e) {
+        throw new DatabaseOperationException("Error counting TimeSeries samples for type '" + typeName + "'", e);
+      }
+    }
+    return (Long) counted;
   }
 
   @Override
