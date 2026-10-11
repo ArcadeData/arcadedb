@@ -30,6 +30,7 @@ import org.junit.jupiter.api.Test;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -271,6 +272,34 @@ class Issue9706ConstraintNamesAndTypedDropTest extends TestHelper {
     command("DROP CONSTRAINT constraint_L_a_b_c_unique_2");
     assertThat(rows("SHOW CONSTRAINTS YIELD name, properties")).singleElement()
         .satisfies(r -> assertThat(r.get("properties")).isEqualTo(List.of("a_b", "c")));
+  }
+
+  @Test
+  void concurrentUnnamedConstraintsAreRecordedOnceEachUnderDistinctNames() throws Exception {
+    database.getSchema().createVertexType("L");
+    final String[] statements = { "CREATE CONSTRAINT FOR (n:L) REQUIRE n.p IS NOT NULL",
+        "CREATE CONSTRAINT IF NOT EXISTS FOR (n:L) REQUIRE (n.a_b, n.c) IS UNIQUE",
+        "CREATE CONSTRAINT IF NOT EXISTS FOR (n:L) REQUIRE (n.a, n.b_c) IS UNIQUE" };
+    final List<Thread> threads = new ArrayList<>();
+    final List<Throwable> failures = new CopyOnWriteArrayList<>();
+    for (int t = 0; t < 12; t++) {
+      final String statement = statements[t % statements.length];
+      final Thread thread = new Thread(() -> {
+        try {
+          command(statement);
+        } catch (final Throwable e) {
+          failures.add(e);
+        }
+      });
+      threads.add(thread);
+      thread.start();
+    }
+    for (final Thread thread : threads)
+      thread.join();
+
+    assertThat(failures).extracting(e -> e.getCause() != null ? e.getCause().toString() : e.toString()).isEmpty();
+    assertThat(names("SHOW CONSTRAINTS")).containsExactly("constraint_L_a_b_c_unique", "constraint_L_a_b_c_unique_2",
+        "constraint_L_p_existence");
   }
 
   @Test

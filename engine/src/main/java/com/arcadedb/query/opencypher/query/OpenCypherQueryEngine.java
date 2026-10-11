@@ -558,10 +558,16 @@ public class OpenCypherQueryEngine implements QueryEngine {
 
     switch (ddl.getKind()) {
     case CREATE_CONSTRAINT:
-      executeCreateConstraint(ddl, schema, stats);
+      // One constraint statement at a time per database: a name is checked, then the schema is changed, then the name is
+      // recorded, and two statements interleaving those steps could both take one name or both find no equivalent (#9706)
+      synchronized (CypherConstraintRegistry.lockFor(database)) {
+        executeCreateConstraint(ddl, schema, stats);
+      }
       break;
     case DROP_CONSTRAINT:
-      executeDropConstraint(ddl, schema, stats);
+      synchronized (CypherConstraintRegistry.lockFor(database)) {
+        executeDropConstraint(ddl, schema, stats);
+      }
       break;
     case CREATE_INDEX:
       executeCreateIndex(ddl, schema, stats);
