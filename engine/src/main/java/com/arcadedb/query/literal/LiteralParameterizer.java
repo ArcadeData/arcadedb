@@ -65,11 +65,17 @@ public abstract class LiteralParameterizer<S> {
   private final SegmentedLRUCache<String, Lookup<S>> statements;
   private final SegmentedLRUCache<String, byte[]>    policies;
   /**
-   * Texts whose literals were extracted, by the text as written: the statement, its generated key and the extracted values.
-   * Kept apart from {@link #statements}, so the one-off texts of a workload that writes its values in never push out the
-   * statements it keeps re-running. The values held here are never handed out: each hit gets its own copy (issue #9714).
+   * Texts whose literals were extracted, by the text as written: the generated key and the extracted values (issue #9714). Kept
+   * apart from {@link #statements}, so the one-off texts of a workload that writes its values in never push out the statements
+   * it keeps re-running. No statement is held here: a hit resolves it in {@link #statements} by its key, which stays the one
+   * owner of every statement, and a key no longer there sends the text down the lexing path. The values held here are never
+   * handed out: each hit gets its own copy.
    */
-  private final SegmentedLRUCache<String, Lookup<S>> parameterizedTexts;
+  private final SegmentedLRUCache<String, ExtractedText> parameterizedTexts;
+
+  /** The generated key of a text and the literal values extracted from it, by generated parameter name. */
+  private record ExtractedText(String cacheKey, Map<String, Object> parameters) {
+  }
 
   /**
    * A statement found or parsed for a query text.
@@ -135,11 +141,17 @@ public abstract class LiteralParameterizer<S> {
       return parseAsWritten(text);
 
     // A TEXT EXTRACTED BEFORE: ITS KEY AND VALUES ARE KNOWN, SO NO LEXING (ISSUE #9714)
+    final ExtractedText extracted;
     synchronized (parameterizedTexts) {
-      cached = parameterizedTexts.get(text);
+      extracted = parameterizedTexts.get(text);
     }
-    if (cached != null)
-      return new Lookup<>(cached.statement(), cached.cacheKey(), new HashMap<>(cached.parameters()));
+    if (extracted != null) {
+      synchronized (statements) {
+        cached = statements.get(extracted.cacheKey());
+      }
+      if (cached != null)
+        return new Lookup<>(cached.statement(), extracted.cacheKey(), new HashMap<>(extracted.parameters()));
+    }
 
     final LiteralScan scan = scan(text);
     if (scan == null || scan.size() == 0 || scan.size() > MAX_LITERALS)
@@ -202,7 +214,7 @@ public abstract class LiteralParameterizer<S> {
       cached = cache(key, template);
     }
     synchronized (parameterizedTexts) {
-      parameterizedTexts.put(text, new Lookup<>(cached.statement(), key, new HashMap<>(values)));
+      parameterizedTexts.put(text, new ExtractedText(key, new HashMap<>(values)));
     }
     return new Lookup<>(cached.statement(), key, values);
   }

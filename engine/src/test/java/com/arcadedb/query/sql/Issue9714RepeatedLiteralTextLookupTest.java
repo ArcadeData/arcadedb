@@ -44,7 +44,11 @@ class Issue9714RepeatedLiteralTextLookupTest extends TestHelper {
     private int scans;
 
     private CountingParameterizer(final SQLAntlrParser parser) {
-      super(parser, 100);
+      this(parser, 100);
+    }
+
+    private CountingParameterizer(final SQLAntlrParser parser, final int size) {
+      super(parser, size);
     }
 
     @Override
@@ -96,6 +100,28 @@ class Issue9714RepeatedLiteralTextLookupTest extends TestHelper {
     cache.clear();
     assertThat(cache.lookup(text, true).statement()).isNotSameAs(second.statement());
     assertThat(cache.scans).isEqualTo(scansToBuild + 2);
+  }
+
+  @Test
+  void aRememberedTextWhoseStatementWasEvictedIsLexedAgain() {
+    // the remembered text holds no statement of its own: once its key leaves the statement cache, the text takes the lexing
+    // path again and answers exactly what it answered before
+    final CountingParameterizer cache = new CountingParameterizer(new SQLAntlrParser(database), 2);
+    final String text = "SELECT count(*) AS c FROM V WHERE a = 77";
+    cache.lookup(text, true);
+    final Lookup<Statement> built = cache.lookup(text, true);
+    assertThat(cache.contains(built.cacheKey())).isTrue();
+
+    for (int i = 0; i < 10; i++)
+      cache.lookup("SELECT count(*) AS c" + i + " FROM V", true);
+    assertThat(cache.contains(built.cacheKey())).as("the key was evicted").isFalse();
+
+    final int scansBefore = cache.scans;
+    final Lookup<Statement> again = cache.lookup(text, true);
+    assertThat(cache.scans).isEqualTo(scansBefore + 1);
+    assertThat(again.cacheKey()).isEqualTo(built.cacheKey());
+    assertThat(again.parameters()).isEqualTo(Map.of("__lit_i0", 77));
+    assertThat(cache.contains(built.cacheKey())).isTrue();
   }
 
   @Test
