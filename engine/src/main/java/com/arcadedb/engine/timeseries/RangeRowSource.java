@@ -59,4 +59,9 @@ final class RangeRowSource implements TimeSeriesRowSource {
   public String getStringValue(final int row, final int columnIndex) {
     return delegate.getStringValue(from + row, columnIndex);
   }
+
+  @Override
+  public boolean isNull(final int row, final int columnIndex) {
+    return delegate.isNull(from + row, columnIndex);
+  }
 }

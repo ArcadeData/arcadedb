@@ -1059,24 +1059,9 @@ public class BinarySerializer {
     case BinaryTypes.TYPE_DOUBLE:
       value = Double.longBitsToDouble(content.getNumber());
       break;
-    case BinaryTypes.TYPE_DATE:
-      value = DateUtils.date(database, content.getUnsignedNumber(), dateImplementation);
-      break;
-    case BinaryTypes.TYPE_DATETIME_SECOND:
-      value = DateUtils.dateTime(database, content.getUnsignedNumber(), ChronoUnit.SECONDS, dateTimeImplementation,
-          ChronoUnit.SECONDS);
-      break;
-    case BinaryTypes.TYPE_DATETIME:
-      value = DateUtils.dateTime(database, content.getUnsignedNumber(), ChronoUnit.MILLIS, dateTimeImplementation,
-          ChronoUnit.MILLIS);
-      break;
-    case BinaryTypes.TYPE_DATETIME_MICROS:
-      value = DateUtils.dateTime(database, content.getUnsignedNumber(), ChronoUnit.MICROS, subMillisDateTimeImplementation,
-          ChronoUnit.MICROS);
-      break;
-    case BinaryTypes.TYPE_DATETIME_NANOS:
-      value = DateUtils.dateTime(database, content.getUnsignedNumber(), ChronoUnit.NANOS, subMillisDateTimeImplementation,
-          ChronoUnit.NANOS);
+    case BinaryTypes.TYPE_DATE, BinaryTypes.TYPE_DATETIME_SECOND, BinaryTypes.TYPE_DATETIME, BinaryTypes.TYPE_DATETIME_MICROS,
+         BinaryTypes.TYPE_DATETIME_NANOS:
+      value = deserializeTemporal(database, content.getUnsignedNumber(), type);
       break;
     case BinaryTypes.TYPE_OFFSET_TIME: {
       final long nanoOfDay = content.getUnsignedNumber();
@@ -1751,12 +1736,32 @@ public class BinarySerializer {
     }
   }
 
+  /**
+   * The object a stored DATE or DATETIME value of the given binary type reads back as: an epoch count in the type's own unit
+   * (days for a DATE) turned into the implementation class the database is configured with. The one definition, shared by a
+   * document property and a TimeSeries column of the same declared type (issue #9725), so the two cannot hand back
+   * different objects for the same instant.
+   */
+  public Object deserializeTemporal(final Database database, final long epoch, final byte type) {
+    return switch (type) {
+      case BinaryTypes.TYPE_DATE -> DateUtils.date(database, epoch, dateImplementation);
+      case BinaryTypes.TYPE_DATETIME_SECOND -> DateUtils.dateTime(database, epoch, ChronoUnit.SECONDS, dateTimeImplementation, ChronoUnit.SECONDS);
+      case BinaryTypes.TYPE_DATETIME -> DateUtils.dateTime(database, epoch, ChronoUnit.MILLIS, dateTimeImplementation, ChronoUnit.MILLIS);
+      case BinaryTypes.TYPE_DATETIME_MICROS ->
+          DateUtils.dateTime(database, epoch, ChronoUnit.MICROS, subMillisDateTimeImplementation, ChronoUnit.MICROS);
+      case BinaryTypes.TYPE_DATETIME_NANOS ->
+          DateUtils.dateTime(database, epoch, ChronoUnit.NANOS, subMillisDateTimeImplementation, ChronoUnit.NANOS);
+      default -> throw new IllegalArgumentException("Binary type " + type + " is not a date or a datetime");
+    };
+  }
+
   public BinaryComparator getComparator() {
     return comparator;
   }
 
   private void serializeDateTime(final Database database, final Binary content, final Object value, final byte type) {
-    content.putUnsignedNumber(DateUtils.dateTimeToTimestamp(database, value, DateUtils.getPrecisionFromBinaryType(type)));
+    // Stored, so an instant the precision cannot hold is refused instead of saturated into a different one (issue #9725)
+    content.putUnsignedNumber(DateUtils.dateTimeToTimestampExact(database, value, DateUtils.getPrecisionFromBinaryType(type)));
   }
 
   public void setDataEncryption(final DataEncryption dataEncryption) {

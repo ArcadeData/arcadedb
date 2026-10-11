@@ -228,9 +228,9 @@ class Issue5519TagStrideTest extends TestHelper {
         "CREATE TIMESERIES TYPE Logs TIMESTAMP ts TAGS (host STRING) FIELDS (message STRING, level INTEGER) SHARDS 1");
     final TimeSeriesEngine engine = ((LocalTimeSeriesType) database.getSchema().getType("Logs")).getEngine();
 
-    // 8 (ts) + 4 (dictionary-encoded host) + 258 (inline message) + 4 (level)
+    // 8 (ts) + 1 (null bitmap for level, issue #9721) + 4 (dictionary-encoded host) + 258 (inline message) + 4 (level)
     assertThat(engine.getShard(0).getMutableBucket().getRowSize())
-        .isEqualTo(8 + 4 + (2 + TimeSeriesBucket.MAX_STRING_BYTES) + 4);
+        .isEqualTo(8 + 1 + 4 + (2 + TimeSeriesBucket.MAX_STRING_BYTES) + 4);
   }
 
   @Test

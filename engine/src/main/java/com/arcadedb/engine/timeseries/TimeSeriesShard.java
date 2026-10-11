@@ -151,6 +151,18 @@ public class TimeSeriesShard implements AutoCloseable {
   public TimeSeriesShard(final DatabaseInternal database, final String baseName, final int shardIndex,
                          final List<ColumnDefinition> columns, final long compactionBucketIntervalMs,
                          final TimeSeriesTagDictionary tagDictionary) throws IOException {
+    this(database, baseName, shardIndex, columns, compactionBucketIntervalMs, tagDictionary, TimeSeriesBucket.CURRENT_VERSION);
+  }
+
+  /**
+   * @param tagDictionary        the type's shared tag dictionary, or {@code null} to store TAG STRING columns inline as mutable
+   *                             format version 0 did
+   * @param mutableFormatVersion the type's mutable row format version, which also decides whether a row carries a null bitmap
+   *                             (issue #9721)
+   */
+  public TimeSeriesShard(final DatabaseInternal database, final String baseName, final int shardIndex,
+                         final List<ColumnDefinition> columns, final long compactionBucketIntervalMs,
+                         final TimeSeriesTagDictionary tagDictionary, final int mutableFormatVersion) throws IOException {
     this.shardIndex = shardIndex;
     this.typeName = baseName;
     this.database = database;
@@ -165,11 +177,11 @@ public class TimeSeriesShard implements AutoCloseable {
     final Component existing = schema.getFileByName(shardName);
     if (existing instanceof TimeSeriesBucket tsb) {
       this.mutableBucket = tsb;
-      this.mutableBucket.setColumns(columns, tagDictionary);
+      this.mutableBucket.setColumns(columns, tagDictionary, mutableFormatVersion);
     } else {
       // First-time creation: register the file with the schema BEFORE initialising the header
       // page, so that the nested-TX commit in initHeaderPage() can resolve the file by its ID.
-      this.mutableBucket = new TimeSeriesBucket(database, shardName, shardPath, columns, tagDictionary);
+      this.mutableBucket = new TimeSeriesBucket(database, shardName, shardPath, columns, tagDictionary, mutableFormatVersion);
       schema.registerFile(mutableBucket);
       // Initialise the header page in a self-contained nested transaction.  Using a nested TX
       // here ensures that page 0 is committed immediately and is NOT placed in any enclosing
@@ -1259,13 +1271,8 @@ public class TimeSeriesShard implements AutoCloseable {
       final int chunkLen = chunkEnd - chunkStart;
       final long[] chunkTs = Arrays.copyOfRange(sortedTs, chunkStart, chunkEnd);
 
-      final double[] mins = new double[colCount];
-      final double[] maxs = new double[colCount];
-      final double[] sums = new double[colCount];
-      final long[] counts = new long[colCount];
-      Arrays.fill(mins, Double.NaN);
-      Arrays.fill(maxs, Double.NaN);
-      Arrays.fill(sums, Double.NaN);
+      // Exact statistics for an integral column, the NaN-policy doubles for a floating-point one (issue #9720)
+      final TimeSeriesSealedStore.StatsBuilder stats = new TimeSeriesSealedStore.StatsBuilder(columns);
 
       final byte[][] compressedCols = new byte[colCount][];
       for (int c = 0; c < colCount; c++) {
@@ -1276,13 +1283,8 @@ public class TimeSeriesShard implements AutoCloseable {
           compressedCols[c] = TimeSeriesSealedStore.compressColumn(columns.get(c), chunkValues);
 
           final TimeSeriesCodec codec = columns.get(c).getCompressionHint();
-          if (codec == TimeSeriesCodec.GORILLA_XOR || codec == TimeSeriesCodec.SIMPLE8B) {
-            final double[] stats = TimeSeriesSealedStore.reduceNumericStats(columns.get(c), chunkValues);
-            mins[c] = stats[0];
-            maxs[c] = stats[1];
-            sums[c] = stats[2];
-            counts[c] = (long) stats[3];
-          }
+          if (codec == TimeSeriesCodec.GORILLA_XOR || codec == TimeSeriesCodec.SIMPLE8B)
+            stats.add(c, chunkValues);
         }
       }
 
@@ -1300,7 +1302,7 @@ public class TimeSeriesShard implements AutoCloseable {
 
       compressedOut.add(compressedCols);
       metaOut.add(new long[]{chunkTs[0], chunkTs[chunkLen - 1], chunkLen});
-      statsOut.add(new TimeSeriesSealedStore.BlockStats(mins, maxs, sums, counts));
+      statsOut.add(stats.build());
       tagDVOut.add(chunkTagDistinctValues);
       chunkStart = chunkEnd;
     }

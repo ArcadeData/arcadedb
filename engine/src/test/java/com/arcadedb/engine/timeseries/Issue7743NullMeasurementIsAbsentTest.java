@@ -153,17 +153,17 @@ class Issue7743NullMeasurementIsAbsentTest extends TestHelper {
   }
 
   /**
-   * An integer column has no absent marker in its stored form, so a null there is still a real zero - on both
-   * layers, which is the property that matters. Pinned so the asymmetry is a decision rather than an oversight.
+   * An integer column has no absent marker in its stored form, so its rows and blocks carry a null bitmap since issue #9721:
+   * a null there is absent too, on both layers, exactly as on a floating-point column.
    */
   @Test
-  void anIntegerColumnStillStoresANullAsZeroOnBothLayers() throws Exception {
+  void anIntegerColumnStoresANullAsAbsentOnBothLayers() throws Exception {
     final TimeSeriesEngine engine = create("Longs", "LONG");
     engine.appendSamples(new long[] { BASE_TS, BASE_TS + 1_000 }, new Object[][] { new Object[] { 10L, null } });
 
-    assertAggregates("Longs", 10.0d, 5.0d, 0.0d, 2);
+    assertAggregates("Longs", 10.0d, 10.0d, 10.0d, 2);
     engine.compactAll();
-    assertAggregates("Longs", 10.0d, 5.0d, 0.0d, 2);
+    assertAggregates("Longs", 10.0d, 10.0d, 10.0d, 2);
   }
 
   /**

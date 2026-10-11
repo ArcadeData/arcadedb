@@ -34,6 +34,13 @@ import java.nio.ByteBuffer;
  * unchanged. The trade-off: one outlier makes its whole block 8 bytes per value, so a column of mostly small values
  * with an occasional wide one compresses worse for the blocks that hold it.
  * <p>
+ * <b>Absent values.</b> A block in which some samples carry no value (a {@code null} measurement, issue #9721) is written in a
+ * nullable layout: the header is {@link #NULLABLE_MARKER}, followed by the value count, a bitmap of
+ * {@code ceil(count / 64)} longs in which bit {@code i} set means sample {@code i} is absent, and then the values in either of
+ * the layouts above with every absent one written as zero. A block without an absent sample keeps the layouts above, byte for
+ * byte. A decoder that predates the marker reads it as a negative count it cannot honour and refuses the block, rather than
+ * reading the absent samples as zeros.
+ * <p>
  * Packs multiple integers into 64-bit words using a selector scheme.
  * The top 4 bits of each word are the selector (0-14), determining how many
  * integers are packed and at what bit width.
@@ -54,6 +61,12 @@ public final class Simple8bCodec {
 
   // Maximum zigzag-encoded value that fits in 60 bits (selector 15 = 1 value × 60 bits)
   static final long MAX_ZIGZAG_VALUE = (1L << 60) - 1;
+
+  /**
+   * The header of the nullable layout (issue #9721). {@link Integer#MIN_VALUE} is the one count neither of the other layouts can
+   * write - the raw layout negates a count of at most {@link Integer#MAX_VALUE} - and the one a decoder that predates it refuses.
+   */
+  static final int NULLABLE_MARKER = Integer.MIN_VALUE;
 
   private Simple8bCodec() {
   }
@@ -134,6 +147,68 @@ public final class Simple8bCodec {
     return result;
   }
 
+  /**
+   * Encodes {@code values} together with the samples that carry no value (issue #9721).
+   *
+   * @param values the values, with every absent sample already written as zero so it costs no width
+   * @param nulls  a bitmap over the samples, bit {@code i} of word {@code i >>> 6} set when sample {@code i} is absent, or
+   *               {@code null} when every sample has a value. A bitmap with no bit set is the same as {@code null}
+   */
+  public static byte[] encode(final long[] values, final long[] nulls) {
+    if (nulls == null || values == null || values.length == 0 || !anyBitSet(nulls))
+      return encode(values);
+
+    final byte[] payload = encode(values);
+    final int words = bitmapWords(values.length);
+    final ByteBuffer buf = ByteBuffer.allocate(4 + 4 + words * 8 + payload.length);
+    buf.putInt(NULLABLE_MARKER);
+    buf.putInt(values.length);
+    for (int w = 0; w < words; w++)
+      buf.putLong(w < nulls.length ? nulls[w] : 0L);
+    buf.put(payload);
+    return buf.array();
+  }
+
+  /**
+   * The bitmap of the samples of {@code data} that carry no value, in the shape {@link #encode(long[], long[])} takes it, or
+   * {@code null} when every sample has one - which is every block written before issue #9721.
+   */
+  public static long[] nulls(final byte[] data) throws IOException {
+    if (data == null || data.length < 4)
+      return null;
+    try {
+      final ByteBuffer buf = ByteBuffer.wrap(data);
+      if (buf.getInt() != NULLABLE_MARKER)
+        return null;
+      final int count = buf.getInt();
+      if (count < 0)
+        throw new IOException("Simple8bCodec: invalid count " + count + " in the nullable header");
+      final long[] nulls = new long[bitmapWords(count)];
+      for (int w = 0; w < nulls.length; w++)
+        nulls[w] = buf.getLong();
+      return nulls;
+    } catch (final BufferUnderflowException e) {
+      throw new IOException("Simple8bCodec: malformed data (truncated null bitmap, size=" + data.length + ")", e);
+    }
+  }
+
+  /** Whether sample {@code index} is absent in a bitmap {@link #nulls(byte[])} returned; {@code null} has none. */
+  public static boolean isNull(final long[] nulls, final int index) {
+    return nulls != null && (nulls[index >>> 6] & (1L << index)) != 0;
+  }
+
+  /** The number of 64-bit words a bitmap over {@code count} samples takes. */
+  public static int bitmapWords(final int count) {
+    return (count + 63) >>> 6;
+  }
+
+  private static boolean anyBitSet(final long[] bits) {
+    for (final long word : bits)
+      if (word != 0)
+        return true;
+    return false;
+  }
+
   private static byte[] encodeRaw(final long[] values) {
     final ByteBuffer buf = ByteBuffer.allocate(4 + values.length * 8);
     buf.putInt(-values.length);
@@ -147,8 +222,21 @@ public final class Simple8bCodec {
       return new long[0];
 
     try {
-      final ByteBuffer buf = ByteBuffer.wrap(data);
-      final int totalCount = buf.getInt();
+      ByteBuffer buf = ByteBuffer.wrap(data);
+      int totalCount = buf.getInt();
+      if (totalCount == NULLABLE_MARKER) {
+        // The nullable layout (issue #9721): the values follow the bitmap in one of the two layouts below, absent ones as zero
+        final int count = buf.getInt();
+        if (count < 0)
+          throw new IOException("Simple8bCodec: invalid count " + count + " in the nullable header");
+        final int payloadStart = 4 + 4 + bitmapWords(count) * 8;
+        if (payloadStart > data.length)
+          throw new IOException("Simple8bCodec: malformed data (null bitmap exceeds buffer, size=" + data.length + ")");
+        buf = ByteBuffer.wrap(data, payloadStart, data.length - payloadStart).slice();
+        totalCount = buf.getInt();
+        if (totalCount == NULLABLE_MARKER || (totalCount >= 0 ? totalCount : -(long) totalCount) != count)
+          throw new IOException("Simple8bCodec: the nullable header declares " + count + " value(s) but its payload " + totalCount);
+      }
       if (totalCount < 0) {
         // Raw escape layout (issue #9309). Integer.MIN_VALUE has no positive counterpart: malformed
         if (totalCount == Integer.MIN_VALUE)

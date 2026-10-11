@@ -70,4 +70,16 @@ public interface TimeSeriesRowSource {
    * Value of a {@code STRING} column. {@code null} is stored as an empty string.
    */
   String getStringValue(int row, int columnIndex);
+
+  /**
+   * Whether a fixed-width, non-floating column carries NO value on this row (issue #9721): a {@code null} measurement in a
+   * {@code LONG}, {@code INTEGER}, {@code SHORT}, {@code BYTE}, {@code BOOLEAN}, {@code DATE} or {@code DATETIME} column.
+   * {@link #getRawValue(int, int)} is not consulted for such a row. A floating-point column has its own absent marker, the NaN
+   * {@code getRawValue} hands back, and is never asked.
+   * <p>
+   * The default is the behaviour before the question existed: every such column has a value.
+   */
+  default boolean isNull(final int row, final int columnIndex) {
+    return false;
+  }
 }

@@ -3176,7 +3176,17 @@ public class SelectExecutionPlanner {
           // now, so a stringified literal would never match (issue #5475).
           // Equalities inside one block are AND'ed, so their values are INTERSECTED (issue #8917); an empty
           // intersection is a block that matches nothing and contributes no value to the union below
-          final Object coerced = col.coerceValue(value);
+          final Object coerced;
+          if (col.isTemporal()) {
+            // A DATE/DATETIME tag stores an epoch count, which the literal is turned into exactly as INSERT turned the one that
+            // wrote the row (issue #9724). One the column cannot read is not pushed down: the filter above the fetch decides it
+            try {
+              coerced = col.epochOf(context.getDatabase(), value);
+            } catch (final IllegalArgumentException e) {
+              break;
+            }
+          } else
+            coerced = col.coerceValue(value);
           final Set<Object> existing = blockMap.get(nonTsIdx);
           if (existing == null) {
             final Set<Object> values = new HashSet<>();

@@ -104,10 +104,22 @@ class Issue9643TimeSeriesInsertDateTimeColumnsTest extends TestHelper {
       assertThat(rows).as("%s tag rows", declared).hasSize(2);
       assertThat(rows.get(0)[1]).as("%s tag value", declared).isEqualTo(expected);
 
-      // the tag push-down compares against what the layers hand back, so the stored value must be the epoch count
-      try (final ResultSet rs = database.query("sql", "SELECT FROM " + typeName + " WHERE k = " + expected)) {
+      // the tag push-down converts a literal as INSERT did (issue #9724), so the literal that wrote the row finds it - unless the
+      // column's precision dropped part of it, as a DATETIME_SECOND drops the milliseconds, which a document property does too
+      if (!"DATETIME_SECOND".equals(declared))
+        try (final ResultSet rs = database.query("sql", "SELECT FROM " + typeName + " WHERE k = " + literal)) {
+          final List<Result> found = rs.stream().toList();
+          assertThat(found).as("%s tag filter", declared).hasSize(1);
+          assertThat(found.getFirst().<Object>getProperty("tail")).isEqualTo(2.5d);
+        }
+      // and the value a row reads back as finds that row whatever the precision (issue #9725)
+      final Object readBack;
+      try (final ResultSet rs = database.query("sql", "SELECT k FROM " + typeName + " WHERE tail = 2.5")) {
+        readBack = rs.next().getProperty("k");
+      }
+      try (final ResultSet rs = database.query("sql", "SELECT FROM " + typeName + " WHERE k = ?", readBack)) {
         final List<Result> found = rs.stream().toList();
-        assertThat(found).as("%s tag filter", declared).hasSize(1);
+        assertThat(found).as("%s tag filter by the value read back", declared).hasSize(1);
         assertThat(found.getFirst().<Object>getProperty("tail")).isEqualTo(2.5d);
       }
 

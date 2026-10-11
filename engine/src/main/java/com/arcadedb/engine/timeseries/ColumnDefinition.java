@@ -18,8 +18,13 @@
  */
 package com.arcadedb.engine.timeseries;
 
+import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.timeseries.codec.TimeSeriesCodec;
 import com.arcadedb.schema.Type;
+import com.arcadedb.utility.DateUtils;
+
+import java.time.DateTimeException;
 
 /**
  * Defines a column in a TimeSeries type.
@@ -231,6 +236,16 @@ public final class ColumnDefinition {
       return value instanceof String s ? s : value.toString();
     if (dataType == Type.BOOLEAN)
       return value instanceof Boolean b ? b : Boolean.parseBoolean(value.toString());
+    // A date or an instant in any form the engine reads - a temporal object, or text that is not a bare number - names the
+    // epoch count this column stores for it (issue #9724). It used to reach Long.valueOf, fail, and come back unchanged, so
+    // a tag filter compared a String or a LocalDateTime against the stored Long and matched nothing. A NUMBER is already a
+    // count in the column's unit at this layer, the unit the engine API, the line protocol and every HTTP surface speak.
+    if (isTemporal() && !(value instanceof Number) && !(value instanceof String text && isIntegerText(text)))
+      try {
+        return epochOf(null, value);
+      } catch (final IllegalArgumentException e) {
+        return value;
+      }
     if (value instanceof Number n)
       return switch (dataType) {
         case DOUBLE -> n.doubleValue();
@@ -242,6 +257,82 @@ public final class ColumnDefinition {
         default -> value;
       };
     return boxString(value.toString());
+  }
+
+  /**
+   * Whether this column holds a {@code DATE} or a {@code DATETIME} of some precision, stored as an epoch count in its own unit:
+   * days for a DATE, the precision the type names for the others.
+   */
+  public boolean isTemporal() {
+    return switch (dataType) {
+      case DATE, DATETIME, DATETIME_SECOND, DATETIME_MICROS, DATETIME_NANOS -> true;
+      default -> false;
+    };
+  }
+
+  /**
+   * The epoch count this DATE/DATETIME column stores for a value given at the SQL boundary, read exactly as a document property
+   * of the same declared type reads it (issues #9643, #9724, #9725): the value is converted to the Java type that property holds
+   * and then encoded the way the binary serializer encodes it. A number is therefore epoch MILLIS for every DATETIME precision and
+   * epoch DAYS for a DATE (issue #9324), text is parsed by the same chain, and an instant the precision cannot represent is
+   * refused instead of saturated.
+   * <p>
+   * {@code INSERT}, the tag push-down and the field filter all go through here, so the literal that wrote a row is the literal
+   * that finds it.
+   *
+   * @param database may be {@code null}, which reads text with the default formats and a {@code java.util.Date} for a DATETIME
+   *
+   * @throws IllegalArgumentException when the value is not a date or an instant, or is outside the range the column can store
+   */
+  public long epochOf(final Database database, final Object value) {
+    if (!isTemporal())
+      throw new IllegalArgumentException("Column '" + name + "' of type " + dataType + " is not a date or a datetime");
+    final Object converted = Type.convert(database, value, database != null ? dataType.getJavaImplementation(database) :
+        dataType.getDefaultJavaType());
+    if (converted == null)
+      throw new IllegalArgumentException("Cannot convert a value of type " + value.getClass().getName() + " to the " + dataType
+          + " column '" + name + "'");
+    final Long epoch = dataType == Type.DATE ? DateUtils.dateToEpochDays(converted)
+        : DateUtils.dateTimeToTimestampExact(database, converted, DateUtils.getPrecisionFromType(dataType));
+    if (epoch == null)
+      throw new IllegalArgumentException("Cannot convert a value of type " + value.getClass().getName() + " to the " + dataType
+          + " column '" + name + "'");
+    return epoch;
+  }
+
+  /**
+   * The object a document property of this DATE/DATETIME type hands back for the epoch count the column stores, which is what
+   * the SQL boundary returns for it (issue #9725): the same instant, in the same Java class, as the twin document property, so a
+   * value read from a row can be written back as it is and compared against the literal that wrote it.
+   * <p>
+   * A count no date can stand for - which only the engine API, the line protocol or gRPC can have written, since they store the
+   * number they are given - is handed back as that number rather than failing the read of every row around it.
+   */
+  public Object temporalOf(final Database database, final long epoch) {
+    try {
+      return ((DatabaseInternal) database).getSerializer().deserializeTemporal(database, epoch, dataType.getBinaryType());
+    } catch (final DateTimeException | ArithmeticException e) {
+      return epoch;
+    }
+  }
+
+  private static boolean isIntegerText(final String text) {
+    final int length = text.length();
+    if (length == 0)
+      return false;
+    for (int i = text.charAt(0) == '-' || text.charAt(0) == '+' ? 1 : 0; i < length; i++)
+      if (!Character.isDigit(text.charAt(i)))
+        return false;
+    return length > 1 || Character.isDigit(text.charAt(0));
+  }
+
+  /**
+   * Whether this column stores its values as exact integers ({@code SIMPLE8B}): the integral types, BOOLEAN and the
+   * datetimes. Their block statistics and their aggregates are kept as longs (issue #9720), so a value past 2^53 is answered
+   * exactly rather than through a double.
+   */
+  public boolean storesExactIntegers() {
+    return compressionHint == TimeSeriesCodec.SIMPLE8B;
   }
 
   /**
@@ -262,16 +353,18 @@ public final class ColumnDefinition {
    * Numeric view of a value as THIS column stores it, for the {@code GORILLA_XOR} encoder and for the
    * min/max/sum block statistics the aggregation push-down answers from (issue #7743).
    * <p>
-   * The one thing it adds over {@link #numericValueOf(Object)} is the null: a floating-point column stores it
-   * as {@link TimeSeriesNaN#ABSENT}, because it can, and every other column as zero, because it cannot. Both
-   * halves have to be spelled here rather than at each call site, because the statistics describe the bytes and
-   * would otherwise declare a minimum of zero for a block whose encoder wrote no zero.
+   * The one thing it adds over {@link #numericValueOf(Object)} is the null, which is {@link TimeSeriesNaN#ABSENT} on every
+   * column: a floating-point column stores it as the NaN itself, and an integral one as a zero its block's null bitmap marks
+   * absent (issue #9721). Spelled here rather than at each call site, because the statistics describe the samples and would
+   * otherwise declare a minimum of zero for a block whose only zero is a missing measurement.
    *
    * @see TimeSeriesBatch#rawNull(byte) the same rule on the mutable side
    */
   public double storedNumericValueOf(final Object value) {
+    // An integral column carries absence in the null bitmap of its block since issue #9721, so a null is absent on every
+    // numeric column: the statistics describe the samples that have a value
     if (value == null)
-      return storesAbsentMarker() ? TimeSeriesNaN.ABSENT : 0.0;
+      return TimeSeriesNaN.ABSENT;
     return numericValueOf(value);
   }
 
