@@ -13,6 +13,7 @@ from typing import Any, List, Optional
 
 import jpype
 
+from ._logging import get_logger, log_swallowed_exception
 from .exceptions import ArcadeDBError, _retry_verdict
 from .graph import Document, Edge, Vertex
 from .graph_batch import GraphBatch
@@ -23,6 +24,8 @@ from .results import ResultSet
 from .transactions import TransactionContext
 from .type_conversion import _is_numpy_bool, convert_python_to_java, json_bulk_dumps
 from .vector import to_java_float_array
+
+_LOGGER = get_logger(__name__)
 
 try:  # optional; hoisted to module scope to keep it out of per-call hot paths
     import numpy as _np
@@ -402,6 +405,10 @@ class Database:
         manager cannot retry (a ``with`` block can't be re-entered), so use
         this for contended multi-threaded writes.
 
+        A refusal's wait is capped by ``arcadedb.network.retryAfterMaxWait``
+        per attempt, so a call can block for up to ``retries`` times that cap
+        when every attempt is refused with a wait.
+
         Args:
             fn: Zero-argument callable executed inside the transaction.
             retries: Max retry attempts on conflict (default 12).
@@ -459,7 +466,10 @@ class Database:
         try:
             tx = self._java_db.getTransactionIfExists()
             return tx, (int(tx.getCommitCount()) if tx is not None else 0)
-        except Exception:  # nosec B110 - a wrapper without the accessor: no witness
+        except Exception:  # a wrapper without the accessor: no witness
+            # Observable, not silent: without the witness a block that crossed a
+            # BATCH boundary would be replayed (#7916).
+            log_swallowed_exception(_LOGGER, "reading the transaction commit mark")
             return None, 0
 
     @staticmethod
@@ -475,7 +485,8 @@ class Database:
             return False
         try:
             return int(tx_at_start.getCommitCount()) != commits_at_start
-        except Exception:  # nosec B110 - no witness: behave as before #7916
+        except Exception:  # no witness: behave as before #7916
+            log_swallowed_exception(_LOGGER, "reading the transaction commit count")
             return False
 
     def begin(self):

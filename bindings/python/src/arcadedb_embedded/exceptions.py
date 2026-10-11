@@ -23,29 +23,30 @@ def _java_root_cause(exc):
     return root
 
 
-_RETRY_CLASSES = []
 _MAX_CAUSE_DEPTH = 64
+_RETRY_CLASSES = None
 
 
 def _retry_classes():
-    """``(NeedRetryException, DuplicatedKeyException)``, resolved once.
+    """``(NeedRetryException, DuplicatedKeyException, GlobalConfiguration)``.
 
-    By name through the JVM rather than the ``com`` import hook, which a
-    ``com/`` folder on ``sys.path`` shadows. None while the JVM is down: no
-    Java exception can exist then either.
+    Resolved once, by name through the JVM rather than the ``com`` import
+    hook, which a ``com/`` folder on ``sys.path`` shadows. Two threads racing
+    the first call resolve the same classes, so the unlocked assignment is
+    harmless. None while the JVM is down: no Java exception can exist then.
     """
-    if not _RETRY_CLASSES:
+    global _RETRY_CLASSES
+    if _RETRY_CLASSES is None:
         import jpype
 
         if not jpype.isJVMStarted():
             return None
-        _RETRY_CLASSES.append(
-            (
-                jpype.JClass("com.arcadedb.exception.NeedRetryException"),
-                jpype.JClass("com.arcadedb.exception.DuplicatedKeyException"),
-            )
+        _RETRY_CLASSES = (
+            jpype.JClass("com.arcadedb.exception.NeedRetryException"),
+            jpype.JClass("com.arcadedb.exception.DuplicatedKeyException"),
+            jpype.JClass("com.arcadedb.GlobalConfiguration"),
         )
-    return _RETRY_CLASSES[0]
+    return _RETRY_CLASSES
 
 
 def _java_exceptions(exc):
@@ -72,7 +73,7 @@ def _java_exceptions(exc):
             exc = exc.__cause__
 
 
-def _bounded_retry_after_ms(retry_after_ms):
+def _bounded_retry_after_ms(retry_after_ms, global_configuration):
     """The part of a refusal's wait a retry loop honors (#8617).
 
     All of it up to ``arcadedb.network.retryAfterMaxWait``, the cap the Java
@@ -80,10 +81,7 @@ def _bounded_retry_after_ms(retry_after_ms):
     """
     if retry_after_ms <= 0:
         return 0
-    import jpype
-
-    config = jpype.JClass("com.arcadedb.GlobalConfiguration")
-    cap = int(config.NETWORK_RETRY_AFTER_MAX_WAIT.getValueAsLong())
+    cap = int(global_configuration.NETWORK_RETRY_AFTER_MAX_WAIT.getValueAsLong())
     return min(retry_after_ms, max(0, cap))
 
 
@@ -107,11 +105,11 @@ def _retry_verdict(exc):
     classes = _retry_classes()
     if classes is None:
         return None, 0
-    need_retry, duplicated_key = classes
+    need_retry, duplicated_key, global_configuration = classes
     for java_exc in _java_exceptions(exc):
         if isinstance(java_exc, need_retry):
             return "need_retry", _bounded_retry_after_ms(
-                int(java_exc.getRetryAfterMs())
+                int(java_exc.getRetryAfterMs()), global_configuration
             )
         if isinstance(java_exc, duplicated_key):
             return "duplicated_key", 0

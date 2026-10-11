@@ -246,7 +246,7 @@ public final class TypedRows {
    */
   private static void appendEpochMillis(final StringBuilder sb, final long millis, final Object original,
       final List<Object> side) {
-    appendDateTime(sb, "T", LocalDateTime.ofEpochSecond(Math.floorDiv(millis, 1000L), (int) Math.floorMod(millis, 1000L) * 1_000_000,
+    appendDateTime(sb, "T", LocalDateTime.ofEpochSecond(Math.floorDiv(millis, 1000L), ((int) Math.floorMod(millis, 1000L)) * 1_000_000,
         ZoneOffset.UTC), "", original, side);
   }
 
