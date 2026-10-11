@@ -221,6 +221,35 @@ class Issue9741ConcurrentCreateIndexTest extends TestHelper {
         .isInstanceOf(CommandExecutionException.class).hasMessageContaining("not defined");
   }
 
+  /** A manual index name is kept on the $variable path too: the old code discarded it whenever the type was a variable. */
+  @Test
+  void manualIndexNameIsKeptWithAVariableTypeName() {
+    database.getSchema().createDocumentType("Named").createProperty("p", Type.STRING);
+
+    final CreateIndexStatement createIndex = (CreateIndexStatement) new SQLAntlrParser(database).parse(
+        "CREATE INDEX byP ON $t (p) NOTUNIQUE");
+    try (final ResultSet rs = createIndex.execute(database, (Map<String, Object>) null, contextWith("t", "Named"), false)) {
+      final Result row = rs.next();
+      assertThat(row.<String>getProperty("name")).isEqualTo("byP");
+      assertThat(row.<Boolean>getProperty("created")).isTrue();
+    }
+    assertThat(database.getSchema().getIndexByName("byP").getTypeName()).isEqualTo("Named");
+    assertThat(createIndex.name.getStringValue()).isEqualTo("byP");
+  }
+
+  /** created comes from the builder that ran (TypeIndexBuilder.isBuilt()), for the specialised builders too. */
+  @Test
+  void createdIsReportedBySpecialisedBuilders() {
+    database.getSchema().createDocumentType("Doc").createProperty("text", Type.STRING);
+
+    for (final boolean expected : new boolean[] { true, false })
+      try (final ResultSet rs = database.command("sql", "CREATE INDEX IF NOT EXISTS ON Doc (text) FULL_TEXT")) {
+        final Result row = rs.next();
+        assertThat(row.<Boolean>getProperty("created")).isEqualTo(expected);
+        assertThat(row.<String>getProperty("name")).isEqualTo("Doc[text]");
+      }
+  }
+
   private static BasicCommandContext contextWith(final String variable, final Object value) {
     final BasicCommandContext context = new BasicCommandContext();
     context.setVariable(variable, value);
