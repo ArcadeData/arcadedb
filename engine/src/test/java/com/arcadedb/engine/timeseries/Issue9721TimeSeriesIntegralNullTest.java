@@ -223,6 +223,23 @@ class Issue9721TimeSeriesIntegralNullTest extends TestHelper {
   }
 
   @Test
+  void theNullBitmapRoundTripsAtItsWordBoundaries() throws Exception {
+    for (final int count : new int[] { 1, 63, 64, 65, 128, 129 })
+      for (final boolean wide : new boolean[] { false, true }) {
+        final long[] values = new long[count];
+        final long[] nulls = new long[Simple8bCodec.bitmapWords(count)];
+        for (int i = 0; i < count; i++)
+          if (i == count - 1 || i % 3 == 0)
+            nulls[i >>> 6] |= 1L << i; // the last sample is absent, so the bit at the boundary is the one tested
+          else
+            values[i] = wide ? Long.MIN_VALUE + i : i; // a wide value forces the raw layout under the bitmap
+        final byte[] encoded = Simple8bCodec.encode(values, nulls);
+        assertThat(Simple8bCodec.decode(encoded)).as(count + (wide ? " wide" : "")).containsExactly(values);
+        assertThat(Simple8bCodec.nulls(encoded)).as(count + (wide ? " wide" : "")).containsExactly(nulls);
+      }
+  }
+
+  @Test
   void aCorruptNullableHeaderIsRefusedBeforeAnythingIsAllocated() {
     // the nullable marker followed by a count whose bitmap the buffer cannot hold: refused, not a 256 MB array or a wrapped size
     for (final int count : new int[] { Integer.MAX_VALUE, Integer.MAX_VALUE - 10, 1_000_000 }) {
