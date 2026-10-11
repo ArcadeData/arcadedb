@@ -4457,11 +4457,14 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       if (len > Integer.MAX_VALUE)
         throw new IOException("Sealed store file too large to ship: " + len + " bytes");
       final byte[] bytes = new byte[(int) len];
+      final RandomAccessFile file = indexFile;
       try {
         readWholeFileInto(bytes);
       } catch (final IOException e) {
-        // ANOTHER READER UNDER THE SAME READ LOCK CAN BE INTERRUPTED MID-COPY, CLOSING THE DESCRIPTOR THIS SHARES (#9621)
-        if (indexChannel.isOpen())
+        // ANOTHER READER UNDER THE SAME READ LOCK CAN BE INTERRUPTED MID-COPY, CLOSING THE DESCRIPTOR THIS SHARES (#9621).
+        // JUDGED ON THE HANDLE THE COPY USED: ANOTHER READER MAY ALREADY HAVE REOPENED THE FIELD, AND A STILL-OPEN HANDLE
+        // MEANS A GENUINE I/O ERROR, WHICH IS RETHROWN
+        if (file.getChannel().isOpen() && file == indexFile)
           throw e;
         retryAfterReopen("whole-file read", () -> readWholeFileInto(bytes));
       }
@@ -4809,10 +4812,12 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     }
   }
 
+  /** Writes {@code buf}, from its current position, at file offset 0. */
   private void writeHeaderOnce(final ByteBuffer buf, final boolean metaData) throws IOException {
     final FileChannel channel = indexChannel;
+    final int start = buf.position();
     while (buf.hasRemaining())
-      channel.write(buf, buf.position());
+      channel.write(buf, buf.position() - start);
     channel.force(metaData);
   }
 
@@ -5398,12 +5403,14 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     return buf.array();
   }
 
+  /** Fills {@code buf} from its current position with the bytes at file offset {@code offset} onwards. */
   private void readFully(final ByteBuffer buf, final long offset) throws IOException {
     final FileChannel channel = indexChannel;
+    final int start = buf.position();
     while (buf.hasRemaining()) {
-      final int read = channel.read(buf, offset + buf.position());
-      if (read == -1)
-        throw new IOException("Unexpected end of sealed store at offset " + (offset + buf.position()));
+      final long pos = offset + (buf.position() - start);
+      if (channel.read(buf, pos) == -1)
+        throw new IOException("Unexpected end of sealed store at offset " + pos);
     }
   }
 
@@ -5434,6 +5441,9 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * thread's OWN interrupt can close the freshly reopened channel again. The interrupt flag is cleared around the retry
    * so the reopened channel is not closed at once, and restored afterwards so the caller still sees the cancellation.
    * Only a reopen that is REFUSED - the store was closed on purpose, or its file no longer exists - is a real failure.
+   * <p>
+   * So an interrupt does NOT cancel a sealed-store read: the read completes and the flag is left set for the caller to
+   * act on at its next cancellation point, the same deferral #9306 chose for the page file.
    */
   private void retryAfterReopen(final String operation, final ChannelOperation channelOperation) throws IOException {
     boolean wasInterrupted = false;
