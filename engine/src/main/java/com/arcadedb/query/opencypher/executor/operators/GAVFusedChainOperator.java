@@ -220,6 +220,8 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
       }
     }
     inputResults.close();
+    // Expanded whole, not streamed: these are the few vertices created after the build of a stale view still in use, and
+    // their rows are bounded by their own fan-out rather than by the graph's
     final List<Result> unmappedRows = unmappedSources != null ? expandUnmappedSources(unmappedSources, context) : null;
 
     final int[] sourceNodeIds = sourceNodeIdsBuf;

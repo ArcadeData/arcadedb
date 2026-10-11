@@ -201,6 +201,8 @@ class Issue9738GAVFusedChainCountTest {
       assertThat(rows(queries.get(i))).as(queries.get(i)).isEqualTo(expected.get(i));
     assertThat(plan(TWO_HOPS + "RETURN count(*) AS n")).contains("fused count(*)");
     assertThat(plan(TWO_HOPS + "RETURN count(c.name) AS n")).doesNotContain("fused count");
+    // A grouping key that is not a chain variable is a value the chain cannot pack: the aggregation step groups it
+    assertThat(plan(TWO_HOPS + "RETURN a.pid AS a, count(*) AS n")).doesNotContain("fused count");
     // Two edge types keep no relationship apart: the fused count walks untracked hops (an ungrouped count of that shape
     // never reaches the chain, the CSR count push-down answers it first)
     assertThat(plan(MIXED + "RETURN a, b, count(*) AS n")).contains("fused count(*) AS n BY a, b")
