@@ -19,14 +19,20 @@
 package com.arcadedb.gremlin;
 
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.index.IndexCursor;
+import com.arcadedb.index.IndexException;
+import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.IntegralKeyBound;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.log.LogManager;
+import com.arcadedb.query.sql.executor.SelectExecutionPlanner;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
+import com.arcadedb.utility.LongHashSet;
 import org.apache.tinkerpop.gremlin.process.traversal.Compare;
 import org.apache.tinkerpop.gremlin.process.traversal.Contains;
 import org.apache.tinkerpop.gremlin.process.traversal.Step;
@@ -48,6 +54,7 @@ import org.apache.tinkerpop.gremlin.util.iterator.EmptyIterator;
 
 import java.util.*;
 import java.util.function.BiPredicate;
+import java.util.logging.Level;
 
 /**
  * Candidate generator for {@code g.V().hasLabel(X).has(key, predicate)} backed by one index. It is a pure candidate
@@ -62,10 +69,24 @@ import java.util.function.BiPredicate;
  *   runs never pays for a scan (#8299).</li>
  *   <li>Memory: the cursor is streamed, never drained into a set, so {@code limit(n)} stops the scan after
  *   {@code n} candidates.</li>
+ *   <li>Concurrent DDL: the index the traversal was compiled against can be dropped or rebuilt before, or while, the step
+ *   reads it (#9651). Each scan starts by checking it is still usable, and takes the index that now covers the same property
+ *   when it is not, or scans the type when none does: the {@code HasStep} after the step re-checks every candidate, so a scan
+ *   of the type is always a correct superset. When the index goes away in the middle of a scan, the scan is finished on the
+ *   type, skipping the candidates already emitted, so a count stays exact rather than coming back short.</li>
  * </ul>
+ * Like every TinkerPop step, an instance runs on one thread at a time: the index it re-resolves and the bucket filter it caches
+ * are plain fields, so a compiled traversal must not be iterated from two threads at once.
  */
 public class ArcadeFilterByIndexStep<S, E extends Element> extends AbstractStep<S, E> implements AutoCloseable, Configuring {
-  private final   TypeIndex                            index;
+  /**
+   * The candidates of one scan that are remembered, so the scan can be finished on the type when its index goes away in the
+   * middle of it without emitting one twice. Beyond this many the scan stops remembering, and an index lost after that point
+   * fails the traversal with a retryable {@link IndexException} rather than answering short.
+   */
+  static final    int                                  MAX_TRACKED_CANDIDATES = 1 << 16;
+  private         TypeIndex                            index;
+  private final   String[]                             indexProperties;
   private final   BiPredicate<?, ?>                    predicate;
   private final   Object[]                             keys;
   private final   String                               typeName;
@@ -86,13 +107,16 @@ public class ArcadeFilterByIndexStep<S, E extends Element> extends AbstractStep<
    *                  {@link Compare#lte}
    * @param keys      the index key the predicate compares against
    * @param typeName  the type named by {@code hasLabel()}: only its elements, or its sub-types', are emitted
+   * @param indexProperties the properties the index covers, as the strategy matched them: not read from the index, which a
+   *                        concurrent DDL can have dropped by now (#9651)
    */
   public ArcadeFilterByIndexStep(final Traversal.Admin traversal, final Class returnClass, final boolean isStart, final TypeIndex index,
-      final BiPredicate<?, ?> predicate, final Object[] keys, final String typeName) {
+      final BiPredicate<?, ?> predicate, final Object[] keys, final String typeName, final String... indexProperties) {
     super(traversal);
     if (!isSupported(predicate))
       throw new IllegalArgumentException("Unsupported index predicate '" + predicate + "'");
     this.index = index;
+    this.indexProperties = indexProperties;
     this.predicate = predicate;
     this.keys = keys;
     this.typeName = typeName;
@@ -107,12 +131,55 @@ public class ArcadeFilterByIndexStep<S, E extends Element> extends AbstractStep<
   }
 
   /**
+   * Whether the index can generate the candidates of the predicate: it is usable by a query now (not dropped, rebuilt or still
+   * being built) and answers by exact key, and for a range it iterates in key order over the keys as written. Asked by the
+   * strategy when it picks the index, and by the step again when it opens a scan. An index a concurrent DDL takes away while
+   * this is asked cannot (#9651).
+   */
+  public static boolean canAnswer(final TypeIndex index, final BiPredicate<?, ?> predicate) {
+    try {
+      if (index == null || index.getPropertyNamesIfExactKeyLookup() == null)
+        return false; // A FULL_TEXT INDEX ANSWERS BY TOKEN AND MISSES A VALUE WITH NONE (#8439)
+      if (predicate == Compare.eq)
+        return true;
+      // A HASH INDEX ANSWERS EQUALITY ONLY (#9144); A COLLATE ci INDEX HOLDS LOWER-CASED KEYS, ITS RANGE LOSES ROWS (#9302)
+      return index.supportsOrderedIterations() && !SelectExecutionPlanner.holdsFoldedKeys(index);
+    } catch (final IndexException e) {
+      return false;
+    }
+  }
+
+  /**
+   * The index this scan reads: the one the traversal was compiled against while it can still answer, otherwise the one that
+   * now covers the same properties on the type (a {@code DROP INDEX} followed by a {@code CREATE INDEX} leaves a new index
+   * under the same name), otherwise null and the type is scanned.
+   */
+  private TypeIndex currentIndex(final Schema schema) {
+    if (index.isValid() && canAnswer(index, predicate))
+      return index;
+    try {
+      if (!schema.existsType(typeName))
+        return null;
+      final TypeIndex replacement = schema.getType(typeName).getPolymorphicIndexByProperties(indexProperties);
+      if (!canAnswer(replacement, predicate))
+        return null;
+      if (replacement != index) {
+        index = replacement;
+        allowedBucketsResolved = false;
+      }
+      return replacement;
+    } catch (final IndexException e) {
+      return null;
+    }
+  }
+
+  /**
    * Opens the cursor, or returns null when no key can satisfy the predicate. A bound no key of an integral index equals (29.5)
    * is moved onto the key that bounds the same keys, inclusive (the {@code HasStep} after the step re-checks the exact
    * predicate): the index would otherwise truncate it toward zero and drop a match for {@code lt} above zero and {@code gt}
    * below zero (#9206).
    */
-  private IndexCursor openCursor() {
+  private IndexCursor openCursor(final TypeIndex index) {
     if (predicate == Compare.eq)
       return index.get(keys);
 
@@ -140,7 +207,7 @@ public class ArcadeFilterByIndexStep<S, E extends Element> extends AbstractStep<
    * The bucket ids a candidate may live in, indexed by bucket id, or null when every entry of the index qualifies.
    * An index declared on the named type itself already spans exactly that type's polymorphic buckets.
    */
-  private boolean[] allowedBuckets(final Schema schema) {
+  private boolean[] allowedBuckets(final Schema schema, final TypeIndex index) {
     if (typeName.equals(index.getTypeName()))
       return null;
 
@@ -156,72 +223,195 @@ public class ArcadeFilterByIndexStep<S, E extends Element> extends AbstractStep<
 
   private Iterator<E> openIterator() {
     final ArcadeGraph graph = (ArcadeGraph) getTraversal().getGraph().get();
-    if (!allowedBucketsResolved) {
-      allowedBuckets = allowedBuckets(graph.getDatabase().getSchema());
-      allowedBucketsResolved = true;
+    final Schema schema = graph.getDatabase().getSchema();
+    final TypeIndex current = currentIndex(schema);
+    if (current == null)
+      return new CandidateIterator(graph, null, null, null, null);
+
+    final IndexCursor cursor;
+    final IndexInternal[] subIndexes = current.getIndexesOnBuckets();
+    try {
+      if (!allowedBucketsResolved) {
+        allowedBuckets = allowedBuckets(schema, current);
+        allowedBucketsResolved = true;
+      }
+      cursor = openCursor(current);
+    } catch (final RuntimeException e) {
+      if (!isLostIndex(current, e))
+        throw e;
+      // NOTHING HAS BEEN EMITTED YET: THE TYPE ANSWERS INSTEAD OF THE INDEX DROPPED SINCE IT WAS CHECKED
+      return new CandidateIterator(graph, null, null, null, null);
     }
-    final boolean[] allowed = allowedBuckets;
-    final IndexCursor cursor = openCursor();
     if (cursor == null)
       return EmptyIterator.instance();
+    return new CandidateIterator(graph, current, subIndexes, cursor, allowedBuckets);
+  }
 
-    return new CloseableIterator<>() {
-      private E       next;
-      private boolean closed;
+  /**
+   * The candidates of one scan: the entries of the index cursor, or, without one, every element of the type. A cursor whose
+   * index goes away under it (it fails, or it ends after its index was dropped or rebuilt, when it may have missed the
+   * entries of sub-indexes already gone) hands over to a scan of the type that skips what the cursor already emitted.
+   */
+  private final class CandidateIterator implements CloseableIterator<E> {
+    private final ArcadeGraph      graph;
+    private final TypeIndex        cursorIndex;
+    // THE SUB-INDEXES OF THE INDEX WHEN THE CURSOR WAS OPENED: A DROP TAKES THEM AWAY ONE AT A TIME
+    private final IndexInternal[]  subIndexes;
+    private final boolean[]        allowed;
+    private       IndexCursor      cursor;
+    private       Iterator<Record> typeScan;
+    // THE CANDIDATES THE CURSOR EMITTED, PACKED, UNTIL MAX_TRACKED_CANDIDATES: NULL ONCE THE SCAN STOPPED REMEMBERING
+    private       LongHashSet      emitted;
+    private       boolean          tracking;
+    private       E                next;
+    private       boolean          closed;
 
-      @Override
-      public boolean hasNext() {
-        if (next != null)
-          return true;
-        if (closed)
-          return false;
+    private CandidateIterator(final ArcadeGraph graph, final TypeIndex cursorIndex, final IndexInternal[] subIndexes,
+        final IndexCursor cursor, final boolean[] allowed) {
+      this.graph = graph;
+      this.cursorIndex = cursorIndex;
+      this.subIndexes = subIndexes;
+      this.cursor = cursor;
+      this.allowed = allowed;
+      this.tracking = cursor != null;
+      if (cursor == null)
+        this.typeScan = graph.getDatabase().iterateType(typeName, true);
+    }
 
-        while (cursor.hasNext()) {
-          final Identifiable candidate = cursor.next();
-          final int bucketId = candidate.getIdentity().getBucketId();
-          if (allowed != null && (bucketId < 0 || bucketId >= allowed.length || !allowed[bucketId]))
-            continue;
+    @Override
+    public boolean hasNext() {
+      if (next != null)
+        return true;
+      if (closed)
+        return false;
 
-          // AN INDEX ENTRY WHOSE RECORD IS GONE IS SKIPPED, THE SAME AS A RECORD THAT NO LONGER MATCHES: getRecord() EITHER
-          // ANSWERS NULL OR RAISES RecordNotFoundException FOR IT, DEPENDING ON WHERE THE LOOKUP FINDS IT MISSING
-          final Record rec;
-          try {
-            rec = candidate.getRecord();
-          } catch (final RecordNotFoundException e) {
-            continue;
+      if (cursor != null) {
+        RuntimeException lost;
+        try {
+          while (cursor.hasNext()) {
+            final Identifiable candidate = cursor.next();
+            final int bucketId = candidate.getIdentity().getBucketId();
+            if (allowed != null && (bucketId < 0 || bucketId >= allowed.length || !allowed[bucketId]))
+              continue;
+            if (load(candidate)) {
+              remember(candidate);
+              return true;
+            }
           }
-          if (rec instanceof com.arcadedb.graph.Vertex vertex)
-            next = (E) new ArcadeVertex(graph, vertex);
-          else if (rec instanceof com.arcadedb.graph.Edge edge)
-            next = (E) new ArcadeEdge(graph, edge);
-          else if (rec != null)
-            throw new IllegalStateException("Record of type '" + rec.getClass() + "' is not a graph element");
-          if (next != null)
-            return true;
+          // A DROP THAT STARTED SINCE THE CURSOR WAS OPENED MAY HAVE TAKEN SUB-INDEXES AWAY UNDER IT WITHOUT AN ERROR
+          if (cursorIndex.isUnchangedSince(subIndexes)) {
+            // #5662: RELEASE THE CURSOR AS SOON AS IT IS EXHAUSTED, NOT WHEN THE TRAVERSAL IS CLOSED: A COMPACTED-SERIES
+            // CURSOR LEFT REGISTERED KEEPS A RETIRED INDEX FILE UNDROPPABLE UNTIL THE NEXT RESTART
+            close();
+            return false;
+          }
+          lost = null;
+        } catch (final RuntimeException e) {
+          if (!isLostIndex(cursorIndex, e))
+            throw e;
+          lost = e;
         }
-        // #5662: RELEASE THE CURSOR AS SOON AS IT IS EXHAUSTED, NOT WHEN THE TRAVERSAL IS CLOSED: A COMPACTED-SERIES
-        // CURSOR LEFT REGISTERED KEEPS A RETIRED INDEX FILE UNDROPPABLE UNTIL THE NEXT RESTART
-        close();
+        // THE INDEX WAS DROPPED OR REBUILT WHILE IT WAS READ: WHAT IT DID NOT EMIT IS FOUND ON THE TYPE
+        handOverToTypeScan(lost);
+      }
+
+      while (typeScan.hasNext()) {
+        final Record record = typeScan.next();
+        if (emitted != null && emitted.contains(pack(record.getIdentity())))
+          continue;
+        if (load(record))
+          return true;
+      }
+      close();
+      return false;
+    }
+
+    /**
+     * @param cause what the cursor raised, or null when it ended normally after its index changed under it
+     */
+    private void handOverToTypeScan(final RuntimeException cause) {
+      final IndexCursor lostCursor = cursor;
+      cursor = null;
+      try {
+        lostCursor.close();
+      } catch (final RuntimeException ignored) {
+        // THE CURSOR OF A DROPPED INDEX: NOTHING LEFT TO RELEASE
+      }
+      // LOGGED, SO A CURSOR THAT FAILS FOR ANOTHER REASON IS NOT HIDDEN BEHIND A SILENT SCAN OF THE TYPE
+      LogManager.instance().log(ArcadeFilterByIndexStep.this, Level.FINE,
+          "Index '%s' changed while traversal step read it (%s): finishing the scan on type '%s'", cause, cursorIndex.getName(),
+          cause != null ? cause.toString() : "dropped or rebuilt", typeName);
+      if (!tracking)
+        throw new IndexException("Index '" + cursorIndex.getName() + "' was dropped or rebuilt while the traversal was reading it, "
+            + "after more than " + MAX_TRACKED_CANDIDATES + " candidates: run the traversal again");
+      typeScan = graph.getDatabase().iterateType(typeName, true);
+    }
+
+    private void remember(final Identifiable candidate) {
+      if (!tracking)
+        return;
+      if (emitted == null)
+        emitted = new LongHashSet();
+      if (emitted.size() >= MAX_TRACKED_CANDIDATES) {
+        emitted = null;
+        tracking = false;
+        return;
+      }
+      emitted.add(pack(candidate.getIdentity()));
+    }
+
+    /**
+     * Loads the record of a candidate into {@link #next}, or answers false when it is gone: getRecord() either answers null or
+     * raises RecordNotFoundException for an entry whose record was deleted, depending on where the lookup finds it missing.
+     */
+    @SuppressWarnings("unchecked")
+    private boolean load(final Identifiable candidate) {
+      final Record rec;
+      try {
+        rec = candidate instanceof Record record ? record : candidate.getRecord();
+      } catch (final RecordNotFoundException e) {
         return false;
       }
+      if (rec instanceof com.arcadedb.graph.Vertex vertex)
+        next = (E) new ArcadeVertex(graph, vertex);
+      else if (rec instanceof com.arcadedb.graph.Edge edge)
+        next = (E) new ArcadeEdge(graph, edge);
+      else if (rec != null)
+        throw new IllegalStateException("Record of type '" + rec.getClass() + "' is not a graph element");
+      return next != null;
+    }
 
-      @Override
-      public E next() {
-        if (!hasNext())
-          throw new NoSuchElementException();
-        final E result = next;
-        next = null;
-        return result;
-      }
+    @Override
+    public E next() {
+      if (!hasNext())
+        throw new NoSuchElementException();
+      final E result = next;
+      next = null;
+      return result;
+    }
 
-      @Override
-      public void close() {
-        if (!closed) {
-          closed = true;
+    @Override
+    public void close() {
+      if (!closed) {
+        closed = true;
+        if (cursor != null)
           cursor.close();
-        }
       }
-    };
+    }
+  }
+
+  /**
+   * Whether {@code e}, raised opening or reading the cursor of {@code index}, means the index went away under it. A
+   * {@link NoSuchElementException} counts too: raised from inside a step, TinkerPop takes it for the end of the stream, so
+   * letting it through would answer a short result as a success, which a scan of the type cannot do (#9651).
+   */
+  private static boolean isLostIndex(final TypeIndex index, final RuntimeException e) {
+    return e instanceof NoSuchElementException || TypeIndex.isStaleRead(index, e);
+  }
+
+  /** A RID as one long: the bucket in the top 16 bits, the position in the other 48, which no bucket reaches. */
+  private static long pack(final RID rid) {
+    return ((long) rid.getBucketId() << 48) | rid.getPosition();
   }
 
   public String toString() {

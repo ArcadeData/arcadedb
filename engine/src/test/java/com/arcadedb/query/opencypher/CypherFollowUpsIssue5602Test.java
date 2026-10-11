@@ -181,8 +181,9 @@ class CypherFollowUpsIssue5602Test extends TestHelper {
     try (final Stream<Path> files = Files.list(astPackage)) {
       files.filter(path -> path.toString().endsWith("Expression.java")).forEach(path -> {
         final String source = readSource(path);
-        // Only concrete implementations: the two interfaces themselves declare nothing to walk.
-        if (source.contains("implements Expression") || source.contains("implements BooleanExpression"))
+        // Only concrete implementations: the interfaces themselves declare nothing to walk.
+        if (source.contains("implements Expression") || source.contains("implements BooleanExpression")
+            || source.contains("implements PropertyReadExpression"))
           names.add(path.getFileName().toString().replace(".java", ""));
       });
     } catch (final IOException e) {

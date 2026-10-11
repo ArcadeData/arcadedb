@@ -18,7 +18,6 @@
  */
 package com.arcadedb.query.opencypher.ast;
 
-import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
 import com.arcadedb.function.graph.IdFunction;
 import com.arcadedb.query.opencypher.InlineProperties;
@@ -123,7 +122,7 @@ public class InExpression implements BooleanExpression {
 
     // A property declared STRING holds the text of what was written into it, so membership compares it with the text each
     // element would be stored as, like = does (issue #9695)
-    final Property declared = value instanceof String ? declaredStringProperty(result) : null;
+    final Property declared = value instanceof String ? declaredStringProperty(result, context) : null;
 
     if (valuesToCheck instanceof LongRangeList range) {
       Boolean found = rangeMembership(range, value);
@@ -158,12 +157,13 @@ public class InExpression implements BooleanExpression {
     return Boolean.FALSE;
   }
 
-  /** The declared STRING property the left operand reads, when it is a property access on a record; otherwise null. */
-  private Property declaredStringProperty(final Result result) {
-    if (!(expression instanceof PropertyAccessExpression access) || result == null)
-      return null;
-    final Document record = InlineProperties.boundRecord(result.getProperty(access.getVariableName()));
-    return record != null ? InlineProperties.declaredStringProperty(record, access.getPropertyName()) : null;
+  /**
+   * The declared STRING property the left operand reads, when it reads a stored property of a record in any spelling
+   * ({@link PropertyReadExpression}, #9701); otherwise null.
+   */
+  private Property declaredStringProperty(final Result result, final CommandContext context) {
+    final PropertyReadExpression.PropertyRead read = PropertyReadExpression.of(expression, result, context);
+    return read != null && read.record() != null ? InlineProperties.declaredStringProperty(read.record(), read.key()) : null;
   }
 
   /**

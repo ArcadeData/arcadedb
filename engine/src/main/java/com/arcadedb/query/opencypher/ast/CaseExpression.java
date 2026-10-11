@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.ast;
 
+import com.arcadedb.query.opencypher.InlineProperties;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 
@@ -81,7 +82,24 @@ public class CaseExpression implements Expression {
 
   @Override
   public Object evaluate(final Result result, final CommandContext context) {
-    return evaluateWith(expr -> expr.evaluate(result, context));
+    return evaluateWith(expr -> expr.evaluate(result, context), result, context);
+  }
+
+  public Object evaluateWith(final SubEvaluator subEvaluator) {
+    return evaluateWith(subEvaluator, null, null);
+  }
+
+  /**
+   * {@code CASE x WHEN v}: Cypher {@code =} between the operand and the WHEN value, with the declared-STRING coercion of
+   * {@code x = v} when the operand reads a stored property declared STRING (#9701), so both spellings of the same test agree.
+   */
+  private Object whenEquals(final Object caseValue, final Object whenValue, final Result result, final CommandContext context) {
+    final Object plain = whenEquality.evaluateWithValues(caseValue, whenValue);
+    if (Boolean.TRUE.equals(plain) || !(caseValue instanceof String) || whenValue == null || whenValue instanceof String)
+      return plain;
+    final PropertyReadExpression.PropertyRead read = PropertyReadExpression.of(caseExpression, result, context);
+    final String text = read != null && read.record() != null ? InlineProperties.declaredText(read.record(), read.key(), whenValue) : null;
+    return text != null ? whenEquality.evaluateWithValues(caseValue, text) : plain;
   }
 
   /**
@@ -89,7 +107,7 @@ public class CaseExpression implements Expression {
    * The branch-selection logic and Cypher '=' equality semantics live here so both the plain
    * {@link #evaluate(Result, CommandContext)} path and the aggregation-override path share them.
    */
-  public Object evaluateWith(final SubEvaluator subEvaluator) {
+  public Object evaluateWith(final SubEvaluator subEvaluator, final Result result, final CommandContext context) {
     // Extended form: CASE expr WHEN value THEN result
     if (caseExpression != null) {
       final Object caseValue = subEvaluator.evaluate(caseExpression);
@@ -102,7 +120,7 @@ public class CaseExpression implements Expression {
           // A comparison-form WHEN (WHEN > 5) is a predicate over the bound operand; a plain value is checked for
           // equality using Cypher '=' semantics (numeric folding, temporal, list, RID interop)
           if (alternative.isPredicate() ? isTrue(whenValue)
-              : Boolean.TRUE.equals(whenEquality.evaluateWithValues(caseValue, whenValue))) {
+              : Boolean.TRUE.equals(whenEquals(caseValue, whenValue, result, context))) {
             // the THEN branch may evaluate this very CASE again (nested rows), so release the operand first
             if (operandHolder != null)
               operandHolder.unbind();
