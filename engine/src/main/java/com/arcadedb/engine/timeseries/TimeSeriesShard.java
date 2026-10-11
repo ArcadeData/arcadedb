@@ -107,6 +107,14 @@ public class TimeSeriesShard implements AutoCloseable {
   public static volatile Runnable TEST_PRE_PHASE4C_HOOK = null;
 
   /**
+   * Test-only hook (issue #9716). When non-null, fires in {@link #compactInternal()} inside Phase 4c, under the
+   * compaction write lock, after the sealed file has been swapped in and before the mutable bucket is cleared: the one
+   * instant at which the compacted rows sit in both layers. Used to prove that a reader taking both layers in one
+   * compaction read-lock window cannot observe that instant. Same reset rule as {@link #TEST_PRE_PHASE4C_HOOK}.
+   */
+  public static volatile Runnable TEST_PHASE4C_AFTER_SWAP_HOOK = null;
+
+  /**
    * Test-only fault-injection hook (issue #6406 item 5). When non-null, fires in
    * {@link #checkMutableIntegrity} immediately before the {@code FIX} transaction's commit -
    * but only on the path that actually reaches a commit, a repair with something to write. Set
@@ -1175,6 +1183,10 @@ public class TimeSeriesShard implements AutoCloseable {
         db.recordTimeSeriesSealedChange(typeName, shardIndex, sealedStore.getSealedFileName(),
             sealedStore.readWholeSealedFile());
 
+        final Runnable afterSwapHook = TEST_PHASE4C_AFTER_SWAP_HOOK;
+        if (afterSwapHook != null)
+          afterSwapHook.run();
+
         // Clear the entire mutable bucket and persist the crash-recovery flag reset.
         // No MVCC conflict: writeLock blocks all concurrent appendSamples().
         mutableBucket.clearDataPages();
@@ -1604,6 +1616,52 @@ public class TimeSeriesShard implements AutoCloseable {
       repairs.add("sealed store: " + repair);
 
     return new IntegrityReport(problems, repairs, 0, 0);
+  }
+
+  /**
+   * The number of samples this shard holds, sealed and mutable together (issue #9716).
+   * <p>
+   * Both totals are read in ONE {@code compactionLock} read window, for the reason {@link #forEachRow} takes its two
+   * layers in one: a compaction moves rows from the mutable bucket into the sealed store, publishing the sealed blocks
+   * and clearing the bucket under the write lock, so a total read outside it can land between the two and count every
+   * row being compacted twice. Both reads are header reads, so the window costs nothing a compaction would notice.
+   */
+  public long countSamples() throws IOException {
+    compactionLock.readLock().lock();
+    try {
+      return sealedStore.getTotalSampleCount() + mutableBucket.getSampleCount();
+    } finally {
+      compactionLock.readLock().unlock();
+    }
+  }
+
+  /**
+   * What {@code schema:types} reports for one shard, read in one compaction read-lock window (issue #9716).
+   * {@code sealedMin}/{@code sealedMax} are meaningful only when {@code sealedBlocks > 0}, and
+   * {@code mutableMin}/{@code mutableMax} only when {@code mutableSamples > 0}.
+   */
+  public record SampleStats(long sealedSamples, long mutableSamples, int sealedBlocks, long sealedMin, long sealedMax,
+                            long mutableMin, long mutableMax) {
+  }
+
+  /**
+   * Both layers' totals and time ranges as of one instant, for the same reason as {@link #countSamples()}: read one
+   * after the other with nothing held, a compaction landing in between reports the rows it moves in both layers.
+   */
+  public SampleStats sampleStats() throws IOException {
+    compactionLock.readLock().lock();
+    try {
+      final int sealedBlocks = sealedStore.getBlockCount();
+      final long mutableSamples = mutableBucket.getSampleCount();
+      final long[] mutableRange = mutableSamples > 0 ? mutableBucket.getMinMaxTimestamps() : null;
+      return new SampleStats(sealedStore.getTotalSampleCount(), mutableSamples, sealedBlocks,
+          sealedBlocks > 0 ? sealedStore.getGlobalMinTimestamp() : Long.MAX_VALUE,
+          sealedBlocks > 0 ? sealedStore.getGlobalMaxTimestamp() : Long.MIN_VALUE,
+          mutableRange != null ? mutableRange[0] : Long.MAX_VALUE,
+          mutableRange != null ? mutableRange[1] : Long.MIN_VALUE);
+    } finally {
+      compactionLock.readLock().unlock();
+    }
   }
 
   public TimeSeriesBucket getMutableBucket() {
