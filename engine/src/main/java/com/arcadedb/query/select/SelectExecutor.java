@@ -34,9 +34,11 @@ import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.SelectExecutionPlanner;
 import com.arcadedb.schema.Type;
+import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.utility.MultiIterator;
 import com.arcadedb.utility.Pair;
 
+import java.math.BigDecimal;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.LongSupplier;
@@ -394,7 +396,9 @@ public class SelectExecutor {
           // filterWithIndexesFinalNode() PRUNES AN 'and' SIBLING'S - HARMLESS TODAY ONLY BECAUSE 'and' IS ALREADY
           // UNCONDITIONALLY DISQUALIFIED
           final SelectTreeNode exactLeaf = soleExactLeaf(select.rootTreeElement);
-          indexCandidateLimit = exactLeaf != null && isOrderBySafeForCap(exactLeaf) ? computeExactCandidateLimit() : -1;
+          indexCandidateLimit = exactLeaf != null && answersExactly(exactLeaf.index) && isOrderBySafeForCap(exactLeaf) ?
+              computeExactCandidateLimit() :
+              -1;
 
           filterWithIndexes(select.rootTreeElement, cursors);
         }
@@ -582,7 +586,7 @@ public class SelectExecutor {
     // THE WHOLE WHERE-TREE'S RESULT SET (EVERY LEAF WAS CONSUMED BY THE MATCHED PREFIX, NOTHING LEFT FOR
     // evaluateWhere() TO DISCARD) AND THE ORDER BY, IF ANY, IS ALREADY SATISFIED BY THE CURSOR ITSELF - OTHERWISE
     // fetchResultInCaseOfOrderBy()'S FULL-DRAIN SORT NEEDS EVERY MATCH, NOT JUST skip + limit OF THEM.
-    final boolean exactMatch = bestPrefixLength == countAndLeaves(select.rootTreeElement);
+    final boolean exactMatch = bestPrefixLength == countAndLeaves(select.rootTreeElement) && answersExactly(bestIndex);
     indexCandidateLimit = exactMatch && (select.orderBy == null || orderByElided) ? computeExactCandidateLimit() : -1;
 
     return true;
@@ -651,6 +655,34 @@ public class SelectExecutor {
   }
 
   /**
+   * Whether keys of an index, already converted to its own key form and deduplicated by {@code equals()} once
+   * canonicalized, are different keys of the index too, so their probes cannot return the same record. True when they are
+   * all of one class whose {@code equals()} is the comparator's equality once canonicalized; a {@code byte[]}, whose
+   * {@code equals()} is identity, or a mix of classes, is answered with a dedup of the records instead.
+   */
+  private static boolean areDistinctByEquals(final List<Object> keys) {
+    final Class<?> keyClass = keys.getFirst() != null ? keys.getFirst().getClass() : null;
+    if (keyClass != String.class && keyClass != Integer.class && keyClass != Long.class && keyClass != Short.class
+        && keyClass != Byte.class && keyClass != Boolean.class && keyClass != Double.class && keyClass != Float.class
+        && keyClass != BigDecimal.class && keyClass != RID.class)
+      return false;
+    for (final Object key : keys)
+      if (key == null || key.getClass() != keyClass)
+        return false;
+    return true;
+  }
+
+  /**
+   * Whether a probe of {@code index} returns only records the where-tree keeps. A folded (COLLATE ci) index answers
+   * {@code 'Smith'} with every record whose value differs from it only in case, and {@code evaluateWhere()} discards the
+   * extras: a cap on the candidates pulled would then stop on records about to be discarded, before reaching the ones
+   * that match (issue #9613). Whether the query sorts is irrelevant: the defect is in which candidates are pulled.
+   */
+  private static boolean answersExactly(final Index index) {
+    return !SelectExecutionPlanner.holdsFoldedKeys(index);
+  }
+
+  /**
    * The tree's one and only indexed leaf whose index cursor, if built, would return exactly the records matching
    * the whole tree, with nothing left for {@code evaluateWhere()} to discard afterward - {@code null} if no such
    * leaf exists. Only a bare leaf qualifies (through the synthetic {@code run} wrapper, see below): an
@@ -669,8 +701,9 @@ public class SelectExecutor {
    * downstream {@code filterOutRecords} dedup ever sees it. That can exhaust the cap on duplicates before enough
    * distinct matches are found - the same "cap spent before the filtering it needs to survive" defect this class
    * exists to fix, just reachable again through the "or is exact" path. An {@code in_op} leaf's own internal
-   * per-value cursors don't have this problem <i>for the indexes this method can actually resolve</i>: each value is
-   * a distinct key on a single-valued property, so their RID sets are disjoint by construction - but that
+   * per-value cursors don't have this problem <i>for the indexes this method can actually resolve</i>: the values are
+   * deduplicated, and the nested merge returns each record once whenever two of them may still be one key to the index
+   * (#9614), so on a single-valued property no record is yielded twice - but that
    * assumption only holds because a {@code BY ITEM}/{@code BY KEY}/{@code BY VALUE} index (one document can
    * contribute multiple entries for the same list/map property, breaking disjointness the same way {@code or} does)
    * is registered under a property-name key carrying that literal suffix, which the fluent {@code Select} API this
@@ -771,12 +804,34 @@ public class SelectExecutor {
     else if (node.operator == SelectOperator.in_op) {
       // IN: multi-point index lookup
       if (rightValue instanceof Collection<?> collection) {
-        final List<IndexCursor> inCursors = new ArrayList<>();
-        for (final Object item : collection)
-          inCursors.add(node.index.get(new Object[] { item }));
+        // IN IS SET MEMBERSHIP, AND TWO DIFFERENT VALUES CAN BE ONE KEY TO THE INDEX (1, 1L AND '1' ON AN INTEGER KEY, 'a'
+        // AND 'A' ON A FOLDED ONE): EACH VALUE IS TAKEN IN THE INDEX'S OWN KEY FORM AND EACH KEY IS PROBED ONCE, OR ITS
+        // RECORDS CAME BACK ONCE PER REPEAT (#9614). THE KEY FORM IS ALSO WHAT THE MERGE BELOW COMPARES: THE RAW VALUES
+        // OF A MIXED LIST ARE NOT COMPARABLE BY THE INDEX'S COMPARATOR ('1' AGAINST AN INTEGER KEY RAISED A
+        // ClassCastException). A VALUE THE KEY TYPE CANNOT READ IS NO KEY OF THE INDEX AND MATCHES NO ROW, AS ITS
+        // LOOKUP ALREADY ANSWERED (#8888)
+        final Set<Object> probed = new HashSet<>();
+        final List<Object> keys = new ArrayList<>(collection.size());
+        for (final Object item : collection) {
+          final Object key;
+          try {
+            key = node.index.convertLookupKeys(new Object[] { item })[0];
+          } catch (final IllegalArgumentException e) {
+            continue;
+          }
+          if (probed.add(BinaryComparator.canonicalizeForByteEquality(key)))
+            keys.add(key);
+        }
+        final List<IndexCursor> inCursors = new ArrayList<>(keys.size());
+        for (final Object key : keys)
+          inCursors.add(node.index.get(new Object[] { key }));
         // DELIBERATE, NOT JUST CONVENIENT REUSE: THE OUTER MultiIndexCursor NEVER PULLS MORE THAN indexCandidateLimit
-        // CANDIDATES ACROSS ALL ITS CHILDREN COMBINED, SO NO SINGLE VALUE'S NESTED CURSOR CAN LEGITIMATELY NEED MORE
-        cursor = inCursors.isEmpty() ? null : new MultiIndexCursor(inCursors, indexCandidateLimit, ascendingOrder);
+        // CANDIDATES ACROSS ALL ITS CHILDREN COMBINED, SO NO SINGLE VALUE'S NESTED CURSOR CAN LEGITIMATELY NEED MORE.
+        // THE MERGE ALSO RETURNS EACH RECORD ONCE WHEN equals() CANNOT VOUCH THAT THE KEYS ARE DIFFERENT (A byte[], SAY)
+        cursor = inCursors.isEmpty() ?
+            new TempIndexCursor(Collections.emptyList()) :
+            new MultiIndexCursor(inCursors, indexCandidateLimit, ascendingOrder, true,
+                inCursors.size() > 1 && !areDistinctByEquals(keys));
       } else
         cursor = node.index.get(new Object[] { rightValue });
     } else if (node.operator == SelectOperator.between) {

@@ -28,11 +28,9 @@ import com.arcadedb.utility.DateUtils;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
-import java.time.Instant;
 import java.time.LocalTime;
 import java.time.OffsetDateTime;
 import java.time.OffsetTime;
-import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.time.chrono.ChronoLocalDate;
 import java.time.chrono.ChronoLocalDateTime;
@@ -217,8 +215,10 @@ public class BinaryComparator {
 
     case BinaryTypes.TYPE_OFFSET_TIME:
       if (type2 == BinaryTypes.TYPE_OFFSET_TIME)
-        // By the instant of the day, which is what the index key canonicalizes to (issue #8572)
-        return Long.compare(utcNanoOfDay((OffsetTime) value1), utcNanoOfDay((OffsetTime) value2));
+        // By the instant of the day, then by the offset (west to east): the openCypher order, which answers 0 exactly when
+        // OffsetTime.equals() does. Stopping at the instant made one index key of two values the row filter tells apart, so
+        // creating an index changed what a query returned (issue #9648)
+        return ((OffsetTime) value1).compareTo((OffsetTime) value2);
       throw unsupportedPair(type1, type2);
 
     case BinaryTypes.TYPE_LOCAL_TIME:
@@ -228,7 +228,7 @@ public class BinaryComparator {
 
     case BinaryTypes.TYPE_ZONED_DATETIME:
       if (type2 == BinaryTypes.TYPE_ZONED_DATETIME)
-        return instantOf(value1).compareTo(instantOf(value2));
+        return compareZoned(zonedOf(value1), zonedOf(value2));
       throw unsupportedPair(type1, type2);
 
     case BinaryTypes.TYPE_DURATION:
@@ -335,12 +335,23 @@ public class BinaryComparator {
     throw unsupportedPair(type1, type2);
   }
 
-  private static long utcNanoOfDay(final OffsetTime time) {
-    return time.toLocalTime().toNanoOfDay() - time.getOffset().getTotalSeconds() * 1_000_000_000L;
+  /**
+   * The openCypher order of two zoned datetimes: by instant, then by offset (west to east), then by zone name - the order
+   * {@code CypherDateTime} applies (issue #8300). It answers 0 exactly when {@code ZonedDateTime.equals()} does, which is
+   * what evaluates a predicate when no index is used: the same instant in two zones is two values to Neo4j, to the row
+   * filter and now to the index too, rather than one key the filter then tells apart (issue #9648).
+   */
+  private static int compareZoned(final ZonedDateTime value1, final ZonedDateTime value2) {
+    final int cmp = value1.toInstant().compareTo(value2.toInstant());
+    if (cmp != 0)
+      return cmp;
+    final int offsetCmp = Integer.compare(value1.getOffset().getTotalSeconds(), value2.getOffset().getTotalSeconds());
+    return offsetCmp != 0 ? offsetCmp : value1.getZone().getId().compareTo(value2.getZone().getId());
   }
 
-  private static Instant instantOf(final Object value) {
-    return value instanceof OffsetDateTime offset ? offset.toInstant() : ((ZonedDateTime) value).toInstant();
+  /** An {@code OffsetDateTime} is serialized as the zoned datetime whose zone is its offset, so it compares as that. */
+  private static ZonedDateTime zonedOf(final Object value) {
+    return value instanceof OffsetDateTime offset ? offset.toZonedDateTime() : (ZonedDateTime) value;
   }
 
   private static IllegalArgumentException unsupportedPair(final byte type1, final byte type2) {
@@ -602,6 +613,9 @@ public class BinaryComparator {
       return d.equals(d1) || (d == 0.0d && d1 == 0.0d);
     else if (a instanceof Float f && b instanceof Float f1)
       return f.equals(f1) || (f == 0.0f && f1 == 0.0f);
+    else if (a instanceof OffsetDateTime && b instanceof ZonedDateTime || a instanceof ZonedDateTime && b instanceof OffsetDateTime)
+      // the zoned datetime an OffsetDateTime is stored and indexed as, so the filter answers what the index does (issue #9648)
+      return zonedOf(a).equals(zonedOf(b));
     return a.equals(b);
   }
 
@@ -676,6 +690,13 @@ public class BinaryComparator {
       return aDate.compareTo(bDate);
     else if (a instanceof ChronoLocalDateTime<?> aDate && b instanceof ChronoLocalDateTime<?> bDate)
       return aDate.compareTo(bDate);
+    else if (a instanceof ZonedDateTime && (b instanceof ZonedDateTime || b instanceof OffsetDateTime)
+        || a instanceof OffsetDateTime && b instanceof ZonedDateTime)
+      // the ZONED_DATETIME order, not the timestamp below: the same instant in two zones is two values (issue #9648). Two
+      // OffsetDateTime values keep the timestamp: undeclared, that class is stored as a DATETIME, which is an instant
+      return compareZoned(zonedOf(a), zonedOf(b));
+    else if (a instanceof OffsetTime aTime && b instanceof OffsetTime bTime)
+      return aTime.compareTo(bTime);
     else if (DateUtils.isDate(a) || DateUtils.isDate(b)) {
       // The untyped twin of the refusal in the typed compare(): a Boolean has no timestamp meaning, and the helper
       // below answers null for it, which NPE'd on unboxing (issue #7754). The operators already catch this
@@ -970,14 +991,9 @@ public class BinaryComparator {
     } else if (value instanceof Float f) {
       if (f == 0.0f && Float.floatToRawIntBits(f) != 0)
         return 0.0f;
-    } else if (value instanceof ZonedDateTime zoned) {
-      // Two zones for one instant are one key to the comparator, so one set of bytes (issue #8572)
-      if (!ZoneOffset.UTC.equals(zoned.getZone()))
-        return zoned.withZoneSameInstant(ZoneOffset.UTC);
-    } else if (value instanceof OffsetTime time) {
-      if (!ZoneOffset.UTC.equals(time.getOffset()))
-        return time.withOffsetSameInstant(ZoneOffset.UTC);
     }
+    // A ZonedDateTime and an OffsetTime need no rewriting: the comparator tells two zones of one instant apart, as their
+    // serialized bytes do (issue #9648)
     return null;
   }
 }

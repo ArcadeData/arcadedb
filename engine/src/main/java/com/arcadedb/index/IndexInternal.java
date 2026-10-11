@@ -142,6 +142,17 @@ public interface IndexInternal extends Index {
   }
 
   /**
+   * The keys a lookup of {@code keys} reads, in this index's own form: narrowed to the declared key types and folded where
+   * the index folds (COLLATE ci), so two values that are one key here come back equal, and every key comes back comparable
+   * by this index's comparator. An index that keeps its keys as given returns them unchanged.
+   *
+   * @throws IllegalArgumentException when a declared key type cannot read a value: such a value is no key of this index
+   */
+  default Object[] convertLookupKeys(final Object[] keys) {
+    return keys;
+  }
+
+  /**
    * Recomputes any persisted per-index statistics (e.g. BM25 corpus counters) by rescanning the live data, repairing drift that
    * incremental maintenance cannot reverse (rolled-back transactions, analyzer changes). Most indexes keep no such statistics and
    * this is a no-op. Exposed to SQL via {@code REBUILD INDEX <name> {statsOnly: true}} so operators can repair drift without a

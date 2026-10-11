@@ -573,10 +573,15 @@ public class OpenCypherQueryEngine implements QueryEngine {
       }
       break;
     case CREATE_INDEX:
-      executeCreateIndex(ddl, schema, stats);
+      // Under the constraint lock too: an index name is checked against the constraint names before it is taken (#9705)
+      synchronized (CypherConstraintRegistry.lockFor(database)) {
+        executeCreateIndex(ddl, schema, stats);
+      }
       break;
     case DROP_INDEX:
-      executeDropIndex(ddl, schema, stats);
+      synchronized (CypherConstraintRegistry.lockFor(database)) {
+        executeDropIndex(ddl, schema, stats);
+      }
       break;
     }
 
@@ -823,6 +828,13 @@ public class OpenCypherQueryEngine implements QueryEngine {
       if (ddl.isIfNotExists())
         return;
       throw new SchemaException("Constraint '" + constraintName + "' already exists");
+    }
+    // Indexes and constraints share one namespace, as in Neo4j: since CREATE INDEX <name> names the index (#9705), a
+    // constraint taking the same name would make DROP CONSTRAINT <name> drop the index instead
+    if (constraintName != null && schema.existsIndex(constraintName)) {
+      if (ddl.isIfNotExists())
+        return;
+      throw new SchemaException("There already exists an index called '" + constraintName + "'");
     }
 
     autoCreateDDLType(schema, ddl, typeName);
@@ -1261,8 +1273,18 @@ public class OpenCypherQueryEngine implements QueryEngine {
       stats.incConstraintsRemoved();
       return;
     }
-    if (schema.existsIndex(constraintName)) {
-      schema.dropIndex(constraintName);
+    // A unique index only: a plain one is no constraint, and since CREATE INDEX <name> names the index (#9705) its name
+    // would otherwise drop it through DROP CONSTRAINT
+    if (schema.existsIndex(constraintName) && schema.getIndexByName(constraintName).isUnique()) {
+      final String owner = CypherConstraintRegistry.findIndexOwner(schema, constraintName);
+      if (owner != null)
+        CypherConstraintRegistry.drop(schema, owner, this::retypeForConstraintDrop);
+      else
+        schema.dropIndex(constraintName);
+      stats.incConstraintsRemoved();
+      return;
+    }
+    if (CypherSchemaCommands.dropUnrecordedConstraint(schema, constraintName)) {
       stats.incConstraintsRemoved();
       return;
     }
@@ -1270,9 +1292,31 @@ public class OpenCypherQueryEngine implements QueryEngine {
       throw new SchemaException("Constraint '" + constraintName + "' does not exist");
   }
 
+  /** Puts back the declaration a type constraint replaced, through the same checks as the retype that replaced it. */
+  private void retypeForConstraintDrop(final DocumentType type, final Property property, final Type newType, final String newOfType) {
+    retypeProperty(type.getSchema(), type.getName(), property, new DeclaredType(newType, newOfType, true));
+  }
+
+  /**
+   * Creates the index under the name the statement gives it, or {@code Type[properties]} when it gives none (#9705). Names
+   * are unique across indexes and constraints, as in Neo4j: a taken name raises, and with {@code IF NOT EXISTS} it is a
+   * no-op, like an equivalent index under another name.
+   */
   private void executeCreateIndex(final CypherDDLStatement ddl, final Schema schema, final QueryStatistics stats) {
     final String typeName = ddl.getLabelName();
     final String[] propertyNames = ddl.getPropertyNames().toArray(new String[0]);
+    final String indexName = ddl.getConstraintName();
+
+    // Checked before anything is created, so a refused statement leaves no type or property behind
+    if (indexName != null) {
+      final boolean taken = schema.existsIndex(indexName);
+      if (taken || CypherConstraintRegistry.findOwner(schema, indexName) != null) {
+        if (ddl.isIfNotExists())
+          return;
+        throw new SchemaException(
+            "There already exists " + (taken ? "an index" : "a constraint") + " called '" + indexName + "'");
+      }
+    }
 
     autoCreateDDLType(schema, ddl, typeName);
 
@@ -1308,6 +1352,10 @@ public class OpenCypherQueryEngine implements QueryEngine {
     builder.withType(Schema.INDEX_TYPE.LSM_TREE);
     builder.withUnique(false);
     builder.withIgnoreIfExists(ddl.isIfNotExists());
+    // An equivalent index under another name satisfies IF NOT EXISTS, as in Neo4j: the name is not asked for then, or the
+    // builder would refuse the request over the name alone (#6921)
+    if (indexName != null && !(existedBefore && ddl.isIfNotExists()))
+      builder.withIndexName(indexName);
     if (anyUndeclared)
       builder.withDefaultKeyTypesForUndeclaredProperties(defaultKeyTypes);
     try {
@@ -1453,17 +1501,24 @@ public class OpenCypherQueryEngine implements QueryEngine {
     };
   }
 
+  /**
+   * Drops the index by its name. An unknown name raises unless {@code IF EXISTS} is given: {@code Schema.dropIndex} returns
+   * silently on it, which reported a removal that never happened (#9705). The index a constraint created is refused, as in
+   * Neo4j: dropping it alone would leave the constraint listed with nothing enforcing it.
+   */
   private void executeDropIndex(final CypherDDLStatement ddl, final Schema schema, final QueryStatistics stats) {
     final String indexName = ddl.getConstraintName();
-    if (ddl.isIfExists()) {
-      if (schema.existsIndex(indexName)) {
-        schema.dropIndex(indexName);
-        stats.incIndexesRemoved();
-      }
-    } else {
-      schema.dropIndex(indexName);
-      stats.incIndexesRemoved();
+    if (!schema.existsIndex(indexName)) {
+      if (ddl.isIfExists())
+        return;
+      throw new SchemaException("Index '" + indexName + "' does not exist");
     }
+    final String owner = CypherConstraintRegistry.findIndexOwner(schema, indexName);
+    if (owner != null)
+      throw new SchemaException(
+          "Index '" + indexName + "' belongs to constraint '" + owner + "': use DROP CONSTRAINT " + owner + " to drop it");
+    schema.dropIndex(indexName);
+    stats.incIndexesRemoved();
   }
 
   /**
