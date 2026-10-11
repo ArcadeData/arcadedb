@@ -121,6 +121,13 @@ public class LocalSchema implements Schema {
    * Cannot collide with a bucket name: {@link #checkValidBucketName} rejects ':' as illegal on Windows.
    */
   static final String                                        STATISTICS_FORMAT_VERSION_KEY = "@arcadedb:statisticsFormat";
+  /**
+   * Schema setting naming how openCypher temporals are stored (issue #9636): {@code native} for the self-describing
+   * binary types, absent for a schema written by a release that stored them as text.
+   */
+  static final String                                        TEMPORAL_STORAGE_SETTING      = "temporalStorage";
+  static final String                                        TEMPORAL_STORAGE_NATIVE       = "native";
+  static final String                                        TEMPORAL_STORAGE_TEXT         = "text";
   public static final int                                    BUILD_TX_BATCH_SIZE           = 100_000;
 
   // The rest of the NTFS/Windows-reserved character set beyond '/', '\' and '*', which checkValidBucketName()
@@ -391,6 +398,14 @@ public class LocalSchema implements Schema {
   private             String                                 dateTimeFormat                = GlobalConfiguration.DATE_TIME_FORMAT.getValueAsString();
   private             TimeZone                               timeZone                      = TimeZone.getDefault();
   private             ZoneId                                 zoneId                        = ZoneId.systemDefault();
+  /**
+   * True for a database whose records may hold an openCypher {@code time()}, {@code localtime()}, zoned
+   * {@code datetime()} or {@code duration()} as its ISO text, the way every release before the native temporal types
+   * stored them (issue #9636). Decided by the schema file: one written before {@link #TEMPORAL_STORAGE_SETTING} existed
+   * has none and comes from such a release; a database created since starts and stays native. Cleared only by the
+   * one-off conversion ({@code CALL db.migrateLegacyTemporals()}), once the text is rewritten in the native types.
+   */
+  private volatile    boolean                                legacyTemporalText            = false;
   private             boolean                                readingFromFile               = false;
   private final       AtomicLong                             dirtyGeneration               = new AtomicLong(0);
   private volatile    long                                   savedGeneration               = 0;
@@ -718,7 +733,7 @@ public class LocalSchema implements Schema {
     // before the replacement is published would close them under readers still holding the old graph.
     stagedTypes.clear();
     supersededTypes = published.types();
-    stagedMembers = new StagedMembers(timeZone, zoneId, dateFormat, dateTimeFormat, versionSerial.get());
+    stagedMembers = new StagedMembers(timeZone, zoneId, dateFormat, dateTimeFormat, legacyTemporalText, versionSerial.get());
   }
 
   /**
@@ -921,6 +936,7 @@ public class LocalSchema implements Schema {
       zoneId = stagedMembers.previousZoneId;
       dateFormat = stagedMembers.previousDateFormat;
       dateTimeFormat = stagedMembers.previousDateTimeFormat;
+      legacyTemporalText = stagedMembers.previousLegacyTemporalText;
       versionSerial.set(stagedMembers.previousVersion);
     }
     stagedMembers = null;
@@ -1368,6 +1384,28 @@ public class LocalSchema implements Schema {
 
   public void setZoneId(final ZoneId zoneId) {
     this.zoneId = zoneId;
+  }
+
+  /**
+   * Whether this database's records may hold openCypher temporals as the ISO text releases before the native temporal
+   * types wrote (issue #9636). openCypher then restores such a text, on a property the schema does not declare, the
+   * way those releases read it back.
+   */
+  public boolean isLegacyTemporalText() {
+    return legacyTemporalText;
+  }
+
+  /**
+   * Marks the openCypher temporals of this database as stored natively, once {@code db.migrateLegacyTemporals()} has
+   * rewritten the legacy text (issue #9636). Saved with the schema. There is no way back: a String written after this
+   * point is a String.
+   */
+  public void markTemporalStorageNative() {
+    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_DATABASE_SETTINGS);
+    if (!legacyTemporalText)
+      return;
+    legacyTemporalText = false;
+    saveConfiguration();
   }
 
   @Override
@@ -3166,6 +3204,8 @@ public class LocalSchema implements Schema {
 
       dateFormat = settings.getString("dateFormat");
       dateTimeFormat = settings.getString("dateTimeFormat");
+      // A schema written before the setting existed comes from a release that stored the openCypher temporals as text
+      legacyTemporalText = !TEMPORAL_STORAGE_NATIVE.equals(settings.getString(TEMPORAL_STORAGE_SETTING, TEMPORAL_STORAGE_TEXT));
 
       final JSONObject types = root.getJSONObject("types");
 
@@ -4050,14 +4090,16 @@ public class LocalSchema implements Schema {
     final ZoneId   previousZoneId;
     final String   previousDateFormat;
     final String   previousDateTimeFormat;
+    final boolean  previousLegacyTemporalText;
     final long     previousVersion;
 
     StagedMembers(final TimeZone timeZone, final ZoneId zoneId, final String dateFormat, final String dateTimeFormat,
-        final long version) {
+        final boolean legacyTemporalText, final long version) {
       this.previousTimeZone = timeZone;
       this.previousZoneId = zoneId;
       this.previousDateFormat = dateFormat;
       this.previousDateTimeFormat = dateTimeFormat;
+      this.previousLegacyTemporalText = legacyTemporalText;
       this.previousVersion = version;
     }
   }
@@ -4164,6 +4206,7 @@ public class LocalSchema implements Schema {
     settings.put("zoneId", zoneId.getId());
     settings.put("dateFormat", dateFormat);
     settings.put("dateTimeFormat", dateTimeFormat);
+    settings.put(TEMPORAL_STORAGE_SETTING, legacyTemporalText ? TEMPORAL_STORAGE_TEXT : TEMPORAL_STORAGE_NATIVE);
 
     // Every keyed map below is written in key order (issue #8206): hash-map order depends on table capacity, which
     // differs between a map grown by DDL and one rebuilt by a reload, so replicas would write different files.
