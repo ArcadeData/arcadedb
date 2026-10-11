@@ -1611,7 +1611,7 @@ class CypherExpressionBuilder {
   // Package-private (not private) so CypherExpressionWalker, in this same package, can descend into
   // baseExpression - the fix for issue #6567 depends on the walk reaching it: without this arm the
   // walker had already treated startNode(r).name as a leaf and never seen the "r" inside.
-  static class ChainedPropertyAccessExpression implements Expression {
+  static class ChainedPropertyAccessExpression implements PropertyReadExpression {
     private final Expression baseExpression;
     private final String propertyName;
 
@@ -1622,6 +1622,13 @@ class CypherExpressionBuilder {
 
     public Expression getBaseExpression() {
       return baseExpression;
+    }
+
+    /** {@code a.link.v} and {@code properties(n).v} read the property {@code v} of the record the base evaluates to. */
+    @Override
+    public PropertyRead propertyRead(final Result row, final CommandContext context) {
+      final Document record = PropertyReadExpression.recordOf(baseExpression, row, context);
+      return record != null ? new PropertyRead(record, propertyName) : null;
     }
 
     @Override

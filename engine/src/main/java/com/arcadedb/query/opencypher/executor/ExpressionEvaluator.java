@@ -105,7 +105,7 @@ public class ExpressionEvaluator {
       // Route CASE branches through this evaluator so a pre-computed aggregation nested inside a
       // branch (e.g. CASE WHEN ... THEN sum(v) END) resolves to its accumulated value instead of
       // being re-evaluated against the single representative row (issue #5220).
-      return ce.evaluateWith(sub -> evaluate(sub, result, context));
+      return ce.evaluateWith(sub -> evaluate(sub, result, context), result, context);
     } else if (expression instanceof ListSliceExpression lse) {
       return evaluateListSlice(lse, result, context);
     }
@@ -195,7 +195,7 @@ public class ExpressionEvaluator {
     final ComparisonExpression comp = expression.getComparison();
     final Object leftValue = evaluate(comp.getLeft(), result, context);
     final Object rightValue = evaluate(comp.getRight(), result, context);
-    return comp.evaluateWithValues(leftValue, rightValue, result);
+    return comp.evaluateWithValues(leftValue, rightValue, result, context);
   }
 
   private Object evaluateBooleanWrapper(final BooleanWrapperExpression expression,
@@ -204,7 +204,7 @@ public class ExpressionEvaluator {
     if (boolExpr instanceof ComparisonExpression comp) {
       final Object leftValue = evaluate(comp.getLeft(), result, context);
       final Object rightValue = evaluate(comp.getRight(), result, context);
-      return comp.evaluateWithValues(leftValue, rightValue, result);
+      return comp.evaluateWithValues(leftValue, rightValue, result, context);
     }
     return expression.evaluate(result, context);
   }

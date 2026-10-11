@@ -28,8 +28,10 @@ import com.arcadedb.query.opencypher.ast.CreateClause;
 import com.arcadedb.query.opencypher.ast.CypherAdminStatement;
 import com.arcadedb.query.opencypher.ast.CypherDDLStatement;
 import com.arcadedb.query.opencypher.ast.CypherSessionStatement;
+import com.arcadedb.query.opencypher.ast.CypherShowSchemaStatement;
 import com.arcadedb.query.opencypher.ast.CypherStatement;
 import com.arcadedb.query.opencypher.ast.CypherTransactionStatement;
+import com.arcadedb.query.opencypher.ast.CypherTypeName;
 import com.arcadedb.query.opencypher.ast.DeleteClause;
 import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.ast.Expression;
@@ -185,14 +187,72 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     throw new CommandParsingException("Only DROP CONSTRAINT, DROP INDEX and DROP USER are currently supported");
   }
 
-  private CypherAdminStatement handleShowCommand(final Cypher25Parser.ShowCommandContext ctx) {
+  private CypherStatement handleShowCommand(final Cypher25Parser.ShowCommandContext ctx) {
+    if (ctx.showConstraintCommand() != null)
+      return handleShowConstraints(ctx.showConstraintCommand());
+    if (ctx.showIndexCommand() != null)
+      return handleShowIndexes(ctx.showIndexCommand());
     if (ctx.showUsers() != null)
       return new CypherAdminStatement(CypherAdminStatement.Kind.SHOW_USERS, null, null, false, false);
     if (ctx.showCurrentUser() != null)
       return new CypherAdminStatement(CypherAdminStatement.Kind.SHOW_CURRENT_USER, null, null, false, false);
     if (ctx.showTransactions() != null)
       return handleShowTransactions(ctx.showTransactions());
-    throw new CommandParsingException("Only SHOW USERS, SHOW CURRENT USER and SHOW TRANSACTIONS are currently supported");
+    throw new CommandParsingException(
+        "Only SHOW USERS, SHOW CURRENT USER, SHOW TRANSACTIONS, SHOW CONSTRAINTS and SHOW INDEXES are currently supported");
+  }
+
+  /** {@code SHOW [ALL | [NODE | RELATIONSHIP] (UNIQUE | EXIST | KEY | PROPERTY TYPE)] CONSTRAINTS} (#9706). */
+  private CypherShowSchemaStatement handleShowConstraints(final Cypher25Parser.ShowConstraintCommandContext ctx) {
+    final CypherShowSchemaStatement.ConstraintFilter filter;
+    Cypher25Parser.ShowConstraintEntityContext entity = null;
+    final Cypher25Parser.ShowConstraintsEndContext end;
+    switch (ctx) {
+    case Cypher25Parser.ShowConstraintUniqueContext unique -> {
+      filter = CypherShowSchemaStatement.ConstraintFilter.UNIQUENESS;
+      entity = unique.showConstraintEntity();
+      end = unique.showConstraintsEnd();
+    }
+    case Cypher25Parser.ShowConstraintExistContext exist -> {
+      filter = CypherShowSchemaStatement.ConstraintFilter.EXISTENCE;
+      entity = exist.showConstraintEntity();
+      end = exist.showConstraintsEnd();
+    }
+    case Cypher25Parser.ShowConstraintKeyContext key -> {
+      filter = CypherShowSchemaStatement.ConstraintFilter.KEY;
+      entity = key.showConstraintEntity();
+      end = key.showConstraintsEnd();
+    }
+    case Cypher25Parser.ShowConstraintPropTypeContext propType -> {
+      filter = CypherShowSchemaStatement.ConstraintFilter.PROPERTY_TYPE;
+      entity = propType.showConstraintEntity();
+      end = propType.showConstraintsEnd();
+    }
+    case Cypher25Parser.ShowConstraintAllContext all -> {
+      filter = CypherShowSchemaStatement.ConstraintFilter.ALL;
+      end = all.showConstraintsEnd();
+    }
+    default -> throw new CommandParsingException("Unsupported SHOW CONSTRAINTS form: " + ctx.getText());
+    }
+    if (end.composableCommandClauses() != null)
+      throw new CommandParsingException("SHOW CONSTRAINTS cannot be followed by another command");
+
+    final CypherShowSchemaStatement.EntityFilter entityFilter = entity == null ?
+        CypherShowSchemaStatement.EntityFilter.ALL :
+        entity instanceof Cypher25Parser.NodeEntityContext ?
+            CypherShowSchemaStatement.EntityFilter.NODE :
+            CypherShowSchemaStatement.EntityFilter.RELATIONSHIP;
+    return new CypherShowSchemaStatement(CypherShowSchemaStatement.Kind.CONSTRAINTS, filter, entityFilter, null);
+  }
+
+  /** {@code SHOW [ALL | RANGE | TEXT | POINT | VECTOR | FULLTEXT | LOOKUP] INDEXES} (#9706). */
+  private CypherShowSchemaStatement handleShowIndexes(final Cypher25Parser.ShowIndexCommandContext ctx) {
+    if (ctx.showIndexesEnd().composableCommandClauses() != null)
+      throw new CommandParsingException("SHOW INDEXES cannot be followed by another command");
+    final Cypher25Parser.ShowIndexTypeContext type = ctx.showIndexType();
+    final String indexType = type == null || type.ALL() != null ? null : type.getText().toUpperCase(Locale.ROOT);
+    return new CypherShowSchemaStatement(CypherShowSchemaStatement.Kind.INDEXES, CypherShowSchemaStatement.ConstraintFilter.ALL,
+        CypherShowSchemaStatement.EntityFilter.ALL, indexType);
   }
 
   /**
@@ -311,7 +371,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
 
     // Determine constraint kind
     final CypherDDLStatement.ConstraintKind constraintKind;
-    String typedName = null;
+    CypherTypeName typedName = null;
     if (constraintType instanceof Cypher25Parser.ConstraintIsUniqueContext)
       constraintKind = CypherDDLStatement.ConstraintKind.UNIQUE;
     else if (constraintType instanceof Cypher25Parser.ConstraintIsNotNullContext)
@@ -320,7 +380,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       constraintKind = CypherDDLStatement.ConstraintKind.KEY;
     else if (constraintType instanceof Cypher25Parser.ConstraintTypedContext) {
       constraintKind = CypherDDLStatement.ConstraintKind.TYPED;
-      typedName = extractCypherTypeName(((Cypher25Parser.ConstraintTypedContext) constraintType).type());
+      typedName = parseTypeName(((Cypher25Parser.ConstraintTypedContext) constraintType).type(), "a property type constraint");
     } else
       throw new CommandParsingException("Unsupported constraint type: " + constraintType.getText());
 
@@ -426,86 +486,64 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
   }
 
   /**
-   * Extracts the Cypher type name from a type context (e.g., STRING, INTEGER, BOOLEAN, FLOAT, DATE, LOCAL DATETIME).
-   * Returns a normalized uppercase string that can be mapped to an ArcadeDB Type.
-   */
-  private String extractCypherTypeName(final Cypher25Parser.TypeContext typeCtx) {
-    // The type rule is: typePart (BAR typePart)* - we only support single types (no union types)
-    if (typeCtx.typePart().size() != 1)
-      throw new CommandParsingException("Union types are not supported in IS TYPED constraints");
-    final Cypher25Parser.TypePartContext typePart = typeCtx.typePart(0);
-    final Cypher25Parser.TypeNameContext typeName = typePart.typeName();
-    // Build the normalized type name from the tokens (e.g., "LOCAL DATETIME" has two tokens)
-    final StringBuilder sb = new StringBuilder();
-    for (int i = 0; i < typeName.getChildCount(); i++) {
-      if (i > 0)
-        sb.append(' ');
-      sb.append(typeName.getChild(i).getText().toUpperCase(Locale.ROOT));
-    }
-    return sb.toString();
-  }
-
-  /**
    * Builds an {@link IsTypedExpression} from a parsed {@code IS [NOT] TYPED type} or
-   * {@code :: type} comparison (issue #3365 section 3.3). Detects {@code NOT NULL}
-   * nullability and {@code LIST<T>} element-type wrappers. Static so both
+   * {@code :: type} comparison (issue #3365 section 3.3). Static so both
    * {@link CypherASTBuilder} (boolean path) and {@link CypherExpressionBuilder}
    * (expression path) can share a single implementation.
    */
   static IsTypedExpression buildIsTypedExpression(final Expression leftExpr,
       final Cypher25Parser.TypeComparisonContext typeCtx) {
-    final boolean isNot = typeCtx.NOT() != null;
-    final Cypher25Parser.TypeContext typeContext = typeCtx.type();
-    if (typeContext.typePart().size() != 1)
-      throw new CommandParsingException("UnsupportedFeature: union types are not supported in IS TYPED");
-    final Cypher25Parser.TypePartContext typePart = typeContext.typePart(0);
-
-    final boolean requiresNonNull;
-    final Cypher25Parser.TypeNullabilityContext nullability = typePart.typeNullability();
-    if (nullability != null)
-      requiresNonNull = nullability.NOT() != null || nullability.EXCLAMATION_MARK() != null;
-    else
-      requiresNonNull = false;
-
-    final Cypher25Parser.TypeNameContext nameCtx = typePart.typeName();
-    String normalizedName = normalizeTypeNameTokens(nameCtx);
-    String listElementTypeName = null;
-
-    // LIST<inner> / ARRAY<inner> from the typeName rule itself.
-    if (nameCtx.type() != null) {
-      listElementTypeName = extractInnerTypeName(nameCtx.type());
-      normalizedName = normalizedName.startsWith("ARRAY") ? "ARRAY" : "LIST";
-    } else if (!typePart.typeListSuffix().isEmpty()) {
-      // ANY VALUE LIST / INTEGER LIST suffix form: keep the inner type, switch to LIST envelope.
-      listElementTypeName = normalizedName;
-      normalizedName = "LIST";
-    }
-
-    return new IsTypedExpression(leftExpr, normalizedName, listElementTypeName, requiresNonNull, isNot);
+    return new IsTypedExpression(leftExpr, parseTypeName(typeCtx.type(), "IS TYPED"), typeCtx.NOT() != null);
   }
 
-  private static String normalizeTypeNameTokens(final Cypher25Parser.TypeNameContext typeName) {
-    final StringBuilder sb = new StringBuilder();
-    for (int i = 0; i < typeName.getChildCount(); i++) {
-      final ParseTree child = typeName.getChild(i);
-      if (child instanceof Cypher25Parser.TypeContext)
-        // LIST<inner> form: skip the inner type here, handled by the caller via nameCtx.type().
-        continue;
-      // Skip surrounding angle brackets for LIST<T>.
-      final String text = child.getText();
-      if ("<".equals(text) || ">".equals(text))
-        continue;
-      if (sb.length() > 0)
-        sb.append(' ');
-      sb.append(text.toUpperCase(Locale.ROOT));
-    }
-    return sb.toString();
-  }
-
-  private static String extractInnerTypeName(final Cypher25Parser.TypeContext typeCtx) {
+  /**
+   * Parses a Cypher type into its canonical {@link CypherTypeName}, shared by the {@code IS ::} predicate and the property
+   * type constraint so the two cannot read one spelling two ways (#9709). {@code LIST<T>}, {@code ARRAY<T>} and the postfix
+   * {@code T LIST} are all the list of {@code T}; {@code ANY<T>} with a single {@code T} is {@code T}. A union of types and a
+   * list of lists are refused: neither the predicate nor the schema can express them.
+   *
+   * @param where the construct being parsed, for the refusal message
+   */
+  static CypherTypeName parseTypeName(final Cypher25Parser.TypeContext typeCtx, final String where) {
     if (typeCtx.typePart().size() != 1)
-      throw new CommandParsingException("UnsupportedFeature: union types are not supported in IS TYPED");
-    return normalizeTypeNameTokens(typeCtx.typePart(0).typeName());
+      throw new CommandParsingException("UnsupportedFeature: union types are not supported in " + where);
+    final Cypher25Parser.TypePartContext typePart = typeCtx.typePart(0);
+    final Cypher25Parser.TypeNameContext nameCtx = typePart.typeName();
+    final boolean nonNull = isNonNull(typePart.typeNullability());
+
+    if (nameCtx.type() != null) {
+      // LIST<T> / ARRAY<T>, or ANY<T> (ANY VALUE<T>), which is T itself when T is a single type
+      final CypherTypeName inner = parseTypeName(nameCtx.type(), where);
+      if (nameCtx.ANY() != null)
+        return wrapInListSuffixes(new CypherTypeName(inner.name(), inner.elementName(), inner.nonNull() || nonNull,
+            inner.elementNonNull()), typePart, where);
+      if (inner.isList())
+        throw new CommandParsingException("UnsupportedFeature: a list of lists is not supported in " + where);
+      return wrapInListSuffixes(new CypherTypeName(CypherTypeName.LIST, inner.name(), nonNull, inner.nonNull()), typePart, where);
+    }
+
+    final StringBuilder sb = new StringBuilder();
+    for (int i = 0; i < nameCtx.getChildCount(); i++) {
+      if (i > 0)
+        sb.append(' ');
+      sb.append(nameCtx.getChild(i).getText().toUpperCase(Locale.ROOT));
+    }
+    return wrapInListSuffixes(new CypherTypeName(CypherTypeName.canonical(sb.toString()), null, nonNull, false), typePart, where);
+  }
+
+  /** {@code T LIST} / {@code T ARRAY}: the postfix spelling of {@code LIST<T>}, with its own nullability. */
+  private static CypherTypeName wrapInListSuffixes(final CypherTypeName type, final Cypher25Parser.TypePartContext typePart,
+      final String where) {
+    final List<Cypher25Parser.TypeListSuffixContext> suffixes = typePart.typeListSuffix();
+    if (suffixes.isEmpty())
+      return type;
+    if (suffixes.size() > 1 || type.isList())
+      throw new CommandParsingException("UnsupportedFeature: a list of lists is not supported in " + where);
+    return new CypherTypeName(CypherTypeName.LIST, type.name(), isNonNull(suffixes.getFirst().typeNullability()), type.nonNull());
+  }
+
+  private static boolean isNonNull(final Cypher25Parser.TypeNullabilityContext nullability) {
+    return nullability != null && (nullability.NOT() != null || nullability.EXCLAMATION_MARK() != null);
   }
 
   @Override

@@ -24,7 +24,9 @@ import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.temporal.CypherDate;
+import com.arcadedb.query.opencypher.executor.CypherValues;
 import com.arcadedb.query.opencypher.temporal.CypherDateTime;
+import com.arcadedb.query.opencypher.temporal.CypherDuration;
 import com.arcadedb.query.opencypher.temporal.CypherLocalDateTime;
 import com.arcadedb.query.opencypher.temporal.CypherLocalTime;
 import com.arcadedb.query.opencypher.temporal.CypherTemporalValue;
@@ -34,9 +36,13 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.serializer.BinaryComparator;
 
+import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.time.OffsetDateTime;
+import java.time.OffsetTime;
+import java.time.Period;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.time.temporal.WeekFields;
@@ -133,29 +139,42 @@ public final class CypherFunctionHelper {
 
   /**
    * Returns the Cypher name of the runtime type of a value: INTEGER, FLOAT, STRING, BOOLEAN, LIST&lt;ANY&gt;, MAP,
-   * NODE, RELATIONSHIP or NULL. Used to phrase type errors (and by valueType()) with the vocabulary of the
+   * NODE, RELATIONSHIP, DATE, LOCAL DATETIME, ZONED DATETIME, LOCAL TIME, ZONED TIME, DURATION, POINT or NULL. Used to phrase type errors (and by valueType()) with the vocabulary of the
    * language instead of Java class names.
    */
   public static String cypherTypeName(final Object value) {
-    if (value == null)
-      return "NULL";
-    if (value instanceof Long || value instanceof Integer || value instanceof Short || value instanceof Byte)
-      return "INTEGER";
-    if (value instanceof Double || value instanceof Float)
-      return "FLOAT";
-    if (value instanceof String)
-      return "STRING";
-    if (value instanceof Boolean)
-      return "BOOLEAN";
-    if (value instanceof Vertex)
-      return "NODE";
-    if (value instanceof Edge)
-      return "RELATIONSHIP";
-    if (value instanceof List)
-      return "LIST<ANY>";
-    if (value instanceof Map)
-      return "MAP";
-    return value.getClass().isArray() ? "LIST<ANY>" : value.getClass().getSimpleName().toUpperCase(Locale.ROOT);
+    return switch (value) {
+      case null -> "NULL";
+      case Long ignored -> "INTEGER";
+      case Integer ignored -> "INTEGER";
+      case Short ignored -> "INTEGER";
+      case Byte ignored -> "INTEGER";
+      case Double ignored -> "FLOAT";
+      case Float ignored -> "FLOAT";
+      case String ignored -> "STRING";
+      case Boolean ignored -> "BOOLEAN";
+      case Vertex ignored -> "NODE";
+      case Edge ignored -> "RELATIONSHIP";
+      case List ignored -> "LIST<ANY>";
+      // the temporal values by Neo4j's names, whether Cypher built them or the Java API stored them (#9709)
+      case CypherDate ignored -> "DATE";
+      case LocalDate ignored -> "DATE";
+      case CypherLocalDateTime ignored -> "LOCAL DATETIME";
+      case LocalDateTime ignored -> "LOCAL DATETIME";
+      case CypherDateTime ignored -> "ZONED DATETIME";
+      case ZonedDateTime ignored -> "ZONED DATETIME";
+      case OffsetDateTime ignored -> "ZONED DATETIME";
+      case CypherLocalTime ignored -> "LOCAL TIME";
+      case LocalTime ignored -> "LOCAL TIME";
+      case CypherTime ignored -> "ZONED TIME";
+      case OffsetTime ignored -> "ZONED TIME";
+      case CypherDuration ignored -> "DURATION";
+      case Duration ignored -> "DURATION";
+      case Period ignored -> "DURATION";
+      // a point is a map at runtime: point() builds one, and the storage returns one
+      case Map<?, ?> map -> CypherValues.isPointShaped(map) ? "POINT" : "MAP";
+      default -> value.getClass().isArray() ? "LIST<ANY>" : value.getClass().getSimpleName().toUpperCase(Locale.ROOT);
+    };
   }
 
   /**

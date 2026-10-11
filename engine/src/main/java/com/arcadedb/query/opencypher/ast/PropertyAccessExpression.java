@@ -23,6 +23,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.query.opencypher.InlineProperties;
 import com.arcadedb.query.opencypher.executor.DeletedEntityMarker;
 import com.arcadedb.query.opencypher.temporal.*;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -36,7 +37,7 @@ import java.util.Map;
  * Expression representing property access on a variable.
  * Example: n.name, person.age
  */
-public class PropertyAccessExpression implements Expression {
+public class PropertyAccessExpression implements PropertyReadExpression {
   private final String variableName;
   private final String propertyName;
 
@@ -125,6 +126,11 @@ public class PropertyAccessExpression implements Expression {
    */
   private static String brokenLinkMessage(final RID rid, final String propertyName, final String reason) {
     return "TypeError: Cannot access property '" + propertyName + "' on " + rid + ": " + reason;
+  }
+
+  @Override
+  public PropertyRead propertyRead(final Result row, final CommandContext context) {
+    return new PropertyRead(InlineProperties.boundRecord(row.getProperty(variableName)), propertyName);
   }
 
   @Override
