@@ -80,7 +80,7 @@ public final class ChannelReopenLog {
   }
 
   /** Every reopen recorded since this file was opened. */
-  long getTotal() {
+  public long getTotal() {
     return total;
   }
 }

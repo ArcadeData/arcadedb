@@ -4377,13 +4377,17 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
   @Override
   public void close() throws IOException {
-    flushHeader();
-    synchronized (channelReopenLock) {
-      closed = true;
-      if (indexChannel != null && indexChannel.isOpen())
-        indexChannel.close();
-      if (indexFile != null)
-        indexFile.close();
+    try {
+      flushHeader();
+    } finally {
+      // MARKED CLOSED EVEN WHEN THE FLUSH FAILS, SO NO LATER READ REOPENS A STORE ITS OWNER CLOSED (#9621)
+      synchronized (channelReopenLock) {
+        closed = true;
+        if (indexChannel != null && indexChannel.isOpen())
+          indexChannel.close();
+        if (indexFile != null)
+          indexFile.close();
+      }
     }
   }
 
@@ -4456,19 +4460,9 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       final long len = fileLength();
       if (len > Integer.MAX_VALUE)
         throw new IOException("Sealed store file too large to ship: " + len + " bytes");
-      final byte[] bytes = new byte[(int) len];
-      final RandomAccessFile file = indexFile;
-      try {
-        readWholeFileInto(bytes);
-      } catch (final IOException e) {
-        // ANOTHER READER UNDER THE SAME READ LOCK CAN BE INTERRUPTED MID-COPY, CLOSING THE DESCRIPTOR THIS SHARES (#9621).
-        // JUDGED ON THE HANDLE THE COPY USED: ANOTHER READER MAY ALREADY HAVE REOPENED THE FIELD, AND A STILL-OPEN HANDLE
-        // MEANS A GENUINE I/O ERROR, WHICH IS RETHROWN
-        if (file.getChannel().isOpen() && file == indexFile)
-          throw e;
-        retryAfterReopen("whole-file read", () -> readWholeFileInto(bytes));
-      }
-      return bytes;
+      // A POSITIONED read rather than seek + readFully on the RandomAccessFile: two callers under the read lock would share
+      // its file pointer. Through readBytes(), so an interrupt closing the shared channel mid-copy is recovered (#9621).
+      return readBytes(0, (int) len);
     } finally {
       directoryLock.readLock().unlock();
     }
@@ -4838,6 +4832,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * mid-scan (issue #9621): the scan clears the directory before it reads a block, so a rerun is a clean one.
    */
   private void loadDirectory() throws IOException {
+    // Only a ClosedChannelException is retried here: the one RandomAccessFile call of the scan, the file length, goes
+    // through fileLength(), which recovers the "Stream Closed" IOException a closed descriptor raises on its own.
     try {
       loadDirectoryOnce();
     } catch (final ClosedChannelException e) {
@@ -5512,10 +5508,9 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     }
   }
 
-  private void readWholeFileInto(final byte[] bytes) throws IOException {
-    final RandomAccessFile file = indexFile;
-    file.seek(0);
-    file.readFully(bytes);
+  /** How many times the channel was reopened since the store was opened, for tests (issue #9621). */
+  long getReopenCountForTest() {
+    return reopenLog.getTotal();
   }
 
   /** The live channel, for tests that simulate another thread's interrupt by closing it (issue #9621). */
