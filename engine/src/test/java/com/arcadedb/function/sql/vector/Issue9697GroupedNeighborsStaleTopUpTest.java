@@ -39,16 +39,16 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Issue #9697 (from #9692): {@code vector.neighbors} (#9368) and {@code vector.sparseNeighbors} (#9692) topped up a short
- * answer when a candidate's record had been deleted by an overlapping commit, but only without {@code groupBy}. The
- * grouped emit skipped the record and returned, so a stale entry could leave a group one member short or cost a whole
- * group its place.
+ * Issue #9697 (from #9692): {@code vector.neighbors} (#9368) and {@code vector.sparseNeighbors} (#9692) topped up a
+ * short answer when a candidate's record had been deleted by an overlapping commit, but only without {@code groupBy}.
+ * The grouped emit skipped the record and returned, so a stale entry could leave a group one member short or cost a
+ * whole group its place.
  * <p>
  * Records {@code 2g} and {@code 2g + 1} form group {@code g}, ordered nearest-first, so {@code k = 3, groupSize = 2}
- * answers the first three groups. Every case runs over one bucket and over two. The records are removed from the bucket only, leaving their index entries behind,
- * which is the state a search sees between a commit's record delete and its index update. The sparse index runs with
- * exact rescoring off ({@code rescoreOversample: 0}) so it hands the stale RIDs over as they are, which isolates the SQL
- * layer from the index-level top-up of #9692.
+ * answers the first three groups. Every case runs over one bucket and over two. The records are removed from the
+ * bucket only, leaving their index entries behind, which is the state a search sees between a commit's record delete
+ * and its index update. The sparse index runs with exact rescoring off ({@code rescoreOversample: 0}) so it hands the
+ * stale RIDs over as they are, which isolates the SQL layer from the index-level top-up of #9692.
  */
 class Issue9697GroupedNeighborsStaleTopUpTest extends TestHelper {
   private static final int COUNT = 60;
@@ -159,7 +159,9 @@ class Issue9697GroupedNeighborsStaleTopUpTest extends TestHelper {
 
   /**
    * End to end on the sparse function, whose answer is exact: five groups always hold far more than two live members,
-   * while a writer replaces 100 records per commit. Every grouped probe must answer three full groups.
+   * while a writer replaces 100 records per commit. Every grouped probe must answer three full groups. Timing dependent:
+   * a run can pass without a probe ever landing in the race, so the deterministic cases above carry the guarantee and
+   * this one is the reporter's shape as a smoke test (it failed before the fix, 0.5 s).
    */
   @Test
   void sparseConcurrentDeletesNeverShortenTheGroupedAnswer() throws Exception {

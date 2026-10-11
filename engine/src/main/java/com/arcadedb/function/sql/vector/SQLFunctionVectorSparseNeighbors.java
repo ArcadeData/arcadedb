@@ -265,10 +265,10 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
 
     // Per-bucket fetch cap. The non-grouped path asks for {@code fetchK} candidates, {@code k} on the first pass and
     // wider on a stale top-up; the grouped path uses {@code fetchK} as the distinct-group budget, with
-    // {@code fetchGroupSize} members each (both {@code k} and {@code groupSize} unless a stale top-up widened them). In
-    // multi-bucket mode each bucket returns up to {@code fetchK} distinct groups, a second phase fetches the members of winning groups a bucket
-    // ranked out (issue #8002), and the post-merge {@link GroupAdmissionState} re-applies the global cap so
-    // cross-bucket group keys collapse correctly.
+    // {@code fetchGroupSize} members each (both {@code k} and {@code groupSize} unless a stale top-up widened them).
+    // In multi-bucket mode each bucket returns up to {@code fetchK} distinct groups, a second phase fetches the
+    // members of winning groups a bucket ranked out (issue #8002), and the post-merge {@link GroupAdmissionState}
+    // re-applies the global cap so cross-bucket group keys collapse correctly.
     final int groupBudget = fetchK;
 
     // Resolved HERE, on the caller's thread, and never inside the searches below (issue #7966). A search that
