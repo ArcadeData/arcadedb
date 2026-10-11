@@ -100,8 +100,11 @@ class Issue9680RunningQueryTerminationTest {
 
   @Test
   void cypherForeachStopsWhenTerminatedAndWritesNothing() {
-    // Every element runs the inner SET on a plan of its own: nothing loops over the list but the FOREACH itself
-    final String query = "MATCH (n:Node {v: 0}) FOREACH (i IN range(1, 50000000) | SET n.x9680 = i)";
+    // Every element runs the inner SET on a plan of its own: nothing loops over the lists but the FOREACHes themselves.
+    // Two nested ranges of at most 1,000,000 elements rather than one of 50,000,000: arcadedb.queryMaxRangeSize scales with
+    // the heap and never goes below that floor, and a single range above it is refused at once on a small CI runner - the
+    // statement had then ended before the test terminated it
+    final String query = "MATCH (n:Node {v: 0}) FOREACH (i IN range(1, 1000000) | FOREACH (j IN range(1, 1000) | SET n.x9680 = j))";
     terminateWhileRunning("opencypher", query, q -> database.transaction(() -> drain(database.command("opencypher", query))));
     try (final ResultSet rs = database.query("sql", "SELECT x9680 FROM Node WHERE v = 0")) {
       assertThat(rs.next().<Object>getProperty("x9680")).as("the terminated statement must not commit its writes").isNull();

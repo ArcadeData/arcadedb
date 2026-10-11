@@ -27,6 +27,8 @@ import com.arcadedb.query.opencypher.executor.operators.NodeHashJoin;
 import com.arcadedb.query.opencypher.executor.operators.PhysicalOperator;
 import com.arcadedb.query.opencypher.executor.operators.ValueHashJoin;
 
+import java.util.Locale;
+
 /**
  * Physical execution plan.
  * Represents "how" the query will be executed - the optimized operator tree.
@@ -184,7 +186,7 @@ public class PhysicalPlan {
       sb.append(rootOperator.explain(0));
     }
 
-    sb.append("\nEstimated Cost: ").append(String.format("%.2f", totalEstimatedCost)).append("\n");
+    sb.append("\nEstimated Cost: ").append(String.format(Locale.ROOT, "%.2f", totalEstimatedCost)).append("\n");
     sb.append("Estimated Rows: ").append(totalEstimatedCardinality).append("\n");
 
     return sb.toString();
@@ -194,7 +196,7 @@ public class PhysicalPlan {
   public String toString() {
     return "PhysicalPlan{" +
         "anchor=" + anchor +
-        ", cost=" + String.format("%.2f", totalEstimatedCost) +
+        ", cost=" + String.format(Locale.ROOT, "%.2f", totalEstimatedCost) +
         ", cardinality=" + totalEstimatedCardinality +
         '}';
   }

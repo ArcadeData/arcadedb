@@ -18,7 +18,10 @@
  */
 package com.arcadedb.query.opencypher;
 
+import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
+import com.arcadedb.database.RID;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.query.opencypher.ast.ComparisonExpression;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.parser.CypherASTBuilder;
@@ -30,6 +33,9 @@ import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.Property;
+import com.arcadedb.schema.Type;
 
 import java.math.BigInteger;
 import java.time.ZoneOffset;
@@ -80,32 +86,85 @@ public final class InlineProperties {
       return true;
 
     for (final Map.Entry<String, Object> entry : properties.entrySet()) {
-      if (!matchesResolvedProperty(record, entry.getKey(), resolve(entry.getValue(), row, context)))
+      if (!matchesProperty(record, entry.getKey(), resolve(entry.getValue(), row, context)))
         return false;
     }
     return true;
   }
 
   /**
-   * Returns true if a stored property value satisfies the value declared for it in the pattern.
+   * Returns true if the property {@code key} of the record satisfies an already resolved expected value: the comparison of
+   * {@link #matchesResolvedValue(Object, Object)}, plus the declared-type coercion only the record can tell about. A
+   * property declared {@code STRING} stores the text of whatever a pattern writes into it ({@code '1'} for {@code 1}), so
+   * the same pattern has to find that text again, or a repeated MERGE duplicates the node (issue #9695). Likewise a DATE
+   * that {@code arcadedb.dateImplementation} read back as an instant still compares as a date (issue #9647).
    */
-  public static boolean matchesValue(final Object actual, final Object declared, final Result row,
-      final CommandContext context) {
-    return matchesResolvedValue(actual, resolve(declared, row, context));
-  }
-
-  /**
-   * Whether the property {@code key} of {@code record} satisfies an already resolved inline value. Unlike
-   * {@link #matchesResolvedValue(Object, Object)} it knows the declared type of the property, so a DATE that
-   * {@code arcadedb.dateImplementation} read back as an instant still compares as a date (issue #9647).
-   */
-  public static boolean matchesResolvedProperty(final Document record, final String key, final Object expected) {
+  public static boolean matchesProperty(final Document record, final String key, final Object expected) {
     final Object actual = record.get(key);
     // A temporal is compared as the type the schema declares: a DATE that arcadedb.dateImplementation read back as an
     // instant is still a date (issue #9647). Only looked up against a temporal, so any other entry pays nothing
-    if (expected instanceof CypherTemporalValue)
-      return matchesResolvedValue(TemporalUtil.asDeclaredDate(record, key, actual), expected);
-    return matchesResolvedValue(actual, expected);
+    if (matchesResolvedValue(expected instanceof CypherTemporalValue ? TemporalUtil.asDeclaredDate(record, key, actual) : actual,
+        expected))
+      return true;
+    // Only the mismatch of a stored text against a non-text operand pays for the schema lookup
+    return actual instanceof String text && expected != null && !(expected instanceof String) && text.equals(
+        declaredText(record, key, expected));
+  }
+
+  /**
+   * The text a write of {@code operand} stores in the property {@code key} of the record when the property is declared
+   * {@code STRING} (the conversion of CREATE, MERGE and SET: the Cypher value's storage form, then the schema conversion
+   * to text), or null when the property is not declared {@code STRING} or the operand has no text form there. Comparing a
+   * stored text with this, instead of with the operand itself, is what lets a pattern match the value it would store: a
+   * schemaless property keeps the Cypher typing of {@code =}, under which {@code '1' = 1} is false.
+   */
+  public static String declaredText(final Document record, final String key, final Object operand) {
+    if (operand == null || operand instanceof String || operand instanceof Map)
+      return null;
+    final Property property = declaredStringProperty(record, key);
+    return property != null ? declaredText(property, record.getDatabase(), operand) : null;
+  }
+
+  /**
+   * The record a variable binding stands for: the record itself, or the one a RID points to (a binding procedures and
+   * persisted node links leave lazy, see {@code PropertyAccessExpression}); null for any other value.
+   */
+  public static Document boundRecord(final Object bound) {
+    if (bound instanceof Document record)
+      return record;
+    if (bound instanceof RID rid) {
+      try {
+        return rid.getRecord() instanceof Document record ? record : null;
+      } catch (final RecordNotFoundException e) {
+        return null;
+      }
+    }
+    return null;
+  }
+
+  /** The property {@code key} of the record's type (or of a supertype) when it is declared {@code STRING}, otherwise null. */
+  public static Property declaredStringProperty(final Document record, final String key) {
+    final DocumentType type = record.getType();
+    if (type == null)
+      return null;
+    final Property property = type.getPolymorphicPropertyIfExists(key);
+    return property != null && property.getType() == Type.STRING ? property : null;
+  }
+
+  /**
+   * {@link #declaredText(Document, String, Object)} for a caller that holds the property instead of a record, such as an
+   * index lookup building its key.
+   */
+  public static String declaredText(final Property property, final Database database, final Object operand) {
+    if (property == null || property.getType() != Type.STRING || operand == null || operand instanceof String
+        || operand instanceof Map)
+      return null;
+    // NaN equals nothing, not even the 'NaN' it was stored as
+    if ((operand instanceof Double d && d.isNaN()) || (operand instanceof Float f && f.isNaN()))
+      return null;
+    return Type.convertOrNull(database, TemporalUtil.toCoreJavaType(operand), String.class, property) instanceof String text ?
+        text :
+        null;
   }
 
   /**
@@ -117,7 +176,7 @@ public final class InlineProperties {
    * stored {@code Integer} matches an inline literal parsed as {@code Long} and a stored {@code Float}
    * matches a {@code Double} parameter (issue #5146).
    * <p>
-   * Prefer {@link #matchesResolvedProperty(Document, String, Object)} when the record is at hand: only that one knows the
+   * Prefer {@link #matchesProperty(Document, String, Object)} when the record is at hand: only that one knows the
    * declared type of the property.
    */
   public static boolean matchesResolvedValue(final Object actual, final Object expected) {

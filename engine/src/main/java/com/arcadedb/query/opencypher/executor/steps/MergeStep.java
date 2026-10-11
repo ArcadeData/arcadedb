@@ -64,7 +64,6 @@ import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
 
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
@@ -1192,12 +1191,13 @@ public class MergeStep extends AbstractExecutionStep {
     for (int i = 0; i < propertyNames.length; i++) {
       final Object value = evaluatedProperties.get(propertyNames[i]);
       // A temporal wrapper is looked up as the java.time value the index key conversion understands. A declared STRING
-      // property holds text, which a temporal never equals in a MATCH (InlineProperties.matchesResolvedValue), so no
-      // candidate can match: nothing to look up, and nothing to scan either (issue #9693)
+      // property holds the text a write of the value stores, which is what a MATCH compares it with
+      // (InlineProperties.matchesProperty), so that text is the key (issue #9695)
       final Property property = type.getPolymorphicPropertyIfExists(propertyNames[i]);
-      if (value instanceof CypherTemporalValue && property != null && property.getType() == Type.STRING)
-        return Collections.emptyIterator();
-      propertyValues[i] = TemporalUtil.toIndexKey(value);
+      final String text = property != null && property.getType() == Type.STRING ?
+          InlineProperties.declaredText(property, context.getDatabase(), value) :
+          null;
+      propertyValues[i] = text != null ? text : TemporalUtil.toIndexKey(value);
     }
 
     final Iterator<Identifiable> cursor = context.getDatabase().lookupByKey(label, propertyNames, propertyValues);
@@ -1319,8 +1319,9 @@ public class MergeStep extends AbstractExecutionStep {
       final Object expectedValue = entry.getValue();
 
       // MERGE is defined as the MATCH of its pattern: the very comparison a MATCH applies to an inline property, so the
-      // two clauses cannot drift apart on a FLOAT, a signed zero or a temporal against stored text (issue #9693)
-      if (!InlineProperties.matchesResolvedProperty(doc, key, expectedValue))
+      // two clauses cannot drift apart on a FLOAT, a signed zero or a temporal against stored text (issue #9693), and a
+      // declared STRING property is found by the text the same value was stored as (issue #9695)
+      if (!InlineProperties.matchesProperty(doc, key, expectedValue))
         return false;
     }
     return true;

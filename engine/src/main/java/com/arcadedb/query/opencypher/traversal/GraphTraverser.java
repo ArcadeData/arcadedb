@@ -292,7 +292,7 @@ public abstract class GraphTraverser {
       return true;
 
     for (final Map.Entry<String, Object> entry : filters.entrySet()) {
-      if (!InlineProperties.matchesResolvedProperty(edge, entry.getKey(), entry.getValue()))
+      if (!InlineProperties.matchesProperty(edge, entry.getKey(), entry.getValue()))
         return false;
     }
     return true;

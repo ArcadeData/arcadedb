@@ -90,6 +90,14 @@ public enum ErrorCategory {
   TIMEOUT,
 
   /**
+   * The statement was stopped on request - {@code terminate query}, a Postgres {@code CancelRequest}, Cypher
+   * {@code TERMINATE TRANSACTIONS} - by its own user or by the server administrator (issue #9689). Never retryable:
+   * re-running work somebody deliberately stopped is the one thing a client must not do, which is why it is told apart
+   * from {@link #TIMEOUT}, a deadline the statement ran out of on its own.
+   */
+  TERMINATED,
+
+  /**
    * Anything else: the server, not the caller, is at fault.
    */
   SERVER;
@@ -97,7 +105,8 @@ public enum ErrorCategory {
   /**
    * The category of {@code error}, or {@link #SERVER} when nothing in its cause chain is recognised.
    * <p>
-   * The order of the tests is behaviour, not style. {@link #RETRY} is decided first so a chain carrying both a
+   * The order of the tests is behaviour, not style. {@link #TERMINATED} is decided before anything else, see its
+   * comment. {@link #RETRY} is decided next so a chain carrying both a
    * conflict and an arithmetic error keeps the transient classification a driver acts on - the same precedence
    * {@code BoltNetworkExecutor.classifyExecutionError} documents. {@link #ARITHMETIC} is decided before
    * {@link #PARSING} so the {@code CommandParsingException} that GraphQL and the query engines wrap execution
@@ -148,6 +157,10 @@ public enum ErrorCategory {
    * nothing worth reclaiming - they run only on a failure path, and each is capped by {@link CauseChain}.
    */
   public static ErrorCategory of(final Throwable error) {
+    // First, before RETRY: whatever else the chain carries - a wrapper some engine puts around every failure, a conflict
+    // the rollback ran into - a statement stopped on request must never be reported as something a client retries
+    if (CauseChain.contains(error, QueryTerminatedException.class))
+      return TERMINATED;
     if (CauseChain.contains(error, NeedRetryException.class) //
         || CauseChain.contains(error, TimeSeriesWalkCoarsenedException.class) //
         || CauseChain.contains(error, QueryHeapBudgetExceededException.class) //

@@ -22,7 +22,6 @@ import com.arcadedb.database.Document;
 import com.arcadedb.exception.InvalidPropertyTypeException;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.temporal.TemporalUtil;
-import com.arcadedb.serializer.BinaryComparator;
 
 import java.util.List;
 import java.util.Map;
@@ -50,10 +49,12 @@ public final class CypherValues {
   /**
    * Numeric-tolerant equality: a stored {@code Integer} 1 equals a supplied {@code Long} 1, which is what makes a
    * MERGE pattern match a record written with a different integral width. A {@code Float} and a {@code Double} may
-   * still report unequal after widening (0.1f != 0.1d). The two zeros are one value (-0.0 equals 0.0), as in a MATCH
-   * and in the index (issue #9303). It answers whether a write changes a stored value (SET), not whether a pattern matches
-   * one: MERGE compares the way MATCH does, through {@code InlineProperties.matchesResolvedValue} (issue #9693), because a
-   * false negative there creates a duplicate.
+   * still report unequal after widening (0.1f != 0.1d). It answers whether a write changes a stored value (the no-op
+   * write skip of a MERGE action, issue #4474), not whether a pattern matches one: MERGE compares the way MATCH does,
+   * through {@code InlineProperties.matchesResolvedValue} (issue #9693), because a false negative there creates a
+   * duplicate. That is why the two zeros are told apart here although a MATCH and the index call them one value (issue
+   * #9303): writing 0.0 over a stored -0.0 changes what the record holds ({@code 1/v} flips sign), so calling them equal
+   * would silently drop the write (issue #9618).
    */
   public static boolean equalValues(final Object a, final Object b) {
     if (a == null)
@@ -62,7 +63,7 @@ public final class CypherValues {
       return true;
     if (a instanceof Number numberA && b instanceof Number numberB)
       return numberA.longValue() == numberB.longValue()
-          && BinaryComparator.compareDoubles(numberA.doubleValue(), numberB.doubleValue()) == 0;
+          && Double.compare(numberA.doubleValue(), numberB.doubleValue()) == 0;
     return false;
   }
 
