@@ -1428,6 +1428,17 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     return snap.nodeMapping.getRID(database, nodeId);
   }
 
+  @Override
+  public int getBucketId(final int nodeId) {
+    final Snapshot snap = checkBuilt();
+    if (nodeId >= snap.nodeMapping.size()) {
+      final DeltaOverlay ov = snap.overlay;
+      final RID rid = ov != null ? ov.getOverflowRID(nodeId) : null;
+      return rid != null ? rid.getBucketId() : -1;
+    }
+    return snap.nodeMapping.getBucketId(snap.nodeMapping.getBucketIdx(nodeId));
+  }
+
   // --- Node type queries ---
 
   /**

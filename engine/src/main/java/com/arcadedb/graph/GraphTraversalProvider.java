@@ -146,6 +146,15 @@ public interface GraphTraversalProvider {
   RID getRID(int nodeId);
 
   /**
+   * Returns the bucket id of the record behind a dense node ID, or -1 if not mapped. Unlike {@code getRID(nodeId)
+   * .getBucketId()} it builds no RID, which matters in a loop over every neighbour of a traversal (issue #9738).
+   */
+  default int getBucketId(final int nodeId) {
+    final RID rid = getRID(nodeId);
+    return rid != null ? rid.getBucketId() : -1;
+  }
+
+  /**
    * Returns neighbor dense node IDs for a given node, direction, and edge types.
    * This is the primary acceleration method — O(1) array access vs O(n) linked list traversal.
    */
