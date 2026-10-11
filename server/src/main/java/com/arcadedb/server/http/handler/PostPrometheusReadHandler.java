@@ -221,7 +221,10 @@ public class PostPrometheusReadHandler extends AbstractBinaryHttpHandler {
             continue;
           if (col.getRole() == ColumnDefinition.ColumnRole.TAG) {
             final Object tagVal = 1 + nonTsIdx < firstRow.length ? firstRow[1 + nonTsIdx] : null;
-            if (tagVal != null)
+            // An empty value is an ABSENT label in Prometheus (issue #7712): left out here exactly as
+            // buildLabelKey leaves it out of the key, or a series would be grouped on a label it is not
+            // reported with (issue #9623).
+            if (tagVal != null && PromQLResponseFormatter.isLabelValuePresent(tagVal.toString()))
               labels.add(new Label(col.getName(), tagVal.toString()));
           }
           nonTsIdx++;
@@ -304,18 +307,32 @@ public class PostPrometheusReadHandler extends AbstractBinaryHttpHandler {
     return -1;
   }
 
-  /** Groups rows by their TAG values, indexed the way {@link #findFieldRowIndex} explains. */
+  /**
+   * Groups rows by their TAG values, indexed the way {@link #findFieldRowIndex} explains.
+   * <p>
+   * Each label is LENGTH-PREFIXED, name and value, as {@code GetPromQLSeriesHandler} and
+   * {@code PromQLEvaluator.labelKey} do: a tag value arrives from a remote-write client and can hold any
+   * character, so a separator-joined key let two distinct label sets ({@code host="a|b",region="c"} and
+   * {@code host="a",region="b|c"}) spell one key and be answered as ONE series carrying both series' samples
+   * under the first one's labels (issue #9623). An empty value is an absent label (issue #7712), so it takes no
+   * part in the identity; carrying the NAME is what keeps that skip from merging {@code host="",region="x"}
+   * with {@code host="x",region=""}.
+   */
   private static String buildLabelKey(final List<ColumnDefinition> columns, final Object[] row) {
-    final StringBuilder sb = new StringBuilder();
+    final StringBuilder sb = new StringBuilder(64);
     int nonTsIdx = 0;
     for (final ColumnDefinition col : columns) {
       if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
         continue;
       if (col.getRole() == ColumnDefinition.ColumnRole.TAG) {
-        if (!sb.isEmpty())
-          sb.append('|');
         final Object val = 1 + nonTsIdx < row.length ? row[1 + nonTsIdx] : null;
-        sb.append(val != null ? val.toString() : "");
+        if (val != null) {
+          final String value = val.toString();
+          if (PromQLResponseFormatter.isLabelValuePresent(value)) {
+            final String name = col.getName();
+            sb.append(name.length()).append(':').append(name).append(value.length()).append(':').append(value);
+          }
+        }
       }
       nonTsIdx++;
     }
