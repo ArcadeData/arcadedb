@@ -183,7 +183,11 @@ public final class Simple8bCodec {
       final int count = buf.getInt();
       if (count < 0)
         throw new IOException("Simple8bCodec: invalid count " + count + " in the nullable header");
-      final long[] nulls = new long[bitmapWords(count)];
+      // Checked before allocating, as the raw layout's count is: a corrupt header must not request a bitmap the buffer cannot fill
+      final int words = bitmapWords(count);
+      if ((long) words * Long.BYTES > buf.remaining())
+        throw new IOException("Simple8bCodec: malformed data (null bitmap of " + words + " word(s) exceeds buffer, size=" + data.length + ")");
+      final long[] nulls = new long[words];
       for (int w = 0; w < nulls.length; w++)
         nulls[w] = buf.getLong();
       return nulls;
@@ -199,7 +203,8 @@ public final class Simple8bCodec {
 
   /** The number of 64-bit words a bitmap over {@code count} samples takes. */
   public static int bitmapWords(final int count) {
-    return (count + 63) >>> 6;
+    // in long arithmetic, so a count near Integer.MAX_VALUE does not wrap
+    return (int) (((long) count + 63) >>> 6);
   }
 
   private static boolean anyBitSet(final long[] bits) {
@@ -229,10 +234,10 @@ public final class Simple8bCodec {
         final int count = buf.getInt();
         if (count < 0)
           throw new IOException("Simple8bCodec: invalid count " + count + " in the nullable header");
-        final int payloadStart = 4 + 4 + bitmapWords(count) * 8;
+        final long payloadStart = 4L + 4L + (long) bitmapWords(count) * Long.BYTES;
         if (payloadStart > data.length)
           throw new IOException("Simple8bCodec: malformed data (null bitmap exceeds buffer, size=" + data.length + ")");
-        buf = ByteBuffer.wrap(data, payloadStart, data.length - payloadStart).slice();
+        buf = ByteBuffer.wrap(data, (int) payloadStart, data.length - (int) payloadStart).slice();
         totalCount = buf.getInt();
         if (totalCount == NULLABLE_MARKER || (totalCount >= 0 ? totalCount : -(long) totalCount) != count)
           throw new IOException("Simple8bCodec: the nullable header declares " + count + " value(s) but its payload " + totalCount);
