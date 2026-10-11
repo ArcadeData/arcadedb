@@ -20,6 +20,9 @@ package com.arcadedb.graph;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.Record;
+import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.schema.DocumentType;
 import com.arcadedb.utility.ResettableIterator;
 
 import java.util.concurrent.atomic.AtomicInteger;
@@ -34,6 +37,12 @@ public abstract class ResettableIteratorBase<T> implements ResettableIterator<T>
   private         long             neighborPosition = -1;
   private         boolean          neighborFiltered = false;
   private         ChainCycleGuard  cycleGuard;
+  // THE ENTRY THE LAST next() RETURNED, SEE entryReturned()
+  private         EdgeSegment      returnedContainer;
+  private         int              returnedBegin;
+  private         int              returnedEnd;
+  private         RID              returnedEdge;
+  private         RID              returnedVertex;
 
   protected ResettableIteratorBase(final DatabaseInternal database, final EdgeSegment current) {
     if (current == null)
@@ -73,6 +82,107 @@ public abstract class ResettableIteratorBase<T> implements ResettableIterator<T>
     cycleGuard = null;
     currentPosition.set(MutableEdgeSegment.CONTENT_START_POSITION);
     browsed = 0;
+    returnedContainer = null;
+  }
+
+  /**
+   * Records the entry {@code next()} is about to hand out, the one a following {@link #removeReturnedEntry} is about.
+   * Not the cursor: a {@code hasNext()} in between peeks the entry after it, possibly in another segment (#9715).
+   */
+  protected final void entryReturned(final EdgeSegment container, final int begin, final int end, final RID edge,
+      final RID vertex) {
+    returnedContainer = container;
+    returnedBegin = begin;
+    returnedEnd = end;
+    returnedEdge = edge;
+    returnedVertex = vertex;
+  }
+
+  /**
+   * {@code Iterator.remove()} of every iterator over an edge list: DELETES the edge of the entry the last {@code next()}
+   * returned, then takes the entry out of the list being walked (#9779).
+   * <p>
+   * The delete goes through the database like {@code edge.delete()} does - the {@code DELETE_RECORD} check, the index
+   * cleanup, the delete events, the disconnection from the far endpoint - and anything it raises reaches the caller
+   * with the entry still in place. A refused delete used to be logged and dropped, and the entry unlinked anyway: a
+   * LIGHTWEIGHT edge the user may not delete was gone from this side and still listed on the other, a record-backed
+   * one was left alive and reachable from one endpoint only.
+   * <p>
+   * The delete skips THIS list ({@code listOwner}, {@code listDirection}) because the entry is taken out of it here, by
+   * position. Removing it by RID as well removed it twice: once the iterator's own copy of the segment was the one the
+   * transaction held, the positional removal took out the entry AFTER it, dropping a sibling edge.
+   * <p>
+   * Only an entry that names no edge is unlinked without a delete, because unlinking it is the repair: its edge record
+   * is gone, its slot holds a record that is not an edge (which must not be deleted through it), or its lightweight
+   * type no longer exists.
+   *
+   * @throws IllegalStateException         when {@code next()} returned nothing since the last removal
+   * @throws UnsupportedOperationException when the iterator does not know whose list it walks
+   */
+  protected final void removeReturnedEntry(final RID listOwner, final Vertex.DIRECTION listDirection) {
+    if (listOwner == null || listDirection == null)
+      throw new UnsupportedOperationException("remove() on an edge list iterator that does not know the vertex it walks");
+    if (returnedContainer == null)
+      throw new IllegalStateException("No entry to remove: next() has not been called since the last remove()");
+
+    deleteEdgeOfEntry((DatabaseInternal) returnedContainer.getDatabase(), listOwner, listDirection);
+    unlinkReturnedEntry();
+  }
+
+  /**
+   * Takes the entry the last {@code next()} returned out of the list being walked, and nothing else: the second half of
+   * {@link #removeReturnedEntry}, for a repair that has to prune an entry whose edge cannot be deleted.
+   */
+  protected final void unlinkReturnedEntry() {
+    if (returnedContainer == null)
+      throw new IllegalStateException("No entry to remove: next() has not been called since the last remove()");
+
+    final EdgeSegment container = returnedContainer;
+    container.removeEntry(returnedBegin, returnedEnd);
+    ((DatabaseInternal) container.getDatabase()).updateRecord(container);
+    returnedContainer = null;
+
+    if (container == currentContainer) {
+      // THE ENTRIES AFTER THE REMOVED ONE SHIFTED BACK, THE CURSOR AND ANY ENTRY ALREADY PEEKED WITH THEM
+      final int removed = returnedEnd - returnedBegin;
+      currentPosition.addAndGet(-removed);
+      entriesShiftedBack(removed);
+    }
+  }
+
+  /**
+   * Called when {@link #unlinkReturnedEntry} shifted the entries of {@link #currentContainer} that follow the removed one
+   * back by {@code removed} bytes: an iterator holding the position of an entry it already peeked moves it too.
+   */
+  protected void entriesShiftedBack(final int removed) {
+  }
+
+  private void deleteEdgeOfEntry(final DatabaseInternal database, final RID listOwner, final Vertex.DIRECTION listDirection) {
+    if (returnedEdge.getPosition() < 0) {
+      final DocumentType edgeType = database.getSchema().getTypeByBucketId(returnedEdge.getBucketId());
+      if (edgeType == null)
+        // A LIGHTWEIGHT ENTRY OF A TYPE THAT NO LONGER EXISTS
+        return;
+      final Edge edge = listDirection == Vertex.DIRECTION.OUT ?
+          new ImmutableLightEdge(database, edgeType, returnedEdge.getBucketId(), listOwner, returnedVertex) :
+          new ImmutableLightEdge(database, edgeType, returnedEdge.getBucketId(), returnedVertex, listOwner);
+      database.deleteEdgeSkippingEndpoint(edge, listOwner, listDirection);
+      return;
+    }
+
+    final Record record;
+    try {
+      // LOADED, NOT LAZY: A LAZY HANDLE DOES NOT PROVE THE RECORD EXISTS, AND THE DELETE READS THE CONTENT ANYWAY
+      record = database.lookupByRID(returnedEdge, true);
+    } catch (final RecordNotFoundException e) {
+      // THE EDGE RECORD IS GONE: THE ENTRY IS STALE
+      return;
+    }
+
+    if (record instanceof Edge edge)
+      // THE EDGE'S OWN DATABASE HANDLE, SO A WRAPPED INSTANCE (SERVER, REPLICATED) SEES THE DELETE GO THROUGH ITS PIPELINE
+      ((DatabaseInternal) edge.getDatabase()).deleteEdgeSkippingEndpoint(edge, listOwner, listDirection);
+    // ELSE THE SLOT HOLDS A RECORD THAT IS NOT AN EDGE: IT MUST NOT BE DELETED THROUGH A STALE ENTRY
   }
 
   /**
@@ -118,6 +228,12 @@ public abstract class ResettableIteratorBase<T> implements ResettableIterator<T>
     final int savedCurrentPosition = currentPosition.get();
     final int savedBrowsed = browsed;
     final ChainCycleGuard savedGuard = cycleGuard == null ? null : cycleGuard.copy();
+    // THE COUNT WALKS THROUGH next(): THE ENTRY A FOLLOWING remove() IS ABOUT MUST SURVIVE IT
+    final EdgeSegment savedReturnedContainer = returnedContainer;
+    final int savedReturnedBegin = returnedBegin;
+    final int savedReturnedEnd = returnedEnd;
+    final RID savedReturnedEdge = returnedEdge;
+    final RID savedReturnedVertex = returnedVertex;
 
     try {
       while (hasNext()) {
@@ -130,6 +246,11 @@ public abstract class ResettableIteratorBase<T> implements ResettableIterator<T>
       currentPosition.set(savedCurrentPosition);
       browsed = savedBrowsed;
       cycleGuard = savedGuard;
+      returnedContainer = savedReturnedContainer;
+      returnedBegin = savedReturnedBegin;
+      returnedEnd = savedReturnedEnd;
+      returnedEdge = savedReturnedEdge;
+      returnedVertex = savedReturnedVertex;
     }
 
     return total;

@@ -29,6 +29,12 @@ public class EdgeVertexIteratorFilter extends IteratorFilterBase<Pair<RID, RID>>
     super(database, current, edgeTypes);
   }
 
+  /** With the vertex and direction of the list walked, so {@link #remove()} can delete the edge of the entry. */
+  public EdgeVertexIteratorFilter(final DatabaseInternal database, final EdgeSegment current, final String[] edgeTypes,
+      final RID vertex, final Vertex.DIRECTION direction) {
+    super(database, current, edgeTypes, vertex, direction);
+  }
+
   @Override
   public boolean hasNext() {
     return super.hasNext(false);
@@ -41,6 +47,7 @@ public class EdgeVertexIteratorFilter extends IteratorFilterBase<Pair<RID, RID>>
     if (next == null)
       throw new NoSuchElementException();
 
+    entryReturned();
     try {
       return new Pair(nextEdge, next);
     } finally {

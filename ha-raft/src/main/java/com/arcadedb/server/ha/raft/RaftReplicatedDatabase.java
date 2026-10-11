@@ -1764,8 +1764,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   }
 
   @Override
-  public void deleteEdgeSkippingEndpoint(final Edge edge, final RID skipEndpoint) {
-    proxied.deleteEdgeSkippingEndpoint(edge, skipEndpoint);
+  public void deleteEdgeSkippingEndpoint(final Edge edge, final RID skipEndpoint, final Vertex.DIRECTION skipDirection) {
+    proxied.deleteEdgeSkippingEndpoint(edge, skipEndpoint, skipDirection);
   }
 
   @Override
