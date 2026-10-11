@@ -281,7 +281,7 @@ public class SaveElementStep extends AbstractExecutionStep {
       if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP) {
         timestamps[0] = toEpochMs(value, zoneId);
       } else {
-        columnValues[colIdx][0] = convertValue(context.getDatabase(), value, col.getDataType());
+        columnValues[colIdx][0] = convertValue(context.getDatabase(), col.getName(), value, col.getDataType());
         colIdx++;
       }
     }
@@ -345,7 +345,8 @@ public class SaveElementStep extends AbstractExecutionStep {
     throw new CommandExecutionException("Cannot convert to timestamp: " + (value != null ? value.getClass().getName() : "null"));
   }
 
-  private static Object convertValue(final Database database, final Object value, final Type targetType) {
+  private static Object convertValue(final Database database, final String columnName, final Object value,
+      final Type targetType) {
     if (value == null)
       return null;
     return switch (targetType) {
@@ -365,19 +366,37 @@ public class SaveElementStep extends AbstractExecutionStep {
       // same instant on a TimeSeries column as on a document property, numbers included: those are epoch MILLIS for
       // every DATETIME precision and epoch DAYS for a DATE, as Type.convert reads them (issue #9324).
       case DATETIME, DATETIME_SECOND, DATETIME_MICROS, DATETIME_NANOS -> {
-        final Long epoch = DateUtils.dateTimeToTimestamp(database, value, DateUtils.getPrecisionFromType(targetType));
+        final Long epoch;
+        try {
+          epoch = DateUtils.dateTimeToTimestamp(database, value, DateUtils.getPrecisionFromType(targetType));
+        } catch (final IllegalArgumentException e) {
+          throw unconvertibleDateTime(columnName, value, targetType, e);
+        }
         // dateTimeToTimestamp answers null for a type it cannot read: refuse it rather than store the absent marker
         if (epoch == null)
-          throw new CommandExecutionException(
-              "Cannot convert a value of type " + value.getClass().getName() + " to a " + targetType + " TimeSeries column");
+          throw unconvertibleDateTime(columnName, value, targetType, null);
         yield epoch;
       }
-      case DATE -> DateUtils.dateToEpochDays(value instanceof String ? Type.convert(database, value, LocalDate.class) : value);
+      case DATE -> {
+        try {
+          // dateToEpochDays reads every temporal and Number but not text, which dateTimeToTimestamp parses itself:
+          // a String is parsed to a LocalDate first, through the same chain the document layer uses
+          yield DateUtils.dateToEpochDays(value instanceof String ? Type.convert(database, value, LocalDate.class) : value);
+        } catch (final IllegalArgumentException e) {
+          throw unconvertibleDateTime(columnName, value, targetType, e);
+        }
+      }
       // DECIMAL needs no branch of its own: Type.convert()'s BigDecimal case already builds it with
       // new BigDecimal(value.toString()), so it reads the float's decimal rather than its bits and never
       // carried the error this DOUBLE case had to be fixed for (issue #7609).
       default -> value;
     };
+  }
+
+  private static CommandExecutionException unconvertibleDateTime(final String columnName, final Object value,
+      final Type targetType, final Exception cause) {
+    return new CommandExecutionException("Cannot convert a value of type " + value.getClass().getName() + " to the " + targetType
+        + " TimeSeries column '" + columnName + "'", cause);
   }
 
   @Override

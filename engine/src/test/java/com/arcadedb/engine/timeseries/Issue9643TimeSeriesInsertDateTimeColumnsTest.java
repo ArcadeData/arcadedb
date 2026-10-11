@@ -20,6 +20,7 @@ package com.arcadedb.engine.timeseries;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Document;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.LocalTimeSeriesType;
@@ -30,6 +31,7 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #9643: {@code INSERT INTO} a TIMESERIES type threw a raw {@code ClassCastException} for every
@@ -167,6 +169,39 @@ class Issue9643TimeSeriesInsertDateTimeColumnsTest extends TestHelper {
     final List<Object[]> rows = engineOf("Sparse").query(Long.MIN_VALUE, Long.MAX_VALUE, null, null);
     assertThat(rows).hasSize(1);
     assertThat(rows.getFirst()[2]).isEqualTo(2.5d);
+  }
+
+  @Test
+  void anExplicitNullIntoADateTimeFieldStillInserts() throws Exception {
+    database.command("sql", "CREATE TIMESERIES TYPE Nulls TIMESTAMP ts FIELDS (v DATETIME_MICROS, d DATE, tail DOUBLE) SHARDS 1");
+    database.command("sql", "INSERT INTO Nulls SET ts = " + BASE_TS + ", v = null, d = null, tail = 2.5");
+
+    final List<Object[]> rows = engineOf("Nulls").query(Long.MIN_VALUE, Long.MAX_VALUE, null, null);
+    assertThat(rows).hasSize(1);
+    assertThat(rows.getFirst()[3]).isEqualTo(2.5d);
+  }
+
+  /**
+   * A value no datetime encoding can read is refused naming the column, not cast to {@code Number} by the engine and
+   * not stored as the absent marker. Through SQL the document layer refuses it first, when the property is set; the
+   * refusal in {@code SaveElementStep.convertValue} is the second line for a value that reaches it unconverted.
+   */
+  @Test
+  void aValueNoDateTimeEncodingCanReadIsRefusedNamingTheColumn() throws Exception {
+    for (final String declared : new String[] { "DATETIME", "DATETIME_NANOS", "DATE" }) {
+      final String typeName = "Bad_" + declared;
+      database.command("sql", "CREATE TIMESERIES TYPE " + typeName + " TIMESTAMP ts FIELDS (observed " + declared
+          + ") SHARDS 1");
+
+      assertThatThrownBy(() -> database.command("sql", "INSERT INTO " + typeName + " SET ts = " + BASE_TS
+          + ", observed = [1, 2]"))
+          .as("%s refuses a list", declared)
+          .isInstanceOfAny(IllegalArgumentException.class, CommandExecutionException.class)
+          .hasMessageContaining("'observed'")
+          .hasMessageContaining(declared);
+      assertThat(engineOf(typeName).query(Long.MIN_VALUE, Long.MAX_VALUE, null, null)).as("%s stored nothing", declared)
+          .isEmpty();
+    }
   }
 
   private void assertStored(final String typeName, final String declared, final long expected, final double tail)
