@@ -26,7 +26,6 @@ import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.TransactionException;
-import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
@@ -118,35 +117,37 @@ class WalCommitOrderingTest {
   @Test
   void explicitLockTransactionWithLateJoiningFileIsRejectedNotSilentlyRelocked() {
     // #4937 review: an explicit-lock transaction that touches a file it did NOT lock must fail with the
-    // contract violation, not have its lock set silently expanded. An EXTERNAL property's paired bucket is
-    // a genuine LATE joiner: an explicit type-lock does not cover it (collectTypeFileIds omits external
-    // buckets), yet updating the property writes it during phase-1 serialization (updateRecordNoLock, AFTER
-    // the initial explicit-lock check) - so only the late-joiner block added by #4937 can catch it.
+    // contract violation, not have its lock set silently expanded. An update is deferred: taking the record for it
+    // only pins its page, and the write itself happens during phase-1 serialization (updateRecordNoLock, AFTER the
+    // initial explicit-lock check), so the bucket of a type the transaction did not lock joins the page set late and
+    // only the late-joiner block added by #4937 can catch it. (This test used an EXTERNAL property's paired bucket
+    // until #9637 made a type or bucket lock cover that bucket too.)
     final DatabaseFactory factory = new DatabaseFactory(DB_PATH);
     if (factory.exists())
       factory.open().drop();
 
     final DatabaseInternal db = (DatabaseInternal) factory.create();
     try {
-      final DocumentType type = db.getSchema().createDocumentType("Doc");
-      type.createProperty("name", Type.STRING);
-      type.createProperty("blob", Type.STRING).setExternal(true);
+      db.getSchema().createDocumentType("Doc").createProperty("name", Type.STRING);
+      db.getSchema().createDocumentType("Other").createProperty("name", Type.STRING);
 
       final RID[] rid = new RID[1];
-      db.transaction(() -> rid[0] = db.newDocument("Doc").set("name", "a")
-          .set("blob", "the quick brown fox jumps over the lazy dog").save().getIdentity());
+      db.transaction(() -> {
+        db.newDocument("Doc").set("name", "a").save();
+        rid[0] = db.newDocument("Other").set("name", "b").save().getIdentity();
+      });
 
       db.begin();
-      // Lock ONLY the Doc type (primary + index buckets); the EXTERNAL 'blob' bucket is NOT covered.
+      // Lock ONLY the Doc type: the bucket of Other is NOT covered.
       db.getTransaction().lock().type("Doc").lock();
 
-      // Update the external property: the write to its paired bucket joins the page set late.
-      db.lookupByRID(rid[0], true).asDocument().modify().set("blob", "a different, also externally-stored value").save();
+      // Update a record of Other: its bucket page is written during phase 1, so it joins the page set late.
+      db.lookupByRID(rid[0], true).asDocument().modify().set("name", "c").save();
 
       assertThatThrownBy(db::commit)
-          .as("an explicit-lock tx touching an unlocked late-joining external bucket must be rejected (#4937 review)")
+          .as("an explicit-lock tx touching an unlocked late-joining bucket must be rejected (#4937 review)")
           .isInstanceOf(TransactionException.class)
-          .hasMessage("Cannot commit transaction because not all the modified resources were locked: [Doc_0_ext]");
+          .hasMessage("Cannot commit transaction because not all the modified resources were locked: [Other_0]");
     } finally {
       if (db.getTransaction().isActive())
         db.rollback();

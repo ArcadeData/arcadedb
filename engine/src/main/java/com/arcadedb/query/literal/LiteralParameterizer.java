@@ -30,9 +30,10 @@ import java.util.logging.Level;
  * #8307). Text-to-query generators, GraphRAG tools and query builders write their values into the text, so without this every
  * value is a new cache key, parsed and planned from scratch.
  * <p>
- * A lookup first tries the text as it is, so a parameterized or repeated statement costs exactly what it did before. On a miss
- * the text is lexed (with the language's own lexer, so a literal is exactly what the grammar calls one) and the literals the
- * language's POLICY allows are replaced with generated parameters: the resulting text is the cache key, and the replaced values
+ * A lookup first tries the text as it is, so a parameterized or repeated statement costs exactly what it did before. A text
+ * whose literals were extracted is remembered too, with its generated key and values, so repeating it costs one map lookup
+ * and a copy of its values rather than a lex (issue #9714). On a miss the text is lexed (with the language's own lexer, so a
+ * literal is exactly what the grammar calls one) and the literals the language's POLICY allows are replaced with generated parameters: the resulting text is the cache key, and the replaced values
  * are returned to be bound like any parameter the caller supplied.
  * <p>
  * The policy is decided once per SHAPE (see {@link LiteralScan}) on the parse tree of the first text of that shape, by
@@ -62,6 +63,12 @@ public abstract class LiteralParameterizer<S> {
 
   private final SegmentedLRUCache<String, Lookup<S>> statements;
   private final SegmentedLRUCache<String, byte[]>    policies;
+  /**
+   * Texts whose literals were extracted, by the text as written: the statement, its generated key and the extracted values.
+   * Kept apart from {@link #statements}, so the one-off texts of a workload that writes its values in never push out the
+   * statements it keeps re-running. The values held here are never handed out: each hit gets its own copy (issue #9714).
+   */
+  private final SegmentedLRUCache<String, Lookup<S>> parameterizedTexts;
 
   /**
    * A statement found or parsed for a query text.
@@ -93,6 +100,7 @@ public abstract class LiteralParameterizer<S> {
   protected LiteralParameterizer(final int size) {
     this.statements = new SegmentedLRUCache<>(size);
     this.policies = new SegmentedLRUCache<>(size);
+    this.parameterizedTexts = new SegmentedLRUCache<>(size);
   }
 
   /**
@@ -124,6 +132,13 @@ public abstract class LiteralParameterizer<S> {
 
     if (!parameterize || !LiteralScan.isEligible(text))
       return parseAsWritten(text);
+
+    // A TEXT EXTRACTED BEFORE: ITS KEY AND VALUES ARE KNOWN, SO NO LEXING (ISSUE #9714)
+    synchronized (parameterizedTexts) {
+      cached = parameterizedTexts.get(text);
+    }
+    if (cached != null)
+      return new Lookup<>(cached.statement(), cached.cacheKey(), new HashMap<>(cached.parameters()));
 
     final LiteralScan scan = scan(text);
     if (scan == null || scan.size() == 0 || scan.size() > MAX_LITERALS)
@@ -185,6 +200,9 @@ public abstract class LiteralParameterizer<S> {
       }
       cached = cache(key, template);
     }
+    synchronized (parameterizedTexts) {
+      parameterizedTexts.put(text, new Lookup<>(cached.statement(), key, new HashMap<>(values)));
+    }
     return new Lookup<>(cached.statement(), key, values);
   }
 
@@ -206,6 +224,9 @@ public abstract class LiteralParameterizer<S> {
     }
     synchronized (policies) {
       policies.clear();
+    }
+    synchronized (parameterizedTexts) {
+      parameterizedTexts.clear();
     }
   }
 

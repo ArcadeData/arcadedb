@@ -46,14 +46,17 @@ public class EdgeVertexIterator extends ResettableIteratorBase<Pair<RID, RID>> {
     if (currentContainer == null)
       return false;
 
-    if (currentPosition.get() < currentContainer.getUsed())
-      return true;
+    // A SEGMENT CAN BE EMPTY ANYWHERE IN THE CHAIN (A DELETE EMPTIES THE HEAD, A GRAPHBATCH THEN PREPENDS A NEW ONE OVER IT):
+    // STEP OVER IT INSTEAD OF ENDING THE WALK THERE (#9715)
+    while (true) {
+      if (currentPosition.get() < currentContainer.getUsed())
+        return true;
 
-    if (moveToPreviousChunk() == null)
-      return false;
+      if (moveToPreviousChunk() == null)
+        return false;
 
-    currentPosition.set(MutableEdgeSegment.CONTENT_START_POSITION);
-    return currentPosition.get() < currentContainer.getUsed();
+      currentPosition.set(MutableEdgeSegment.CONTENT_START_POSITION);
+    }
   }
 
   @Override
