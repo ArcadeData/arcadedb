@@ -21,6 +21,7 @@ package com.arcadedb.server.gremlin;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.ServerException;
 import com.arcadedb.server.StaticBaseServerTest;
 import com.arcadedb.server.TestServerHelper;
 import org.apache.tinkerpop.gremlin.server.channel.HttpChannelizer;
@@ -32,6 +33,9 @@ import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.net.ServerSocket;
 import java.nio.file.Path;
 
 import static org.assertj.core.api.Assertions.assertThatCode;
@@ -48,12 +52,16 @@ class Issue9749GremlinRuntimeProductionModeTest {
   Path root;
 
   private GremlinServerPlugin newPlugin(final String channelizer) {
+    return newPlugin(channelizer, StaticBaseServerTest.allocateFreePorts(1)[0]);
+  }
+
+  private GremlinServerPlugin newPlugin(final String channelizer, final int port) {
     final ContextConfiguration configuration = new ContextConfiguration();
     configuration.setValue(GlobalConfiguration.SERVER_MODE, "development");
     if (channelizer != null)
       configuration.setValue("gremlin.channelizer", channelizer);
     configuration.setValue("gremlin.host", "127.0.0.1");
-    configuration.setValue("gremlin.port", String.valueOf(StaticBaseServerTest.allocateFreePorts(1)[0]));
+    configuration.setValue("gremlin.port", String.valueOf(port));
     final ArcadeDBServer server = TestServerHelper.unstartedServer(root, configuration);
     final GremlinServerPlugin plugin = new GremlinServerPlugin();
     plugin.configure(server, configuration);
@@ -114,6 +122,24 @@ class Issue9749GremlinRuntimeProductionModeTest {
     plugin.stopService();
 
     assertThatCode(() -> plugin.checkServerSettingChange(GlobalConfiguration.SERVER_MODE, "production")).doesNotThrowAnyException();
+  }
+
+  @Test
+  void aStartThatFailedToBindNoLongerRefusesTheSwitch() throws Exception {
+    // The channelizer is recorded before the server is built, so a failed start must release it with the server
+    final int port = StaticBaseServerTest.allocateFreePorts(1)[0];
+    final GremlinServerPlugin plugin = newPlugin(WsAndHttpChannelizer.class.getName(), port);
+    try (final ServerSocket holder = new ServerSocket()) {
+      holder.setReuseAddress(false);
+      holder.bind(new InetSocketAddress(InetAddress.getByName("127.0.0.1"), port));
+
+      assertThatThrownBy(plugin::startService).isInstanceOf(ServerException.class);
+
+      assertThatCode(() -> plugin.checkServerSettingChange(GlobalConfiguration.SERVER_MODE, "production"))
+          .as("nothing serves with the channelizer").doesNotThrowAnyException();
+    } finally {
+      plugin.stopService();
+    }
   }
 
   @Test
