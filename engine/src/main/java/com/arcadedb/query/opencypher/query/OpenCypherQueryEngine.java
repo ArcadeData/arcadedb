@@ -24,6 +24,7 @@ import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.DeferredExistenceChecks;
+import com.arcadedb.database.DocumentValidator;
 import com.arcadedb.database.ExistingRecordsCheck;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandExecutionException;
@@ -31,6 +32,7 @@ import com.arcadedb.exception.CommandParameterMissingException;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.QueryNotIdempotentException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.GraphTraversalProviderRegistry.ViewsPassedOver;
 import com.arcadedb.query.OperationType;
@@ -66,7 +68,9 @@ import com.arcadedb.security.SecurityManager;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 import com.arcadedb.index.Index;
+import com.arcadedb.index.TypeIndex;
 
+import java.math.BigDecimal;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -230,6 +234,10 @@ public class OpenCypherQueryEngine implements QueryEngine {
       // path (database.command) are where a profiled write is legitimate (issue #4366).
       if (!explain && !statement.isReadOnly())
         throw new QueryNotIdempotentException("Query '" + query + "' is not idempotent");
+
+      // SHOW/TERMINATE TRANSACTIONS read no data and are answered by the server's registry, not by a plan (issue #9689)
+      if (!explain && statement instanceof CypherAdminStatement admin && admin.isTransactionsCommand())
+        return executeAdmin(admin, actualQuery, effectiveParameters);
 
       return execute(lookup.cacheKey(), statement, configuration, effectiveParameters, explain, profile, timeExecution);
     } catch (final QueryNotIdempotentException | CommandExecutionException | CommandParsingException | SecurityException
@@ -619,15 +627,26 @@ public class OpenCypherQueryEngine implements QueryEngine {
   }
 
   /**
-   * Changes the declared type of a property, keeping every other attribute of its declaration (MANDATORY, NOTNULL, READONLY,
-   * REGEXP, MIN, MAX, DEFAULT, HIDDEN, custom values) and refusing the change when a stored record violates the new
-   * declaration (#9304). The schema has no in-place type change, so the property is recreated from its own JSON; a refusal
-   * (or any failure, an Error included) puts the previous declaration back before rethrowing. The check scans the whole type, as
-   * CREATE PROPERTY does.
+   * Changes the declared type of a property, keeping every other attribute of its declaration and refusing the change when a
+   * stored record violates the new declaration (#9304). The schema has no in-place type change, so the property is recreated
+   * from its own JSON; a refusal (or any failure, an Error included) puts the previous declaration back before rethrowing. The
+   * check scans the whole type, as CREATE PROPERTY does.
+   * <p>
+   * The attributes no type restricts (MANDATORY, NOTNULL, READONLY, HIDDEN, EXTERNAL, COMPRESSION, custom values) are carried
+   * over as they are. The ones expressed in the old type's terms - OF, REGEXP, MIN, MAX and DEFAULT - are carried over
+   * only when the new type reads them the same way, and otherwise the statement is refused naming them (#9645): copied blindly
+   * they left a property no value could be written through, and the scan of the stored records cannot notice it on a type that
+   * holds none.
    */
   private void retypeProperty(final Schema schema, final String typeName, final Property existing, final Type newType) {
     final DocumentType type = schema.getType(typeName);
     final String propName = existing.getName();
+    final Database database = schema.getEmbedded().getDatabase();
+
+    final List<String> notCarried = typeDependentAttributesNotCarried(database, existing, newType);
+    if (!notCarried.isEmpty())
+      throw refuseRetype(typeName, existing, newType, notCarried, null);
+
     final JSONObject previous = existing.toJSON();
     final JSONObject retyped = new JSONObject(previous.toMap());
     retyped.put("type", newType.name());
@@ -635,7 +654,8 @@ public class OpenCypherQueryEngine implements QueryEngine {
     type.dropProperty(propName);
     try {
       final Property created = type.createProperty(propName, retyped);
-      ExistingRecordsCheck.requireDeclaration(schema.getEmbedded().getDatabase(), type, created);
+      requireDefaultReadableAs(database, typeName, existing, created, newType);
+      ExistingRecordsCheck.requireDeclaration(database, type, created);
     } catch (final Throwable e) {
       // the schema is not transactional: until the declaration is back, a concurrent write is not validated against it
       try {
@@ -649,9 +669,134 @@ public class OpenCypherQueryEngine implements QueryEngine {
     }
   }
 
+  /**
+   * The OF, REGEXP, MIN and MAX of {@code existing} that {@code newType} cannot hold with the meaning they have now, each
+   * described with the reason. An empty list means every one of them, if set, carries over unchanged.
+   */
+  private static List<String> typeDependentAttributesNotCarried(final Database database, final Property existing,
+      final Type newType) {
+    final Type oldType = existing.getType();
+    final List<String> notCarried = new ArrayList<>(4);
+
+    // the element type of a LIST is the value type of a MAP and nothing else: no other type has elements to constrain
+    if (existing.getOfType() != null && !(hasElementType(oldType) && hasElementType(newType)))
+      notCarried.add("OF '" + existing.getOfType() + "' (" + newType + " has no element type)");
+
+    // a pattern describes text: on any other type it is matched against the value's string form, which is not what it
+    // was written for, and a pattern such as '[A-Z]+' refuses every value of a numeric type
+    if (existing.getRegexp() != null && newType != Type.STRING)
+      notCarried.add("REGEXP '" + existing.getRegexp() + "' (" + newType + " values are not text)");
+
+    final String minReason = boundNotCarried(database, oldType, newType, existing.getMin());
+    if (minReason != null)
+      notCarried.add("MIN '" + existing.getMin() + "' (" + minReason + ")");
+    final String maxReason = boundNotCarried(database, oldType, newType, existing.getMax());
+    if (maxReason != null)
+      notCarried.add("MAX '" + existing.getMax() + "' (" + maxReason + ")");
+
+    return notCarried;
+  }
+
+  private static boolean hasElementType(final Type type) {
+    return type == Type.LIST || type == Type.MAP;
+  }
+
+  /**
+   * Why a MIN or MAX of a property of {@code oldType} cannot serve the same purpose on {@code newType}, or null when it can:
+   * the bound is a length on a STRING, a size on a collection and a value on a number or a date, so it carries over only
+   * between two types that measure the same thing and when the new type can read it.
+   */
+  private static String boundNotCarried(final Database database, final Type oldType, final Type newType, final String bound) {
+    if (bound == null)
+      return null;
+    final String oldMeasure = DocumentValidator.boundMeasure(oldType);
+    final String newMeasure = DocumentValidator.boundMeasure(newType);
+    if (newMeasure == null)
+      return newType + " has no order and no size";
+    if (oldMeasure == null)
+      return oldType + " has no order and no size, so the bound has no meaning to carry";
+    if (!newMeasure.equals(oldMeasure))
+      return "a " + oldMeasure + " on " + oldType + ", a " + newMeasure + " on " + newType;
+    return DocumentValidator.unreadableBound(database, newType, bound);
+  }
+
+  /**
+   * The default of the previous declaration, or null when it produces none. A default that already failed to evaluate under
+   * the old type counts as producing none: the new type is then only asked not to throw, which it was asked already.
+   */
+  private static Object evaluateDefaultOrNull(final Property property) {
+    try {
+      return property.getDefaultValue();
+    } catch (final RuntimeException e) {
+      return null;
+    }
+  }
+
+  /**
+   * Refuses the retype when the DEFAULT of the previous declaration does not produce a value of {@code newType}: it would be
+   * stored, and every record created without the property would then fail on it (#9645). A default that produced a value
+   * before and produces none now lost it in the conversion, which is the same failure without the exception.
+   * <p>
+   * A numeric default carried onto another numeric type has to keep its value: {@code Type.convert} narrows silently, so a
+   * DOUBLE {@code 3.7} would become a LONG {@code 3}, and the bounds are refused for the same reason.
+   * <p>
+   * The new default is evaluated once. The old one is evaluated too only when the new one produced nothing, or when both types
+   * are numeric and the new value has to be compared with it, so a default with a side effect (a sequence's next value) is
+   * consumed at most twice by this DDL statement, and usually once.
+   */
+  private static void requireDefaultReadableAs(final Database database, final String typeName, final Property existing,
+      final Property created, final Type newType) {
+    final Object definition = created.getDefaultValueDefinition();
+    if (definition == null)
+      return;
+
+    final String notCarried = "DEFAULT `" + definition + "` (it does not evaluate to a " + newType + ")";
+    Object value;
+    try {
+      value = created.getDefaultValue();
+      // a default set through the API as a non-String is returned verbatim: whether the new type can take it is asked here
+      if (value != null)
+        value = Type.convert(database, value, newType.getDefaultJavaType());
+    } catch (final RuntimeException e) {
+      throw refuseRetype(typeName, existing, newType, List.of(notCarried), e);
+    }
+    if (value == null) {
+      if (evaluateDefaultOrNull(existing) != null)
+        throw refuseRetype(typeName, existing, newType, List.of(notCarried), null);
+      return;
+    }
+
+    if (value instanceof Number converted && NUMERIC_MEASURE.equals(DocumentValidator.boundMeasure(existing.getType()))
+        && evaluateDefaultOrNull(existing) instanceof Number original
+        && new BigDecimal(original.toString()).compareTo(new BigDecimal(converted.toString())) != 0)
+      throw refuseRetype(typeName, existing, newType,
+          List.of("DEFAULT `" + definition + "` (" + original + " becomes " + converted + " as a " + newType + ")"), null);
+  }
+
+  private static final String NUMERIC_MEASURE = DocumentValidator.boundMeasure(Type.LONG);
+
+  private static CommandExecutionException refuseRetype(final String typeName, final Property existing, final Type newType,
+      final List<String> notCarried, final Throwable cause) {
+    return new CommandExecutionException(
+        "Cannot change the type of property '" + typeName + "." + existing.getName() + "' from "
+            + existing.getType() + " to " + newType + ": " + String.join(", ", notCarried)
+            + " cannot be carried over to the new type. Change or remove them with ALTER PROPERTY first", cause);
+  }
+
   private void executeCreateConstraint(final CypherDDLStatement ddl, final Schema schema, final QueryStatistics stats) {
     final String typeName = ddl.getLabelName();
     final String[] propertyNames = ddl.getPropertyNames().toArray(new String[0]);
+
+    // A constraint name is unique across the database (#9646). Checked before anything is created, so a refused statement
+    // leaves no type, property or index behind; IF NOT EXISTS makes a taken name a no-op, as in Neo4j. The check and the
+    // registration at the end are not atomic with the schema changes in between, like every multi-step DDL here: two
+    // concurrent CREATE CONSTRAINT statements with one name on different types can both pass it.
+    final String constraintName = ddl.getConstraintName();
+    if (CypherConstraintRegistry.findOwner(schema, constraintName) != null) {
+      if (ddl.isIfNotExists())
+        return;
+      throw new SchemaException("Constraint '" + constraintName + "' already exists");
+    }
 
     autoCreateDDLType(schema, ddl, typeName);
 
@@ -703,6 +848,11 @@ public class OpenCypherQueryEngine implements QueryEngine {
       }
     }
 
+    // What this statement created, recorded under the constraint's name so DROP CONSTRAINT can undo exactly that (#9646)
+    String ownedIndex = null;
+    final List<String> ownedMandatory = new ArrayList<>(propertyNames.length);
+    boolean changed;
+
     switch (ddl.getConstraintKind()) {
     case UNIQUE: {
       final boolean existedBefore = uniqueIndexExistsOnProperties(schema, typeName, propertyNames);
@@ -716,14 +866,17 @@ public class OpenCypherQueryEngine implements QueryEngine {
       b.withReplaceIfIncompatible(true);
       if (anyUndeclared)
         b.withDefaultKeyTypesForUndeclaredProperties(defaultKeyTypes);
-      b.create();
-      if (!existedBefore)
+      final TypeIndex created = b.create();
+      changed = !existedBefore;
+      if (changed) {
+        ownedIndex = created.getName();
         stats.incConstraintsAdded();
+      }
       break;
     }
 
     case NOT_NULL: {
-      boolean changed = false;
+      changed = false;
       for (final String propName : propertyNames) {
         Property prop = schema.getType(typeName).getPropertyIfExists(propName);
         if (prop == null) {
@@ -734,6 +887,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
         }
         if (!prop.isMandatory()) {
           prop.setMandatory(true);
+          ownedMandatory.add(propName);
           changed = true;
         }
       }
@@ -754,13 +908,19 @@ public class OpenCypherQueryEngine implements QueryEngine {
       b.withReplaceIfIncompatible(true);
       if (anyUndeclared)
         b.withDefaultKeyTypesForUndeclaredProperties(defaultKeyTypes);
-      b.create();
+      final TypeIndex created = b.create();
+      if (!existedBefore)
+        ownedIndex = created.getName();
       for (final String propName : propertyNames) {
         Property prop = schema.getType(typeName).getPropertyIfExists(propName);
         if (prop == null)
           prop = schema.getType(typeName).createProperty(propName, Type.STRING);
-        prop.setMandatory(true);
+        if (!prop.isMandatory()) {
+          prop.setMandatory(true);
+          ownedMandatory.add(propName);
+        }
       }
+      changed = !existedBefore || !ownedMandatory.isEmpty();
       if (!existedBefore)
         stats.incConstraintsAdded();
       break;
@@ -768,10 +928,19 @@ public class OpenCypherQueryEngine implements QueryEngine {
 
     case TYPED:
       // Property type already set above; for IF NOT EXISTS, silently succeed if property already has the correct type
+      changed = typedChanged;
       if (typedChanged)
         stats.incConstraintsAdded();
       break;
+
+    default:
+      throw new IllegalStateException("Unhandled constraint kind: " + ddl.getConstraintKind());
     }
+
+    // An IF NOT EXISTS that found the constraint already in place is a no-op and claims no name, as in Neo4j
+    if (constraintName != null && (changed || !ddl.isIfNotExists()))
+      CypherConstraintRegistry.register(schema.getType(typeName), constraintName, ddl.getConstraintKind(), propertyNames,
+          ownedIndex, ownedMandatory);
   }
 
   /**
@@ -845,6 +1014,11 @@ public class OpenCypherQueryEngine implements QueryEngine {
    */
   private ResultSet executeAdmin(final CypherAdminStatement admin, final String query,
       final Map<String, Object> parameters) {
+    // SHOW/TERMINATE TRANSACTIONS act on the server's running statements, not on the security manager: every user may run
+    // them, and sees and stops only their own statements unless they administer the server (issue #9689)
+    if (admin.isTransactionsCommand())
+      return new CypherTransactionsCommand(database, EXPRESSION_EVALUATOR, query, parameters).execute(admin);
+
     final SecurityManager security = database.getSecurity();
     if (security == null)
       throw new CommandExecutionException("User management commands require server mode");
@@ -1036,17 +1210,24 @@ public class OpenCypherQueryEngine implements QueryEngine {
     return resultSet;
   }
 
+  /**
+   * Drops a constraint by the name {@code CREATE CONSTRAINT <name>} gave it, undoing what that statement created (#9646).
+   * A name that is no constraint's but is an index's still drops that index, which is how an unnamed constraint is
+   * dropped. Any other name raises unless {@code IF EXISTS} is given.
+   */
   private void executeDropConstraint(final CypherDDLStatement ddl, final Schema schema, final QueryStatistics stats) {
     final String constraintName = ddl.getConstraintName();
-    if (ddl.isIfExists()) {
-      if (schema.existsIndex(constraintName)) {
-        schema.dropIndex(constraintName);
-        stats.incConstraintsRemoved();
-      }
-    } else {
+    if (CypherConstraintRegistry.drop(schema, constraintName)) {
+      stats.incConstraintsRemoved();
+      return;
+    }
+    if (schema.existsIndex(constraintName)) {
       schema.dropIndex(constraintName);
       stats.incConstraintsRemoved();
+      return;
     }
+    if (!ddl.isIfExists())
+      throw new SchemaException("Constraint '" + constraintName + "' does not exist");
   }
 
   private void executeCreateIndex(final CypherDDLStatement ddl, final Schema schema, final QueryStatistics stats) {

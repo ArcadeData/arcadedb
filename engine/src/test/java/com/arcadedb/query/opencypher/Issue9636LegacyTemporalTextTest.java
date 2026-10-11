@@ -112,10 +112,13 @@ class Issue9636LegacyTemporalTextTest extends TestHelper {
       assertThat(r.<Object>getProperty("free")).isEqualTo("Paris");
     }
 
-    // Nor does MERGE match a declared STRING against a temporal: the text is text (issue #8384)
+    // MERGE finds the declared STRING by the text the temporal would be stored as (issue #9695), not by a legacy restore:
+    // the text is still text, so no duplicate is created and the property reads back as the String it holds
     database.command("opencypher", "MERGE (n:S {code: duration('P100D')})");
-    try (final ResultSet rs = database.query("opencypher", "MATCH (n:S) RETURN count(n) AS c")) {
-      assertThat(((Number) rs.next().getProperty("c")).intValue()).isEqualTo(2);
+    try (final ResultSet rs = database.query("opencypher", "MATCH (n:S) RETURN count(n) AS c, n.code AS code")) {
+      final Result r = rs.next();
+      assertThat(((Number) r.getProperty("c")).intValue()).isEqualTo(1);
+      assertThat(r.<Object>getProperty("code")).isEqualTo("P100D");
     }
   }
 

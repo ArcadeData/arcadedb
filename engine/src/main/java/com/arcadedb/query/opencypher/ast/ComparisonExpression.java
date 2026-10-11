@@ -18,10 +18,11 @@
  */
 package com.arcadedb.query.opencypher.ast;
 
-import com.arcadedb.schema.Type;
+import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.function.graph.IdFunction;
+import com.arcadedb.query.opencypher.InlineProperties;
 import com.arcadedb.query.opencypher.query.OpenCypherQueryEngine;
 import com.arcadedb.query.opencypher.temporal.CypherDateTime;
 import com.arcadedb.query.opencypher.temporal.CypherLocalDateTime;
@@ -30,6 +31,7 @@ import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinaryComparator;
 
 import java.math.BigDecimal;
@@ -38,6 +40,7 @@ import java.time.Instant;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.time.temporal.Temporal;
+import java.util.Calendar;
 import java.util.Date;
 import java.util.List;
 import java.util.Map;
@@ -117,9 +120,56 @@ public class ComparisonExpression implements BooleanExpression {
       rightValue = right.evaluate(result, context);
     }
 
-    return compareValuesTernary(leftValue, rightValue);
+    return evaluateWithValues(leftValue, rightValue, result);
   }
 
+  /**
+   * {@link #evaluateWithValues(Object, Object)} for a caller that evaluated this comparison's own operands against
+   * {@code result}: also applies the declared-STRING coercion, which needs the row to find the record an operand reads.
+   */
+  public Object evaluateWithValues(final Object leftValue, final Object rightValue, final Result result) {
+    final Object plain = compareValuesTernary(leftValue, rightValue);
+
+    // A property declared STRING holds the text of what was written into it: = and <> also compare that text with the text
+    // the other operand would be stored as, so a pattern finds what it stored (issue #9695). On top of the plain comparison,
+    // not instead of it, so an equality it already grants (a RID spelled as text against its id()) stands. Only a stored
+    // text that did not equal a non-text operand pays for the schema lookup
+    if (((operator == Operator.EQUALS && !Boolean.TRUE.equals(plain)) || (operator == Operator.NOT_EQUALS && !Boolean.FALSE.equals(
+        plain))) && leftValue != null && rightValue != null) {
+      if (leftValue instanceof String && !(rightValue instanceof String)) {
+        final Object text = toDeclaredText(left, rightValue, result);
+        if (text != rightValue)
+          return compareValuesTernary(leftValue, text);
+      } else if (rightValue instanceof String && !(leftValue instanceof String)) {
+        final Object text = toDeclaredText(right, leftValue, result);
+        if (text != leftValue)
+          return compareValuesTernary(text, rightValue);
+      }
+    }
+
+    return plain;
+  }
+
+  /**
+   * The text {@code operand} would be stored as in the property {@code propertySide} reads, when that is a property of a
+   * record declared {@code STRING}; the operand itself otherwise, so the Cypher typing of {@code =} is untouched wherever
+   * no declaration says what the stored text stands for.
+   */
+  private static Object toDeclaredText(final Expression propertySide, final Object operand, final Result result) {
+    if (!(propertySide instanceof PropertyAccessExpression access) || result == null)
+      return operand;
+    final Document record = InlineProperties.boundRecord(result.getProperty(access.getVariableName()));
+    if (record == null)
+      return operand;
+    final String text = InlineProperties.declaredText(record, access.getPropertyName(), operand);
+    return text != null ? text : operand;
+  }
+
+  /**
+   * Compares two already evaluated values with this operator's Cypher semantics, without the declared-STRING coercion of
+   * issue #9695, which needs the row the operands were read from: a caller that evaluated this comparison's own operands
+   * uses {@link #evaluateWithValues(Object, Object, Result)}.
+   */
   public Object evaluateWithValues(final Object leftValue, final Object rightValue) {
     return compareValuesTernary(leftValue, rightValue);
   }
@@ -185,8 +235,8 @@ public class ComparisonExpression implements BooleanExpression {
     // Only against a genuinely zoned operand: two zone-less ones are both UTC already.
     // A datetime read from a stored property is the same: it carries a zone the engine materialized, not one chosen
     // (issue #9325), and the property read has already wrapped it, so it is flagged zone-less on the wrapper.
-    final boolean leftZoneless = left instanceof Date || left instanceof Instant || isStoredZoneless(left);
-    final boolean rightZoneless = right instanceof Date || right instanceof Instant || isStoredZoneless(right);
+    final boolean leftZoneless = left instanceof Date || left instanceof Calendar || left instanceof Instant || isStoredZoneless(left);
+    final boolean rightZoneless = right instanceof Date || right instanceof Calendar || right instanceof Instant || isStoredZoneless(right);
     if (leftZoneless && !rightZoneless && rightTemporal instanceof CypherDateTime zoned)
       leftTemporal = adoptZone(left, (CypherDateTime) leftTemporal, zoned.getValue().getZone());
     else if (rightZoneless && !leftZoneless && leftTemporal instanceof CypherDateTime zoned)
@@ -422,7 +472,7 @@ public class ComparisonExpression implements BooleanExpression {
    * (typically a bound parameter) is coerced once and served from a single-slot memo thereafter.
    */
   private Object coerceTemporal(final Object value) {
-    if (!(value instanceof Temporal || value instanceof Date))
+    if (!TemporalUtil.isNativeTemporal(value))
       return value;
     final Object[] memo = temporalCoercionMemo;
     if (memo != null && memo[0] == value && (long) memo[2] == dateMillis(value))
@@ -454,7 +504,9 @@ public class ComparisonExpression implements BooleanExpression {
    * the memo with the value it had before. Its millis are part of the key; any other operand keys as 0.
    */
   private static long dateMillis(final Object value) {
-    return value instanceof Date date ? date.getTime() : 0L;
+    if (value instanceof Date date)
+      return date.getTime();
+    return value instanceof Calendar calendar ? calendar.getTimeInMillis() : 0L;
   }
 
   private Boolean numericCompare(final long leftNum, final long rightNum) {

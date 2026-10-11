@@ -33,10 +33,13 @@ import java.util.logging.Level;
  * first one after {@link #SEVERE_INTERVAL_NANOS} of quiet, so a later, unrelated interrupt on a long-lived file is not
  * hidden behind an old one. Every reopen in between is logged at {@code FINE}, and the next {@code SEVERE} line says how
  * many it folded. {@link #getTotal()} lets a scan report its own count once when it finishes.
+ * <p>
+ * Public only so the TimeSeries sealed store (another package) can share the same policy (issue #9621): an
+ * engine-internal helper, not an API.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-final class ChannelReopenLog {
+public final class ChannelReopenLog {
   static final long SEVERE_INTERVAL_NANOS = TimeUnit.MINUTES.toNanos(1);
 
   private static final long NEVER = Long.MIN_VALUE;
@@ -49,7 +52,7 @@ final class ChannelReopenLog {
   // volatile ONLY SO getTotal() CAN BE READ WITHOUT THE MONITOR
   private volatile long         total           = 0;
 
-  ChannelReopenLog() {
+  public ChannelReopenLog() {
     this(System::nanoTime);
   }
 
@@ -63,7 +66,7 @@ final class ChannelReopenLog {
    * @return the number of earlier reopens folded into this report when it must be logged at {@link Level#SEVERE}
    * (0 for the first one), or -1 when it must be logged at {@link Level#FINE}
    */
-  synchronized long record() {
+  public synchronized long record() {
     ++total;
     final long now = nanoClock.getAsLong();
     if (lastSevereNanos == NEVER || now - lastSevereNanos >= SEVERE_INTERVAL_NANOS) {
@@ -77,7 +80,7 @@ final class ChannelReopenLog {
   }
 
   /** Every reopen recorded since this file was opened. */
-  long getTotal() {
+  public long getTotal() {
     return total;
   }
 }
