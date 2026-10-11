@@ -40,6 +40,17 @@ public class GetQueryHandler extends AbstractQueryHandler {
     super(httpServer);
   }
 
+  /**
+   * A query cannot write ({@code database.query} refuses a statement that is not idempotent), so a failure of it - a 413 once
+   * the result is over the ceiling, a 400 for a streaming precondition - leaves nothing half applied in the caller's
+   * transaction, and rolling it back would only destroy what the caller wrote before (issue #9784). The request still joins that
+   * transaction: it must read the caller's own writes, and it is refused once a failed command has rolled the transaction back.
+   */
+  @Override
+  protected boolean rollsBackSessionTransactionOnFailure() {
+    return false;
+  }
+
   @Override
   public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user, final Database database,
       final JSONObject payload)

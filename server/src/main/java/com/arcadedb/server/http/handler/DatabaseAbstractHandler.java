@@ -275,7 +275,7 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
           else
             response.set(execute(exchange, user, database, payload));
           return null;
-        }, participatesInSessionTransaction(), endsSession());
+        }, rollsBackSessionTransactionOnFailure(), endsSession(), participatesInSessionTransaction());
       } else {
         if (finalAtomicTransaction)
           executeInTransaction(exchange, user, database, payload, response, retries);
@@ -510,6 +510,25 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
    */
   protected boolean participatesInSessionTransaction() {
     return true;
+  }
+
+  /**
+   * Whether a failure raised by this handler rolls the session's transaction back (issue #9784).
+   * <p>
+   * A different question from {@link #participatesInSessionTransaction()}, which says whether the request RUNS INSIDE the
+   * caller's transaction and is therefore refused once a failed command has rolled it back (issue #9312). The two used to be
+   * one flag, which is right for a command and for the routes that stand outside the transaction altogether, and wrong for a
+   * route that runs inside it but provably writes nothing: its failure leaves nothing half applied, so rolling back destroys
+   * work the client wrote before it, for no benefit. {@code GET} and {@code POST /api/v1/query} are those routes. They keep
+   * joining the transaction - a query must see the writes the caller made in it - and stop destroying it when they fail.
+   * <p>
+   * Defaults to {@link #participatesInSessionTransaction()}, which is what every handler did before the split.
+   *
+   * @see GetQueryHandler
+   * @see PostQueryHandler
+   */
+  protected boolean rollsBackSessionTransactionOnFailure() {
+    return participatesInSessionTransaction();
   }
 
   /**
