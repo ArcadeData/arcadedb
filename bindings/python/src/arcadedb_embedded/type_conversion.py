@@ -35,6 +35,7 @@ class _JavaCoreTypes(NamedTuple):
     big_decimal: Any
     big_integer: Any
     java_date: Any
+    java_calendar: Any
 
 
 class _JavaCollectionTypes(NamedTuple):
@@ -133,6 +134,7 @@ def _get_java_core_types():
         "java.lang.String",
         "java.math.BigDecimal",
         "java.math.BigInteger",
+        "java.util.Calendar",
         "java.util.Collection",
         "java.util.Date",
         "java.util.List",
@@ -153,6 +155,7 @@ def _get_java_core_types():
         String,
         BigDecimal,
         BigInteger,
+        JavaCalendar,
         JavaCollection,
         JavaDate,
         JavaList,
@@ -173,6 +176,7 @@ def _get_java_core_types():
         big_decimal=BigDecimal,
         big_integer=BigInteger,
         java_date=JavaDate,
+        java_calendar=JavaCalendar,
     )
     _TYPE_CACHE["java_collections"] = _JavaCollectionTypes(
         collection=JavaCollection,
@@ -219,7 +223,7 @@ def convert_java_to_python(value: Any) -> Any:
     Handles:
     - Primitives: Boolean, Integer, Long, Float, Double
     - Numeric: BigDecimal, BigInteger
-    - Temporal: Date, LocalDate, LocalDateTime, Instant, ZonedDateTime
+    - Temporal: Date, Calendar, LocalDate, LocalDateTime, Instant, ZonedDateTime
     - Collections: List, Set, Map
     - Arrays: byte[], int[], float[], etc.
     - Special: null → None
@@ -283,8 +287,31 @@ def _conv_bigint(value):
     return int(str(value))
 
 
+_EPOCH_NAIVE = datetime(1970, 1, 1)
+
+
+def _naive_utc_from_epoch_millis(millis):
+    # The engine stores DATETIME as a UTC wall clock (see convert_python_to_java)
+    # and a java.util.Date or Calendar holds that wall clock's UTC instant, so
+    # the naive UTC wall clock is the value, the one _conv_local_datetime gives
+    # for the default implementation and the columnar readers give for this
+    # one. datetime.fromtimestamp() applied the HOST's time zone instead: the
+    # value moved by the host's UTC offset and a DATE (a Date at UTC midnight)
+    # landed on the previous day west of UTC (#9630). Integer arithmetic, not
+    # a float of seconds, so no millisecond is rounded away.
+    return _EPOCH_NAIVE + timedelta(milliseconds=int(millis))
+
+
 def _conv_java_date(value):
-    return datetime.fromtimestamp(value.getTime() / 1000.0)
+    return _naive_utc_from_epoch_millis(value.getTime())
+
+
+def _conv_java_calendar(value):
+    # arcadedb.dateTimeImplementation / dateImplementation = java.util.Calendar,
+    # both documented values. With no branch of its own a GregorianCalendar
+    # fell through to the identity converter and reached Python as the raw
+    # JVM object (#9630).
+    return _naive_utc_from_epoch_millis(value.getTimeInMillis())
 
 
 def _conv_local_date(value):
@@ -405,6 +432,8 @@ def _convert_and_register(value):
 
         if isinstance(value, java_core_types.java_date):
             return _register(value, _conv_java_date)
+        if isinstance(value, java_core_types.java_calendar):
+            return _register(value, _conv_java_calendar)
 
         java_time_types = _get_java_time_types()
         if java_time_types is not None:
