@@ -19,6 +19,7 @@
 package com.arcadedb.index;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
@@ -75,6 +76,25 @@ class Issue9651TypeIndexConcurrentDropReadTest extends TestHelper {
     assertThat(TypeIndex.isStaleRead(index, new IndexException("gone"))).isTrue();
     assertThat(TypeIndex.isStaleRead(index, new IllegalArgumentException("File with id 7 was not found"))).isTrue();
     assertThat(TypeIndex.isStaleRead(index, new IllegalArgumentException("something else"))).isFalse();
+  }
+
+  @Test
+  void aDropRefusedBeforeTakingAnythingAwayLeavesTheIndexReady() {
+    final TypeIndex index = createIndex();
+    final IndexInternal subIndex = index.getIndexesOnBuckets()[0];
+    // a sub-index busy compacting: the drop cannot acquire it and is refused before removing anything
+    assertThat(subIndex.setStatus(new IndexInternal.INDEX_STATUS[] { IndexInternal.INDEX_STATUS.AVAILABLE },
+        IndexInternal.INDEX_STATUS.COMPACTION_IN_PROGRESS)).isTrue();
+    try {
+      assertThatThrownBy(index::drop).isInstanceOf(NeedRetryException.class);
+    } finally {
+      subIndex.setStatus(new IndexInternal.INDEX_STATUS[] { IndexInternal.INDEX_STATUS.COMPACTION_IN_PROGRESS },
+          IndexInternal.INDEX_STATUS.AVAILABLE);
+    }
+
+    assertThat(index.isValid()).isTrue();
+    assertThat(index.isReadyForQueries()).isTrue();
+    assertThat(index.isUnchangedSince(index.getIndexesOnBuckets())).isTrue();
   }
 
   private TypeIndex createIndex() {

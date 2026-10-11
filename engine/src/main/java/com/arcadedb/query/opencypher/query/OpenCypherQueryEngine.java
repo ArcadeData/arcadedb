@@ -985,14 +985,12 @@ public class OpenCypherQueryEngine implements QueryEngine {
     final String recordedOfType = isTyped ? explicitPropertyType.ofType() : null;
     String recordAs = constraintName;
     if (recordAs == null && changed && CypherConstraintRegistry.findEquivalent(constrained, kind, ddl.getPropertyNames(), recordedType,
-        recordedOfType) == null) {
-      recordAs = CypherConstraintRegistry.generatedName(typeName, kind, ddl.getPropertyNames());
-      if (CypherConstraintRegistry.findOwner(schema, recordAs) != null)
-        recordAs = null;
-    }
+        recordedOfType) == null)
+      recordAs = CypherConstraintRegistry.freeGeneratedName(schema, typeName, kind, ddl.getPropertyNames());
     if (recordAs != null && (changed || !ddl.isIfNotExists()))
-      CypherConstraintRegistry.register(constrained, recordAs, kind, propertyNames, ownedIndex, ownedMandatory, declared, previous,
-          recordedType, recordedOfType, isTyped ? ddl.getTypedName().toString() : null);
+      CypherConstraintRegistry.register(constrained, recordAs, kind, propertyNames,
+          new CypherConstraintRegistry.Ownership(ownedIndex, ownedMandatory, declared, previous, recordedType, recordedOfType,
+              isTyped ? ddl.getTypedName().toString() : null));
   }
 
   /**

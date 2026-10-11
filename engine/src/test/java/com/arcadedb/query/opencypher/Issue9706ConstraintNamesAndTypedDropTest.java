@@ -263,6 +263,17 @@ class Issue9706ConstraintNamesAndTypedDropTest extends TestHelper {
   }
 
   @Test
+  void twoPropertySetsSpellingTheSameGeneratedNameGetTwoNames() {
+    command("CREATE CONSTRAINT FOR (n:L) REQUIRE (n.a_b, n.c) IS UNIQUE");
+    command("CREATE CONSTRAINT FOR (n:L) REQUIRE (n.a, n.b_c) IS UNIQUE");
+
+    assertThat(names("SHOW CONSTRAINTS")).containsExactly("constraint_L_a_b_c_unique", "constraint_L_a_b_c_unique_2");
+    command("DROP CONSTRAINT constraint_L_a_b_c_unique_2");
+    assertThat(rows("SHOW CONSTRAINTS YIELD name, properties")).singleElement()
+        .satisfies(r -> assertThat(r.get("properties")).isEqualTo(List.of("a_b", "c")));
+  }
+
+  @Test
   void generatedNamesSurviveReopen() {
     command("CREATE CONSTRAINT FOR (n:L) REQUIRE n.p IS :: STRING");
 

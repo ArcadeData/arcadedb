@@ -23,8 +23,8 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
-import com.arcadedb.query.opencypher.temporal.CypherDate;
 import com.arcadedb.query.opencypher.executor.CypherValues;
+import com.arcadedb.query.opencypher.temporal.CypherDate;
 import com.arcadedb.query.opencypher.temporal.CypherDateTime;
 import com.arcadedb.query.opencypher.temporal.CypherDuration;
 import com.arcadedb.query.opencypher.temporal.CypherLocalDateTime;
@@ -139,8 +139,9 @@ public final class CypherFunctionHelper {
 
   /**
    * Returns the Cypher name of the runtime type of a value: INTEGER, FLOAT, STRING, BOOLEAN, LIST&lt;ANY&gt;, MAP,
-   * NODE, RELATIONSHIP, DATE, LOCAL DATETIME, ZONED DATETIME, LOCAL TIME, ZONED TIME, DURATION, POINT or NULL. Used to phrase type errors (and by valueType()) with the vocabulary of the
-   * language instead of Java class names.
+   * NODE, RELATIONSHIP, DATE, LOCAL DATETIME, ZONED DATETIME, LOCAL TIME, ZONED TIME, DURATION, POINT or NULL. Used to
+   * phrase type errors (and by valueType()) with the vocabulary of the language instead of Java class names. A map is
+   * a POINT when it has the shape point() gives it: three key lookups, so classifying a map stays cheap.
    */
   public static String cypherTypeName(final Object value) {
     return switch (value) {
