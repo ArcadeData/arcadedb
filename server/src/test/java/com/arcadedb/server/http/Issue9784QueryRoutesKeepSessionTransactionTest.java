@@ -217,6 +217,48 @@ class Issue9784QueryRoutesKeepSessionTransactionTest extends BaseGraphServerTest
     }
   }
 
+  /** The fourth place a request is refused before the engine is touched: a streamed response has no envelope to profile in. */
+  @Test
+  void commandAskingToProfileAStreamedResponseIsRefusedAndKeepsTheSessionTransaction() throws Exception {
+    final String sessionId = beginWithWitnesses();
+    try {
+      final String body = new JSONObject().put("language", "sql").put("command", "SELECT FROM " + DOC_TYPE)
+          .put("profileExecution", "basic").toString();
+      final HttpResponse<String> refused = send("POST", "/command/" + getDatabaseName(), sessionId, NDJSON, body);
+      assertThat(refused.statusCode()).as("%s", refused.body()).isEqualTo(400);
+
+      assertTransactionIntactAndCommit(sessionId, "a request refused before the engine was touched must not destroy the transaction");
+    } finally {
+      rollback(sessionId);
+    }
+  }
+
+  /**
+   * The invariant the query routes' lack of a rollback relies on: {@code database.query} accepts idempotent statements only, so a
+   * query that calls a function which writes is refused and leaves NOTHING in the session transaction - not the three documents
+   * the caller wrote before it destroyed, and not the one the function tried to add.
+   */
+  @Test
+  void aQueryCallingAFunctionThatWritesIsRefusedAndLeavesTheSessionTransactionUntouched() throws Exception {
+    assertThat(command(null, "CREATE DOCUMENT TYPE " + DOC_TYPE + " IF NOT EXISTS").statusCode()).isEqualTo(200);
+    assertThat(command(null, "DEFINE FUNCTION fw9784.add \"INSERT INTO " + DOC_TYPE + " SET name = 'smuggled'\" LANGUAGE sql")
+        .statusCode()).isEqualTo(200);
+    final String sessionId = beginWithWitnesses();
+    try {
+      final HttpResponse<String> viaGet = send("GET",
+          "/query/" + getDatabaseName() + "/sql/" + encoded("SELECT fw9784.add() AS r"), sessionId, null, null);
+      assertThat(viaGet.statusCode()).as("%s", viaGet.body()).isGreaterThanOrEqualTo(400);
+      final HttpResponse<String> viaPost = send("POST", "/query/" + getDatabaseName(), sessionId, null,
+          json("SELECT fw9784.add() AS r", null, null));
+      assertThat(viaPost.statusCode()).as("%s", viaPost.body()).isGreaterThanOrEqualTo(400);
+
+      // exactly the three witnesses: the function wrote nothing, and the refusals did not roll anything back
+      assertTransactionIntactAndCommit(sessionId, "a refused query must neither write nor destroy what the caller wrote");
+    } finally {
+      rollback(sessionId);
+    }
+  }
+
   /**
    * The counter-case that keeps the tests above meaningful: a command that fails INSIDE the engine, after it was handed the
    * statement, still rolls the transaction back - that is what a half-applied command needs. And a query sent to a session in
