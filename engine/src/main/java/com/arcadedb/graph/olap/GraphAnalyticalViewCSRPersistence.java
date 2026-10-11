@@ -21,6 +21,7 @@ package com.arcadedb.graph.olap;
 import com.arcadedb.database.DataEncryption;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.engine.NodeLocalFiles;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.FileUtils;
 
@@ -81,8 +82,9 @@ import java.util.zip.CRC32;
 class GraphAnalyticalViewCSRPersistence {
   private static final int    MAGIC          = 0x47415643; // "GAVC"
   private static final int    FORMAT_VERSION = 2;
-  private static final String FILE_PREFIX    = "gav-";
-  private static final String FILE_EXTENSION = ".csr";
+  // NODE-LOCAL (#9638): DECLARED IN NodeLocalFiles SO A CROSS-NODE CHECKSUM LEAVES THE FILE OUT
+  private static final String FILE_PREFIX    = NodeLocalFiles.GAV_CSR_FILE_PREFIX;
+  private static final String FILE_EXTENSION = NodeLocalFiles.GAV_CSR_FILE_EXTENSION;
 
   private GraphAnalyticalViewCSRPersistence() {
   }

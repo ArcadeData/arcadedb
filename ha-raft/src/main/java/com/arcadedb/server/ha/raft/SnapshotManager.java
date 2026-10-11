@@ -19,6 +19,7 @@
 package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.database.LocalDatabase;
+import com.arcadedb.engine.NodeLocalFiles;
 import com.arcadedb.engine.PageSnapshot;
 import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.engine.timeseries.TimeSeriesSealedStore;
@@ -331,6 +332,14 @@ public final class SnapshotManager {
    * WRITING IT - the torn checksum {@link #computeFileChecksums(File, PageSnapshot)} exists to prevent. Skipping it
    * here settles both, before either branch is reached. See {@link PaginatedComponent#isTemporaryFileName(String)}
    * for why the test is on the extension and not on the name.
+   * <p>
+   * #9638 adds the engine's own node-local side files, which are not scratch at all - they persist across restarts - but
+   * are written per node and never shipped by a snapshot: {@code statistics.json} (and the legacy
+   * {@code cached-count.json}), written at whatever moment this node last closed; a Graph Analytical View's persisted
+   * CSR and contraction-hierarchy orders, written in a replicated database only on the leader; and
+   * {@code database.lck}, empty today and so matching by accident. They are declared by
+   * {@link NodeLocalFiles#isNodeLocalFileName(String)} in the engine, beside the constants their writers build the names
+   * from, rather than listed here, so a new engine side file is classified where it is written.
    */
   private static boolean isNodeLocalScratchFileName(final String name) {
     return name.endsWith(".wal")
@@ -344,6 +353,7 @@ public final class SnapshotManager {
         || SnapshotInstaller.isSnapshotMachineryFileName(name)
         || name.equals(ArcadeDBServer.UNVERIFIED_CLOSED_COPY_FILE)
         || name.startsWith(SortedIndexBuildRecoveryMarker.FILE_PREFIX)
-        || PaginatedComponent.isTemporaryFileName(name);
+        || PaginatedComponent.isTemporaryFileName(name)
+        || NodeLocalFiles.isNodeLocalFileName(name);
   }
 }
