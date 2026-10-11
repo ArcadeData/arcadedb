@@ -181,13 +181,15 @@ class Issue9638NodeLocalFilesChecksumTest {
   /**
    * What {@code SnapshotHttpHandler} puts in the archive: the registered page files ({@code addPageFilesToZip}), the
    * sealed stores ({@code addSealedStoresToZip}), the two files of {@code addConfigurationToZip} and the synthesized
-   * recency marker.
+   * recency marker. A mirror of those methods, not a call into them: if the handler starts or stops shipping a file,
+   * update this helper with it.
    */
   private static boolean isShippedBySnapshot(final String name) {
     return (LocalDatabase.isComponentFileName(name) && SnapshotHttpHandler.isShippedPageFile(name))
         || name.endsWith(TimeSeriesSealedStore.FILE_EXTENSION)
         || name.equals(LocalDatabase.CONFIGURATION_FILE_NAME)
         || name.equals(LocalSchema.SCHEMA_FILE_NAME)
+        // TODO #9751: shipped, but rewritten per node on WAL rotation and close, so it may still differ between peers
         || name.equals(TransactionManager.LAST_TX_ID_FILE_NAME);
   }
 

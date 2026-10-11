@@ -54,7 +54,9 @@ public final class NodeLocalFiles {
    * True when {@code fileName} (a name, never a path) is one of the node-local files above. Matched by exact name or by
    * the full prefix-plus-extension shape, never by a substring, so a component file of a type named {@code gav-x} or
    * {@code statistics} is still data: a component file's name always ends with its own extension, which is neither of
-   * the two below.
+   * the two below. The shapes describe the files the engine itself creates; a user file dropped into the directory that
+   * happens to take one of them (say {@code gav-notes.csr}) is left out too, which is harmless because nothing in the
+   * database reads or ships it.
    */
   public static boolean isNodeLocalFileName(final String fileName) {
     return fileName.equals(LocalSchema.STATISTICS_FILE_NAME)
