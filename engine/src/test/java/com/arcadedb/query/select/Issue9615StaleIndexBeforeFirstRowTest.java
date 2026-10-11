@@ -119,11 +119,11 @@ class Issue9615StaleIndexBeforeFirstRowTest extends TestHelper {
   }
 
   /**
-   * The last attempt of a statement whose index kept going away plans without the indexes of its types: a range, an equality and
-   * an ORDER BY on the indexed property are then answered by a scan, with the same rows.
+   * The last attempt of a statement whose index kept going away plans without the key indexes of its types: a range, an equality
+   * and an ORDER BY on the indexed property are then answered by a scan, with the same rows.
    */
   @Test
-  void theLastAttemptPlansWithoutTypeIndexesAndAnswersTheSameRows() {
+  void theLastAttemptPlansWithoutKeyIndexesAndAnswersTheSameRows() {
     database.command("sql", "CREATE DOCUMENT TYPE Person BUCKETS 8");
     database.command("sql", "CREATE PROPERTY Person.id LONG");
     database.command("sql", "CREATE INDEX ON Person (id) NOTUNIQUE");
@@ -143,12 +143,43 @@ class Issue9615StaleIndexBeforeFirstRowTest extends TestHelper {
 
       final BasicCommandContext withoutIndex = new BasicCommandContext();
       withoutIndex.setDatabase(database);
-      final InternalExecutionPlan scan = new SelectExecutionPlanner(statement).withoutTypeIndexes()
+      final InternalExecutionPlan scan = new SelectExecutionPlanner(statement).withoutKeyIndexes()
           .createExecutionPlan(withoutIndex, false);
       assertThat(scan.prettyPrint(0, 2)).as(sql).doesNotContain("FETCH FROM INDEX");
 
       assertThat(ids(new LocalResultSet(scan))).as(sql).containsExactlyElementsOf(ids(new LocalResultSet(indexed)));
     }
+  }
+
+  /**
+   * A FULL_TEXT index stays plannable on the last attempt: {@code CONTAINSTEXT} matches analyzer tokens through the index and
+   * would mean something else on a scan, so dropping the index from the plan would change the answer, not only its cost.
+   */
+  @Test
+  void theLastAttemptKeepsAFullTextIndex() {
+    database.command("sql", "CREATE DOCUMENT TYPE Article");
+    database.command("sql", "CREATE PROPERTY Article.title STRING");
+    database.command("sql", "CREATE INDEX ON Article (title) FULL_TEXT");
+    database.transaction(() -> {
+      database.newDocument("Article").set("title", "graph database engine").save();
+      database.newDocument("Article").set("title", "document store").save();
+    });
+
+    final String sql = "SELECT FROM Article WHERE title CONTAINSTEXT 'graph'";
+    final SelectStatement statement = (SelectStatement) ((DatabaseInternal) database).getStatementCache().get(sql);
+    final BasicCommandContext context = new BasicCommandContext();
+    context.setDatabase(database);
+    final InternalExecutionPlan plan = new SelectExecutionPlanner(statement).withoutKeyIndexes().createExecutionPlan(context, false);
+    assertThat(plan.prettyPrint(0, 2)).contains("FETCH FROM INDEX");
+
+    int rows = 0;
+    try (final ResultSet rs = new LocalResultSet(plan)) {
+      while (rs.hasNext()) {
+        assertThat(rs.next().<String>getProperty("title")).isEqualTo("graph database engine");
+        rows++;
+      }
+    }
+    assertThat(rows).isEqualTo(1);
   }
 
   private static List<Long> ids(final ResultSet rs) {
