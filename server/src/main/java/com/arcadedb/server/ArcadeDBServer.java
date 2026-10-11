@@ -171,7 +171,7 @@ public class ArcadeDBServer {
    * every consumer that splits it. HTTP ({@code exceptionArgs}) and gRPC (the {@code arcadedb-dup-keys} trailer) must both apply it, or the setting means one thing on each surface.
    * The PostgreSQL wire protocol applies it by answering with {@link #CONCEALED_ERROR_MESSAGE} in the {@code M} field and keeping the
    * SQLSTATE (issue #8931); the MongoDB wire protocol words its own errors and keeps the engine message in the server log;
-   * the Gremlin Server (default WebSocket channelizer) rewrites every server-failure answer to {@link #CONCEALED_ERROR_MESSAGE} (issue #9317).
+   * the Gremlin Server rewrites every server-failure answer to {@link #CONCEALED_ERROR_MESSAGE} (issue #9317) and refuses to start in production mode with a channelizer that cannot (issue #9639).
    * The /ws insert session (its error frames and its per-row {@code errors} entries), the /ws subscription listener, Bolt,
    * the Redis RESP protocol and MCP answer with {@link #CONCEALED_ERROR_MESSAGE} through {@link ErrorConcealment} (issue
    * #8749). Any new surface that serialises {@code getKeys()} or the exception message must apply it too: nothing
