@@ -226,7 +226,8 @@ class SupportRedactorTest {
         "eyJ".repeat(n / 3), "a://".repeat(n / 4), "a://b:" + "c".repeat(n - 20), "x".repeat(n - 20) + " --token",
         // the quoted defaultDatabases shape (#9773): every quote is tried as an opener, and a span is read in one pass
         "[a:".repeat(n / 3), "'[a:".repeat(n / 4), "'a[b:c];".repeat(n / 8), "\"'".repeat(n / 2 - 2) + "[a:",
-        "'" + "a;".repeat(n / 2 - 8) + "b[c:d]'", "\"" + "'".repeat(n - 10) + "[a:b]\"" };
+        "'" + "a;".repeat(n / 2 - 8) + "b[c:d]'", "\"" + "'".repeat(n - 10) + "[a:b]\"", "[".repeat(n - 1), "[a".repeat(n / 2),
+        "'A[u:" + "'".repeat(n - 10), "'a[b:c'".repeat(n / 7), "'a[b:c]".repeat(n / 7), "\\'a[b:c]".repeat(n / 8) };
     final StallAwareStopwatch watch = StallAwareStopwatch.start();
     for (final String line : lines)
       new SupportRedactor.Session().redactLine(line);
@@ -359,7 +360,14 @@ class SupportRedactorTest {
     assertThat(session.redactLine("can't load \"A[u:p1];B[v:p2,w:p3:admin]\" at boot"))
         .isEqualTo("can't load \"A[u:*****];B[v:*****,w:*****:admin]\" at boot");
     assertThat(session.redactLine("can't load 'A[u:p1]' at boot")).isEqualTo("can't load 'A[u:*****]' at boot");
-    assertThat(session.getCount()).isEqualTo(4);
+    // a quote inside the credential block is part of the password (the server reads it so): it must not close the span
+    assertThat(session.redactLine("format: 'A[u:pa'ss]' done")).isEqualTo("format: 'A[u:*****]' done");
+    assertThat(session.redactLine("format: \"A[u:pa\"ss,v:x]\" done")).isEqualTo("format: \"A[u:*****,v:*****]\" done");
+    // a block that never closes runs to the end of the line: fail closed
+    assertThat(session.redactLine("format: 'A[u:pa'ss and more")).isEqualTo("format: 'A[*****");
+    // an escaped span, as a JSON string quoted in a log line, closes on the escaped quote
+    assertThat(session.redactLine("{\\\"x\\\": \\\"A[u:p1];B[v:p2]\\\"}")).isEqualTo("{\\\"x\\\": \\\"A[u:*****];B[v:*****]\\\"}");
+    assertThat(session.getCount()).isEqualTo(8);
 
     // bracketed text that is not the value stays as it is
     final SupportRedactor.Session clean = new SupportRedactor.Session();

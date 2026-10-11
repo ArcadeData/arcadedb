@@ -65,7 +65,7 @@ public final class SupportRedactor {
   // Cheap pre-filter: a line that matches none of these cannot be changed by any rule below.
   private static final Pattern PRE_FILTER = Pattern.compile(
       "(?i)" + KEYWORDS + "|defaultdatabases|authorization|bearer|identified\\s+by|-----|://[^/\\s]*@|wsk_|eyJ|AKIA|gh[pousr]_|\\bat-[0-9a-f]{20}"
-          + "|\\[[^\\]:]*+:");
+          + "|\\[[^\\[\\]:]*+:");
 
   // Possessive: a long quoted value must neither backtrack nor recurse once per character (a 64K-character string overflows the
   // stack with a plain (?:a|b)* and is polynomial without the possessive quantifiers)
@@ -258,26 +258,43 @@ public final class SupportRedactor {
       StringBuilder out = null;
       int copied = 0;
       for (int open = nextQuote(line, 0); open >= 0; ) {
-        final char quote = line.charAt(open);
-        final int close = line.indexOf(quote, open + 1);
+        int close = closingQuote(line, open, open + 1);
         if (close < 0) {
           open = nextQuote(line, open + 1);
           continue;
         }
-        final String value = line.substring(open + 1, close);
-        if (!looksLikeDefaultDatabases(value)) {
+        // AN ESCAPED SPAN (\"...\") ENDS BEFORE THE BACKSLASH OF ITS CLOSING QUOTE
+        final boolean escaped = isEscaped(line, open);
+        int end = escaped ? close - 1 : close;
+        if (!looksLikeDefaultDatabases(line.substring(open + 1, end))) {
           open = nextQuote(line, open + 1);
           continue;
         }
+
+        // A QUOTE INSIDE A CREDENTIAL BLOCK IS PART OF THE PASSWORD, AS THE SERVER READS IT: A SPAN THAT STOPPED INSIDE AN
+        // OPEN BLOCK GOES ON TO THE BLOCK'S ']' AND THE NEXT MATCHING QUOTE, OR TO THE END OF THE LINE WHEN EITHER IS
+        // MISSING, WHICH FAILS CLOSED. EACH CHARACTER IS LOOKED AT ONCE MORE AT MOST: THE SCAN RESUMES PAST THE SPAN
+        for (int scanned = open + 1; end < line.length() && blockOpenAt(line, scanned, end); ) {
+          scanned = end;
+          final int bracket = line.indexOf(']', end);
+          close = bracket < 0 ? -1 : closingQuote(line, open, bracket + 1);
+          if (close < 0) {
+            close = line.length();
+            end = line.length();
+          } else
+            end = escaped ? close - 1 : close;
+        }
+
+        final String value = line.substring(open + 1, end);
         final String publishable = String.valueOf(GlobalConfiguration.SERVER_DEFAULT_DATABASES.publishableValue(value));
         if (!publishable.equals(value)) {
           if (out == null)
             out = new StringBuilder(line.length());
           out.append(line, copied, open + 1).append(publishable);
-          copied = close;
+          copied = end;
           count++;
         }
-        open = nextQuote(line, close + 1);
+        open = close + 1 < line.length() ? nextQuote(line, close + 1) : -1;
       }
       if (out == null)
         return line;
@@ -456,6 +473,32 @@ public final class SupportRedactor {
     final boolean closed = !open.isEmpty() && value.length() >= 2 * open.length() && value.endsWith(open);
     final String inner = value.substring(open.length(), closed ? value.length() - open.length() : value.length());
     return open + GlobalConfiguration.SERVER_DEFAULT_DATABASES.publishableValue(inner) + (closed ? open : "");
+  }
+
+  /**
+   * The quote, from {@code from} on, that closes the span {@code open} opened: the same character, escaped the same way, so
+   * an escaped span (a JSON string quoted in a log line) closes on an escaped quote and a plain one does not.
+   */
+  private static int closingQuote(final String text, final int open, final int from) {
+    final char quote = text.charAt(open);
+    final boolean escaped = isEscaped(text, open);
+    for (int i = text.indexOf(quote, from); i >= 0; i = text.indexOf(quote, i + 1))
+      if (isEscaped(text, i) == escaped)
+        return i;
+    return -1;
+  }
+
+  private static boolean isEscaped(final String text, final int position) {
+    return position > 0 && text.charAt(position - 1) == '\\';
+  }
+
+  /** Tells whether a credential block opened in {@code [from, to)} is still open at {@code to}. */
+  private static boolean blockOpenAt(final String text, final int from, final int to) {
+    final int lastOpen = text.lastIndexOf('[', to - 1);
+    if (lastOpen < from)
+      return false;
+    final int closed = text.indexOf(']', lastOpen);
+    return closed < 0 || closed >= to;
   }
 
   private static int nextQuote(final String text, final int from) {
