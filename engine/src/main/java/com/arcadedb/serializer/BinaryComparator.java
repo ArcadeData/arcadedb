@@ -693,7 +693,9 @@ public class BinaryComparator {
     else if (a instanceof ZonedDateTime && (b instanceof ZonedDateTime || b instanceof OffsetDateTime)
         || a instanceof OffsetDateTime && b instanceof ZonedDateTime)
       // the ZONED_DATETIME order, not the timestamp below: the same instant in two zones is two values (issue #9648). Two
-      // OffsetDateTime values keep the timestamp: undeclared, that class is stored as a DATETIME, which is an instant
+      // OffsetDateTime values keep the timestamp: undeclared, that class is stored as a DATETIME, which is an instant. So
+      // across the three classes this is not one total order (two OffsetDateTime of one instant are equal here, and each
+      // differs from a ZonedDateTime in a third zone): a property holds one of the two kinds, never both
       return compareZoned(zonedOf(a), zonedOf(b));
     else if (a instanceof OffsetTime aTime && b instanceof OffsetTime bTime)
       return aTime.compareTo(bTime);
