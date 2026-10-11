@@ -99,7 +99,7 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   /**
    * The sub-indexes a cursor reads, as one snapshot. The live list is copy-on-write, so a loop over it already walks a snapshot,
    * but a cursor that asked the list again afterwards (for its first element's key types) read it as a concurrent drop left it:
-   * emptied, which raised a {@link java.util.NoSuchElementException} that a Gremlin traversal takes for the end of the stream,
+   * emptied, which raised a {@link NoSuchElementException} that a Gremlin traversal takes for the end of the stream,
    * answering an empty result as a success (#9651). An index with no sub-index left is being dropped, and says so the way
    * every reader already expects.
    */
