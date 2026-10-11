@@ -550,6 +550,12 @@ public class PromQLEvaluator {
     final PromQLResult leftResult = evaluate(bin.left(), evalTimeMs, queryStartMs, queryEndMs, stepMs, depth);
     final PromQLResult rightResult = evaluate(bin.right(), evalTimeMs, queryStartMs, queryEndMs, stepMs, depth);
 
+    // Prometheus refuses a set operator with a scalar operand: `and`, `or` and `unless` match series by labels, and a
+    // scalar has none. Without this check the scalar branches below ran them through applyBinaryOp(), which maps them to
+    // NaN (issue #9743). Checked on the evaluated operands for the same reason as the comparison check below.
+    if (bin.op().isSetOperator() && (leftResult instanceof ScalarResult || rightResult instanceof ScalarResult))
+      throw new IllegalArgumentException("set operator \"" + bin.op().symbol() + "\" not allowed in binary scalar expression");
+
     // scalar-scalar
     if (leftResult instanceof ScalarResult ls && rightResult instanceof ScalarResult rs) {
       // Prometheus refuses a scalar-scalar comparison without `bool`: there is no sample to keep or drop, so only the
