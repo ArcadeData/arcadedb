@@ -54,6 +54,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
+// a hang detector for a deadlock between the compaction and the rewrite it is meant to exclude, not a latency bound: the class runs in about 2 seconds
+@Timeout(180)
 class Issue9771SealedRewritesExcludeEachOtherTest extends TestHelper {
   private static final String TYPE_NAME = "Issue9771Ts";
   private static final long   T0        = 1_700_000_000_000L;
