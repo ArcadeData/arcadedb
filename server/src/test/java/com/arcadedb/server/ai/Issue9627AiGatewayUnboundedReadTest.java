@@ -229,6 +229,21 @@ class Issue9627AiGatewayUnboundedReadTest extends BaseGraphServerTest {
     assertThat(new JSONObject(answer.body).getString("code", "")).isEqualTo("token_invalid");
   }
 
+  @Test
+  void anActivationRefusalEchoesOnlyTheStartOfTheGatewaysError() throws Exception {
+    final byte[] json = new JSONObject().put("error", "e".repeat(CAP / 2)).toString().getBytes(StandardCharsets.UTF_8);
+    startGateway((path, out, sent) -> {
+      write(out, "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: " + json.length + "\r\n\r\n");
+      out.write(json);
+      out.flush();
+    });
+
+    final Answer answer = post("/activate", new JSONObject().put("subscriptionKey", "key"));
+
+    assertThat(answer.status).isEqualTo(400);
+    assertThat(new JSONObject(answer.body).getString("error", "")).hasSizeLessThan(AiChatHandler.MAX_ERROR_EXCERPT_CHARS + 100);
+  }
+
   /** An error body goes into a message or a log line only as its start. */
   @Test
   void anErrorBodyIsExcerptedForMessages() {

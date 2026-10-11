@@ -107,8 +107,8 @@ public class AiActivateHandler extends AbstractServerHttpHandler {
       if (response.statusCode() != 200) {
         String errorMsg = "Activation failed";
         try {
-          final JSONObject errBody = new JSONObject(response.body());
-          errorMsg = errBody.getString("error", errorMsg);
+          // Peer text goes back to the user: only its start (issue #9627)
+          errorMsg = AiChatHandler.excerpt(AiChatHandler.refusalBody(response.body()).getString("error", errorMsg));
         } catch (final Exception ignored) {
         }
         // Never propagate 401/403 from the upstream gateway: those statuses are reserved for
