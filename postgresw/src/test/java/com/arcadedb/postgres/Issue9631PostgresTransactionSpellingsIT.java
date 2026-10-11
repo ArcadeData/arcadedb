@@ -204,6 +204,23 @@ class Issue9631PostgresTransactionSpellingsIT extends PostgresWireProtocolTestBa
           assertThat(commandTagOf(extended)).isEqualTo("ROLLBACK");
           assertThat(readyForQueryStatusOf(extended)).isEqualTo('I');
         }
+
+        // AND CHAIN in an aborted block cannot be honored, so it is refused like any other statement there, the block
+        // stays aborted, and a plain ROLLBACK still recovers the session
+        sendSimpleQuery(out, "BEGIN");
+        readUntilReadyForQuery(in);
+        sendSimpleQuery(out, "SELECT * FROM NoSuchType9631");
+        assertThat(readyForQueryStatusOf(readUntilReadyForQuery(in))).isEqualTo('E');
+        sendSimpleQuery(out, "COMMIT AND CHAIN");
+        final List<WireMessage> chain = readUntilReadyForQuery(in);
+        assertThat(sqlStateOf(chain)).isEqualTo("25P02");
+        assertThat(readyForQueryStatusOf(chain)).isEqualTo('E');
+        sendSimpleQuery(out, "ROLLBACK");
+        final List<WireMessage> recovered = readUntilReadyForQuery(in);
+        assertThat(commandTagOf(recovered)).isEqualTo("ROLLBACK");
+        assertThat(readyForQueryStatusOf(recovered)).isEqualTo('I');
+        sendSimpleQuery(out, "SELECT 1");
+        assertThat(messageTypesOf(readUntilReadyForQuery(in))).doesNotContain('E');
       });
     }
   }

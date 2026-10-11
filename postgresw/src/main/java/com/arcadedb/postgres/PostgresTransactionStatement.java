@@ -97,7 +97,7 @@ final class PostgresTransactionStatement {
   static PostgresTransactionStatement parse(final String upperCaseText) {
     if (upperCaseText.isEmpty())
       return null;
-    // CHEAP REJECTION FIRST: THIS RUNS ON EVERY STATEMENT THE WIRE DISPATCHES
+    // Cheap rejection first: this runs on every statement the wire dispatches
     switch (upperCaseText.charAt(0)) {
     case 'A', 'B', 'C', 'E', 'R', 'S' -> {
     }
@@ -107,18 +107,28 @@ final class PostgresTransactionStatement {
     }
     int keywordEnd = 0;
     while (keywordEnd < upperCaseText.length() && !Character.isWhitespace(upperCaseText.charAt(keywordEnd)))
-      // NO KEYWORD BELOW IS LONGER THAN ROLLBACK
+      // No keyword below is longer than ROLLBACK
       if (++keywordEnd > 8)
         return null;
-    final String keyword = upperCaseText.substring(0, keywordEnd);
+    // Matched in place, so a statement that only shares a first letter with a keyword (SELECT, CREATE, SET...)
+    // allocates nothing
+    if (isKeyword(upperCaseText, keywordEnd, "BEGIN"))
+      return begin(upperCaseText, "BEGIN", restOf(upperCaseText, keywordEnd), true);
+    if (isKeyword(upperCaseText, keywordEnd, "START"))
+      return begin(upperCaseText, TAG_START_TRANSACTION, restOf(upperCaseText, keywordEnd), false);
+    if (isKeyword(upperCaseText, keywordEnd, "COMMIT"))
+      return end(PostgresPortal.TransactionControl.COMMIT, "COMMIT", restOf(upperCaseText, keywordEnd));
+    if (isKeyword(upperCaseText, keywordEnd, "END"))
+      return end(PostgresPortal.TransactionControl.COMMIT, "END", restOf(upperCaseText, keywordEnd));
+    if (isKeyword(upperCaseText, keywordEnd, "ROLLBACK"))
+      return end(PostgresPortal.TransactionControl.ROLLBACK, "ROLLBACK", restOf(upperCaseText, keywordEnd));
+    if (isKeyword(upperCaseText, keywordEnd, "ABORT"))
+      return end(PostgresPortal.TransactionControl.ROLLBACK, "ABORT", restOf(upperCaseText, keywordEnd));
+    return null;
+  }
 
-    return switch (keyword) {
-      case "BEGIN" -> begin(upperCaseText, "BEGIN", restOf(upperCaseText, keywordEnd), true);
-      case "START" -> begin(upperCaseText, TAG_START_TRANSACTION, restOf(upperCaseText, keywordEnd), false);
-      case "COMMIT", "END" -> end(PostgresPortal.TransactionControl.COMMIT, keyword, restOf(upperCaseText, keywordEnd));
-      case "ROLLBACK", "ABORT" -> end(PostgresPortal.TransactionControl.ROLLBACK, keyword, restOf(upperCaseText, keywordEnd));
-      default -> null;
-    };
+  private static boolean isKeyword(final String text, final int keywordEnd, final String keyword) {
+    return keywordEnd == keyword.length() && text.startsWith(keyword);
   }
 
   private static String restOf(final String text, final int keywordEnd) {
@@ -127,6 +137,10 @@ final class PostgresTransactionStatement {
 
   private static PostgresTransactionStatement begin(final String query, final String tag, final String rest,
       final boolean transactionKeywordOptional) {
+    // PostgreSQL separates the modes with a comma OR with whitespace (transaction_mode_list : item | list ',' item |
+    // list item), so both are separators here. Doubled commas are accepted too, a leniency over PostgreSQL that only
+    // accepts text PostgreSQL refuses and never changes what a valid list means; a leading comma leaves an empty first
+    // token, which no mode matches
     final String[] tokens = rest.isEmpty() ? new String[0] : MODE_SEPARATOR.split(rest);
     int i = 0;
     if (transactionKeywordOptional) {
@@ -142,7 +156,7 @@ final class PostgresTransactionStatement {
       isolationName = isolationOfModes(query, tokens, i);
     } catch (final PostgresSessionSettings.SettingException e) {
       if (PostgresCopyStatement.SQLSTATE_SYNTAX_ERROR.equals(e.sqlState))
-        // NOT POSTGRESQL'S SPELLING: LEFT TO THE SQL GRAMMAR, WHICH ACCEPTS ARCADEDB'S OWN (BEGIN ISOLATION <level>)
+        // Not PostgreSQL's spelling: left to the SQL grammar, which accepts ArcadeDB's own (BEGIN ISOLATION <level>)
         return null;
       return new PostgresTransactionStatement(PostgresPortal.TransactionControl.BEGIN, null, tag, e);
     }
@@ -157,7 +171,7 @@ final class PostgresTransactionStatement {
           new PostgresSessionSettings.SettingException(
               "transaction isolation level \"serializable\" is not supported by this server: transactions run at \"read committed\" or \"repeatable read\"",
               PostgresSessionSettings.SQLSTATE_FEATURE_NOT_SUPPORTED));
-      // READ UNCOMMITTED BEHAVES AS READ COMMITTED, AS IN POSTGRESQL
+      // READ UNCOMMITTED behaves as READ COMMITTED, as in PostgreSQL
       default -> new PostgresTransactionStatement(PostgresPortal.TransactionControl.BEGIN, Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED,
           tag, null);
     };
@@ -185,7 +199,7 @@ final class PostgresTransactionStatement {
       return null;
 
     if (!chain)
-      // AND NO CHAIN IS THE DEFAULT, SPELLED OUT
+      // AND NO CHAIN is the default, spelled out
       return new PostgresTransactionStatement(control, null, tag, null);
     return new PostgresTransactionStatement(control, null, tag,
         new PostgresSessionSettings.SettingException(keyword + " AND CHAIN is not supported by this server: end the transaction, then open a new one",

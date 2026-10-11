@@ -3723,7 +3723,7 @@ public class PostgresNetworkExecutor extends Thread {
    */
   private static PostgresSessionSettings.Assignment transactionModes(final String query, final String modes,
       final String isolationParameter) {
-    // THE SAME MODE PARSER BEGIN / START TRANSACTION USE (ISSUE #9631), SO BOTH REFUSE THE SAME THINGS THE SAME WAY
+    // The same mode parser BEGIN / START TRANSACTION use (issue #9631), so both refuse the same things the same way
     final String isolation = PostgresTransactionStatement.isolationOfModes(query,
         TRANSACTION_MODE_SEPARATOR.split(modes.toUpperCase(Locale.ENGLISH)), 0);
     return isolation != null ? new PostgresSessionSettings.Assignment(isolationParameter, isolation, false) : PostgresSessionSettings.Assignment.NO_OP;
@@ -4354,7 +4354,9 @@ public class PostgresNetworkExecutor extends Thread {
       // The one transaction-control tag that is not the statement's first word (issue #9631)
       return PostgresTransactionStatement.TAG_START_TRANSACTION;
     } else if ("BEGIN".equals(upperCaseText) || "COMMIT".equals(upperCaseText) || "ROLLBACK".equals(upperCaseText)) {
-      // Every transaction-control statement leaves its canonical tag as the text of the portal or the command tag
+      // Never the client's own text: once recognized, every transaction-control statement - PostgresTransactionStatement
+      // or the #8273 grammar fallback - leaves its canonical tag as portal.query (extended) or commandTag (simple), which
+      // is the text that reaches here. A new recognition path must do the same, or its statement is tagged ""
       return upperCaseText;
     } else if (upperCaseText.startsWith("SAVEPOINT ")) {
       return "SAVEPOINT";
@@ -4457,8 +4459,8 @@ public class PostgresNetworkExecutor extends Thread {
   /**
    * Trims a statement's text and strips ONE trailing {@code ';'} (and the whitespace in front of it), the form every
    * statement matcher of this class expects: {@link PostgresTransactionStatement#parse} matches whole tokens up to the
-   * end of the text, and {@link #getTag} derives the command tag from the text. Shared by the simple-query and the extended-query protocol so the two cannot disagree on what a
-   * transaction-control statement looks like (issue #8245).
+   * end of the text, and {@link #getTag} derives the command tag from the text. Shared by the simple-query and the
+   * extended-query protocol so the two cannot disagree on what a transaction-control statement looks like (issue #8245).
    */
   static String normalizeStatementText(final String text) {
     String normalized = text.trim();
