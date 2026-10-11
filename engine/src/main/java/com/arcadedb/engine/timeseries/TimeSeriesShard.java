@@ -90,6 +90,13 @@ public class TimeSeriesShard implements AutoCloseable {
   // two of them overlapping corrupt each other's temp file or silently undo each other's result (a retention pass inside a
   // compaction's window put the retired blocks back). compactionLock is NOT this lock: compaction deliberately does not hold
   // it for the long part of its work. Lock order: compactionMutex first, then compactionLock.
+  // The HA replication session (runWithCompactionReplication) is not a lock in this order: compact() and mergeSmallBlocks() take
+  // the mutex and then open the session, retention and downsampling open one session for all shards and take each shard's mutex
+  // inside it. That cannot invert into a deadlock because opening a session never waits: FileManager.startRecordingChanges()
+  // answers false when one is already active and the wrapper then returns false without running the work (a deferred pass). A
+  // thread holding a session and waiting for the mutex is waited for by nobody who holds the mutex and wants a session.
+  // runSealedRewrite() must not be called while holding compactionLock (a read lock cannot be upgraded); its only caller,
+  // TimeSeriesEngine.runSealedMaintenanceReplicated(), holds none.
   private final Lock                   compactionMutex = new ReentrantLock();
   // Serializes concurrent appendSamples() calls on this shard.
   // Multiple threads routing to the same shard via round-robin would otherwise produce

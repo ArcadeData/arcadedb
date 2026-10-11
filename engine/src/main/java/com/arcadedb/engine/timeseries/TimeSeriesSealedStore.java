@@ -3808,6 +3808,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     // The file Phase 3 wrote. Opening a path with "rw" quietly re-creates one that is gone, as an EMPTY file, and the header read
     // below would then fail on a bounds check that says nothing about why (issue #9771). It is the one writer that must NOT
     // truncate, so it does not go through openTempFileForRewrite: it appends to what is there, and refuses to invent it.
+    // This check is only a clearer error, not the protection: it is a check followed by an open, and what keeps another rewrite
+    // from removing the file in between is TimeSeriesShard.compactionMutex, which every rewrite of the sealed file holds.
     if (!new File(tempPath).isFile())
       throw new IOException("The compaction temp file '" + tempPath
           + "' is gone: another rewrite of the sealed store removed or replaced it while this compaction was building its replacement");
