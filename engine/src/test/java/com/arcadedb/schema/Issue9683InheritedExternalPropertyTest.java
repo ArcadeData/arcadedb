@@ -213,6 +213,22 @@ class Issue9683InheritedExternalPropertyTest extends TestHelper {
     assertThat(externalCount("Doc")).isZero();
   }
 
+  /** A read rendering (serializeForRead) of a subtype record never writes to the paired bucket, now that it is resolved. */
+  @Test
+  void readRenderingOfAChildRecordDoesNotTouchTheExternalBucket() {
+    createParentWithExternalAndChild();
+    final RID child = saveDocument("Child", BIG);
+
+    database.transaction(() -> {
+      final DatabaseInternal db = (DatabaseInternal) database;
+      final MutableDocument modified = child.asDocument(true).modify().set("blob", BIG2);
+      db.getSerializer().serializeForRead(db, modified);
+    });
+
+    assertThat(externalCount("Child")).isEqualTo(1L);
+    assertExternal(child, BIG);
+  }
+
   @Test
   void settingAnInheritedExternalValueToNullReleasesTheExternalRecord() {
     createParentWithExternalAndChild();
