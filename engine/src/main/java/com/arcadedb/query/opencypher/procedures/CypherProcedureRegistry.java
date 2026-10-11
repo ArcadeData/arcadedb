@@ -24,6 +24,7 @@ import com.arcadedb.query.opencypher.procedures.db.DbIndexFulltextQueryNodes;
 import com.arcadedb.query.opencypher.procedures.db.DbIndexFulltextQueryRelationships;
 import com.arcadedb.query.opencypher.procedures.db.DbIndexVectorQueryNodes;
 import com.arcadedb.query.opencypher.procedures.db.DbLabels;
+import com.arcadedb.query.opencypher.procedures.db.DbMigrateLegacyTemporals;
 import com.arcadedb.query.opencypher.procedures.db.DbPropertyKeys;
 import com.arcadedb.query.opencypher.procedures.db.DbRelationshipTypes;
 import com.arcadedb.query.opencypher.procedures.db.DbSchemaVisualization;
@@ -399,6 +400,7 @@ public final class CypherProcedureRegistry {
     register(new DbIndexFulltextQueryNodes());
     register(new DbIndexFulltextQueryRelationships());
     register(new DbLabels());
+    register(new DbMigrateLegacyTemporals());
     register(new DbRelationshipTypes());
     register(new DbPropertyKeys());
     register(new DbSchemaVisualization("db.schema"));

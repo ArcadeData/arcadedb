@@ -63,10 +63,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
 
-import java.time.temporal.Temporal;
 import java.util.ArrayList;
-import java.util.Collections;
-import java.util.Date;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
@@ -1194,12 +1191,13 @@ public class MergeStep extends AbstractExecutionStep {
     for (int i = 0; i < propertyNames.length; i++) {
       final Object value = evaluatedProperties.get(propertyNames[i]);
       // A temporal wrapper is looked up as the java.time value the index key conversion understands. A declared STRING
-      // property holds text, which a temporal never equals in a MATCH (InlineProperties.matchesResolvedValue), so no
-      // candidate can match: nothing to look up, and nothing to scan either (issue #9693)
+      // property holds the text a write of the value stores, which is what a MATCH compares it with
+      // (InlineProperties.matchesProperty), so that text is the key (issue #9695)
       final Property property = type.getPolymorphicPropertyIfExists(propertyNames[i]);
-      if (value instanceof CypherTemporalValue && property != null && property.getType() == Type.STRING)
-        return Collections.emptyIterator();
-      propertyValues[i] = TemporalUtil.toIndexKey(value);
+      final String text = property != null && property.getType() == Type.STRING ?
+          InlineProperties.declaredText(property, context.getDatabase(), value) :
+          null;
+      propertyValues[i] = text != null ? text : TemporalUtil.toIndexKey(value);
     }
 
     final Iterator<Identifiable> cursor = context.getDatabase().lookupByKey(label, propertyNames, propertyValues);
@@ -1321,8 +1319,18 @@ public class MergeStep extends AbstractExecutionStep {
       final Object expectedValue = entry.getValue();
 
       // MERGE is defined as the MATCH of its pattern: the very comparison a MATCH applies to an inline property, so the
-      // two clauses cannot drift apart on a FLOAT, a signed zero or a temporal against stored text (issue #9693)
-      if (!InlineProperties.matchesResolvedValue(doc.get(key), expectedValue))
+      // two clauses cannot drift apart on a FLOAT, a signed zero or a temporal against stored text (issue #9693), and a
+      // declared STRING property is found by the text the same value was stored as (issue #9695)
+      final Object stored = doc.get(key);
+      // ...except for the text a release before the native temporal types stored a temporal as: on a database that
+      // predates them it is that temporal, which MERGE matched before, and must go on matching rather than create a
+      // duplicate beside it (issue #9636). Only an undeclared property is restored, so it never meets the STRING coercion
+      final Object restored = stored instanceof String text && expectedValue instanceof CypherTemporalValue ?
+          TemporalUtil.restoreLegacyText(doc, key, text) :
+          stored;
+      if (restored != stored ?
+          !InlineProperties.matchesResolvedValue(restored, expectedValue) :
+          !InlineProperties.matchesProperty(doc, key, expectedValue))
         return false;
     }
     return true;
@@ -1574,7 +1582,7 @@ public class MergeStep extends AbstractExecutionStep {
     if (value instanceof CypherTemporalValue)
       return value;
     // A native java.time parameter (a datetime sent over Bolt or HTTP) is wrapped like datetime() so both compare alike
-    if (value instanceof Temporal || value instanceof Date) {
+    if (TemporalUtil.isNativeTemporal(value)) {
       final Object wrapped = TemporalUtil.fromCoreJavaType(value);
       if (wrapped instanceof CypherTemporalValue)
         return wrapped;

@@ -19,6 +19,7 @@
 package com.arcadedb.engine.timeseries;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.engine.ChannelReopenLog;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.engine.timeseries.codec.DeltaOfDeltaCodec;
@@ -29,12 +30,15 @@ import com.arcadedb.engine.timeseries.codec.TimeSeriesCodec;
 import com.arcadedb.engine.timeseries.simd.TimeSeriesVectorOps;
 import com.arcadedb.engine.timeseries.simd.TimeSeriesVectorOpsProvider;
 import com.arcadedb.schema.Type;
+import com.arcadedb.utility.FileUtils;
 
 import java.io.File;
+import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
+import java.nio.channels.ClosedChannelException;
 import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -57,6 +61,7 @@ import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.function.UnaryOperator;
 import java.util.logging.Level;
 import java.util.zip.CRC32;
 
@@ -181,8 +186,37 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
   private final String               basePath;
   private final List<ColumnDefinition> columns;
-  private       RandomAccessFile     indexFile;
-  private       FileChannel          indexChannel;
+  /**
+   * The file and its channel, held for the life of the store and replaced only by the file-swap paths (under the
+   * directory WRITE lock) and by {@link #reopenChannel()}. An interrupt landing on ANY thread blocked in an I/O on the
+   * channel closes it for every thread ({@code ClosedByInterruptException}), so every operation on it recovers through
+   * {@link #retryAfterReopen} instead of leaving the store unreadable until a swap happens to replace the file
+   * (issue #9621). Volatile because a reopen runs under the directory READ lock, which orders nothing between two
+   * readers.
+   */
+  private volatile RandomAccessFile  indexFile;
+  private volatile FileChannel       indexChannel;
+  /** Set by {@link #close()} under {@link #channelReopenLock}: a store closed on purpose is never reopened. */
+  private volatile boolean           closed;
+  /** Serializes {@link #reopenChannel()} with itself and with {@link #close()}. */
+  private final    Object            channelReopenLock = new Object();
+  private final    ChannelReopenLog  reopenLog         = new ChannelReopenLog();
+  /** Same bound as {@code PaginatedComponentFile}: enough for an interrupt landing again during the retry itself. */
+  private static final int           REOPEN_ATTEMPTS   = 5;
+
+  /** An operation on the channel that is repeated from its start after a reopen. */
+  @FunctionalInterface
+  private interface ChannelOperation {
+    void run() throws IOException;
+  }
+
+  /**
+   * Test seam (issue #9640): when set, wraps every {@link FileChannel} this store opens on its sealed file and on its
+   * temp files. A local-disk channel essentially never transfers fewer bytes than asked for, so the short reads and
+   * writes the {@link FileChannel} contract allows can only be exercised through a channel that does. Read once per
+   * channel open, never on the read path.
+   */
+  static volatile UnaryOperator<FileChannel> TEST_CHANNEL_DECORATOR = null;
 
   enum BlockMatchResult { SKIP, FAST_PATH, SLOW_PATH }
 
@@ -488,10 +522,10 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     final File f = new File(basePath + ".ts.sealed");
     final boolean exists = f.exists();
     this.indexFile = new RandomAccessFile(f, "rw");
-    this.indexChannel = indexFile.getChannel();
+    this.indexChannel = channelOf(indexFile);
 
     try {
-      if (exists && indexFile.length() >= HEADER_SIZE)
+      if (exists && fileLength() >= HEADER_SIZE)
         loadDirectory();
       else
         writeEmptyHeader();
@@ -536,7 +570,9 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       final CRC32 crc = new CRC32();
       crc.update(metaBuf.array(), 0, metaBuf.limit());
 
-      final long blockStart = indexFile.length();
+      // fileLength() reopens a channel an interrupt left closed (issue #9621). The RandomAccessFile writes below are not
+      // interruptible, and the directory WRITE lock keeps every reader off the shared descriptor until they are done.
+      final long blockStart = fileLength();
       long offset = blockStart;
       indexFile.seek(offset);
       indexFile.write(metaBuf.array(), 0, metaBuf.limit());
@@ -2645,7 +2681,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         headerBuf.putLong(Long.MAX_VALUE);
         headerBuf.putLong(Long.MIN_VALUE);
         headerBuf.flip();
-        tempFile.getChannel().write(headerBuf);
+        FileUtils.writeFully(channelOf(tempFile), headerBuf, 0);
 
         for (final BlockEntry oldEntry : retained)
           copyBlockToFile(tempFile, oldEntry, colCount, newDirectory);
@@ -2664,7 +2700,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         // Move failed — original file is still in place; reopen handles so the store stays usable
         try {
           indexFile = new RandomAccessFile(oldFile, "rw");
-          indexChannel = indexFile.getChannel();
+          indexChannel = channelOf(indexFile);
         } catch (final IOException reopenEx) {
           LogManager.instance().log(this, Level.SEVERE,
               "Failed to reopen sealed store after failed atomic move: %s", reopenEx, oldFile.getAbsolutePath());
@@ -2693,7 +2729,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       retentionRemovedBelowTs = Math.max(retentionRemovedBelowTs, timestamp);
 
       indexFile = new RandomAccessFile(oldFile, "rw");
-      indexChannel = indexFile.getChannel();
+      indexChannel = channelOf(indexFile);
       rewriteHeader();
     } finally {
       directoryLock.writeLock().unlock();
@@ -3041,7 +3077,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       headerBuf.putLong(Long.MAX_VALUE);
       headerBuf.putLong(Long.MIN_VALUE);
       headerBuf.flip();
-      tempFile.getChannel().write(headerBuf);
+      FileUtils.writeFully(channelOf(tempFile), headerBuf, 0);
 
       int groupIdx = 0;
       int i = 0;
@@ -3281,7 +3317,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       headerBuf.putLong(Long.MAX_VALUE);
       headerBuf.putLong(Long.MIN_VALUE);
       headerBuf.flip();
-      tempFile.getChannel().write(headerBuf);
+      FileUtils.writeFully(channelOf(tempFile), headerBuf, 0);
 
       // Write all blocks in ascending minTimestamp order
       for (final WriteSpec spec : writeOrder) {
@@ -3313,7 +3349,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       // Move failed — original file is still in place; reopen handles so the store stays usable
       try {
         indexFile = new RandomAccessFile(oldFile, "rw");
-        indexChannel = indexFile.getChannel();
+        indexChannel = channelOf(indexFile);
       } catch (final IOException reopenEx) {
         LogManager.instance().log(this, Level.SEVERE,
             "Failed to reopen sealed store after failed atomic move: %s", reopenEx, oldFile.getAbsolutePath());
@@ -3335,7 +3371,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     }
 
     indexFile = new RandomAccessFile(oldFile, "rw");
-    indexChannel = indexFile.getChannel();
+    indexChannel = channelOf(indexFile);
     rewriteHeader();
   }
 
@@ -3689,7 +3725,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       headerBuf.putLong(Long.MAX_VALUE);
       headerBuf.putLong(Long.MIN_VALUE);
       headerBuf.flip();
-      tempFile.getChannel().write(headerBuf);
+      FileUtils.writeFully(channelOf(tempFile), headerBuf, 0);
 
       for (final WriteSpec spec : writeOrder) {
         final BlockEntry entry;
@@ -3743,7 +3779,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         // Move failed — original file is still in place; reopen handles so the store stays usable
         try {
           indexFile = new RandomAccessFile(sealedFile, "rw");
-          indexChannel = indexFile.getChannel();
+          indexChannel = channelOf(indexFile);
         } catch (final IOException reopenEx) {
           LogManager.instance().log(this, Level.SEVERE,
               "Failed to reopen sealed store after failed atomic move: %s", reopenEx, sealedFile.getAbsolutePath());
@@ -3752,7 +3788,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       }
 
       indexFile = new RandomAccessFile(sealedFile, "rw");
-      indexChannel = indexFile.getChannel();
+      indexChannel = channelOf(indexFile);
 
       blockDirectory.clear();
       ++directoryVersion;
@@ -3806,8 +3842,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     try (final RandomAccessFile tempFile = new RandomAccessFile(tempPath, "rw")) {
       // Read the current header to get existing block count and global min/max timestamps
       final ByteBuffer hdrBuf = ByteBuffer.allocate(HEADER_SIZE);
-      tempFile.seek(0);
-      tempFile.getChannel().read(hdrBuf);
+      readExactly(channelOf(tempFile), hdrBuf, 0, "the temp file header");
       hdrBuf.flip();
       hdrBuf.position(7); // skip magic(4) + version(1) + colCount(2)
       final int existingBlockCount = hdrBuf.getInt();
@@ -3833,7 +3868,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       updateBuf.putLong(curGlobalMin);
       updateBuf.putLong(curGlobalMax);
       updateBuf.flip();
-      tempFile.getChannel().write(updateBuf, 7);
+      FileUtils.writeFully(channelOf(tempFile), updateBuf, 7);
     }
   }
 
@@ -3920,7 +3955,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         headerBuf.putLong(Long.MAX_VALUE);
         headerBuf.putLong(Long.MIN_VALUE);
         headerBuf.flip();
-        tempFile.getChannel().write(headerBuf);
+        FileUtils.writeFully(channelOf(tempFile), headerBuf, 0);
 
         for (final BlockEntry entry : retained)
           copyBlockToFile(tempFile, entry, colCount, newDirectory);
@@ -3939,7 +3974,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         // Move failed — original file is still in place; reopen handles so the store stays usable
         try {
           indexFile = new RandomAccessFile(oldFile, "rw");
-          indexChannel = indexFile.getChannel();
+          indexChannel = channelOf(indexFile);
         } catch (final IOException reopenEx) {
           LogManager.instance().log(this, Level.SEVERE,
               "Failed to reopen sealed store after failed atomic move: %s", reopenEx, oldFile.getAbsolutePath());
@@ -3961,7 +3996,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       }
 
       indexFile = new RandomAccessFile(oldFile, "rw");
-      indexChannel = indexFile.getChannel();
+      indexChannel = channelOf(indexFile);
       rewriteHeader();
     } finally {
       directoryLock.writeLock().unlock();
@@ -4065,7 +4100,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     final Lock lock = options.fix() ? directoryLock.writeLock() : directoryLock.readLock();
     lock.lock();
     try {
-      final long fileLength = indexFile.length();
+      final long fileLength = fileLength();
       if (fileLength < HEADER_SIZE) {
         problems.add("the file is " + fileLength + " bytes, shorter than its " + HEADER_SIZE + "-byte header");
         return new TimeSeriesIntegrity.Outcome(problems, repairs);
@@ -4661,7 +4696,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   public long getFileSizeBytes() throws IOException {
     directoryLock.readLock().lock();
     try {
-      return indexFile.length();
+      return fileLength();
     } finally {
       directoryLock.readLock().unlock();
     }
@@ -4711,11 +4746,18 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
   @Override
   public void close() throws IOException {
-    flushHeader();
-    if (indexChannel != null && indexChannel.isOpen())
-      indexChannel.close();
-    if (indexFile != null)
-      indexFile.close();
+    try {
+      flushHeader();
+    } finally {
+      // MARKED CLOSED EVEN WHEN THE FLUSH FAILS, SO NO LATER READ REOPENS A STORE ITS OWNER CLOSED (#9621)
+      synchronized (channelReopenLock) {
+        closed = true;
+        if (indexChannel != null && indexChannel.isOpen())
+          indexChannel.close();
+        if (indexFile != null)
+          indexFile.close();
+      }
+    }
   }
 
   /**
@@ -4784,13 +4826,12 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     flushHeader();
     directoryLock.readLock().lock();
     try {
-      final long len = indexFile.length();
+      final long len = fileLength();
       if (len > Integer.MAX_VALUE)
         throw new IOException("Sealed store file too large to ship: " + len + " bytes");
-      final byte[] bytes = new byte[(int) len];
-      indexFile.seek(0);
-      indexFile.readFully(bytes);
-      return bytes;
+      // A POSITIONED read rather than seek + readFully on the RandomAccessFile: two callers under the read lock would share
+      // its file pointer. Through readBytes(), so an interrupt closing the shared channel mid-copy is recovered (#9621).
+      return readBytes(0, (int) len);
     } finally {
       directoryLock.readLock().unlock();
     }
@@ -4840,7 +4881,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       Files.move(incoming.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING);
 
       indexFile = new RandomAccessFile(target, "rw");
-      indexChannel = indexFile.getChannel();
+      indexChannel = channelOf(indexFile);
 
       // What this node held a moment ago, so the image can be compared against it below.
       final Set<Long> previousBlockIds = new HashSet<>(blockDirectory.size());
@@ -4853,7 +4894,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       globalMinTs = Long.MAX_VALUE;
       globalMaxTs = Long.MIN_VALUE;
       headerDirty = false;
-      if (indexFile.length() >= HEADER_SIZE)
+      if (fileLength() >= HEADER_SIZE)
         loadDirectory();
       else
         writeEmptyHeader();
@@ -5111,6 +5152,12 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     return buf.array();
   }
 
+  private static FileChannel channelOf(final RandomAccessFile file) {
+    final FileChannel channel = file.getChannel();
+    final UnaryOperator<FileChannel> decorator = TEST_CHANNEL_DECORATOR;
+    return decorator != null ? decorator.apply(channel) : channel;
+  }
+
   private void writeEmptyHeader() throws IOException {
     final ByteBuffer buf = ByteBuffer.allocate(HEADER_SIZE);
     buf.putInt(MAGIC_VALUE);
@@ -5120,8 +5167,28 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     buf.putLong(Long.MAX_VALUE); // min ts
     buf.putLong(Long.MIN_VALUE); // max ts
     buf.flip();
-    indexChannel.write(buf, 0);
-    indexChannel.force(true);
+    writeHeader(buf, true);
+  }
+
+  private void writeHeader(final ByteBuffer buf, final boolean metaData) throws IOException {
+    try {
+      writeHeaderOnce(buf, metaData);
+    } catch (final ClosedChannelException e) {
+      retryAfterReopen("header write", () -> {
+        buf.rewind();
+        writeHeaderOnce(buf, metaData);
+      });
+    }
+  }
+
+  /**
+   * Writes {@code buf}, from its current position, at file offset 0. Looped: one positional write may legally store
+   * only part of the header, leaving a block count and a range that are half old and half new (issue #9640).
+   */
+  private void writeHeaderOnce(final ByteBuffer buf, final boolean metaData) throws IOException {
+    final FileChannel channel = indexChannel;
+    FileUtils.writeFully(channel, buf, 0);
+    channel.force(metaData);
   }
 
   private void rewriteHeader() throws IOException {
@@ -5133,11 +5200,24 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     buf.putLong(globalMinTs);
     buf.putLong(globalMaxTs);
     buf.flip();
-    indexChannel.write(buf, 0);
-    indexChannel.force(false);
+    writeHeader(buf, false);
   }
 
+  /**
+   * Rebuilds the directory from the file, rerun from its start on a reopened channel when an interrupt closes it
+   * mid-scan (issue #9621): the scan clears the directory before it reads a block, so a rerun is a clean one.
+   */
   private void loadDirectory() throws IOException {
+    // Only a ClosedChannelException is retried here: the one RandomAccessFile call of the scan, the file length, goes
+    // through fileLength(), which recovers the "Stream Closed" IOException a closed descriptor raises on its own.
+    try {
+      loadDirectoryOnce();
+    } catch (final ClosedChannelException e) {
+      retryAfterReopen("directory load", this::loadDirectoryOnce);
+    }
+  }
+
+  private void loadDirectoryOnce() throws IOException {
     // One canonical instance per distinct tag value, and per distinct declared array, for the whole directory
     // (issue #8793). A low-rate feed seals a small block per pass and every block declares the same few thousand
     // values, so decoding each one into a fresh String kept blocks x values copies alive for the life of the
@@ -5146,7 +5226,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     final Map<String, String> canonicalValues = new HashMap<>();
     final Map<List<String>, String[]> canonicalArrays = new HashMap<>();
     final ByteBuffer headerBuf = ByteBuffer.allocate(HEADER_SIZE);
-    indexChannel.read(headerBuf, 0);
+    // Checked: a short read used to be decoded as a whole header, the rest of it whatever the buffer held (#9640)
+    readExactly(indexChannel, headerBuf, 0, "the header");
     headerBuf.flip();
 
     final int magic = headerBuf.getInt();
@@ -5175,7 +5256,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     blockDirectory.clear();
     ++directoryVersion;
     decodedColumnCache.clear();
-    final long fileLength = indexFile.length();
+    final long fileLength = fileLength();
     long pos = HEADER_SIZE;
 
     // magic + minTs + maxTs + sampleCount + colSizes: what every generation of the record carries. A TSB3 block
@@ -5187,7 +5268,10 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     while (pos + shortestBaseMetaSize <= fileLength) {
       final int readSize = (int) Math.min(shortestBaseMetaSize + (long) BLOCK_ID_BYTES, fileLength - pos);
       final ByteBuffer metaBuf = ByteBuffer.allocate(readSize);
-      if (indexChannel.read(metaBuf, pos) < readSize)
+      // Every read of the scan loops until the buffer is full or the file ends (issue #9640): a short count is then
+      // the unfinished tail of an interrupted write, never a read that merely came back short - taking one of those
+      // for the end of the file silently dropped every block after it
+      if (FileUtils.readFully(indexChannel, metaBuf, pos) < readSize)
         break;
       metaBuf.flip();
 
@@ -5227,7 +5311,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       // Read stats section: numericColCount(4) + [min(8) + max(8) + sum(8)] * numericColCount (schema order)
       long statsPos = pos + baseMetaSize;
       final ByteBuffer numBuf = ByteBuffer.allocate(4);
-      if (indexChannel.read(numBuf, statsPos) < 4)
+      if (FileUtils.readFully(indexChannel, numBuf, statsPos) < 4)
         break;
       numBuf.flip();
       final int numericColCount = numBuf.getInt();
@@ -5247,7 +5331,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
             n++;
           }
         final ByteBuffer statsBuf = ByteBuffer.allocate(statsSize);
-        if (indexChannel.read(statsBuf, statsPos) < statsSize)
+        if (FileUtils.readFully(indexChannel, statsBuf, statsPos) < statsSize)
           break;
         statsBuf.flip();
         // Stats are in schema order — iterate columns, consuming one entry per column the WRITER emitted one
@@ -5293,7 +5377,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       String[][] blockTagDistinctValues = null;
       long tagEndPos = statsPos;
       final ByteBuffer tagCountBuf = ByteBuffer.allocate(2);
-      if (indexChannel.read(tagCountBuf, tagEndPos) < 2)
+      if (FileUtils.readFully(indexChannel, tagCountBuf, tagEndPos) < 2)
         break;
       tagCountBuf.flip();
       // Read as unsigned short for safety
@@ -5307,7 +5391,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
           if (columns.get(c).getRole() != ColumnDefinition.ColumnRole.TAG)
             continue;
           final ByteBuffer dcBuf = ByteBuffer.allocate(2);
-          indexChannel.read(dcBuf, tagEndPos);
+          readExactly(indexChannel, dcBuf, tagEndPos, "a tag value count");
           dcBuf.flip();
           // Read as unsigned short: values up to 65535 (MAX_DICTIONARY_SIZE) are valid
           final int distinctCount = dcBuf.getShort() & 0xFFFF;
@@ -5316,7 +5400,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
           final String[] distinctValues = new String[distinctCount];
           for (int v = 0; v < distinctCount; v++) {
             final ByteBuffer lenBuf = ByteBuffer.allocate(2);
-            indexChannel.read(lenBuf, tagEndPos);
+            readExactly(indexChannel, lenBuf, tagEndPos, "a tag value length");
             lenBuf.flip();
             // Read as unsigned short: tag values are bounded to 32767 bytes at write time
             final int valLen = lenBuf.getShort() & 0xFFFF;
@@ -5324,7 +5408,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
             final byte[] valBytes = new byte[valLen];
             final ByteBuffer valBuf = ByteBuffer.wrap(valBytes);
-            indexChannel.read(valBuf, tagEndPos);
+            readExactly(indexChannel, valBuf, tagEndPos, "a tag value");
             final String value = new String(valBytes, StandardCharsets.UTF_8);
             distinctValues[v] = canonicalValues.computeIfAbsent(value, k -> k);
             tagEndPos += valLen;
@@ -5346,7 +5430,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
       // Read stored CRC32 (validate lazily on first block read)
       final ByteBuffer crcBuf = ByteBuffer.allocate(4);
-      if (indexChannel.read(crcBuf, dataPos) < 4)
+      if (FileUtils.readFully(indexChannel, crcBuf, dataPos) < 4)
         throw new IOException("Unexpected end of sealed store: missing block CRC32");
       crcBuf.flip();
       // Read from the file rather than recorded from a write, so the flag stays false: this is the one path whose
@@ -5698,14 +5782,138 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
   private byte[] readBytes(final long offset, final int size) throws IOException {
     final ByteBuffer buf = ByteBuffer.allocate(size);
-    int totalRead = 0;
-    while (totalRead < size) {
-      final int read = indexChannel.read(buf, offset + totalRead);
-      if (read == -1)
-        throw new IOException("Unexpected end of sealed store at offset " + (offset + totalRead));
-      totalRead += read;
+    try {
+      readExactly(indexChannel, buf, offset, "block data");
+    } catch (final ClosedChannelException e) {
+      // THE LAMBDA IS ALLOCATED ON THE RECOVERY PATH ONLY (issue #9621)
+      retryAfterReopen("read", () -> {
+        buf.clear();
+        readExactly(indexChannel, buf, offset, "block data");
+      });
     }
     return buf.array();
+  }
+
+
+  /**
+   * The file length, recovering a channel another thread's interrupt closed (issue #9621). {@link RandomAccessFile}
+   * shares its descriptor with the channel, so once the channel is closed every {@code indexFile} call fails with a
+   * plain {@code IOException("Stream Closed")} rather than a {@link ClosedChannelException}: the channel's state, not
+   * the exception type, says whether this is a closed channel. Every path that then writes or reads through
+   * {@code indexFile} ({@link #appendBlock}, {@link #readWholeSealedFile}, {@link #checkIntegrity}) starts here, under a
+   * directory lock that keeps every reader off the channel for the rest of its sequence.
+   */
+  private long fileLength() throws IOException {
+    final RandomAccessFile file = indexFile;
+    try {
+      return file.length();
+    } catch (final IOException e) {
+      if (file.getChannel().isOpen() && file == indexFile)
+        throw e;
+      final long[] length = new long[1];
+      retryAfterReopen("length", () -> length[0] = indexFile.length());
+      return length[0];
+    }
+  }
+
+  /**
+   * The single recovery policy for a channel found closed (issue #9621), the same as {@code PaginatedComponentFile}'s
+   * (#9306): reopen the channel and repeat {@code operation} from its start, a bounded number of times, because this
+   * thread's OWN interrupt can close the freshly reopened channel again. The interrupt flag is cleared around the retry
+   * so the reopened channel is not closed at once, and restored afterwards so the caller still sees the cancellation.
+   * Only a reopen that is REFUSED - the store was closed on purpose, or its file no longer exists - is a real failure.
+   * <p>
+   * So an interrupt does NOT cancel a sealed-store read: the read completes and the flag is left set for the caller to
+   * act on at its next cancellation point, the same deferral #9306 chose for the page file.
+   */
+  private void retryAfterReopen(final String operation, final ChannelOperation channelOperation) throws IOException {
+    boolean wasInterrupted = false;
+    try {
+      for (int attempt = 1; ; attempt++) {
+        wasInterrupted |= Thread.interrupted();
+        reopenChannel();
+        try {
+          channelOperation.run();
+          return;
+        } catch (final IOException e) {
+          final boolean channelClosed = e instanceof ClosedChannelException || !indexChannel.isOpen();
+          if (!channelClosed || attempt >= REOPEN_ATTEMPTS)
+            throw e;
+        }
+      }
+    } finally {
+      if (wasInterrupted)
+        Thread.currentThread().interrupt();
+    }
+  }
+
+  /**
+   * Reopens the channel if it is closed. Takes the directory READ lock, which every caller may already hold (the lock is
+   * reentrant, and the WRITE-lock holder may take it too), so no file swap - they all run under the WRITE lock - can be
+   * replacing the same fields at the same time; {@link #channelReopenLock} then makes concurrent readers reopen it once,
+   * without leaking descriptors, and keeps {@link #close()} from racing a reopen.
+   */
+  private void reopenChannel() throws IOException {
+    directoryLock.readLock().lock();
+    try {
+      synchronized (channelReopenLock) {
+        if (indexChannel.isOpen())
+          return; // ANOTHER THREAD, OR A FILE SWAP, ALREADY REPLACED IT
+
+        if (closed)
+          throw new FileNotFoundException(
+              "Sealed store '" + basePath + FILE_EXTENSION + "' was closed on purpose, refusing to reopen it after a ClosedChannelException");
+        final File file = new File(basePath + FILE_EXTENSION);
+        // "rw" WOULD RE-CREATE A DROPPED FILE AS AN EMPTY GHOST
+        if (!file.exists())
+          throw new FileNotFoundException(
+              "Sealed store '" + file.getPath() + "' no longer exists on disk, refusing to re-create it after a ClosedChannelException");
+
+        final long folded = reopenLog.record();
+        if (folded < 0)
+          LogManager.instance().log(this, Level.FINE, "Sealed store '%s' channel was closed (thread interrupt). Reopen it and retry...", null,
+              file.getPath());
+        else
+          LogManager.instance().log(this, Level.SEVERE,
+              "Sealed store '%s' channel was closed (thread interrupt). Reopen it and retry... (%d more reopens logged at FINE since the last report)",
+              null, file.getPath(), folded);
+
+        final RandomAccessFile previous = indexFile;
+        final RandomAccessFile reopened = new RandomAccessFile(file, "rw");
+        indexFile = reopened;
+        indexChannel = channelOf(reopened);
+        try {
+          previous.close();
+        } catch (final IOException ignored) {
+          // ALREADY CLOSED WITH ITS CHANNEL
+        }
+      }
+    } finally {
+      directoryLock.readLock().unlock();
+    }
+  }
+
+  /** How many times the channel was reopened since the store was opened, for tests (issue #9621). */
+  long getReopenCountForTest() {
+    return reopenLog.getTotal();
+  }
+
+  /** The live channel, for tests that simulate another thread's interrupt by closing it (issue #9621). */
+  FileChannel getIndexChannelForTest() {
+    return indexChannel;
+  }
+
+  /**
+   * Fills {@code buf} from {@code offset}, looping through short reads, and raises if the file ends first. Every
+   * read of a fixed-size structure goes through here, so none can decode what a short read left unfilled (#9640).
+   */
+  private void readExactly(final FileChannel channel, final ByteBuffer buf, final long offset, final String what)
+      throws IOException {
+    final int expected = buf.remaining();
+    final int read = FileUtils.readFully(channel, buf, offset);
+    if (read < expected)
+      throw new IOException("Unexpected end of file in sealed store '" + basePath + "' reading " + what + " at offset "
+          + offset + ": " + read + " of " + expected + " bytes");
   }
 
   /**
