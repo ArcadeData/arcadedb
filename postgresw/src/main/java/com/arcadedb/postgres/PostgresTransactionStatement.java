@@ -47,6 +47,7 @@ final class PostgresTransactionStatement {
 
   private static final Pattern WHITESPACE     = Pattern.compile("\\s+");
   private static final Pattern MODE_SEPARATOR = Pattern.compile("[\\s,]+");
+  private static final Pattern EMPTY_MODE     = Pattern.compile(",\\s*,");
 
   final PostgresPortal.TransactionControl    control;
   /** The level a BEGIN / START TRANSACTION asked for, or null for the database default. */
@@ -138,9 +139,10 @@ final class PostgresTransactionStatement {
   private static PostgresTransactionStatement begin(final String query, final String tag, final String rest,
       final boolean transactionKeywordOptional) {
     // PostgreSQL separates the modes with a comma OR with whitespace (transaction_mode_list : item | list ',' item |
-    // list item), so both are separators here. Doubled commas are accepted too, a leniency over PostgreSQL that only
-    // accepts text PostgreSQL refuses and never changes what a valid list means; a leading comma leaves an empty first
-    // token, which no mode matches
+    // list item), so both are separators here. A comma that separates nothing - leading, trailing or doubled - is a
+    // syntax error in PostgreSQL, and is left to the grammar here, which refuses it the same way
+    if (!rest.isEmpty() && (rest.charAt(0) == ',' || rest.charAt(rest.length() - 1) == ',' || EMPTY_MODE.matcher(rest).find()))
+      return null;
     final String[] tokens = rest.isEmpty() ? new String[0] : MODE_SEPARATOR.split(rest);
     int i = 0;
     if (transactionKeywordOptional) {
@@ -149,6 +151,9 @@ final class PostgresTransactionStatement {
     } else if (i < tokens.length && "TRANSACTION".equals(tokens[i]))
       ++i;
     else
+      return null;
+    // A comma after WORK/TRANSACTION separates nothing either (BEGIN TRANSACTION, READ WRITE)
+    if (i == 1 && rest.length() > tokens[0].length() && rest.substring(tokens[0].length()).trim().startsWith(","))
       return null;
 
     final String isolationName;
@@ -237,7 +242,7 @@ final class PostgresTransactionStatement {
           if ("REPEATABLE".equals(first) && "READ".equals(second))
             isolation = "repeatable read";
           else if ("READ".equals(first) && ("COMMITTED".equals(second) || "UNCOMMITTED".equals(second)))
-            isolation = "read " + (second.equals("COMMITTED") ? "committed" : "uncommitted");
+            isolation = "read " + ("COMMITTED".equals(second) ? "committed" : "uncommitted");
           else
             throw syntaxError(query);
         }

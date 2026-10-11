@@ -127,7 +127,9 @@ class PostgresTransactionStatementTest {
   @ValueSource(strings = { "", "BEGIN ISOLATION READ_COMMITTED", "BEGIN ISOLATION REPEATABLE_READ", "COMMIT RETRY 3", "BEGIN -- GO",
       "/* HI */ BEGIN", "ROLLBACK TO SAVEPOINT S1", "ROLLBACK TRANSACTION TO S1", "START", "START WORK", "BEGINS", "ABORTED",
       "COMMIT AND", "COMMIT AND NO", "COMMIT AND CHAIN NOW", "COMMIT, AND CHAIN", "BEGIN, READ WRITE", "BEGIN ISOLATION LEVEL",
-      "SELECT 1", "ENDPOINT", "CREATE VERTEX TYPE BEGIN", "BEGIN READ", "BEGIN,", "COMMIT,", "ABORT;", "STARTTRANSACTION" })
+      "SELECT 1", "ENDPOINT", "CREATE VERTEX TYPE BEGIN", "BEGIN READ", "BEGIN,", "COMMIT,", "ABORT;", "STARTTRANSACTION",
+      "BEGIN TRANSACTION TRANSACTION", "BEGIN WORK WORK", "START TRANSACTION TRANSACTION", "END AND CHAIN NOW", "ROLLBACK AND NO CHAIN X",
+      "COMMIT WORK TRANSACTION", "ROLLBACK TO S1", "BEGIN TRANSACTION,READ WRITE" })
   void otherTextIsNotRecognized(final String text) {
     assertThat(PostgresTransactionStatement.parse(text)).as(text).isNull();
   }
@@ -143,13 +145,18 @@ class PostgresTransactionStatementTest {
   }
 
   /**
-   * PostgreSQL separates transaction modes with a comma or with whitespace; doubled commas are a deliberate leniency.
+   * PostgreSQL separates transaction modes with a comma or with whitespace, and refuses a comma that separates nothing.
    */
   @Test
   void modeSeparatorLeniency() {
     assertThat(PostgresTransactionStatement.parse("BEGIN ISOLATION LEVEL READ COMMITTED READ WRITE").refusal()).isNull();
-    assertThat(PostgresTransactionStatement.parse("BEGIN READ WRITE,,DEFERRABLE").refusal()).isNull();
     assertThat(PostgresTransactionStatement.parse("BEGIN READ WRITE,NOT DEFERRABLE").refusal()).isNull();
+    assertThat(PostgresTransactionStatement.parse("BEGIN READ WRITE , NOT DEFERRABLE").refusal()).isNull();
+    // a comma that separates nothing is PostgreSQL's syntax error, left to the grammar
+    assertThat(PostgresTransactionStatement.parse("BEGIN READ WRITE,,DEFERRABLE")).isNull();
+    assertThat(PostgresTransactionStatement.parse("BEGIN READ WRITE, ,DEFERRABLE")).isNull();
+    assertThat(PostgresTransactionStatement.parse("BEGIN READ WRITE,")).isNull();
+    assertThat(PostgresTransactionStatement.parse("START TRANSACTION READ WRITE,,ISOLATION LEVEL READ COMMITTED")).isNull();
   }
 
   @Test
