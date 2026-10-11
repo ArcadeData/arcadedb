@@ -565,6 +565,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       final CRC32 crc = new CRC32();
       crc.update(metaBuf.array(), 0, metaBuf.limit());
 
+      // fileLength() reopens a channel an interrupt left closed (issue #9621). The RandomAccessFile writes below are not
+      // interruptible, and the directory WRITE lock keeps every reader off the shared descriptor until they are done.
       final long blockStart = fileLength();
       long offset = blockStart;
       indexFile.seek(offset);

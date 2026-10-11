@@ -33,6 +33,9 @@ import java.util.logging.Level;
  * first one after {@link #SEVERE_INTERVAL_NANOS} of quiet, so a later, unrelated interrupt on a long-lived file is not
  * hidden behind an old one. Every reopen in between is logged at {@code FINE}, and the next {@code SEVERE} line says how
  * many it folded. {@link #getTotal()} lets a scan report its own count once when it finishes.
+ * <p>
+ * Public only so the TimeSeries sealed store (another package) can share the same policy (issue #9621): an
+ * engine-internal helper, not an API.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
