@@ -30,6 +30,7 @@ import com.arcadedb.query.sql.executor.WorkGuard;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.NoSuchElementException;
 
 /**
@@ -223,7 +224,7 @@ public class ExpandIntoStep extends AbstractExecutionStep {
     builder.append("]-");
     builder.append(direction == Direction.OUT ? ">" : direction == Direction.IN ? "<" : "");
     builder.append("(").append(targetVariable).append(")");
-    builder.append(" [cost=").append(String.format("%.2f", estimatedCost));
+    builder.append(" [cost=").append(String.format(Locale.ROOT, "%.2f", estimatedCost));
     builder.append(", rows=").append(estimatedCardinality);
     builder.append("] ⭐ BOUND-TARGET");
     if (context.isProfiling()) {

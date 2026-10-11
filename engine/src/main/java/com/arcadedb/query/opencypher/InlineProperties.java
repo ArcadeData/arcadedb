@@ -96,11 +96,15 @@ public final class InlineProperties {
    * Returns true if the property {@code key} of the record satisfies an already resolved expected value: the comparison of
    * {@link #matchesResolvedValue(Object, Object)}, plus the declared-type coercion only the record can tell about. A
    * property declared {@code STRING} stores the text of whatever a pattern writes into it ({@code '1'} for {@code 1}), so
-   * the same pattern has to find that text again, or a repeated MERGE duplicates the node (issue #9695).
+   * the same pattern has to find that text again, or a repeated MERGE duplicates the node (issue #9695). Likewise a DATE
+   * that {@code arcadedb.dateImplementation} read back as an instant still compares as a date (issue #9647).
    */
   public static boolean matchesProperty(final Document record, final String key, final Object expected) {
     final Object actual = record.get(key);
-    if (matchesResolvedValue(actual, expected))
+    // A temporal is compared as the type the schema declares: a DATE that arcadedb.dateImplementation read back as an
+    // instant is still a date (issue #9647). Only looked up against a temporal, so any other entry pays nothing
+    if (matchesResolvedValue(expected instanceof CypherTemporalValue ? TemporalUtil.asDeclaredDate(record, key, actual) : actual,
+        expected))
       return true;
     // Only the mismatch of a stored text against a non-text operand pays for the schema lookup
     return actual instanceof String text && expected != null && !(expected instanceof String) && text.equals(
@@ -171,6 +175,9 @@ public final class InlineProperties {
    * either side never matches, not even against another null. Numbers compare by value across types, so a
    * stored {@code Integer} matches an inline literal parsed as {@code Long} and a stored {@code Float}
    * matches a {@code Double} parameter (issue #5146).
+   * <p>
+   * Prefer {@link #matchesProperty(Document, String, Object)} when the record is at hand: only that one knows the
+   * declared type of the property.
    */
   public static boolean matchesResolvedValue(final Object actual, final Object expected) {
     if (actual == null || expected == null)

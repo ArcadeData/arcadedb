@@ -33,7 +33,7 @@ repos:
       - id: actionlint
         files: ^\.github/workflows/native-image\.yml$
   - repo: https://github.com/psf/black
-    rev: 26.5.1
+    rev: 26.10.0
     hooks:
       - id: black
         language_version: python3

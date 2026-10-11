@@ -33,6 +33,7 @@ import org.antlr.v4.runtime.tree.ParseTree;
 
 import java.util.Collections;
 import java.util.LinkedHashSet;
+import java.util.Locale;
 import java.util.Set;
 import java.util.regex.Pattern;
 
@@ -177,7 +178,7 @@ public class Cypher25AntlrParser {
         final String errorLine = line > 0 && line <= lines.length ? lines[line - 1] : "";
 
         final StringBuilder errorMsg = new StringBuilder();
-        errorMsg.append(String.format("Unexpected input '%s' at line %d, column %d\n",
+        errorMsg.append(String.format(Locale.ROOT, "Unexpected input '%s' at line %d, column %d\n",
             nextToken.getText(), line, column));
 
         if (!errorLine.isEmpty()) {

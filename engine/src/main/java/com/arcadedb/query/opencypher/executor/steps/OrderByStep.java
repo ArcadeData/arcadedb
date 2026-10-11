@@ -295,10 +295,9 @@ public class OrderByStep extends AbstractExecutionStep {
             return null;
 
           if (obj instanceof Vertex || obj instanceof Edge) {
-            final Document document = (Document) obj;
-            final Object value = document.get(parts[1]);
-            // A schema-declared STRING property is never sniffed as a temporal (issue #8384)
-            return convertFromStorage(value);
+            // The same read a property access makes: a temporal text a release before the native types wrote is
+            // restored on a database that predates them (issue #9636)
+            return convertFromStorage(TemporalUtil.convertFromStorage((Document) obj, parts[1]));
           }
         }
 

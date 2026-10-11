@@ -63,9 +63,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
 
-import java.time.temporal.Temporal;
 import java.util.ArrayList;
-import java.util.Date;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
@@ -1323,7 +1321,16 @@ public class MergeStep extends AbstractExecutionStep {
       // MERGE is defined as the MATCH of its pattern: the very comparison a MATCH applies to an inline property, so the
       // two clauses cannot drift apart on a FLOAT, a signed zero or a temporal against stored text (issue #9693), and a
       // declared STRING property is found by the text the same value was stored as (issue #9695)
-      if (!InlineProperties.matchesProperty(doc, key, expectedValue))
+      final Object stored = doc.get(key);
+      // ...except for the text a release before the native temporal types stored a temporal as: on a database that
+      // predates them it is that temporal, which MERGE matched before, and must go on matching rather than create a
+      // duplicate beside it (issue #9636). Only an undeclared property is restored, so it never meets the STRING coercion
+      final Object restored = stored instanceof String text && expectedValue instanceof CypherTemporalValue ?
+          TemporalUtil.restoreLegacyText(doc, key, text) :
+          stored;
+      if (restored != stored ?
+          !InlineProperties.matchesResolvedValue(restored, expectedValue) :
+          !InlineProperties.matchesProperty(doc, key, expectedValue))
         return false;
     }
     return true;
@@ -1575,7 +1582,7 @@ public class MergeStep extends AbstractExecutionStep {
     if (value instanceof CypherTemporalValue)
       return value;
     // A native java.time parameter (a datetime sent over Bolt or HTTP) is wrapped like datetime() so both compare alike
-    if (value instanceof Temporal || value instanceof Date) {
+    if (TemporalUtil.isNativeTemporal(value)) {
       final Object wrapped = TemporalUtil.fromCoreJavaType(value);
       if (wrapped instanceof CypherTemporalValue)
         return wrapped;

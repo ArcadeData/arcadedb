@@ -32,6 +32,10 @@ public class EdgeVertexIterator extends ResettableIteratorBase<Pair<RID, RID>> {
   private final RID              vertex;
   private final Vertex.DIRECTION direction;
   private       int              lastElementPosition = currentPosition.get();
+  // THE SEGMENT AND END OF THE ENTRY THE LAST next() RETURNED: a hasNext() in between may already have moved the cursor to
+  // another segment, over empty ones too (#9715), and remove() must take the entry out of the segment it came from
+  private       EdgeSegment      lastElementContainer;
+  private       int              lastElementEnd;
   private       RID              nextEdgeRID;
   private       RID              nextVertexRID;
 
@@ -46,14 +50,17 @@ public class EdgeVertexIterator extends ResettableIteratorBase<Pair<RID, RID>> {
     if (currentContainer == null)
       return false;
 
-    if (currentPosition.get() < currentContainer.getUsed())
-      return true;
+    // A SEGMENT CAN BE EMPTY ANYWHERE IN THE CHAIN (A DELETE EMPTIES THE HEAD, A GRAPHBATCH THEN PREPENDS A NEW ONE OVER IT):
+    // STEP OVER IT INSTEAD OF ENDING THE WALK THERE (#9715)
+    while (true) {
+      if (currentPosition.get() < currentContainer.getUsed())
+        return true;
 
-    if (moveToPreviousChunk() == null)
-      return false;
+      if (moveToPreviousChunk() == null)
+        return false;
 
-    currentPosition.set(MutableEdgeSegment.CONTENT_START_POSITION);
-    return currentPosition.get() < currentContainer.getUsed();
+      currentPosition.set(MutableEdgeSegment.CONTENT_START_POSITION);
+    }
   }
 
   @Override
@@ -65,6 +72,8 @@ public class EdgeVertexIterator extends ResettableIteratorBase<Pair<RID, RID>> {
 
     nextEdgeRID = currentContainer.getRID(currentPosition);
     nextVertexRID = currentContainer.getRID(currentPosition);
+    lastElementContainer = currentContainer;
+    lastElementEnd = currentPosition.get();
 
     ++browsed;
     return new Pair(nextEdgeRID, nextVertexRID);
@@ -92,9 +101,12 @@ public class EdgeVertexIterator extends ResettableIteratorBase<Pair<RID, RID>> {
       LogManager.instance().log(this, Level.WARNING, "Error on deleting edge record %s", e, nextEdgeRID);
     }
 
-    currentContainer.removeEntry(lastElementPosition, currentPosition.get());
-    ((DatabaseInternal) currentContainer.getDatabase()).updateRecord(currentContainer);
+    lastElementContainer.removeEntry(lastElementPosition, lastElementEnd);
+    ((DatabaseInternal) lastElementContainer.getDatabase()).updateRecord(lastElementContainer);
 
-    currentPosition.set(lastElementPosition);
+    if (lastElementContainer == currentContainer)
+      // THE ENTRIES AFTER THE REMOVED ONE SHIFTED BACK: THE NEXT ONE IS NOW WHERE IT WAS
+      currentPosition.set(lastElementPosition);
+    nextEdgeRID = null;
   }
 }

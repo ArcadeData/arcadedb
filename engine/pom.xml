@@ -37,7 +37,7 @@
         <disruptor.version>1.2.21</disruptor.version>
         <gson.version>2.14.0</gson.version>
         <lz4-java.version>1.12.0</lz4-java.version>
-        <lucene.version>10.5.1</lucene.version>
+        <lucene.version>10.5.2</lucene.version>
         <!--
             ONE GraalVM version, everywhere. This property, native/pom.xml's
             native.graalvm.version and native-image.yml's setup-graalvm java-version are all
@@ -93,7 +93,7 @@
              converge. -->
         <antlr4.version>4.13.2</antlr4.version>
         <antlr4.visitor>true</antlr4.visitor>
-        <cucumber.version>8.0.3</cucumber.version>
+        <cucumber.version>8.0.4</cucumber.version>
         <jmh.version>1.37</jmh.version>
     </properties>
 
