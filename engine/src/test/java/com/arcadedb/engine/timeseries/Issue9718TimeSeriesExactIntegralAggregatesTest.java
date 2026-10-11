@@ -32,6 +32,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issues #9718 and #9720: the TimeSeries aggregation push-down accumulated every aggregate as a double, and a sealed block kept the
@@ -149,6 +150,24 @@ class Issue9718TimeSeriesExactIntegralAggregatesTest extends TestHelper {
     // a sample with no value fails every condition, so the block is decoded rather than answered whole
     assertThat(FieldFilter.blockMatchExact(above, twoPow53 + 1, twoPow53 + 5, 9, 10)).isEqualTo(FieldFilter.BlockMatch.SOME);
     assertThat(FieldFilter.blockMatchExact(above, 0, 0, 0, 10)).isEqualTo(FieldFilter.BlockMatch.NONE);
+  }
+
+  @Test
+  void anExactRequestRefusesAValueOnlyADoubleCarries() {
+    final List<MultiColumnAggregationRequest> requests = List.of(new MultiColumnAggregationRequest(1, AggregationType.SUM, "s"),
+        MultiColumnAggregationRequest.count("c"));
+    final MultiColumnAggregationResult result = new MultiColumnAggregationResult(requests, new boolean[] { true, false });
+    // a double past 2^53 has already lost what the exact lane keeps, so the double-only overloads refuse an exact request
+    assertThatThrownBy(() -> result.accumulate(0L, 0, 0x1p60)).isInstanceOf(IllegalStateException.class);
+    assertThatThrownBy(() -> result.accumulateRow(0L, new double[] { 0x1p60, 1 })).isInstanceOf(IllegalStateException.class);
+    assertThatThrownBy(() -> result.accumulateSingleStat(0L, 0, 0x1p60, 1)).isInstanceOf(IllegalStateException.class);
+    assertThatThrownBy(() -> result.accumulateBlockStats(0L, new double[] { 0x1p60, 1 }, new long[] { 1, 1 }))
+        .isInstanceOf(IllegalStateException.class);
+    // a COUNT is never exact, so it still takes them
+    result.accumulateSingleStat(0L, 1, 1, 1);
+    result.accumulateRow(0L, new double[] { 0, 1 }, new long[] { (1L << 60) + 1, 0 });
+    assertThat(result.getExactValue(0L, 0)).isEqualTo((1L << 60) + 1);
+    assertThat(result.getValue(0L, 1)).isEqualTo(2.0);
   }
 
   @Test

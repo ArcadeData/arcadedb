@@ -201,7 +201,21 @@ public final class MultiColumnAggregationResult {
     return exact != null && exact[requestIndex];
   }
 
+  /**
+   * Refuses to fold a double into an exact request (code review on PR #9730): a double holds every integer only up to 2^53, so a
+   * caller that reached an exact result through a double-only overload would lose exactly what the exact lane is for, silently.
+   */
+  private void requireLongs(final boolean longsGiven, final int requestIndex) {
+    if (!longsGiven && isExact(requestIndex))
+      throw new IllegalStateException(
+          "Aggregation request " + requestIndex + " is exact: fold it through an accumulation overload that takes its long value");
+  }
 
+  private void requireLongs(final boolean longsGiven) {
+    if (!longsGiven && exact != null)
+      for (int i = 0; i < requestCount; i++)
+        requireLongs(false, i);
+  }
 
   /**
    * Returns whether this result uses flat array mode.
@@ -216,8 +230,9 @@ public final class MultiColumnAggregationResult {
    * Accumulates a value for request at the given index into the given bucket.
    */
   public void accumulate(final long bucketTs, final int requestIndex, final double value) {
+    requireLongs(false, requestIndex);
     resolve(bucketTs);
-    accumulateInPlace(curValues, curCounts, curExact, requestIndex, value, (long) value);
+    accumulateInPlace(curValues, curCounts, curExact, requestIndex, value, 0L);
   }
 
   /**
@@ -235,9 +250,10 @@ public final class MultiColumnAggregationResult {
    *                    {@code null} when no request is exact
    */
   public void accumulateRow(final long bucketTs, final double[] values, final long[] exactValues) {
+    requireLongs(exactValues != null);
     resolve(bucketTs);
     for (int i = 0; i < requestCount; i++)
-      accumulateInPlace(curValues, curCounts, curExact, i, values[i], exactValues != null ? exactValues[i] : (long) values[i]);
+      accumulateInPlace(curValues, curCounts, curExact, i, values[i], exactValues != null ? exactValues[i] : 0L);
   }
 
   /**
@@ -258,10 +274,11 @@ public final class MultiColumnAggregationResult {
    */
   public void accumulateBlockStats(final long bucketTs, final double[] values, final long[] sampleCounts, final long[] exactValues,
       final long[] exactHigh) {
+    requireLongs(exactValues != null && exactHigh != null);
     resolve(bucketTs);
     for (int i = 0; i < requestCount; i++)
-      accumulateStatInPlace(curValues, curCounts, curExact, i, values[i], sampleCounts[i],
-          exactValues != null ? exactValues[i] : (long) values[i], exactHigh != null ? exactHigh[i] : ((long) values[i]) >> 63);
+      accumulateStatInPlace(curValues, curCounts, curExact, i, values[i], sampleCounts[i], exactValues != null ? exactValues[i] : 0L,
+          exactHigh != null ? exactHigh[i] : 0L);
   }
 
   /**
@@ -276,7 +293,9 @@ public final class MultiColumnAggregationResult {
    */
   public void accumulateSingleStat(final long bucketTs, final int requestIndex,
       final double value, final long count) {
-    accumulateSingleStat(bucketTs, requestIndex, value, count, (long) value, ((long) value) >> 63);
+    requireLongs(false, requestIndex);
+    resolve(bucketTs);
+    accumulateStatInPlace(curValues, curCounts, curExact, requestIndex, value, count, 0L, 0L);
   }
 
   /**
