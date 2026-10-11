@@ -56,6 +56,15 @@ class Issue9705CypherIndexNameTest extends TestHelper {
   }
 
   @Test
+  void theNameSurvivesAReopen() {
+    command("CREATE INDEX person_name FOR (n:Person) ON (n.name)");
+    reopenDatabase();
+    assertThat(database.getSchema().existsIndex("person_name")).isTrue();
+    assertThat(stats("DROP INDEX person_name").getIndexesRemoved()).isEqualTo(1);
+    assertThat(database.getSchema().getType("Person").getPolymorphicIndexByProperties("name")).isNull();
+  }
+
+  @Test
   void unnamedIndexKeepsTheGeneratedName() {
     command("CREATE INDEX FOR (n:Person) ON (n.name)");
     assertThat(database.getSchema().existsIndex("Person[name]")).isTrue();

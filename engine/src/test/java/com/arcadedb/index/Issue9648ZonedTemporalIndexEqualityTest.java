@@ -146,6 +146,30 @@ class Issue9648ZonedTemporalIndexEqualityTest extends TestHelper {
     assertThat(sorted("Indexed", "z > ?", SAME_UTC)).isEqualTo(sorted("Plain", "z > ?", SAME_UTC)).isEqualTo(List.of(STORED, later));
   }
 
+  @ParameterizedTest
+  @CsvSource(textBlock = """
+      LSM_TREE
+      HASH
+      """)
+  void inTransactionAndPersistedKeysAgree(final String algorithm) {
+    // the pending entries of a transaction are keyed by the untyped compareTo, the persisted ones by the typed comparator:
+    // both must tell the zones of one instant apart
+    database.getSchema().createDocumentType("Tx").createProperty("z", Type.ZONED_DATETIME);
+    database.getSchema().createTypeIndex(Schema.INDEX_TYPE.valueOf(algorithm), false, "Tx", "z");
+    final ZonedDateTime west = ZonedDateTime.parse("2025-12-31T17:30-05:00");
+
+    database.begin();
+    for (final ZonedDateTime value : List.of(STORED, SAME_UTC, west))
+      database.newDocument("Tx").set("z", value).save();
+    final long[] pending = { count("Tx", STORED), count("Tx", SAME_UTC), count("Tx", west) };
+    database.commit();
+
+    assertThat(pending).containsExactly(1L, 1L, 1L);
+    assertThat(new long[] { count("Tx", STORED), count("Tx", SAME_UTC), count("Tx", west) }).containsExactly(1L, 1L, 1L);
+    if ("LSM_TREE".equals(algorithm))
+      assertThat(sorted("Tx", "z >= ?", west)).isEqualTo(List.of(west, SAME_UTC, STORED));
+  }
+
   @Test
   void offsetDateTimeComparesAsItsZonedForm() {
     final OffsetDateTime offset = STORED.toOffsetDateTime();
