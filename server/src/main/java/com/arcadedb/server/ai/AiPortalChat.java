@@ -21,9 +21,9 @@ package com.arcadedb.server.ai;
 import com.arcadedb.network.BoundedHttpExchange;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.support.SupportLineReader;
 import com.arcadedb.server.support.SupportPortalException;
 
-import java.io.BufferedReader;
 import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
@@ -48,6 +48,14 @@ public class AiPortalChat {
   static final int SPENT_BUDGET_RESULT_CHARS = 2_000;
   /** The most tool results the portal takes in one turn (four a round, over {@link #MAX_ROUNDS}). */
   static final int MAX_TOOL_RESULT_ENTRIES = MAX_ROUNDS * 4;
+  /**
+   * The longest line of a stream this server reads from the portal or the gateway (one NDJSON envelope, one SSE line). The
+   * silence bound ends a stream that goes quiet, not one that keeps sending, so without this cap a peer that never sends a
+   * newline would fill the heap (issue #9627). An answer of the model is far shorter: a longer line is not a legitimate event.
+   */
+  public static final int MAX_EVENT_CHARS = 4 * 1024 * 1024;
+  /** {@link #MAX_EVENT_CHARS}, mutable and package-private only so a test can shorten it (JVM-wide: restore it afterwards). */
+  static volatile int maxEventChars = MAX_EVENT_CHARS;
 
   /** What the caller does with the events of the answer. */
   public interface Sink {
@@ -154,9 +162,10 @@ public class AiPortalChat {
     String refusedCode = null;
 
     try (final InputStream body = BoundedHttpExchange.silenceBounded(client.openStream(turnId, silenceMs), silenceMs);
-        final BufferedReader reader = new BufferedReader(new InputStreamReader(body, StandardCharsets.UTF_8))) {
+        final InputStreamReader input = new InputStreamReader(body, StandardCharsets.UTF_8)) {
+      final SupportLineReader reader = SupportLineReader.failingOver(input, maxEventChars);
       String line;
-      while ((line = reader.readLine()) != null) {
+      while ((line = readEvent(reader)) != null) {
         if (line.isBlank())
           continue;
         final JSONObject envelope;
@@ -191,5 +200,13 @@ public class AiPortalChat {
       }
     }
     throw new EOFException("the AI service closed the stream without completing the answer");
+  }
+
+  private static String readEvent(final SupportLineReader reader) throws IOException {
+    try {
+      return reader.readLine();
+    } catch (final SupportLineReader.LineTooLongException e) {
+      throw new SupportPortalException("portal_error", 0, "The AI service sent an event longer than the server reads", 0);
+    }
   }
 }

@@ -29,8 +29,13 @@ import java.io.Reader;
  * <p>
  * It works on chunks of a {@code char[]}, scanning for the terminator, so it costs close to {@code readLine()} and far less
  * than reading one character at a time (every {@code Reader.read()} takes the reader's lock).
+ * <p>
+ * {@link #failingOver(Reader, int)} builds the strict variant for text a third party sends (the AI Assistant's streams, issue
+ * #9627): there an over-long line is not a legitimate event to cut and carry on with, and a peer that never sends a terminator
+ * would keep this reader dropping bytes for as long as it keeps sending. The strict reader stops at the cap with
+ * {@link LineTooLongException} instead, having held at most {@code maxLine} characters plus one chunk.
  */
-final class SupportLineReader {
+public final class SupportLineReader {
   private static final int CHUNK = 1 << 16;
 
   private final Reader  in;
@@ -40,16 +45,40 @@ final class SupportLineReader {
   private       int     limit;
   private       boolean skipLineFeed;
   private final int[]   truncatedLines;
+  private final boolean failOnOverlong;
+
+  /** A line longer than the cap of a {@link #failingOver strict} reader. */
+  public static final class LineTooLongException extends IOException {
+    public LineTooLongException(final int maxLine) {
+      super("A line longer than " + maxLine + " characters, which this server does not read");
+    }
+  }
 
   /** @param truncatedLines {@code truncatedLines[0]} is incremented for every line that was cut (shared across files) */
   SupportLineReader(final Reader in, final int maxLine, final int[] truncatedLines) {
+    this(in, maxLine, truncatedLines, false);
+  }
+
+  private SupportLineReader(final Reader in, final int maxLine, final int[] truncatedLines, final boolean failOnOverlong) {
     this.in = in;
     this.maxLine = maxLine;
     this.truncatedLines = truncatedLines;
+    this.failOnOverlong = failOnOverlong;
   }
 
-  /** @return the next line without its terminator, or {@code null} at the end of the input */
-  String readLine() throws IOException {
+  /**
+   * A reader whose {@link #readLine()} throws {@link LineTooLongException} as soon as a line exceeds {@code maxLine} characters,
+   * without reading the rest of it.
+   */
+  public static SupportLineReader failingOver(final Reader in, final int maxLine) {
+    return new SupportLineReader(in, maxLine, new int[1], true);
+  }
+
+  /**
+   * @return the next line without its terminator, or {@code null} at the end of the input
+   * @throws LineTooLongException on a line longer than the cap, if this reader is {@link #failingOver strict}
+   */
+  public String readLine() throws IOException {
     StringBuilder line = null;
     long dropped = 0;
     boolean any = false;
@@ -81,6 +110,8 @@ final class SupportLineReader {
         if (line == null)
           line = new StringBuilder(Math.min(length + 16, 256));
         final int room = maxLine - line.length();
+        if (length > room && failOnOverlong)
+          throw new LineTooLongException(maxLine);
         if (room > 0)
           line.append(buffer, start, Math.min(length, room));
         if (length > room)
