@@ -1399,13 +1399,19 @@ public class LocalSchema implements Schema {
    * Marks the openCypher temporals of this database as stored natively, once {@code db.migrateLegacyTemporals()} has
    * rewritten the legacy text (issue #9636). Saved with the schema. There is no way back: a String written after this
    * point is a String.
+   * <p>
+   * Flipped inside a schema recording session, not by a bare {@link #saveConfiguration()}: under HA the session is what
+   * ships the schema to the followers, and a bare save only rewrote the leader's own file, so every follower stayed
+   * legacy and answered the same openCypher read differently (issue #9712).
    */
   public void markTemporalStorageNative() {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_DATABASE_SETTINGS);
     if (!legacyTemporalText)
       return;
-    legacyTemporalText = false;
-    saveConfiguration();
+    recordFileChanges(() -> {
+      legacyTemporalText = false;
+      return null;
+    });
   }
 
   @Override
