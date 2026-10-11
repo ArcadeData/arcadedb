@@ -40,7 +40,8 @@ public final class PrometheusTypes {
    * {@link WriteRequest#hasRecognizedContent()}.
    */
   public static String protoMessage(final String contentType) {
-    if (contentType == null)
+    // the common case, a 1.0 sender's bare "application/x-protobuf", returns before allocating anything
+    if (contentType == null || contentType.indexOf(';') < 0)
       return null;
     final String[] parts = contentType.split(";");
     for (int i = 1; i < parts.length; i++) {
