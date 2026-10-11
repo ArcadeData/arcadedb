@@ -261,13 +261,15 @@ public class HttpSession implements QuerySession {
         // IN THE GAP BETWEEN UNLOCK AND THIS ASSIGNMENT, SEE A STALE lastUpdate, AND ROLL BACK A TRANSACTION
         // WHOSE COMMAND JUST FINISHED
         lastUpdate = System.currentTimeMillis();
+      } catch (final RequestRefusedBeforeExecutionException e) {
+        // A REQUEST REFUSED BEFORE ANYTHING REACHED THE ENGINE LEAVES THE TRANSACTION AS IT WAS: THERE IS NOTHING IN IT TO DISTRUST (issue #9784)
+        throw e;
       } catch (Exception e) {
         // ROLLBACK SERVER-SIDE TRANSACTION. CALL rollbackIfActive() DIRECTLY (NOT cancel()): THIS THREAD
         // ALREADY HOLDS `lock` HERE, AND ReentrantLock.lockInterruptibly() CHECKS Thread.interrupted() BEFORE
         // ITS REENTRANT FAST PATH - IF THIS THREAD'S INTERRUPT FLAG IS SET, cancel() WOULD THROW
         // InterruptedException AND SILENTLY SKIP THE ROLLBACK
-        // A REQUEST REFUSED BEFORE ANYTHING REACHED THE ENGINE LEAVES THE TRANSACTION AS IT WAS: THERE IS NOTHING IN IT TO DISTRUST (issue #9784)
-        if (rollbackOnFailure && !(e instanceof RequestRefusedBeforeExecutionException)) {
+        if (rollbackOnFailure) {
           final boolean wasActive = transaction != null && transaction.isActive();
           final boolean hadChanges = wasActive && transaction.hasChanges();
           final boolean rolledBack = rollbackIfActive();

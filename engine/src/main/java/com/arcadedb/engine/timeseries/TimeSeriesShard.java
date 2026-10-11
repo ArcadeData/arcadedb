@@ -943,6 +943,12 @@ public class TimeSeriesShard implements AutoCloseable {
    * The shard owns the question of what a rewrite must exclude, so a caller (the engine) hands it the work and does not decide
    * which lock to take: before this, retention took the write lock alone, which compaction does not hold for Phases 3 and 4b,
    * and could run from beginning to end inside a compaction's window.
+   * <p>
+   * A rewrite therefore waits for a compaction that is in flight on this shard, Phases 3 and 4b included. That is the point, and it
+   * costs the maintenance scheduler nothing it did not already pay: it runs compaction, merge, retention and downsampling one
+   * after the other on one thread, so retention only ever started after the compaction of the same pass had finished. The wait is
+   * new only for a rewrite called from a second thread (an explicit {@code COMPACT TIMESERIES TYPE} in a session), and it is
+   * bounded by that compaction.
    */
   void runSealedRewrite(final SealedRewrite rewrite) throws IOException {
     compactionMutex.lock();
