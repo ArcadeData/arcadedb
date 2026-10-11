@@ -146,18 +146,47 @@ def test_an_ordinary_error_is_not_retried(db):
     assert _count(db) == 0
 
 
-def test_the_wait_the_refusing_side_asked_for_is_honored(db):
+def _refusing_with(retry_after_ms):
     def refusal():
         error = _java("NeedRetryException")("not ready yet")
-        error.setRetryAfterMs(300)
+        error.setRetryAfterMs(retry_after_ms)
         return _wrapped(error)
 
-    fn, attempts = _failing(db, 1, refusal)
-    started = time.monotonic()
-    assert db.run_in_transaction(fn, retries=3, backoff_s=0) == "done"
-    # a lower bound: a stall can only make it longer
-    assert time.monotonic() - started >= 0.3
+    return refusal
+
+
+@pytest.fixture
+def recorded_sleeps(monkeypatch):
+    """The waits run_in_transaction asks for, recorded instead of slept.
+
+    The REQUESTED wait is what is under test. Measuring the elapsed time
+    instead failed on Windows, whose clock read a 300 ms sleep as 297 ms.
+    """
+    sleeps = []
+    monkeypatch.setattr(time, "sleep", sleeps.append)
+    return sleeps
+
+
+def test_the_wait_the_refusing_side_asked_for_is_honored(db, recorded_sleeps):
+    fn, attempts = _failing(db, 1, _refusing_with(300))
+    assert db.run_in_transaction(fn, retries=3, backoff_s=0.001) == "done"
     assert len(attempts) == 2
+    # the refusal's 300 ms, not the 1 ms backoff
+    assert recorded_sleeps == [0.3]
+
+
+def test_the_wait_is_capped_by_retry_after_max_wait(db, recorded_sleeps):
+    """A peer asking for an hour does not park the caller (#8617)."""
+    cap_ms = int(
+        jpype.JClass(
+            "com.arcadedb.GlobalConfiguration"
+        ).NETWORK_RETRY_AFTER_MAX_WAIT.getValueAsLong()
+    )
+    fn, attempts = _failing(db, 1, _refusing_with(3_600_000))
+    assert db.run_in_transaction(fn, retries=3, backoff_s=0) == "done"
+    assert len(attempts) == 2
+    assert recorded_sleeps == [cap_ms / 1000.0]
+    assert cap_ms < 3_600_000
 
 
 def test_a_block_that_committed_part_of_its_work_is_not_replayed(db):
