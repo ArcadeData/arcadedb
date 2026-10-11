@@ -74,9 +74,9 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
    */
   protected LSMTreeIndexMutable(final LSMTreeIndex mainIndex, final DatabaseInternal database, final String name,
       final boolean unique, final String filePath, final Type[] keyTypes, final byte[] storageKeyTypes, final int pageSize,
-      final int version, final LSMTreeIndexCompacted subIndex) throws IOException {
+      final int version, final LSMTreeIndexCompacted subIndex, final NULL_STRATEGY nullStrategy) throws IOException {
     super(mainIndex, database, name, unique, filePath, unique ? UNIQUE_INDEX_EXT : NOTUNIQUE_INDEX_EXT, keyTypes, storageKeyTypes,
-        pageSize, version);
+        pageSize, version, nullStrategy);
     this.subIndex = subIndex;
     minPagesToScheduleACompaction = database.getConfiguration()
         .getValueAsInteger(GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE);
@@ -214,7 +214,7 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
     final String newName = LSMTreeIndexAbstract.compactionBaseName(componentName) + "_" + System.nanoTime();
 
     final LSMTreeIndexCompacted compacted = new LSMTreeIndexCompacted(mainIndex, database, newName, unique,
-        database.getDatabasePath() + File.separator + newName, keyTypes, storageKeyTypes, pageSize);
+        database.getDatabasePath() + File.separator + newName, keyTypes, storageKeyTypes, pageSize, nullStrategy);
     compacted.setStoreTermFrequency(isStoreTermFrequency());
     return compacted;
   }

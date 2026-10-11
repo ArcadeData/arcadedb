@@ -154,9 +154,23 @@ public class SelectExecutionPlanner {
    */
   private              String            rangeMinMaxSource;
   private              String            rangeMinMaxAlias;
+  /**
+   * Set for the last attempt of a statement whose index kept going away while it was planned and read (issue #9615): the plan
+   * then reads the types it targets without any of their indexes, which a concurrent DDL cannot take away under it.
+   */
+  private              boolean           withoutTypeIndexes;
 
   public SelectExecutionPlanner(final SelectStatement oSelectStatement) {
     this.statement = oSelectStatement;
+  }
+
+  /**
+   * Plans the statement as if its types had no index, see {@link #withoutTypeIndexes}. An index the statement names
+   * ({@code FROM index:...}) is still read: there is no other way to answer it.
+   */
+  public SelectExecutionPlanner withoutTypeIndexes() {
+    this.withoutTypeIndexes = true;
+    return this;
   }
 
   private void init(final CommandContext context) {
@@ -5040,8 +5054,8 @@ public class SelectExecutionPlanner {
    * effort: the callers read an index's metadata under a try/catch of IndexException, and any new planner path that reads
    * index metadata must do the same.
    */
-  private static List<TypeIndex> plannableIndexes(final Collection<TypeIndex> indexes) {
-    return TypeIndex.filterReadyForQueries(indexes);
+  private List<TypeIndex> plannableIndexes(final Collection<TypeIndex> indexes) {
+    return withoutTypeIndexes ? List.of() : TypeIndex.filterReadyForQueries(indexes);
   }
 
   /**

@@ -142,10 +142,9 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
    */
   public LSMTreeIndexCompacted(final LSMTreeIndex mainIndex, final DatabaseInternal database, final String name,
       final boolean unique, final String filePath,
-      final Type[] keyTypes, final byte[] storageKeyTypes, final int pageSize) throws IOException {
+      final Type[] keyTypes, final byte[] storageKeyTypes, final int pageSize, final NULL_STRATEGY nullStrategy) throws IOException {
     super(mainIndex, database, name, unique, filePath, unique ? UNIQUE_INDEX_EXT : NOTUNIQUE_INDEX_EXT, keyTypes, storageKeyTypes,
-        pageSize,
-        LSMTreeIndexMutable.CURRENT_VERSION);
+        pageSize, LSMTreeIndexMutable.CURRENT_VERSION, nullStrategy);
   }
 
   /**

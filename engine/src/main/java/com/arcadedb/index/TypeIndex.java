@@ -787,6 +787,14 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   }
 
   /**
+   * True once a drop of this index has started, even while it still answers as valid: {@link #drop()} takes the sub-indexes away
+   * first and invalidates the index last, so a reader in between can read part of the index, or none of it, without an error.
+   */
+  public boolean isDropping() {
+    return dropping;
+  }
+
+  /**
    * True when a query can use this index: it was not dropped or rebuilt and its per-bucket sub-indexes exist. DDL runs
    * concurrently with queries: an index being created is registered before its sub-indexes exist (no type yet) and one being
    * dropped stays registered for a while after it was invalidated. Best effort, the index can still go away right after the
