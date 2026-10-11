@@ -24,6 +24,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.engine.DatabaseChecker;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.EdgeLinkedList;
+import com.arcadedb.graph.EdgeSegment;
 import com.arcadedb.graph.GraphBatch;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.VertexInternal;
@@ -57,7 +58,7 @@ class Issue9715EmptyEdgeSegmentTest extends TestHelper {
     database.getSchema().createEdgeType("K");
     database.transaction(() -> {
       a = database.newVertex("P").set("name", "A").save().getIdentity();
-      targets = new RID[4];
+      targets = new RID[7];
       for (int i = 0; i < targets.length; i++)
         targets[i] = database.newVertex("P").set("name", "T" + i).save().getIdentity();
     });
@@ -80,7 +81,27 @@ class Issue9715EmptyEdgeSegmentTest extends TestHelper {
       batch.newEdge(a, "K", targets[2]);
       batch.newEdge(a, "K", targets[3]);
     }
-    assertEveryReaderSeesThreeEdges();
+    assertEveryReaderSeesEdges(3);
+  }
+
+  @Test
+  void consecutiveEmptySegmentsHideNoEdge() throws Exception {
+    // a second batch-and-delete round empties the next head too: two empty segments in a row between non-empty ones
+    try (final GraphBatch batch = database.batch().build()) {
+      batch.newEdge(a, "K", targets[2]);
+      batch.newEdge(a, "K", targets[3]);
+    }
+    database.transaction(() -> {
+      for (final Edge e : vertexA().getEdges(Vertex.DIRECTION.OUT, "K"))
+        if (e.getIn().equals(targets[2]) || e.getIn().equals(targets[3]))
+          e.delete();
+    });
+    try (final GraphBatch batch = database.batch().build()) {
+      for (int i = 4; i < 7; i++)
+        batch.newEdge(a, "K", targets[i]);
+    }
+    assertThat(longestRunOfEmptySegments()).as("empty segments in a row in the OUT list").isGreaterThanOrEqualTo(2);
+    assertEveryReaderSeesEdges(4);
   }
 
   @Test
@@ -89,12 +110,23 @@ class Issue9715EmptyEdgeSegmentTest extends TestHelper {
       vertexA().modify().newEdge("K", targets[2]);
       vertexA().modify().newEdge("K", targets[3]);
     });
-    assertEveryReaderSeesThreeEdges();
+    assertEveryReaderSeesEdges(3);
   }
 
-  private void assertEveryReaderSeesThreeEdges() throws Exception {
-    assertThat(vertexA().countEdges(Vertex.DIRECTION.OUT, "K")).isEqualTo(3);
-    assertThat(count()).as("MATCH without a view").isEqualTo(3);
+  private int longestRunOfEmptySegments() {
+    int longest = 0;
+    int run = 0;
+    for (EdgeSegment segment = (EdgeSegment) database.lookupByRID(((VertexInternal) vertexA()).getOutEdgesHeadChunk(), true);
+         segment != null; segment = segment.getPrevious()) {
+      run = segment.isEmpty() ? run + 1 : 0;
+      longest = Math.max(longest, run);
+    }
+    return longest;
+  }
+
+  private void assertEveryReaderSeesEdges(final int expected) throws Exception {
+    assertThat(vertexA().countEdges(Vertex.DIRECTION.OUT, "K")).isEqualTo(expected);
+    assertThat(count()).as("MATCH without a view").isEqualTo(expected);
 
     // the iterator the view build and CHECK DATABASE read the list through
     final EdgeLinkedList list = ((DatabaseInternal) database).getGraphEngine()
@@ -102,11 +134,11 @@ class Issue9715EmptyEdgeSegmentTest extends TestHelper {
     int entries = 0;
     for (final Iterator<Pair<RID, RID>> it = list.entryIterator(); it.hasNext(); it.next())
       ++entries;
-    assertThat(entries).as("entries of the OUT list").isEqualTo(3);
+    assertThat(entries).as("entries of the OUT list").isEqualTo(expected);
     int typedEntries = 0;
     for (final Iterator<Pair<RID, RID>> it = list.entryIterator("K"); it.hasNext(); it.next())
       ++typedEntries;
-    assertThat(typedEntries).as("entries of type K of the OUT list").isEqualTo(3);
+    assertThat(typedEntries).as("entries of type K of the OUT list").isEqualTo(expected);
 
     final Map<String, Object> check = new DatabaseChecker(database).setVerboseLevel(0).check();
     assertThat(check.get("edgesMissingOutReference")).isEqualTo(0L);
@@ -116,11 +148,11 @@ class Issue9715EmptyEdgeSegmentTest extends TestHelper {
     database.command("sql", "CREATE GRAPH ANALYTICAL VIEW g VERTEX TYPES (P) EDGE TYPES (K) UPDATE MODE OFF");
     final GraphAnalyticalView view = GraphAnalyticalViewRegistry.get(database, "g");
     assertThat(view.awaitReady(60, TimeUnit.SECONDS)).isTrue();
-    assertThat(view.getEdgeCount()).isEqualTo(3);
-    assertThat(count()).as("MATCH with the view").isEqualTo(3);
+    assertThat(view.getEdgeCount()).isEqualTo(expected);
+    assertThat(count()).as("MATCH with the view").isEqualTo(expected);
 
     database.command("sql", "DROP GRAPH ANALYTICAL VIEW g");
-    assertThat(count()).as("MATCH once the view is dropped").isEqualTo(3);
+    assertThat(count()).as("MATCH once the view is dropped").isEqualTo(expected);
   }
 
   private Vertex vertexA() {
