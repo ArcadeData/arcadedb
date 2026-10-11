@@ -290,9 +290,13 @@ public class FetchFromSchemaTypesStep extends AbstractFetchFromSchemaListStep {
         shardR.setProperty("shard", s);
 
         try {
-          final long sealedSamples = shard.getSealedStore().getTotalSampleCount();
-          final long mutableSamples = shard.getMutableBucket().getSampleCount();
-          final int sealedBlocks = shard.getSealedStore().getBlockCount();
+          // Every figure of the shard is taken in one compaction read-lock window, so the sealed and mutable halves
+          // describe the same instant: read one after the other, a compaction caught between publishing its sealed
+          // blocks and clearing the mutable bucket reported the rows it moves in both (issue #9716)
+          final TimeSeriesShard.SampleStats stats = shard.sampleStats();
+          final long sealedSamples = stats.sealedSamples();
+          final long mutableSamples = stats.mutableSamples();
+          final int sealedBlocks = stats.sealedBlocks();
 
           shardR.setProperty("sealedBlocks", sealedBlocks);
           shardR.setProperty("sealedSamples", sealedSamples);
@@ -302,8 +306,8 @@ public class FetchFromSchemaTypesStep extends AbstractFetchFromSchemaListStep {
           totalSamples += sealedSamples + mutableSamples;
 
           if (sealedBlocks > 0) {
-            final long min = shard.getSealedStore().getGlobalMinTimestamp();
-            final long max = shard.getSealedStore().getGlobalMaxTimestamp();
+            final long min = stats.sealedMin();
+            final long max = stats.sealedMax();
             shardR.setProperty("minTimestamp", min);
             shardR.setProperty("maxTimestamp", max);
             if (min < globalMin)
@@ -313,8 +317,8 @@ public class FetchFromSchemaTypesStep extends AbstractFetchFromSchemaListStep {
           }
 
           if (mutableSamples > 0) {
-            final long mMin = shard.getMutableBucket().getMinTimestamp();
-            final long mMax = shard.getMutableBucket().getMaxTimestamp();
+            final long mMin = stats.mutableMin();
+            final long mMax = stats.mutableMax();
             shardR.setProperty("mutableMinTimestamp", mMin);
             shardR.setProperty("mutableMaxTimestamp", mMax);
             if (mMin < globalMin)

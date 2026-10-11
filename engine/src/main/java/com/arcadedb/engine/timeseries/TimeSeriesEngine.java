@@ -1348,14 +1348,18 @@ public class TimeSeriesEngine implements AutoCloseable {
 
   /**
    * Returns the total number of samples across all shards (sealed + mutable).
-   * O(shardCount * blockCount), all data already in memory.
+   * O(shardCount), header reads only.
+   * <p>
+   * Each shard's two layers are read together under its compaction read lock ({@link TimeSeriesShard#countSamples}), so
+   * a concurrent compaction cannot be caught between publishing its sealed blocks and clearing the mutable bucket, which
+   * counted the rows it moved twice (issue #9716). No window spans the shards: a row never moves from one shard to
+   * another, so the sum of per-shard counts is never above what was inserted, and one wider lock would only make every
+   * shard's compaction wait for the slowest.
    */
   public long countSamples() throws IOException {
     long total = 0;
-    for (final TimeSeriesShard shard : shards) {
-      total += shard.getSealedStore().getTotalSampleCount();
-      total += shard.getMutableBucket().getSampleCount();
-    }
+    for (final TimeSeriesShard shard : shards)
+      total += shard.countSamples();
     return total;
   }
 
