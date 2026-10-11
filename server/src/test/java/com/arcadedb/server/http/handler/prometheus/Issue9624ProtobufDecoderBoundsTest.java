@@ -18,10 +18,19 @@
  */
 package com.arcadedb.server.http.handler.prometheus;
 
+import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.Label;
+import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.LabelMatcher;
+import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.MatchType;
+import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.Query;
+import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.ReadRequest;
+import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.Sample;
+import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.TimeSeries;
 import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.WriteRequest;
 import org.junit.jupiter.api.Test;
 
+import java.util.Arrays;
 import java.util.HexFormat;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -71,6 +80,43 @@ class Issue9624ProtobufDecoderBoundsTest {
         .isEqualTo("io.prometheus.write.v2.Request");
     assertThat(PrometheusTypes.protoMessage("application/x-protobuf; charset=utf-8; PROTO=\"prometheus.WriteRequest\" "))
         .isEqualTo("prometheus.WriteRequest");
-    assertThat(PrometheusTypes.protoMessage("application/x-protobuf;proto=")).isEmpty();
+    assertThat(PrometheusTypes.protoMessage("application/x-protobuf;proto=")).as("an empty value names no message").isNull();
+    assertThat(PrometheusTypes.protoMessage("application/x-protobuf;proto=\"\"")).isNull();
+  }
+
+  /**
+   * Every truncation and every single-byte corruption of a valid request either decodes or fails with the
+   * {@link IllegalStateException} the handlers answer 400: no other exception type may escape to the 500 arm.
+   */
+  @Test
+  void truncatedOrCorruptedRequestsOnlyFailWithIllegalStateException() {
+    final byte[] write = new WriteRequest(List.of(new TimeSeries(
+        List.of(new Label("__name__", "cpu"), new Label("host", "h1")),
+        List.of(new Sample(1.5, 1696000000000L), new Sample(-2.0, 1696000015000L))))).encode();
+    final byte[] read = new ReadRequest(List.of(new Query(1000, 2000,
+        List.of(new LabelMatcher(MatchType.EQ, "__name__", "cpu"), new LabelMatcher(MatchType.RE, "host", "h.*"))))).encode();
+
+    for (final byte[] valid : List.of(write, read))
+      for (int i = 0; i < valid.length; i++) {
+        decodeBoth(Arrays.copyOf(valid, i));
+        for (final int b : new int[] { 0x00, 0x7f, 0x80, 0xff, valid[i] ^ 0x07 }) {
+          final byte[] corrupted = valid.clone();
+          corrupted[i] = (byte) b;
+          decodeBoth(corrupted);
+        }
+      }
+  }
+
+  private static void decodeBoth(final byte[] body) {
+    try {
+      WriteRequest.decode(body);
+    } catch (final IllegalStateException expected) {
+      // answered 400
+    }
+    try {
+      ReadRequest.decode(body);
+    } catch (final IllegalStateException expected) {
+      // answered 400
+    }
   }
 }

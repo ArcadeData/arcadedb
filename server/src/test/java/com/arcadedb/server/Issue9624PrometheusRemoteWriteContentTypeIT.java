@@ -73,6 +73,11 @@ class Issue9624PrometheusRemoteWriteContentTypeIT extends BaseGraphServerTest {
   }
 
   @Test
+  void anEmptyProtoParameterIsAbsentSoA2BodyStillGets400() throws Exception {
+    assertThat(post("prom/write", Snappy.compress(v2Request("m9624empty")), "application/x-protobuf;proto=").status).isEqualTo(400);
+  }
+
+  @Test
   void aRemoteWrite2BodyWithoutTheProtoParameterIsAnswered400Not204() throws Exception {
     final Response response = post("prom/write", Snappy.compress(v2Request("m9624nohdr")), "application/x-protobuf");
     assertThat(response.status).as("a non-empty body with no 1.0 content must not be acknowledged as delivered").isEqualTo(400);

@@ -168,8 +168,9 @@ public class PostPrometheusWriteHandler extends AbstractBinaryHttpHandler {
       // field at all is a message in another schema - a 2.0 Request sent without the proto= parameter - and answering
       // 204 would make the sender discard it as delivered (issue #9624).
       if (decompressed.length > 0 && !writeRequest.hasRecognizedContent())
-        return new ExecutionResponse(400, "{ \"error\" : \"The body carries no " + WriteRequest.PROTO_MESSAGE
-            + " field (remote write 1.0): if it is a remote write 2.0 io.prometheus.write.v2.Request, configure the sender for 1.0\"}");
+        return new ExecutionResponse(400, new JSONObject().put("error", "The body carries no " + WriteRequest.PROTO_MESSAGE
+            + " field (remote write 1.0): if it is a remote write 2.0 io.prometheus.write.v2.Request, configure the sender for 1.0")
+            .toString());
       return new ExecutionResponse(204, "");
     }
 

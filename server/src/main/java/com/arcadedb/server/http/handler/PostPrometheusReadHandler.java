@@ -97,8 +97,6 @@ public class PostPrometheusReadHandler extends AbstractBinaryHttpHandler {
   protected ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user,
       final Database db, final JSONObject payload) throws Exception {
 
-    // THIS request's bytes, off the exchange rather than off a field shared with every concurrent request; see
-    // AbstractBinaryHttpHandler.RAW_BINARY_PAYLOAD and issue #7683.
     // A request naming another protobuf message in its Content-Type is refused with the 415 the remote-write
     // specification gives that case, rather than decoded in a schema it is not in (issue #9624)
     final String protoMessage = PrometheusTypes.protoMessage(exchange.getRequestHeaders().getFirst(Headers.CONTENT_TYPE));
@@ -106,6 +104,8 @@ public class PostPrometheusReadHandler extends AbstractBinaryHttpHandler {
       return new ExecutionResponse(415, new JSONObject().put("error", "Unsupported remote-read protobuf message '" + protoMessage
           + "': this endpoint implements " + ReadRequest.PROTO_MESSAGE).toString());
 
+    // THIS request's bytes, off the exchange rather than off a field shared with every concurrent request; see
+    // AbstractBinaryHttpHandler.RAW_BINARY_PAYLOAD and issue #7683.
     final byte[] rawBytes = rawBytes(exchange);
     if (rawBytes == null || rawBytes.length == 0)
       return new ExecutionResponse(400, "{ \"error\" : \"Request body is empty\"}");

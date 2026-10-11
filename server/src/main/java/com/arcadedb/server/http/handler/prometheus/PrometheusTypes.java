@@ -35,7 +35,9 @@ public final class PrometheusTypes {
   /**
    * The {@code proto=} parameter of a request {@code Content-Type}, which is how Prometheus remote write 2.0 names the
    * message a body is encoded in (issue #9624), or null when the header or the parameter is absent. The parameter name is
-   * matched case-insensitively and surrounding quotes are removed from its value.
+   * matched case-insensitively and surrounding quotes are removed from its value. An empty value names no message, so it
+   * is answered as absent: the body is then decoded as the endpoint's own message, and a 2.0 body is still caught by
+   * {@link WriteRequest#hasRecognizedContent()}.
    */
   public static String protoMessage(final String contentType) {
     if (contentType == null)
@@ -49,7 +51,7 @@ public final class PrometheusTypes {
       String value = param.substring(eq + 1).trim();
       if (value.length() >= 2 && value.charAt(0) == '"' && value.charAt(value.length() - 1) == '"')
         value = value.substring(1, value.length() - 1).trim();
-      return value;
+      return value.isEmpty() ? null : value;
     }
     return null;
   }
