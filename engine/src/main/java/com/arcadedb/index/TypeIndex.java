@@ -438,8 +438,15 @@ public class TypeIndex implements RangeIndex, IndexInternal {
     // A failure from here on leaves `dropping` raised on purpose: some sub-indexes may be gone, and an index missing part of
     // its entries must not answer a query as if it were whole. The drop is retried, and only a completed one clears the
     // wrapper (valid = false)
-    for (final Index index : new ArrayList<>(indexesOnBuckets))
-      type.getSchema().dropIndex(index.getName());
+    try {
+      for (final Index index : new ArrayList<>(indexesOnBuckets))
+        type.getSchema().dropIndex(index.getName());
+    } catch (final RuntimeException | Error e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Drop of index '%s' failed after removing part of its sub-indexes: it stays unusable by queries until the drop is run again",
+          e, getName());
+      throw e;
+    }
 
     valid = false;
     indexesOnBuckets.clear();

@@ -19,21 +19,25 @@
 package com.arcadedb.gremlin;
 
 import com.arcadedb.database.BasicDatabase;
+import com.arcadedb.index.IndexException;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import org.apache.tinkerpop.gremlin.process.traversal.P;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -41,6 +45,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #9651: {@code ArcadeFilterByIndexStep} held the index its traversal was compiled against and read it with no guard, so
@@ -100,6 +105,50 @@ class Issue9651IndexDdlDuringTraversalsTest {
     graph.getDatabase().getSchema().getType("T").createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "a");
 
     assertThat(traversal.next()).isEqualTo((long) ROWS / VALUES * 2);
+  }
+
+  @Test
+  void aScanWhoseIndexIsDroppedMidwayFinishesOnTheTypeWithoutRepeatingACandidate() {
+    graph.getDatabase().getSchema().getType("T").createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "a");
+    final var traversal = graph.traversal().V().hasLabel("T").has("a", P.gte(0)).id();
+    final Set<Object> ids = new HashSet<>();
+    for (int i = 0; i < 10; i++)
+      assertThat(ids.add(traversal.next())).isTrue();
+
+    // deterministic, unlike the churn below: the drop lands between two candidates of the same scan
+    graph.getDatabase().getSchema().dropIndex("T[a]");
+
+    while (traversal.hasNext())
+      assertThat(ids.add(traversal.next())).as("a candidate emitted twice").isTrue();
+    assertThat(ids).hasSize(ROWS);
+  }
+
+  /**
+   * Past {@link ArcadeFilterByIndexStep#MAX_TRACKED_CANDIDATES} the scan stops remembering what it emitted, so an index lost
+   * after that point fails the traversal with a retryable error rather than answering short or repeating candidates.
+   */
+  @Test
+  @Tag("slow")
+  void anIndexLostAfterTooManyCandidatesFailsTheTraversalInsteadOfAnsweringShort() {
+    final BasicDatabase database = graph.getDatabase();
+    database.getSchema().createVertexType("Many").createProperty("a", Type.INTEGER);
+    final int total = ArcadeFilterByIndexStep.MAX_TRACKED_CANDIDATES + 100;
+    database.transaction(() -> {
+      for (int i = 0; i < total; i++)
+        database.newVertex("Many").set("a", i).save();
+    });
+    database.getSchema().getType("Many").createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "a");
+
+    final var traversal = graph.traversal().V().hasLabel("Many").has("a", P.gte(0)).id();
+    for (int i = 0; i < ArcadeFilterByIndexStep.MAX_TRACKED_CANDIDATES + 10; i++)
+      traversal.next();
+
+    database.getSchema().dropIndex("Many[a]");
+
+    assertThatThrownBy(() -> {
+      while (traversal.hasNext())
+        traversal.next();
+    }).isInstanceOf(IndexException.class).hasMessageContaining("run the traversal again");
   }
 
   @Test
