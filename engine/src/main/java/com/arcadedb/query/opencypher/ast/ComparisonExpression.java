@@ -18,7 +18,6 @@
  */
 package com.arcadedb.query.opencypher.ast;
 
-import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.function.graph.IdFunction;
@@ -119,14 +118,21 @@ public class ComparisonExpression implements BooleanExpression {
       rightValue = right.evaluate(result, context);
     }
 
-    return evaluateWithValues(leftValue, rightValue, result);
+    return evaluateWithValues(leftValue, rightValue, result, context);
   }
 
   /**
    * {@link #evaluateWithValues(Object, Object)} for a caller that evaluated this comparison's own operands against
    * {@code result}: also applies the declared-STRING coercion, which needs the row to find the record an operand reads.
+   * Without a context only a property of a bound variable ({@code n.v}) is resolved; with one, every spelling of a stored
+   * property read is (#9701).
    */
   public Object evaluateWithValues(final Object leftValue, final Object rightValue, final Result result) {
+    return evaluateWithValues(leftValue, rightValue, result, null);
+  }
+
+  public Object evaluateWithValues(final Object leftValue, final Object rightValue, final Result result,
+      final CommandContext context) {
     final Object plain = compareValuesTernary(leftValue, rightValue);
 
     // A property declared STRING holds the text of what was written into it: = and <> also compare that text with the text
@@ -136,11 +142,11 @@ public class ComparisonExpression implements BooleanExpression {
     if (((operator == Operator.EQUALS && !Boolean.TRUE.equals(plain)) || (operator == Operator.NOT_EQUALS && !Boolean.FALSE.equals(
         plain))) && leftValue != null && rightValue != null) {
       if (leftValue instanceof String && !(rightValue instanceof String)) {
-        final Object text = toDeclaredText(left, rightValue, result);
+        final Object text = toDeclaredText(left, rightValue, result, context);
         if (text != rightValue)
           return compareValuesTernary(leftValue, text);
       } else if (rightValue instanceof String && !(leftValue instanceof String)) {
-        final Object text = toDeclaredText(right, leftValue, result);
+        final Object text = toDeclaredText(right, leftValue, result, context);
         if (text != leftValue)
           return compareValuesTernary(text, rightValue);
       }
@@ -152,15 +158,16 @@ public class ComparisonExpression implements BooleanExpression {
   /**
    * The text {@code operand} would be stored as in the property {@code propertySide} reads, when that is a property of a
    * record declared {@code STRING}; the operand itself otherwise, so the Cypher typing of {@code =} is untouched wherever
-   * no declaration says what the stored text stands for.
+   * no declaration says what the stored text stands for. Every spelling of the read counts ({@code n.v}, {@code n['v']},
+   * {@code properties(n).v}, {@code a.link.v}, see {@link PropertyReadExpression}), so they all answer as {@code n.v} does
+   * (#9701). A value projected first ({@code WITH n.v AS v}) carries no record, and keeps the Cypher typing.
    */
-  private static Object toDeclaredText(final Expression propertySide, final Object operand, final Result result) {
-    if (!(propertySide instanceof PropertyAccessExpression access) || result == null)
+  static Object toDeclaredText(final Expression propertySide, final Object operand, final Result result,
+      final CommandContext context) {
+    final PropertyReadExpression.PropertyRead read = PropertyReadExpression.of(propertySide, result, context);
+    if (read == null || read.record() == null)
       return operand;
-    final Document record = InlineProperties.boundRecord(result.getProperty(access.getVariableName()));
-    if (record == null)
-      return operand;
-    final String text = InlineProperties.declaredText(record, access.getPropertyName(), operand);
+    final String text = InlineProperties.declaredText(read.record(), read.key(), operand);
     return text != null ? text : operand;
   }
 

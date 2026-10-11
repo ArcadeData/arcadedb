@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.ast;
 
 import com.arcadedb.database.Document;
+import com.arcadedb.database.RID;
 import com.arcadedb.query.opencypher.query.OpenCypherQueryEngine;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
@@ -33,7 +34,7 @@ import java.util.Map;
  *
  * Supports negative indices (Python-style): list[-1] returns the last element.
  */
-public class ListIndexExpression implements Expression {
+public class ListIndexExpression implements PropertyReadExpression {
   private final Expression listExpression;
   private final Expression indexExpression;
 
@@ -73,6 +74,9 @@ public class ListIndexExpression implements Expression {
         return ((Document) listValue).get(key);
       if (listValue instanceof Result)
         return ((Result) listValue).getProperty(key);
+      // a persisted node-valued property is a LINK: read through it as a.link.v does, rather than answer null (#9701)
+      if (listValue instanceof RID rid)
+        return PropertyAccessExpression.readLinkedProperty(rid, key);
       // List with string index is a type error in Cypher
       if (isListLike)
         throw new IllegalArgumentException("List index must be a number, got: String");
@@ -114,6 +118,18 @@ public class ListIndexExpression implements Expression {
     // In Cypher, numeric indexing is only valid for lists, not for strings or other types
     throw new IllegalArgumentException(
         "TypeError: InvalidArgumentType - Cannot index into type: " + listValue.getClass().getSimpleName());
+  }
+
+  /** {@code n['v']} and {@code properties(n)['v']} read the property {@code v} of the record {@code n}. */
+  @Override
+  public PropertyRead propertyRead(final Result row, final CommandContext context) {
+    if (context == null)
+      return null;
+    final Object key = OpenCypherQueryEngine.getExpressionEvaluator().evaluate(indexExpression, row, context);
+    if (!(key instanceof String name))
+      return null;
+    final Document record = PropertyReadExpression.recordOf(listExpression, row, context);
+    return record != null ? new PropertyRead(record, name) : null;
   }
 
   @Override

@@ -19,18 +19,14 @@
 package com.arcadedb.query.opencypher.ast;
 
 import com.arcadedb.database.Document;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 
-import java.time.Duration;
-import java.time.LocalDate;
-import java.time.LocalDateTime;
-import java.time.ZonedDateTime;
 import java.util.Arrays;
 import java.util.Collection;
-import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -47,68 +43,64 @@ import java.util.Map;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class IsTypedExpression implements BooleanExpression {
-  private final Expression valueExpression;
-  private final String     normalizedTypeName;
-  private final String     listElementTypeName;
-  private final boolean    requiresNonNull;
-  private final boolean    isNot;
+  private final Expression     valueExpression;
+  private final CypherTypeName type;
+  private final boolean        isNot;
 
-  public IsTypedExpression(final Expression valueExpression, final String normalizedTypeName,
-      final String listElementTypeName, final boolean requiresNonNull, final boolean isNot) {
+  public IsTypedExpression(final Expression valueExpression, final CypherTypeName type, final boolean isNot) {
     this.valueExpression = valueExpression;
-    this.normalizedTypeName = normalizedTypeName;
-    this.listElementTypeName = listElementTypeName;
-    this.requiresNonNull = requiresNonNull;
+    this.type = type;
     this.isNot = isNot;
   }
 
   @Override
   public boolean evaluate(final Result result, final CommandContext context) {
     final Object value = valueExpression.evaluate(result, context);
-    final boolean conforms = conforms(value);
+    final boolean conforms = conforms(value, type.name(), type.nonNull(), type.elementName(), type.elementNonNull());
     return isNot != conforms;
   }
 
-  private boolean conforms(final Object value) {
+  /**
+   * Whether the value conforms to the type. The temporal types, DURATION and POINT are answered by the same classification
+   * {@code valueType()} reports ({@link CypherFunctionHelper#cypherTypeName}), so the two cannot disagree: they used to test
+   * the {@code java.time} classes, which no Cypher temporal value is, and answered false for {@code date() IS :: DATE} (#9709).
+   */
+  private static boolean conforms(final Object value, final String name, final boolean nonNull, final String elementName,
+      final boolean elementNonNull) {
     if (value == null)
-      return !requiresNonNull && !"NOTHING".equals(normalizedTypeName);
+      return !nonNull && !"NOTHING".equals(name);
 
-    return switch (normalizedTypeName) {
-      case "ANY", "ANY VALUE", "PROPERTY VALUE" -> true;
-      case "BOOL", "BOOLEAN" -> value instanceof Boolean;
-      // GQL signed-integer subtype hierarchy: a Java Byte is also INT16/INT32/INT64/INTEGER,
+    return switch (name) {
+      case "ANY" -> true;
+      case "BOOLEAN" -> value instanceof Boolean;
+      // GQL signed-integer subtype hierarchy: a Java Byte is also INT16/INT32/INTEGER,
       // but a Java Long is not INT8. INT (without suffix) aliases INT32 per Cypher 25.
-      case "INT8", "INTEGER8" -> value instanceof Byte;
-      case "INT16", "INTEGER16" -> value instanceof Byte || value instanceof Short;
-      case "INT", "INT32", "INTEGER32" ->
-          value instanceof Byte || value instanceof Short || value instanceof Integer;
-      case "INT64", "INTEGER64", "INTEGER", "SIGNED INTEGER" ->
-          value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long;
-      // GQL float subtype hierarchy: Java Float is FLOAT32 (and therefore also FLOAT64/FLOAT),
-      // Java Double is FLOAT64/FLOAT but not FLOAT32.
+      case "INT8" -> value instanceof Byte;
+      case "INT16" -> value instanceof Byte || value instanceof Short;
+      case "INT32" -> value instanceof Byte || value instanceof Short || value instanceof Integer;
+      case "INTEGER" -> value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long;
+      // GQL float subtype hierarchy: Java Float is FLOAT32 (and therefore also FLOAT),
+      // Java Double is FLOAT but not FLOAT32.
       case "FLOAT32" -> value instanceof Float;
-      case "FLOAT64", "FLOAT" -> value instanceof Float || value instanceof Double;
-      case "VARCHAR", "STRING" -> value instanceof String;
-      case "DATE" -> value instanceof LocalDate;
-      case "LOCAL DATETIME", "LOCAL TIMESTAMP" -> value instanceof LocalDateTime;
-      case "ZONED DATETIME", "ZONED TIMESTAMP" -> value instanceof ZonedDateTime;
-      case "DURATION" -> value instanceof Duration;
-      case "POINT" -> value.getClass().getSimpleName().toLowerCase(Locale.ROOT).contains("point");
-      case "MAP" -> value instanceof Map;
-      case "LIST", "ARRAY" -> isListMatch(value);
-      case "NODE", "VERTEX", "ANY NODE", "ANY VERTEX" -> value instanceof Vertex;
-      case "RELATIONSHIP", "EDGE", "ANY RELATIONSHIP", "ANY EDGE" -> value instanceof Edge;
+      case "FLOAT" -> value instanceof Float || value instanceof Double;
+      case "STRING" -> value instanceof String;
+      case "DATE", "LOCAL DATETIME", "ZONED DATETIME", "LOCAL TIME", "ZONED TIME", "DURATION", "POINT" ->
+          name.equals(CypherFunctionHelper.cypherTypeName(value));
+      // a point is a map at runtime, but it is a POINT and not a MAP to the type system
+      case "MAP" -> value instanceof Map && !"POINT".equals(CypherFunctionHelper.cypherTypeName(value));
+      case CypherTypeName.LIST -> isListMatch(value, elementName, elementNonNull);
+      case "NODE" -> value instanceof Vertex;
+      case "RELATIONSHIP" -> value instanceof Edge;
       case "ELEMENT" -> value instanceof Document;
-      case "PATH", "PATHS" -> value instanceof Collection || value.getClass().isArray();
-      case "NULL", "NOTHING" -> false;
+      case "PATH" -> value instanceof Collection || value.getClass().isArray();
       default -> false;
     };
   }
 
-  private boolean isListMatch(final Object value) {
+  private static boolean isListMatch(final Object value, final String elementName, final boolean elementNonNull) {
     if (!(value instanceof Collection<?>) && !value.getClass().isArray())
       return false;
-    if (listElementTypeName == null)
+    if (elementName == null)
       return true;
     final Iterable<?> elements;
     if (value instanceof Collection<?> coll)
@@ -117,40 +109,23 @@ public class IsTypedExpression implements BooleanExpression {
       elements = Arrays.asList(arr);
     else
       return false;
-    final IsTypedExpression elementCheck = new IsTypedExpression(null, listElementTypeName, null, false, false);
     for (final Object e : elements)
-      if (!elementCheck.conforms(e))
+      if (!conforms(e, elementName, elementNonNull, null, false))
         return false;
     return true;
   }
 
   @Override
   public String getText() {
-    final StringBuilder sb = new StringBuilder();
-    sb.append(valueExpression.getText());
-    sb.append(isNot ? " IS NOT TYPED " : " IS TYPED ");
-    sb.append(normalizedTypeName);
-    if (listElementTypeName != null)
-      sb.append("<").append(listElementTypeName).append(">");
-    if (requiresNonNull)
-      sb.append(" NOT NULL");
-    return sb.toString();
+    return valueExpression.getText() + (isNot ? " IS NOT TYPED " : " IS TYPED ") + type;
   }
 
   public Expression getValueExpression() {
     return valueExpression;
   }
 
-  public String getNormalizedTypeName() {
-    return normalizedTypeName;
-  }
-
-  public String getListElementTypeName() {
-    return listElementTypeName;
-  }
-
-  public boolean requiresNonNull() {
-    return requiresNonNull;
+  public CypherTypeName getType() {
+    return type;
   }
 
   public boolean isNot() {

@@ -1772,6 +1772,29 @@ public class BoltProtocolIT extends BaseBoltServerTest {
   }
 
   /**
+   * Regression test for #9706: over Bolt, SHOW CONSTRAINTS lists a Cypher constraint by the name DROP CONSTRAINT takes - the
+   * one it was given, or the one generated for it - so a Neo4j driver can find and drop it.
+   */
+  @Test
+  void showConstraintsListsCypherConstraintsByTheNameDropTakes() {
+    try (Driver driver = getDriver()) {
+      try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+        session.run("CREATE CONSTRAINT bolt_named FOR (n:BoltCon9706) REQUIRE n.a IS UNIQUE").consume();
+        session.run("CREATE CONSTRAINT FOR (n:BoltCon9706) REQUIRE n.b IS :: INTEGER").consume();
+
+        final List<String> names = session.run("SHOW CONSTRAINTS YIELD name, labelsOrTypes WHERE 'BoltCon9706' IN labelsOrTypes "
+            + "RETURN name ORDER BY name").list(r -> r.get("name").asString());
+        assertThat(names).containsExactly("bolt_named", "constraint_BoltCon9706_b_type");
+
+        session.run("DROP CONSTRAINT bolt_named").consume();
+        session.run("DROP CONSTRAINT constraint_BoltCon9706_b_type").consume();
+
+        assertThat(session.run("SHOW CONSTRAINTS WHERE 'BoltCon9706' IN labelsOrTypes").list()).isEmpty();
+      }
+    }
+  }
+
+  /**
    * Regression test: SHOW VECTOR INDEXES filters to only vector indexes; when there are
    * none, the result is empty but the response shape is preserved.
    */

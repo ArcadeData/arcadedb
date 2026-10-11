@@ -297,7 +297,7 @@ public final class CypherValues {
    * javadoc above), and {@link #validatePointEntries} closes the map-smuggling loophole a looser key-presence check
    * would leave open.
    */
-  private static boolean isPointShaped(final Map<?, ?> map) {
+  public static boolean isPointShaped(final Map<?, ?> map) {
     return map.get("crs") != null && map.get("x") instanceof Number && map.get("y") instanceof Number;
   }
 

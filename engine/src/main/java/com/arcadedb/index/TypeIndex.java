@@ -55,6 +55,9 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   private final List<IndexInternal> indexesOnBuckets = new CopyOnWriteArrayList<>();
   private final DocumentType        type;
   private volatile boolean          valid            = true;
+  // Raised by drop() before it takes the first sub-index away, while valid is still true: a reader can tell that what it read
+  // through the index may be missing the sub-indexes already gone (#9651)
+  private volatile boolean          dropping         = false;
   private       IndexInternal       associatedIndex;
   private       IndexMetadata       metadata;
 
@@ -81,7 +84,7 @@ public class TypeIndex implements RangeIndex, IndexInternal {
     if (!supportsOrderedIterations())
       throw new UnsupportedOperationException("Index '" + getName() + "' does not support ordered iterations");
 
-    return new MultiIndexCursor(indexesOnBuckets, ascendingOrder, -1);
+    return new MultiIndexCursor(subIndexesToRead(), ascendingOrder, -1);
   }
 
   @Override
@@ -90,7 +93,21 @@ public class TypeIndex implements RangeIndex, IndexInternal {
     if (!supportsOrderedIterations())
       throw new UnsupportedOperationException("Index '" + getName() + "' does not support ordered iterations");
 
-    return new MultiIndexCursor(indexesOnBuckets, fromKeys, ascendingOrder, inclusive, -1);
+    return new MultiIndexCursor(subIndexesToRead(), fromKeys, ascendingOrder, inclusive, -1);
+  }
+
+  /**
+   * The sub-indexes a cursor reads, as one snapshot. The live list is copy-on-write, so a loop over it already walks a snapshot,
+   * but a cursor that asked the list again afterwards (for its first element's key types) read it as a concurrent drop left it:
+   * emptied, which raised a {@link java.util.NoSuchElementException} that a Gremlin traversal takes for the end of the stream,
+   * answering an empty result as a success (#9651). An index with no sub-index left is being dropped, and says so the way
+   * every reader already expects.
+   */
+  private List<IndexInternal> subIndexesToRead() {
+    final List<IndexInternal> snapshot = List.copyOf(indexesOnBuckets);
+    if (snapshot.isEmpty())
+      throw new IndexException("Index '" + getName() + "' is not valid. Probably has been drop or rebuilt");
+    return snapshot;
   }
 
   @Override
@@ -100,9 +117,10 @@ public class TypeIndex implements RangeIndex, IndexInternal {
     if (!supportsOrderedIterations())
       throw new UnsupportedOperationException("Index '" + getName() + "' does not support ordered iterations");
 
-    final List<IndexCursor> cursors = new ArrayList<>(indexesOnBuckets.size());
+    final List<IndexInternal> subIndexes = subIndexesToRead();
+    final List<IndexCursor> cursors = new ArrayList<>(subIndexes.size());
     try {
-      for (final Index index : indexesOnBuckets)
+      for (final Index index : subIndexes)
         cursors.add(((RangeIndex) index).range(ascending, beginKeys, beginKeysInclusive, endKeys, endKeysInclusive));
 
       return new MultiIndexCursor(cursors, -1, ascending);
@@ -395,6 +413,7 @@ public class TypeIndex implements RangeIndex, IndexInternal {
       // Throwing here would surface a confusing "is not valid" error for an idempotent operation.
       return;
 
+    dropping = true;
     final List<IndexInternal> acquired = new ArrayList<>(indexesOnBuckets.size());
     for (final IndexInternal index : new ArrayList<>(indexesOnBuckets))
       if (index.setStatus(new INDEX_STATUS[] { INDEX_STATUS.AVAILABLE, INDEX_STATUS.UNAVAILABLE }, INDEX_STATUS.UNAVAILABLE))
@@ -403,6 +422,7 @@ public class TypeIndex implements RangeIndex, IndexInternal {
         // NOT AVAILABLE, RESET ACQUIRED STATUSES
         for (IndexInternal i : acquired)
           i.setStatus(new INDEX_STATUS[] { INDEX_STATUS.UNAVAILABLE }, INDEX_STATUS.AVAILABLE);
+        dropping = false;
         throw new NeedRetryException(
             "Cannot drop index '" + getName() + "' because one or more underlying files are not available");
       }
@@ -763,7 +783,7 @@ public class TypeIndex implements RangeIndex, IndexInternal {
    * planners and lookups: writes, uniqueness checks and index maintenance do not consult it.
    */
   public boolean isReadyForQueries() {
-    if (!valid)
+    if (!valid || dropping)
       return false;
     try {
       final IndexInternal first = firstOrNull();
@@ -785,6 +805,38 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   public static boolean isFileNotFound(final IllegalArgumentException e) {
     final String message = e.getMessage();
     return message != null && message.startsWith("File with id");
+  }
+
+  /**
+   * Whether a reader that read through this index since it took {@code snapshot} ({@link #getIndexesOnBuckets()}) read all of
+   * it: the index is still valid, no drop has started, and it has the very sub-indexes it had then. A drop takes the
+   * sub-indexes away one at a time while the index still answers as valid, so a scan running in that window can come back short
+   * without any error (see {@link #drop()}); a reader that must not answer short checks this once the scan is over, and reads
+   * again without the index when it is false (#9651).
+   */
+  public boolean isUnchangedSince(final IndexInternal[] snapshot) {
+    if (!valid || dropping)
+      return false;
+    final IndexInternal[] current = getIndexesOnBuckets();
+    if (current.length != snapshot.length)
+      return false;
+    for (int i = 0; i < current.length; i++)
+      if (current[i] != snapshot[i])
+        return false;
+    return true;
+  }
+
+  /**
+   * Whether {@code e}, raised by a read of {@code index}, is how the read fails when a concurrent DDL dropped or rebuilt the
+   * index under it: an {@link IndexException}, or the page manager's "File with id n was not found" ({@link #isFileNotFound})
+   * once the index is no longer valid. A reader that has not returned anything yet can then read without the index (a scan,
+   * or another index on the same properties) instead of failing (issues #9331, #9651). Any other exception is the caller's.
+   */
+  public static boolean isStaleRead(final Index index, final RuntimeException e) {
+    if (e instanceof IndexException)
+      return true;
+    return e instanceof IllegalArgumentException iae && isFileNotFound(iae) && !(index instanceof TypeIndex typeIndex
+        && typeIndex.isValid());
   }
 
   /**

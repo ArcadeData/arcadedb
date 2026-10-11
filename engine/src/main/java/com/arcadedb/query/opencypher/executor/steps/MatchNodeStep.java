@@ -28,6 +28,7 @@ import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.function.graph.IdFunction;
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.opencypher.InlineProperties;
 import com.arcadedb.query.opencypher.Labels;
@@ -899,7 +900,22 @@ public class MatchNodeStep extends AbstractExecutionStep {
    */
   private Iterator<Identifiable> lookupByKey(final TypeIndex index, final String label, final String[] propertyNames,
       final Object[] propertyValues) {
-    final Iterator<Identifiable> cursor = context.getDatabase().lookupByKey(label, propertyNames, propertyValues);
+    final Iterator<Identifiable> cursor;
+    final IndexInternal[] subIndexes = index.getIndexesOnBuckets();
+    try {
+      cursor = context.getDatabase().lookupByKey(label, propertyNames, propertyValues);
+      // The lookup is read whole before it returns: a drop that started meanwhile may have taken sub-indexes away under it
+      // without an error, and the scan answers instead of a lookup that may be short (#9651)
+      if (!index.isUnchangedSince(subIndexes))
+        return null;
+    } catch (final RuntimeException e) {
+      // A concurrent DDL dropped or rebuilt the index after it was checked (lookupByKey answers "no index" with an
+      // IllegalArgumentException, a lookup under the drop fails with the stale-read errors): the lookup is eager, so nothing
+      // has been returned yet, and the caller scans the type instead (#9651)
+      if (TypeIndex.isStaleRead(index, e) || (e instanceof IllegalArgumentException && !index.isReadyForQueries()))
+        return null;
+      throw e;
+    }
     return Labels.isInheritedIndex(index, label) ? Labels.filterByLabel(cursor, context.getDatabase(), label) : cursor;
   }
 

@@ -315,7 +315,7 @@ class OpenCypherConstraintTest {
 
     final Property property = database.getSchema().getType("Person").getPropertyIfExists("created");
     assertThat(property).isNotNull();
-    assertThat(property.getType()).isEqualTo(Type.DATETIME);
+    assertThat(property.getType()).isEqualTo(Type.DATETIME_NANOS);
   }
 
   @Test
