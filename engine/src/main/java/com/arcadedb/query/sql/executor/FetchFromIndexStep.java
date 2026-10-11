@@ -318,7 +318,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
             // few instructions wide, and a statement planned again answers the same rows. Before any entry, a drop that has
             // only started counts too (issue #9615): it may already have taken the sub-indexes away, and an empty answer is the
             // one a statement planned again can still replace at no cost to the caller
-            if (index instanceof TypeIndex typeIndex && (!typeIndex.isValid() || count == 0 && typeIndex.isDropping()))
+            if (index instanceof TypeIndex typeIndex && (!typeIndex.isValid() || (count == 0 && typeIndex.isDropping())))
               throw new IndexException("Index '" + indexName + "' was dropped or rebuilt while it was being read");
             updateIndexStats();
           } else

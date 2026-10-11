@@ -245,8 +245,10 @@ public class SelectStatement extends Statement {
       } catch (final IndexException e) {
         if (attempt >= STALE_INDEX_PLAN_MAX_ATTEMPTS)
           throw e;
-        LogManager.instance().log(this, Level.INFO, "Planning the statement again after attempt %d, its index was dropped or "
-            + "rebuilt: %s", null, attempt, e.getMessage());
+        // The last attempt reads the types without their indexes: a full scan, worth telling an operator about
+        LogManager.instance().log(this, Level.INFO, "Planning the statement again after attempt %d%s, its index was dropped or "
+                + "rebuilt: %s", null, attempt,
+            attempt + 1 >= STALE_INDEX_PLAN_MAX_ATTEMPTS ? " without the indexes of its types (a scan)" : "", e.getMessage());
         if (plan != null)
           try {
             plan.close();
