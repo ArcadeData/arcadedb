@@ -25,6 +25,7 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
+import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -199,6 +200,26 @@ class Issue9613Issue9614SelectIndexCandidatesTest extends TestHelper {
     // the residual filter is case sensitive: 'A' matches nothing, 'a' its two records, once each
     assertThat(ids(where("Ci").property("s").in().value(List.of("A", "a")))).containsExactly("a1", "a2");
     assertThat(where("Ci").property("s").in().value(List.of("A", "a")).count()).isEqualTo(2);
+  }
+
+  @Test
+  void decimalsOfOneValueInTwoScalesAreOneKey() {
+    // 1.0 and 1.00 differ by equals() but are one key: probed once, each record returned once, on both index kinds
+    for (final String kind : List.of("NOTUNIQUE", "NOTUNIQUE_HASH")) {
+      final String type = "Dec" + kind.replace("_", "");
+      database.command("sql", "CREATE DOCUMENT TYPE " + type);
+      database.command("sql", "CREATE PROPERTY " + type + ".d DECIMAL");
+      database.command("sql", "CREATE INDEX ON " + type + " (d) " + kind);
+      database.transaction(() -> {
+        database.newDocument(type).set("id", "x1").set("d", new BigDecimal("1.0")).save();
+        database.newDocument(type).set("id", "x2").set("d", new BigDecimal("1")).save();
+        database.newDocument(type).set("id", "y1").set("d", new BigDecimal("2.5")).save();
+      });
+      final List<Object> values = List.of(new BigDecimal("1.0"), new BigDecimal("1.00"), new BigDecimal("1"));
+      assertThat(ids(where(type).property("d").in().value(values))).as(kind).containsExactly("x1", "x2");
+      assertThat(where(type).property("d").in().value(values).count()).as(kind).isEqualTo(2);
+      assertThat(where(type).property("d").in().value(values).limit(2).documents().toList()).as(kind).hasSize(2);
+    }
   }
 
   @Test
