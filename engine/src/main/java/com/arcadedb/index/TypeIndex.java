@@ -415,23 +415,29 @@ public class TypeIndex implements RangeIndex, IndexInternal {
 
     dropping = true;
     final List<IndexInternal> acquired = new ArrayList<>(indexesOnBuckets.size());
-    for (final IndexInternal index : new ArrayList<>(indexesOnBuckets))
-      if (index.setStatus(new INDEX_STATUS[] { INDEX_STATUS.AVAILABLE, INDEX_STATUS.UNAVAILABLE }, INDEX_STATUS.UNAVAILABLE))
-        acquired.add(index);
-      else {
-        // NOT AVAILABLE, RESET ACQUIRED STATUSES
-        for (IndexInternal i : acquired)
-          i.setStatus(new INDEX_STATUS[] { INDEX_STATUS.UNAVAILABLE }, INDEX_STATUS.AVAILABLE);
-        dropping = false;
-        throw new NeedRetryException(
-            "Cannot drop index '" + getName() + "' because one or more underlying files are not available");
-      }
+    try {
+      for (final IndexInternal index : new ArrayList<>(indexesOnBuckets))
+        if (index.setStatus(new INDEX_STATUS[] { INDEX_STATUS.AVAILABLE, INDEX_STATUS.UNAVAILABLE }, INDEX_STATUS.UNAVAILABLE))
+          acquired.add(index);
+        else
+          throw new NeedRetryException(
+              "Cannot drop index '" + getName() + "' because one or more underlying files are not available");
+    } catch (final RuntimeException | Error e) {
+      // NOTHING WAS TAKEN AWAY: RESET THE ACQUIRED STATUSES AND THE FLAG, THE INDEX ANSWERS QUERIES AGAIN
+      for (final IndexInternal i : acquired)
+        i.setStatus(new INDEX_STATUS[] { INDEX_STATUS.UNAVAILABLE }, INDEX_STATUS.AVAILABLE);
+      dropping = false;
+      throw e;
+    }
 
     // Order: sub-indexes dropped, then valid = false, then the list cleared. The wrapper must stay valid during the first step
     // (LocalSchema#dropIndex resolves and unregisters the wrapper through its sub-indexes), so until valid = false a reader
     // sees a valid wrapper with some sub-indexes missing: it usually gets an IndexException or a null type, which the callers
     // treat as "not a candidate". A query that already chose this index and reads it in that instant can miss the rows of the
     // sub-indexes already dropped: the index is going away, and that query was planned before the drop completed.
+    // A failure from here on leaves `dropping` raised on purpose: some sub-indexes may be gone, and an index missing part of
+    // its entries must not answer a query as if it were whole. The drop is retried, and only a completed one clears the
+    // wrapper (valid = false)
     for (final Index index : new ArrayList<>(indexesOnBuckets))
       type.getSchema().dropIndex(index.getName());
 

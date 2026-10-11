@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.ast;
 
+import com.arcadedb.query.opencypher.InlineProperties;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 
@@ -96,8 +97,9 @@ public class CaseExpression implements Expression {
     final Object plain = whenEquality.evaluateWithValues(caseValue, whenValue);
     if (Boolean.TRUE.equals(plain) || !(caseValue instanceof String) || whenValue == null || whenValue instanceof String)
       return plain;
-    final Object text = ComparisonExpression.toDeclaredText(caseExpression, whenValue, result, context);
-    return text != whenValue ? whenEquality.evaluateWithValues(caseValue, text) : plain;
+    final PropertyReadExpression.PropertyRead read = PropertyReadExpression.of(caseExpression, result, context);
+    final String text = read != null && read.record() != null ? InlineProperties.declaredText(read.record(), read.key(), whenValue) : null;
+    return text != null ? whenEquality.evaluateWithValues(caseValue, text) : plain;
   }
 
   /**

@@ -65,6 +65,21 @@ final class CypherConstraintRegistry {
     void retype(DocumentType type, Property property, Type newType, String newOfType);
   }
 
+  /**
+   * What a constraint statement created, recorded under the constraint's name so dropping it undoes exactly that.
+   *
+   * @param ownedIndex     the unique index it created, or null
+   * @param ownedMandatory the properties whose MANDATORY flag it turned on
+   * @param declared       the properties it declared, undeclared before it
+   * @param previous       for a type constraint, the declarations it replaced, by property
+   * @param declaredType   for a type constraint, the ArcadeDB type it declared, otherwise null
+   * @param declaredOfType for a type constraint over a list, its element type
+   * @param propertyType   for a type constraint, the Cypher type it was written with
+   */
+  record Ownership(String ownedIndex, List<String> ownedMandatory, List<String> declared, JSONObject previous, Type declaredType,
+                   String declaredOfType, String propertyType) {
+  }
+
   /** A constraint as recorded, for listing. */
   record Entry(String name, ConstraintKind kind, List<String> properties, String index, List<String> declared, String propertyType) {
   }
@@ -91,6 +106,20 @@ final class CypherConstraintRegistry {
   }
 
   /**
+   * A generated name no recorded constraint and no index holds yet. The name joins the properties with {@code _}, so two
+   * property sets can spell it the same ({@code [a_b, c]} and {@code [a, b_c]}): the second one takes the first free
+   * {@code <name>_2}, {@code <name>_3}, ... rather than being mistaken for the first.
+   */
+  static String freeGeneratedName(final Schema schema, final String typeName, final ConstraintKind kind,
+      final List<String> properties) {
+    final String base = generatedName(typeName, kind, properties);
+    String candidate = base;
+    for (int i = 2; findOwner(schema, candidate) != null || schema.existsIndex(candidate); i++)
+      candidate = base + "_" + i;
+    return candidate;
+  }
+
+  /**
    * Returns the type holding the constraint with that name, or null if no recorded constraint has it. Names are unique
    * across the database, as in Neo4j.
    */
@@ -105,22 +134,21 @@ final class CypherConstraintRegistry {
   }
 
   static void register(final DocumentType type, final String name, final ConstraintKind kind, final String[] properties,
-      final String ownedIndex, final List<String> ownedMandatory, final List<String> declared, final JSONObject previous,
-      final Type declaredType, final String declaredOfType, final String propertyType) {
+      final Ownership owned) {
     final JSONObject entry = new JSONObject();
     entry.put("kind", kind.name());
     entry.put("properties", new JSONArray(properties));
-    if (ownedIndex != null)
-      entry.put("index", ownedIndex);
-    entry.put("mandatory", new JSONArray(ownedMandatory));
-    if (!declared.isEmpty())
-      entry.put("declared", new JSONArray(declared));
-    if (previous != null && !previous.isEmpty())
-      entry.put("previous", previous);
-    if (declaredType != null)
-      entry.put("declaredType", declaration(declaredType, declaredOfType));
-    if (propertyType != null)
-      entry.put("propertyType", propertyType);
+    if (owned.ownedIndex() != null)
+      entry.put("index", owned.ownedIndex());
+    entry.put("mandatory", new JSONArray(owned.ownedMandatory()));
+    if (!owned.declared().isEmpty())
+      entry.put("declared", new JSONArray(owned.declared()));
+    if (owned.previous() != null && !owned.previous().isEmpty())
+      entry.put("previous", owned.previous());
+    if (owned.declaredType() != null)
+      entry.put("declaredType", declaration(owned.declaredType(), owned.declaredOfType()));
+    if (owned.propertyType() != null)
+      entry.put("propertyType", owned.propertyType());
     type.setCustomValue(KEY_PREFIX + name, entry.toString());
   }
 
