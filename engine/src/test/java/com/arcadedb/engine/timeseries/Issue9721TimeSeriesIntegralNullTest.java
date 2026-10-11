@@ -245,6 +245,10 @@ class Issue9721TimeSeriesIntegralNullTest extends TestHelper {
     final byte[] tidy = Simple8bCodec.encode(values, new long[] { 0b010L });
     assertThat(Simple8bCodec.encode(values, new long[] { 0b010L | (1L << 40) })).containsExactly(tidy);
     assertThat(Simple8bCodec.nulls(tidy)).containsExactly(0b010L);
+    // only a bit past the last sample: no sample is absent, so the block is the one without a bitmap
+    final byte[] none = Simple8bCodec.encode(values, new long[] { 1L << 40 });
+    assertThat(none).containsExactly(Simple8bCodec.encode(values));
+    assertThat(Simple8bCodec.nulls(none)).isNull();
   }
 
   @Test
