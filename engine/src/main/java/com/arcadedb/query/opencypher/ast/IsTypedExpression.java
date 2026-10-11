@@ -60,6 +60,11 @@ public class IsTypedExpression implements BooleanExpression {
     return isNot != conforms;
   }
 
+  /** Whether the value conforms to the type, as {@code value IS :: type} answers it. */
+  public static boolean conforms(final Object value, final CypherTypeName type) {
+    return conforms(value, type.name(), type.nonNull(), type.elementName(), type.elementNonNull());
+  }
+
   /**
    * Whether the value conforms to the type. The temporal types, DURATION and POINT are answered by the same classification
    * {@code valueType()} reports ({@link CypherFunctionHelper#cypherTypeName}), so the two cannot disagree: they used to test

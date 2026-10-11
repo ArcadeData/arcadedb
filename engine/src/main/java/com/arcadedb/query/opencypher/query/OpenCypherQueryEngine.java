@@ -44,6 +44,9 @@ import com.arcadedb.query.opencypher.ast.CypherAdminStatement;
 import com.arcadedb.query.opencypher.ast.CypherDDLStatement;
 import com.arcadedb.query.opencypher.ast.CypherShowSchemaStatement;
 import com.arcadedb.query.opencypher.ast.CypherTypeName;
+import com.arcadedb.query.opencypher.ast.IsTypedExpression;
+import com.arcadedb.query.opencypher.temporal.TemporalUtil;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.opencypher.ast.CypherSessionStatement;
 import com.arcadedb.query.opencypher.ast.CypherStatement;
 import com.arcadedb.query.opencypher.ast.CypherTransactionStatement;
@@ -974,6 +977,8 @@ public class OpenCypherQueryEngine implements QueryEngine {
 
     case TYPED:
       // Property type already set above; for IF NOT EXISTS, silently succeed if property already has the correct type
+      if (typedChanged)
+        requireStoredValuesConform(schema, typeName, propertyNames, ddl.getTypedName(), declared, previous);
       changed = typedChanged;
       if (typedChanged)
         stats.incConstraintsAdded();
@@ -997,6 +1002,40 @@ public class OpenCypherQueryEngine implements QueryEngine {
       CypherConstraintRegistry.register(constrained, recordAs, kind, propertyNames,
           new CypherConstraintRegistry.Ownership(ownedIndex, ownedMandatory, declared, previous, recordedType, recordedOfType,
               isTyped ? ddl.getTypedName().toString() : null));
+  }
+
+  /**
+   * Refuses a property type constraint that a stored record already violates, as Neo4j does, and puts back the declarations the
+   * statement made. The declaration check of the retype accepts any value the new type can convert ({@code 86400} for a
+   * DURATION, {@code '12'} for an INTEGER), but nothing rewrites the stored value: the record would keep a value its own
+   * constraint answers false for ({@code n.d IS :: DURATION}). So every stored value is read as Cypher reads it and asked
+   * {@code IS :: type}, in one scan of the type.
+   */
+  private void requireStoredValuesConform(final Schema schema, final String typeName, final String[] propertyNames,
+      final CypherTypeName cypherType, final List<String> declared, final JSONObject previous) {
+    final Iterator<Record> records = database.iterateType(typeName, true);
+    while (records.hasNext()) {
+      if (!(records.next() instanceof Document document))
+        continue;
+      for (final String propertyName : propertyNames) {
+        final Object value = TemporalUtil.convertFromStorage(document, propertyName);
+        if (value == null || IsTypedExpression.conforms(value, cypherType))
+          continue;
+
+        final DocumentType type = schema.getType(typeName);
+        for (final String undeclared : declared)
+          if (type.existsProperty(undeclared))
+            type.dropProperty(undeclared);
+        for (final String retyped : previous.keySet()) {
+          final JSONObject old = previous.getJSONObject(retyped);
+          retypeProperty(schema, typeName, type.getProperty(retyped),
+              new DeclaredType(Type.valueOf(old.getString("type")), old.getString("of", null), true));
+        }
+        throw new CommandExecutionException(
+            "Cannot require " + typeName + "." + propertyName + " IS :: " + cypherType + ": record " + document.getIdentity()
+                + " holds " + value + " (" + CypherFunctionHelper.cypherTypeName(value) + ")");
+      }
+    }
   }
 
   /**

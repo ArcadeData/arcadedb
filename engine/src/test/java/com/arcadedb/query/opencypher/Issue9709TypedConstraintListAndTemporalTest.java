@@ -28,6 +28,9 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
+import java.util.List;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -80,7 +83,7 @@ class Issue9709TypedConstraintListAndTemporalTest extends TestHelper {
     try (final ResultSet rs = database.query("opencypher",
         "MATCH (n:L) RETURN n.tags AS tags, n.tags IS :: LIST<STRING NOT NULL> AS typed, n.tags = ['a', 'b'] AS eq")) {
       final Result r = rs.next();
-      assertThat(r.<Object>getProperty("tags")).isEqualTo(java.util.List.of("a", "b"));
+      assertThat(r.<Object>getProperty("tags")).isEqualTo(List.of("a", "b"));
       assertThat(r.<Boolean>getProperty("typed")).isTrue();
       assertThat(r.<Boolean>getProperty("eq")).isTrue();
     }
@@ -172,6 +175,39 @@ class Issue9709TypedConstraintListAndTemporalTest extends TestHelper {
     }
   }
 
+  /**
+   * A property an earlier version declared LONG for {@code IS :: DURATION}: re-running the constraint retypes it to the native
+   * DURATION when the stored records allow it, and refuses naming the property when one of them does not. Nothing is migrated
+   * silently.
+   */
+  @Test
+  void reRunningATemporalConstraintOverAnOldDeclarationRetypesItOrRefuses() {
+    database.command("sql", "CREATE VERTEX TYPE Old");
+    database.command("sql", "CREATE PROPERTY Old.d LONG");
+    command("CREATE CONSTRAINT FOR (n:Old) REQUIRE n.d IS :: DURATION");
+    assertThat(property("Old", "d").getType()).isEqualTo(Type.DURATION);
+
+    database.command("sql", "CREATE VERTEX TYPE OldWithData");
+    database.command("sql", "CREATE PROPERTY OldWithData.d LONG");
+    database.transaction(() -> database.newVertex("OldWithData").set("d", 86_400L).save());
+    // the stored 86400 converts to a DURATION, but it is not one: the record would violate the constraint created over it
+    assertThatThrownBy(() -> command("CREATE CONSTRAINT FOR (n:OldWithData) REQUIRE n.d IS :: DURATION")).hasStackTraceContaining(
+        "OldWithData.d IS :: DURATION");
+    assertThat(property("OldWithData", "d").getType()).isEqualTo(Type.LONG);
+    assertThat(names("SHOW CONSTRAINTS WHERE 'OldWithData' IN labelsOrTypes AND type = 'NODE_PROPERTY_TYPE' AND propertyType = 'DURATION'"))
+        .isEmpty();
+  }
+
+  @Test
+  void aTypeConstraintOverAValueOfAnotherKindIsRefusedAndDeclaresNothing() {
+    command("CREATE (:Mixed {p: 'text'})");
+
+    assertThatThrownBy(() -> command("CREATE CONSTRAINT FOR (n:Mixed) REQUIRE n.p IS :: INTEGER")).hasStackTraceContaining(
+        "Mixed.p IS :: INTEGER");
+    assertThat(database.getSchema().getType("Mixed").getPropertyIfExists("p")).isNull();
+    assertThat(names("SHOW CONSTRAINTS WHERE 'Mixed' IN labelsOrTypes")).isEmpty();
+  }
+
   @Test
   void aLocalDatetimeConstraintKeepsADatetimePropertyAtItsPrecision() {
     database.command("sql", "CREATE VERTEX TYPE T");
@@ -240,5 +276,14 @@ class Issue9709TypedConstraintListAndTemporalTest extends TestHelper {
     final Property p = database.getSchema().getType(typeName).getPropertyIfExists(propertyName);
     assertThat(p).isNotNull();
     return p;
+  }
+
+  private List<Object> names(final String cypher) {
+    final List<Object> names = new ArrayList<>();
+    try (final ResultSet rs = database.query("opencypher", cypher)) {
+      while (rs.hasNext())
+        names.add(rs.next().getProperty("name"));
+    }
+    return names;
   }
 }
