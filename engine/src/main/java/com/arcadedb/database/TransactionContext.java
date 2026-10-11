@@ -167,6 +167,11 @@ public class TransactionContext implements Transaction {
   // to all be pinned can still pair a head of one commit with tails of another: only a chain validated on exactly these
   // images is the transaction's snapshot of the record. Lazily allocated, so a READ_COMMITTED transaction never pays.
   private       Map<RID, long[]>                     snapshotChunkChains;
+  // #9620: per multi-page record this REPEATABLE_READ transaction first read when no image of its chain could be assembled
+  // from the pages the transaction holds (a neighbour's read pinned one of them before a concurrent rewrite), the content
+  // it was served from the newest committed images. Every later read of the record in the transaction answers it. Lazily
+  // allocated: only that corner ever fills it.
+  private       Map<RID, byte[]>                     snapshotRecordContents;
   private       RidHashSet                            deletedRecordsInTx    = new RidHashSet(DELETED_SET_CAPACITY);
   private       Map<PageId, MutablePage>             modifiedPages;
   private       Map<PageId, MutablePage>             newPages;
@@ -1111,7 +1116,9 @@ public class TransactionContext implements Transaction {
 
   /**
    * The (page, version) pairs a multi-page record was assembled from the last time this transaction validated it, or
-   * null when it never did (#9070). See {@link #setSnapshotChunkChain}.
+   * null when it never did (#9070). See {@link #setSnapshotChunkChain}. An EMPTY array means the record was read from pages
+   * not all pinned (#9620): it was read in this transaction, but there is no chain to compare a later read with, so it
+   * matches none.
    */
   public long[] getSnapshotChunkChain(final RID rid) {
     return snapshotChunkChains == null ? null : snapshotChunkChains.get(rid);
@@ -1128,10 +1135,38 @@ public class TransactionContext implements Transaction {
     snapshotChunkChains.put(rid, pagesAndVersions);
   }
 
-  /** Drops the snapshot of a multi-page record this transaction writes or deletes (#9070). */
+  /**
+   * The content a multi-page record was served with at its first read in this transaction, when that read could not be
+   * assembled from the pages the transaction holds (#9620), or null. See {@link #setSnapshotRecordContent}.
+   */
+  public byte[] getSnapshotRecordContent(final RID rid) {
+    return snapshotRecordContents == null ? null : snapshotRecordContents.get(rid);
+  }
+
+  /**
+   * Records the content a multi-page record was served with at its first read in this transaction, assembled from the
+   * newest committed images because a page of its chain was pinned by the read of another record before a concurrent
+   * commit rewrote it (#9620). The pages stay as they are, so the reads that pinned them stay repeatable, and every later
+   * read of this record answers this content.
+   * <p>
+   * The content is held until the transaction ends, like the pages it pins: a REPEATABLE_READ transaction that reads many
+   * large records this way holds each of them once. Refusing the read instead, which is what bounded it before, is the
+   * failure this exists to remove.
+   */
+  public void setSnapshotRecordContent(final RID rid, final byte[] content) {
+    if (snapshotRecordContents == null)
+      snapshotRecordContents = new HashMap<>();
+    snapshotRecordContents.put(rid, content);
+  }
+
+  /** Drops the snapshot of a multi-page record this transaction writes or deletes (#9070, #9620). */
   private void forgetSnapshotChunkChain(final RID rid) {
-    if (snapshotChunkChains != null && rid != null)
+    if (rid == null)
+      return;
+    if (snapshotChunkChains != null)
       snapshotChunkChains.remove(rid);
+    if (snapshotRecordContents != null)
+      snapshotRecordContents.remove(rid);
   }
 
   /**
@@ -2057,6 +2092,7 @@ public class TransactionContext implements Transaction {
     newPageCounters.clear();
     immutablePages.clear();
     snapshotChunkChains = null;
+    snapshotRecordContents = null;
     commitLockTimeout = null;
     useWALOverride = null;
   }
@@ -3013,6 +3049,7 @@ public class TransactionContext implements Transaction {
     immutableRecordsCache = clearOrReplace(immutableRecordsCache, RECORDS_CACHE_CAPACITY);
     immutablePages = clearOrReplace(immutablePages, PAGES_CACHE_CAPACITY);
     snapshotChunkChains = null;
+    snapshotRecordContents = null;
     bucketRecordDelta.clear();
     if (deletedRecordsInTx.size() > DELETED_SET_CAPACITY * 3 / 4)
       deletedRecordsInTx = new RidHashSet(DELETED_SET_CAPACITY);

@@ -51,6 +51,7 @@ import com.arcadedb.utility.LongHashSet;
 
 import java.io.IOException;
 import java.util.*;
+import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -189,6 +190,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   private static final   int                       CHAIN_TRACE_REFRESHABLE          = 4;
   /** No page the read walked has moved since: the chain is trivially the one that was read. */
   private static final   int                       CHAIN_READ_UNCHANGED             = 0;
+  // #9620: the snapshot chain of a record read from pages not all pinned. Matches no traced chain, and still says the record
+  // was read in the transaction
+  private static final   long[]                    NO_SNAPSHOT_CHAIN                = new long[0];
   /** A page the read walked has moved, but not one byte this record owns on it: the read stands (#6217). */
   private static final   int                       CHAIN_READ_REVALIDATED           = 1;
   /** The record itself moved under the read: what was assembled may be a mix of two commits, so it is thrown away. */
@@ -5382,6 +5386,14 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     // manager, under REPEATABLE_READ only a head this read pinned itself can be released and pinned again.
     final boolean headRefreshable = !repeatableRead || headPinnedByThisRead;
 
+    if (repeatableRead) {
+      // #9620: a record first served from the newest committed images, because the pages the transaction holds could not
+      // assemble it, reads the same at every later read of the transaction
+      final byte[] servedContent = walkTransaction.getSnapshotRecordContent(originalRID);
+      if (servedContent != null)
+        return new Binary(servedContent.clone());
+    }
+
     for (int retry = 0; retry <= maxRetries; retry++) {
       // Trace of the chunks this attempt consumed, in chain order: where each one was, at which version of its page,
       // and how long it was. Sized for the chains that exist in practice and grown only by a record that has more.
@@ -5540,9 +5552,13 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           // committed since. A commit made after that read is not a change made during this one.
           verdict = CHAIN_READ_UNCHANGED;
         else {
-          verdict = validateChainRead(chainTrace, chunks, record, lastNextChunkPointer, headMarker, false);
-          if (verdict != CHAIN_READ_CHANGED && repeatableRead && isChainPinnedWhole(walkTransaction, chainTrace, chunks))
-            walkTransaction.setSnapshotChunkChain(originalRID, pagesAndVersions(chainTrace, chunks));
+          verdict = validateChainReadAgainstOneCommit(chainTrace, chunks, record, lastNextChunkPointer, headMarker);
+          if (verdict != CHAIN_READ_CHANGED && repeatableRead)
+            // #9620: a chain read from pages not all pinned (a page past the component's page count is never pinned) is no
+            // snapshot to compare against, but it is a read: the record is no longer one the transaction owes no image of
+            walkTransaction.setSnapshotChunkChain(originalRID, isChainPinnedWhole(walkTransaction, chainTrace, chunks) ?
+                    pagesAndVersions(chainTrace, chunks) :
+                    NO_SNAPSHOT_CHAIN);
         }
         if (verdict == CHAIN_READ_REVALIDATED)
           database.getPageManager().incrementChunkChainReadRevalidations();
@@ -5568,11 +5584,26 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
                 brokenHopPage :
                 -1);
 
-      if (!worthRetrying)
+      if (!worthRetrying) {
+        if (repeatableRead && walkTransaction.getSnapshotChunkChain(originalRID) == null
+                && walkTransaction.getWrittenRecord(originalRID) == null) {
+          // #9620: the transaction never read this record, so it owes no image of it: what refuses the read is only that
+          // a page of its chain was pinned, before a concurrent rewrite, by the read of ANOTHER record living on it. The
+          // newest committed state is the one complete image there is, exactly what a first read of a record on pages
+          // the transaction does not hold returns. It is assembled without touching a pin (the reads that took them stay
+          // repeatable) and kept, so every later read of the record in the transaction answers the same.
+          final Binary newest = assembleFromNewestCommitted(firstPageId, firstChunkSlot, headMarker, maxRetries);
+          if (newest != null) {
+            walkTransaction.setSnapshotRecordContent(originalRID, newest.toByteArray());
+            newest.position(0);
+            return newest;
+          }
+        }
         throw new ConcurrentModificationException(
                 "Multi-page record " + originalRID + " was modified during read and cannot be re-read in this "
                         + "transaction: its chunks are pinned by the transaction's own snapshot, so no retry can "
                         + "assemble a different one. Please retry the operation in a new transaction");
+      }
 
       if (retry < maxRetries) {
         LogManager.instance().log(this, Level.FINE,
@@ -5670,6 +5701,158 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     }
 
     return verdict;
+  }
+
+  /**
+   * Assembles a record from the newest committed images of its pages, through the page manager alone: no page is pinned
+   * or released, so nothing any other read of the transaction relied on moves (#9620). The chain is validated like any
+   * read ({@link #validateChainRead}) and walked again when a commit landed under the walk.
+   * <p>
+   * The walk mirrors the one in {@link #loadMultiPageRecord(RID, BasePage, int, long[], boolean)}, chunk layout and trace
+   * included, and must change with it. It is kept apart because that one reads through the transaction, which pins every
+   * page it fetches, and diagnoses a chain it cannot follow, while this one may pin nothing and only gives up.
+   *
+   * @param headMarker the marker the head chunk carried in the image the caller read. A newest head of the same kind is
+   *                   walked as a chain; a head that collapsed back into a plain record (#6178) is that record's content.
+   *
+   * @return the content, or null when the newest committed state is not one this read can serve: the record was
+   * deleted, its slot now holds something else, or no attempt read the chain whole
+   */
+  private Binary assembleFromNewestCommitted(final PageId headPageId, final int headSlot, final long headMarker,
+                                             final int maxRetries) throws IOException {
+    for (int retry = 0; retry <= maxRetries; retry++) {
+      final BasePage head = database.getPageManager().getImmutablePage(headPageId, pageSize, false, true);
+      if (head == null || headSlot >= head.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET))
+        return null;
+      final int headPosition = getRecordPositionInPage(head, headSlot);
+      if (headPosition == 0)
+        return null;
+      final long[] headSize = head.readNumberAndSize(headPosition);
+
+      if (headSize[0] != headMarker) {
+        // NO LONGER A CHAIN OF THE SAME KIND: SERVED ONLY WHEN IT IS NOW THE PLAIN SHAPE OF THE SAME KIND OF RECORD
+        final long plainSize;
+        if (headMarker == FIRST_CHUNK && headSize[0] > 0)
+          plainSize = headSize[0];
+        else if (headMarker == FIRST_CHUNK_PLACEHOLDER_CONTENT && headSize[0] < RECORD_PLACEHOLDER_CONTENT)
+          plainSize = -headSize[0];
+        else
+          return null;
+        // A single page image is one commit by itself. A size that does not fit the page is not a record to serve
+        final int contentPosition = (int) (headPosition + headSize[1]);
+        if ((long) contentPosition + plainSize > head.getMaxContentSize())
+          return null;
+        final Binary plain = new Binary((int) plainSize);
+        plain.append(head.getImmutableView(contentPosition, (int) plainSize));
+        plain.position(0);
+        return plain;
+      }
+
+      long[] chainTrace = new long[CHAIN_TRACE_STRIDE * 8];
+      int chunks = 0;
+      boolean complete = false;
+      LongHashSet visitedChunks = null;
+      final Binary record = new Binary();
+      try {
+        BasePage page = head;
+        int slot = headSlot;
+        int position = headPosition;
+        long[] size = headSize;
+        while (true) {
+          final int chunkSize = page.readInt((int) (position + size[1]));
+          final long nextChunkPointer = page.readLong((int) (position + size[1] + INT_SERIALIZED_SIZE));
+          record.append(page.getImmutableView((int) (position + size[1] + INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE), chunkSize));
+
+          if (chunks * CHAIN_TRACE_STRIDE == chainTrace.length)
+            chainTrace = Arrays.copyOf(chainTrace, chainTrace.length * 2);
+          final int trace = chunks * CHAIN_TRACE_STRIDE;
+          chainTrace[trace + CHAIN_TRACE_PAGE_NUMBER] = page.pageId.getPageNumber();
+          chainTrace[trace + CHAIN_TRACE_PAGE_VERSION] = page.getVersion();
+          chainTrace[trace + CHAIN_TRACE_SLOT] = slot;
+          chainTrace[trace + CHAIN_TRACE_CHUNK_SIZE] = chunkSize;
+          ++chunks;
+
+          if (nextChunkPointer == 0) {
+            complete = true;
+            break;
+          }
+
+          final int chunkPageId = (int) (nextChunkPointer / maxRecordsInPage);
+          if (chunkPageId >= getTotalPages())
+            break;
+          if (visitedChunks == null)
+            visitedChunks = new LongHashSet();
+          if (!visitedChunks.add(nextChunkPointer))
+            break;
+
+          page = database.getPageManager().getImmutablePage(new PageId(database, file.getFileId(), chunkPageId), pageSize, false, true);
+          slot = (int) (nextChunkPointer % maxRecordsInPage);
+          if (page == null || slot >= page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET))
+            break;
+          position = getRecordPositionInPage(page, slot);
+          if (position == 0)
+            break;
+          size = page.readNumberAndSize(position);
+          if (size[0] != NEXT_CHUNK)
+            break;
+        }
+      } catch (final RuntimeException e) {
+        // A chunk read out of bounds: a chain in motion, or a broken one. Either way not one this read can serve as is
+        LogManager.instance().log(this, Level.FINE, "Error assembling the newest committed image of the chain at %s/%d", e,
+                headPageId, headSlot);
+      }
+
+      // A chain that did not walk to its end, or that a commit moved under the walk, is walked again
+      if (complete && validateChainReadAgainstOneCommit(chainTrace, chunks, record, 0L, headMarker) != CHAIN_READ_CHANGED) {
+        record.position(0);
+        return record;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * {@link #validateChainRead} against the newest images of ONE committed state. A commit puts its pages in the read cache one
+   * at a time, so a validation running while one is published can find the head chunk already at the new commit and a
+   * continuation chunk still at the old one, both equal to what the walk read: a record that never existed accepted as
+   * current, and under {@code REPEATABLE_READ} recorded as the transaction's snapshot of it. The publication sequence tells
+   * whether a publication overlapped the validation ({@link PageManager#getPublicationSequence()}, #9369); when one did, the
+   * validation runs again under the publication lock, where no commit can be half visible. A chain found changed needs no
+   * second look: a chunk that differs from the newest image belongs to a commit made after the walk read it.
+   */
+  private int validateChainReadAgainstOneCommit(final long[] chainTrace, final int chunks, final Binary record,
+                                                final long lastNextChunkPointer, final long headMarker) throws IOException {
+    final PageManager pageManager = database.getPageManager();
+    final long sequence = pageManager.getPublicationSequence();
+    final int verdict = validateChainRead(chainTrace, chunks, record, lastNextChunkPointer, headMarker, false);
+    if (verdict == CHAIN_READ_CHANGED || ((sequence & 1) == 0 && pageManager.getPublicationSequence() == sequence))
+      return verdict;
+
+    try {
+      // executeInLock rethrows a RuntimeException as it is and wraps a checked one, the IOException of a page load, as its cause
+      return (Integer) pageManager.executeInLock(
+              () -> validateChainRead(chainTrace, chunks, record, lastNextChunkPointer, headMarker, false));
+    } catch (final RuntimeException e) {
+      if (e.getCause() instanceof IOException ioException)
+        throw ioException;
+      throw e;
+    }
+  }
+
+  /**
+   * Runs a proof that a chunk chain is broken against ONE committed state. The proof walks the newest committed images, and a
+   * commit being published puts its pages there one at a time: a head chunk already pointing at a slot its commit has not
+   * published yet reads as a cleaned slot, and that is a permanent verdict, the record reported as corrupted and handed to
+   * CHECK DATABASE FIX. A proof that a publication overlapped is run again under the publication lock, where none can. A proof
+   * that finds nothing broken is never doubted: it is the one that changes nothing.
+   */
+  private String provenAgainstOneCommit(final Callable<String> proof) throws Exception {
+    final PageManager pageManager = database.getPageManager();
+    final long sequence = pageManager.getPublicationSequence();
+    final String reason = proof.call();
+    if (reason == null || ((sequence & 1) == 0 && pageManager.getPublicationSequence() == sequence))
+      return reason;
+    return (String) pageManager.executeInLock(proof::call);
   }
 
   /** Whether every chunk of the traced chain was read from a page this transaction holds, at the version it read. */
@@ -5812,14 +5995,16 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   private String confirmBrokenChunkChain(final RID rid, final long[] chainTrace, final int chunks, final Binary record,
                                          final long lastNextChunkPointer, final long headMarker) {
     try {
-      final String reason = findBrokenChunkChainInNewestCommitted(rid);
-      if (reason == null)
-        // THE COMMITTED CHAIN WALKS CLEANLY: what this read met was a chain in motion, which is what the retry is for.
-        return null;
+      return provenAgainstOneCommit(() -> {
+        final String reason = findBrokenChunkChainInNewestCommitted(rid);
+        if (reason == null)
+          // THE COMMITTED CHAIN WALKS CLEANLY: what this read met was a chain in motion, which is what the retry is for.
+          return null;
 
-      return validateChainRead(chainTrace, chunks, record, lastNextChunkPointer, headMarker, false) == CHAIN_READ_CHANGED ?
-              null :
-              reason;
+        return validateChainRead(chainTrace, chunks, record, lastNextChunkPointer, headMarker, false) == CHAIN_READ_CHANGED ?
+                null :
+                reason;
+      });
     } catch (final Exception e) {
       // Could not prove corruption (an I/O fault, most likely): fall back to the retry rather than condemn a record.
       LogManager.instance()
@@ -5855,18 +6040,20 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    */
   private String confirmBrokenChunkChainOnDelete(final RID rid, final int chunkId, final long nextChunkPointer) {
     try {
-      final ChunkChainWalk walk = new ChunkChainWalk();
-      final String reason = findBrokenChunkChainInNewestCommitted(rid, walk);
-      if (reason == null)
-        // THE COMMITTED CHAIN WALKS CLEANLY (or the record is no longer a chunked one): contention, which is what
-        // the retry is for.
-        return null;
+      return provenAgainstOneCommit(() -> {
+        final ChunkChainWalk walk = new ChunkChainWalk();
+        final String reason = findBrokenChunkChainInNewestCommitted(rid, walk);
+        if (reason == null)
+          // THE COMMITTED CHAIN WALKS CLEANLY (or the record is no longer a chunked one): contention, which is what
+          // the retry is for.
+          return null;
 
-      if (walk.brokenAtChunk != chunkId || walk.brokenAtPointer != nextChunkPointer)
-        // BROKEN, BUT NOT WHERE THIS DELETE BROKE: a different chain, so a record that moved rather than a corrupt one.
-        return null;
+        if (walk.brokenAtChunk != chunkId || walk.brokenAtPointer != nextChunkPointer)
+          // BROKEN, BUT NOT WHERE THIS DELETE BROKE: a different chain, so a record that moved rather than a corrupt one.
+          return null;
 
-      return reason;
+        return reason;
+      });
     } catch (final Exception e) {
       // Could not prove corruption (an I/O fault, most likely): fall back to the retry rather than condemn a record.
       LogManager.instance()
