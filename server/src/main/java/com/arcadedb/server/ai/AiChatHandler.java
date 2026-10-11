@@ -23,6 +23,7 @@ import com.arcadedb.Profiler;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.BoundedHttpExchange;
 import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.http.HttpServer;
@@ -126,8 +127,20 @@ public class AiChatHandler extends AbstractServerHttpHandler {
   static JSONObject refusalBody(final String body) {
     try {
       return new JSONObject(body);
-    } catch (final RuntimeException e) {
+    } catch (final JSONException e) {
       return new JSONObject();
+    }
+  }
+
+  /**
+   * The JSON answer of the gateway. A body that is not JSON fails with only its {@link #excerpt}: the parser's own message
+   * carries the whole input, up to {@link #maxResponseBytes}, into the log line that reports it.
+   */
+  static JSONObject parseAnswer(final String body) {
+    try {
+      return new JSONObject(body);
+    } catch (final JSONException e) {
+      throw new IllegalStateException("The AI gateway answered with a body that is not a JSON object: " + excerpt(body));
     }
   }
 
@@ -814,6 +827,6 @@ public class AiChatHandler extends AbstractServerHttpHandler {
     if (response.statusCode() != 200)
       throw new RuntimeException("Gateway returned status " + response.statusCode() + ": " + excerpt(response.body()));
 
-    return new JSONObject(response.body());
+    return parseAnswer(response.body());
   }
 }

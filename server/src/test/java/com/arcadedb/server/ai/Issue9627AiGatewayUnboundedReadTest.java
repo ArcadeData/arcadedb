@@ -47,6 +47,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression test for issue #9627: every answer the AI Assistant read from its gateway was buffered whole with no byte cap. The
@@ -250,6 +251,16 @@ class Issue9627AiGatewayUnboundedReadTest extends BaseGraphServerTest {
     assertThat(AiChatHandler.excerpt("short")).isEqualTo("short");
     assertThat(AiChatHandler.excerpt(null)).isEmpty();
     assertThat(AiChatHandler.excerpt("x".repeat(CAP))).hasSize(AiChatHandler.MAX_ERROR_EXCERPT_CHARS + 3).endsWith("...");
+  }
+
+  /** The parser's own message carries the whole input: a non-JSON answer is reported with its start only. */
+  @Test
+  void aNonJsonAnswerIsReportedWithItsStartOnly() {
+    final String body = "x".repeat(CAP);
+    assertThatThrownBy(() -> AiChatHandler.parseAnswer(body)).isInstanceOf(IllegalStateException.class)
+        .satisfies(e -> assertThat(e.getMessage()).hasSizeLessThan(AiChatHandler.MAX_ERROR_EXCERPT_CHARS + 100));
+    assertThat(AiChatHandler.refusalBody(body).length()).isZero();
+    assertThat(AiChatHandler.parseAnswer("{\"response\":\"ok\"}").getString("response")).isEqualTo("ok");
   }
 
   /** The cap leaves an ordinary answer alone. */

@@ -252,6 +252,6 @@ public class AiAnalyzeProfilerHandler extends AbstractServerHttpHandler {
     if (response.statusCode() != 200)
       throw new RuntimeException("Gateway returned status " + response.statusCode() + ": " + AiChatHandler.excerpt(response.body()));
 
-    return new JSONObject(response.body());
+    return AiChatHandler.parseAnswer(response.body());
   }
 }
