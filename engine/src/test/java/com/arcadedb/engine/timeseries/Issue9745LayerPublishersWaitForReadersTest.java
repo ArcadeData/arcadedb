@@ -28,6 +28,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.LockSupport;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
@@ -96,7 +97,8 @@ class Issue9745LayerPublishersWaitForReadersTest extends TestHelper {
     // One sample per second downsampled to one per minute, for every sealed block
     final State after = runWhileAReaderHoldsTheLock(
         engine -> engine.applyDownsampling(List.of(new DownsamplingTier(1L, 60_000L)), Long.MAX_VALUE / 2));
-    assertThat(after.sealedSamples()).as("downsampling reduced the sealed samples once the reader let go").isLessThan(sealedBefore);
+    assertThat(after.sealedSamples()).as("downsampling reduced the sealed samples once the reader let go").isLessThan(sealedBefore)
+        .isGreaterThan(0L);
     assertThat(after.mutableSamples()).as("downsampling does not touch the mutable bucket").isEqualTo(MUTABLE_ROWS);
   }
 
@@ -121,7 +123,12 @@ class Issue9745LayerPublishersWaitForReadersTest extends TestHelper {
     assertThat(shard().getCompactionLock()).as("the queue checks below need the JDK's ReentrantReadWriteLock")
         .isInstanceOf(ReentrantReadWriteLock.class);
     final ReentrantReadWriteLock lock = (ReentrantReadWriteLock) shard().getCompactionLock();
-    final ExecutorService executor = Executors.newSingleThreadExecutor(r -> new Thread(r, "issue9745-maintenance"));
+    final AtomicReference<Thread> maintenanceThread = new AtomicReference<>();
+    final ExecutorService executor = Executors.newSingleThreadExecutor(r -> {
+      final Thread thread = new Thread(r, "issue9745-maintenance");
+      maintenanceThread.set(thread);
+      return thread;
+    });
     try {
       final Future<?> running;
       lock.readLock().lock();
@@ -132,18 +139,17 @@ class Issue9745LayerPublishersWaitForReadersTest extends TestHelper {
           return null;
         });
         final long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30);
-        while (!lock.hasQueuedThreads() && !running.isDone() && System.nanoTime() < deadline)
+        while (!isQueued(lock, maintenanceThread.get()) && !running.isDone() && System.nanoTime() < deadline)
           LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(1));
 
         assertThat(running.isDone()).as("the operation waits for the reader instead of publishing past it").isFalse();
         // Not done AND queued: a publisher that skipped the write lock fails here, whether it already finished or is
         // still running unlocked, before state() is even asked
-        assertThat(lock.getQueueLength()).as("the operation is parked on the compaction lock").isGreaterThanOrEqualTo(1);
+        assertThat(isQueued(lock, maintenanceThread.get())).as("the operation is parked on the compaction lock").isTrue();
         // state() runs the windowed count on THIS thread, which already holds the read lock: ReentrantReadWriteLock lets a
         // reentrant read through even with a writer queued. aggregateMulti reads a single shard on the calling thread; if it
         // ever read it from another thread, that read would queue behind the parked writer and this would hang up to the
         // 30 s bound below
-
         assertThat(state()).as("nothing changed under the reader's compaction read lock").isEqualTo(before);
       } finally {
         lock.readLock().unlock();
@@ -155,7 +161,12 @@ class Issue9745LayerPublishersWaitForReadersTest extends TestHelper {
       return after;
     } finally {
       executor.shutdownNow();
+      executor.awaitTermination(30, TimeUnit.SECONDS);
     }
+  }
+
+  private static boolean isQueued(final ReentrantReadWriteLock lock, final Thread thread) {
+    return thread != null && lock.hasQueuedThread(thread);
   }
 
   /**
