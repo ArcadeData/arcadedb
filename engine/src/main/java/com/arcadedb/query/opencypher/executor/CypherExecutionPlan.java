@@ -1560,8 +1560,7 @@ public class CypherExecutionPlan {
         currentStep = countOpt;
       } else if (statement.getReturnClause().hasAggregations()
           && !tryFuseAggregationIntoChain(statement.getReturnClause().getReturnItems(), currentStep)) {
-        // A step aggregates the rows, unless the fused chain counts its paths itself and answers them (issue #9738)
-
+        // A step aggregates the rows, unless the fused chain counts its paths itself and answers them (issue #9738).
         // One row per edge of a one-hop pattern, read from a Graph Analytical View instead of the operators (#8335)
         final AbstractExecutionStep gavScan = tryGAVOneHopScan(context);
         if (gavScan != null)

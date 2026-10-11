@@ -279,29 +279,31 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
 
     @Override
     public boolean hasNext() {
-      while (true) {
-        if (buffer < buffers.length) {
-          if (position < buffers[buffer].size())
-            return true;
-          buffers[buffer].clear();
-          ++buffer;
-          position = 0;
-          continue;
-        }
-        if (unfinished > 0) {
+      while (!advanceToRow()) {
+        if (unfinished > 0)
           walkRound();
-          continue;
-        }
-        if (unmappedRows != null && !unmappedRows.isEmpty()) {
+        else if (unmappedRows != null && !unmappedRows.isEmpty()) {
           // The sources the view does not map come last, as one more buffer
           buffers[0] = unmappedRows;
           unmappedRows = null;
           buffer = 0;
           position = 0;
-          continue;
-        }
-        return false;
+        } else
+          return false;
       }
+      return true;
+    }
+
+    /** Skips the drained buffers of the round, releasing their rows: true when a row is ready. */
+    private boolean advanceToRow() {
+      while (buffer < buffers.length) {
+        if (position < buffers[buffer].size())
+          return true;
+        buffers[buffer].clear();
+        ++buffer;
+        position = 0;
+      }
+      return false;
     }
 
     @Override
@@ -320,7 +322,21 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
       buffer = buffers.length;
     }
 
+    /**
+     * A round that fails (the query timed out or was killed, a filter threw) ends the result set: the walkers are left
+     * mid-path and a partial round must never be handed out as a complete one, so a later {@link #hasNext()} answers
+     * false instead of resuming them.
+     */
     private void walkRound() {
+      try {
+        walkPendingSlices();
+      } catch (final RuntimeException | Error e) {
+        close();
+        throw e;
+      }
+    }
+
+    private void walkPendingSlices() {
       int pending = 0;
       int last = -1;
       for (int t = 0; t < walkers.length; t++)
