@@ -72,19 +72,13 @@ public class LocalEdgeType extends LocalDocumentType implements EdgeType {
           throw new SchemaException("Cannot declare edge type '" + getName()
               + "' LIGHTWEIGHT because it already contains edge records. Create a new lightweight type instead");
     // Inside a schema recording session, which saves schema.json and, under HA, ships it to the followers (issue #9747)
-    recordFileChanges(() -> {
-      this.lightweight = lightweight;
-      return null;
-    });
+    getSchema().getEmbedded().recordChange(() -> this.lightweight = lightweight);
   }
 
   public void setUnique(final boolean unique) {
     checkForSchemaMutation();
     // See setLightweight: a lightweight type builds no index, so nothing else would have shipped this flag (issue #9747)
-    recordFileChanges(() -> {
-      this.unique = unique;
-      return null;
-    });
+    getSchema().getEmbedded().recordChange(() -> this.unique = unique);
   }
 
   /**

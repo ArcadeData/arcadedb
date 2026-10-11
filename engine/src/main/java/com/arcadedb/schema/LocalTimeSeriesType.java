@@ -341,10 +341,7 @@ public class LocalTimeSeriesType extends LocalDocumentType implements TimeSeries
   public void setDownsamplingTiers(final List<DownsamplingTier> tiers) {
     checkForSchemaMutation();
     final List<DownsamplingTier> newTiers = tiers != null ? List.copyOf(tiers) : List.of();
-    recordFileChanges(() -> {
-      this.downsamplingTiers = newTiers;
-      return null;
-    });
+    getSchema().getEmbedded().recordChange(() -> this.downsamplingTiers = newTiers);
   }
 
   @Override

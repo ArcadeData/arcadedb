@@ -52,17 +52,11 @@ public class LocalProperty extends AbstractProperty {
   }
 
   /**
-   * Applies a change to this property inside a schema recording session, which saves {@code schema.json} on its way out
-   * and, under HA, is what ships the schema to the followers (issue #9747). A bare {@code saveConfiguration()} did the
-   * former and not the latter: a constraint set on the leader was not enforced by a follower, nor by the node that
-   * became leader after a failover. Validation stays outside, so a refused value touches nothing. During the schema
-   * load the session is a plain call.
+   * See {@link LocalSchema#recordChange(Runnable)}: a property setter used to end in a bare save, which under HA left the
+   * constraint on the leader alone (issue #9747).
    */
   private void publish(final Runnable change) {
-    owner.getSchema().getEmbedded().recordFileChanges(() -> {
-      change.run();
-      return null;
-    });
+    owner.getSchema().getEmbedded().recordChange(change);
   }
 
   /**
