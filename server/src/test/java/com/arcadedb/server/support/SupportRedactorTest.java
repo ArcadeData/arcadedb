@@ -223,7 +223,10 @@ class SupportRedactorTest {
     final int n = SupportLogCollector.MAX_LINE_CHARS;
     final String[] lines = { "-".repeat(n - 10) + " token x", "-a".repeat(n / 2) + " token", "a.".repeat(n / 2) + "token",
         "-token".repeat(n / 6), "token".repeat(n / 5) + " = x", "password=\"" + "a".repeat(n - 20), "password=\\\"" + "a".repeat(n - 20),
-        "eyJ".repeat(n / 3), "a://".repeat(n / 4), "a://b:" + "c".repeat(n - 20), "x".repeat(n - 20) + " --token" };
+        "eyJ".repeat(n / 3), "a://".repeat(n / 4), "a://b:" + "c".repeat(n - 20), "x".repeat(n - 20) + " --token",
+        // the quoted defaultDatabases shape (#9773): every quote is tried as an opener, and a span is read in one pass
+        "[a:".repeat(n / 3), "'[a:".repeat(n / 4), "'a[b:c];".repeat(n / 8), "\"'".repeat(n / 2 - 2) + "[a:",
+        "'" + "a;".repeat(n / 2 - 8) + "b[c:d]'", "\"" + "'".repeat(n - 10) + "[a:b]\"" };
     final StallAwareStopwatch watch = StallAwareStopwatch.start();
     for (final String line : lines)
       new SupportRedactor.Session().redactLine(line);
