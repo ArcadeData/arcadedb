@@ -120,6 +120,11 @@ public interface ServerPlugin {
    * listens, so a runtime switch of {@code arcadedb.server.mode} to {@code production} would otherwise leave a
    * channelizer that cannot conceal engine error text serving it under a setting that promises otherwise (issue #9749).
    * <p>
+   * Only those operator surfaces ask, and only for a DECLARED setting: a key that names no {@link GlobalConfiguration} is
+   * stored without asking, and code embedding the server that writes its {@code ContextConfiguration} (or a
+   * {@code GlobalConfiguration}) directly bypasses the hook. A new runtime writer of server settings has to call
+   * {@link ArcadeDBServer#checkServerSettingChange} before it stores.
+   * <p>
    * Called on the request thread, so the implementation has to be short and non-blocking.
    *
    * @param setting the setting about to change
