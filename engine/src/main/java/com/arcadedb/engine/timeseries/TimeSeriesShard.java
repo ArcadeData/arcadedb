@@ -97,7 +97,7 @@ public class TimeSeriesShard implements AutoCloseable {
   // thread holding a session and waiting for the mutex is waited for by nobody who holds the mutex and wants a session.
   // runSealedRewrite() must not be called while holding compactionLock (a read lock cannot be upgraded); its only caller,
   // TimeSeriesEngine.runSealedMaintenanceReplicated(), holds none.
-  private final Lock                   compactionMutex = new ReentrantLock();
+  private final ReentrantLock          compactionMutex = new ReentrantLock();
   // Serializes concurrent appendSamples() calls on this shard.
   // Multiple threads routing to the same shard via round-robin would otherwise produce
   // MVCC conflicts (ConcurrentModificationException) on page 0, because each call
@@ -125,7 +125,7 @@ public class TimeSeriesShard implements AutoCloseable {
    * the window the Phase 3 cleanup arm does not cover leaves no temp file behind. Same reset rule as
    * {@link #TEST_PRE_PHASE4C_HOOK}.
    */
-  public static volatile Runnable TEST_PRE_PHASE4B_HOOK = null;
+  static volatile Runnable TEST_PRE_PHASE4B_HOOK = null;
 
   /**
    * Test-only hook (issue #9716). When non-null, fires in {@link #compactInternal()} inside Phase 4c, under the
@@ -969,6 +969,14 @@ public class TimeSeriesShard implements AutoCloseable {
     } finally {
       compactionMutex.unlock();
     }
+  }
+
+  /**
+   * Whether a rewrite of the sealed file (compaction, merge, retention, downsampling) is waiting for the one in flight. Lets a
+   * test prove that a second rewrite is queued on {@link #compactionMutex} and not merely parked on something else.
+   */
+  boolean hasRewriteWaiting() {
+    return compactionMutex.hasQueuedThreads();
   }
 
   /** A rewrite of the sealed file, run by {@link #runSealedRewrite}. */
