@@ -306,6 +306,20 @@ class Issue9706ConstraintNamesAndTypedDropTest extends TestHelper {
   }
 
   @Test
+  void twoLabelsSpellingTheSameGeneratedNameGetTwoNames() {
+    command("CREATE CONSTRAINT FOR (n:A) REQUIRE n.b_c IS NOT NULL");
+    command("CREATE CONSTRAINT FOR (n:A_b) REQUIRE n.c IS NOT NULL");
+    // repeating either one changes nothing and records nothing new
+    command("CREATE CONSTRAINT IF NOT EXISTS FOR (n:A_b) REQUIRE n.c IS NOT NULL");
+
+    assertThat(names("SHOW CONSTRAINTS")).containsExactly("constraint_A_b_c_existence", "constraint_A_b_c_existence_2");
+
+    command("DROP CONSTRAINT constraint_A_b_c_existence_2");
+    assertThat(database.getSchema().getType("A_b").getPropertyIfExists("c")).isNull();
+    assertThat(property("A", "b_c").isMandatory()).isTrue();
+  }
+
+  @Test
   void generatedNamesOfUnusualIdentifiersRoundTripThroughShowAndDrop() {
     command("CREATE CONSTRAINT FOR (n:`My Label`) REQUIRE n.`my prop` IS NOT NULL");
     command("CREATE CONSTRAINT FOR (n:`My Label`) REQUIRE n.`odd``name` IS :: STRING");
