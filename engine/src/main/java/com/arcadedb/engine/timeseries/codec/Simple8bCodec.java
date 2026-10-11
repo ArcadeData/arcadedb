@@ -163,8 +163,12 @@ public final class Simple8bCodec {
     final ByteBuffer buf = ByteBuffer.allocate(4 + 4 + words * 8 + payload.length);
     buf.putInt(NULLABLE_MARKER);
     buf.putInt(values.length);
-    for (int w = 0; w < words; w++)
-      buf.putLong(w < nulls.length ? nulls[w] : 0L);
+    // bits past the last sample are dropped, so equal blocks always encode to equal bytes
+    final int tail = values.length & 63;
+    for (int w = 0; w < words; w++) {
+      final long word = w < nulls.length ? nulls[w] : 0L;
+      buf.putLong(w == words - 1 && tail != 0 ? word & ((1L << tail) - 1) : word);
+    }
     buf.put(payload);
     return buf.array();
   }
