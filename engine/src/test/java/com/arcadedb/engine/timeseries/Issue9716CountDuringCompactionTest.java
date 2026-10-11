@@ -32,6 +32,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.LockSupport;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -136,7 +137,7 @@ class Issue9716CountDuringCompactionTest extends TestHelper {
         pending.set(future);
         final long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30);
         while (!future.isDone() && !readerParkedOnACompactionLock(engine) && System.nanoTime() < deadline)
-          Thread.onSpinWait();
+          LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(1));
       };
 
       engine.compactAll();
@@ -149,6 +150,11 @@ class Issue9716CountDuringCompactionTest extends TestHelper {
     }
   }
 
+  /**
+   * Whether any thread waits on a shard's compaction lock. While the hook runs, the compaction holding the write lock
+   * is the only other user of these locks in this test, so a queued thread is the reader; a test that adds other
+   * readers or writers of the type would need to tell them apart.
+   */
   private static boolean readerParkedOnACompactionLock(final TimeSeriesEngine engine) {
     for (int s = 0; s < engine.getShardCount(); s++)
       if (((ReentrantReadWriteLock) engine.getShard(s).getCompactionLock()).hasQueuedThreads())
