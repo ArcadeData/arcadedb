@@ -21,9 +21,12 @@ package com.arcadedb.engine.timeseries.promql;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.timeseries.promql.PromQLResult.InstantVector;
+import com.arcadedb.engine.timeseries.promql.PromQLResult.VectorSample;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -99,8 +102,13 @@ class Issue9743PromQLSetOperatorWithScalarTest extends TestHelper {
 
   @Test
   void aSetOperatorBetweenTwoVectorsStillWorks() {
-    assertThat(((InstantVector) instant("m9743 and m9743")).samples()).hasSize(1);
-    assertThat(((InstantVector) instant("m9743 or m9743")).samples()).hasSize(1);
+    // a set operator passes the left-hand sample through unchanged: value and metric name both survive
+    for (final String promql : new String[] { "m9743 and m9743", "m9743 or m9743" }) {
+      final List<VectorSample> samples = ((InstantVector) instant(promql)).samples();
+      assertThat(samples).as(promql).hasSize(1);
+      assertThat(samples.getFirst().value()).as(promql).isEqualTo(5.5);
+      assertThat(samples.getFirst().labels()).as(promql).containsEntry("__name__", "m9743").containsEntry("host", "h1");
+    }
     assertThat(((InstantVector) instant("m9743 unless m9743")).samples()).isEmpty();
   }
 
