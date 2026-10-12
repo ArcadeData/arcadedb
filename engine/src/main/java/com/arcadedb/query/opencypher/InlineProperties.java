@@ -237,8 +237,13 @@ public final class InlineProperties {
       final String trimmed = text.trim();
       if (trimmed.isEmpty())
         return false;
-      final char first = trimmed.charAt(0);
-      return first >= '0' && first <= '9' || first == '-' || first == '+' || first == '.' || first == 'I' || first == 'N';
+      final int start = trimmed.charAt(0) == '-' || trimmed.charAt(0) == '+' ? 1 : 0;
+      if (start == trimmed.length())
+        return false;
+      final char first = trimmed.charAt(start);
+      // a letter only starts NaN or Infinity, the two words Double.parseDouble reads
+      return first >= '0' && first <= '9' || first == '.' || trimmed.startsWith("NaN", start) || trimmed.startsWith("Infinity",
+          start);
     }
     case DATE, DATETIME, DATETIME_SECOND, DATETIME_MICROS, DATETIME_NANOS, OFFSET_TIME, LOCAL_TIME, ZONED_DATETIME, DURATION -> {
       for (int i = 0; i < length; i++)
