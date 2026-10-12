@@ -25,10 +25,29 @@ import java.util.Objects;
 
 public class NamedParameter extends InputParameter {
 
+  /** A parameter name and the same name with the colon some callers write in front of it, built once (issue #9818). */
+  private record PrefixedName(String name, String prefixed) {
+  }
+
   public int    paramNumber;
   public String paramName;
+  /**
+   * Shared by every copy of this parameter, so the plan cache's copy per execution does not build the name again. It is
+   * immutable and replaced as a whole, which makes a racing first read harmless; {@link #prefixedName()} checks it still
+   * belongs to the current {@link #paramName}, a public field.
+   */
+  private transient PrefixedName prefixedName;
 
   public NamedParameter() {
+  }
+
+  private PrefixedName prefixedName() {
+    PrefixedName result = prefixedName;
+    if (result == null || result.name != paramName) {
+      result = new PrefixedName(paramName, ":" + paramName);
+      prefixedName = result;
+    }
+    return result;
   }
 
   @Override
@@ -51,27 +70,33 @@ public class NamedParameter extends InputParameter {
     }
   }
 
+  /**
+   * Every literal of a repeated text arrives here as a generated named parameter (issue #8307), and a plan reads it more than
+   * once, so this allocates nothing and probes the map once per key it tries. The prefixed key still wins over the plain one,
+   * and a key bound to null still ends the search.
+   */
   public Object getValue(final Map<String, Object> params) {
-    Object result = null;
-    if (params != null) {
-      final String key = paramName;
-      if (params.containsKey(":" + key)) {
-        result = params.get(":" + key);
-      } else if (params.containsKey(key)) {
-        result = params.get(key);
-      } else {
-        result = params.get(String.valueOf(paramNumber));
-      }
-    }
-    return result;
+    if (params == null)
+      return null;
+
+    final String prefixed = prefixedName().prefixed;
+    if (params.containsKey(prefixed))
+      return params.get(prefixed);
+
+    final String key = paramName;
+    final Object value = params.get(key);
+    if (value != null || params.containsKey(key))
+      return value;
+
+    return params.get(String.valueOf(paramNumber));
   }
 
   public Object bindFromInputParams(final Map<String, Object> params) {
     if (params != null) {
       final String key = paramName;
-      if (params.containsKey(key)) {
-        return toParsedTree(params.get(key));
-      }
+      final Object value = params.get(key);
+      if (value != null || params.containsKey(key))
+        return toParsedTree(value);
       return toParsedTree(params.get(String.valueOf(paramNumber)));
     }
     return this;
@@ -82,6 +107,7 @@ public class NamedParameter extends InputParameter {
     final NamedParameter result = new NamedParameter();
     result.paramName = paramName;
     result.paramNumber = paramNumber;
+    result.prefixedName = prefixedName();
     return result;
   }
 
