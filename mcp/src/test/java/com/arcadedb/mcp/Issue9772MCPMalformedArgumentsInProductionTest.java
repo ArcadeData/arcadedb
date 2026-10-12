@@ -127,6 +127,44 @@ class Issue9772MCPMalformedArgumentsInProductionTest extends BaseGraphServerTest
   }
 
   @Test
+  void fullTextSearchWithNeitherAnIndexNameNorATypeNameIsAnsweredInFull() throws Exception {
+    assertRefused("full_text_search", new JSONObject().put("database", getDatabaseName()).put("queryText", "a"),
+        "Provide either 'indexName', or 'typeName'");
+  }
+
+  @Test
+  void fullTextSearchWithPropertiesThatAreNotNamesIsAnsweredInFull() throws Exception {
+    assertRefused("full_text_search", new JSONObject().put("database", getDatabaseName()).put("typeName", "Person")
+        .put("queryText", "a").put("properties", new JSONArray().put(new JSONObject().put("x", 1))), "'properties'");
+  }
+
+  @Test
+  void vectorSearchWithoutAQueryVectorIsAnsweredInFull() throws Exception {
+    // the index exists in the fixture or not, the shape of the vector is reported first
+    assertRefused("vector_search", new JSONObject().put("database", getDatabaseName()).put("indexName", "Doc[embedding]"),
+        "'queryVector' is required");
+  }
+
+  @Test
+  void vectorSearchWithAQueryVectorThatIsNotNumbersIsAnsweredInFull() throws Exception {
+    assertRefused("vector_search", new JSONObject().put("database", getDatabaseName()).put("indexName", "Doc[embedding]")
+        .put("queryVector", new JSONArray().put("a").put("b")), "'queryVector' must contain only numbers");
+  }
+
+  @Test
+  void vectorSearchWithAnAllZeroDenseQueryVectorIsAnsweredInFull() throws Exception {
+    assertRefused("vector_search", new JSONObject().put("database", getDatabaseName()).put("indexName", "Doc[embedding]")
+        .put("queryVector", new JSONArray().put(0.0f).put(0.0f)), "non-zero");
+  }
+
+  @Test
+  void vectorSearchWithSparseIndicesOfTheWrongLengthIsAnsweredInFull() throws Exception {
+    assertRefused("vector_search", new JSONObject().put("database", getDatabaseName()).put("indexName", "Doc[embedding]")
+        .put("sparse", true).put("queryVector", new JSONArray().put(1.0f).put(2.0f))
+        .put("queryIndices", new JSONArray().put(0)), "'queryIndices' and 'queryVector' must have the same length");
+  }
+
+  @Test
   void vectorSearchWithoutAnIndexNameIsAnsweredInFull() throws Exception {
     assertRefused("vector_search", new JSONObject().put("database", getDatabaseName())
         .put("queryVector", new JSONArray().put(1.0f)), "'indexName'");
@@ -164,6 +202,14 @@ class Issue9772MCPMalformedArgumentsInProductionTest extends BaseGraphServerTest
   @Test
   void sampleRecordsWithTypesThatIsNotAnArrayIsAnsweredInFull() throws Exception {
     assertRefused("sample_records", new JSONObject().put("database", getDatabaseName()).put("types", "V1"), "'types'");
+  }
+
+  @Test
+  void sampleRecordsWithATypesElementThatIsNotANameIsAnsweredInFull() throws Exception {
+    assertRefused("sample_records", new JSONObject().put("database", getDatabaseName())
+        .put("types", new JSONArray().put((Object) null)), "'types'");
+    assertRefused("sample_records", new JSONObject().put("database", getDatabaseName())
+        .put("types", new JSONArray().put(new JSONObject())), "'types'");
   }
 
   @Test

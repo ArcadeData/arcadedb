@@ -92,6 +92,15 @@ public final class VectorLeg {
     if (!sparse && args.has("queryIndices"))
       throw new IllegalArgumentException("'queryIndices' requires sparse=true");
     normalizeFilter(args.getString("filter", null));
+
+    // The shape of the query vector (and of the sparse indices) needs no schema either, so it is reported here with the
+    // other argument faults and not after the index has resolved. What needs the index - the dimension count - stays in build.
+    // A dimension count of 0 turns the checks against the index off in buildSparseQuery.
+    final float[] queryVector = readFloatArray(args.getJSONArray("queryVector", null), "queryVector");
+    if (sparse)
+      buildSparseQuery(args, queryVector, 0);
+    else
+      requireNonZeroDenseVector(queryVector);
   }
 
   /**

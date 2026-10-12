@@ -26,6 +26,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.mcp.MCPConfiguration;
@@ -128,7 +129,12 @@ public class SampleRecordsTool {
 
     final LinkedHashSet<String> typeNames = new LinkedHashSet<>();
     for (int i = 0; i < requestedTypes.length(); i++) {
-      final String typeName = requestedTypes.getString(i);
+      final String typeName;
+      try {
+        typeName = requestedTypes.getString(i);
+      } catch (final JSONException e) {
+        throw new MCPToolArgumentException("'types' must contain only non-blank type names");
+      }
       if (typeName == null || typeName.isBlank())
         throw new MCPToolArgumentException("'types' must contain only non-blank type names");
       if (!database.getSchema().existsType(typeName))

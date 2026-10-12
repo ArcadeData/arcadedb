@@ -159,18 +159,24 @@ class SupportDiagnosticsConfigurationTest {
     final ArcadeDBServer server = new ArcadeDBServer(new ContextConfiguration());
     final String backup = GlobalConfiguration.SERVER_BACKUP_DIRECTORY.getKey();
     final String name = GlobalConfiguration.SERVER_NAME.getKey();
+    // a system property would make the source "jvm": cleared for the test, given back after it
+    final String previousBackup = System.getProperty(backup);
     System.clearProperty(backup);
+    try {
+      server.storeOperatorSetting(GlobalConfiguration.SERVER_BACKUP_DIRECTORY, "/data/backups-9836");
+      server.storeOperatorSetting(GlobalConfiguration.SERVER_NAME, "node-9836");
 
-    server.storeOperatorSetting(GlobalConfiguration.SERVER_BACKUP_DIRECTORY, "/data/backups-9836");
-    server.storeOperatorSetting(GlobalConfiguration.SERVER_NAME, "node-9836");
+      final Map<String, String> noEnvironment = Map.of();
+      final JSONObject json = SupportDiagnostics.buildConfiguration(server.getConfiguration(), server::getOperatorSettingSource,
+          noEnvironment::get, new SupportRedactor.Session());
 
-    final Map<String, String> noEnvironment = Map.of();
-    final JSONObject json = SupportDiagnostics.buildConfiguration(server.getConfiguration(), server::getOperatorSettingSource,
-        noEnvironment::get, new SupportRedactor.Session());
-
-    assertThat(entry(json.getJSONArray("nonDefault"), backup).getString("source")).isEqualTo("runtime");
-    assertThat(entry(json.getJSONArray("nonDefault"), name).getString("source")).isEqualTo("runtime");
-    assertThat(has(json.getJSONArray("computed"), backup)).isFalse();
-    assertThat(has(json.getJSONArray("computed"), name)).isFalse();
+      assertThat(entry(json.getJSONArray("nonDefault"), backup).getString("source")).isEqualTo("runtime");
+      assertThat(entry(json.getJSONArray("nonDefault"), name).getString("source")).isEqualTo("runtime");
+      assertThat(has(json.getJSONArray("computed"), backup)).isFalse();
+      assertThat(has(json.getJSONArray("computed"), name)).isFalse();
+    } finally {
+      if (previousBackup != null)
+        System.setProperty(backup, previousBackup);
+    }
   }
 }
