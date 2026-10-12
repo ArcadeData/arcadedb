@@ -137,7 +137,15 @@ class Issue7734TimeSeriesRouteKeepsSessionTransactionTest {
 
     assertThat(new PostCommandHandler(null).participatesInSessionTransaction())
         .as("a command runs INSIDE the caller's transaction and a failure must roll it back").isTrue();
+    assertThat(new PostCommandHandler(null).rollsBackSessionTransactionOnFailure()).isTrue();
+
+    // The two query routes run inside the caller's transaction too (read-your-writes, and refused once a failed command rolled it
+    // back) but cannot have written anything, so their failures stop destroying it (issue #9784). Two questions, two answers.
     assertThat(new GetQueryHandler(null).participatesInSessionTransaction()).isTrue();
     assertThat(new PostQueryHandler(null).participatesInSessionTransaction()).isTrue();
+    assertThat(new GetQueryHandler(null).rollsBackSessionTransactionOnFailure())
+        .as("a read that fails has nothing half applied to distrust").isFalse();
+    assertThat(new PostQueryHandler(null).rollsBackSessionTransactionOnFailure())
+        .as("a read that fails has nothing half applied to distrust").isFalse();
   }
 }
