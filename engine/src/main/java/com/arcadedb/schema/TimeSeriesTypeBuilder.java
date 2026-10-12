@@ -64,6 +64,7 @@ public class TimeSeriesTypeBuilder {
   protected       String                 typeName;
   protected       String                 timestampColumn;
   protected       String                 precision;
+  protected       boolean                legacyPrecision;
   protected       int                    shards                     = 0; // 0 = default (async worker threads)
   protected       long                   retentionMs                = 0;
   protected       long                   compactionBucketIntervalMs = 0;
@@ -97,11 +98,27 @@ public class TimeSeriesTypeBuilder {
    * embedded and {@code "NANOSECOND"} remotely (issue #7399), a divergence in exactly the invariant the remote
    * builder exists to establish.
    * <p>
-   * The value is NOT validated here: {@link #toSQL()} is where an unrenderable precision has to fail, and rejecting
-   * one at declaration time would refuse it for the embedded path too, which accepts it today.
+   * Only {@code MILLISECOND} can be declared (issue #9800): every path that turns a wall-clock instant or duration
+   * into a stored timestamp counts in milliseconds, so any other unit would be a declaration nothing honours - for
+   * {@code SECOND}, one that made the first retention pass delete every sample. The value is checked by
+   * {@link #validate()}, so {@link #create()} and {@link #toSQL()} refuse it alike.
    */
   public TimeSeriesTypeBuilder withPrecision(final String precision) {
     this.precision = precision != null ? precision.toUpperCase(Locale.ENGLISH) : null;
+    this.legacyPrecision = false;
+    return this;
+  }
+
+  /**
+   * Restores the precision of a type exported before issue #9800, which may be any of the units the grammar named
+   * then. For a logical restore only: the restored type keeps the declaration it was exported with, and so keeps
+   * retention and downsampling suspended until {@code ALTER TIMESERIES TYPE <name> PRECISION MILLISECOND} confirms
+   * the unit of its data (see {@link TimeSeriesType#isPrecisionHonoured()}). Has no SQL expression: a builder carrying
+   * such a precision can only {@link #create()} in an embedded database.
+   */
+  public TimeSeriesTypeBuilder withLegacyPrecision(final String precision) {
+    withPrecision(precision);
+    this.legacyPrecision = precision != null && !TimeSeriesType.MILLISECOND_PRECISION.equals(this.precision);
     return this;
   }
 
@@ -300,6 +317,9 @@ public class TimeSeriesTypeBuilder {
       if (!SQL_PRECISIONS.contains(precision))
         throw new SchemaException("Precision '" + precision + "' has no CREATE TIMESERIES TYPE expression. Supported: "
             + String.join(", ", SQL_PRECISIONS));
+      if (legacyPrecision)
+        throw new SchemaException("Type '" + typeName + "' restores the legacy precision '" + precision
+            + "', which CREATE TIMESERIES TYPE no longer accepts (issue #9800): restore it into an embedded database");
       sql.append(" PRECISION ").append(precision);
     }
     appendCodec(sql, timestampDefinition);
@@ -407,6 +427,10 @@ public class TimeSeriesTypeBuilder {
       throw new SchemaException("TimeSeries type name is required");
     if (timestampColumn == null)
       throw new SchemaException("TimeSeries type requires a TIMESTAMP column");
+
+    if (precision != null && !legacyPrecision && !TimeSeriesType.MILLISECOND_PRECISION.equals(precision))
+      throw new SchemaException("TimeSeries timestamp precision '" + precision + "' is not supported: timestamps are "
+          + "stored, ingested, retained and queried in milliseconds, so only MILLISECOND (the default) can be declared");
 
     // Negative durations are refused rather than carried: renderCreate() omits both clauses below zero, while
     // the embedded create() hands the value straight to LocalTimeSeriesType, so the SAME builder body would

@@ -280,7 +280,7 @@ public class PromQLEvaluator {
     final TagFilter tagFilter = buildTagFilter(vs.matchers(), columns);
     final long offset = vs.offsetMs();
     final long queryEnd = evalTimeMs - offset;
-    final long queryStart = queryEnd - lookbackMs;
+    final long queryStart = windowScanStart(queryEnd, lookbackMs);
 
     // Folded straight from the scan through forEachRow rather than collected via iterateQuery first (issue
     // #7696): iterateQuery's own javadoc says the sealed layer materialises every matching row of the range
@@ -326,6 +326,18 @@ public class PromQLEvaluator {
     return new InstantVector(new ArrayList<>(latestByLabels.values()));
   }
 
+  /**
+   * First timestamp to scan for a selector window of {@code windowMs} ending at {@code windowEndMs} (issue #9801).
+   * Prometheus selects the window LEFT-OPEN, {@code (end - window, end]}: a sample exactly one lookback old is stale
+   * for an instant selector (in every Prometheus version), and {@code [5m]} excludes the sample at {@code t-5m} (the
+   * 3.x semantics). {@code forEachRow} scans a CLOSED range, so the lower bound moves up by one tick of the stored
+   * unit, which is the millisecond (see {@code TimeSeriesType#MILLISECOND_PRECISION}). Shared by both selectors so the
+   * two cannot drift apart again.
+   */
+  static long windowScanStart(final long windowEndMs, final long windowMs) {
+    return windowEndMs - windowMs + 1;
+  }
+
   private PromQLResult evaluateMatrixSelector(final MatrixSelector ms, final long evalTimeMs) {
     final VectorSelector vs = ms.selector();
     final String typeName = sanitizeTypeName(vs.metricName());
@@ -350,7 +362,8 @@ public class PromQLEvaluator {
     final TagFilter tagFilter = buildTagFilter(vs.matchers(), columns);
     final long offset = vs.offsetMs();
     final long queryEnd = evalTimeMs - offset;
-    final long queryStart = queryEnd - ms.rangeMs();
+    final long windowStart = queryEnd - ms.rangeMs();
+    final long queryStart = windowScanStart(queryEnd, ms.rangeMs());
 
     // Folded straight from the scan through forEachRow rather than collected via iterateQuery first (issue
     // #7696) - same rationale as evaluateVectorSelector() above, including the narrowed IOException catch so a
@@ -384,7 +397,8 @@ public class PromQLEvaluator {
       // the first, last and consecutive pairs of this list assuming ascending order, so it is restored here -
       // once per series, over just that series' own points, rather than once for the whole scan.
       points.sort(Comparator.comparingDouble(p -> p[0]));
-      result.add(new RangeSeries(labelsMap.get(entry.getKey()), points, queryStart, queryEnd));
+      // The window's own boundaries, not the scan's: extrapolation measures from where the range begins
+      result.add(new RangeSeries(labelsMap.get(entry.getKey()), points, windowStart, queryEnd));
     }
     return new RangeVector(result);
   }

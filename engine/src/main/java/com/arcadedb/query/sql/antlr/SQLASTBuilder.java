@@ -7046,7 +7046,9 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
     stmt.name = (Identifier) visit(bodyCtx.identifier());
 
-    if (bodyCtx.ADD() != null) {
+    if (bodyCtx.tsPrecision() != null)
+      stmt.precision = bodyCtx.tsPrecision().getText().toUpperCase(Locale.ENGLISH);
+    else if (bodyCtx.ADD() != null) {
       stmt.addPolicy = true;
       stmt.tiers.addAll(parseDownsamplingTiers(bodyCtx.downsamplingTierClause()));
     } else {

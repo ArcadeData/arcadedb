@@ -143,30 +143,36 @@ public class MutableEdge extends MutableDocument implements Edge {
 
   @Override
   public MutableEdge set(final String name, final Object value) {
-    if ("@in".equals(name)) {
-      final RID newIn = toRID(value);
-      if (newIn == null)
-        throw new IllegalArgumentException("Cannot set @in to null: edges require both endpoints");
-      if (rid != null && !newIn.equals(this.in) && database != null)
-        database.getGraphEngine().moveEdge(this, Vertex.DIRECTION.IN, newIn);
-      else
-        this.in = newIn;
-      dirty = true;
-      propertiesAssigned = true;
-      return this;
-    } else if ("@out".equals(name)) {
-      final RID newOut = toRID(value);
-      if (newOut == null)
-        throw new IllegalArgumentException("Cannot set @out to null: edges require both endpoints");
-      if (rid != null && !newOut.equals(this.out) && database != null)
-        database.getGraphEngine().moveEdge(this, Vertex.DIRECTION.OUT, newOut);
-      else
-        this.out = newOut;
-      dirty = true;
-      propertiesAssigned = true;
-      return this;
-    }
     return (MutableEdge) super.set(name, value);
+  }
+
+  /**
+   * {@code @in} and {@code @out} re-point the edge. Declared here, at the one funnel every setter of
+   * {@link MutableDocument} goes through, so the positional overloads, {@code set(Map)}, {@code fromMap} and
+   * {@code merge} all move the edge the same way (issue #9799).
+   */
+  @Override
+  protected boolean isAssignableMetadata(final String name) {
+    return Property.IN_PROPERTY.equals(name) || Property.OUT_PROPERTY.equals(name);
+  }
+
+  @Override
+  protected void setMetadata(final String name, final Object value) {
+    final Vertex.DIRECTION direction = Property.IN_PROPERTY.equals(name) ?Vertex.DIRECTION.IN : Vertex.DIRECTION.OUT;
+    final RID newEndpoint = toRID(value);
+    if (newEndpoint == null)
+      throw new IllegalArgumentException(
+          "Cannot set " + name + " to " + (value == null ? "null" : "'" + value + "'") + ": edges require both endpoints");
+
+    // A move needs an endpoint to move FROM: an instance whose endpoint is still unknown is being initialized, as when
+    // JavaBinarySerializer rebuilds an edge from its toMap() before the trailing endpoint block is read
+    final RID current = direction == Vertex.DIRECTION.IN ? in : out;
+    if (rid != null && current != null && !newEndpoint.equals(current) && database instanceof DatabaseInternal dbInt)
+      dbInt.getGraphEngine().moveEdge(this, direction, newEndpoint);
+    else if (direction == Vertex.DIRECTION.IN)
+      this.in = newEndpoint;
+    else
+      this.out = newEndpoint;
   }
 
   @Override
@@ -238,9 +244,11 @@ public class MutableEdge extends MutableDocument implements Edge {
     this.buffer = null;
   }
 
-  private static RID toRID(final Object value) {
+  private RID toRID(final Object value) {
     if (value instanceof RID r) return r;
     if (value instanceof Identifiable i) return i.getIdentity();
+    // The textual form a JSON payload (fromJSON, an HTTP document) carries the endpoint in
+    if (value instanceof String s && RID.is(s)) return RID.create(database, s);
     return null;
   }
 

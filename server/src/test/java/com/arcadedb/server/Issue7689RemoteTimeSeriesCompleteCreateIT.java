@@ -60,7 +60,7 @@ class Issue7689RemoteTimeSeriesCompleteCreateIT extends BaseGraphServerTest {
         .withName(typeName)
         .withColumn(new ColumnDefinition("ts", Type.LONG, ColumnDefinition.ColumnRole.TIMESTAMP,
             TimeSeriesCodec.DELTA_OF_DELTA))
-        .withPrecision("MICROSECOND")
+        .withPrecision("MILLISECOND")
         .withColumn(new ColumnDefinition("host", Type.STRING, ColumnDefinition.ColumnRole.TAG, TimeSeriesCodec.DICTIONARY))
         .withColumn(new ColumnDefinition("zone", Type.INTEGER, ColumnDefinition.ColumnRole.TAG,
             TimeSeriesCodec.SIMPLE8B))

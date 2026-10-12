@@ -56,7 +56,7 @@ class Issue7399RemoteTimeSeriesTypeBuilderIT extends BaseGraphServerTest {
     return schema.buildTimeSeriesType()
         .withName(typeName)
         .withTimestamp("ts")
-        .withPrecision("MICROSECOND")
+        .withPrecision("MILLISECOND")
         .withTag("host", Type.STRING)
         .withTag("zone", Type.INTEGER)
         .withField("cpu", Type.DOUBLE)
@@ -127,7 +127,7 @@ class Issue7399RemoteTimeSeriesTypeBuilderIT extends BaseGraphServerTest {
       final TimeSeriesType readBack = (TimeSeriesType) type;
 
       assertThat(readBack.getTimestampColumn()).isEqualTo("ts");
-      assertThat(readBack.getPrecision()).isEqualTo("MICROSECOND");
+      assertThat(readBack.getPrecision()).isEqualTo("MILLISECOND");
       assertThat(readBack.getShardCount()).isEqualTo(3);
       assertThat(readBack.getRetentionMs()).isEqualTo(90L * 86_400_000L);
       assertThat(readBack.getCompactionBucketIntervalMs()).isEqualTo(2L * 3_600_000L);
@@ -169,18 +169,18 @@ class Issue7399RemoteTimeSeriesTypeBuilderIT extends BaseGraphServerTest {
 
   @Test
   void aLowerCasePrecisionReadsBackTheSameEmbeddedAndRemotely() {
-    // The parity recipe above declares an already-canonical "MICROSECOND", so it would not notice the builder
+    // The parity recipe above declares an already-canonical "MILLISECOND", so it would not notice the builder
     // storing the caller's spelling verbatim on one side and the SQL-canonicalized form on the other.
     final TimeSeriesType viaEmbedded = embedded().getSchema().buildTimeSeriesType()
-        .withName("LowerCaseEmbedded").withTimestamp("ts").withPrecision("nanosecond")
+        .withName("LowerCaseEmbedded").withTimestamp("ts").withPrecision("millisecond")
         .withField("value", Type.DOUBLE).withShards(1).create();
 
     try (final RemoteDatabase database = remote()) {
       final TimeSeriesType viaRemote = database.getSchema().buildTimeSeriesType()
-          .withName("LowerCaseRemote").withTimestamp("ts").withPrecision("nanosecond")
+          .withName("LowerCaseRemote").withTimestamp("ts").withPrecision("millisecond")
           .withField("value", Type.DOUBLE).withShards(1).create();
 
-      assertThat(viaEmbedded.getPrecision()).isEqualTo("NANOSECOND");
+      assertThat(viaEmbedded.getPrecision()).isEqualTo("MILLISECOND");
       assertThat(viaRemote.getPrecision()).isEqualTo(viaEmbedded.getPrecision());
     }
   }
