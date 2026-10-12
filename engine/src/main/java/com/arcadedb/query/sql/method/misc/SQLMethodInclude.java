@@ -143,17 +143,19 @@ public class SQLMethodInclude extends AbstractSQLMethod {
     return doc;
   }
 
-  private Object copy(final Map map, final Object[] iFieldNames) {
+  private Object copy(final Map<String, Object> map, final Object[] iFieldNames) {
     final Map<String, Object> doc = new LinkedHashMap<>(iFieldNames.length);
-    for (int i = 0; i < iFieldNames.length; ++i) {
-      if (iFieldNames[i] != null) {
-        final String fieldName = iFieldNames[i].toString();
+    for (final Object iFieldName : iFieldNames) {
+      if (iFieldName != null) {
+        final String fieldName = iFieldName.toString();
 
         if (fieldName.endsWith("*")) {
           final String fieldPart = fieldName.substring(0, fieldName.length() - 1);
-          for (final Object f : map.keySet()) {
-            if (f.toString().startsWith(fieldPart))
-              doc.put(f.toString(), map.get(f));
+          // A MAP RECEIVER MAY CARRY NON-STRING KEYS: MATCH ON THEIR TEXT, AS BEFORE
+          for (final Map.Entry<?, ?> f : ((Map<?, ?>) map).entrySet()) {
+            final String key = String.valueOf(f.getKey());
+            if (key.startsWith(fieldPart))
+              doc.put(key, f.getValue());
           }
 
         } else

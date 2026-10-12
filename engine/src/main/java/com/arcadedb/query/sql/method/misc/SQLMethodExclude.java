@@ -87,7 +87,7 @@ public class SQLMethodExclude extends AbstractSQLMethod {
       final boolean includeMetadata = referencesMetadata(params);
       final Map<String, Object> single = projectionSource(current, includeMetadata);
       if (single != null)
-        return copy(single, params, current);
+        return copy(single, params);
 
       if (MultiValue.isMultiValue(current)) {
         // ACT ON MULTIPLE DOCUMENTS
@@ -96,7 +96,7 @@ public class SQLMethodExclude extends AbstractSQLMethod {
         for (final Object o : MultiValue.getMultiValueIterable(current, false)) {
           final Map<String, Object> element = projectionSource(o, includeMetadata);
           if (element != null)
-            result.add(copy(element, params, o));
+            result.add(copy(element, params));
         }
         return result;
       }
@@ -106,20 +106,16 @@ public class SQLMethodExclude extends AbstractSQLMethod {
     return null;
   }
 
-  /**
-   * @param source the value the map was read from: a record's {@code toMap()} builds a fresh {@link LinkedHashMap} that is
-   *               pruned in place; anything else (the caller's own map, a result's content, a light edge's immutable
-   *               empty map) is copied first
-   */
-  private Object copy(final Map<String, Object> map, final Object[] iFieldNames, final Object source) {
-    final Map<String, Object> doc = source instanceof Identifiable && map instanceof LinkedHashMap ? map : new LinkedHashMap<>(map);
+  private Object copy(final Map<String, Object> map, final Object[] iFieldNames) {
+    final Map<String, Object> doc = new LinkedHashMap<>(map);
     for (final Object iFieldName : iFieldNames) {
       if (iFieldName != null) {
         final String fieldName = iFieldName.toString();
 
         if (fieldName.endsWith("*")) {
           final String fieldPart = fieldName.substring(0, fieldName.length() - 1);
-          doc.keySet().removeIf(f -> f.startsWith(fieldPart));
+          // A MAP RECEIVER MAY CARRY NON-STRING KEYS: MATCH ON THEIR TEXT, AS BEFORE
+          ((Map<?, ?>) doc).keySet().removeIf(f -> String.valueOf(f).startsWith(fieldPart));
 
         } else
           doc.remove(fieldName);

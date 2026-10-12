@@ -27,6 +27,7 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -222,6 +223,25 @@ class SQLMethodIncludeExcludeProjectionTest extends TestHelper {
       final Object excluded = single("select @this.exclude('@*') as c from V1 where n = 1");
       assertThat((Map<String, Object>) excluded).containsOnlyKeys("n", "m", "secret");
     });
+  }
+
+  @Test
+  void includeOfAMissingNameAnswersANullEntryOnEveryReceiver() {
+    database.transaction(() -> {
+      final Object onRecord = single("select @this.include('n', 'missing') as c from V1 where n = 1");
+      assertThat((Map<String, Object>) onRecord).containsOnlyKeys("n", "missing").containsEntry("missing", null);
+    });
+    final Object onMap = new SQLMethodInclude().execute(Map.of("n", 1), null, null, new Object[] { "n", "missing" });
+    assertThat((Map<String, Object>) onMap).containsOnlyKeys("n", "missing").containsEntry("missing", null);
+  }
+
+  @Test
+  void wildcardsMatchNonStringMapKeysByTheirText() {
+    final Map<Object, Object> input = new LinkedHashMap<>();
+    input.put(10, "ten");
+    input.put("x", 1);
+    assertThat((Map<String, Object>) new SQLMethodInclude().execute(input, null, null, new Object[] { "1*" })).containsOnlyKeys("10");
+    assertThat((Map<Object, Object>) new SQLMethodExclude().execute(input, null, null, new Object[] { "1*" })).containsOnlyKeys("x");
   }
 
   private Object single(final String sql) {
