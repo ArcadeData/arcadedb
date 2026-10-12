@@ -167,7 +167,8 @@ public class LocalVertexType extends LocalDocumentType implements VertexType {
    * Moves the super-node stripe pool under the new type name (issue #9780). The pool is found, dropped and listed among the
    * type's involved buckets by its name alone, so one left under the old name would fall out of the type's permission map
    * and explicit lock again, be orphaned when the type is dropped, and be adopted by the next type created under the old
-   * name. Every moved bucket is added to {@code renamedBuckets} so a failure further on puts it back.
+   * name. Every moved bucket is added to {@code renamedBuckets} so a failure further on puts it back. The pool is walked as
+   * {@link StripedEdgeList#getStripePool} walks it for the drop and the checker, under the live stripe count.
    */
   private void renameSuperNodeStripePool(final String oldName, final String newName, final List<Bucket> renamedBuckets)
       throws IOException {

@@ -44,7 +44,8 @@ import java.util.function.Function;
  * every commit: the import is part of the caller's unit of work, which is what {@code Importer(Database, String)}
  * promises and what #7771 settled for the non-RID GraphSON branch. When the import owns its transaction nothing changes,
  * the reader commits on its own schedule; and if it fails part way, the batch it left open is the import's to roll back,
- * not a transaction to leave on a thread whose caller never began one.
+ * not a transaction to leave on a thread whose caller never began one. The batches it committed before the failure stay
+ * committed: a standalone import that fails is partial, as every importer format that commits in batches is.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
