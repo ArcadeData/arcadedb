@@ -1880,8 +1880,12 @@ public enum GlobalConfiguration {
       """
       Content-Security-Policy sent with Studio's HTML pages and the Swagger UI page at /api/v1/docs (issue #9681). The \
       default refuses inline script (no 'unsafe-inline' in script-src), so an HTML-injection bug in Studio cannot run \
-      script with the logged-in user's token. Inline styles stay allowed. The Swagger UI page adds the hash of its own \
-      bootstrap script to script-src. Set to an empty string to send no policy""",
+      script with the logged-in user's token. Inline styles stay allowed (style-src 'unsafe-inline'): Studio, Bootstrap \
+      and the chart library set style attributes throughout. The default also allows three outside origins, Google \
+      Fonts (fonts.googleapis.com, fonts.gstatic.com) for Studio's typeface and raw.githubusercontent.com for the list \
+      of sample datasets; an air-gapped or stricter installation can drop them: Studio then falls back to a system font \
+      and its quick start reports that the sample datasets cannot be loaded. The Swagger UI page adds the hash of its own bootstrap script to script-src. Set to an \
+      empty string to send no policy""",
       String.class,
       "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
           + "font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: blob:; "

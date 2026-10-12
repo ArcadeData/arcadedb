@@ -45,8 +45,14 @@ const INLINE_EVENTS =
   "click|dblclick|change|input|submit|reset|keydown|keyup|keypress|mouse[a-z]+|pointer[a-z]+|focus|focusin|focusout|blur|" +
   "load|error|scroll|wheel|contextmenu|drag[a-z]*|drop|toggle|select";
 
+// Repeats until nothing changes, so a comment that removing another one brings together is removed too
 function stripHtmlComments(text) {
-  return text.replace(/<!--[\s\S]*?-->/g, "");
+  let previous;
+  do {
+    previous = text;
+    text = text.replace(/<!--[\s\S]*?-->/g, "");
+  } while (text !== previous);
+  return text;
 }
 
 // Removes block comments and line comments (a "//" that starts a line or follows whitespace, so "https://" survives)
