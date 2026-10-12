@@ -194,7 +194,8 @@ public class LocalVertexType extends LocalDocumentType implements VertexType {
       try {
         return StripedEdgeList.stripeBucketName(oldName, Integer.parseInt(renamedBucketName.substring(stripePrefix.length())));
       } catch (final NumberFormatException e) {
-        // NOT A STRIPE BUCKET: AN EDGE BUCKET WHOSE NAME HAPPENS TO START THE SAME WAY
+        // NOT A STRIPE BUCKET: AN EDGE BUCKET WHOSE NAME HAPPENS TO START THE SAME WAY. It cannot be misread as one: an
+        // edge bucket's name ends in '_out_edges'/'_in_edges', never in the bare slot number a stripe name ends with
       }
     }
     return LocalSchema.rebaseComponentName(renamedBucketName, newName, oldName, schema.getEncoding());

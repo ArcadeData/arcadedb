@@ -22,6 +22,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.Bucket;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import org.junit.jupiter.api.Test;
@@ -29,6 +30,7 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #9780: the super-node stripe pool of a vertex type ({@code <type>_sn_stripe_<slot>}) was in no list the type
@@ -128,6 +130,48 @@ class Issue9780SuperNodeStripeInvolvedTest extends TestHelper {
     for (int i = 0; i < STRIPES; i++)
       assertThat(database.getSchema().existsBucket(StripedEdgeList.stripeBucketName("W", i)))
           .as("the pool is dropped with its type").isFalse();
+  }
+
+  /**
+   * A bucket already holding one of the pool's new names refuses the rename before anything moves: the type keeps its name
+   * and its pool, and the bucket in the way is left alone.
+   */
+  @Test
+  void aRenameThatWouldCollideWithAStripeNameLeavesEverythingInPlace() {
+    final RID hub = createPromotedHub("V");
+    final Bucket inTheWay = database.getSchema().createBucket(StripedEdgeList.stripeBucketName("W", 1));
+
+    assertThatThrownBy(() -> database.getSchema().getType("V").rename("W")).isInstanceOf(SchemaException.class);
+
+    assertThat(database.getSchema().existsType("V")).isTrue();
+    assertThat(database.getSchema().existsType("W")).isFalse();
+    assertStripePoolInvolved("V");
+    assertThat(database.getSchema().getBucketByName(StripedEdgeList.stripeBucketName("W", 1)).getFileId())
+        .isEqualTo(inTheWay.getFileId());
+    assertThat(database.getSchema().getInvolvedTypeByBucketId(inTheWay.getFileId())).isNull();
+    assertThat(countOut(hub)).isEqualTo(400);
+  }
+
+  /**
+   * The pool is walked past the configured stripe count for as long as it stays contiguous, so lowering
+   * {@code arcadedb.graph.supernodeStripes} after a promotion does not take the extra slots out of the type's grants or lock.
+   */
+  @Test
+  void aShrunkStripeCountStillCoversTheWholePool() {
+    final RID hub = createPromotedHub("V");
+
+    database.getConfiguration().setValue(GlobalConfiguration.GRAPH_SUPERNODE_STRIPES, 2);
+    // Any schema change rebuilds the per-file maps, now under the shrunk count
+    database.getSchema().createDocumentType("Unrelated");
+
+    assertStripePoolInvolved("V");
+    database.transaction(() -> {
+      database.acquireLock().type("V").type("E").lock();
+      final MutableVertex other = database.newVertex("V").save();
+      for (int i = 0; i < 2 * STRIPES; i++)
+        hub.asVertex().newEdge("E", other);
+    });
+    assertThat(countOut(hub)).isEqualTo(400 + 2 * STRIPES);
   }
 
   private RID createPromotedHub(final String typeName) {
