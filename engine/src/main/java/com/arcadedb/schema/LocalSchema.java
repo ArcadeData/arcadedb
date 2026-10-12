@@ -3766,6 +3766,10 @@ public class LocalSchema implements Schema {
     // for the write lock is the reverse order, and it deadlocks against any concurrent DDL that is saving. Installing
     // the restored members' listeners and schedules under the write lock is what dropMaterializedView and
     // alterMaterializedView already do.
+    //
+    // Each member is restored under its own try, so the body throws only on something outside them. A throw then
+    // fails the frame as it would fail any DDL: whatever was restored before it stays in memory unsaved and unshipped,
+    // which is what the bare save that used to follow it did too (it never ran).
     final Integer failures = recordFileChanges(() -> restoreSchemaMembersFromJSONLocked(root, source));
     return failures != null ? failures : 0;
   }

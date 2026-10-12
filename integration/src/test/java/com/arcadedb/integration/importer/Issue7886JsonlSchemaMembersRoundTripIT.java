@@ -31,6 +31,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -65,6 +67,15 @@ class Issue7886JsonlSchemaMembersRoundTripIT {
 
     new Importer(("-url " + new File(FILE).getAbsolutePath() + " -database " + TARGET_PATH
         + " -forceDatabaseCreate true").split(" ")).load();
+
+    // Issue #9764: the import no longer ends in a bare saveConfiguration(), the schema recording session it restores
+    // under persists the members. Read off the file itself, before any reopen could rebuild them from somewhere else.
+    final JSONObject onDisk = new JSONObject(
+        Files.readString(new File(TARGET_PATH, "schema.json").toPath(), StandardCharsets.UTF_8));
+    assertThat(onDisk.getJSONObject("triggers").has("audit")).isTrue();
+    assertThat(onDisk.getJSONObject("materializedViews").has("ActiveAccounts")).isTrue();
+    assertThat(onDisk.getJSONObject("continuousAggregates").has("hourly_temps")).isTrue();
+    assertThat(onDisk.getJSONObject("functions").has("acct")).isTrue();
 
     try (final Database target = new DatabaseFactory(TARGET_PATH).open()) {
       final LocalSchema schema = target.getSchema().getEmbedded();

@@ -36,9 +36,9 @@ import java.nio.file.Files;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Issue #9764: a JSONL import restored the export's triggers, materialized views and function libraries through
- * {@code LocalSchema.restoreSchemaMembersFromJSON} followed by a bare {@code saveConfiguration()}, outside any schema
- * recording session. The leader's {@code schema.json} got the members and no {@code SCHEMA_ENTRY} carried them, so the
+ * Issue #9764: a JSONL import restored the export's triggers, materialized views, continuous aggregates and function
+ * libraries through {@code LocalSchema.restoreSchemaMembersFromJSON} followed by a bare {@code saveConfiguration()},
+ * outside any schema recording session. The leader's {@code schema.json} got the members and no {@code SCHEMA_ENTRY} carried them, so the
  * followers held the imported types and records but none of the members: a trigger enforced on the leader did not
  * exist on a node that became leader after a failover.
  * <p>
@@ -72,6 +72,9 @@ class Issue9764JsonlImportSchemaMembersReplicationIT extends BaseRaftHATest {
       source.command("sql",
           "CREATE TRIGGER audit AFTER CREATE ON TYPE Account EXECUTE SQL \"INSERT INTO AccountAudit SET what = 'account'\"");
       source.command("sql", "CREATE MATERIALIZED VIEW ActiveAccounts AS SELECT name FROM Account WHERE active = true");
+      // No continuous aggregate here: creating one under HA makes the followers fail their next apply to the source
+      // timeseries type and resync, import or not (#9886). The import restores it through the same call as the rest,
+      // and Issue7886JsonlSchemaMembersRoundTripIT asserts it lands in schema.json.
       source.command("sql", "DEFINE FUNCTION acct.twice \"SELECT :a * 2 AS result\" PARAMETERS [a] LANGUAGE sql");
     }
 
