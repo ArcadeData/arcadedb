@@ -483,10 +483,11 @@ public final class SparseSegmentBuilder implements AutoCloseable {
     }
     // weightMin / weightMax stay the RAW band: the INT8 codec quantizes against it, so it must be the one the encode
     // loop below uses. The BMW bound, on the other hand, must cover what the reader will DECODE (issue #9834): fp16
-    // rounds to nearest and decodes above the raw weight about half the time, and a ceiling below a decoded weight
-    // makes Block-Max WAND / MaxScore prune a document that belongs in the top-K. The decode is monotone, so the
-    // block's decoded maximum is the decode of its raw maximum; taking the larger of the two leaves FP32 and INT8
-    // bounds bit-identical to before. currentDimMaxWeight and the skip list's max_weight_to_end are derived from this
+    // rounds to nearest and decodes above the raw weight about half the time, INT8's top level decodes to
+    // min + 1.0f * (max - min), which float rounding can put one ulp above max (e.g. band [18.354017, 50.413555]), and a
+    // ceiling below a decoded weight makes Block-Max WAND / MaxScore prune a document that belongs in the top-K. The
+    // decode is monotone, so the block's decoded maximum is the decode of its raw maximum; taking the larger of the two
+    // keeps FP32 bounds, and every INT8 bound whose band decodes exactly, bit-identical to before. currentDimMaxWeight and the skip list's max_weight_to_end are derived from this
     // value and inherit the fix. liveInBlock == 0 is the all-tombstone block, whose band was reset to [0, 0] above, so
     // it keeps the 0.0 bound the former weightMax == NEGATIVE_INFINITY check produced.
     final float blockMaxForBmw = liveInBlock == 0 ?

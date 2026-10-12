@@ -150,34 +150,37 @@ class Issue9834Fp16BlockMaxBoundTest extends TestHelper {
 
     final float decoded = WeightCodec.fromFp16(WeightCodec.toFp16(TARGET_RAW));
     assertThat(decoded).isGreaterThan(TARGET_RAW);
-    final int decodedBits = Float.floatToRawIntBits(decoded);
-    final int rawBits = Float.floatToRawIntBits(TARGET_RAW);
 
-    final int[] patched = { 0 };
-    inTx(() -> {
-      final SparseSegmentComponent c = component.get();
-      final int contentSize = c.pageContentSize();
-      for (int pageNum = 0; pageNum < c.getTotalPages(); pageNum++) {
-        final BasePage page = c.readPage(pageNum);
-        for (int off = 0; off + 4 <= contentSize; off++) {
-          if (page.readInt(off) == decodedBits) {
-            final MutablePage mp = c.modifyPage(pageNum);
-            mp.writeInt(off, rawBits);
-            patched[0]++;
-          }
-        }
-      }
-    });
     // Exactly the three bound slots: the target's block header, the dim's global max and the dim's single skip entry
-    // (4 blocks at the default stride of 8). An exact count also proves no posting payload matched the pattern and got
-    // over-patched.
-    assertThat(patched[0]).as("raw-bound slots rewritten to simulate a pre-fix segment").isEqualTo(3);
+    // (4 blocks at the default stride of 8).
+    rewriteBoundsToRaw(component.get(), decoded, TARGET_RAW, 3);
 
     inTx(() -> {
       final PaginatedSegmentReader reader = new PaginatedSegmentReader(component.get());
       assertBoundsCoverDecodedWeights(reader, "legacy FP16");
       assertTopOneIsTheTarget(reader, true);
     });
+  }
+
+  /**
+   * INT8 is affected too, which the issue ruled out: its top level dequantizes to {@code min + 1.0f * (max - min)},
+   * and float rounding puts that one ulp above {@code max} for bands like this one. A fixed builder stores the decoded
+   * ceiling; a segment written before the fix stored the raw maximum and is lifted on read from the block's own band.
+   */
+  @Test
+  void int8TopLevelDecodingAboveTheBandMaxIsCovered() throws Exception {
+    final float min = 18.354017f;
+    final float max = 50.413555f;
+    final float decoded = WeightCodec.decodedValueOf(max, WeightQuantization.INT8, min, max);
+    assertThat(decoded).as("this band's top INT8 level decodes above the raw maximum").isGreaterThan(max);
+
+    final AtomicReference<SparseSegmentComponent> component = new AtomicReference<>();
+    inTx(() -> component.set(buildTwoPostingSegment("seg-9834-int8", WeightQuantization.INT8, min, max)));
+    inTx(() -> assertBoundsCoverDecodedWeights(new PaginatedSegmentReader(component.get()), "INT8"));
+
+    // The same segment as a pre-fix builder would have written it: block header, global max and skip entry raw.
+    rewriteBoundsToRaw(component.get(), decoded, max, 3);
+    inTx(() -> assertBoundsCoverDecodedWeights(new PaginatedSegmentReader(component.get()), "legacy INT8"));
   }
 
   // ---------- helpers ----------
@@ -284,6 +287,47 @@ class Issue9834Fp16BlockMaxBoundTest extends TestHelper {
           b.appendPosting(p.getKey(), p.getValue());
         b.endDim();
       }
+      b.finish();
+    }
+    return c;
+  }
+
+  /**
+   * Simulates a segment written before the fix by rewriting every 4-byte slot holding the decoded ceiling back to the
+   * raw maximum. The count is exact so an accidental match inside a posting payload, which would corrupt the segment
+   * instead of simulating an old one, fails here rather than somewhere less obvious.
+   */
+  private void rewriteBoundsToRaw(final SparseSegmentComponent c, final float decoded, final float raw, final int expectedSlots) {
+    final int decodedBits = Float.floatToRawIntBits(decoded);
+    final int rawBits = Float.floatToRawIntBits(raw);
+    final int[] patched = { 0 };
+    inTx(() -> {
+      final int contentSize = c.pageContentSize();
+      for (int pageNum = 0; pageNum < c.getTotalPages(); pageNum++) {
+        final BasePage page = c.readPage(pageNum);
+        for (int off = 0; off + 4 <= contentSize; off++) {
+          if (page.readInt(off) == decodedBits) {
+            final MutablePage mp = c.modifyPage(pageNum);
+            mp.writeInt(off, rawBits);
+            patched[0]++;
+          }
+        }
+      }
+    });
+    assertThat(patched[0]).as("bound slots holding %s rewritten to %s; a different count means the segment layout changed"
+        + " (block count, skip stride) or a posting payload happens to contain the same bytes", decoded, raw)
+        .isEqualTo(expectedSlots);
+  }
+
+  private SparseSegmentComponent buildTwoPostingSegment(final String name, final WeightQuantization q, final float w1,
+      final float w2) throws IOException {
+    final SparseSegmentComponent c = newComponent(name);
+    try (final SparseSegmentBuilder b = new SparseSegmentBuilder(c, SegmentParameters.builder().weightQuantization(q).build())) {
+      b.setSegmentId(9834L);
+      b.startDim(0);
+      b.appendPosting(new RID(0, 1L), w1);
+      b.appendPosting(new RID(0, 2L), w2);
+      b.endDim();
       b.finish();
     }
     return c;

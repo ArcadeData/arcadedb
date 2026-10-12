@@ -47,6 +47,8 @@ public final class PaginatedSegmentReader implements AutoCloseable {
 
   private final SparseSegmentComponent component;
   private final SegmentParameters      params;
+  /** Hoisted from {@link #params}: read once per block header to lift its bound (issue #9834). */
+  private final WeightQuantization     weightQuantization;
   private final long                   segmentId;
   private final long                   totalPostings;
   private final int                    totalDims;
@@ -103,6 +105,7 @@ public final class PaginatedSegmentReader implements AutoCloseable {
         .weightQuantization(wq)
         .ridCompression(rc)
         .build();
+    this.weightQuantization = wq;
     this.segmentId = header.getLong(PaginatedSegmentFormat.HEADER_OFFSET_SEGMENT_ID);
     this.totalPostings = header.getLong(PaginatedSegmentFormat.HEADER_OFFSET_TOTAL_POSTINGS);
     this.totalDims = header.getInt(PaginatedSegmentFormat.HEADER_OFFSET_TOTAL_DIMS);
@@ -366,10 +369,6 @@ public final class PaginatedSegmentReader implements AutoCloseable {
       throw new IOException(
           "Implausible df for dim " + dimId + ": df=" + df + " posting_count=" + postingCount + " (df must be in [0, posting_count])");
 
-    // Every pruning bound is lifted to cover what this reader DECODES (issue #9834): an FP16 segment written before
-    // the fix stores raw float32 maxima, which fp16 round-to-nearest decodes up to half an ulp higher. The lift is the
-    // identity for FP32/INT8 and for any bound a fixed builder wrote, so it only ever corrects a pre-fix segment.
-    final WeightQuantization wq = params.weightQuantization();
     final int skipStride = params.skipStride();
     final int skipEntries = (blockCount + skipStride - 1) / skipStride;
     final int fullTrailerSize = minTrailerHeaderSize + blockCount * (4 + 2) + skipEntries * (12 + 4 + 4);
@@ -390,7 +389,7 @@ public final class PaginatedSegmentReader implements AutoCloseable {
         final long ridPos  = trailerPage.readLong(p);          p += 8;
         final float maxToEnd = trailerPage.readFloat(p);       p += 4;
         final int blockIndex = trailerPage.readInt(p);         p += 4;
-        skipList[s] = new SkipEntry(new RID(bucketId, ridPos), WeightCodec.liftStoredBound(maxToEnd, wq), blockIndex);
+        skipList[s] = new SkipEntry(new RID(bucketId, ridPos), maxToEnd, blockIndex);
       }
     } else {
       // Trailer spans consecutive pages (issue #5254): reassemble it, then parse from a contiguous
@@ -408,7 +407,7 @@ public final class PaginatedSegmentReader implements AutoCloseable {
         final long ridPos  = fb.getLong();
         final float maxToEnd = fb.getFloat();
         final int blockIndex = fb.getInt();
-        skipList[s] = new SkipEntry(new RID(bucketId, ridPos), WeightCodec.liftStoredBound(maxToEnd, wq), blockIndex);
+        skipList[s] = new SkipEntry(new RID(bucketId, ridPos), maxToEnd, blockIndex);
       }
     }
 
@@ -416,8 +415,25 @@ public final class PaginatedSegmentReader implements AutoCloseable {
     for (int b = 0; b < blockCount; b++)
       blockHeaders[b] = readBlockHeader(blockPageNums[b], blockOffsets[b] & 0xFFFF);
 
-    return new PaginatedDimMetadata(dimId, postingCount, df, WeightCodec.liftStoredBound(globalMaxWeight, wq), blockPageNums,
-        blockOffsets, blockHeaders, skipList);
+    // Every pruning bound must cover what this reader DECODES (issue #9834). readBlockHeader already lifted each block
+    // bound to its decoded band maximum; the trailer's global max and each skip entry's max_weight_to_end are suffix
+    // maxima of those block bounds, so they are raised to the suffix max of the lifted ones. Bounds a fixed builder
+    // wrote are already at least that high and come through untouched (no SkipEntry is re-allocated); only a segment
+    // written before the fix, whose trailer holds raw float32 maxima, is corrected - without a rebuild.
+    float suffixMax = 0.0f;
+    for (int b = blockCount - 1; b >= 0; b--) {
+      final float bm = blockHeaders[b].bmwUpperBound();
+      if (bm > suffixMax)
+        suffixMax = bm;
+      if (b % skipStride == 0) {
+        final SkipEntry e = skipList[b / skipStride];
+        if (suffixMax > e.maxWeightToEnd())
+          skipList[b / skipStride] = new SkipEntry(e.firstRid(), suffixMax, e.blockIndex());
+      }
+    }
+
+    return new PaginatedDimMetadata(dimId, postingCount, df, Math.max(globalMaxWeight, suffixMax), blockPageNums, blockOffsets,
+        blockHeaders, skipList);
   }
 
   /**
@@ -458,9 +474,11 @@ public final class PaginatedSegmentReader implements AutoCloseable {
     final float weightMin = page.readFloat(p);                 p += 4;
     final float weightMax = page.readFloat(p);                 p += 4;
     final boolean hasTombstones = page.readByte(p) != 0;
-    // Lifted for the same reason as the trailer bounds in loadDimMetadata (issue #9834).
+    // The stored bound is lifted to the decode of the block's raw band maximum (issue #9834): a segment written before
+    // the fix stored the raw maximum, which the reader can decode above. See WeightCodec.liftBlockBound.
     return new BlockHeader(new RID(firstBucket, firstPos), new RID(lastBucket, lastPos), postingCount,
-        WeightCodec.liftStoredBound(bmwUpperBound, params.weightQuantization()), weightMin, weightMax, hasTombstones);
+        WeightCodec.liftBlockBound(bmwUpperBound, weightQuantization, weightMin, weightMax), weightMin, weightMax,
+        hasTombstones);
   }
 
   /**
