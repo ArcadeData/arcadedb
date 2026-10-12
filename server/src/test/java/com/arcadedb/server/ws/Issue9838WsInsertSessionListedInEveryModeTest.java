@@ -136,10 +136,9 @@ class Issue9838WsInsertSessionListedInEveryModeTest extends BaseGraphServerTest 
           .put("records", records).toString());
 
       assertThat(heldRowReached.await(60, TimeUnit.SECONDS)).as("chunk 2 reached its held row").isTrue();
-      RunningQuery entry = null;
-      for (final RunningQuery q : getServer(0).getRunningQueries().getRunning())
-        if ("ws".equals(q.getProtocol()) && q.getText() != null && q.getText().contains(sessionId))
-          entry = q;
+      final RunningQuery entry = getServer(0).getRunningQueries().getRunning().stream()
+          .filter(q -> "ws".equals(q.getProtocol()) && q.getText() != null && q.getText().contains(sessionId)).findFirst()
+          .orElse(null);
       assertThat(entry).as("the running chunk is listed in the registry").isNotNull();
 
       assertThat(entry.getUser()).isEqualTo("root");

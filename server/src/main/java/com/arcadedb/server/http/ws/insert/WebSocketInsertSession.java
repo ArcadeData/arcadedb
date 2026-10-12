@@ -298,6 +298,7 @@ public class WebSocketInsertSession {
       final RunningQuery entry = openChunkEntry(chunkSeq);
       boolean terminationObserved = false;
       boolean retracted = true;
+      RuntimeException otherFailure = null;
       try {
         if (externalSession != null)
           // Under the caller's own session lock, which is what an HTTP request on that transaction takes too: the
@@ -312,13 +313,19 @@ public class WebSocketInsertSession {
       } catch (final QueryTerminatedException e) {
         // reported below, once the mode's retraction has run
         terminationObserved = true;
+      } catch (final RuntimeException e) {
+        // Another failure racing a terminate: thrown as is unless the terminate closed the session, which the client
+        // must then be told about rather than only about the other failure
+        otherFailure = e;
       } finally {
         if (entry != null)
           retracted = endRunningChunk(entry, terminationObserved);
       }
 
       if (entry != null && entry.isTerminated())
-        throw new IllegalStateException(terminatedChunkMessage(entry, chunkSeq, terminationObserved, retracted));
+        throw new IllegalStateException(terminatedChunkMessage(entry, chunkSeq, terminationObserved, retracted), otherFailure);
+      if (otherFailure != null)
+        throw otherFailure;
 
       // Either way round, this attempt SUPERSEDES any earlier attempt at the same sequence: a whole-chunk failure
       // does not advance the watermark, so the chunk being applied here is the one that failed (issue #7471).
@@ -521,8 +528,8 @@ public class WebSocketInsertSession {
           + options.transactionModeName() + ") is closed";
     return switch (options.transactionMode) {
       case NONE -> prefix + "transaction '" + externalTransactionId + "' was rolled back and ended";
-      case PER_STREAM -> prefix + "the transaction of insert session '" + id + "' (per_stream) was rolled back and the session"
-          + " closed";
+      case PER_STREAM -> prefix + "the transaction of insert session '" + id + "' (per_stream) was rolled back, chunks"
+          + " acknowledged before it included, and the session closed";
       // Not observed: the terminate landed between the chunk's own commit and the end of its entry. The commit stands,
       // and the session is closed all the same, because the terminate is a request to stop the load, not only the chunk
       case PER_BATCH -> prefix + (terminationObserved ?
