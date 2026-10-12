@@ -176,6 +176,29 @@ class Issue9844SqlBackupAppliesRetentionIT extends BaseGraphServerTest {
         .as("the conventionally named archives are pruned around it").hasSize(MAX_FILES);
   }
 
+  /**
+   * Retention prunes the directory of the database that was backed up and nothing else: another database sharing the backup
+   * root keeps every archive, even when it holds more than the policy's {@code maxFiles}.
+   */
+  @Test
+  void onlyTheDirectoryOfTheBackedUpDatabaseIsPruned() throws Exception {
+    final File otherDatabaseDir = new File(backupDir, "some-other-database");
+    assertThat(otherDatabaseDir.mkdirs()).isTrue();
+    final String[] otherArchives = { "some-other-database-backup-20260101-000000001.zip", "some-other-database-backup-20260102-000000001.zip",
+        "some-other-database-backup-20260103-000000001.zip", "some-other-database-backup-20260104-000000001.zip" };
+    for (final String name : otherArchives)
+      assertThat(new File(otherDatabaseDir, name).createNewFile()).isTrue();
+
+    for (int i = 0; i < STATEMENTS; i++) {
+      final HttpResponse<String> response = postDatabaseCommand(getDatabaseName(), "BACKUP DATABASE");
+      assertThat(response.statusCode()).as(response.body()).isEqualTo(200);
+    }
+
+    assertThat(new File(backupDir, getDatabaseName()).listFiles((dir, name) -> name.endsWith(".zip"))).hasSize(MAX_FILES);
+    assertThat(otherDatabaseDir.listFiles((dir, name) -> name.endsWith(".zip")))
+        .as("the other database's directory is not the statement's to prune").hasSize(otherArchives.length);
+  }
+
   private HttpResponse<String> postDatabaseCommand(final String databaseName, final String command) throws Exception {
     final HttpRequest request = HttpRequest.newBuilder()
         .uri(URI.create(getServerHttpUrl("/api/v1/command/") + databaseName))
