@@ -1885,6 +1885,8 @@ public class LocalSchema implements Schema {
         copyTransaction.commit();
 
       } finally {
+        // A no-op when the last commit succeeded, when a commit threw (it pops its context either way) and when the begin() after
+        // a batch commit threw: the handle then still names the committed context, which is no longer on the thread's stack.
         copyTransaction.rollbackIfMine();
       }
 
