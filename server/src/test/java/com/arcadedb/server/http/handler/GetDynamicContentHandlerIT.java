@@ -271,4 +271,39 @@ class GetDynamicContentHandlerIT extends BaseGraphServerTest {
       assertThat(response.headers().firstValue("Content-Type").get()).contains("font/woff2");
     }
   }
+
+  // Regression test for #9817: the TrueType extension is .ttf and its media type is font/ttf (static/fonts/probe.ttf is a test fixture).
+  @Test
+  void shouldServeTrueTypeFontAsFontTtf() throws Exception {
+    final HttpResponse<String> response = get("/fonts/probe.ttf");
+
+    assertThat(response.statusCode()).isEqualTo(200);
+    assertThat(response.headers().firstValue("Content-Type")).contains("font/ttf");
+    assertThat(response.headers().firstValue("Cache-Control").orElse("")).contains("max-age");
+    // a font is binary: it must never go through the template engine
+    assertThat(response.body()).isEqualTo("ttf-probe\n");
+  }
+
+  // The old typo .tff maps to nothing: it is an unknown extension like any other, not a font.
+  @Test
+  void shouldNotTreatTheTypoExtensionTffAsAFont() throws Exception {
+    final HttpResponse<String> response = get("/fonts/probe.tff");
+
+    assertThat(response.statusCode()).isEqualTo(200);
+    assertThat(response.headers().firstValue("Content-Type")).contains("text/plain");
+  }
+
+  // Regression test for #9817: "plain/text" is not a media type, "text/plain" is.
+  @Test
+  void shouldServeAnUnknownExtensionAsTextPlain() throws Exception {
+    final HttpResponse<String> response = get("/probe.txt");
+
+    assertThat(response.statusCode()).isEqualTo(200);
+    assertThat(response.headers().firstValue("Content-Type")).contains("text/plain");
+    assertThat(response.body()).isEqualTo("txt-probe\n");
+  }
+
+  private HttpResponse<String> get(final String path) throws Exception {
+    return client.send(HttpRequest.newBuilder().uri(new URI(getServerHttpUrl(path))).GET().build(), BodyHandlers.ofString());
+  }
 }
