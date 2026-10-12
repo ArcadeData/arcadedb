@@ -191,6 +191,10 @@ public final class InlineProperties {
     // NaN equals nothing, not even the 'NaN' it was stored as
     if ((operand instanceof Double d && d.isNaN()) || (operand instanceof Float f && f.isNaN()))
       return null;
+    // a text of a shape the declaration never reads is refused here rather than by the conversion's exception, which a scan
+    // comparing every record against the same text would otherwise pay once per record
+    if (operand instanceof String text && !mayBeReadAs(property.getType(), text))
+      return null;
     try {
       final Object stored = Type.convert(database, TemporalUtil.toCoreJavaType(operand),
           property.getType().getJavaImplementation(database), property);
@@ -198,6 +202,40 @@ public final class InlineProperties {
     } catch (final RuntimeException e) {
       // a value the declaration cannot store is refused by the write: no record holds what it would have stored
       return null;
+    }
+  }
+
+  /**
+   * Whether {@code text} has a shape {@code Type.convert} can read as {@code type}: an integral type reads an optional sign
+   * and digits ({@code Integer.parseInt} and siblings, so {@code '5.7'} or {@code ' 5'} is refused, as by the write), a
+   * BOOLEAN reads {@code true} or {@code false} in any case, and a FLOAT, DOUBLE or DECIMAL a text starting the way a number
+   * does. A temporal is left to the conversion: the database's date and datetime formats decide its text.
+   */
+  private static boolean mayBeReadAs(final Type type, final String text) {
+    final int length = text.length();
+    switch (type) {
+    case BYTE, SHORT, INTEGER, LONG -> {
+      final int start = length > 0 && (text.charAt(0) == '-' || text.charAt(0) == '+') ? 1 : 0;
+      if (start == length)
+        return false;
+      for (int i = start; i < length; i++)
+        if (text.charAt(i) < '0' || text.charAt(i) > '9')
+          return false;
+      return true;
+    }
+    case BOOLEAN -> {
+      return "true".equalsIgnoreCase(text) || "false".equalsIgnoreCase(text);
+    }
+    case FLOAT, DOUBLE, DECIMAL -> {
+      final String trimmed = text.trim();
+      if (trimmed.isEmpty())
+        return false;
+      final char first = trimmed.charAt(0);
+      return first >= '0' && first <= '9' || first == '-' || first == '+' || first == '.' || first == 'I' || first == 'N';
+    }
+    default -> {
+      return true;
+    }
     }
   }
 
