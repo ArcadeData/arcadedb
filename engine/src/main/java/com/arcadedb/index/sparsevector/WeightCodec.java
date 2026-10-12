@@ -18,6 +18,8 @@
  */
 package com.arcadedb.index.sparsevector;
 
+import com.arcadedb.index.sparsevector.SegmentFormat.WeightQuantization;
+
 /**
  * Per-block weight quantization codecs.
  * <p>
@@ -143,6 +145,40 @@ public final class WeightCodec {
   /** Exact inverse of the IEEE 754 half-precision encoding, subnormals included. See {@link #toFp16}. */
   public static float fromFp16(final short fp16) {
     return Float.float16ToFloat(fp16);
+  }
+
+  // ---------- shared ----------
+
+  /**
+   * The value the reader will decode for a live weight {@code w} stored under {@code q} in a block whose raw band is
+   * {@code [min, max]} (issue #9834). Every bound a segment stores for pruning has to bound THIS value, not the raw
+   * weight: fp16 rounds to nearest, so the decoded weight lands above the raw one about half the time, and a
+   * Block-Max WAND / MaxScore traversal that trusts a raw-derived ceiling skips documents that belong in the top-K.
+   * <p>
+   * Every branch is monotone non-decreasing in {@code w} (each is a composition of IEEE round-to-nearest operations
+   * and a clamp), so the decoded maximum of a block is the decoded value of its raw maximum.
+   */
+  public static float decodedValueOf(final float w, final WeightQuantization q, final float min, final float max) {
+    return switch (q) {
+      case FP32 -> w;
+      case FP16 -> fromFp16(toFp16(w));
+      case INT8 -> dequantizeInt8(quantizeInt8(w, min, max), min, max);
+    };
+  }
+
+  /**
+   * A pruning bound that is guaranteed to cover what the reader decodes from a block whose stored bound is {@code
+   * stored}. Never lowers the bound. Only FP16 needs lifting on read: an FP16 segment written before issue #9834 stored
+   * the raw float32 maximum, which decodes up to half an fp16 ulp higher. FP32 decodes exactly, and INT8 clamps to the
+   * band and dequantizes its top level to {@code min + 1.0f * (max - min)}, the band maximum the bound was taken from
+   * (the issue measured 40M samples without one INT8 decode above it), so both are returned unchanged. Lifting an
+   * fp16-representable bound - every bound a fixed builder writes for FP16 - is the identity.
+   */
+  public static float liftStoredBound(final float stored, final WeightQuantization q) {
+    if (q != WeightQuantization.FP16 || Float.isNaN(stored))
+      return stored;
+    final float decoded = fromFp16(toFp16(stored));
+    return decoded > stored ? decoded : stored;
   }
 
   // ---------- fp32 ----------
