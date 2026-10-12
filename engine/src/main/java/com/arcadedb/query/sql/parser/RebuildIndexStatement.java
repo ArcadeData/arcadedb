@@ -68,7 +68,7 @@ public class RebuildIndexStatement extends DDLStatement {
   public               Identifier                  name;
   public               Expression                  key;
   public               Expression                  value;
-  public final         Map<Expression, Expression> settings     = new HashMap<>();
+  public final         Map<Expression, Expression> settings     = new LinkedHashMap<>();
 
   public RebuildIndexStatement() {
   }

@@ -92,9 +92,11 @@ class Issue5606BuilderStateCarryOverTest extends TestHelper {
 
   /**
    * Additionally not settable, so {@link #everySettingIsActuallyConfiguredByThisTest} cannot expect them to differ
-   * from a pristine builder's: both are structural and final, handed to the specialised builder from the source.
+   * from a pristine builder's: the first two are structural and final, handed to the specialised builder from the source,
+   * and {@code built} is not a setting but the outcome of the builder's own {@code create()}, reset by every call
+   * (issue #9741).
    */
-  private static final Set<String> NOT_CONFIGURABLE = Set.of("database", "indexImplementation");
+  private static final Set<String> NOT_CONFIGURABLE = Set.of("database", "indexImplementation", "built");
 
   /** The bucket-level identity, handed to the specialised builder rather than configured through a setter. */
   private static final Set<String> BUCKET_IDENTITY = Set.of("typeName", "bucketName", "propertyNames");

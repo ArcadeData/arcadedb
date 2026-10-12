@@ -40,7 +40,7 @@ import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.utility.FileUtils;
 
 import java.lang.reflect.InvocationTargetException;
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
 import java.util.logging.Level;
@@ -49,7 +49,7 @@ public class BackupDatabaseStatement extends SimpleExecStatement {
   public          Url                         url;
   protected       Expression                  key;
   protected       Expression                  value;
-  public final    Map<Expression, Expression> settings = new HashMap<>();
+  public final    Map<Expression, Expression> settings = new LinkedHashMap<>();
 
   public BackupDatabaseStatement() {
   }

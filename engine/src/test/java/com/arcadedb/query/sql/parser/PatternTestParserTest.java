@@ -31,12 +31,19 @@ import static org.assertj.core.api.Assertions.assertThat;
 /** Created by luigidellaquila on 11/10/16. */
 class PatternTestParserTest extends AbstractParserTest {
 
+  /** Builds the pattern the way MatchExecutionPlanner does: every match expression of the statement added to one Pattern. */
+  private static Pattern buildPattern(final String query) {
+    final MatchStatement stm = (MatchStatement) new SQLAntlrParser(null).parse(query);
+    final Pattern pattern = new Pattern();
+    for (final MatchExpression expression : stm.getMatchExpressions())
+      pattern.addExpression(expression);
+    return pattern;
+  }
+
   @Test
   void simplePattern() {
     final String query = "MATCH {as:a, type:Person} return a";
-    final MatchStatement stm = (MatchStatement) new SQLAntlrParser(null).parse(query);
-    stm.buildPatterns();
-    final Pattern pattern = stm.pattern;
+    final Pattern pattern = buildPattern(query);
     assertThat(pattern.getNumOfEdges()).isEqualTo(0);
     assertThat(pattern.getAliasToNode().size()).isEqualTo(1);
     assertThat(pattern.getAliasToNode().get("a")).isNotNull();
@@ -46,9 +53,7 @@ class PatternTestParserTest extends AbstractParserTest {
   @Test
   void cartesianProduct() {
     final String query = "MATCH {as:a, type:Person}, {as:b, type:Person} return a, b";
-    final MatchStatement stm = (MatchStatement) new SQLAntlrParser(null).parse(query);
-    stm.buildPatterns();
-    final Pattern pattern = stm.pattern;
+    final Pattern pattern = buildPattern(query);
     assertThat(pattern.getNumOfEdges()).isEqualTo(0);
     assertThat(pattern.getAliasToNode().size()).isEqualTo(2);
     assertThat(pattern.getAliasToNode().get("a")).isNotNull();
@@ -71,9 +76,7 @@ class PatternTestParserTest extends AbstractParserTest {
   void complexCartesianProduct() {
     final String query =
         "MATCH {as:a, type:Person}-->{as:b}, {as:c, type:Person}-->{as:d}-->{as:e}, {as:d, type:Foo}-->{as:f} return a, b";
-    final MatchStatement stm = (MatchStatement) new SQLAntlrParser(null).parse(query);
-    stm.buildPatterns();
-    final Pattern pattern = stm.pattern;
+    final Pattern pattern = buildPattern(query);
     assertThat(pattern.getNumOfEdges()).isEqualTo(4);
     assertThat(pattern.getAliasToNode().size()).isEqualTo(6);
     assertThat(pattern.getAliasToNode().get("a")).isNotNull();

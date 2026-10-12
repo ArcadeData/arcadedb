@@ -24,15 +24,12 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.Record;
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalExecutionPlan;
 import com.arcadedb.query.sql.executor.MatchExecutionPlanner;
 import com.arcadedb.query.sql.executor.PatternEdge;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.Schema;
 
 import java.util.*;
 import java.util.stream.Collectors;
@@ -52,13 +49,7 @@ public class MatchStatement extends Statement {
   protected           OrderBy                orderBy;
   protected           Unwind                 unwind;
   protected           Skip                   skip;
-  // post-parsing generated data
-  protected           Pattern                pattern;
-  //  private Map<String, WhereClause> aliasFilters;
-//  private Map<String, String>      aliasUserTypes;
   // execution data
-  private             CommandContext         context;
-  //  private OProgressListener progressListener;
   private             Database               database;
 
   public List<NestedProjection> getReturnNestedProjections() {
@@ -148,63 +139,6 @@ public class MatchStatement extends Statement {
     return planner.createExecutionPlan(context);
   }
 
-  protected void buildPatterns() {
-    assignDefaultAliases(this.matchExpressions);
-    pattern = new Pattern();
-    for (final MatchExpression expr : this.matchExpressions)
-      pattern.addExpression(expr);
-
-    final Map<String, WhereClause> aliasFilters = new LinkedHashMap<String, WhereClause>();
-    final Map<String, String> aliasUserTypes = new LinkedHashMap<String, String>();
-    for (final MatchExpression expr : this.matchExpressions)
-      addAliases(database, expr, aliasFilters, aliasUserTypes, context);
-
-//    this.aliasFilters = aliasFilters;
-//    this.aliasUserTypes = aliasUserTypes;
-
-    rebindFilters(aliasFilters);
-  }
-
-  /**
-   * rebinds filter (where) conditions to alias nodes after optimization
-   *
-   * @param aliasFilters
-   */
-  private void rebindFilters(final Map<String, WhereClause> aliasFilters) {
-    for (final MatchExpression expression : matchExpressions) {
-      WhereClause newFilter = aliasFilters.get(expression.origin.getAlias());
-      expression.origin.setFilter(newFilter);
-
-      for (final MatchPathItem item : expression.items) {
-        newFilter = aliasFilters.get(item.filter.getAlias());
-        item.filter.setFilter(newFilter);
-      }
-    }
-  }
-
-  /**
-   * assigns default aliases to pattern nodes that do not have an explicit alias
-   *
-   * @param matchExpressions
-   */
-  private void assignDefaultAliases(final List<MatchExpression> matchExpressions) {
-    int counter = 0;
-    for (final MatchExpression expression : matchExpressions) {
-      if (expression.origin.getAlias() == null) {
-        expression.origin.setAlias(DEFAULT_ALIAS_PREFIX + (counter++));
-      }
-
-      for (final MatchPathItem item : expression.items) {
-        if (item.filter == null) {
-          item.filter = new MatchFilter();
-        }
-        if (item.filter.getAlias() == null) {
-          item.filter.setAlias(DEFAULT_ALIAS_PREFIX + (counter++));
-        }
-      }
-    }
-  }
-
   public boolean returnsPathElements() {
     for (final Expression item : returnItems) {
       if ("$pathElements".equalsIgnoreCase(item.toString())) {
@@ -242,70 +176,6 @@ public class MatchStatement extends Statement {
       }
     }
     return false;
-  }
-
-  private void addAliases(final Database database, final MatchExpression expr, final Map<String, WhereClause> aliasFilters,
-      final Map<String, String> aliasUserTypes, final CommandContext context) {
-    addAliases(database, expr.origin, aliasFilters, aliasUserTypes, context);
-    for (final MatchPathItem item : expr.items) {
-      if (item.filter != null) {
-        addAliases(database, item.filter, aliasFilters, aliasUserTypes, context);
-      }
-    }
-  }
-
-  private void addAliases(final Database database, final MatchFilter matchFilter, final Map<String, WhereClause> aliasFilters,
-      final Map<String, String> aliasUserTypes, final CommandContext context) {
-    final String alias = matchFilter.getAlias();
-    final WhereClause filter = matchFilter.getFilter();
-    if (alias != null) {
-      if (filter != null && filter.baseExpression != null) {
-        WhereClause previousFilter = aliasFilters.get(alias);
-        if (previousFilter == null) {
-          previousFilter = new WhereClause();
-          previousFilter.baseExpression = new AndBlock();
-          aliasFilters.put(alias, previousFilter);
-        }
-        final AndBlock filterBlock = (AndBlock) previousFilter.baseExpression;
-        if (filter != null && filter.baseExpression != null) {
-          filterBlock.subBlocks.add(filter.baseExpression);
-        }
-      }
-
-      final String typez = matchFilter.getTypeName(context);
-      if (typez != null) {
-        final String previousClass = aliasUserTypes.get(alias);
-        if (previousClass == null) {
-          aliasUserTypes.put(alias, typez);
-        } else {
-          final String lower = getLowerSubclass(database, typez, previousClass);
-          if (lower == null) {
-            throw new CommandExecutionException(
-                "classes defined for alias " + alias + " (" + typez + ", " + previousClass + ") are not in the same hierarchy");
-          }
-          aliasUserTypes.put(alias, lower);
-        }
-      }
-    }
-  }
-
-  private String getLowerSubclass(final Database database, final String className1, final String className2) {
-    final Schema schema = database.getSchema();
-    final DocumentType class1 = schema.getType(className1);
-    final DocumentType class2 = schema.getType(className2);
-    if (class1 == null) {
-      throw new CommandExecutionException("Type " + className1 + " not found in the schema");
-    }
-    if (class2 == null) {
-      throw new CommandExecutionException("Type " + className2 + " not found in the schema");
-    }
-    if (class1.isSubTypeOf(className2)) {
-      return class1.getName();
-    }
-    if (class2.isSubTypeOf(className1)) {
-      return class2.getName();
-    }
-    return null;
   }
 
   @Override
@@ -400,7 +270,8 @@ public class MatchStatement extends Statement {
     result.limit = limit == null ? null : limit.copy();
     result.timeout = timeout == null ? null : timeout.copy();
     result.returnDistinct = this.returnDistinct;
-    result.buildPatterns();
+    // A COPY IS THE TREE AS PARSED: THE PATTERN (DEFAULT ALIASES, MERGED FILTERS) IS BUILT BY MatchExecutionPlanner ON ITS OWN
+    // COPIES. BUILDING IT HERE TOO REWROTE THE COPY'S AST INTO AN UNPARSEABLE, NOT-EQUAL STATEMENT AND WAS NEVER READ (#9650)
     // A COPY IS THE SAME TREE: CARRY THE MEMO SO THE PLANNER'S PER-EXECUTION COPIES DO NOT RE-WALK IT (#8400)
     result.resultCacheable = resultCacheable;
     return result;
