@@ -38,6 +38,13 @@ import java.util.logging.Level;
 
 /**
  * Java binary serializer. Used to serialize/deserialize Java objects. Null properties are excluded from serialization.
+ * <p>
+ * <b>The contract (issues #186 and #9842).</b> A stream carries the identity, the properties and, for a vertex or an edge, the two
+ * pointers of its graph structure. It does not carry the database or the type: a record is a handle on a page of an open database,
+ * and the bucket is what names its type. So {@link #readExternal} fills a record the CALLER created, bound to the database and of the
+ * right type ({@code database.newDocument("Type").readExternal(in)}). {@code ObjectInputStream.readObject} cannot do that for it: the
+ * JDK instantiates an {@code Externalizable} through a public no-argument constructor before it calls {@code readExternal}, and a
+ * record has no state to construct itself from.
  */
 public class JavaBinarySerializer {
   public static void writeExternal(final Document document, final ObjectOutput out) throws IOException {
@@ -53,8 +60,10 @@ public class JavaBinarySerializer {
 
     final Binary buffer = db.getContext().getTemporaryBuffer1();
 
-    // Count must be written before the payload, so stage the entries to know the final count up-front.
-    final Map<String, Object> properties = document.toMap();
+    // Count must be written before the payload, so stage the entries to know the final count up-front. The PROPERTIES of the
+    // record, not toMap(): that is toMap(true) and includes the metadata (@cat, @type, @rid and, for an edge, @in and @out),
+    // which the header above and the trailing block below already write, and which fromMap() discards on the way back (issue #9842).
+    final Map<String, Object> properties = document.toMap(false);
     final ByteArrayOutputStream staged = new ByteArrayOutputStream();
     int validCount = 0;
     try (final DataOutputStream stagedOut = new DataOutputStream(staged)) {

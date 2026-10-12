@@ -118,7 +118,9 @@ import java.security.cert.CertificateException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -151,6 +153,7 @@ public class HttpServer implements ServerPlugin {
   private          int                    httpPortListening;
   private          int                    httpsPortListening = -1;
   private volatile List<RouteRecordingRoutingHandler.RouteDescriptor> registeredRoutes = List.of();
+  private volatile Map<RouteRecordingRoutingHandler.RouteDescriptor, HttpHandler> registeredRouteHandlers = Map.of();
   /**
    * Test-only: runs after the ports are probed and right before {@code Undertow.start()}, so a test can take a port in
    * the window between the two (issue #9479). Always {@code null} in production. It is JVM-wide: every server started
@@ -454,19 +457,22 @@ public class HttpServer implements ServerPlugin {
       plugin.registerAPI(this, routes);
     }
 
-    registeredRoutes = mergeWithPrefix("/api/v1", basicRoutes, "/api/v1/ai", aiRoutes);
+    registeredRouteHandlers = mergeWithPrefix("/api/v1", basicRoutes, "/api/v1/ai", aiRoutes);
+    registeredRoutes = List.copyOf(registeredRouteHandlers.keySet());
 
     return routes;
   }
 
-  private static List<RouteRecordingRoutingHandler.RouteDescriptor> mergeWithPrefix(final String basicPrefix,
+  private static Map<RouteRecordingRoutingHandler.RouteDescriptor, HttpHandler> mergeWithPrefix(final String basicPrefix,
       final RouteRecordingRoutingHandler basicRoutes, final String aiPrefix, final RouteRecordingRoutingHandler aiRoutes) {
-    final List<RouteRecordingRoutingHandler.RouteDescriptor> merged = new ArrayList<>();
-    for (final RouteRecordingRoutingHandler.RouteDescriptor route : basicRoutes.getRegisteredRoutes())
-      merged.add(new RouteRecordingRoutingHandler.RouteDescriptor(route.method(), basicPrefix + route.path()));
-    for (final RouteRecordingRoutingHandler.RouteDescriptor route : aiRoutes.getRegisteredRoutes())
-      merged.add(new RouteRecordingRoutingHandler.RouteDescriptor(route.method(), aiPrefix + route.path()));
-    return List.copyOf(merged);
+    final Map<RouteRecordingRoutingHandler.RouteDescriptor, HttpHandler> merged = new LinkedHashMap<>();
+    for (final Map.Entry<RouteRecordingRoutingHandler.RouteDescriptor, HttpHandler> route : basicRoutes.getRegisteredHandlers().entrySet())
+      merged.put(new RouteRecordingRoutingHandler.RouteDescriptor(route.getKey().method(), basicPrefix + route.getKey().path()),
+          route.getValue());
+    for (final Map.Entry<RouteRecordingRoutingHandler.RouteDescriptor, HttpHandler> route : aiRoutes.getRegisteredHandlers().entrySet())
+      merged.put(new RouteRecordingRoutingHandler.RouteDescriptor(route.getKey().method(), aiPrefix + route.getKey().path()),
+          route.getValue());
+    return Collections.unmodifiableMap(merged);
   }
 
   /**
@@ -479,6 +485,16 @@ public class HttpServer implements ServerPlugin {
    */
   List<RouteRecordingRoutingHandler.RouteDescriptor> getRegisteredRoutes() {
     return registeredRoutes;
+  }
+
+  /**
+   * The handler serving each route {@link #getRegisteredRoutes()} lists, in registration order. Public because the sweeps that
+   * ask a question of the handlers themselves live next to them, in the {@code handler} package: {@code
+   * HttpServerRoutesDispatchTest} holds every route to a verdict on whether it may block the Undertow IO thread, the same
+   * assertion the {@code ha-raft} routes have carried since issue #7621 (issue #9849).
+   */
+  public Map<RouteRecordingRoutingHandler.RouteDescriptor, HttpHandler> getRegisteredRouteHandlers() {
+    return registeredRouteHandlers;
   }
 
   /**

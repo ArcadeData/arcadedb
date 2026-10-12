@@ -37,6 +37,7 @@ import com.arcadedb.engine.ComponentFactory;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.Dictionary;
 import com.arcadedb.engine.LocalBucket;
+import com.arcadedb.engine.OwnTransaction;
 import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.engine.timeseries.TimeSeriesBucket;
 import com.arcadedb.engine.timeseries.TimeSeriesMaintenanceScheduler;
@@ -1855,7 +1856,10 @@ public class LocalSchema implements Schema {
       // instance applies its pages on this node only - the type exists everywhere, its records only here.
       final DatabaseInternal db = database.getWrappedDatabaseInstance();
       long copied = 0;
-      db.begin();
+      // The transaction THIS copy owns, and the only one it may roll back (issue #9851): a nested transaction is an independent
+      // one, so once a commit has popped it `db.isTransactionActive()` answers for the CALLER's, and the rollback guarded by it
+      // discarded the caller's uncommitted work - on the successful path too. Re-taken after every batch commit.
+      OwnTransaction copyTransaction = OwnTransaction.begin(db);
       try {
         for (final Iterator<Record> iter = db.iterateType(typeName, false); iter.hasNext(); ) {
 
@@ -1873,16 +1877,15 @@ public class LocalSchema implements Schema {
           ++copied;
 
           if (transactionBatchSize > 0 && copied % transactionBatchSize == 0) {
-            db.commit();
-            db.begin();
+            copyTransaction.commit();
+            copyTransaction = OwnTransaction.begin(db);
           }
         }
 
-        db.commit();
+        copyTransaction.commit();
 
       } finally {
-        if (db.isTransactionActive())
-          db.rollback();
+        copyTransaction.rollbackIfMine();
       }
 
       // COPY INDEXES. Deliberately outside the record-copy transaction: each index build opens its own transaction
