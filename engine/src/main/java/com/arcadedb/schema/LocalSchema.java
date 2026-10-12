@@ -5113,8 +5113,13 @@ public class LocalSchema implements Schema {
     // COMPUTE INVOLVED BUCKETS FOR SECURITY
     final Map<Integer, LocalDocumentType> newBucketId2InvolvedTypeMap = new HashMap<>();
     for (final LocalDocumentType t : typeMap().values()) {
-      for (final Bucket b : t.getInvolvedBuckets())
-        newBucketId2InvolvedTypeMap.put(b.getFileId(), t);
+      for (final Bucket b : t.getInvolvedBuckets()) {
+        // A type's own bucket answers to that type, whatever another type's naming convention claims (a vertex type's
+        // stripe pool is found by name, issue #9780): the grants that cover a user bucket stay the grants of its type
+        final LocalDocumentType owner = newBucketId2TypeMap.get(b.getFileId());
+        if (owner == null || owner == t)
+          newBucketId2InvolvedTypeMap.put(b.getFileId(), t);
+      }
     }
 
     if (isStagingPublication()) {

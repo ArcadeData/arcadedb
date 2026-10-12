@@ -91,32 +91,6 @@ public class DepthFirstTraverseStep extends AbstractTraverseStep {
     }
   }
 
-  private Result toTraverseResult(final Result item) {
-    TraverseResult res = null;
-    if (item instanceof TraverseResult result)
-      res = result;
-    else if (item.isElement() && item.getElement().get().getIdentity() != null) {
-      res = new TraverseResult(item.getElement().get());
-      res.depth = 0;
-    } else if (item.getPropertyNames().size() == 1) {
-      final Object val = item.getProperty(item.getPropertyNames().iterator().next());
-      if (val instanceof Identifiable identifiable) {
-        res = new TraverseResult((Document) identifiable.getRecord());
-        res.depth = 0;
-        res.setMetadata("$depth", 0);
-      }
-    } else {
-      res = new TraverseResult();
-      for (final String key : item.getPropertyNames())
-        res.setProperty(key, item.getProperty(key));
-
-      for (final String md : item.getMetadataKeys())
-        res.setMetadata(md, item.getMetadata(md));
-    }
-
-    return res;
-  }
-
   @Override
   protected void fetchNextResults(final CommandContext context, final int nRecords) {
     if (!this.entryPoints.isEmpty()) {
