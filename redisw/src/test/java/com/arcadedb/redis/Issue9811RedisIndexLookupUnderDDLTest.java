@@ -22,6 +22,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.exceptions.JedisDataException;
@@ -82,6 +83,7 @@ public class Issue9811RedisIndexLookupUnderDDLTest extends BaseRedisServerTest {
 
   /** The issue's repro over the wire: one thread dropping and re-creating the index, clients reading a key that exists. */
   @Test
+  @Tag("slow")
   void underConcurrentDropAndCreateALookupNeverAnswersAKeyThatExistsAsMissing() throws Exception {
     final Database database = createType();
     database.command("sql", "CREATE INDEX ON K (k) UNIQUE");

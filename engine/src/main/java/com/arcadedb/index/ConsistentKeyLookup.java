@@ -173,7 +173,7 @@ public final class ConsistentKeyLookup {
     final List<Object[]> entryKeys = new ArrayList<>(keys.size());
     final List<RID> rids = new ArrayList<>(keys.size());
     for (final Object[] key : keys) {
-      final IndexCursor cursor = forQuery ? ((TypeIndex) index).getForQuery(key) : index.get(key);
+      final IndexCursor cursor = forQuery && index instanceof TypeIndex typeIndex ? typeIndex.getForQuery(key) : index.get(key);
       try {
         while (cursor.hasNext()) {
           if (rids.size() >= MAX_ENTRIES)

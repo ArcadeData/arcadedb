@@ -23,6 +23,7 @@ import com.arcadedb.exception.SchemaException;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -81,6 +82,7 @@ class Issue9811GuardedKeyLookupTest extends TestHelper {
    * answers "not found" now and then; the guarded reads either find the record or say they could not read the index.
    */
   @Test
+  @Tag("slow")
   void underConcurrentDropAndCreateAGuardedLookupNeverAnswersAKeyThatExistsAsMissing() throws Exception {
     final DocumentType type = createType();
     type.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "k");
@@ -133,6 +135,60 @@ class Issue9811GuardedKeyLookupTest extends TestHelper {
     assertThat(failure.get()).isNull();
     assertThat(found.get()).as("the readers did find the key between the DDLs").isPositive();
     assertThat(silentlyEmpty.get()).as("a key that exists answered as missing").isZero();
+  }
+
+  /**
+   * {@code Database.lookupByKey} now raises instead of answering short, and the openCypher MERGE that seeks through it scans
+   * the type then: a short answer made MERGE create a node that exists, an exception would fail a statement that can be
+   * answered.
+   */
+  @Test
+  @Tag("slow")
+  void underConcurrentDropAndCreateMergeNeitherFailsNorDuplicates() throws Exception {
+    database.getSchema().createVertexType("Node", 4).createProperty("k", Type.LONG);
+    database.transaction(() -> {
+      for (long i = 0; i < RECORDS; i++)
+        database.newVertex("Node").set("k", i).save();
+    });
+    database.command("sql", "CREATE INDEX ON Node (k) NOTUNIQUE");
+
+    final AtomicBoolean stop = new AtomicBoolean();
+    final AtomicReference<Throwable> failure = new AtomicReference<>();
+    final AtomicLong merges = new AtomicLong();
+
+    final Thread ddl = new Thread(() -> {
+      try {
+        while (!stop.get()) {
+          database.command("sql", "DROP INDEX `Node[k]` IF EXISTS");
+          database.command("sql", "CREATE INDEX IF NOT EXISTS ON Node (k) NOTUNIQUE");
+          Thread.sleep(2);
+        }
+      } catch (final Throwable t) {
+        failure.compareAndSet(null, t);
+      }
+    });
+    final Thread merger = new Thread(() -> {
+      try {
+        while (!stop.get()) {
+          database.transaction(() -> database.command("opencypher", "MERGE (n:Node {k: 777}) RETURN n").close());
+          merges.incrementAndGet();
+        }
+      } catch (final Throwable t) {
+        failure.compareAndSet(null, t);
+      }
+    });
+
+    ddl.start();
+    merger.start();
+    Thread.sleep(3_000);
+    stop.set(true);
+    ddl.join(60_000);
+    merger.join(60_000);
+
+    assertThat(failure.get()).isNull();
+    assertThat(merges.get()).isPositive();
+    assertThat(database.query("sql", "SELECT count(*) AS c FROM Node WHERE k = 777").next().<Long>getProperty("c"))
+        .as("MERGE matched the node that exists every time").isEqualTo(1L);
   }
 
   private interface Lookup {

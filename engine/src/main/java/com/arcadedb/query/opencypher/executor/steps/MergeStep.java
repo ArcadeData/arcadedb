@@ -58,6 +58,7 @@ import com.arcadedb.query.sql.executor.QueryStatistics;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.index.IndexException;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
@@ -1197,7 +1198,19 @@ public class MergeStep extends AbstractExecutionStep {
       propertyValues[i] = stored != null ? stored : TemporalUtil.toIndexKey(value);
     }
 
-    final Iterator<Identifiable> cursor = context.getDatabase().lookupByKey(label, propertyNames, propertyValues);
+    final Iterator<Identifiable> cursor;
+    try {
+      cursor = context.getDatabase().lookupByKey(label, propertyNames, propertyValues);
+    } catch (final IndexException e) {
+      // A concurrent DDL is creating, rebuilding or dropping the index: the lookup is read whole or not at all (#9811), and a
+      // short one would make MERGE create a node that exists. Nothing was returned yet, so the caller scans the type instead
+      return null;
+    } catch (final IllegalArgumentException e) {
+      // lookupByKey answers "no index" this way, and a lookup under the drop fails with "File with id n was not found"
+      if (TypeIndex.isStaleRead(bestIndex, e) || !bestIndex.isReadyForQueries())
+        return null;
+      throw e;
+    }
     return Labels.isInheritedIndex(bestIndex, label) ?
         Labels.filterByLabel(cursor, context.getDatabase(), label) :
         cursor;
