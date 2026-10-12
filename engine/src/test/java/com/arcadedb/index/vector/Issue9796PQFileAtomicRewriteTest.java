@@ -206,6 +206,25 @@ class Issue9796PQFileAtomicRewriteTest {
   }
 
   @Test
+  void aFileNameWithGlobMetacharactersStillGetsItsLeftoversRemoved() throws IOException {
+    // A directory-stream glob built from the file name would throw (unclosed '[' and '{') or match the wrong files; the
+    // failure is swallowed, so the leftovers would silently never be cleaned
+    final String base = tempDir.resolve("in[d{ex*?").toString();
+    final LSMVectorIndexPQFile pqFile = new LSMVectorIndexPQFile(base);
+
+    final Path leftover = tempDir.resolve("in[d{ex*?." + LSMVectorIndexPQFile.FILE_EXT + ".deadbeef.tmp");
+    Files.write(leftover, new byte[] { 1, 2, 3 });
+    final Path neighbour = tempDir.resolve("inXdYex." + LSMVectorIndexPQFile.FILE_EXT + ".deadbeef.tmp");
+    Files.write(neighbour, new byte[] { 4 });
+
+    final Fixture fixture = new Fixture(1, 300);
+    pqFile.writePQ(fixture.pq, fixture.codes);
+
+    assertThat(leftover).doesNotExist();
+    assertThat(neighbour).as("a name the glob would have matched is not this file's temporary").exists();
+  }
+
+  @Test
   void anUnloadableFileIsNotUsableDataEvenThoughItExists() throws IOException {
     final String base = tempDir.resolve("index").toString();
     final LSMVectorIndexPQFile pqFile = new LSMVectorIndexPQFile(base);
