@@ -144,7 +144,8 @@ class Issue9843KeysValuesOnResultReceiverTest extends TestHelper {
 
     for (final String receiver : new String[] { "@this", "$a[0]" }) {
       try (final ResultSet rs = database.query("sql",
-          "select " + receiver + ".keys() as k, " + receiver + ".values() as v from D3 let $a = (select from D3)")) {
+          "select " + receiver + ".keys() as k, " + receiver + ".values() as v, " + receiver + ".emb as e, " + receiver
+              + ".tags as t from D3 let $a = (select from D3)")) {
         final Result row = rs.next();
         final List<String> keys = new ArrayList<>(row.<Collection<String>>getProperty("k"));
         final List<Object> values = new ArrayList<>(row.<Collection<Object>>getProperty("v"));
@@ -154,6 +155,9 @@ class Issue9843KeysValuesOnResultReceiverTest extends TestHelper {
         assertThat(values.get(keys.indexOf("n"))).as(receiver + " n").isEqualTo(1);
         assertThat(values.get(keys.indexOf("tags"))).as(receiver + " tags").isEqualTo(List.of("a", "b"));
         assertThat(values.get(keys.indexOf("emb"))).as(receiver + " emb").isNotNull();
+        // and the nested values are the ones the receiver answers when asked for them by name
+        assertThat(values.get(keys.indexOf("emb"))).as(receiver + " emb by name").isEqualTo(row.getProperty("e"));
+        assertThat(values.get(keys.indexOf("tags"))).as(receiver + " tags by name").isEqualTo(row.getProperty("t"));
       }
     }
   }
