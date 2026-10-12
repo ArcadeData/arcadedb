@@ -18,6 +18,12 @@
  */
 package com.arcadedb.redis;
 
+import com.arcadedb.database.Database;
+import com.arcadedb.database.Identifiable;
+import com.arcadedb.index.ConsistentKeyLookup;
+import com.arcadedb.index.Index;
+import com.arcadedb.index.IndexCursor;
+import com.arcadedb.index.TypeIndex;
 import com.arcadedb.serializer.json.JSONArray;
 
 /**
@@ -43,7 +49,55 @@ import com.arcadedb.serializer.json.JSONArray;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class RedisIndexKeys {
+  /** Attempts a lookup makes past a concurrent CREATE, REBUILD or DROP INDEX before telling the client to retry (issue #9811). */
+  static final int MAX_LOOKUP_ATTEMPTS = 8;
+
   private RedisIndexKeys() {
+  }
+
+  /**
+   * Looks a key up through the named index, for every Redis read and delete by key ({@code HGET}, {@code HMGET},
+   * {@code HEXISTS}, {@code HDEL} and the {@code redis} query language), and answers the record it maps to, or
+   * {@code null} only when the key really is not there (issue #9811).
+   * <p>
+   * The index is read whole or not at all ({@link TypeIndex#getForQuery}): one a concurrent DDL is creating, rebuilding or
+   * dropping answers short - empty, for a key that exists - without an error, and on this protocol an empty answer IS "the
+   * key does not exist". Such a read is made again on the index the name resolves to then, a few times, and reported as a
+   * {@code TRYAGAIN} error if the DDL is still going on, rather than as a key that was never set. The entry and its record
+   * are read against one committed state ({@link ConsistentKeyLookup}), so a concurrent commit cannot make the key vanish
+   * either.
+   *
+   * @param key the key exactly as the client wrote it, see {@link #parse}
+   */
+  public static Identifiable lookup(final Database database, final String indexName, final String key) {
+    final Object[] keys = parse(key);
+    for (int attempt = 1; ; attempt++) {
+      // resolved on every attempt: a DROP and a CREATE replace the index object under the same name
+      final Index index = database.getSchema().getIndexByName(indexName);
+      try {
+        try (final IndexCursor cursor = index instanceof TypeIndex typeIndex ?
+            ConsistentKeyLookup.getForQuery(database, typeIndex, keys) :
+            index.get(keys)) {
+          return cursor.hasNext() ? cursor.next() : null;
+        }
+      } catch (final RuntimeException e) {
+        if (!TypeIndex.isStaleRead(index, e))
+          throw e;
+        if (attempt >= MAX_LOOKUP_ATTEMPTS) {
+          final RedisException retry = RedisException.withKind("TRYAGAIN",
+              "Index '" + indexName + "' is being created, rebuilt or dropped. Retry the command");
+          retry.initCause(e);
+          throw retry;
+        }
+        try {
+          // a short, growing pause: the DDL is usually over in a few milliseconds
+          Thread.sleep(attempt);
+        } catch (final InterruptedException ie) {
+          Thread.currentThread().interrupt();
+          throw e;
+        }
+      }
+    }
   }
 
   /**

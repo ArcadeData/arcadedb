@@ -23,16 +23,18 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.engine.timeseries.TagFilter;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
+import com.arcadedb.engine.timeseries.promql.PromQLEvaluator;
+import com.arcadedb.engine.timeseries.promql.ast.PromQLExpr;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.security.SecurityHelper;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.RequestBodyTooLargeException;
 import com.arcadedb.server.http.handler.prometheus.PrometheusTypes;
 import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.Label;
 import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.LabelMatcher;
-import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.MatchType;
 import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.Query;
 import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.QueryResult;
 import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.ReadRequest;
@@ -45,8 +47,10 @@ import io.undertow.util.Headers;
 import io.undertow.util.HttpString;
 import org.xerial.snappy.Snappy;
 
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -71,6 +75,7 @@ import java.util.Map;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class PostPrometheusReadHandler extends AbstractBinaryHttpHandler {
+  private static final String METRIC_NAME_LABEL = "__name__";
 
   public PostPrometheusReadHandler(final HttpServer httpServer) {
     super(httpServer);
@@ -139,128 +144,17 @@ public class PostPrometheusReadHandler extends AbstractBinaryHttpHandler {
     final TimeSeriesHandlerUtils.RowBudget budget = new TimeSeriesHandlerUtils.RowBudget(getMaxResultRows());
 
     final List<QueryResult> queryResults = new ArrayList<>();
+    // One evaluator for the whole request: its regex deadline is shared by every query and every row, so a crafted pattern
+    // cannot be charged its timeout once per selector (issue #9803, the bound #5886 gave the PromQL endpoints)
+    final PromQLEvaluator matcherEvaluator = new PromQLEvaluator(database);
 
-    for (final Query query : readRequest.getQueries()) {
-      // Find __name__ matcher to determine which type to query
-      String metricName = null;
-      final List<LabelMatcher> tagMatchers = new ArrayList<>();
-
-      for (final LabelMatcher matcher : query.getMatchers()) {
-        if ("__name__".equals(matcher.name()) && matcher.type() == MatchType.EQ)
-          metricName = matcher.value();
-        else
-          tagMatchers.add(matcher);
-      }
-
-      if (metricName == null) {
-        queryResults.add(new QueryResult(List.of()));
-        continue;
-      }
-
-      final String typeName = PostPrometheusWriteHandler.sanitizeTypeName(metricName);
-
-      if (!database.getSchema().existsType(typeName)) {
-        queryResults.add(new QueryResult(List.of()));
-        continue;
-      }
-
-      final DocumentType docType = database.getSchema().getType(typeName);
-      if (!(docType instanceof LocalTimeSeriesType tsType)) {
-        queryResults.add(new QueryResult(List.of()));
-        continue;
-      }
-
-      // Gated accessor (per-type ACL): the query names this metric explicitly, so a denial is answered with a
-      // 403 rather than an empty result - an empty result is how a NON-EXISTENT metric answers, and conflating
-      // the two would let the caller keep probing a type it has no read right on.
-      final TimeSeriesEngine engine = tsType.getEngine(SecurityDatabaseUser.ACCESS.READ_RECORD);
-      if (engine == null) {
-        queryResults.add(new QueryResult(List.of()));
-        continue;
-      }
-      final List<ColumnDefinition> columns = tsType.getTsColumns();
-
-      // Build TagFilter from label matchers (EQ only for now)
-      // TagFilter.matches() accesses row[columnIndex + 1], so the index must be
-      // the zero-based position among non-timestamp columns.
-      TagFilter tagFilter = null;
-      for (final LabelMatcher matcher : tagMatchers) {
-        if (matcher.type() != MatchType.EQ)
-          continue;
-
-        final String colName = PostPrometheusWriteHandler.sanitizeColumnName(matcher.name());
-        final int nonTsIndex = findNonTimestampColumnIndex(columns, colName);
-        if (nonTsIndex < 0)
-          continue;
-
-        // A PromQL matcher value is always text; coerce it to the column's declared type so it matches
-        // what both storage layers hand back (issue #5475).
-        final Object coerced = nonTimestampColumn(columns, nonTsIndex).coerceValue(matcher.value());
-        if (tagFilter == null)
-          tagFilter = TagFilter.eq(nonTsIndex, coerced);
-        else
-          tagFilter = tagFilter.and(nonTsIndex, coerced);
-      }
-
-      // Issue #7663: engine.query() merged every shard's full range into one sorted ArrayList before a single
-      // sample was looked at, so a selector over a wide range cost O(matching rows) heap however few series it
-      // resolved to. The bounded ascending fetch stops each shard as soon as its own bound is satisfied, and the
-      // one row past the budget is what proves the response would have exceeded the ceiling.
-      final List<Object[]> rows = engine.queryAscending(query.getStartTimestampMs(), query.getEndTimestampMs(),
-          null, tagFilter, budget.fetchLimit(), null);
-      // Refused rather than truncated: Prometheus has no way to represent a partial remote-read response, so a
-      // silently cut one is indistinguishable from a gap in the data (issue #5719's rule, applied here).
-      if (!budget.charge(rows.size()))
-        throw resultSetTooLarge(budget.ceiling());
-
-      // Group by label combination → TimeSeries
-      final Map<String, List<Object[]>> grouped = new LinkedHashMap<>();
-      for (final Object[] row : rows) {
-        final String key = buildLabelKey(columns, row);
-        grouped.computeIfAbsent(key, k -> new ArrayList<>()).add(row);
-      }
-
-      // Convert to Prometheus TimeSeries
-      final List<TimeSeries> seriesList = new ArrayList<>();
-      for (final Map.Entry<String, List<Object[]>> entry : grouped.entrySet()) {
-        final List<Object[]> groupRows = entry.getValue();
-        final Object[] firstRow = groupRows.getFirst();
-
-        // Build labels. The row is { timestamp, non-TIMESTAMP columns in schema order... }, so a TAG column's
-        // value sits at 1 + its ordinal AMONG THE NON-TIMESTAMP COLUMNS - not at its schema index, which is the
-        // same number only while the TIMESTAMP column is declared first (issue #7899).
-        final List<Label> labels = new ArrayList<>();
-        labels.add(new Label("__name__", metricName));
-        int nonTsIdx = 0;
-        for (final ColumnDefinition col : columns) {
-          if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
-            continue;
-          if (col.getRole() == ColumnDefinition.ColumnRole.TAG) {
-            final Object tagVal = 1 + nonTsIdx < firstRow.length ? firstRow[1 + nonTsIdx] : null;
-            // An empty value is an ABSENT label in Prometheus (issue #7712): left out here exactly as
-            // buildLabelKey leaves it out of the key, or a series would be grouped on a label it is not
-            // reported with (issue #9623).
-            if (tagVal != null && PromQLResponseFormatter.isLabelValuePresent(tagVal.toString()))
-              labels.add(new Label(col.getName(), tagVal.toString()));
-          }
-          nonTsIdx++;
-        }
-
-        // Build samples
-        final List<Sample> samples = new ArrayList<>();
-        final int valueRowIndex = findFieldRowIndex(columns, "value");
-        for (final Object[] row : groupRows) {
-          final long ts = (long) row[0];
-          double value = 0;
-          if (valueRowIndex >= 0 && valueRowIndex < row.length && row[valueRowIndex] instanceof Number n)
-            value = n.doubleValue();
-          samples.add(new Sample(value, ts));
-        }
-
-        seriesList.add(new TimeSeries(labels, samples));
-      }
-
-      queryResults.add(new QueryResult(seriesList));
+    try {
+      for (final Query query : readRequest.getQueries())
+        queryResults.add(new QueryResult(readSeries(database, query, matcherEvaluator, budget)));
+    } catch (final IllegalArgumentException e) {
+      // A malformed or ReDoS-shaped =~/!~ is a rejected request, not an empty answer: an empty answer is how a metric that
+      // does not exist reads (issue #9803)
+      return new ExecutionResponse(400, new JSONObject().put("error", "Invalid label matcher: " + e.getMessage()).toString());
     }
 
     // Encode response
@@ -277,31 +171,163 @@ public class PostPrometheusReadHandler extends AbstractBinaryHttpHandler {
   }
 
   /**
-   * The column at the given position among the non-timestamp columns - the indexing {@code TagFilter} uses,
-   * which accesses {@code row[columnIndex + 1]}.
+   * The series one remote-read query selects, every one of its label matchers applied (issue #9803).
+   * <p>
+   * The matchers are decided by the engine's own PromQL matcher logic - the rules {@code /query}, {@code /query_range} and
+   * {@code /series} apply - rather than by a loop of this endpoint's own: {@link PromQLEvaluator#selectsNoSeries} settles a
+   * matcher on a label the type does not declare for the whole type, {@link PromQLEvaluator#tagFilter} pushes the non-empty
+   * equalities down to the scan, and {@link PromQLEvaluator#matchesRow} decides the rest per row ({@code !=}, {@code =~},
+   * {@code !~}, {@code label=""}) under the request's regex deadline. The loop this replaces honoured {@code =} only and
+   * dropped every other matcher, so {@code {host!="bad"}} returned the very series it excludes, and Prometheus does not
+   * filter a remote-read response again.
+   * <p>
+   * {@code __name__} selects the metrics: an equality names one, any other matcher is tested against every TimeSeries type
+   * the caller may read, each of them reported under its own name. It used to be recognised as an equality only, and a
+   * {@code {__name__=~"cp.*"}} answered no series at all - the same answer as a metric that does not exist.
+   * <p>
+   * The rows are visited shard by shard and put in timestamp order per series afterwards, as the evaluator's range selector
+   * does. The budget is charged per row that passes the matchers, so the response is refused, never truncated, at the first
+   * row past {@code arcadedb.server.maxResultRows}, and holds at most that many rows meanwhile (issue #7663).
    */
-  private static ColumnDefinition nonTimestampColumn(final List<ColumnDefinition> columns, final int nonTsIndex) {
-    int nonTsIdx = -1;
+  private List<TimeSeries> readSeries(final DatabaseInternal database, final Query query, final PromQLEvaluator matcherEvaluator,
+      final TimeSeriesHandlerUtils.RowBudget budget) throws IOException {
+    final List<PromQLExpr.LabelMatcher> matchers = toEngineMatchers(query.getMatchers());
+    final List<TimeSeries> seriesList = new ArrayList<>();
+
+    for (final Map.Entry<String, LocalTimeSeriesType> metric : selectedMetrics(database, matchers, matcherEvaluator).entrySet()) {
+      final String metricName = metric.getKey();
+      final LocalTimeSeriesType tsType = metric.getValue();
+
+      // Gated accessor (per-type ACL): a metric named by an equality is answered with a 403 when denied rather than with an
+      // empty result - an empty result is how a NON-EXISTENT metric answers, and conflating the two would let the caller keep
+      // probing a type it has no read right on. A metric selected by a pattern was already filtered on that right.
+      final TimeSeriesEngine engine = tsType.getEngine(SecurityDatabaseUser.ACCESS.READ_RECORD);
+      if (engine == null)
+        continue;
+      final List<ColumnDefinition> columns = tsType.getTsColumns();
+
+      if (matcherEvaluator.selectsNoSeries(matchers, columns))
+        continue;
+
+      final TagFilter tagFilter = matcherEvaluator.tagFilter(matchers, columns);
+      final Map<String, List<Object[]>> grouped = new LinkedHashMap<>();
+      final boolean[] overBudget = { false };
+      engine.forEachRow(query.getStartTimestampMs(), query.getEndTimestampMs(), null, tagFilter, null, row -> {
+        if (!matcherEvaluator.matchesRow(row, matchers, columns))
+          return true;
+        // Refused rather than truncated: Prometheus has no way to represent a partial remote-read response, so a silently cut
+        // one is indistinguishable from a gap in the data (issue #5719's rule, applied here)
+        if (!budget.charge(1)) {
+          overBudget[0] = true;
+          return false;
+        }
+        grouped.computeIfAbsent(buildLabelKey(columns, row), k -> new ArrayList<>()).add(row);
+        return true;
+      });
+      if (overBudget[0])
+        throw resultSetTooLarge(budget.ceiling());
+
+      final int valueRowIndex = findFieldRowIndex(columns, "value");
+      final List<TimeSeries> metricSeries = new ArrayList<>(grouped.size());
+      for (final List<Object[]> groupRows : grouped.values()) {
+        // a series' samples are spread over every shard, and a remote-read series lists them in timestamp order
+        groupRows.sort(Comparator.comparingLong(row -> (long) row[0]));
+        metricSeries.add(new TimeSeries(labelsOf(metricName, columns, groupRows.getFirst()), samplesOf(groupRows, valueRowIndex)));
+      }
+      // Ordered by each series' first sample, the order the merged ascending read this replaces gave them
+      metricSeries.sort(Comparator.comparingLong(series -> series.getSamples().getFirst().timestampMs()));
+      seriesList.addAll(metricSeries);
+    }
+    return seriesList;
+  }
+
+  /**
+   * The TimeSeries types a query's {@code __name__} matchers select, by the metric name their series are reported under, in
+   * schema order. A non-empty equality names the metric, so it is the only candidate, and a name the schema does not hold
+   * selects nothing - the answer for a metric that does not exist. Without one, every TimeSeries type the caller may read is
+   * a candidate (series discovery: a type the caller cannot read is left out rather than refused, as {@code /series} does),
+   * and every {@code __name__} matcher must hold on its name.
+   */
+  private static Map<String, LocalTimeSeriesType> selectedMetrics(final DatabaseInternal database,
+      final List<PromQLExpr.LabelMatcher> matchers, final PromQLEvaluator matcherEvaluator) {
+    final Map<String, LocalTimeSeriesType> selected = new LinkedHashMap<>();
+    String namedMetric = null;
+    for (final PromQLExpr.LabelMatcher matcher : matchers)
+      if (METRIC_NAME_LABEL.equals(matcher.name()) && matcher.op() == PromQLExpr.MatchOp.EQ && !matcher.value().isEmpty()) {
+        namedMetric = matcher.value();
+        break;
+      }
+
+    if (namedMetric != null) {
+      final String typeName = PostPrometheusWriteHandler.sanitizeTypeName(namedMetric);
+      if (matcherEvaluator.matchesMetricName(matchers, namedMetric) && database.getSchema().existsType(typeName)
+          && database.getSchema().getType(typeName) instanceof LocalTimeSeriesType tsType)
+        selected.put(namedMetric, tsType);
+      return selected;
+    }
+
+    for (final DocumentType type : database.getSchema().getTypes())
+      if (type instanceof LocalTimeSeriesType tsType && tsType.getEngine() != null
+          && SecurityHelper.canAccessType(database, tsType, SecurityDatabaseUser.ACCESS.READ_RECORD)
+          && matcherEvaluator.matchesMetricName(matchers, type.getName()))
+        selected.put(type.getName(), tsType);
+    return selected;
+  }
+
+  /**
+   * The remote-read matchers in the engine's form. A label name is spelled as the column the remote write stored it under
+   * ({@link PostPrometheusWriteHandler#sanitizeColumnName}); {@code __name__} is kept as it is, since it names the metric.
+   */
+  private static List<PromQLExpr.LabelMatcher> toEngineMatchers(final List<LabelMatcher> matchers) {
+    final List<PromQLExpr.LabelMatcher> converted = new ArrayList<>(matchers.size());
+    for (final LabelMatcher matcher : matchers) {
+      final String name = METRIC_NAME_LABEL.equals(matcher.name()) ?
+          matcher.name() :
+          PostPrometheusWriteHandler.sanitizeColumnName(matcher.name());
+      final PromQLExpr.MatchOp op = switch (matcher.type()) {
+        case EQ -> PromQLExpr.MatchOp.EQ;
+        case NEQ -> PromQLExpr.MatchOp.NEQ;
+        case RE -> PromQLExpr.MatchOp.RE;
+        case NRE -> PromQLExpr.MatchOp.NRE;
+      };
+      converted.add(new PromQLExpr.LabelMatcher(name, op, matcher.value() != null ? matcher.value() : ""));
+    }
+    return converted;
+  }
+
+  /**
+   * The labels of a series. The row is { timestamp, non-TIMESTAMP columns in schema order... }, so a TAG column's value sits
+   * at 1 + its ordinal AMONG THE NON-TIMESTAMP COLUMNS - not at its schema index, which is the same number only while the
+   * TIMESTAMP column is declared first (issue #7899). An empty value is an ABSENT label in Prometheus (issue #7712): left
+   * out here exactly as {@link #buildLabelKey} leaves it out of the key, or a series would be grouped on a label it is not
+   * reported with (issue #9623).
+   */
+  private static List<Label> labelsOf(final String metricName, final List<ColumnDefinition> columns, final Object[] row) {
+    final List<Label> labels = new ArrayList<>();
+    labels.add(new Label(METRIC_NAME_LABEL, metricName));
+    int nonTsIdx = 0;
     for (final ColumnDefinition col : columns) {
       if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
         continue;
-      if (++nonTsIdx == nonTsIndex)
-        return col;
+      if (col.getRole() == ColumnDefinition.ColumnRole.TAG) {
+        final Object tagVal = 1 + nonTsIdx < row.length ? row[1 + nonTsIdx] : null;
+        if (tagVal != null && PromQLResponseFormatter.isLabelValuePresent(tagVal.toString()))
+          labels.add(new Label(col.getName(), tagVal.toString()));
+      }
+      nonTsIdx++;
     }
-    throw new IllegalArgumentException("No non-timestamp column at index " + nonTsIndex);
+    return labels;
   }
 
-  private static int findNonTimestampColumnIndex(final List<ColumnDefinition> columns, final String name) {
-    int nonTsIdx = -1;
-    for (int i = 0; i < columns.size(); i++) {
-      final ColumnDefinition col = columns.get(i);
-      if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
-        continue;
-      nonTsIdx++;
-      if (col.getName().equals(name))
-        return nonTsIdx;
+  private static List<Sample> samplesOf(final List<Object[]> rows, final int valueRowIndex) {
+    final List<Sample> samples = new ArrayList<>(rows.size());
+    for (final Object[] row : rows) {
+      double value = 0;
+      if (valueRowIndex >= 0 && valueRowIndex < row.length && row[valueRowIndex] instanceof Number n)
+        value = n.doubleValue();
+      samples.add(new Sample(value, (long) row[0]));
     }
-    return -1;
+    return samples;
   }
 
   /**

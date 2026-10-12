@@ -22,6 +22,7 @@ import com.arcadedb.Constants;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.RunningQuery;
 import com.arcadedb.query.sql.executor.QueryAdmissionGate;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONException;
@@ -338,6 +339,46 @@ public class MCPDispatcher {
     }
   }
 
+  private JSONObject runTool(final String toolName, final ServerSecurityUser user, final JSONObject args) throws Exception {
+    return switch (toolName) {
+      case "list_databases" -> ListDatabasesTool.execute(server, user, args, config);
+      case "get_schema" -> GetSchemaTool.execute(server, user, args, config);
+      case "query" -> QueryTool.execute(server, user, args, config);
+      case "execute_command" -> ExecuteCommandTool.execute(server, user, args, config);
+      case "sample_records" -> SampleRecordsTool.execute(server, user, args, config);
+      case "vector_search" -> VectorSearchTool.execute(server, user, args, config);
+      case "full_text_search" -> FullTextSearchTool.execute(server, user, args, config);
+      case "hybrid_search" -> HybridSearchTool.execute(server, user, args, config);
+      case "upsert_entity" -> UpsertEntityTool.execute(server, user, args, config);
+      case "upsert_relationship" -> UpsertRelationshipTool.execute(server, user, args, config);
+      case "server_status" -> ServerStatusTool.execute(server, user, args, config);
+      case "profiler_start" -> ProfilerStartTool.execute(server, user, args, config);
+      case "profiler_stop" -> ProfilerStopTool.execute(server, user, args, config);
+      case "profiler_status" -> ProfilerStatusTool.execute(server, user, args, config);
+      case "get_server_settings" -> GetServerSettingsTool.execute(server, user, args, config);
+      case "set_server_setting" -> SetServerSettingTool.execute(server, user, args, config);
+      default -> throw new MCPToolArgumentException("Unknown tool: " + toolName);
+    };
+  }
+
+  /**
+   * Opens the registry entry of a tool call that does work on a database (issue #9774), published on this thread so the
+   * statements the tool runs obey a terminate. Listed as the statement the tool runs when it runs one, by the tool and its
+   * arguments - with the secrets {@link #formatArgs} masks for the request log masked - otherwise, built only if somebody lists it.
+   */
+  private RunningQuery registerRunningQuery(final String toolName, final JSONObject args, final ServerSecurityUser user) {
+    // read without coercion: a member of the wrong type is the tool's to refuse, with its own message
+    final RunningQuery entry = server.getRunningQueries().register(textMember(args, "database"), user.getName(), "mcp", null, null);
+    final String text = "query".equals(toolName) ? textMember(args, "query") :
+        "execute_command".equals(toolName) ? textMember(args, "command") : null;
+    if (text != null) {
+      final String language = textMember(args, "language");
+      entry.setStatement(language != null ? language : "cypher", text);
+    } else
+      entry.setStatement("mcp", () -> toolName + " " + formatArgs(toolName, args));
+    return entry;
+  }
+
   private MCPResponse toolsCall(final Object id, final JSONObject params, final ServerSecurityUser user,
       final EffectiveToolProfile profile) {
     // Guarded for the same reason as the request members in dispatch: a member present but of the wrong JSON type
@@ -369,28 +410,25 @@ public class MCPDispatcher {
             "Tool '" + toolName + "' is not available in " + profile.description());
 
       final JSONObject toolResult;
-      try (final QueryAdmissionGate.Ticket ignored = ADMITTED_TOOL_NAMES.contains(toolName) ?
-          QueryAdmissionGate.getInstance().admit() :
-          null) {
-        toolResult = switch (toolName) {
-          case "list_databases" -> ListDatabasesTool.execute(server, user, args, config);
-          case "get_schema" -> GetSchemaTool.execute(server, user, args, config);
-          case "query" -> QueryTool.execute(server, user, args, config);
-          case "execute_command" -> ExecuteCommandTool.execute(server, user, args, config);
-          case "sample_records" -> SampleRecordsTool.execute(server, user, args, config);
-          case "vector_search" -> VectorSearchTool.execute(server, user, args, config);
-          case "full_text_search" -> FullTextSearchTool.execute(server, user, args, config);
-          case "hybrid_search" -> HybridSearchTool.execute(server, user, args, config);
-          case "upsert_entity" -> UpsertEntityTool.execute(server, user, args, config);
-          case "upsert_relationship" -> UpsertRelationshipTool.execute(server, user, args, config);
-          case "server_status" -> ServerStatusTool.execute(server, user, args, config);
-          case "profiler_start" -> ProfilerStartTool.execute(server, user, args, config);
-          case "profiler_stop" -> ProfilerStopTool.execute(server, user, args, config);
-          case "profiler_status" -> ProfilerStatusTool.execute(server, user, args, config);
-          case "get_server_settings" -> GetServerSettingsTool.execute(server, user, args, config);
-          case "set_server_setting" -> SetServerSettingTool.execute(server, user, args, config);
-          default -> throw new MCPToolArgumentException("Unknown tool: " + toolName);
-        };
+      if (!ADMITTED_TOOL_NAMES.contains(toolName))
+        toolResult = runTool(toolName, user, args);
+      else {
+        final QueryAdmissionGate.Ticket admission = QueryAdmissionGate.getInstance().admit();
+        RunningQuery entry = null;
+        try {
+          // Listed by "list queries" / SHOW TRANSACTIONS and stopped by a terminate over the same window as the slot, like the
+          // work of every other protocol (issue #9774)
+          entry = registerRunningQuery(toolName, args, user);
+          toolResult = runTool(toolName, user, args);
+        } finally {
+          try {
+            admission.close();
+          } finally {
+            // LAST: THE ENTRY LEAVING THE LIST IS THE PROOF THE WORK IS OVER
+            if (entry != null)
+              entry.close();
+          }
+        }
       }
 
       LogManager.instance()
@@ -644,6 +682,11 @@ public class MCPDispatcher {
    * @throws IllegalArgumentException when the member is present with any other JSON type. Callers translate this
    *                                  into the JSON-RPC error that fits where the member sits.
    */
+  /** The member when it is a string, {@code null} otherwise. */
+  private static String textMember(final JSONObject json, final String name) {
+    return json.opt(name) instanceof String string ? string : null;
+  }
+
   private static String stringMember(final JSONObject json, final String name, final String defaultValue) {
     final Object value = json.opt(name);
     if (value == null)
