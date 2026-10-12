@@ -87,6 +87,20 @@ class Issue9846LightweightSubtypeInheritsConstraintTest extends TestHelper {
     assertThat(sessions.get()).as("refused before anything was created: no type registered, then dropped again").isZero();
   }
 
+  /** The first super type is acceptable and the second is not: the statement is refused as a whole, before anything is linked. */
+  @Test
+  void oneRefusedSuperTypeAmongSeveralRefusesTheWholeCreate() {
+    database.getSchema().createEdgeType("Issue9846Plain");
+    database.getSchema().createEdgeType(PARENT).createProperty("since", Type.DATETIME).setMandatory(true);
+
+    assertThatThrownBy(
+        () -> database.command("sql", "CREATE EDGE TYPE " + CHILD + " EXTENDS Issue9846Plain, " + PARENT + " LIGHTWEIGHT").close())
+        .hasMessageContaining("since");
+
+    assertThat(database.getSchema().existsType(CHILD)).isFalse();
+    assertThat(database.getSchema().getType("Issue9846Plain").getSubTypes()).isEmpty();
+  }
+
   @Test
   void aLightweightTypeCannotBeCreatedUnderASuperTypeWithADefaultValuedProperty() {
     final EdgeType parent = database.getSchema().createEdgeType(PARENT);
