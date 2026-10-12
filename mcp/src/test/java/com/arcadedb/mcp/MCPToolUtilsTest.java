@@ -107,6 +107,8 @@ class MCPToolUtilsTest {
   void intArgumentDefaultsWhenAbsentAndRefusesAWrongShape() {
     assertThat(MCPToolUtils.intArgument(new JSONObject(), "limit", 20)).isEqualTo(20);
     assertThat(MCPToolUtils.intArgument(new JSONObject().put("limit", 5), "limit", 20)).isEqualTo(5);
+    // the accessor's own coercion of a numeric string is kept, as it always was
+    assertThat(MCPToolUtils.intArgument(new JSONObject().put("limit", "5"), "limit", 20)).isEqualTo(5);
     assertThatThrownBy(() -> MCPToolUtils.intArgument(new JSONObject().put("limit", "abc"), "limit", 20))
         .isInstanceOf(MCPToolArgumentException.class)
         .hasMessageContaining("'limit'");
@@ -149,6 +151,11 @@ class MCPToolUtilsTest {
     assertThatThrownBy(() -> MCPToolUtils.validateArguments(() -> {
       throw new JSONException("JSONObject[k] is not a int (\"abc\")");
     })).isInstanceOf(MCPToolArgumentException.class).hasMessageContaining("JSONObject[k]");
+
+    // a refusal that carries no text is still self-explanatory
+    assertThatThrownBy(() -> MCPToolUtils.validateArguments(() -> {
+      throw new IllegalArgumentException();
+    })).isInstanceOf(MCPToolArgumentException.class).hasMessage("Invalid arguments");
 
     // a failure that is neither stays what it is
     assertThatThrownBy(() -> MCPToolUtils.validateArguments(() -> {
