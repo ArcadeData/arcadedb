@@ -554,6 +554,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * reaches the live instance too, so nothing is left owned forever.
    * <p>
    * The free-space statistics are a hint the next gather rebuilds, and are not carried.
+   * <p>
+   * The same contract as the counter's: call it only before this instance is published (the schema swap does, under
+   * the file-table lock, ahead of the volatile publication). The adopted fields are not final, and that publication is
+   * what makes them visible to every other thread.
    */
   @Override
   public void carryOverFrom(final PaginatedComponent previous) {
