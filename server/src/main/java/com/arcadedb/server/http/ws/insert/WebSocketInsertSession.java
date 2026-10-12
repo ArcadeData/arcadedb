@@ -115,7 +115,11 @@ public class WebSocketInsertSession {
   /** Whether the server runs in production mode, read per chunk: the per-row errors then conceal the engine text (issue #8749). */
   private final BooleanSupplier               concealErrors;
   private final String                        externalTransactionId;
-  /** Where a chunk applied in {@link #externalSession} is listed while it runs (issue #9774), or {@code null}. */
+  /**
+   * Where every chunk is listed while it runs, whatever the transaction mode (issues #9774, #9838), or {@code null}. A
+   * chunk is bounded only by the frame the client sends, and under {@code PER_STREAM}, the default, it writes into one
+   * transaction held for the whole load: work an administrator has to be able to see and stop.
+   */
   private final RunningQueryRegistry          runningQueries;
   private final ReentrantLock                 lock       = new ReentrantLock();
   private final long                          startedAt  = System.currentTimeMillis();
@@ -286,16 +290,34 @@ public class WebSocketInsertSession {
       final ChunkCounts counts = new ChunkCounts(concealErrors.getAsBoolean());
       final int rows = records == null ? 0 : records.length();
 
-      if (externalSession != null)
-        // Under the caller's own session lock, which is what an HTTP request on that transaction takes too: the
-        // /ws frames of this session and the /commit that ends it arrive on different threads and would
-        // otherwise mutate the same TransactionContext concurrently. It also re-validates that the session is
-        // still registered and refreshes its idle clock, so a loader pausing between chunks does not have the
-        // transaction swept out from under it. rollbackOnFailure is false: a frame this session refuses - a
-        // skipped sequence, a malformed record - is not a reason to destroy a transaction the client still owns.
-        runInExternalSession(() -> applyUnderTransaction(records, rows, counts));
-      else
-        applyUnderTransaction(records, rows, counts);
+      // Listed by "list queries" and stopped by "terminate query" in EVERY transaction mode (issue #9838), and under the
+      // caller's session by SHOW TRANSACTIONS and "terminate transaction" in NONE (issue #9774). Opened here rather than in
+      // the NONE branch: what it names - a database, a user, a protocol, a statement - the session has in every mode, and
+      // the modes the session manages itself are the ones with no other administrative handle at all. Published on this
+      // thread, so the rows applied below, and the commit of a chunk's own transaction, obey a terminate
+      final RunningQuery entry = openChunkEntry(chunkSeq);
+      boolean terminationObserved = false;
+      try {
+        if (externalSession != null)
+          // Under the caller's own session lock, which is what an HTTP request on that transaction takes too: the
+          // /ws frames of this session and the /commit that ends it arrive on different threads and would
+          // otherwise mutate the same TransactionContext concurrently. It also re-validates that the session is
+          // still registered and refreshes its idle clock, so a loader pausing between chunks does not have the
+          // transaction swept out from under it. rollbackOnFailure is false: a frame this session refuses - a
+          // skipped sequence, a malformed record - is not a reason to destroy a transaction the client still owns.
+          runInExternalSession(() -> applyUnderTransaction(records, rows, counts));
+        else
+          applyUnderTransaction(records, rows, counts);
+      } catch (final QueryTerminatedException e) {
+        // reported below, once the mode's retraction has run
+        terminationObserved = true;
+      } finally {
+        if (entry != null)
+          endRunningChunk(entry, terminationObserved);
+      }
+
+      if (entry != null && entry.isTerminated())
+        throw new IllegalStateException(terminatedChunkMessage(entry, chunkSeq, terminationObserved));
 
       // Either way round, this attempt SUPERSEDES any earlier attempt at the same sequence: a whole-chunk failure
       // does not advance the watermark, so the chunk being applied here is the one that failed (issue #7471).
@@ -353,6 +375,10 @@ public class WebSocketInsertSession {
       case PER_BATCH -> {
         try {
           counts.absorb(inOwnTransaction(attempt -> applyRows(records, rows, attempt)));
+        } catch (final QueryTerminatedException e) {
+          // The chunk was asked to stop, and Database.transaction() rolled its transaction back: not a failure of the
+          // chunk to tally and answer with a batchAck, but the end of the load (issue #9838)
+          throw e;
         } catch (final Exception e) {
           // The chunk's own transaction failed to commit, so nothing in it is durable. Report the whole chunk
           // as failed - the per-row tallies the attempts produced describe transactions that no longer exist.
@@ -360,7 +386,11 @@ public class WebSocketInsertSession {
         }
       }
       case PER_ROW -> {
+        final RunningQuery entry = RunningQuery.current();
         for (int i = 0; i < rows; i++) {
+          // Before each row's own transaction: the rows already committed stand, the rest are not applied (issue #9838)
+          if (entry != null)
+            entry.checkNotTerminated("insert chunk");
           final int row = i;
           try {
             // applyRow, not applyRowCounting: a row that fails must take its own transaction down with it rather
@@ -377,6 +407,9 @@ public class WebSocketInsertSession {
               counts.ignored++;
             else
               counts.conflict(row, e);
+          } catch (final QueryTerminatedException e) {
+            // Seen by the row's commit: that row's transaction is rolled back, and the load ends here
+            throw e;
           } catch (final Exception e) {
             // Anything else that stops the row's commit is reported on the row, since the row is the transaction.
             counts.fail(row, e);
@@ -396,22 +429,14 @@ public class WebSocketInsertSession {
    * {@link WebSocketInsertProtocol} already answers with an {@code error} frame.
    */
   private void runInExternalSession(final Runnable work) {
-    // Listed under the caller's session by "list queries" and SHOW TRANSACTIONS while the chunk holds that session's lock, and
-    // stopped and waited for by "terminate transaction" and "terminate query" (issue #9774): a chunk can hold the lock for as
-    // long as a large load takes, and work the registry did not list was invisible to both. Published on this thread, so the
-    // rows applied below obey a terminate
-    final RunningQuery entry = runningQueries != null ?
-        runningQueries.register(databaseName, user.getName(), "ws", externalTransactionId, externalSession.getTag()) :
-        null;
-    if (entry != null)
-      entry.setStatement("ws", () -> "insert chunk of session " + id);
     try {
       externalSession.execute(user, () -> {
         work.run();
         return null;
       }, /* rollbackOnFailure */ false, /* endsSession */ false, /* joinsTransaction */ true);
     } catch (final QueryTerminatedException e) {
-      // reported below, once the session is ended
+      // The caller, applyChunk, ends the session and reports it
+      throw e;
     } catch (final LockTimeoutException e) {
       // An HTTP command is running on the caller's own transaction right now. Translated rather than allowed to
       // propagate: LockTimeoutException is a NeedRetryException, which WebSocketInsertProtocol does not name, so
@@ -426,32 +451,71 @@ public class WebSocketInsertSession {
       // because HttpSession.execute declares Exception. It is not an internal error either.
       throw new IllegalStateException(
           "Transaction '" + externalTransactionId + "' could not be used: " + e.getMessage(), e);
-    } finally {
-      if (entry != null)
-        endRunningChunk(entry);
     }
-
-    if (entry != null && entry.isTerminated())
-      throw new IllegalStateException("Chunk terminated by '" + entry.getTerminatedBy() + "': transaction '"
-          + externalTransactionId + "' was rolled back and ended");
   }
 
   /**
-   * Closes the registry entry of a chunk applied in the caller's session. A terminated chunk ends that session first, rolling
-   * its transaction back, as a terminated HTTP command does (issue #9680): part of the chunk's rows may already be in the
-   * transaction, and the chunk's sequence does not advance, so a replay would apply them twice. Ending it makes the answer
-   * the same wherever the termination landed, and the client's {@code /commit} is told the session is gone.
+   * Opens and publishes the registry entry of one chunk, or answers {@code null} when the server keeps no registry. Its
+   * statement names the session and the mode, since a server-managed session has no {@code transactionId} to be listed
+   * under (issue #9838).
    */
-  private void endRunningChunk(final RunningQuery entry) {
+  private RunningQuery openChunkEntry(final long chunkSeq) {
+    if (runningQueries == null)
+      return null;
+    final RunningQuery entry = runningQueries.register(databaseName, user.getName(), "ws", externalTransactionId,
+        externalSession != null ? externalSession.getTag() : null);
+    entry.setStatement("ws", () -> "insert chunk " + chunkSeq + " of session " + id + " (" + options.transactionModeName() + ")");
+    return entry;
+  }
+
+  /**
+   * Closes the registry entry of a chunk. A terminated chunk first stops the whole load, retracting what its mode can
+   * still retract, so the answer is the same wherever the termination landed:
+   * <ul>
+   * <li>{@code NONE}: the caller's session is ended, rolling its transaction back, as a terminated HTTP command does
+   * (issue #9680): part of the chunk's rows may already be in it, and the chunk's sequence does not advance, so a replay
+   * would apply them twice; the client's {@code /commit} is told the session is gone;</li>
+   * <li>{@code PER_STREAM}: the session's own transaction is rolled back, for the same reason, and the session closed
+   * (issue #9838);</li>
+   * <li>{@code PER_BATCH}: the chunk's own transaction was already rolled back by the termination that stopped it, if one
+   * did; chunks acknowledged before it stay committed, and the session is closed;</li>
+   * <li>{@code PER_ROW}: the rows committed before the termination stand, the rest were never applied, and the session is
+   * closed.</li>
+   * </ul>
+   * Must be called holding {@link #lock}.
+   */
+  private void endRunningChunk(final RunningQuery entry, final boolean terminationObserved) {
     try {
       if (entry.isTerminated()) {
-        externalSession.close();
-        entry.setRolledBack();
+        if (externalSession != null) {
+          externalSession.close();
+          entry.setRolledBack();
+        } else {
+          rollbackAndClose();
+          if (options.transactionMode == InsertSessionOptions.TransactionMode.PER_STREAM
+              || (options.transactionMode == InsertSessionOptions.TransactionMode.PER_BATCH && terminationObserved))
+            entry.setRolledBack();
+        }
       }
     } finally {
       // LAST: THE ENTRY LEAVING THE LIST IS THE PROOF THE WORK IS OVER
       entry.close();
     }
+  }
+
+  /** What the client of a terminated chunk is told happened to what it sent, mode by mode (see {@link #endRunningChunk}). */
+  private String terminatedChunkMessage(final RunningQuery entry, final long chunkSeq, final boolean terminationObserved) {
+    final String prefix = "Chunk " + chunkSeq + " terminated by '" + entry.getTerminatedBy() + "': ";
+    return switch (options.transactionMode) {
+      case NONE -> prefix + "transaction '" + externalTransactionId + "' was rolled back and ended";
+      case PER_STREAM -> prefix + "the transaction of insert session '" + id + "' (per_stream) was rolled back and the session closed";
+      case PER_BATCH -> prefix + (terminationObserved ?
+          "its transaction was rolled back" :
+          "it had committed before the termination was seen") + "; chunks acknowledged before it stay committed and insert session '"
+          + id + "' (per_batch) is closed";
+      case PER_ROW -> prefix + "the rows it committed before the termination stand, the rest were not applied, and insert session '"
+          + id + "' (per_row) is closed";
+    };
   }
 
   /**
@@ -622,7 +686,7 @@ public class WebSocketInsertSession {
   }
 
   private void applyRows(final JSONArray records, final int rows, final ChunkCounts counts) {
-    // The entry of a chunk applied in the caller's session (issue #9774); none otherwise
+    // The entry of the chunk (issues #9774, #9838), published by applyChunk in every mode
     final RunningQuery entry = RunningQuery.current();
     for (int i = 0; i < rows; i++) {
       if (entry != null)
