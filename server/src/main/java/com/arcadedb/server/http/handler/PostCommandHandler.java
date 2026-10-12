@@ -144,9 +144,10 @@ public class PostCommandHandler extends AbstractQueryHandler {
 
   /**
    * Returns the value of a request field that must be a JSON string, or {@code null} when absent. A present
-   * value of the wrong JSON type (number, array, object) is rejected with an {@link IllegalArgumentException},
-   * which the HTTP layer maps to a clean 400 Bad Request instead of leaking a raw {@link ClassCastException}
-   * as HTTP 500 (issue #5222).
+   * value of the wrong JSON type (number, array, object) is rejected with a {@link RequestRefusedBeforeExecutionException},
+   * an {@link IllegalArgumentException} which the HTTP layer maps to a clean 400 Bad Request instead of leaking a raw
+   * {@link ClassCastException} as HTTP 500 (issue #5222), and which leaves the session's transaction as it was because the
+   * statement has not reached the engine (issue #9852).
    */
   private static String requireStringField(final Map<String, Object> map, final String field) {
     return requireStringField(map, field, null);
@@ -158,7 +159,7 @@ public class PostCommandHandler extends AbstractQueryHandler {
       return defaultValue;
     if (value instanceof String s)
       return s;
-    throw new IllegalArgumentException("Field '" + field + "' must be a string");
+    throw new RequestRefusedBeforeExecutionException("Field '" + field + "' must be a string");
   }
 
   /**
@@ -218,7 +219,7 @@ public class PostCommandHandler extends AbstractQueryHandler {
     // QueryEngine.isExecutedByTheLeader() or analyze(query).isDDL() is true.
 
     if (requestMap.get("command") == null)
-      throw new IllegalArgumentException("command missing");
+      throw new RequestRefusedBeforeExecutionException("command missing");
 
     final String language = requireStringField(requestMap, "language");
     // Do NOT HTML-decode the command: the command is already transported losslessly as a JSON string,

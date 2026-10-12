@@ -23,9 +23,9 @@ import io.undertow.server.HttpHandler;
 import io.undertow.server.RoutingHandler;
 import io.undertow.util.HttpString;
 
-import java.util.LinkedHashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Set;
+import java.util.Map;
 
 /**
  * A {@link RoutingHandler} that records every (method, path template) pair registered through it,
@@ -40,28 +40,38 @@ import java.util.Set;
  * remaining gap: it merges another handler's internal route map directly and bypasses both terminal
  * methods, so routes registered that way would not appear in {@link #getRegisteredRoutes()} - not a
  * concern today since {@link HttpServer#setupRoutes()} never calls it.
+ * <p>
+ * The handler INSTANCE is recorded with each route (issue #9849), so a test can ask a question of the handlers themselves - "does
+ * every route that may block dispatch off the Undertow IO thread" - against the real inventory instead of a list somebody maintains
+ * by hand. It is a separate map and not a component of {@link RouteDescriptor}: the descriptor is the route's identity, compared
+ * and printed by the OpenAPI anti-drift checks, and must not change with the object that serves it.
  */
 public class RouteRecordingRoutingHandler extends RoutingHandler {
 
   public record RouteDescriptor(String method, String path) {
   }
 
-  private final Set<RouteDescriptor> registeredRoutes = new LinkedHashSet<>();
+  private final Map<RouteDescriptor, HttpHandler> registeredRoutes = new LinkedHashMap<>();
 
   @Override
   public synchronized RoutingHandler add(final HttpString method, final String template, final HttpHandler handler) {
-    registeredRoutes.add(new RouteDescriptor(method.toString(), template));
+    registeredRoutes.put(new RouteDescriptor(method.toString(), template), handler);
     return super.add(method, template, handler);
   }
 
   @Override
   public synchronized RoutingHandler add(final HttpString method, final String template, final Predicate predicate,
       final HttpHandler handler) {
-    registeredRoutes.add(new RouteDescriptor(method.toString(), template));
+    registeredRoutes.put(new RouteDescriptor(method.toString(), template), handler);
     return super.add(method, template, predicate, handler);
   }
 
   public synchronized List<RouteDescriptor> getRegisteredRoutes() {
-    return List.copyOf(registeredRoutes);
+    return List.copyOf(registeredRoutes.keySet());
+  }
+
+  /** Every registered route's handler, in registration order. A route registered twice keeps the handler registered last. */
+  public synchronized Map<RouteDescriptor, HttpHandler> getRegisteredHandlers() {
+    return new LinkedHashMap<>(registeredRoutes);
   }
 }

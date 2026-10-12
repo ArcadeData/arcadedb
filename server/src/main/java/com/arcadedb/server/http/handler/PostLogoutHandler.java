@@ -41,6 +41,16 @@ public class PostLogoutHandler extends AbstractServerHttpHandler {
     super(httpServer);
   }
 
+  /**
+   * Revoking the token also tells every peer of a cluster to drop its copy, a synchronous RPC to each of them bounded by
+   * the proxy connect timeout: far too long to hold an Undertow IO thread, which serves every other connection multiplexed
+   * onto it (issue #9849).
+   */
+  @Override
+  protected boolean mustExecuteOnWorkerThread() {
+    return true;
+  }
+
   @Override
   protected ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user,
       final JSONObject payload) {

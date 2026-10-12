@@ -75,6 +75,31 @@ class RouteRecordingRoutingHandlerTest {
   }
 
   /**
+   * Issue #9849: the handler INSTANCE is recorded with its route, so a sweep can ask the handlers themselves a question instead
+   * of a list somebody maintains by hand. Two routes sharing one instance (GET and HEAD of a probe) keep it under both, and the
+   * descriptor stays the (method, path) pair the OpenAPI checks compare.
+   */
+  @Test
+  void recordsTheHandlerInstanceServingEachRoute() {
+    final RouteRecordingRoutingHandler handler = new RouteRecordingRoutingHandler();
+    final HttpHandler probe = (HttpServerExchange exchange) -> {
+    };
+    final HttpHandler other = (HttpServerExchange exchange) -> {
+    };
+
+    handler.get("/ready", probe).add("HEAD", "/ready", probe).post("/begin/{database}", other);
+
+    assertThat(handler.getRegisteredHandlers())
+        .containsEntry(new RouteRecordingRoutingHandler.RouteDescriptor("GET", "/ready"), probe)
+        .containsEntry(new RouteRecordingRoutingHandler.RouteDescriptor("HEAD", "/ready"), probe)
+        .containsEntry(new RouteRecordingRoutingHandler.RouteDescriptor("POST", "/begin/{database}"), other)
+        .hasSize(3);
+    assertThat(handler.getRegisteredRoutes()).containsExactly(new RouteRecordingRoutingHandler.RouteDescriptor("GET", "/ready"),
+        new RouteRecordingRoutingHandler.RouteDescriptor("HEAD", "/ready"),
+        new RouteRecordingRoutingHandler.RouteDescriptor("POST", "/begin/{database}"));
+  }
+
+  /**
    * Issue #4896's required self-test, exercised against the real recording mechanism: proves the
    * actual-vs-declared comparison every core anti-drift check relies on genuinely fails when a route
    * is actually registered but missing from the declared set.

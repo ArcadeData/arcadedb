@@ -45,6 +45,17 @@ public class AiChatsHandler extends AbstractServerHttpHandler {
     this.chatStorage = chatStorage;
   }
 
+  /**
+   * Every verb lists, reads, writes or deletes the caller's chat files, which is blocking file IO that does not belong on an
+   * Undertow IO thread. It is also what makes {@code PUT} work at all: the request body is read only for a handler that runs
+   * on a worker thread, so without this {@code execute} always saw a null payload and answered 400 to a request that
+   * carried one (issue #9849).
+   */
+  @Override
+  protected boolean mustExecuteOnWorkerThread() {
+    return true;
+  }
+
   @Override
   protected ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user, final JSONObject payload) {
     final String username = user.getName();

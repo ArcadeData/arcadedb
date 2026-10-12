@@ -46,6 +46,7 @@ import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.HttpSessionException;
 import com.arcadedb.server.http.HttpSessionManager;
 import com.arcadedb.server.http.IdempotencyCache;
+import com.arcadedb.server.http.RequestRefusedBeforeExecutionException;
 import com.arcadedb.server.http.RequestStillInFlightException;
 import com.arcadedb.server.http.RequestBodyTooLargeException;
 import com.arcadedb.server.http.ResultSetTooLargeException;
@@ -344,11 +345,12 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
    * a {@code limit} shares this so the same input gets the same answer: {@link Number#intValue()} truncates the
    * high bits, so {@code 3000000000} would arrive as a negative value and be read as "unlimited", silently
    * turning off the very cap the field governs (issue #5711). Out of range, NaN and a non-numeric value are all
-   * client errors, mapped to HTTP 400 by the {@link IllegalArgumentException} arm below.
+   * client errors, mapped to HTTP 400 by the {@link IllegalArgumentException} arm below, and refused before anything reached the
+   * engine, so they leave the session's transaction as it was (issue #9852).
    */
   protected static int requireIntLimit(final Object value, final String field) {
     if (!(value instanceof Number n))
-      throw new IllegalArgumentException("Field '" + field + "' must be an integer");
+      throw new RequestRefusedBeforeExecutionException("Field '" + field + "' must be an integer");
     final double magnitude = n.doubleValue();
     if (Double.isNaN(magnitude) || magnitude > Integer.MAX_VALUE || magnitude < Integer.MIN_VALUE)
       throw unusableLimit(field, null);
@@ -359,8 +361,8 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
    * Rejection of a row limit that is not an integer this server can apply, worded identically wherever the limit
    * arrives from so the surfaces report the same thing.
    */
-  protected static IllegalArgumentException unusableLimit(final String field, final Throwable cause) {
-    return new IllegalArgumentException(
+  protected static RequestRefusedBeforeExecutionException unusableLimit(final String field, final Throwable cause) {
+    return new RequestRefusedBeforeExecutionException(
         "Field '" + field + "' must be an integer between " + Integer.MIN_VALUE + " and " + Integer.MAX_VALUE, cause);
   }
 
