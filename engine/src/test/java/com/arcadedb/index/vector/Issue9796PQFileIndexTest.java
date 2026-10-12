@@ -1,0 +1,210 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package com.arcadedb.index.vector;
+
+import com.arcadedb.TestHelper;
+import com.arcadedb.database.Database;
+import com.arcadedb.index.TypeIndex;
+import com.arcadedb.schema.Type;
+import io.github.jbellis.jvector.quantization.PQVectors;
+import io.github.jbellis.jvector.quantization.ProductQuantization;
+import org.awaitility.Awaitility;
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
+
+import java.io.IOException;
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
+import java.nio.file.DirectoryStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Random;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+/**
+ * Issue #9796 at the index level: what {@code LSMVectorIndex} does around the PQ file now that
+ * {@code LSMVectorIndexPQFile.writePQ} never destroys the file it replaces.
+ * <ul>
+ *   <li>A failed persist must not leave the previous file standing. It describes the previous graph's ordinals and the
+ *   new graph is already certified, so the next open would pair the two. The file is dropped (the next open rebuilds
+ *   graph and PQ together) and the codes in hand are still published to this session.</li>
+ *   <li>A file that is on disk but cannot be read is no PQ data: the open rebuilds, and ends with a loadable file.</li>
+ * </ul>
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
+@Tag("vector")
+class Issue9796PQFileIndexTest extends TestHelper {
+
+  private static final int EMBEDDING_DIM = 32;
+  private static final int VECTORS       = 1100;
+
+  private static final Duration SETTLE_TIMEOUT = Duration.ofMinutes(2);
+
+  @Test
+  void aFailedPersistDropsThePreviousFileAndStillPublishesTheCodesInHand() throws Exception {
+    final LSMVectorIndex index = buildIndexWithPersistedPQ();
+    final LSMVectorIndexPQFile pqFile = pqFileOf(index);
+    final Path pqPath = pqFile.getFilePath();
+    assertThat(pqPath).exists();
+
+    final ProductQuantization pq = (ProductQuantization) field("productQuantization").get(index);
+    final PQVectors liveCodes = (PQVectors) field("pqVectors").get(index);
+    assertThat(pq).isNotNull();
+    assertThat(liveCodes).isNotNull();
+
+    // Codes whose write dies halfway through: the persist after a rebuild whose disk gave out.
+    final Issue9796PQFileAtomicRewriteTest.FailingPQVectors failing =
+        new Issue9796PQFileAtomicRewriteTest.FailingPQVectors(pq, liveCodes.count(), 64);
+
+    final Method persist = LSMVectorIndex.class.getDeclaredMethod("persistProductQuantization", ProductQuantization.class,
+        PQVectors.class);
+    persist.setAccessible(true);
+    persist.invoke(index, pq, failing);
+
+    assertThat(pqPath)
+        .as("the previous file belongs to the previous graph: it must not survive a failed persist")
+        .doesNotExist();
+    assertThat(temporariesNextTo(pqPath)).isEmpty();
+    assertThat(field("pqVectors").get(index)).as("the codes in hand are right for the graph in memory").isSameAs(failing);
+    assertThat(pqFile.hasUsableData()).isFalse();
+  }
+
+  @Test
+  void anUnreadablePQFileIsRebuiltOnReopen() throws Exception {
+    final LSMVectorIndex index = buildIndexWithPersistedPQ();
+    final Path pqPath = pqFileOf(index).getFilePath();
+    final long completeSize = Files.size(pqPath);
+    assertThat(completeSize).isGreaterThan(0L);
+
+    // The fragment the in-place rewrite used to leave behind, on a database that is closed.
+    database.close();
+    final byte[] whole = Files.readAllBytes(pqPath);
+    Files.write(pqPath, Arrays.copyOf(whole, whole.length / 3));
+    database = factory.open();
+
+    final LSMVectorIndex reopened = indexOf(database);
+
+    // The open found the fragment, tried to load it and could not: "is there PQ data?" must say no, although the file
+    // is there. This is the answer needsGraphRebuildForPQ keys on.
+    reopened.countEntries();
+    final LSMVectorIndexPQFile fragment = pqFileOf(reopened);
+    assertThat(fragment.exists()).as("the fragment is on disk").isTrue();
+    assertThat(fragment.isPQReady()).isFalse();
+    assertThat(fragment.hasUsableData()).as("but it is not PQ data").isFalse();
+
+    final Random random = new Random(9796);
+    Awaitility.await("the PQ is rebuilt next to the graph after the reopen")
+        .atMost(SETTLE_TIMEOUT)
+        .pollInterval(Duration.ofMillis(50))
+        .untilAsserted(() -> {
+          reopened.findNeighborsFromVector(randomUnitVector(random), 10);
+          assertThat(reopened.isPQSearchAvailable()).isTrue();
+          assertThat(PendingDeltaVectors.of(reopened)).isZero();
+        });
+
+    assertThat(reopened.findNeighborsFromVectorApproximate(randomUnitVector(random), 10)).isNotEmpty();
+
+    final LSMVectorIndexPQFile fresh = new LSMVectorIndexPQFile(stripExtension(pqPath));
+    assertThat(fresh.loadPQ()).as("the file on disk must load after the rebuild").isTrue();
+    assertThat(fresh.getPQVectors().count()).isGreaterThanOrEqualTo(VECTORS);
+    assertThat(temporariesNextTo(pqPath)).isEmpty();
+  }
+
+  private LSMVectorIndex buildIndexWithPersistedPQ() throws Exception {
+    final Random random = new Random(9796);
+
+    database.transaction(() -> {
+      database.getSchema().createVertexType("Embedding");
+      database.getSchema().getType("Embedding").createProperty("vector", Type.ARRAY_OF_FLOATS);
+      database.command("sql", """
+          CREATE INDEX ON Embedding (vector) LSM_VECTOR
+          METADATA {
+              "dimensions": %d,
+              "similarity": "EUCLIDEAN",
+              "quantization": "PRODUCT",
+              "pqClusters": 32
+          }""".formatted(EMBEDDING_DIM));
+    });
+
+    database.transaction(() -> {
+      for (int i = 0; i < VECTORS; i++)
+        database.command("sql", "INSERT INTO Embedding SET vector = ?", (Object) randomUnitVector(random));
+    });
+
+    final LSMVectorIndex index = indexOf(database);
+    Awaitility.await("the graph and its PQ settle")
+        .atMost(SETTLE_TIMEOUT)
+        .pollInterval(Duration.ofMillis(50))
+        .untilAsserted(() -> {
+          index.findNeighborsFromVector(randomUnitVector(random), 10);
+          assertThat(PendingDeltaVectors.of(index)).isZero();
+          assertThat(index.isPQSearchAvailable()).isTrue();
+          assertThat(pqFileOf(index).getFilePath()).exists();
+        });
+    return index;
+  }
+
+  private static LSMVectorIndex indexOf(final Database db) {
+    final TypeIndex typeIndex = (TypeIndex) db.getSchema().getIndexByName("Embedding[vector]");
+    return (LSMVectorIndex) typeIndex.getIndexesOnBuckets()[0];
+  }
+
+  private static LSMVectorIndexPQFile pqFileOf(final LSMVectorIndex index) throws Exception {
+    return (LSMVectorIndexPQFile) field("pqFile").get(index);
+  }
+
+  private static Field field(final String name) throws Exception {
+    final Field field = LSMVectorIndex.class.getDeclaredField(name);
+    field.setAccessible(true);
+    return field;
+  }
+
+  private static String stripExtension(final Path pqPath) {
+    final String name = pqPath.toString();
+    return name.substring(0, name.length() - ("." + LSMVectorIndexPQFile.FILE_EXT).length());
+  }
+
+  private static List<Path> temporariesNextTo(final Path pqPath) throws IOException {
+    final List<Path> temporaries = new ArrayList<>();
+    try (DirectoryStream<Path> stream = Files.newDirectoryStream(pqPath.getParent(), pqPath.getFileName() + ".*.tmp")) {
+      stream.forEach(temporaries::add);
+    }
+    return temporaries;
+  }
+
+  private float[] randomUnitVector(final Random random) {
+    final float[] vector = new float[EMBEDDING_DIM];
+    float norm = 0;
+    for (int i = 0; i < EMBEDDING_DIM; i++) {
+      vector[i] = random.nextFloat() * 2 - 1;
+      norm += vector[i] * vector[i];
+    }
+    norm = (float) Math.sqrt(norm);
+    if (norm > 0)
+      for (int i = 0; i < EMBEDDING_DIM; i++)
+        vector[i] /= norm;
+    return vector;
+  }
+}
