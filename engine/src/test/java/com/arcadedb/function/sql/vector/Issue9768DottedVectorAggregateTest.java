@@ -131,6 +131,15 @@ class Issue9768DottedVectorAggregateTest extends TestHelper {
   }
 
   @Test
+  void theNamespaceAndTheMethodAreCaseInsensitive() {
+    load();
+    // SQL function names are case-insensitive, and so was the namespace set before the registry decided
+    assertThat(run("SELECT Vector.SUM(v) AS s FROM D")).hasSize(1);
+    assertThat(vector(run("SELECT VECTOR.sum(v) AS s FROM D").getFirst(), "s")).containsExactly(6f, 8f);
+    assertThat(run("SELECT GEO.point(1, 2) AS p").getFirst().<Object>getProperty("p")).isNotNull();
+  }
+
+  @Test
   void explainShowsTheAggregationStep() {
     load();
     try (final ResultSet rs = database.query("sql", "EXPLAIN SELECT vector.sum(v) AS s FROM D")) {
