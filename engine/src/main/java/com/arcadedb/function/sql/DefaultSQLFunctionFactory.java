@@ -414,7 +414,8 @@ public final class DefaultSQLFunctionFactory extends SQLFunctionFactoryTemplate 
    * <p>
    * The two registries are process-wide: every {@code SQLQueryEngine} uses this singleton, and a user-defined function library
    * is not a namespace for this lookup (it never was: call it back-ticked, {@code `lib.fn`(...)}). So nothing a database or an
-   * engine registers on its own is missed here.
+   * engine registers on its own is missed here. A statement is parsed once and cached, so one parsed before a function was
+   * registered keeps the reading it was parsed with (the run-time lookup this replaced cached its negative answer as well).
    */
   public boolean hasNamespacedFunction(final String qualifiedName) {
     return hasFunction(qualifiedName.toLowerCase(Locale.ENGLISH)) || FunctionRegistry.hasStatelessFunction(qualifiedName);
