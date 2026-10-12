@@ -20,6 +20,7 @@ package com.arcadedb.serializer.json;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
@@ -110,6 +111,30 @@ class Issue9805JsonObjectNonStringMapKeyTest extends TestHelper {
 
     final List<JSONObject> objects = array.toListOfObjects();
     assertThat(names(objects.getFirst())).isEqualTo(mixedKeyNames());
+  }
+
+  @Test
+  void keysWithTheSameTextNameOneMemberAndTheLastEntryWinsOnEverySerializer() {
+    final Map<Object, Object> map = new LinkedHashMap<>();
+    map.put(null, "first");
+    map.put("null", "second");
+    map.put(1, "int");
+    map.put("1", "string");
+
+    final JSONObject constructed = new JSONObject(map);
+    assertThat(names(constructed)).containsExactly("1", "null");
+    assertThat(constructed.getString("null")).isEqualTo("second");
+    assertThat(constructed.getString("1")).isEqualTo("string");
+
+    final ResultInternal row = new ResultInternal(database);
+    row.setProperty("m", map);
+    final JSONObject viaResult = row.toJSON().getJSONObject("m");
+    assertThat(viaResult.getString("null")).isEqualTo("second");
+    assertThat(viaResult.getString("1")).isEqualTo("string");
+
+    final JSONObject viaSerializer = JsonSerializer.createJsonSerializer().serializeResult(database, row).getJSONObject("m");
+    assertThat(viaSerializer.getString("null")).isEqualTo("second");
+    assertThat(viaSerializer.getString("1")).isEqualTo("string");
   }
 
   @Test

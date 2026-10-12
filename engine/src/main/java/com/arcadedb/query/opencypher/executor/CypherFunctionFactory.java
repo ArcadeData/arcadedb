@@ -19,7 +19,6 @@
 package com.arcadedb.query.opencypher.executor;
 
 import com.arcadedb.exception.CommandExecutionException;
-import com.arcadedb.log.LogManager;
 import com.arcadedb.function.CypherBuiltinFunctions;
 import com.arcadedb.function.CypherFunctionRegistry;
 import com.arcadedb.function.StatelessFunction;
@@ -118,6 +117,7 @@ import com.arcadedb.function.vector.VectorDistanceManhattanFunction;
 import com.arcadedb.function.vector.VectorNormFunction;
 import com.arcadedb.function.vector.VectorSimilarityCosineFunction;
 import com.arcadedb.function.vector.VectorSimilarityEuclideanFunction;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.SQLFunction;
 
 import java.util.Arrays;
