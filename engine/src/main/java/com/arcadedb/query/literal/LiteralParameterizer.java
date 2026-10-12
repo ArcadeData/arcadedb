@@ -72,11 +72,34 @@ public abstract class LiteralParameterizer<S> {
    * handed out: each hit gets its own copy of the map. The copy is shallow, which is enough because a value is always an
    * immutable scalar: {@link #literalValue} answers what the parser gives one literal token (a number or a string), never a
    * collection.
+   * <p>
+   * Guarded by the monitor of {@link #statements}, not by one of its own: a hit reads both, and one lock acquisition costs less
+   * than two on the path every repeated query takes (issue #9818).
    */
   private final SegmentedLRUCache<String, ExtractedText> parameterizedTexts;
 
-  /** The generated key of a text and the literal values extracted from it, by generated parameter name. */
-  private record ExtractedText(String cacheKey, Map<String, Object> parameters) {
+  /**
+   * The generated key of a text and the literal values extracted from it, as parallel arrays by generated parameter name (a hit
+   * fills a map of its own from them, which costs no entry iterator).
+   */
+  private record ExtractedText(String cacheKey, String[] names, Object[] values) {
+    private static ExtractedText of(final String cacheKey, final Map<String, Object> parameters) {
+      final String[] names = new String[parameters.size()];
+      final Object[] values = new Object[names.length];
+      int i = 0;
+      for (final Map.Entry<String, Object> entry : parameters.entrySet()) {
+        names[i] = entry.getKey();
+        values[i++] = entry.getValue();
+      }
+      return new ExtractedText(cacheKey, names, values);
+    }
+
+    private Map<String, Object> newParameters() {
+      final Map<String, Object> parameters = HashMap.newHashMap(names.length);
+      for (int i = 0; i < names.length; i++)
+        parameters.put(names[i], values[i]);
+      return parameters;
+    }
   }
 
   /**
@@ -132,28 +155,28 @@ public abstract class LiteralParameterizer<S> {
    * the lookup carries no extracted value: like any parameter the text references, {@code __lit_i0} is the caller's to bind.
    */
   public Lookup<S> lookup(final String text, final boolean parameterize) {
+    // EVERY HIT TAKES THE ONE LOCK ONCE (ISSUE #9818): THE TEXT AS WRITTEN, THEN THE TEXT REMEMBERED AS EXTRACTED AND THE
+    // STATEMENT UNDER ITS KEY. A remembered text was eligible when it was remembered, so the scan for the generated-name prefix
+    // is paid only by a text never seen before.
     Lookup<S> cached;
+    ExtractedText extracted = null;
     synchronized (statements) {
       cached = statements.get(text);
+      if (cached != null)
+        return cached;
+
+      if (parameterize) {
+        extracted = parameterizedTexts.get(text);
+        if (extracted != null)
+          cached = statements.get(extracted.cacheKey());
+      }
     }
     if (cached != null)
-      return cached;
+      // the map is filled outside the lock: the remembered values are never modified after they were remembered
+      return new Lookup<>(cached.statement(), extracted.cacheKey(), extracted.newParameters());
 
     if (!parameterize || !LiteralScan.isEligible(text))
       return parseAsWritten(text);
-
-    // A TEXT EXTRACTED BEFORE: ITS KEY AND VALUES ARE KNOWN, SO NO LEXING (ISSUE #9714)
-    final ExtractedText extracted;
-    synchronized (parameterizedTexts) {
-      extracted = parameterizedTexts.get(text);
-    }
-    if (extracted != null) {
-      synchronized (statements) {
-        cached = statements.get(extracted.cacheKey());
-      }
-      if (cached != null)
-        return new Lookup<>(cached.statement(), extracted.cacheKey(), new HashMap<>(extracted.parameters()));
-    }
 
     final LiteralScan scan = scan(text);
     if (scan == null || scan.size() == 0 || scan.size() > MAX_LITERALS)
@@ -215,8 +238,9 @@ public abstract class LiteralParameterizer<S> {
       }
       cached = cache(key, template);
     }
-    synchronized (parameterizedTexts) {
-      parameterizedTexts.put(text, new ExtractedText(key, new HashMap<>(values)));
+    final ExtractedText remembered = ExtractedText.of(key, values);
+    synchronized (statements) {
+      parameterizedTexts.put(text, remembered);
     }
     return new Lookup<>(cached.statement(), key, values);
   }
@@ -234,14 +258,13 @@ public abstract class LiteralParameterizer<S> {
   }
 
   public void clear() {
+    // both under the one lock, so no lookup can find a remembered text whose statement was just cleared, or the reverse
     synchronized (statements) {
       statements.clear();
+      parameterizedTexts.clear();
     }
     synchronized (policies) {
       policies.clear();
-    }
-    synchronized (parameterizedTexts) {
-      parameterizedTexts.clear();
     }
   }
 
