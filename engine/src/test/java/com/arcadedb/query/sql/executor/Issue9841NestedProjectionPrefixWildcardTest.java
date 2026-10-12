@@ -164,6 +164,23 @@ class Issue9841NestedProjectionPrefixWildcardTest extends TestHelper {
   }
 
   @Test
+  void excludeItemRemovesAPropertyBothTheStarAndTheWildcardSelect() {
+    final Result p = project("@this:{*, s*, !secret}");
+    assertThat(p.getPropertyNames()).doesNotContain("secret").contains("n", "m", "nested");
+  }
+
+  @Test
+  void prefixWildcardKeepsANullValuedProperty() {
+    database.command("sql", "create document type D2").close();
+    database.transaction(() -> database.command("sql", "insert into D2 content {sa:null, sb:1}").close());
+    try (final ResultSet rs = database.query("sql", "select @this:{s*} as p from D2")) {
+      final Result p = rs.next().getProperty("p");
+      assertThat(p.getPropertyNames()).containsExactlyInAnyOrder("sa", "sb");
+      assertThat(p.<Object>getProperty("sa")).isNull();
+    }
+  }
+
+  @Test
   void excludeWildcardStillFilters() {
     final Result p = project("@this:{!s*}");
     assertThat(p.getPropertyNames()).doesNotContain("secret").contains("n", "m", "nested");
