@@ -444,9 +444,19 @@ class Database:
 
         duplicated_key_retried = False
         for attempt in range(retries + 1):
-            self.begin()
-            tx_at_start, commits_at_start = self._transaction_commit_mark()
+            # A transaction the caller already holds is not this call's to roll
+            # back when begin() refuses; one opened here is (#9813).
+            was_active = self.is_transaction_active()
+            begun = False
+            tx_at_start, commits_at_start = None, 0
             try:
+                # begin() and the commit mark inside the try (#9813): a ^C
+                # landing after the transaction was opened but before begin()
+                # returned used to leave it open for the next caller on this
+                # thread, because the handler below was not yet in place.
+                self.begin()
+                begun = True
+                tx_at_start, commits_at_start = self._transaction_commit_mark()
                 result = fn()
                 self.commit()
                 return result
@@ -459,7 +469,7 @@ class Database:
                 # must KeyboardInterrupt/SystemExit, which `except Exception`
                 # does not catch (code review on #7108).
                 try:
-                    if self.is_transaction_active():
+                    if (begun or not was_active) and self.is_transaction_active():
                         self.rollback()
                 except Exception:  # nosec B110 - best-effort rollback before retry
                     pass

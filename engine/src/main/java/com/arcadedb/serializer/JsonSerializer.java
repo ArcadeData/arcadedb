@@ -519,9 +519,10 @@ public class JsonSerializer {
 
   /**
    * True for the values of the types that keep more than an instant: a time of day, a zoned datetime and a duration. A
-   * {@code ZonedDateTime} under a DATETIME declaration is still an instant (issue #8572).
+   * {@code ZonedDateTime} under a DATETIME declaration is still an instant (issue #8572). Public so that
+   * {@code Result#valueToJSON} asks the same question and the two renderings of one row cannot drift (issue #9810).
    */
-  private static boolean isNativeCypherTemporal(final Object value, final Type type) {
+  public static boolean isNativeCypherTemporal(final Object value, final Type type) {
     if (value instanceof OffsetTime || value instanceof LocalTime || value instanceof CypherDuration)
       return true;
     return value instanceof ZonedDateTime && (type == null || type == Type.ZONED_DATETIME);

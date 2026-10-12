@@ -29,6 +29,7 @@ import java.io.File;
 import java.lang.management.ManagementFactory;
 import java.lang.management.MemoryMXBean;
 import java.lang.management.MemoryUsage;
+import java.util.Locale;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -53,6 +54,7 @@ public class ServerMonitor {
 	private static final int MINS_30 = 30 * 60 * 1_000;
 	private static final int HOURS_24 = 24 * 60 * 60 * 1_000;
 	private static final float SAFEPOINT_SPIKE_THRESHOLD_PERC = 20F;
+	private static final double BYTES_PER_GB = 1024.0 * 1024.0 * 1024.0;
 	private final ArcadeDBServer server;
 	private volatile Thread checker;
 	private AtomicBoolean running = new AtomicBoolean(false);
@@ -144,8 +146,7 @@ public class ServerMonitor {
 				if (freeSpacePerc < 20) {
 					// REPORT THE SPIKE
 					server.getEventLog().reportEvent(ServerEventLog.EVENT_TYPE.WARNING, "JVM", null,
-							String.format("Available space on disk is only %.1f%% (%.2f GB free of %.2f GB total) on '%s'", freeSpacePerc,
-									freeSpace / (1024.0 * 1024.0 * 1024.0), totalSpace / (1024.0 * 1024.0 * 1024.0), monitoredDir.getPath()));
+							lowDiskMessage(freeSpacePerc, freeSpace, totalSpace, monitoredDir.getPath()));
 					diskSpaceWarnings.reported(System.currentTimeMillis());
 				}
 			}
@@ -153,6 +154,25 @@ public class ServerMonitor {
 		catch (SecurityException e) {
 			LOGGER.log(Level.FINE, "Cannot check disk space due to security restrictions", e);
 		}
+	}
+
+	/**
+	 * The body of the low-disk warning. Issue #9807: formatted with {@link Locale#ROOT}, not the JVM default locale. The text
+	 * is stored as a server event and served to any REST client by {@code GET /api/v1/server}, so it is an answer a client
+	 * reads, not a line only a human on this host reads: under a comma-decimal locale the figures carried a comma, under a
+	 * locale with its own numbering system they were not ASCII digits, and two nodes of one cluster answered differently.
+	 */
+	static String lowDiskMessage(final float freeSpacePerc, final long freeSpace, final long totalSpace, final String path) {
+		return String.format(Locale.ROOT, "Available space on disk is only %.1f%% (%.2f GB free of %.2f GB total) on '%s'", freeSpacePerc,
+				freeSpace / BYTES_PER_GB, totalSpace / BYTES_PER_GB, path);
+	}
+
+	/**
+	 * The body of the heap-pressure warning, locale-pinned for the same reason as {@link #lowDiskMessage} (issue #9807).
+	 */
+	static String heapPressureMessage(final float heapAvailablePerc, final long heapUsed, final long heapMax) {
+		return String.format(Locale.ROOT, "Server overloaded: available heap RAM is only %.1f%% (%.2f GB used of %.2f GB max)", heapAvailablePerc,
+				heapUsed / BYTES_PER_GB, heapMax / BYTES_PER_GB);
 	}
 
 	/**
@@ -190,8 +210,7 @@ public class ServerMonitor {
 				if (heapAvailablePerc < 20) {
 					// REPORT THE SPIKE
 					server.getEventLog().reportEvent(ServerEventLog.EVENT_TYPE.WARNING, "JVM", null,
-							String.format("Server overloaded: available heap RAM is only %.1f%% (%.2f GB used of %.2f GB max)",
-									heapAvailablePerc, heapUsed / (1024.0 * 1024.0 * 1024.0), heapMax / (1024.0 * 1024.0 * 1024.0)));
+							heapPressureMessage(heapAvailablePerc, heapUsed, heapMax));
 					heapWarnings.reported(System.currentTimeMillis());
 
 					// Do NOT force System.gc() here: a stop-the-world collection triggered precisely when the
