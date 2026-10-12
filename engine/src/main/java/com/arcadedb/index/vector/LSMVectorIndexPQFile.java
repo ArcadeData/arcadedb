@@ -20,19 +20,16 @@ package com.arcadedb.index.vector;
 
 import com.arcadedb.index.IndexException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.utility.FileUtils;
 import io.github.jbellis.jvector.disk.SimpleMappedReader;
 import io.github.jbellis.jvector.graph.disk.OnDiskGraphIndex;
 import io.github.jbellis.jvector.quantization.PQVectors;
 import io.github.jbellis.jvector.quantization.ProductQuantization;
 
 import java.io.IOException;
-import java.nio.channels.FileChannel;
-import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
-import java.nio.file.StandardOpenOption;
 import java.util.logging.Level;
 
 /**
@@ -68,7 +65,9 @@ public class LSMVectorIndexPQFile {
   private volatile ProductQuantization productQuantization;
   private volatile PQVectors           pqVectors;
 
-  // Set when loadPQ() found the file on disk and could not read it, cleared by anything that replaces or removes it
+  // Set when loadPQ() found the file on disk and could not read it, cleared by anything that replaces or removes it.
+  // Sticky on purpose: even a transient read error costs one extra rebuild at the next open, which is the safe side,
+  // against trusting a file that may be a fragment.
   private volatile boolean loadFailed;
 
   /**
@@ -164,16 +163,19 @@ public class LSMVectorIndexPQFile {
         writer.force();
       }
 
+      // Rename over the live file and force the directory, so the new name survives a crash: without it the previous
+      // name can come back, and with it a previous file that no longer matches the graph persisted before this one.
+      // The writer re-asserts an interrupt it absorbed when it closes, and the directory force is an interruptible
+      // channel operation that an interrupted thread fails: in exactly the cancel scenario this write is built for,
+      // the directory would never be forced. Cleared around the publish and restored after, so the caller is still told.
+      final boolean interrupted = Thread.interrupted();
       try {
-        Files.move(temporary, pqFilePath, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-      } catch (final AtomicMoveNotSupportedException e) {
-        Files.move(temporary, pqFilePath, StandardCopyOption.REPLACE_EXISTING);
+        FileUtils.publishAtomically(temporary, pqFilePath, true);
+      } finally {
+        if (interrupted || Thread.interrupted())
+          Thread.currentThread().interrupt();
       }
       temporary = null;
-
-      // The rename is only durable once the directory entry is: without it a crash right after can bring back the
-      // previous name, and with it a previous file that no longer matches the graph persisted before this one
-      syncDirectory(parent);
 
       // Update cached references
       this.loadFailed = false;
@@ -197,29 +199,6 @@ public class LSMVectorIndexPQFile {
           // NOTHING ELSE TO DO
         }
       }
-    }
-  }
-
-  /**
-   * Best effort: opening a directory for a force is a POSIX facility, and a platform that refuses it (Windows) has no
-   * directory entry to lose to a crash in the first place. A failure is not a reason to fail a write that completed.
-   */
-  private void syncDirectory(final Path directory) {
-    if (directory == null)
-      return;
-
-    // The writer re-asserts an interrupt it absorbed when it closes, and a force on an interrupted thread fails with
-    // ClosedByInterruptException: in exactly the cancel scenario the write is built for, the directory would never be
-    // forced. Cleared for the force and restored after, so the caller is still told.
-    final boolean interrupted = Thread.interrupted();
-    try (final FileChannel channel = FileChannel.open(directory, StandardOpenOption.READ)) {
-      channel.force(true);
-    } catch (final Exception e) {
-      LogManager.instance().log(this, Level.FINE, "Could not force directory '%s' after replacing the PQ file: %s", directory,
-          e.getMessage());
-    } finally {
-      if (interrupted || Thread.interrupted())
-        Thread.currentThread().interrupt();
     }
   }
 
@@ -283,8 +262,12 @@ public class LSMVectorIndexPQFile {
   /**
    * Delete the PQ file from disk.
    * Called when the index is being dropped or rebuilt.
+   *
+   * @return {@code true} when the file is gone afterwards (deleted, or never there), {@code false} when it could not be
+   * deleted. A caller that drops a stale file has to know: one left behind is paired with the next graph on the
+   * following open (issue #9796)
    */
-  public void deletePQFile() {
+  public boolean deletePQFile() {
     try {
       if (Files.exists(pqFilePath)) {
         Files.delete(pqFilePath);
@@ -293,8 +276,10 @@ public class LSMVectorIndexPQFile {
       deleteLeftoverTemporaries();
       this.loadFailed = false;
       clearPQCache();
+      return true;
     } catch (final IOException e) {
       LogManager.instance().log(this, Level.WARNING, "Error deleting PQ file: %s", e.getMessage());
+      return false;
     }
   }
 
