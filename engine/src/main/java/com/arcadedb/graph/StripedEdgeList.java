@@ -146,7 +146,7 @@ public class StripedEdgeList extends EdgeLinkedList {
         break;
       pool.add(bucket);
     }
-    // Trailing gaps below the configured count carry no bucket
+    // Trailing gaps below the configured count carry no bucket. Bounded: slot 0 is non-null (checked above)
     int size = pool.size();
     while (pool.get(size - 1) == null)
       --size;
