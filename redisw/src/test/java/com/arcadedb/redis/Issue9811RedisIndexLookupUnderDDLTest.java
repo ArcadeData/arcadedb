@@ -27,6 +27,7 @@ import org.junit.jupiter.api.Test;
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.exceptions.JedisDataException;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -35,6 +36,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.awaitility.Awaitility.await;
 
 /**
  * Issue #9811: the Redis wrapper looked keys up with a bare {@code index.get(...)}, without the guard every other module
@@ -131,7 +133,8 @@ public class Issue9811RedisIndexLookupUnderDDLTest extends BaseRedisServerTest {
 
     ddl.start();
     readers.forEach(Thread::start);
-    Thread.sleep(3_000);
+    // at least 3 s of churn, and until the clients found the key a few times: a loaded runner may leave few windows open
+    await().pollDelay(Duration.ofSeconds(3)).atMost(Duration.ofSeconds(60)).until(() -> found.get() >= 20 || failure.get() != null);
     stop.set(true);
     ddl.join(60_000);
     for (final Thread reader : readers)

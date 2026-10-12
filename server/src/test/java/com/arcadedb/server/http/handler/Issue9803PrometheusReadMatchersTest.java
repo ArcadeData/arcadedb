@@ -103,6 +103,7 @@ class Issue9803PrometheusReadMatchersTest extends BaseGraphServerTest {
   void anEqualityOnATypedTagIsCoercedToTheColumnType() throws Exception {
     assertThat(read(eq("__name__", "disk"), eq("rack", "7"))).containsOnlyKeys("disk{rack=7}");
     assertThat(read(eq("__name__", "disk"), new LabelMatcher(MatchType.NEQ, "rack", "7"))).containsOnlyKeys("disk{rack=8}");
+    assertThat(read(eq("__name__", "disk"), eq("rack", "abc"))).as("text that is no number is no value of a LONG tag").isEmpty();
   }
 
   @Test
