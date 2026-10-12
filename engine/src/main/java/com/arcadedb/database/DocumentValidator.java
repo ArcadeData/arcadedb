@@ -281,6 +281,49 @@ public class DocumentValidator {
   }
 
   /**
+   * Throws when {@code regexp} cannot serve as the REGEXP of {@code p}, see {@link #unusableRegexp}: the REGEXP twin of
+   * {@link #requireReadableBound}, for the paths that check a declaration before applying it.
+   */
+  public static void requireUsableRegexp(final DocumentType owner, final Property p, final String regexp) {
+    final String reason = unusableRegexp(p.getType(), regexp);
+    if (reason != null)
+      throw new CommandExecutionException("The REGEXP '" + regexp + "' of property '" + owner.getName() + "." + p.getName()
+          + "' " + reason);
+  }
+
+  /**
+   * Why {@code regexp} cannot serve as the REGEXP of a property of {@code type}, or null when it can (issue #9808). A pattern
+   * is matched against the text form of the value ({@code toString()}), which only a scalar has: on a BINARY, a LIST, a
+   * MAP, an EMBEDDED document, a LINK or an ARRAY_OF_* it is a class name, a hash or a bracketed dump no pattern was
+   * written for. On a BOOLEAN the text forms are {@code true} and {@code false}, so a pattern matching neither refuses
+   * every value. A pattern on a number or a temporal stays legal ({@code '[0-9]{5}'} on a LONG): nothing tells, in general,
+   * a pattern no number satisfies from one some number does. Kept next to {@link #unreadableBound}, its MIN/MAX twin.
+   */
+  public static String unusableRegexp(final Type type, final String regexp) {
+    if (regexp == null)
+      return null;
+    switch (type) {
+    case BINARY, LIST, MAP, EMBEDDED, LINK, ARRAY_OF_SHORTS, ARRAY_OF_INTEGERS, ARRAY_OF_LONGS, ARRAY_OF_FLOATS, ARRAY_OF_DOUBLES -> {
+      return "is not applicable to type " + type + ": its values have no text form a pattern can describe";
+    }
+    case BOOLEAN -> {
+      final Pattern pattern;
+      try {
+        pattern = Pattern.compile(regexp);
+      } catch (final PatternSyntaxException e) {
+        return "is not a valid regular expression: " + e.getDescription();
+      }
+      if (!pattern.matcher("true").matches() && !pattern.matcher("false").matches())
+        return "matches neither 'true' nor 'false', so it would refuse every value of a BOOLEAN";
+      return null;
+    }
+    default -> {
+      return null;
+    }
+    }
+  }
+
+  /**
    * @return false for a type whose values have no order and no size, so a MIN or MAX on it could never be checked: the
    * write path would refuse every value (issue #9026)
    */

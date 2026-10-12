@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.executor.operators;
 
+import com.arcadedb.database.Database;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
@@ -25,6 +26,7 @@ import com.arcadedb.index.ConsistentKeyLookup;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.query.opencypher.InlineProperties;
 import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -101,8 +103,9 @@ public class IndexNestedLoopJoin extends AbstractPhysicalOperator {
       private boolean   inheritedIndex;
       private boolean   wholeKey;
       private Type[]    keyTypes;
-      // Per key: whether the indexed property is declared STRING, where a boolean equals the text it was stored as
-      private boolean[] declaredText;
+      // Per key: the indexed property's declaration, which reads a text written into it as its own type, and stores a boolean
+      // written into a STRING as its text
+      private Property[] declared;
       private Schema    schema;
 
       private Result                         currentLeft;
@@ -155,12 +158,10 @@ public class IndexNestedLoopJoin extends AbstractPhysicalOperator {
         inheritedIndex = Labels.isInheritedIndex(index, label);
         wholeKey = keys.length == index.getPropertyNames().size();
         keyTypes = index.getKeyTypes();
-        declaredText = new boolean[keys.length];
+        declared = new Property[keys.length];
         final DocumentType indexedType = schema.existsType(index.getTypeName()) ? schema.getType(index.getTypeName()) : null;
-        for (int i = 0; i < keys.length && indexedType != null; i++) {
-          final Property property = indexedType.getPolymorphicPropertyIfExists(indexProperties.get(i));
-          declaredText[i] = property != null && property.getType() == Type.STRING;
-        }
+        for (int i = 0; i < keys.length && indexedType != null; i++)
+          declared[i] = indexedType.getPolymorphicPropertyIfExists(indexProperties.get(i));
         leftResults = child.execute(context, nRecords);
       }
 
@@ -212,9 +213,7 @@ public class IndexNestedLoopJoin extends AbstractPhysicalOperator {
         KeyUse use = KeyUse.SEEK;
         for (int i = 0; i < keys.length; i++) {
           key[i] = keys[i].evaluateLeft(currentLeft, context);
-          // A boolean is stored in a property declared STRING as "true" or "false": that text is the key (issue #9695)
-          if (declaredText[i] && key[i] instanceof Boolean b)
-            key[i] = b.toString();
+          key[i] = declaredKey(declared[i], key[i], context.getDatabase());
           final KeyUse keyUse = keyUse(key[i], keyTypes[i]);
           if (keyUse == KeyUse.NONE)
             // The WHERE cannot hold for this left row
@@ -270,6 +269,23 @@ public class IndexNestedLoopJoin extends AbstractPhysicalOperator {
         finish();
       }
     };
+  }
+
+  /**
+   * The key a value is sought under in the index of {@code property}: what a write of the value stores there, when the
+   * declaration converts it through the text form. A boolean is stored in a property declared STRING as "true" or "false"
+   * (issue #9695), and a text written into any other declaration as that type, 5 for '5' in an INTEGER (issue #9794). A
+   * number against a STRING stays itself: it also equals a text spelling the RID it encodes, which no single key covers.
+   */
+  private static Object declaredKey(final Property property, final Object value, final Database database) {
+    if (property == null || value == null)
+      return value;
+    if (property.getType() == Type.STRING)
+      return value instanceof Boolean b ? b.toString() : value;
+    if (!(value instanceof String text) || RID.is(text))
+      return value;
+    final Object stored = InlineProperties.declaredValue(property, database, text);
+    return stored != null ? stored : value;
   }
 
   /**

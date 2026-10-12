@@ -90,16 +90,16 @@ public class CaseExpression implements Expression {
   }
 
   /**
-   * {@code CASE x WHEN v}: Cypher {@code =} between the operand and the WHEN value, with the declared-STRING coercion of
-   * {@code x = v} when the operand reads a stored property declared STRING (#9701), so both spellings of the same test agree.
+   * {@code CASE x WHEN v}: Cypher {@code =} between the operand and the WHEN value, with the declared-type coercion of
+   * {@code x = v} when the operand reads a stored declared property (#9701, #9794), so both spellings of the same test agree.
    */
   private Object whenEquals(final Object caseValue, final Object whenValue, final Result result, final CommandContext context) {
     final Object plain = whenEquality.evaluateWithValues(caseValue, whenValue);
-    if (Boolean.TRUE.equals(plain) || !(caseValue instanceof String) || whenValue == null || whenValue instanceof String)
+    if (Boolean.TRUE.equals(plain) || !InlineProperties.isTextAgainstNonText(caseValue, whenValue))
       return plain;
     final PropertyReadExpression.PropertyRead read = PropertyReadExpression.of(caseExpression, result, context);
-    final String text = read != null && read.record() != null ? InlineProperties.declaredText(read.record(), read.key(), whenValue) : null;
-    return text != null ? whenEquality.evaluateWithValues(caseValue, text) : plain;
+    final Object stored = read != null && read.record() != null ? InlineProperties.declaredValue(read.record(), read.key(), whenValue) : null;
+    return stored != null ? whenEquality.evaluateWithValues(caseValue, stored) : plain;
   }
 
   /**

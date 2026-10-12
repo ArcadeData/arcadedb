@@ -63,6 +63,10 @@ public class SelectExecutor {
   // ONE EXECUTOR RUNS ONE QUERY ON ONE THREAD. ONLY THE PHASES THAT READ INDEX PAGES (get/range) SET IT: THE PHASES BEFORE THEM
   // READ THE SCHEMA, WHICH A DROPPED INDEX ANSWERS WITH AN IndexException
   private TypeIndex indexBeingRead;
+  // EVERY INDEX lookForIndexes() BUILT A CURSOR ON, WITH THE SUB-INDEXES IT HAD BEFORE THE READ: A DROP TAKES THEM AWAY ONE AT A
+  // TIME WHILE THE INDEX STILL ANSWERS AS VALID, SO A LOOKUP RUNNING IN THAT WINDOW CAN COME BACK SHORT WITHOUT ANY ERROR (#9812)
+  private List<TypeIndex>       indexesRead;
+  private List<IndexInternal[]> indexesReadSnapshots;
 
   // #6815: THE ABSOLUTE DEADLINE FOR THIS EXECUTION, OWNED BY THE CONSUMER INSTEAD OF BY THE SOURCE ITERATOR.
   // buildIterator() CAN RETURN FOUR DIFFERENT SOURCES AND ONLY ONE OF THEM (MultiIterator) CARRIES A TIMEOUT OF ITS
@@ -376,6 +380,8 @@ public class SelectExecutor {
     if (select.fromType != null && select.rootTreeElement != null) {
       final List<IndexCursor> cursors = new ArrayList<>();
       indexBeingRead = null;
+      indexesRead = null;
+      indexesReadSnapshots = null;
       try {
         // #6592: A COMPOSITE (MULTI-PROPERTY) INDEX IS REGISTERED UNDER ITS FULL PROPERTY LIST (SEE
         // LocalDocumentType.indexesByProperties), NOT UNDER ANY SUBSET OF IT - SO A PLAIN AND-CONJUNCTION OF EQUALITY
@@ -407,8 +413,15 @@ public class SelectExecutor {
         // ARE NOT COMPARABLE (AN INTEGER id AGAINST A STRING name), AND THE MERGED ORDER IS NEVER RELIED UPON WHEN MORE THAN
         // ONE LEAF CONTRIBUTED: SelectIterator ONLY SKIPS ITS IN-MEMORY SORT WHEN usedIndexes.size() == 1. A NESTED in_op
         // CURSOR SCANS ONE INDEX AND STAYS KEY-ORDERED
-        if (!cursors.isEmpty())
+        if (!cursors.isEmpty()) {
+          // THE CURSORS ARE BUILT AND NOTHING HAS BEEN RETURNED YET: A DROP THAT STARTED MEANWHILE MAY HAVE TAKEN SUB-INDEXES AWAY
+          // UNDER AN EQUALITY LOOKUP, WHICH IS READ WHOLE, WITHOUT AN ERROR. THE SCAN ANSWERS INSTEAD OF A LOOKUP THAT MAY BE SHORT
+          if (!indexesReadUnchanged()) {
+            fallBackToScan(cursors, null);
+            return null;
+          }
           return new MultiIndexCursor(cursors, indexCandidateLimit, true, false);
+        }
 
         // NO CURSOR WAS ACTUALLY BUILT (E.G. A BARE is_null/is_not_null/neq/like/ilike LEAF, WHICH isTheNodeFullyIndexed()
         // CORRECTLY REFUSES TO TREAT AS INDEXED - SEE #6577 - SO node.index STAYS null AND filterWithIndexesFinalNode()
@@ -418,8 +431,10 @@ public class SelectExecutor {
       } catch (final IllegalArgumentException e) {
         // An IllegalArgumentException is the index's only when the index it was reading is gone ("File with id n was not found"
         // once its file is deleted under the lookup): any other one (a key that does not convert, a bad parameter) is the
-        // caller's and must not turn into a silent scan
-        if (indexBeingRead == null || indexBeingRead.isValid() || !TypeIndex.isFileNotFound(e))
+        // caller's and must not turn into a silent scan. "Gone" includes a drop still under way, which deletes the sub-index
+        // files first and clears isValid() last (#9812): TypeIndex.isStaleRead() is the one place that knows both, shared
+        // with the SQL, Cypher and Gremlin readers
+        if (indexBeingRead == null || !TypeIndex.isStaleRead(indexBeingRead, e))
           throw e;
         fallBackToScan(cursors, e);
       } catch (final IndexException e) {
@@ -432,12 +447,38 @@ public class SelectExecutor {
   }
 
   /**
+   * Marks {@code index} as the one the next lookup reads, and keeps the sub-indexes it has before the read for
+   * {@link #indexesReadUnchanged()}.
+   */
+  private void readingIndex(final TypeIndex index) {
+    indexBeingRead = index;
+    if (indexesRead == null) {
+      indexesRead = new ArrayList<>(2);
+      indexesReadSnapshots = new ArrayList<>(2);
+    }
+    indexesRead.add(index);
+    indexesReadSnapshots.add(index.getIndexesOnBuckets());
+  }
+
+  /**
+   * Whether every index the cursors were built on still has the sub-indexes it had before its read and no drop of it started
+   * (see {@link TypeIndex#isUnchangedSince}, #9651, #9812).
+   */
+  private boolean indexesReadUnchanged() {
+    if (indexesRead != null)
+      for (int i = 0; i < indexesRead.size(); i++)
+        if (!indexesRead.get(i).isUnchangedSince(indexesReadSnapshots.get(i)))
+          return false;
+    return true;
+  }
+
+  /**
    * #9331: AN INDEX DROPPED OR REBUILT BY A CONCURRENT DDL WHILE THE CURSORS WERE BEING BUILT. THE SCAN ANSWERS THE SAME ROWS
    * WITHOUT IT, SINCE evaluateWhere() RUNS THE WHOLE WHERE-TREE ON EVERY RECORD EITHER WAY
    */
   private void fallBackToScan(final List<IndexCursor> cursors, final RuntimeException cause) {
     LogManager.instance().log(this, Level.FINE, "Index dropped or rebuilt while the query was starting, scanning instead: %s",
-        null, cause.getMessage());
+        null, cause != null ? cause.getMessage() : "its sub-indexes changed under the lookup");
     for (final IndexCursor cursor : cursors)
       try {
         cursor.close();
@@ -568,7 +609,7 @@ public class SelectExecutor {
     // THROUGH range() WITH EQUAL (INCLUSIVE) BEGIN/END BOUNDS INSTEAD - SEE LSMTreeIndexCompacted's "PARTIAL KEY
     // COMPARISON...MATCHES BY PREFIX" (PURPOSE=2).
     final boolean ascendingOrder = orderByElided ? select.orderBy.getFirst().getSecond() : true;
-    indexBeingRead = bestIndex;
+    readingIndex(bestIndex);
     final IndexCursor cursor = fullKeyMatch ? bestIndex.get(keys) : bestIndex.range(ascendingOrder, keys, true, keys, true);
 
     if (cursor == null)
@@ -797,7 +838,7 @@ public class SelectExecutor {
     // DESCENDING INDEX SCAN WITH AN OPEN (null) BOUND IS NOT A SUPPORTED CURSOR SHAPE HERE AND USED TO RETURN AN EMPTY RESULT.
     final boolean ascendingOrder = true;
 
-    indexBeingRead = node.index;
+    readingIndex(node.index);
     final IndexCursor cursor;
     if (node.operator == SelectOperator.eq)
       cursor = node.index.get(new Object[] { rightValue });

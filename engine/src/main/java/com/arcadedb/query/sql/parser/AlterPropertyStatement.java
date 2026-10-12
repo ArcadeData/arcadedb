@@ -163,7 +163,11 @@ public class AlterPropertyStatement extends DDLStatement {
       return;
     DocumentValidator.requireReadableBound(db, type, property, min, "MIN");
     DocumentValidator.requireReadableBound(db, type, property, max, "MAX");
-    ExistingRecordsCheck.requireValues(db, type, property, StoredValueConstraints.of(db, false, min, max, regexp), what);
+    // compiled first, so an invalid pattern is reported as one before it is judged against the type
+    final StoredValueConstraints constraints = StoredValueConstraints.of(db, false, min, max, regexp);
+    // before the scan: a pattern the type cannot use is refused for what it is, not for the first record it meets (#9808)
+    DocumentValidator.requireUsableRegexp(type, property, regexp);
+    ExistingRecordsCheck.requireValues(db, type, property, constraints, what);
   }
 
   @Override
