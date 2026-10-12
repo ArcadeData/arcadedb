@@ -107,6 +107,25 @@ class GlobalConfigurationPublishableValueTest {
         .isEqualTo("mydb[*****;other");
   }
 
+  /**
+   * Issue #9773: the server's own error line for an entry without a '[' quotes that entry through this rule, and the
+   * commonest such entry is a credential block written without its brackets. ':' is the format's field separator, so
+   * the entry is masked from its first ':' on; a bare database name has none and stays as written.
+   */
+  @Test
+  void anEntryWithoutBracketsIsMaskedFromItsFirstColon() {
+    assertThat(GlobalConfiguration.SERVER_DEFAULT_DATABASES.publishableValue("Universe:elon:musk"))
+        .isEqualTo("Universe:*****");
+    assertThat(GlobalConfiguration.SERVER_DEFAULT_DATABASES.publishableValue("Universe[elon:musk];Beta:ada:lovelace;Gamma"))
+        .as("only the malformed entry is masked, the ones around it keep their own rule")
+        .isEqualTo("Universe[elon:*****];Beta:*****;Gamma");
+    assertThat(GlobalConfiguration.SERVER_DEFAULT_DATABASES.publishableValue("Beta")).isEqualTo("Beta");
+    assertThat(GlobalConfiguration.SERVER_DEFAULT_DATABASES.publishableValue("Beta:"))
+        .as("nothing after the ':' is nothing to hide, and '*****' would report a password where none is")
+        .isEqualTo("Beta:");
+    assertThat(GlobalConfiguration.SERVER_DEFAULT_DATABASES.publishableValue("Beta:;Gamma:x")).isEqualTo("Beta:;Gamma:*****");
+  }
+
   @Test
   void anEmptyPasswordIsNotASecretToHide() {
     // The server reads 'jay:' as a reference to an existing user (split(":") drops the trailing empty field,

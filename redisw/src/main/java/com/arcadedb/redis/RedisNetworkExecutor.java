@@ -26,8 +26,6 @@ import com.arcadedb.database.Record;
 import com.arcadedb.exception.ErrorCategory;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.MutableEdge;
-import com.arcadedb.index.Index;
-import com.arcadedb.index.IndexCursor;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ChannelBinaryServer;
 import com.arcadedb.query.RunningQuery;
@@ -603,14 +601,13 @@ public class RedisNetworkExecutor extends Thread {
           deleted[0] = removed;
         });
       } else {
-        final Index index = database.getSchema().getIndexByName(keyType);
-
         for (int i = 2; i < list.size(); i++) {
           final String key = (String) list.get(i);
 
-          final IndexCursor cursor = index.get(RedisIndexKeys.parse(key));
-          if (cursor.hasNext()) {
-            cursor.next().getRecord().delete();
+          // a key a concurrent index DDL hid is retried or refused, never counted as "nothing to delete" (#9811)
+          final Identifiable found = RedisIndexKeys.lookup(database, keyType, key);
+          if (found != null) {
+            found.getRecord().delete();
             deleted[0]++;
           }
         }
@@ -1359,10 +1356,9 @@ public class RedisNetworkExecutor extends Thread {
 
       final Database database = getAuthorizedDatabase(databaseName);
 
-      final Index index = database.getSchema().getIndexByName(keyType);
-
-      final IndexCursor cursor = index.get(RedisIndexKeys.parse(key));
-      record = cursor.hasNext() ? cursor.next().asDocument() : null;
+      // "not found" only for a key that is not there: never for one a concurrent CREATE or DROP INDEX hid (#9811)
+      final Identifiable found = RedisIndexKeys.lookup(database, keyType, key);
+      record = found != null ? found.asDocument() : null;
     }
     return record;
   }
@@ -1401,11 +1397,9 @@ public class RedisNetworkExecutor extends Thread {
 
       final Database database = getAuthorizedDatabase(databaseName);
 
-      final Index index = database.getSchema().getIndexByName(keyType);
-
       for (final Object key : keys) {
-        final IndexCursor cursor = index.get(RedisIndexKeys.parse(key.toString()));
-        records.add(cursor.hasNext() ? cursor.next().asDocument() : null);
+        final Identifiable found = RedisIndexKeys.lookup(database, keyType, key.toString());
+        records.add(found != null ? found.asDocument() : null);
       }
     }
     return records;

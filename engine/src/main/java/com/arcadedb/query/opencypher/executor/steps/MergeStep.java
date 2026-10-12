@@ -58,10 +58,10 @@ import com.arcadedb.query.sql.executor.QueryStatistics;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.index.IndexException;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
-import com.arcadedb.schema.Type;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -1190,17 +1190,27 @@ public class MergeStep extends AbstractExecutionStep {
     final Object[] propertyValues = new Object[propertyNames.length];
     for (int i = 0; i < propertyNames.length; i++) {
       final Object value = evaluatedProperties.get(propertyNames[i]);
-      // A temporal wrapper is looked up as the java.time value the index key conversion understands. A declared STRING
-      // property holds the text a write of the value stores, which is what a MATCH compares it with
-      // (InlineProperties.matchesProperty), so that text is the key (issue #9695)
+      // A temporal wrapper is looked up as the java.time value the index key conversion understands. A declared property
+      // holds what a write of the value stores, which is what a MATCH compares it with (InlineProperties.matchesProperty),
+      // so that value is the key (issues #9695, #9794)
       final Property property = type.getPolymorphicPropertyIfExists(propertyNames[i]);
-      final String text = property != null && property.getType() == Type.STRING ?
-          InlineProperties.declaredText(property, context.getDatabase(), value) :
-          null;
-      propertyValues[i] = text != null ? text : TemporalUtil.toIndexKey(value);
+      final Object stored = property != null ? InlineProperties.declaredValue(property, context.getDatabase(), value) : null;
+      propertyValues[i] = stored != null ? stored : TemporalUtil.toIndexKey(value);
     }
 
-    final Iterator<Identifiable> cursor = context.getDatabase().lookupByKey(label, propertyNames, propertyValues);
+    final Iterator<Identifiable> cursor;
+    try {
+      cursor = context.getDatabase().lookupByKey(label, propertyNames, propertyValues);
+    } catch (final IndexException e) {
+      // A concurrent DDL is creating, rebuilding or dropping the index: the lookup is read whole or not at all (#9811), and a
+      // short one would make MERGE create a node that exists. Nothing was returned yet, so the caller scans the type instead
+      return null;
+    } catch (final IllegalArgumentException e) {
+      // lookupByKey answers "no index" this way, and a lookup under the drop fails with "File with id n was not found"
+      if (TypeIndex.isStaleRead(bestIndex, e) || !bestIndex.isReadyForQueries())
+        return null;
+      throw e;
+    }
     return Labels.isInheritedIndex(bestIndex, label) ?
         Labels.filterByLabel(cursor, context.getDatabase(), label) :
         cursor;
@@ -1319,18 +1329,10 @@ public class MergeStep extends AbstractExecutionStep {
       final Object expectedValue = entry.getValue();
 
       // MERGE is defined as the MATCH of its pattern: the very comparison a MATCH applies to an inline property, so the
-      // two clauses cannot drift apart on a FLOAT, a signed zero or a temporal against stored text (issue #9693), and a
-      // declared STRING property is found by the text the same value was stored as (issue #9695)
-      final Object stored = doc.get(key);
-      // ...except for the text a release before the native temporal types stored a temporal as: on a database that
-      // predates them it is that temporal, which MERGE matched before, and must go on matching rather than create a
-      // duplicate beside it (issue #9636). Only an undeclared property is restored, so it never meets the STRING coercion
-      final Object restored = stored instanceof String text && expectedValue instanceof CypherTemporalValue ?
-          TemporalUtil.restoreLegacyText(doc, key, text) :
-          stored;
-      if (restored != stored ?
-          !InlineProperties.matchesResolvedValue(restored, expectedValue) :
-          !InlineProperties.matchesProperty(doc, key, expectedValue))
+      // two clauses cannot drift apart on a FLOAT, a signed zero or a temporal against stored text (issue #9693), a
+      // declared property is found by what the same value was stored as (issues #9695, #9794), and the text a release
+      // before the native temporal types stored a temporal as is still that temporal (issues #9636, #9806)
+      if (!InlineProperties.matchesProperty(doc, key, expectedValue))
         return false;
     }
     return true;

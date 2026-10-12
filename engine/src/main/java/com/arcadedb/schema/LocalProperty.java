@@ -29,6 +29,8 @@ import com.arcadedb.security.SecurityDatabaseUser;
 
 import java.util.*;
 import java.util.logging.Level;
+import java.util.regex.Pattern;
+import java.util.regex.PatternSyntaxException;
 
 public class LocalProperty extends AbstractProperty {
 
@@ -307,9 +309,44 @@ public class LocalProperty extends AbstractProperty {
   public Property setRegexp(final String regexp) {
     checkForSchemaMutation();
     final boolean changed = !Objects.equals(this.regexp, regexp);
-    if (changed)
+    if (changed) {
+      checkRegexp(regexp);
       publish(() -> this.regexp = regexp);
+    }
     return this;
+  }
+
+  /**
+   * Refuses a REGEXP the property's type cannot use (see {@link DocumentValidator#unusableRegexp}) or that is not a valid
+   * pattern, so that an accepted declaration never makes every later write of the property fail (issue #9808): the REGEXP
+   * twin of {@link #checkBound}. Clearing it ({@code null}) is always allowed.
+   * <p>
+   * A schema loaded from disk is not refused: a database written before this rule may carry such a pattern, and refusing it
+   * would make the database unopenable. The load only warns, and {@code ALTER PROPERTY ... REGEXP null} is the remedy.
+   */
+  private void checkRegexp(final String regexp) {
+    if (regexp == null)
+      return;
+
+    String reason = DocumentValidator.unusableRegexp(type, regexp);
+    if (reason == null)
+      try {
+        Pattern.compile(regexp);
+      } catch (final PatternSyntaxException e) {
+        reason = "is not a valid regular expression: " + e.getDescription();
+      }
+    if (reason == null)
+      return;
+
+    reason = "The REGEXP '" + regexp + "' of property '" + owner.getName() + "." + name + "' " + reason;
+    if (owner.getSchema().getEmbedded().isReadingFromFile()) {
+      LogManager.instance().log(this, Level.WARNING,
+          "%s: a write of a value may fail on it. Remove it with ALTER PROPERTY `%s`.`%s` REGEXP null", reason, owner.getName(),
+          name);
+      return;
+    }
+
+    throw new IllegalArgumentException(reason);
   }
 
   /**

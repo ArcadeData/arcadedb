@@ -391,6 +391,19 @@ public class ArcadeDBServer {
     return configuration;
   }
 
+  /**
+   * Asks every plugin whether {@code setting} may take {@code value} while the server runs, before an operator's change
+   * is stored (see {@link ServerPlugin#checkServerSettingChange}). The first refusal propagates to the caller.
+   *
+   * @throws IllegalArgumentException when a plugin refuses the change
+   */
+  public void checkServerSettingChange(final GlobalConfiguration setting, final Object value) {
+    if (pluginManager == null)
+      return;
+    for (final ServerPlugin plugin : pluginManager.getPlugins())
+      plugin.checkServerSettingChange(setting, value);
+  }
+
   /** The configured {@code arcadedb.server.mode}: {@code development}, {@code test} or {@code production}. */
   public String getMode() {
     return configuration.getValueAsString(GlobalConfiguration.SERVER_MODE);
@@ -2167,12 +2180,26 @@ public class ArcadeDBServer {
       if (defaultDbMode == null)
         defaultDbMode = READ_WRITE;
 
-      // CREATE DEFAULT DATABASES
+      // CREATE DEFAULT DATABASES. Every line below that quotes the setting quotes ONE entry, and through the setting's own
+      // publication rule (issue #9773): the server log is on disk, forwarded by log collectors and copied into support
+      // bundles, and an entry carries the password its user authenticates with
       final String[] dbs = defaultDatabases.split(";");
       for (final String db : dbs) {
         final int credentialBegin = db.indexOf('[');
         if (credentialBegin < 0) {
-          LogManager.instance().log(this, Level.WARNING, "Error in default databases format: '%s'", defaultDatabases);
+          LogManager.instance().log(this, Level.WARNING,
+              "Error in default databases format: entry '%s' has no credentials block (expected name[user:password[:group]]), "
+                  + "it and the entries after it are not loaded", GlobalConfiguration.SERVER_DEFAULT_DATABASES.publishableValue(db));
+          break;
+        }
+
+        // A '[' never closed used to reach db.substring(credentialBegin + 1, -1) below and abort the startup with a
+        // StringIndexOutOfBoundsException that named neither the setting nor the entry
+        final int credentialEnd = db.indexOf(']', credentialBegin);
+        if (credentialEnd < 0) {
+          LogManager.instance().log(this, Level.WARNING,
+              "Missing closing ']' in default databases format: entry '%s', it and the entries after it are not loaded",
+              GlobalConfiguration.SERVER_DEFAULT_DATABASES.publishableValue(db));
           break;
         }
 
@@ -2197,7 +2224,6 @@ public class ArcadeDBServer {
           continue;
         }
 
-        final int credentialEnd = db.indexOf(']', credentialBegin);
         final String credentials = db.substring(credentialBegin + 1, credentialEnd);
 
         if (!credentials.isEmpty())
@@ -2209,8 +2235,8 @@ public class ArcadeDBServer {
           // PARSE IMPORTS
           final int commandsEnd = db.indexOf('}', credentialEnd + 2);
           if (commandsEnd < 0) {
-            LogManager.instance().log(this, Level.WARNING, "Missing closing '}' in default databases format: '%s'",
-                db);
+            LogManager.instance().log(this, Level.WARNING, "Missing closing '}' in default databases format: entry '%s'",
+                GlobalConfiguration.SERVER_DEFAULT_DATABASES.publishableValue(db));
             break;
           }
           final String commands = db.substring(credentialEnd + 2, commandsEnd);

@@ -340,6 +340,10 @@ public final class SnapshotManager {
    * {@code database.lck}, empty today and so matching by accident. They are declared by
    * {@link NodeLocalFiles#isNodeLocalFileName(String)} in the engine, beside the constants their writers build the names
    * from, rather than listed here, so a new engine side file is classified where it is written.
+   * <p>
+   * #9751 adds two more families there: an LSM vector index's node-locally built graph with its manifest, ordinal map
+   * and product quantization, and the {@code last-tx-id.bin} recency marker, which a snapshot does ship but which a live
+   * node rewrites at moments of its own.
    */
   private static boolean isNodeLocalFileName(final String name) {
     return name.endsWith(".wal")

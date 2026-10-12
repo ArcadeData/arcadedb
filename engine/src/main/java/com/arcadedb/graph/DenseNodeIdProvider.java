@@ -191,6 +191,17 @@ public class DenseNodeIdProvider implements GraphTraversalProvider {
   }
 
   @Override
+  public int getBucketId(final int nodeId) {
+    final int id = delegateId(nodeId);
+    return id < 0 ? -1 : delegate.getBucketId(id);
+  }
+
+  @Override
+  public Object getNodeIdSpace() {
+    return delegate.getNodeIdSpace();
+  }
+
+  @Override
   public int[] getNeighborIds(final int nodeId, final Vertex.DIRECTION direction, final String... edgeTypes) {
     final int id = delegateId(nodeId);
     if (id < 0)

@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.RetryScope;
@@ -31,8 +32,6 @@ import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.graph.MutableEdge;
-import com.arcadedb.index.Index;
-import com.arcadedb.index.IndexCursor;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.OperationType;
 import com.arcadedb.query.QueryEngine;
@@ -867,13 +866,13 @@ public class RedisQueryEngine implements QueryEngine {
 
       if (!database.getSchema().existsIndex(firstArg))
         throw new CommandParsingException("Index '" + firstArg + "' not found");
-      final Index index = database.getSchema().getIndexByName(firstArg);
       database.transaction(() -> {
         int removed = 0;
         for (int i = 2; i < parts.size(); i++) {
-          final IndexCursor cursor = index.get(RedisIndexKeys.parse(parts.get(i)));
-          if (cursor.hasNext()) {
-            cursor.next().getRecord().delete();
+          // a key a concurrent index DDL hid is retried or refused, never counted as "nothing to delete" (#9811)
+          final Identifiable found = RedisIndexKeys.lookup(database, firstArg, parts.get(i));
+          if (found != null) {
+            found.getRecord().delete();
             removed++;
           }
         }
@@ -885,10 +884,8 @@ public class RedisQueryEngine implements QueryEngine {
   }
 
   private Record getRecordByIndex(final String indexName, final String key) {
-    final Index index = database.getSchema().getIndexByName(indexName);
-    final Object[] keys = RedisIndexKeys.parse(key);
-    final IndexCursor cursor = index.get(keys);
-    return cursor.hasNext() ? cursor.next().asDocument() : null;
+    final Identifiable found = RedisIndexKeys.lookup(database, indexName, key);
+    return found != null ? found.asDocument() : null;
   }
 
 }

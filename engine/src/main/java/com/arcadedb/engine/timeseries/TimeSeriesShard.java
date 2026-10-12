@@ -80,11 +80,24 @@ public class TimeSeriesShard implements AutoCloseable {
   // Read lock: held by scan/iterate (concurrent reads allowed).
   // Write lock: held by compact() to prevent queries from seeing data twice
   // during the window where sealed blocks are written but mutable not yet cleared.
-  private final ReadWriteLock          compactionLock  = new ReentrantReadWriteLock();
-  // Prevents concurrent compact() calls on this shard (e.g. maintenance scheduler + explicit call).
-  // Both writeTempCompactionFile() and truncateToBlockCount() use the same .ts.sealed.tmp path;
-  // concurrent execution would corrupt each other's temp files.
-  private final Lock                   compactionMutex = new ReentrantLock();
+  private final ReentrantReadWriteLock compactionLock  = new ReentrantReadWriteLock();
+  // The mutual exclusion of EVERY operation that rewrites this shard's sealed file (issue #9771):
+  //  - compact()             (Phases 3 and 4b are lock-free, and they own .ts.sealed.tmp)
+  //  - mergeSmallBlocks()    (its own .ts.sealed.merge.tmp, but it installs a directory planned against a snapshot)
+  //  - runSealedRewrite()    (retention and downsampling, through TimeSeriesEngine: truncateBefore() and downsampleBlocks()
+  //                           use .ts.sealed.tmp as well)
+  // All of them either share that one temp path or install a block directory computed from a snapshot of the live store, so
+  // two of them overlapping corrupt each other's temp file or silently undo each other's result (a retention pass inside a
+  // compaction's window put the retired blocks back). compactionLock is NOT this lock: compaction deliberately does not hold
+  // it for the long part of its work. Lock order: compactionMutex first, then compactionLock.
+  // The HA replication session (runWithCompactionReplication) is not a lock in this order: compact() and mergeSmallBlocks() take
+  // the mutex and then open the session, retention and downsampling open one session for all shards and take each shard's mutex
+  // inside it. That cannot invert into a deadlock because opening a session never waits: FileManager.startRecordingChanges()
+  // answers false when one is already active and the wrapper then returns false without running the work (a deferred pass). A
+  // thread holding a session and waiting for the mutex is waited for by nobody who holds the mutex and wants a session.
+  // runSealedRewrite() must not be called while holding compactionLock (a read lock cannot be upgraded); its only caller,
+  // TimeSeriesEngine.runSealedMaintenanceReplicated(), holds none.
+  private final ReentrantLock          compactionMutex = new ReentrantLock();
   // Serializes concurrent appendSamples() calls on this shard.
   // Multiple threads routing to the same shard via round-robin would otherwise produce
   // MVCC conflicts (ConcurrentModificationException) on page 0, because each call
@@ -105,6 +118,14 @@ public class TimeSeriesShard implements AutoCloseable {
    * it leaks into subsequent tests in the same JVM and silently alters their compaction timing.
    */
   public static volatile Runnable TEST_PRE_PHASE4C_HOOK = null;
+
+  /**
+   * Test-only hook (issue #9770). When non-null, fires in {@link #compactInternal()} between Phase 4a and Phase 4b, that is
+   * once the temp file exists and before anything else is appended to it: throw from it to prove that a compaction failing in
+   * the window the Phase 3 cleanup arm does not cover leaves no temp file behind. Same reset rule as
+   * {@link #TEST_PRE_PHASE4C_HOOK}.
+   */
+  static volatile Runnable TEST_PRE_PHASE4B_HOOK = null;
 
   /**
    * Test-only hook (issue #9716). When non-null, fires in {@link #compactInternal()} inside Phase 4c, under the
@@ -870,9 +891,8 @@ public class TimeSeriesShard implements AutoCloseable {
    * left intact for re-compaction.
    */
   public void compact() throws IOException {
-    // Serialize concurrent compact() calls: writeTempCompactionFile() and truncateToBlockCount()
-    // both use the same .ts.sealed.tmp path; concurrent execution would corrupt each other's
-    // temp files (e.g. maintenance scheduler and an explicit compactAll() running in parallel).
+    // Serialize against every other rewrite of the sealed file (see compactionMutex): a second compact() (maintenance
+    // scheduler and an explicit compactAll() in parallel), but also retention and downsampling.
     compactionMutex.lock();
     try {
       // Route through the HA replication wrapper. On a Raft FOLLOWER this returns false WITHOUT running
@@ -920,6 +940,54 @@ public class TimeSeriesShard implements AutoCloseable {
     } finally {
       compactionMutex.unlock();
     }
+  }
+
+  /**
+   * Runs a rewrite of this shard's sealed file that is not a compaction - retention, downsampling - with the exclusion every
+   * such rewrite needs (issue #9771): the {@link #compactionMutex} that keeps it off a compaction or a merge that is between
+   * its snapshot and its swap, then the compaction write lock that keeps readers off the files while they are swapped.
+   * <p>
+   * The shard owns the question of what a rewrite must exclude, so a caller (the engine) hands it the work and does not decide
+   * which lock to take: before this, retention took the write lock alone, which compaction does not hold for Phases 3 and 4b,
+   * and could run from beginning to end inside a compaction's window.
+   * <p>
+   * A rewrite therefore waits for a compaction that is in flight on this shard, Phases 3 and 4b included. That is the point, and it
+   * costs the maintenance scheduler nothing it did not already pay: it runs compaction, merge, retention and downsampling one
+   * after the other on one thread, so retention only ever started after the compaction of the same pass had finished. The wait is
+   * new only for a rewrite called from a second thread (an explicit {@code COMPACT TIMESERIES TYPE} in a session), and it is
+   * bounded by that compaction.
+   */
+  void runSealedRewrite(final SealedRewrite rewrite) throws IOException {
+    // A read lock cannot be upgraded: taking the write lock below while this thread holds the read lock would wait for itself
+    // forever. Said out loud, before the mutex is taken, instead of as a hung maintenance thread.
+    if (compactionLock.getReadHoldCount() > 0)
+      throw new IllegalStateException("A rewrite of the sealed file of shard " + shardIndex + " of type '" + typeName
+          + "' was started while holding the compaction read lock, which would wait for itself to release it");
+    compactionMutex.lock();
+    try {
+      compactionLock.writeLock().lock();
+      try {
+        rewrite.run();
+      } finally {
+        compactionLock.writeLock().unlock();
+      }
+    } finally {
+      compactionMutex.unlock();
+    }
+  }
+
+  /**
+   * Whether a rewrite of the sealed file (compaction, merge, retention, downsampling) is waiting for the one in flight. Lets a
+   * test prove that a second rewrite is queued on {@link #compactionMutex} and not merely parked on something else.
+   */
+  boolean hasRewriteWaiting() {
+    return compactionMutex.hasQueuedThreads();
+  }
+
+  /** A rewrite of the sealed file, run by {@link #runSealedRewrite}. */
+  @FunctionalInterface
+  interface SealedRewrite {
+    void run() throws IOException;
   }
 
   private boolean mergeSmallBlocksInternal(final int minBlocksSaved) throws IOException {
@@ -1066,70 +1134,87 @@ public class TimeSeriesShard implements AutoCloseable {
       }
     }
 
-    // ── Phase 3 (lock-free, no TX): write existing sealed + Phase 2 blocks to temp file ─────
-    // Concurrent queries still read from the CURRENT sealed file — no double-counting.
-    // The temp file is created even when allCompressedList is empty so that Phase 4 can
-    // append the partial page's data and then swap atomically in one shot.
+    // The temp file exists from Phase 3 until Phase 4c swaps it in, and Phases 3 to 4b are the part of the compaction that is
+    // lock-free and owns it. Whatever fails in that window (an MVCC conflict reading the pages, an IO error, a data-dependent
+    // throw such as "Tag value too long" or a dictionary overflow) must not leave it behind, nor the crash-recovery flag set
+    // over a sealed store that was never touched (issue #9770): the next rewrite of the sealed file would find a half-written
+    // file of unbounded age at its path.
     final List<TimeSeriesSealedStore.BlockEntry> newBlockDirectory;
-    try {
-      newBlockDirectory = sealedStore.writeTempCompactionFile(
-          allCompressedList, allMetaList, allStatsList, allTagDVList);
-    } catch (final Exception e) {
-      sealedStore.deleteTempFileIfExists();
-      clearCompactionFlagBestEffort();
-      throw e instanceof IOException ? (IOException) e : new IOException("Compaction failed writing temp file", e);
-    }
-
-    // ── Phase 4a (brief writeLock + read-only TX): snapshot remaining pages ──────────────
-    // Grab the write lock just long enough to snapshot the current page count and read the
-    // pages accumulated since Phase 0.  Release the lock immediately so appends can resume
-    // while we sort + compress (Phase 4b).
-    //
-    // IMPORTANT: do NOT read the last page (phase4aPageCount) here.  Phase 4b runs lock-free,
-    // so concurrent appendSamples() calls may add samples to page phase4aPageCount between now
-    // and Phase 4c.  Deferring the read of page phase4aPageCount to Phase 4c (under writeLock)
-    // guarantees we capture those extra samples and do not lose them when clearDataPages() runs.
     final int phase4aPageCount;
-    Object[] phase4aData;
-    compactionLock.writeLock().lock();
-    try {
-      final OwnTransaction snapshot = OwnTransaction.begin(db);
-      try {
-        phase4aPageCount = mutableBucket.getDataPageCount();
-        if (phase4aPageCount > lastFullPage + 1)
-          // Read only up to phase4aPageCount - 1; the last page is read in Phase 4c.
-          phase4aData = mutableBucket.readPagesRangeForCompaction(lastFullPage + 1, phase4aPageCount - 1);
-        else
-          phase4aData = null;
-      } finally {
-        snapshot.rollbackIfMine(); // read-only snapshot
-      }
-    } finally {
-      compactionLock.writeLock().unlock();
-    }
-
-    // ── Phase 4b (lock-free, no TX): compress remaining pages + write to temp file ────────
-    // Merge Phase-2 spill with the Phase-4a snapshot, then compress and append to the temp
-    // file.  Concurrent appends proceed freely during this CPU/IO-intensive step.
-    final Object[] toCompress4b;
-    if (phase2Spill != null && phase4aData != null)
-      toCompress4b = mergeCompactionData(phase2Spill, phase4aData);
-    else if (phase2Spill != null)
-      toCompress4b = phase2Spill;
-    else
-      toCompress4b = phase4aData;
-
-    // Use returnSpill=true so the last partial chunk is held back for Phase 4c,
-    // where it can be merged with any tail pages created during Phase 4b.
     Object[] phase4bSpill = null;
-    if (toCompress4b != null) {
-      final List<byte[][]> remCompressed = new ArrayList<>();
-      final List<long[]> remMeta = new ArrayList<>();
-      final List<TimeSeriesSealedStore.BlockStats> remStats = new ArrayList<>();
-      final List<String[][]> remTagDV = new ArrayList<>();
-      phase4bSpill = buildCompressedBlocks(toCompress4b, remCompressed, remMeta, remStats, remTagDV, true);
-      if (!remCompressed.isEmpty())
-        sealedStore.appendBlocksToTempFile(remCompressed, remMeta, remStats, remTagDV, newBlockDirectory);
+    boolean readyForPhase4c = false;
+    try {
+      // ── Phase 3 (lock-free, no TX): write existing sealed + Phase 2 blocks to temp file ─────
+      // Concurrent queries still read from the CURRENT sealed file — no double-counting.
+      // The temp file is created even when allCompressedList is empty so that Phase 4 can
+      // append the partial page's data and then swap atomically in one shot.
+      try {
+        newBlockDirectory = sealedStore.writeTempCompactionFile(
+            allCompressedList, allMetaList, allStatsList, allTagDVList);
+      } catch (final Exception e) {
+        // the temp file and the crash-recovery flag are cleaned up by the finally below
+        throw e instanceof IOException ? (IOException) e : new IOException("Compaction failed writing temp file", e);
+      }
+
+      // ── Phase 4a (brief writeLock + read-only TX): snapshot remaining pages ──────────────
+      // Grab the write lock just long enough to snapshot the current page count and read the
+      // pages accumulated since Phase 0.  Release the lock immediately so appends can resume
+      // while we sort + compress (Phase 4b).
+      //
+      // IMPORTANT: do NOT read the last page (phase4aPageCount) here.  Phase 4b runs lock-free,
+      // so concurrent appendSamples() calls may add samples to page phase4aPageCount between now
+      // and Phase 4c.  Deferring the read of page phase4aPageCount to Phase 4c (under writeLock)
+      // guarantees we capture those extra samples and do not lose them when clearDataPages() runs.
+      Object[] phase4aData;
+      compactionLock.writeLock().lock();
+      try {
+        final OwnTransaction snapshot = OwnTransaction.begin(db);
+        try {
+          phase4aPageCount = mutableBucket.getDataPageCount();
+          if (phase4aPageCount > lastFullPage + 1)
+            // Read only up to phase4aPageCount - 1; the last page is read in Phase 4c.
+            phase4aData = mutableBucket.readPagesRangeForCompaction(lastFullPage + 1, phase4aPageCount - 1);
+          else
+            phase4aData = null;
+        } finally {
+          snapshot.rollbackIfMine(); // read-only snapshot
+        }
+      } finally {
+        compactionLock.writeLock().unlock();
+      }
+
+      // ── Phase 4b (lock-free, no TX): compress remaining pages + write to temp file ────────
+      // Merge Phase-2 spill with the Phase-4a snapshot, then compress and append to the temp
+      // file.  Concurrent appends proceed freely during this CPU/IO-intensive step.
+      final Runnable prePhase4bHook = TEST_PRE_PHASE4B_HOOK;
+      if (prePhase4bHook != null)
+        prePhase4bHook.run();
+      final Object[] toCompress4b;
+      if (phase2Spill != null && phase4aData != null)
+        toCompress4b = mergeCompactionData(phase2Spill, phase4aData);
+      else if (phase2Spill != null)
+        toCompress4b = phase2Spill;
+      else
+        toCompress4b = phase4aData;
+
+      // Use returnSpill=true so the last partial chunk is held back for Phase 4c,
+      // where it can be merged with any tail pages created during Phase 4b.
+      if (toCompress4b != null) {
+        final List<byte[][]> remCompressed = new ArrayList<>();
+        final List<long[]> remMeta = new ArrayList<>();
+        final List<TimeSeriesSealedStore.BlockStats> remStats = new ArrayList<>();
+        final List<String[][]> remTagDV = new ArrayList<>();
+        phase4bSpill = buildCompressedBlocks(toCompress4b, remCompressed, remMeta, remStats, remTagDV, true);
+        if (!remCompressed.isEmpty())
+          sealedStore.appendBlocksToTempFile(remCompressed, remMeta, remStats, remTagDV, newBlockDirectory);
+      }
+
+      readyForPhase4c = true;
+    } finally {
+      if (!readyForPhase4c) {
+        sealedStore.deleteTempFileIfExists();
+        clearCompactionFlagBestEffort();
+      }
     }
 
     // ── Phase 4c (brief writeLock + brief TX): read tail pages, swap + clear ──────────────
@@ -1194,6 +1279,9 @@ public class TimeSeriesShard implements AutoCloseable {
         tx.commit();
       } catch (final Exception e) {
         tx.rollbackIfMine();
+        // A failure before the swap leaves the temp file where it is, and the rollback below returns early when it has nothing to
+        // cut: neither may hand the file to the next rewrite of the sealed store (issue #9770).
+        sealedStore.deleteTempFileIfExists();
         // Restore sealed store to initial state so the next run re-compacts cleanly.
         // (The crash-recovery flag remains set, so a restart also handles this correctly.)
         try {

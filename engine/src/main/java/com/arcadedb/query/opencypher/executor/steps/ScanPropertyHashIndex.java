@@ -22,6 +22,8 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.query.opencypher.temporal.CypherTemporalValue;
+import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.sql.executor.WorkGuard;
 
 import java.math.BigInteger;
@@ -56,9 +58,13 @@ final class ScanPropertyHashIndex {
   // value: a RID for a key held by one record (the common case, no list allocated), else an ArrayList<RID>
   private final Map<Object, Object> byKey       = new HashMap<>();
   private final List<RID>           nonIntegral = new ArrayList<>();
+  /** The records holding a temporal: a text is only read as one by a declaration, so they are kept aside for a text lookup. */
+  private final List<RID>           temporals   = new ArrayList<>();
   private       int                 hashed;
   /** Whether any record holds a text, the only key an integer's digits can be found under. */
   private       boolean             anyText;
+  /** Whether any record holds an integer or a boolean, the keys a text written into a declared property can be found under. */
+  private       boolean             anyTyped;
 
   /** Drains {@code scan}, loading each record's {@code propertyName}; {@code guard} enforces the command deadline. The records' order is kept within a key. */
   ScanPropertyHashIndex(final Iterator<Identifiable> scan, final String propertyName, final WorkGuard guard) {
@@ -80,10 +86,16 @@ final class ScanPropertyHashIndex {
       if (value instanceof String) {
         put(value, rid);
         anyText = true;
-      } else if (isIntegral(value))
+      } else if (isIntegral(value)) {
         put(((Number) value).longValue(), rid);
-      else if (value instanceof Number)
+        anyTyped = true;
+      } else if (value instanceof Number)
         nonIntegral.add(rid);
+      else if (value instanceof Boolean) {
+        put(value, rid);
+        anyTyped = true;
+      } else if (TemporalUtil.isNativeTemporal(value) || value instanceof CypherTemporalValue)
+        temporals.add(rid);
     }
   }
 
@@ -117,31 +129,116 @@ final class ScanPropertyHashIndex {
 
   /**
    * The records that may equal {@code expected} (a supported value), in scan order within a key (a numeric lookup lists the
-   * exact matches first, then the texts spelling the number, then the non-integral numbers), or null when the hash
-   * cannot answer cheaply - a numeric lookup against a type holding many non-integral numbers - and the caller must scan.
+   * exact matches first, then the texts spelling the number, then the non-integral numbers; a text lookup the exact texts
+   * first, then the values the text can be read as), or null when the hash cannot answer cheaply - a lookup against a type
+   * holding many values no key can find - and the caller must scan.
    */
-  @SuppressWarnings("unchecked")
   Iterator<Identifiable> candidates(final Object expected) {
     final boolean text = expected instanceof String;
-    if (!text && nonIntegral.size() > MAX_NON_INTEGRAL)
+    if (text)
+      return textCandidates((String) expected);
+    if (nonIntegral.size() > MAX_NON_INTEGRAL)
       return null;
 
-    final Object exact = byKey.get(text ? expected : (Object) ((Number) expected).longValue());
+    final Object exact = byKey.get(((Number) expected).longValue());
     // An integer written into a property declared STRING is stored as its digits ('1' for 1), and the pattern that wrote it
     // has to find it again (issue #9695): those records are candidates too. The caller's re-check keeps a schemaless '1' out
-    final Object digits = text || !anyText ? null : byKey.get(expected.toString());
-    if (text || nonIntegral.isEmpty() && digits == null) {
-      if (exact == null)
-        return Collections.emptyIterator();
-      return exact instanceof List ? (Iterator<Identifiable>) (Iterator<?>) ((List<RID>) exact).iterator()
-          : Collections.<Identifiable>singletonList((RID) exact).iterator();
-    }
+    final Object digits = anyText ? byKey.get(expected.toString()) : null;
+    if (nonIntegral.isEmpty() && digits == null)
+      return iterator(exact);
 
     final List<Identifiable> merged = new ArrayList<>(nonIntegral.size() + 2);
     addAll(merged, exact);
     addAll(merged, digits);
     merged.addAll(nonIntegral);
     return merged.iterator();
+  }
+
+  /**
+   * A text written into a property declared with another type is stored as that type ({@code 5} for {@code '5'} in an
+   * INTEGER, {@code true} for {@code 'true'} in a BOOLEAN), and the pattern that wrote it has to find it again (issue #9794):
+   * the records holding a value the text can be read as are candidates too. The caller's re-check keeps out a value no
+   * declaration reads the text as, such as a schemaless {@code 5} against {@code '5'}.
+   */
+  private Iterator<Identifiable> textCandidates(final String text) {
+    final Object exact = byKey.get(text);
+    if (!anyTyped && nonIntegral.isEmpty() && temporals.isEmpty())
+      return iterator(exact);
+
+    // the integer and the boolean a write of the text stores (Integer.parseInt and Boolean's text, see Type.convert)
+    final Long integral = anyTyped ? integralOf(text) : null;
+    final Object integralRecords = integral != null ? byKey.get(integral) : null;
+    final Object booleanRecords = anyTyped && ("true".equalsIgnoreCase(text) || "false".equalsIgnoreCase(text)) ?
+        byKey.get(Boolean.valueOf(text)) :
+        null;
+    // a FLOAT, DOUBLE or DECIMAL is only stored from a text a number parses, a temporal only from one of a temporal's shape
+    final List<RID> fractional = !nonIntegral.isEmpty() && isDecimalText(text) ? nonIntegral : List.of();
+    final List<RID> temporal = !temporals.isEmpty() && TemporalUtil.mayBeTemporalString(text) ? temporals : List.of();
+    if (fractional.size() + temporal.size() > MAX_NON_INTEGRAL)
+      return null;
+    if (integralRecords == null && booleanRecords == null && fractional.isEmpty() && temporal.isEmpty())
+      return iterator(exact);
+
+    final List<Identifiable> merged = new ArrayList<>(fractional.size() + temporal.size() + 3);
+    addAll(merged, exact);
+    addAll(merged, integralRecords);
+    addAll(merged, booleanRecords);
+    merged.addAll(fractional);
+    merged.addAll(temporal);
+    return merged.iterator();
+  }
+
+  /**
+   * Whether a FLOAT, DOUBLE or DECIMAL declaration can read the text as a number ({@code Double.parseDouble}, which
+   * {@code Type.convert} uses, ignores surrounding blanks). Only a text starting the way a number does is parsed, so an
+   * ordinary text never costs a thrown exception.
+   */
+  private static boolean isDecimalText(final String text) {
+    final String trimmed = text.trim();
+    if (trimmed.isEmpty())
+      return false;
+    final char first = trimmed.charAt(0);
+    if (!(first >= '0' && first <= '9') && first != '-' && first != '+' && first != '.' && first != 'I' && first != 'N')
+      return false;
+    try {
+      Double.parseDouble(trimmed);
+      return true;
+    } catch (final NumberFormatException e) {
+      return false;
+    }
+  }
+
+  /**
+   * The integer a text is read as by an integral declaration (an optional sign, then digits), or null: a text of any other
+   * shape is refused by the write, so no record holds an integer stored from it. Only that shape is parsed, so an ordinary
+   * text never costs a thrown exception.
+   */
+  private static Long integralOf(final String text) {
+    final int length = text.length();
+    int start = length > 0 && (text.charAt(0) == '-' || text.charAt(0) == '+') ? 1 : 0;
+    if (start == length)
+      return null;
+    for (int i = start; i < length; i++)
+      if (text.charAt(i) < '0' || text.charAt(i) > '9')
+        return null;
+    // leading zeros are no digits of the value, as for the declaration's own reading of the text (InlineProperties)
+    while (start < length - 1 && text.charAt(start) == '0')
+      start++;
+    if (length - start > 19)
+      return null;
+    try {
+      return Long.parseLong(text);
+    } catch (final NumberFormatException e) {
+      return null; // out of the range of a long
+    }
+  }
+
+  @SuppressWarnings("unchecked")
+  private static Iterator<Identifiable> iterator(final Object bucket) {
+    if (bucket == null)
+      return Collections.emptyIterator();
+    return bucket instanceof List ? (Iterator<Identifiable>) (Iterator<?>) ((List<RID>) bucket).iterator()
+        : Collections.<Identifiable>singletonList((RID) bucket).iterator();
   }
 
   @SuppressWarnings("unchecked")

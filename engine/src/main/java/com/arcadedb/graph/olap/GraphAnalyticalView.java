@@ -1428,6 +1428,35 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     return snap.nodeMapping.getRID(database, nodeId);
   }
 
+  @Override
+  public int getBucketId(final int nodeId) {
+    if (nodeId < 0)
+      return -1;
+    final Snapshot snap = checkBuilt();
+    if (nodeId >= snap.nodeMapping.size()) {
+      final DeltaOverlay ov = snap.overlay;
+      final RID rid = ov != null ? ov.getOverflowRID(nodeId) : null;
+      return rid != null ? rid.getBucketId() : -1;
+    }
+    return snap.nodeMapping.getBucketId(snap.nodeMapping.getBucketIdx(nodeId));
+  }
+
+  /**
+   * The node mapping of the snapshot being served: a rebuild publishes a new one, while the delta overlay of a
+   * synchronous update keeps it and appends the IDs of new vertices past it.
+   */
+  @Override
+  public Object getNodeIdSpace() {
+    // Resolved as every read resolves it: a view restored from disk on first use publishes its snapshot only then, and a
+    // token taken before would not match the mapping the walk then reads, failing it for nothing
+    try {
+      return checkBuilt().nodeMapping;
+    } catch (final IllegalStateException e) {
+      // Never built: there is no ID to read either, so any token is as good
+      return this;
+    }
+  }
+
   // --- Node type queries ---
 
   /**

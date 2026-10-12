@@ -19,10 +19,9 @@
 package com.arcadedb.function.agg;
 
 import com.arcadedb.function.StatelessFunction;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 
 import java.util.ArrayList;
-import java.util.Collection;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -41,45 +40,27 @@ public abstract class AbstractAggFunction implements StatelessFunction {
   protected abstract String getSimpleName();
 
   /**
-   * Converts an input to a list of numbers.
+   * Converts an input to a list of numbers: the numeric elements of a list argument, or the input itself when it is a single
+   * number. What a list argument is comes from {@link CypherFunctionHelper#asListOrNull}, the one answer the {@code coll.*} and
+   * Cypher list functions share: every Java array is one, {@code float[]} and {@code short[]} included, which is how a
+   * {@code ARRAY_OF_FLOATS}/{@code ARRAY_OF_SHORTS} property and every {@code vector.*} function hand their values over (#9777).
    */
   protected List<Double> toDoubleList(final Object input) {
-    final List<Double> result = new ArrayList<>();
     if (input == null)
+      return new ArrayList<>();
+
+    final List<Object> list = CypherFunctionHelper.asListOrNull(input);
+    if (list == null) {
+      final List<Double> result = new ArrayList<>(1);
+      if (input instanceof Number number)
+        result.add(number.doubleValue());
       return result;
+    }
 
-    if (input instanceof Collection) {
-      for (final Object item : (Collection<?>) input) {
-        if (item instanceof Number) {
-          result.add(((Number) item).doubleValue());
-        }
-      }
-    } else if (input.getClass().isArray()) {
-      switch (input) {
-        case double[] doubles -> {
-          for (final double d : doubles)
-            result.add(d);
-        }
-        case int[] ints -> {
-          for (final int i : ints)
-            result.add((double) i);
-        }
-        case long[] longs -> {
-          for (final long l : longs)
-            result.add((double) l);
-        }
-        case Object[] objects -> {
-          for (final Object item : objects) {
-            if (item instanceof Number)
-              result.add(((Number) item).doubleValue());
-          }
-        }
-        default -> {
-        }
-      }
-    } else if (input instanceof Number)
-      result.add(((Number) input).doubleValue());
-
+    final List<Double> result = new ArrayList<>(list.size());
+    for (final Object item : list)
+      if (item instanceof Number number)
+        result.add(number.doubleValue());
     return result;
   }
 
@@ -121,39 +102,20 @@ public abstract class AbstractAggFunction implements StatelessFunction {
   }
 
   /**
-   * Converts an input to a list of objects.
+   * Converts an input to a new list of objects: the elements of a list argument (see {@link #toDoubleList} for what one is), or
+   * a one-element list holding the input when it is anything else. A new list, because a caller may sort it or hand out a view
+   * of it, and neither must reach the caller's own collection.
    */
   protected List<Object> toObjectList(final Object input) {
-    final List<Object> result = new ArrayList<>();
     if (input == null)
-      return result;
+      return new ArrayList<>();
 
-    if (input instanceof Collection) {
-      result.addAll((Collection<?>) input);
-    } else if (input.getClass().isArray()) {
-      switch (input) {
-        case Object[] objects -> {
-          Collections.addAll(result, objects);
-        }
-        case int[] ints -> {
-          for (final int i : ints)
-            result.add(i);
-        }
-        case long[] longs -> {
-          for (final long l : longs)
-            result.add(l);
-        }
-        case double[] doubles -> {
-          for (final double d : doubles)
-            result.add(d);
-        }
-        default -> {
-        }
-      }
-    } else {
+    final List<Object> list = CypherFunctionHelper.asListOrNull(input);
+    if (list == null) {
+      final List<Object> result = new ArrayList<>(1);
       result.add(input);
+      return result;
     }
-
-    return result;
+    return new ArrayList<>(list);
   }
 }

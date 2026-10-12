@@ -30,6 +30,7 @@ import com.arcadedb.exception.TransactionException;
 import com.arcadedb.exception.ValidationException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GraphEngine;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.optimizer.statistics.GraphStatisticsCache;
 import com.arcadedb.query.opencypher.query.CypherPlanCache;
 import com.arcadedb.query.opencypher.query.CypherStatementCache;
@@ -255,10 +256,16 @@ public interface DatabaseInternal extends Database {
    * #5760: for {@code GraphEngine.deleteVertex}, which passes the vertex it is deleting. That vertex's edge lists
    * are dropped in their entirety a moment later, so removing each edge from them one at a time - a chain walk, a
    * chunk anchor, a compaction and a write-back per edge - is pure waste. See
-   * {@link com.arcadedb.graph.GraphEngine#deleteEdge(Edge, RID)} for the contract, including why a self-loop skips
-   * both sides and why the self-side READ is untouched.
+   * {@link com.arcadedb.graph.GraphEngine#deleteEdge(Edge, RID, Vertex.DIRECTION)} for the contract, including why a
+   * self-loop skips both sides and why the self-side READ is untouched.
+   * <p>
+   * #9779: also for the edge-list iterators' {@code remove()}, which pass the direction of the list they walk and take
+   * the entry out of it themselves.
+   *
+   * @param skipDirection the one list of {@code skipEndpoint} to leave alone, or {@code null} for both of them
+   * @return false when a before-delete listener vetoed the delete, so nothing was deleted or disconnected
    */
-  void deleteEdgeSkippingEndpoint(Edge edge, RID skipEndpoint);
+  boolean deleteEdgeSkippingEndpoint(Edge edge, RID skipEndpoint, Vertex.DIRECTION skipDirection);
 
   Record invokeAfterReadEvents(Record record);
 

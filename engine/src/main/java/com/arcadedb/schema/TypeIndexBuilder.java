@@ -67,6 +67,8 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
   private Path           buildSpillDirectory;
   private int            buildMergeFanIn        = DEFAULT_SORTED_BUILD_MERGE_FAN_IN;
   private int            buildParallelism       = 1;
+  // Whether the last create() built the index, as opposed to answering with one already on the properties
+  private boolean        built;
 
   protected TypeIndexBuilder(final DatabaseInternal database, final String typeName, final String[] propertyNames) {
     super(database, TypeIndex.class);
@@ -253,8 +255,22 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
     return new TypeGeoIndexBuilder(this);
   }
 
+  /**
+   * Whether the last {@link #create()} BUILT the index it returned, as opposed to answering a guarded request
+   * ({@link #withIgnoreIfExists}) with the index already on those properties. Told apart here rather than by comparing
+   * the returned name with the requested one: concurrent creators of an unnamed index all derive the same name, and every
+   * one of them used to report the single index only one of them built as its own (issue #9741).
+   * <p>
+   * State of THIS builder instance, reset by every {@code create()}: read it on the same thread, right after the call.
+   * A builder is not meant to be shared between threads.
+   */
+  public boolean isBuilt() {
+    return built;
+  }
+
   @Override
   public TypeIndex create() {
+    built = false;
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
     // Checked before the existing-index lookup below, which needs the requested index type to decide whether an index
@@ -286,92 +302,25 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
     final LocalSchema schema = database.getSchema().getEmbedded();
 
     final LocalDocumentType type = schema.getType(metadata.typeName);
-    // First try the type's own index (no hierarchy walk), then fall back to the polymorphic walk so an index the type
-    // only inherits is found too. Either way the outcome below is the same: it is used to answer the request, never
-    // to make room for it.
-    TypeIndex existingTypeIndex = type.getIndexByProperties(metadata.propertyNames);
-    if (existingTypeIndex == null)
-      existingTypeIndex = type.getPolymorphicIndexByProperties(metadata.propertyNames);
-
-    // Non-null only on the replacement path below: the definition to put back if the new index cannot be built.
-    ReplacedIndexDefinition replaced = null;
-
-    if (existingTypeIndex != null) {
-      // "Ignore if exists" means the caller can live with what is already there - but only when what is already there
-      // provides what was asked for. A mismatch used to DROP the existing index and rebuild it with the requested
-      // definition: on an inherited index that wiped the parent type's index and left an orphan entry in the schema
-      // JSON (issue #4083), and on the type's own index it threw away a working index for a rebuild the stored data
-      // may not even allow, leaving the type with none at all (issue #5675). Only an explicit
-      // {@link #withReplaceIfIncompatible} takes an index away now, and it puts it back on failure.
-      //
-      // Two halves to "provides what was asked for": the structural definition (kind, uniqueness) and, when the
-      // statement carried a METADATA clause, the settings that clause NAMED. The second half is skipped entirely for
-      // a request that named nothing, so a guarded statement without METADATA behaves exactly as before. The
-      // structural check runs first because it is the cheap one and because comparing the settings of two different
-      // index KINDS would be comparing key spaces that have nothing to do with each other.
-      boolean satisfied = satisfiesRequest(existingTypeIndex, indexType, unique);
-
-      //
-      // Not wrapped the way the SQL shortcut wraps its own call: reading the clause here CANNOT fail on any path that
-      // sets {@link #withUserMetadata} the way it is meant to be set. The clause is read once by
-      // {@code withMetadata(JSONObject)} first, which is where an unreadable value is reported - the SQL branches do
-      // both inside one try, so the statement never reaches create() with a clause that would raise. A caller that
-      // sets the user clause WITHOUT the parsed one has skipped that validation, and gets the reader's own message
-      // here instead of a friendlier one; there is no such caller, and inventing a second error path for it would
-      // only re-type an exception the reader already words correctly.
-      List<String> settingMismatches = List.of();
-      if (satisfied) {
-        settingMismatches = findUnsatisfiedSettings(existingTypeIndex, userMetadata, indexType);
-        satisfied = settingMismatches.isEmpty();
+    // The index already on these properties, if any, and whether this request replaces it (dropped under the lock below)
+    TypeIndex found = findIndexOnProperties(type);
+    boolean replace = false;
+    if (found != null) {
+      try {
+        replace = decideOverExistingIndex(found, true);
+      } catch (final IndexException e) {
+        // Read without the lock, so a concurrent replacer can be dropping the index while it is decided over here (issue
+        // #9741). It stays registered - dropping, then invalid - until that drop completes under the schema write lock, so
+        // the request is decided there instead, over whatever replaced it or over nothing. Any other refusal is the answer.
+        if (found.isValid() && !found.isDropping())
+          throw e;
+        found = null;
       }
-
-      // Third half, once the definition lines up: the NAME the caller wrote. A name is not a label on the request -
-      // an index is reachable only through it (SEARCH_INDEX('<name>', ...), DROP INDEX, REBUILD INDEX) - so an index
-      // already on these properties under a different name does not provide what was asked for either, and a type
-      // holds one index per property set so the requested name cannot be added next to it. Answering the guard with
-      // the other index left the requested name uncreated while the statement reported on the request, and every
-      // later lookup through that name failed (issue #6921).
-      //
-      // Last of the three on purpose: a definition mismatch is the harder problem and stays the reported one, so a
-      // named request over an index of the wrong kind or configuration still names the kind or the settings rather
-      // than the name. And only a name the caller WROTE reaches this - {@link CreateIndexStatement} forwards the
-      // manual name alone and leaves the auto-derived typeName[properties] form out - which keeps a guarded request
-      // that named nothing the plain no-op it has always been.
-      //
-      // Applied on the unguarded path too: a name conflict is not something IF NOT EXISTS makes idempotent, so the
-      // "use IF NOT EXISTS" hint the unguarded message below ends with would be the wrong advice here.
-      //
-      // The other production caller that sets a name on a TYPE index is {@code RebuildIndexStatement}, which carries
-      // the logical index's own name across the rebuild (issue #5791). It never meets this check: it drops the index
-      // first, inside the same {@code executeLockingFiles} closure, so the lookup above finds nothing on those
-      // properties by the time create() runs. The one shape that still reaches here - a type whose OWN index was just
-      // dropped while a parent type indexes the same properties - was already refused before this check existed, by
-      // the unguarded branch further down; only the message it is refused with changes.
-      if (satisfied && indexName != null && !indexName.isEmpty() && !indexName.equals(existingTypeIndex.getName()))
-        throw conflictWithExistingIndexName(existingTypeIndex, indexName, metadata.typeName, metadata.propertyNames);
-
-      if (satisfied && ignoreIfExists)
-        return existingTypeIndex;
-
-      if (!satisfied && replaceIfIncompatible && existingTypeIndex.getTypeName().equals(metadata.typeName))
-        // Own index, and the caller explicitly asked to replace what does not fit. Recorded here and dropped further
-        // down, once everything that could still refuse the request has had its say.
-        replaced = ReplacedIndexDefinition.of(existingTypeIndex);
-      else if (!satisfied && (ignoreIfExists || replaceIfIncompatible))
-        throw conflictWithExistingIndex(existingTypeIndex, indexType, unique, metadata.typeName, metadata.propertyNames,
-            settingMismatches);
-      else
-        // Reached when the request was NOT guarded, whether or not the existing index satisfies it. The suffix names
-        // the guard that makes the statement idempotent: the satisfied case here is a caller asking twice for
-        // something already there - a Cypher CREATE CONSTRAINT without IF NOT EXISTS over its own unique index, say -
-        // and the bare sentence left them to work out that the guard was the missing piece. The sentence itself is
-        // unchanged: it is long-standing wording that callers may already match on.
-        throw new IllegalArgumentException(
-            "Found the existent index '" + existingTypeIndex.getName() + "' defined on the properties '" + Arrays.asList(
-                metadata.propertyNames) + "' for type '" + metadata.typeName + "'" + (satisfied ?
-                ". It already provides what was requested: use IF NOT EXISTS to make this statement idempotent" :
-                ". Drop it first if the definition has to change"));
+      if (found != null && !replace)
+        return found;
     }
+    final TypeIndex existingTypeIndex = found;
+    final boolean replacing = replace;
 
     if (metadata.propertyNames.isEmpty())
       throw new DatabaseMetadataException(
@@ -485,9 +434,9 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
     if (sortedBuild)
       validateSortedBuildPreconditions();
 
-    // Last thing before the build: everything above can still refuse the request (an undeclared property, a BY ITEM on
-    // a non-LIST, a sorted build on a replicated database), and none of those refusals may cost the caller the index it
-    // already had.
+    // The replaced index is dropped as the last thing before the build, under the lock below: everything above can still
+    // refuse the request (an undeclared property, a BY ITEM on a non-LIST, a sorted build on a replicated database), and
+    // none of those refusals may cost the caller the index it already had.
     //
     // NOT ATOMIC, and deliberately so. The drop is its own committed schema change - LocalSchema.dropIndex wraps itself
     // in recordFileChanges, and so does the build below - so the two cannot be rolled back as one. The window is
@@ -498,14 +447,18 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
     // LocalDocumentType.indexesByProperties cannot represent - one index per property set is the invariant.
     //
     // Only an explicit withReplaceIfIncompatible reaches here, so nothing is exposed to this window without asking.
-    if (replaced != null)
-      existingTypeIndex.drop();
+    // Set once the replaced index has been dropped: the definition to put back if the new index cannot be built.
+    final ReplacedIndexDefinition[] replaced = new ReplacedIndexDefinition[1];
 
     // Asked here because below this line there is ALWAYS a transaction, and the answer is about the one that was
     // already there (issue #6324, item 1). See IndexBuilder#buildSharesCallerTransaction.
     final boolean sharesCallerTransaction = buildSharesCallerTransaction();
 
     final TypeIndex created;
+    // Set when another creator built an index on these properties after the lookup above (issue #9741, below)
+    final TypeIndex[] builtConcurrently = new TypeIndex[1];
+    // The refusal decided over that index, carried out of the build's try so it is not wrapped as a failed build
+    final RuntimeException[] refusedOverConcurrent = new RuntimeException[1];
     // The barrier of #6281, paid at the top of this method, covers what the async side wrote BEFORE the build. This
     // covers what it would write DURING it (issue #6303, item 2), and only the first half was ever here:
     // LocalDocumentType.addIndexInternal registers the index before the scan, so a record saved AFTER that point
@@ -522,6 +475,36 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
     try (final AsyncQuiesce asyncPaused = database.quiesceAsync()) {
       final long recordFileChangesStarted = System.nanoTime();
       schema.recordFileChanges(() -> {
+        // ASKED AGAIN UNDER THE LOCK. The lookup at the top runs before it, so concurrent creators of the same index all
+        // found nothing there and then built one each, one after the other: the type ended up with one sub-index per
+        // creator on every bucket, all fed by every write (issue #9741). Every build runs inside this write lock, so an
+        // index found here is complete, and the request is decided over it exactly as if it had been there all along.
+        //
+        // The replacement is decided here too. Only the type's OWN index counts on that path - a parent's index on the
+        // same properties must not stand in for the replacement that was explicitly asked for - and it is dropped only
+        // if it is still the very index the decision above was made over. Concurrent replacers all found that one
+        // before the first of them dropped it, and dropping an index twice is a no-op, so dropping it outside the lock
+        // let every one of them go on to build its own; the later ones now find the first one's replacement instead.
+        final TypeIndex current = replacing ? type.getIndexByProperties(metadata.propertyNames) : findIndexOnProperties(type);
+        if (current != null) {
+          if (current != existingTypeIndex) {
+            // Decided here, under the lock, so no other replacer can drop the index while it is decided over. A
+            // replacement is never decided over an index another creator has just built: dropping that one is not what
+            // either request asked for.
+            try {
+              decideOverExistingIndex(current, false);
+              builtConcurrently[0] = current;
+            } catch (final RuntimeException refusal) {
+              refusedOverConcurrent[0] = refusal;
+            }
+            return null;
+          }
+          // Recorded only once dropped: a refused drop takes nothing away, so there is nothing to put back
+          final ReplacedIndexDefinition definition = ReplacedIndexDefinition.of(current);
+          current.drop();
+          replaced[0] = definition;
+        }
+
         if (sortedBuild) {
           recoveryMarker[0] = SortedIndexBuildRecoveryMarker.create(database, metadata.typeName, metadata.propertyNames,
               buildSpillDirectory);
@@ -587,18 +570,22 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
         emitSortedBuildMetrics(completed);
       }
 
-      created = type.getIndexByProperties(metadata.propertyNames);
+      if (builtConcurrently[0] == null && refusedOverConcurrent[0] == null) {
+        created = type.getIndexByProperties(metadata.propertyNames);
+        built = true;
+      } else
+        created = null;
     } catch (final NeedRetryException e) {
       if (cleanupIndexes(schema, indexes, e)
           && (recoveryMarker[0] == null || recoveryMarker[0].baselineRestored(database)))
         clearRecoveryMarker(recoveryMarker[0], e);
-      restoreReplacedIndex(replaced, e);
+      restoreReplacedIndex(replaced[0], e);
       throw e;
     } catch (final Throwable e) {
       if (cleanupIndexes(schema, indexes, e)
           && (recoveryMarker[0] == null || recoveryMarker[0].baselineRestored(database)))
         clearRecoveryMarker(recoveryMarker[0], e);
-      restoreReplacedIndex(replaced, e);
+      restoreReplacedIndex(replaced[0], e);
       // Carry the root cause into the message: this exception is what the SQL/HTTP layers report back, and
       // without the reason a configuration mistake (a missing vector 'dimensions', an incompatible property
       // type, ...) reaches the user as a bare "Error on creating index" with nowhere to go (issue #5607).
@@ -607,6 +594,13 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
     } finally {
       type.endIndexConstruction(metadata.propertyNames);
     }
+
+    // Thrown outside the build's try, so a refusal reaches the caller exactly as it does when the index was there before
+    // the request, rather than wrapped as a failed build
+    if (refusedOverConcurrent[0] != null)
+      throw refusedOverConcurrent[0];
+    if (builtConcurrently[0] != null)
+      return builtConcurrently[0];
 
     // An index is half of what decides whether a partition is any use, so one created after the strategy was assigned
     // can undo the check that accepted it: recollating the partition index COLLATE CI makes it unprunable, and an
@@ -631,6 +625,98 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
     }
 
     return created;
+  }
+
+  /**
+   * The index already on the requested properties: the type's own first (no hierarchy walk), then an inherited one.
+   * Either way it is used to answer the request, never to make room for it.
+   */
+  private TypeIndex findIndexOnProperties(final LocalDocumentType type) {
+    final TypeIndex own = type.getIndexByProperties(metadata.propertyNames);
+    return own != null ? own : type.getPolymorphicIndexByProperties(metadata.propertyNames);
+  }
+
+  /**
+   * Decides a request over {@code existingTypeIndex}, an index already on the requested properties: answers false when
+   * that index answers the request, true when an explicit {@link #withReplaceIfIncompatible} replaces it and
+   * {@code replacementAllowed}, and throws otherwise - with the same message whichever path asks.
+   */
+  private boolean decideOverExistingIndex(final TypeIndex existingTypeIndex,
+      final boolean replacementAllowed) {
+    // "Ignore if exists" means the caller can live with what is already there - but only when what is already there
+    // provides what was asked for. A mismatch used to DROP the existing index and rebuild it with the requested
+    // definition: on an inherited index that wiped the parent type's index and left an orphan entry in the schema
+    // JSON (issue #4083), and on the type's own index it threw away a working index for a rebuild the stored data
+    // may not even allow, leaving the type with none at all (issue #5675). Only an explicit
+    // {@link #withReplaceIfIncompatible} takes an index away now, and it puts it back on failure.
+    //
+    // Two halves to "provides what was asked for": the structural definition (kind, uniqueness) and, when the
+    // statement carried a METADATA clause, the settings that clause NAMED. The second half is skipped entirely for
+    // a request that named nothing, so a guarded statement without METADATA behaves exactly as before. The
+    // structural check runs first because it is the cheap one and because comparing the settings of two different
+    // index KINDS would be comparing key spaces that have nothing to do with each other.
+    boolean satisfied = satisfiesRequest(existingTypeIndex, indexType, unique);
+
+    //
+    // Not wrapped the way the SQL shortcut wraps its own call: reading the clause here CANNOT fail on any path that
+    // sets {@link #withUserMetadata} the way it is meant to be set. The clause is read once by
+    // {@code withMetadata(JSONObject)} first, which is where an unreadable value is reported - the SQL branches do
+    // both inside one try, so the statement never reaches create() with a clause that would raise. A caller that
+    // sets the user clause WITHOUT the parsed one has skipped that validation, and gets the reader's own message
+    // here instead of a friendlier one; there is no such caller, and inventing a second error path for it would
+    // only re-type an exception the reader already words correctly.
+    List<String> settingMismatches = List.of();
+    if (satisfied) {
+      settingMismatches = findUnsatisfiedSettings(existingTypeIndex, userMetadata, indexType);
+      satisfied = settingMismatches.isEmpty();
+    }
+
+    // Third half, once the definition lines up: the NAME the caller wrote. A name is not a label on the request -
+    // an index is reachable only through it (SEARCH_INDEX('<name>', ...), DROP INDEX, REBUILD INDEX) - so an index
+    // already on these properties under a different name does not provide what was asked for either, and a type
+    // holds one index per property set so the requested name cannot be added next to it. Answering the guard with
+    // the other index left the requested name uncreated while the statement reported on the request, and every
+    // later lookup through that name failed (issue #6921).
+    //
+    // Last of the three on purpose: a definition mismatch is the harder problem and stays the reported one, so a
+    // named request over an index of the wrong kind or configuration still names the kind or the settings rather
+    // than the name. And only a name the caller WROTE reaches this - {@link CreateIndexStatement} forwards the
+    // manual name alone and leaves the auto-derived typeName[properties] form out - which keeps a guarded request
+    // that named nothing the plain no-op it has always been.
+    //
+    // Applied on the unguarded path too: a name conflict is not something IF NOT EXISTS makes idempotent, so the
+    // "use IF NOT EXISTS" hint the unguarded message below ends with would be the wrong advice here.
+    //
+    // The other production caller that sets a name on a TYPE index is {@code RebuildIndexStatement}, which carries
+    // the logical index's own name across the rebuild (issue #5791). It never meets this check: it drops the index
+    // first, inside the same {@code executeLockingFiles} closure, so the lookup in create() finds nothing on those
+    // properties by the time create() runs. The one shape that still reaches here - a type whose OWN index was just
+    // dropped while a parent type indexes the same properties - was already refused before this check existed, by
+    // the unguarded branch below; only the message it is refused with changes.
+    if (satisfied && indexName != null && !indexName.isEmpty() && !indexName.equals(existingTypeIndex.getName()))
+      throw conflictWithExistingIndexName(existingTypeIndex, indexName, metadata.typeName, metadata.propertyNames);
+
+    if (satisfied && ignoreIfExists)
+      return false;
+
+    if (!satisfied && replaceIfIncompatible && replacementAllowed && existingTypeIndex.getTypeName().equals(metadata.typeName))
+      // Own index, and the caller explicitly asked to replace what does not fit. Dropped by create() under the write
+      // lock, once everything that could still refuse the request has had its say.
+      return true;
+    else if (!satisfied && (ignoreIfExists || replaceIfIncompatible))
+      throw conflictWithExistingIndex(existingTypeIndex, indexType, unique, metadata.typeName, metadata.propertyNames,
+          settingMismatches);
+    else
+      // Reached when the request was NOT guarded, whether or not the existing index satisfies it. The suffix names
+      // the guard that makes the statement idempotent: the satisfied case here is a caller asking twice for
+      // something already there - a Cypher CREATE CONSTRAINT without IF NOT EXISTS over its own unique index, say -
+      // and the bare sentence left them to work out that the guard was the missing piece. The sentence itself is
+      // unchanged: it is long-standing wording that callers may already match on.
+      throw new IllegalArgumentException(
+          "Found the existent index '" + existingTypeIndex.getName() + "' defined on the properties '" + Arrays.asList(
+              metadata.propertyNames) + "' for type '" + metadata.typeName + "'" + (satisfied ?
+              ". It already provides what was requested: use IF NOT EXISTS to make this statement idempotent" :
+              ". Drop it first if the definition has to change"));
   }
 
   /**

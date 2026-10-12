@@ -223,7 +223,11 @@ class SupportRedactorTest {
     final int n = SupportLogCollector.MAX_LINE_CHARS;
     final String[] lines = { "-".repeat(n - 10) + " token x", "-a".repeat(n / 2) + " token", "a.".repeat(n / 2) + "token",
         "-token".repeat(n / 6), "token".repeat(n / 5) + " = x", "password=\"" + "a".repeat(n - 20), "password=\\\"" + "a".repeat(n - 20),
-        "eyJ".repeat(n / 3), "a://".repeat(n / 4), "a://b:" + "c".repeat(n - 20), "x".repeat(n - 20) + " --token" };
+        "eyJ".repeat(n / 3), "a://".repeat(n / 4), "a://b:" + "c".repeat(n - 20), "x".repeat(n - 20) + " --token",
+        // the quoted defaultDatabases shape (#9773): every quote is tried as an opener, and a span is read in one pass
+        "[a:".repeat(n / 3), "'[a:".repeat(n / 4), "'a[b:c];".repeat(n / 8), "\"'".repeat(n / 2 - 2) + "[a:",
+        "'" + "a;".repeat(n / 2 - 8) + "b[c:d]'", "\"" + "'".repeat(n - 10) + "[a:b]\"", "[".repeat(n - 1), "[a".repeat(n / 2),
+        "'A[u:" + "'".repeat(n - 10), "'a[b:c'".repeat(n / 7), "'a[b:c]".repeat(n / 7), "\\'a[b:c]".repeat(n / 8) };
     final StallAwareStopwatch watch = StallAwareStopwatch.start();
     for (final String line : lines)
       new SupportRedactor.Session().redactLine(line);
@@ -334,6 +338,45 @@ class SupportRedactorTest {
     assertThat(clean.redactLine("arcadedb.server.defaultDatabases=Imported[root]")).isEqualTo("arcadedb.server.defaultDatabases=Imported[root]");
     assertThat(clean.redactLine("arcadedb.server.defaultDatabases=Universe[albert:*****]"))
         .isEqualTo("arcadedb.server.defaultDatabases=Universe[albert:*****]");
+    assertThat(clean.getCount()).isZero();
+  }
+
+  /**
+   * Issue #9773: the server's two error lines quoted the value as "default databases", with a space, so the rule keyed
+   * on the setting's name never saw them. The value is now also recognised by its own shape inside a quoted span,
+   * whatever the words around it.
+   */
+  @Test
+  void aQuotedDefaultDatabasesValueIsRecognisedByItsShape() {
+    final SupportRedactor.Session session = new SupportRedactor.Session();
+    // the two lines of the issue, as LogFormatter writes them
+    assertThat(session.redactLine("2026-10-10 09:12:33.401 WARNING Error in default databases format: 'Universe[elon:musk];Broken'"))
+        .isEqualTo("2026-10-10 09:12:33.401 WARNING Error in default databases format: 'Universe[elon:*****];Broken'");
+    assertThat(session.redactLine(
+        "2026-10-10 09:12:33.402 WARNING Missing closing '}' in default databases format: 'Universe[elon:musk]{import:file:///x'"))
+        .isEqualTo(
+            "2026-10-10 09:12:33.402 WARNING Missing closing '}' in default databases format: 'Universe[elon:*****]{import:file:///x'");
+    // a stray apostrophe earlier in the line does not pair the quotes the wrong way round
+    assertThat(session.redactLine("can't load \"A[u:p1];B[v:p2,w:p3:admin]\" at boot"))
+        .isEqualTo("can't load \"A[u:*****];B[v:*****,w:*****:admin]\" at boot");
+    assertThat(session.redactLine("can't load 'A[u:p1]' at boot")).isEqualTo("can't load 'A[u:*****]' at boot");
+    // a quote inside the credential block is part of the password (the server reads it so): it must not close the span
+    assertThat(session.redactLine("format: 'A[u:pa'ss]' done")).isEqualTo("format: 'A[u:*****]' done");
+    assertThat(session.redactLine("format: \"A[u:pa\"ss,v:x]\" done")).isEqualTo("format: \"A[u:*****,v:*****]\" done");
+    // a block that never closes runs to the end of the line: fail closed
+    assertThat(session.redactLine("format: 'A[u:pa'ss and more")).isEqualTo("format: 'A[*****");
+    // an escaped span, as a JSON string quoted in a log line, closes on the escaped quote
+    assertThat(session.redactLine("{\\\"x\\\": \\\"A[u:p1];B[v:p2]\\\"}")).isEqualTo("{\\\"x\\\": \\\"A[u:*****];B[v:*****]\\\"}");
+    assertThat(session.getCount()).isEqualTo(8);
+
+    // bracketed text that is not the value stays as it is
+    final SupportRedactor.Session clean = new SupportRedactor.Session();
+    assertThat(clean.redactLine("2026-09-30 12:00:00.000 INFO  [HttpServer] Listening on 0.0.0.0:2480 for 'Universe'"))
+        .isEqualTo("2026-09-30 12:00:00.000 INFO  [HttpServer] Listening on 0.0.0.0:2480 for 'Universe'");
+    assertThat(clean.redactLine("[main] took 3:02 for [batch:4] unquoted")).isEqualTo("[main] took 3:02 for [batch:4] unquoted");
+    assertThat(clean.redactLine("Error on executing query 'SELECT FROM V WHERE list[0:3] = 1'"))
+        .isEqualTo("Error on executing query 'SELECT FROM V WHERE list[0:3] = 1'");
+    assertThat(clean.redactLine("Default database 'Imported[root]' opened")).isEqualTo("Default database 'Imported[root]' opened");
     assertThat(clean.getCount()).isZero();
   }
 }

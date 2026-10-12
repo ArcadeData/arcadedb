@@ -28,6 +28,7 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GraphBatch;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.IndexCursor;
+import com.arcadedb.index.IndexException;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.select.Select;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -183,7 +184,9 @@ public interface Database extends BasicDatabase {
    * @param keyName  Name of the property defined in the index to use
    * @param keyValue Value to look for in the index
    * @return A cursor containing the records found if any
-   * @throws IllegalArgumentException If an index is not defined on the `type.keyName` property
+   * @throws IllegalArgumentException If an index is not defined on the `type.keyName` property, or it is still being built
+   * @throws IndexException If a concurrent DDL dropped or rebuilt the index while it was read: the lookup is
+   *                         answered whole or not at all, never short (issue #9811). Read again
    */
   IndexCursor lookupByKey(String type, String keyName, Object keyValue);
 
@@ -195,7 +198,9 @@ public interface Database extends BasicDatabase {
    * @param keyNames  Names of the property defined in the index to use
    * @param keyValues Values to look for in the index
    * @return A cursor containing the records found if any
-   * @throws IllegalArgumentException If an index is not defined on the `type.keyNames` property
+   * @throws IllegalArgumentException If an index is not defined on the `type.keyNames` property, or it is still being built
+   * @throws IndexException If a concurrent DDL dropped or rebuilt the index while it was read: the lookup is
+   *                         answered whole or not at all, never short (issue #9811). Read again
    */
   IndexCursor lookupByKey(String type, String[] keyNames, Object[] keyValues);
 

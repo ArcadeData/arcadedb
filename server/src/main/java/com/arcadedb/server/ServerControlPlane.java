@@ -958,7 +958,8 @@ public class ServerControlPlane {
    * Ends an HTTP transaction session: terminates the statements running in it, rolls its transaction back and removes
    * it, so a later request naming it is told it does not exist. Answers {@code terminated}, {@code terminating} when a
    * statement running in it has not stopped within {@code waitMs} (the session is rolled back and removed as soon as it
-   * does), or {@code not found}.
+   * does) or the session is still held past that by work in it, which then rolls it back as it ends, or {@code not found}.
+   * The whole call is bounded by {@code waitMs}, capped at {@link #MAX_TERMINATE_WAIT_MS} (issue #9774).
    */
   public JSONObject terminateTransaction(final ServerSecurityUser user, final String sessionId, final long waitMs) {
     final HttpServer httpServer = server.getHttpServer();
@@ -980,9 +981,13 @@ public class ServerControlPlane {
       if (!awaitEnd(query, deadline))
         return new JSONObject().put("id", sessionId).put("status", "terminating");
 
-    // Idle, or what ran in it is over: end it here. Removed first, so no new request can resolve it meanwhile
-    if (httpServer.getSessionManager().removeSession(sessionId) != null)
-      session.cancel();
+    // Idle, or what ran in it is over: end it here. Removed first, so no new request can resolve it meanwhile. The wait for
+    // the session lock shares the deadline (issue #9774): work the registry does not list can still hold it, and this runs on
+    // a request thread the cap exists to protect. Past the deadline the rollback is left to that work, which performs it as
+    // it lets go of the session, and the answer says the session is still terminating
+    if (httpServer.getSessionManager().removeSession(sessionId) != null
+        && !session.cancel(Math.max(0, deadline - System.currentTimeMillis())))
+      return new JSONObject().put("id", sessionId).put("status", "terminating");
     return new JSONObject().put("id", sessionId).put("status", "terminated");
   }
 
@@ -1179,11 +1184,27 @@ public class ServerControlPlane {
     database.saveConfiguration();
   }
 
+  /**
+   * Stores one server setting the operator sets while the server runs. A declared setting is parsed first and then
+   * offered to the plugins, any of which can refuse a value its running state cannot honour, before anything is
+   * stored (issue #9749: a Gremlin Server channelizer that cannot conceal engine error text refuses a switch to
+   * production mode).
+   */
   public void setServerSetting(final String key, final String value) {
-    applySetting(server.getConfiguration(), key, value);
     final String name = FileUtils.getStringContent(key.trim());
     final GlobalConfiguration setting = GlobalConfiguration.findByKey(name);
-    server.markOperatorSetting(setting != null ? setting.getKey() : name);
+    if (setting == null) {
+      applySetting(server.getConfiguration(), key, value);
+      server.markOperatorSetting(name);
+      return;
+    }
+
+    final Object coerced = coerceSetting(setting, value);
+    // Not atomic with the store below, and need not be: what a plugin refuses on is state fixed while it runs (the Gremlin
+    // channelizer), and plugins start before any admin surface listens
+    server.checkServerSettingChange(setting, coerced);
+    server.getConfiguration().setValue(setting.getKey(), coerced);
+    server.markOperatorSetting(setting.getKey());
   }
 
   /**
@@ -1228,14 +1249,22 @@ public class ServerControlPlane {
       return;
     }
 
-    if (value.isEmpty() && setting.getType() != String.class)
-      throw new IllegalArgumentException(
-          "'value' must not be empty for setting '" + setting.getKey() + "' of type " + setting.getType().getSimpleName());
-
     // setValue also runs the side effect of a declared SCOPE.SERVER setting, so one whose effect is not a value
     // somebody later reads - arcadedb.server.logFormat swapping the console formatter - takes effect here too
     // rather than being stored and ignored (issue #7121).
-    configuration.setValue(setting.getKey(), setting.coerceFromAdminCommand(value));
+    configuration.setValue(setting.getKey(), coerceSetting(setting, rawValue));
+  }
+
+  /**
+   * The value of a "set ... setting" command parsed to {@code setting}'s type: the quotes stripped, an empty value
+   * refused for any type but {@code String}, the rest through {@link GlobalConfiguration#coerceFromAdminCommand(Object)}.
+   */
+  private static Object coerceSetting(final GlobalConfiguration setting, final String rawValue) {
+    final String value = FileUtils.getStringContent(rawValue.trim());
+    if (value.isEmpty() && setting.getType() != String.class)
+      throw new IllegalArgumentException(
+          "'value' must not be empty for setting '" + setting.getKey() + "' of type " + setting.getType().getSimpleName());
+    return setting.coerceFromAdminCommand(value);
   }
 
   // ---------------------------------------------------------------------------------------------

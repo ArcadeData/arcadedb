@@ -275,7 +275,7 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
           else
             response.set(execute(exchange, user, database, payload));
           return null;
-        }, participatesInSessionTransaction(), endsSession());
+        }, rollsBackSessionTransactionOnFailure(), endsSession(), participatesInSessionTransaction());
       } else {
         if (finalAtomicTransaction)
           executeInTransaction(exchange, user, database, payload, response, retries);
@@ -336,12 +336,21 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
 
   /**
    * Closes the registry entry of the request. A request terminated while it ran in a transaction session also ends the
-   * session, rolling back its transaction, before the entry goes (issue #9680).
+   * session, rolling back its transaction, before the entry goes (issue #9680) - when the route is one whose failure
+   * rolls that transaction back ({@link #rollsBackSessionTransactionOnFailure()}).
    * <p>
    * The session goes because a client that stops a statement wants none of it to stand, and in a session the
    * statement's writes are the session's: they would otherwise survive a statement that ended before it reached a check,
    * to be published by the next {@code /commit}. Ending the session makes the answer the same whenever the termination
    * landed, and a later {@code /commit} is told the session is gone instead of committing what is left of it.
+   * <p>
+   * A route that cannot leave anything half applied in the caller's transaction - a read, or a {@code /ts}, vector or
+   * observability route that stands outside it - has nothing of its own in the session to undo, so a terminate ends the
+   * statement and leaves the transaction alone, exactly as a failure of the same route does (issue #9798). The question is
+   * the route's, asked once: a terminate is a failure of the statement, and the two paths that can end the caller's
+   * transaction must agree. It matters most for the client-disconnect watch, which terminates a statement whenever a
+   * connection closes: an HTTP client's read timeout on a long read must not roll back the writes the client made in its
+   * {@code /begin} transaction, which it reaches again from any connection.
    */
   private void endRunningQuery(final HttpServerExchange exchange, final RunningQuery runningQuery,
       final HttpSession activeSession, final HttpClientDisconnectWatch disconnectWatch) {
@@ -349,7 +358,7 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
       // First: the connection is Undertow's again, and a client going away from here on no longer reaches the statement
       if (disconnectWatch != null)
         disconnectWatch.disarm();
-      if (activeSession != null && runningQuery.isTerminated()
+      if (activeSession != null && runningQuery.isTerminated() && rollsBackSessionTransactionOnFailure()
           && httpServer.getSessionManager().removeSession(activeSession.id) != null) {
         activeSession.cancel();
         runningQuery.setRolledBack();
@@ -510,6 +519,25 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
    */
   protected boolean participatesInSessionTransaction() {
     return true;
+  }
+
+  /**
+   * Whether a failure raised by this handler rolls the session's transaction back (issue #9784).
+   * <p>
+   * A different question from {@link #participatesInSessionTransaction()}, which says whether the request RUNS INSIDE the
+   * caller's transaction and is therefore refused once a failed command has rolled it back (issue #9312). The two used to be
+   * one flag, which is right for a command and for the routes that stand outside the transaction altogether, and wrong for a
+   * route that runs inside it but provably writes nothing: its failure leaves nothing half applied, so rolling back destroys
+   * work the client wrote before it, for no benefit. {@code GET} and {@code POST /api/v1/query} are those routes. They keep
+   * joining the transaction - a query must see the writes the caller made in it - and stop destroying it when they fail.
+   * <p>
+   * Defaults to {@link #participatesInSessionTransaction()}, which is what every handler did before the split.
+   *
+   * @see GetQueryHandler
+   * @see PostQueryHandler
+   */
+  protected boolean rollsBackSessionTransactionOnFailure() {
+    return participatesInSessionTransaction();
   }
 
   /**

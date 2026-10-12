@@ -620,7 +620,15 @@ public class TransactionManager {
             applyChanges(walPositions[lowerTx], Collections.emptyMap(), false);
             // Only advance lastTxId after a successful apply, otherwise a failed transaction
             // would wrongly increment the next-tx counter past data that was never written.
-            lastTxId = lowerTxId;
+            // The HIGHEST applied id, not the last one (#9795): a WAL file does NOT hold its transactions in txId
+            // order. The id is allocated at the end of commit1stPhase and the record appended in phase 2, and two
+            // transactions sharing no file have no lock between those points, so the second id can be appended first
+            // into the same file (always with a single-file pool, on a thread-id hash collision otherwise). This
+            // merge then emits [6, 5] as 6, 5. It cannot reverse a CONFLICTING pair: the lock on their shared file
+            // (TransactionContext.lockFilesInOrder in commit1stPhase, released by unlockFilesInOrder when the commit
+            // ends) is held across the WAL append, so the lower id is appended before the higher one is allocated.
+            if (lowerTxId > lastTxId)
+              lastTxId = lowerTxId;
           } catch (WALVersionGapException e) {
             LogManager.instance().log(this, Level.SEVERE,
                 "Recovery aborted for database '%s': version gap in WAL (txId=%d). WAL files have been preserved for manual inspection. No further transactions will be replayed.",
@@ -649,8 +657,12 @@ public class TransactionManager {
         // Only update the next-tx counter if recovery actually applied a transaction. When
         // lastTxId is still -1 the counter must keep the persistedLastTxId value loaded by the
         // constructor; overwriting it with 0 would lose recency and risk transaction-id reuse.
+        // Never move it backwards either (#9795): the marker the constructor loaded, persisted by a clean close or by
+        // a runtime WAL rotation, can be past everything left in the WAL. A rotation drops a file holding the newest
+        // ids while another file still holds older ones, or a commit that took its id before the rotation appends to
+        // the new file after it: replaying only those would hand out again ids that are already durable.
         if (lastTxId != -1) {
-          transactionIds.set(lastTxId + 1);
+          transactionIds.accumulateAndGet(lastTxId + 1, Math::max);
           // Reconstructed from real evidence (replayed WAL transactions), regardless of what the
           // constructor found (or didn't) in the persisted marker.
           recencySignalReliable = true;

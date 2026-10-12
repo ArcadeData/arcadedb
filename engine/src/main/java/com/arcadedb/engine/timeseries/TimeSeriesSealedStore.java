@@ -2672,19 +2672,13 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       // Build new directory in a local list — do NOT modify blockDirectory until after the
       // atomic file swap. If Files.move() fails, the live file and blockDirectory remain intact.
       final List<BlockEntry> newDirectory = new ArrayList<>();
-      try (final RandomAccessFile tempFile = new RandomAccessFile(tempPath, "rw")) {
-        final ByteBuffer headerBuf = ByteBuffer.allocate(HEADER_SIZE);
-        headerBuf.putInt(MAGIC_VALUE);
-        headerBuf.put((byte) CURRENT_VERSION);
-        headerBuf.putShort((short) colCount);
-        headerBuf.putInt(0);
-        headerBuf.putLong(Long.MAX_VALUE);
-        headerBuf.putLong(Long.MIN_VALUE);
-        headerBuf.flip();
-        FileUtils.writeFully(channelOf(tempFile), headerBuf, 0);
-
+      try (final RandomAccessFile tempFile = openTempFileForRewrite(tempPath, colCount)) {
         for (final BlockEntry oldEntry : retained)
           copyBlockToFile(tempFile, oldEntry, colCount, newDirectory);
+      } catch (final IOException | RuntimeException e) {
+        // a failed copy leaves no half-written file for whoever rewrites next to find (issue #9770)
+        deleteTempFileIfExists();
+        throw e;
       }
 
       // Atomic file swap: close handles first (required on Windows), then atomically replace.
@@ -2705,6 +2699,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
           LogManager.instance().log(this, Level.SEVERE,
               "Failed to reopen sealed store after failed atomic move: %s", reopenEx, oldFile.getAbsolutePath());
         }
+        deleteTempFileIfExists();
         throw moveEx;
       }
 
@@ -3039,8 +3034,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * that appends need while the file is written. If anything rewrote the store meanwhile, the next read notices the
    * version moved and the whole pass is dropped, to be retried by the next maintenance tick.
    * <p>
-   * The temp file is the merge's own, so it needs no serialisation against retention or downsampling; the caller serialises merges
-   * with each other and with compaction ({@code TimeSeriesShard.compactionMutex}).
+   * The temp file is the merge's own, but the directory it installs is planned against a snapshot, so the caller serialises
+   * merges with every other rewrite of the sealed file ({@code TimeSeriesShard.compactionMutex}).
    */
   MergePlan prepareMerge(final int targetSamples, final long bucketIntervalMs, final int minBlocksSaved) throws IOException {
     final List<BlockEntry> snapshot;
@@ -3067,18 +3062,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     final List<BlockEntry> newDirectory = new ArrayList<>(snapshot.size());
     final List<MergeLink> links = new ArrayList<>(groups.size());
     boolean complete = false;
-    try (final RandomAccessFile tempFile = new RandomAccessFile(tempPath, "rw")) {
-      tempFile.setLength(0);
-      final ByteBuffer headerBuf = ByteBuffer.allocate(HEADER_SIZE);
-      headerBuf.putInt(MAGIC_VALUE);
-      headerBuf.put((byte) CURRENT_VERSION);
-      headerBuf.putShort((short) colCount);
-      headerBuf.putInt(0);
-      headerBuf.putLong(Long.MAX_VALUE);
-      headerBuf.putLong(Long.MIN_VALUE);
-      headerBuf.flip();
-      FileUtils.writeFully(channelOf(tempFile), headerBuf, 0);
-
+    try (final RandomAccessFile tempFile = openTempFileForRewrite(tempPath, colCount)) {
       int groupIdx = 0;
       int i = 0;
       while (i < snapshot.size()) {
@@ -3306,19 +3290,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     // Build new directory in a local list — do NOT modify blockDirectory until after the
     // atomic file swap. If Files.move() fails, the live file and blockDirectory remain intact.
     final List<BlockEntry> newDirectory = new ArrayList<>();
-    try (final RandomAccessFile tempFile = new RandomAccessFile(tempPath, "rw")) {
-      tempFile.setLength(0);
-      // Write placeholder header
-      final ByteBuffer headerBuf = ByteBuffer.allocate(HEADER_SIZE);
-      headerBuf.putInt(MAGIC_VALUE);
-      headerBuf.put((byte) CURRENT_VERSION);
-      headerBuf.putShort((short) colCount);
-      headerBuf.putInt(0);
-      headerBuf.putLong(Long.MAX_VALUE);
-      headerBuf.putLong(Long.MIN_VALUE);
-      headerBuf.flip();
-      FileUtils.writeFully(channelOf(tempFile), headerBuf, 0);
-
+    try (final RandomAccessFile tempFile = openTempFileForRewrite(tempPath, colCount)) {
       // Write all blocks in ascending minTimestamp order
       for (final WriteSpec spec : writeOrder) {
         if (spec.retained()) {
@@ -3334,6 +3306,10 @@ public class TimeSeriesSealedStore implements AutoCloseable {
           newDirectory.add(entry);
         }
       }
+    } catch (final IOException | RuntimeException e) {
+      // a failed write leaves no half-written file for whoever rewrites next to find (issue #9770)
+      deleteTempFileIfExists();
+      throw e;
     }
 
     // Atomic file swap: close handles first (required on Windows), then atomically replace.
@@ -3354,6 +3330,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         LogManager.instance().log(this, Level.SEVERE,
             "Failed to reopen sealed store after failed atomic move: %s", reopenEx, oldFile.getAbsolutePath());
       }
+      deleteTempFileIfExists();
       throw moveEx;
     }
 
@@ -3714,19 +3691,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     final List<BlockEntry> newDirectory = new ArrayList<>(writeOrder.size());
 
     // Write placeholder header + all blocks to the temp file (no lock held).
-    // Truncate first so any leftover bytes from a previous partial write are cleared.
-    try (final RandomAccessFile tempFile = new RandomAccessFile(tempPath, "rw")) {
-      tempFile.setLength(0);
-      final ByteBuffer headerBuf = ByteBuffer.allocate(HEADER_SIZE);
-      headerBuf.putInt(MAGIC_VALUE);
-      headerBuf.put((byte) CURRENT_VERSION);
-      headerBuf.putShort((short) colCount);
-      headerBuf.putInt(0);
-      headerBuf.putLong(Long.MAX_VALUE);
-      headerBuf.putLong(Long.MIN_VALUE);
-      headerBuf.flip();
-      FileUtils.writeFully(channelOf(tempFile), headerBuf, 0);
-
+    // The opener truncates first, so any leftover bytes from a previous partial write are cleared.
+    try (final RandomAccessFile tempFile = openTempFileForRewrite(tempPath, colCount)) {
       for (final WriteSpec spec : writeOrder) {
         final BlockEntry entry;
         if (spec.isRetained()) {
@@ -3839,6 +3805,15 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     final String tempPath = basePath + ".ts.sealed.tmp";
     final int colCount = columns.size();
 
+    // The file Phase 3 wrote. Opening a path with "rw" quietly re-creates one that is gone, as an EMPTY file, and the header read
+    // below would then fail on a bounds check that says nothing about why (issue #9771). It is the one writer that must NOT
+    // truncate, so it does not go through openTempFileForRewrite: it appends to what is there, and refuses to invent it.
+    // This check is only a clearer error, not the protection: it is a check followed by an open, and what keeps another rewrite
+    // from removing the file in between is TimeSeriesShard.compactionMutex, which every rewrite of the sealed file holds.
+    if (!new File(tempPath).isFile())
+      throw new IOException("The compaction temp file '" + tempPath
+          + "' is gone: another rewrite of the sealed store removed or replaced it while this compaction was building its replacement");
+
     try (final RandomAccessFile tempFile = new RandomAccessFile(tempPath, "rw")) {
       // Read the current header to get existing block count and global min/max timestamps
       final ByteBuffer hdrBuf = ByteBuffer.allocate(HEADER_SIZE);
@@ -3882,6 +3857,42 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       LogManager.instance().log(this, Level.WARNING,
           "Failed to delete stale compaction temp file '%s'; next compaction may fail or use stale data",
           null, tmp.getAbsolutePath());
+  }
+
+  /**
+   * Opens the temp file a rewrite of the sealed file is about to fill, EMPTY and holding the placeholder header (issue #9770).
+   * <p>
+   * Every rewrite that reuses a fixed temp path owns that file, so it starts from nothing: {@code RandomAccessFile} in
+   * {@code "rw"} mode neither truncates on open nor shrinks on write, and {@link #writeNewBlockToFile} positions each block at
+   * the file's length, so a leftover of ANY size past the header would not be overwritten but preserved whole, with the blocks
+   * the rewrite means to keep appended after it. The six writers each carried their own copy of this preamble and one of them
+   * (retention) had lost the truncate, which is how the blocks it dropped came back at the next open and were shipped to the
+   * followers. With one definition there is no second place for the next rewrite path to forget it in.
+   * <p>
+   * {@link #appendBlocksToTempFile} is the one writer that must NOT truncate, and it says so by not using this.
+   */
+  private RandomAccessFile openTempFileForRewrite(final String tempPath, final int colCount) throws IOException {
+    final RandomAccessFile tempFile = new RandomAccessFile(tempPath, "rw");
+    try {
+      tempFile.setLength(0);
+      final ByteBuffer headerBuf = ByteBuffer.allocate(HEADER_SIZE);
+      headerBuf.putInt(MAGIC_VALUE);
+      headerBuf.put((byte) CURRENT_VERSION);
+      headerBuf.putShort((short) colCount);
+      headerBuf.putInt(0);
+      headerBuf.putLong(Long.MAX_VALUE);
+      headerBuf.putLong(Long.MIN_VALUE);
+      headerBuf.flip();
+      FileUtils.writeFully(channelOf(tempFile), headerBuf, 0);
+      return tempFile;
+    } catch (final IOException | RuntimeException e) {
+      try {
+        tempFile.close();
+      } catch (final IOException closeEx) {
+        e.addSuppressed(closeEx);
+      }
+      throw e;
+    }
   }
 
   /** Deletes the temp file of a merge of small blocks ({@code .ts.sealed.merge.tmp}) if it exists. */
@@ -3945,20 +3956,13 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       // Build new directory in a local list — do NOT modify blockDirectory until after the
       // atomic file swap. If Files.move() fails, the live file and blockDirectory remain intact.
       final List<BlockEntry> newDirectory = new ArrayList<>();
-      try (final RandomAccessFile tempFile = new RandomAccessFile(tempPath, "rw")) {
-        tempFile.setLength(0);
-        final ByteBuffer headerBuf = ByteBuffer.allocate(HEADER_SIZE);
-        headerBuf.putInt(MAGIC_VALUE);
-        headerBuf.put((byte) CURRENT_VERSION);
-        headerBuf.putShort((short) colCount);
-        headerBuf.putInt(0);
-        headerBuf.putLong(Long.MAX_VALUE);
-        headerBuf.putLong(Long.MIN_VALUE);
-        headerBuf.flip();
-        FileUtils.writeFully(channelOf(tempFile), headerBuf, 0);
-
+      try (final RandomAccessFile tempFile = openTempFileForRewrite(tempPath, colCount)) {
         for (final BlockEntry entry : retained)
           copyBlockToFile(tempFile, entry, colCount, newDirectory);
+      } catch (final IOException | RuntimeException e) {
+        // a failed copy leaves no half-written file for whoever rewrites next to find (issue #9770)
+        deleteTempFileIfExists();
+        throw e;
       }
 
       // Atomic file swap: close handles first (required on Windows), then atomically replace.
@@ -3979,6 +3983,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
           LogManager.instance().log(this, Level.SEVERE,
               "Failed to reopen sealed store after failed atomic move: %s", reopenEx, oldFile.getAbsolutePath());
         }
+        deleteTempFileIfExists();
         throw moveEx;
       }
 

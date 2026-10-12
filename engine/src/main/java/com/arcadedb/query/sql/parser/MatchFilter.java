@@ -66,16 +66,23 @@ public class MatchFilter extends SimpleNode {
     return null;
   }
 
+  /**
+   * Replaces the {@code where:} of this node, and removes it when {@code filter} is null. An item left carrying nothing
+   * renders as nothing, which left the separator before it dangling in an unparseable {@code {type: 'V', as: foo, }}
+   * (issue #9650).
+   */
   public void setFilter(final WhereClause filter) {
-    boolean found = false;
-    for (final MatchFilterItem item : items) {
+    for (int i = 0; i < items.size(); i++) {
+      final MatchFilterItem item = items.get(i);
       if (item.filter != null) {
-        item.filter = filter;
-        found = true;
-        break;
+        if (filter == null)
+          items.remove(i);
+        else
+          item.filter = filter;
+        return;
       }
     }
-    if (!found) {
+    if (filter != null) {
       final MatchFilterItem newItem = new MatchFilterItem();
       newItem.filter = filter;
       items.add(newItem);

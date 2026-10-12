@@ -1,3 +1,4 @@
 com.arcadedb.server.http.ArrayPayloadTestPlugin
 com.arcadedb.server.plugin.DatabaseLifecycleTestPlugin
 com.arcadedb.server.Issue7025ShutdownHookOpenDatabasesBoundTest$HookDuringStartPlugin
+com.arcadedb.server.plugin.ServerSettingVetoTestPlugin

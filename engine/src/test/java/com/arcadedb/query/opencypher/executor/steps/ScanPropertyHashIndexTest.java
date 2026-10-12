@@ -23,6 +23,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.WorkGuard;
 import org.junit.jupiter.api.Test;
 
+import java.time.LocalDate;
 import java.util.Iterator;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -79,6 +80,36 @@ class ScanPropertyHashIndexTest extends TestHelper {
     final ScanPropertyHashIndex index = build("k");
     assertThat(index.candidates(3L)).isNull();
     assertThat(count(index.candidates("a"))).isEqualTo(1);
+    // a text a FLOAT or DOUBLE declaration could read as a number would need every one of them too: the caller scans (#9794)
+    assertThat(index.candidates("1.5")).isNull();
+  }
+
+  /**
+   * Issue #9794: a text written into a property declared with another type is stored as that type, so a text lookup also
+   * offers the records holding a value the text can be read as. The caller's re-check decides.
+   */
+  @Test
+  void aTextLookupAlsoOffersTheValuesTheTextCanBeReadAs() {
+    database.getSchema().createVertexType("T");
+    database.transaction(() -> {
+      database.newVertex("T").set("k", 5).save();
+      database.newVertex("T").set("k", true).save();
+      database.newVertex("T").set("k", 1.5d).save();
+      database.newVertex("T").set("k", LocalDate.of(2024, 1, 2)).save();
+      database.newVertex("T").set("k", "x").save();
+    });
+    final ScanPropertyHashIndex index = build("k");
+    assertThat(count(index.candidates("x"))).isEqualTo(1);
+    // the integer 5, and the double a FLOAT or DOUBLE declaration could have read '5' as
+    assertThat(count(index.candidates("5"))).isEqualTo(2);
+    // the spellings Integer.parseInt reads as 5 too
+    assertThat(count(index.candidates("+5"))).isEqualTo(2);
+    assertThat(count(index.candidates("005"))).isEqualTo(2);
+    // padded past 19 characters it is still 5; that long a run of digits also has a temporal text's shape, so the date is offered
+    assertThat(count(index.candidates("00000000000000000000005"))).isEqualTo(3);
+    assertThat(count(index.candidates("TRUE"))).isEqualTo(1);
+    assertThat(count(index.candidates("2024-01-02"))).isEqualTo(1);
+    assertThat(count(index.candidates("y"))).isZero();
   }
 
   @Test

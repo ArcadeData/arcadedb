@@ -39,6 +39,7 @@ import java.io.File;
 import java.lang.reflect.InvocationTargetException;
 import java.time.LocalDateTime;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
 
@@ -49,7 +50,7 @@ public class ExportDatabaseStatement extends SimpleExecStatement {
   protected       BooleanExpression           overwrite = BooleanExpression.FALSE;
   protected       Expression                  key;
   protected       Expression                  value;
-  public final    Map<Expression, Expression> settings  = new HashMap<>();
+  public final    Map<Expression, Expression> settings  = new LinkedHashMap<>();
 
   public ExportDatabaseStatement() {
   }

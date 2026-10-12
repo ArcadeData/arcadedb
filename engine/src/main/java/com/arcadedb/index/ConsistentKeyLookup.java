@@ -77,7 +77,12 @@ public final class ConsistentKeyLookup {
    * the state that was read is dropped as dangling. {@code null} when there are more than {@link #MAX_ENTRIES} entries
    */
   public static List<IndexCursorEntry> lookup(final DatabaseInternal database, final Index index, final List<Object[]> keys) {
-    final List<IndexCursorEntry> entries = lookupConsistently(database, index, keys);
+    return lookup(database, index, keys, false);
+  }
+
+  private static List<IndexCursorEntry> lookup(final DatabaseInternal database, final Index index, final List<Object[]> keys,
+      final boolean forQuery) {
+    final List<IndexCursorEntry> entries = lookupConsistently(database, index, keys, forQuery);
     final Runnable observer = afterLookupObserver;
     if (observer != null && entries != null)
       observer.run();
@@ -85,7 +90,7 @@ public final class ConsistentKeyLookup {
   }
 
   private static List<IndexCursorEntry> lookupConsistently(final DatabaseInternal database, final Index index,
-      final List<Object[]> keys) {
+      final List<Object[]> keys, final boolean forQuery) {
     final PageManager pageManager = database.getPageManager();
     boolean unpinnedForDangling = false;
     Set<Integer> lastBucketIds = Set.of();
@@ -100,7 +105,7 @@ public final class ConsistentKeyLookup {
         // attempt ends in the lock below
         continue;
 
-      final Read read = readAndLoad(database, index, keys);
+      final Read read = readAndLoad(database, index, keys, forQuery);
       if (read == null)
         return null;
       lastBucketIds = read.bucketIds;
@@ -119,7 +124,7 @@ public final class ConsistentKeyLookup {
         "Lookup on index '%s' overlapped a commit %d times, reading it under the publication lock", null, index.getName(), MAX_ATTEMPTS);
     // the pages pinned by the attempts that overlapped a commit must not serve the locked read either
     unpinRepeatableRead(database, index, lastBucketIds);
-    final Read read = (Read) pageManager.executeInLock(() -> readAndLoad(database, index, keys));
+    final Read read = (Read) pageManager.executeInLock(() -> readAndLoad(database, index, keys, forQuery));
     return read == null ? null : read.entries;
   }
 
@@ -145,14 +150,30 @@ public final class ConsistentKeyLookup {
     return cursor != null ? cursor : index.get(key);
   }
 
+  /**
+   * {@link #get}, reading the index through {@link TypeIndex#getForQuery} (issue #9811): for a reader that answers a client
+   * with what it finds, which must never take a lookup a concurrent CREATE, REBUILD or DROP INDEX left short for "the key does
+   * not exist". Raises the {@link IndexException} of {@code getForQuery} instead, which every guarded reader treats as "read
+   * again" ({@link TypeIndex#isStaleRead}).
+   */
+  public static IndexCursor getForQuery(final Database database, final TypeIndex index, final Object[] key) {
+    if (database instanceof DatabaseInternal internal) {
+      final List<IndexCursorEntry> entries = lookup(internal, index, List.<Object[]>of(key), true);
+      if (entries != null)
+        return new TempIndexCursor(entries);
+    }
+    return index.getForQuery(key);
+  }
+
   private record Read(List<IndexCursorEntry> entries, Set<Integer> bucketIds, boolean dangling) {
   }
 
-  private static Read readAndLoad(final DatabaseInternal database, final Index index, final List<Object[]> keys) {
+  private static Read readAndLoad(final DatabaseInternal database, final Index index, final List<Object[]> keys,
+      final boolean forQuery) {
     final List<Object[]> entryKeys = new ArrayList<>(keys.size());
     final List<RID> rids = new ArrayList<>(keys.size());
     for (final Object[] key : keys) {
-      final IndexCursor cursor = index.get(key);
+      final IndexCursor cursor = forQuery && index instanceof TypeIndex typeIndex ? typeIndex.getForQuery(key) : index.get(key);
       try {
         while (cursor.hasNext()) {
           if (rids.size() >= MAX_ENTRIES)
