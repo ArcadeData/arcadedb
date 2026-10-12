@@ -247,7 +247,9 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
    * {@code <id>.<method>} is a registered function ({@link #isNamespacedFunctionCall}), which is the question the planner needs
    * answered while it still has only the AST: an aggregate that stays an identifier carrying a method call builds no aggregation
    * step and answers one NULL per row (issue #9768). A property named like a namespace keeps its own methods ({@code
-   * vector.size()}) for as long as no function is registered under that name.
+   * vector.size()}) for as long as no function is registered under that name: a registered name ({@code vector.max()}) wins
+   * over the method of a property called {@code vector}, as the run-time lookup this replaced already did, and back-ticking the
+   * property ({@code `vector`.max()}) makes it a property again (issue #9076).
    */
   private static final Set<String> FUNCTION_NAMESPACES = Set.of("ts", "geo", "text", "math", "convert", "date", "util", "coll",
       "map", "agg", "node", "rel", "path", "create");

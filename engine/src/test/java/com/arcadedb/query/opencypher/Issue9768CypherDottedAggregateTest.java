@@ -19,9 +19,14 @@
 package com.arcadedb.query.opencypher;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.Identifiable;
+import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
+import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
+import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.executor.SQLFunction;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
@@ -128,6 +133,40 @@ class Issue9768CypherDottedAggregateTest extends TestHelper {
     final List<Result> rows = run("MATCH (d:D) RETURN last([1, 2, 3]) AS l");
     assertThat(rows).hasSize(4);
     assertThat(((Number) rows.getFirst().getProperty("l")).intValue()).isEqualTo(3);
+  }
+
+  /** A function that validates its arguments when it is configured, which the planner's probe configuration must survive. */
+  public static class StrictConfig extends SQLFunctionAbstract {
+    public StrictConfig() {
+      super("acme9768.strict");
+    }
+
+    @Override
+    public SQLFunction config(final Object[] configuredParameters) {
+      throw new IllegalArgumentException("acme9768.strict wants a number");
+    }
+
+    @Override
+    public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
+        final CommandContext context) {
+      return null;
+    }
+
+    @Override
+    public String getSyntax() {
+      return "acme9768.strict(<n>)";
+    }
+  }
+
+  @Test
+  void aFunctionThatRefusesTheProbeConfigurationIsNotAnAggregationAndDoesNotFailPlanning() {
+    final DefaultSQLFunctionFactory factory = DefaultSQLFunctionFactory.getInstance();
+    factory.register("acme9768.strict", StrictConfig.class);
+    try {
+      assertThat(CypherFunctionFactory.isNamespacedAggregation("acme9768.strict", 1)).isFalse();
+    } finally {
+      factory.unregister("acme9768.strict");
+    }
   }
 
   @Test

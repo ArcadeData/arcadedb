@@ -20,8 +20,10 @@ package com.arcadedb.function.sql.vector;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.function.FunctionRegistry;
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
+import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -29,6 +31,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.executor.SQLFunction;
 import com.arcadedb.query.sql.parser.SelectStatement;
 import com.arcadedb.schema.Type;
+import org.assertj.core.data.Offset;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -186,6 +189,49 @@ class Issue9768DottedVectorAggregateTest extends TestHelper {
 
     assertThat(checked).as("the dotted aggregates of the registry").contains("vector.sum", "vector.avg", "vector.min", "vector.max");
     assertThat(failures).as("dotted aggregates the planner would not see as aggregates").isEmpty();
+  }
+
+  /** A scalar function an application registers under a namespace of its own. */
+  public static class Twice extends SQLFunctionAbstract {
+    public Twice() {
+      super("acme9768.twice");
+    }
+
+    @Override
+    public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
+        final CommandContext context) {
+      return ((Number) params[0]).intValue() * 2;
+    }
+
+    @Override
+    public String getSyntax() {
+      return "acme9768.twice(<n>)";
+    }
+  }
+
+  @Test
+  void aFunctionAnApplicationRegisteredIsCalledWithoutBackTicks() {
+    // the lookup is the parser's, so a function registered before the statement is parsed is found, whatever its namespace
+    final DefaultSQLFunctionFactory factory = DefaultSQLFunctionFactory.getInstance();
+    factory.register("acme9768.twice", Twice.class);
+    try {
+      final List<Result> rows = run("SELECT acme9768.twice(21) AS n");
+      assertThat(rows).hasSize(1);
+      assertThat(rows.getFirst().<Integer>getProperty("n")).isEqualTo(42);
+    } finally {
+      factory.unregister("acme9768.twice");
+    }
+  }
+
+  @Test
+  void methodCallsSelectorsAndModifiersAfterTheFunctionChainInSourceOrder() {
+    load();
+    // vector.normalize([3, 4]) = [0.6, 0.8]: the function, then two method calls, then an array selector
+    assertThat(run("SELECT vector.normalize([3.0, 4.0]).size() AS n").getFirst().<Integer>getProperty("n")).isEqualTo(2);
+    assertThat(((Number) run("SELECT vector.normalize([3.0, 4.0]).asList()[1] AS e").getFirst().getProperty("e")).doubleValue())
+        .isCloseTo(0.8, Offset.offset(1e-6));
+    assertThat(((Number) run("SELECT vector.normalize([3.0, 4.0])[0] AS e").getFirst().getProperty("e")).doubleValue()).isCloseTo(
+        0.6, Offset.offset(1e-6));
   }
 
   @Test

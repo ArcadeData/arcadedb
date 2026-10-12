@@ -259,7 +259,13 @@ public class CypherFunctionFactory {
     // does not), and the values are irrelevant to that decision
     final Object[] placeholders = new Object[argumentCount];
     Arrays.fill(placeholders, "dummy");
-    return factory.getFunctionInstance(sqlFunctionName).config(placeholders).aggregateResults();
+    try {
+      return factory.getFunctionInstance(sqlFunctionName).config(placeholders).aggregateResults();
+    } catch (final RuntimeException e) {
+      // a function that validates its arguments in config() refuses the placeholders. It is not an aggregation as far as the
+      // planner can tell, and the call reports the real error when it is configured with its real arguments
+      return false;
+    }
   }
 
   /**
