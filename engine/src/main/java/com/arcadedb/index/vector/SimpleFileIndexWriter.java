@@ -18,32 +18,56 @@
  */
 package com.arcadedb.index.vector;
 
+import com.arcadedb.log.LogManager;
 import io.github.jbellis.jvector.disk.IndexWriter;
 
 import java.io.IOException;
 import java.io.UTFDataFormatException;
 import java.nio.ByteBuffer;
+import java.nio.channels.ClosedByInterruptException;
 import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.util.logging.Level;
 
 /**
  * Simple IndexWriter implementation for writing to a regular file.
  * Used for PQ data serialization where ArcadeDB page management is not needed.
+ * <p>
+ * The writer opens its target with {@code TRUNCATE_EXISTING}, so it must be pointed at a file nobody reads yet: a
+ * caller that replaces a live file writes a temporary one and renames it over the target (see
+ * {@link LSMVectorIndexPQFile#writePQ}).
+ * <p>
+ * <b>Interrupts</b> (issue #9796). An interrupt that lands on a thread doing I/O on a {@link FileChannel} closes the
+ * channel ({@link ClosedByInterruptException}), and the thread that streams PQ data is one the engine interrupts on
+ * purpose: the graph build pool is cancelled with {@code shutdownNow()}. Like the page file (#9306), the WAL (#7768),
+ * the snapshot shadow (#9444) and the sealed store (#9621), the writer reopens its channel and carries on, a bounded
+ * number of times, so a close landing in the middle of a stream does not abandon it half written. The interrupt is
+ * not swallowed: it is cleared while the stream is written, because a thread that still has it set would close every
+ * reopened channel at once, and asserted again by {@link #close()}.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class SimpleFileIndexWriter implements IndexWriter {
-  private final FileChannel channel;
+  /** Reopen-and-retry rounds of one flush or force whose channel an interrupt closed under it. */
+  private static final int MAX_REOPENS = 5;
+
+  private final Path        path;
   private final ByteBuffer  buffer;
+  private       FileChannel channel;
   private       long        position;
+  /** Bytes already handed to the channel: the file offset the buffer's first byte lands on. */
+  private       long        flushed;
+  /** An interrupt absorbed while writing, asserted again by {@link #close()}. */
+  private       boolean     interrupted;
 
   /**
    * Create a writer for the given file path.
    * The file will be created or truncated if it exists.
    */
   public SimpleFileIndexWriter(final Path path) throws IOException {
+    this.path = path;
     this.channel = FileChannel.open(path,
         StandardOpenOption.CREATE,
         StandardOpenOption.WRITE,
@@ -51,6 +75,25 @@ public class SimpleFileIndexWriter implements IndexWriter {
     // 8KB buffer for efficient writing
     this.buffer = ByteBuffer.allocate(8192);
     this.position = 0;
+  }
+
+  /**
+   * Flushes the buffered bytes and forces them, and the file's metadata, to the storage device. A caller that renames
+   * the file over a live one calls this first: the rename is atomic, but without it the new name can survive a crash
+   * that the new content does not.
+   */
+  public void force() throws IOException {
+    flush();
+    for (int reopens = 0; ; ) {
+      try {
+        channel.force(true);
+        return;
+      } catch (final ClosedByInterruptException e) {
+        if (++reopens > MAX_REOPENS)
+          throw e;
+        reopenAfterInterrupt();
+      }
+    }
   }
 
   @Override
@@ -169,8 +212,16 @@ public class SimpleFileIndexWriter implements IndexWriter {
 
   @Override
   public void close() throws IOException {
-    flush();
-    channel.close();
+    try {
+      flush();
+    } finally {
+      channel.close();
+      if (interrupted) {
+        // Absorbed while the stream was written; the caller is still entitled to see it.
+        interrupted = false;
+        Thread.currentThread().interrupt();
+      }
+    }
   }
 
   private void ensureCapacity(final int needed) throws IOException {
@@ -186,12 +237,38 @@ public class SimpleFileIndexWriter implements IndexWriter {
   }
 
   private void flush() throws IOException {
-    if (buffer.position() > 0) {
-      buffer.flip();
-      while (buffer.hasRemaining()) {
-        channel.write(buffer);
+    if (buffer.position() == 0)
+      return;
+
+    buffer.flip();
+    // Writes are strictly sequential and the file starts empty, so what the file holds past this offset is exactly the
+    // part of this buffer a closed channel got through, which is what lets a retry resume from the file's size
+    final long base = flushed;
+    for (int reopens = 0; ; ) {
+      try {
+        // Positional, so a retry on a reopened channel never depends on where the closed one left its own position
+        while (buffer.hasRemaining())
+          channel.write(buffer, base + buffer.position());
+        break;
+      } catch (final ClosedByInterruptException e) {
+        if (++reopens > MAX_REOPENS)
+          throw e;
+        reopenAfterInterrupt();
+        // The interrupted write may have landed some of its bytes before the channel noticed: the file says how many
+        buffer.position((int) Math.min(buffer.limit(), Math.max(0L, channel.size() - base)));
       }
-      buffer.clear();
     }
+    flushed = base + buffer.limit();
+    buffer.clear();
+  }
+
+  /**
+   * Replaces the channel an interrupt closed. Never creates or truncates: the file is the one this writer made.
+   */
+  private void reopenAfterInterrupt() throws IOException {
+    // The flag stays set after ClosedByInterruptException, which would close the reopened channel on its first I/O
+    interrupted |= Thread.interrupted();
+    LogManager.instance().log(this, Level.FINE, "File '%s' was closed (thread interrupted?). Reopen it and retry...", null, path);
+    channel = FileChannel.open(path, StandardOpenOption.WRITE);
   }
 }

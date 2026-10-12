@@ -20,12 +20,14 @@ package com.arcadedb.index.vector;
 
 import com.arcadedb.index.IndexException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.utility.FileUtils;
 import io.github.jbellis.jvector.disk.SimpleMappedReader;
 import io.github.jbellis.jvector.graph.disk.OnDiskGraphIndex;
 import io.github.jbellis.jvector.quantization.PQVectors;
 import io.github.jbellis.jvector.quantization.ProductQuantization;
 
 import java.io.IOException;
+import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.logging.Level;
@@ -44,17 +46,29 @@ import java.util.logging.Level;
  * 1. PQ data is loaded entirely into RAM for zero-disk-I/O search
  * 2. JVector's native serialization is optimized for PQ data
  * 3. There's no need for random access patterns during search
+ * <p>
+ * The file is read on a later open, so it is never rewritten in place (issue #9796): {@link #writePQ} streams the new
+ * data into a temporary sibling, forces it to the device and renames it over the live file. Whatever interrupts the
+ * stream, the previous complete file is still there afterwards - there is no window in which the file is neither the
+ * old data nor the new.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class LSMVectorIndexPQFile {
   public static final String FILE_EXT = "vecpq";
 
+  private static final String TEMPORARY_SUFFIX = ".tmp";
+
   private final Path pqFilePath;
 
   // Cached PQ structures loaded into memory for zero-disk-I/O search
   private volatile ProductQuantization productQuantization;
   private volatile PQVectors           pqVectors;
+
+  // Set when loadPQ() found the file on disk and could not read it, cleared by anything that replaces or removes it.
+  // Sticky on purpose: even a transient read error costs one extra rebuild at the next open, which is the safe side,
+  // against trusting a file that may be a fragment.
+  private volatile boolean loadFailed;
 
   /**
    * Create a PQ file handler for the given index file path.
@@ -89,19 +103,43 @@ public class LSMVectorIndexPQFile {
   }
 
   /**
-   * Checks if a PQ file exists on disk.
+   * Checks if a PQ file exists on disk. This says nothing about whether it can be read: a decision that depends on
+   * there being PQ data to use asks {@link #hasUsableData()}.
    */
   public boolean exists() {
     return Files.exists(pqFilePath);
   }
 
   /**
+   * Answers "is there PQ data to use?" the way {@link #isPQReady()} does, for the open-time decisions that cannot wait
+   * for the data to be loaded: true when the PQ is loaded, or when a file is on disk that no load has found
+   * unreadable. A file that exists and failed to load counts as no data - {@link #exists()} alone reports it as
+   * present, which is the answer that sent an open down the wrong route (issue #9796).
+   * <p>
+   * A point-in-time answer: it reads a flag and then the file system, so it is not atomic against a concurrent
+   * {@link #writePQ} or {@link #deletePQFile()}. The open-time decision that asks it runs before any writer of this
+   * index does.
+   */
+  public boolean hasUsableData() {
+    return isPQReady() || (!loadFailed && exists());
+  }
+
+  /**
    * Write PQ data to the file using JVector's serialization.
+   * <p>
+   * The data goes to a temporary sibling that replaces the live file only once it is complete and forced to the
+   * device, so a failure at any point (an interrupt, a full disk, an I/O error, a crash) leaves the previous file
+   * exactly as it was and never a fragment. The cached references are published only after the rename.
+   * <p>
+   * Writers of one file are serialized by the caller ({@code LSMVectorIndex} holds its graph build lock around both
+   * of them): a second writer would race on the rename, and {@link #deleteLeftoverTemporaries()} would remove the
+   * first one's in-flight temporary.
    *
    * @param pq      The ProductQuantization codebook to persist
    * @param vectors The PQVectors containing encoded vectors
    */
   public void writePQ(final ProductQuantization pq, final PQVectors vectors) {
+    Path temporary = null;
     try {
       LogManager.instance().log(this, Level.INFO,
           "Writing PQ data: %d vectors, %d subspaces, %d clusters",
@@ -113,15 +151,40 @@ public class LSMVectorIndexPQFile {
         Files.createDirectories(parent);
       }
 
+      // A process killed between the write and the rename leaves a temporary nothing else would ever remove
+      deleteLeftoverTemporaries();
+
+      // Per-write suffix rather than a fixed name, like the graph manifest's and the ordinal map's temporaries
+      temporary = pqFilePath.resolveSibling(pqFilePath.getFileName() + "." + Long.toHexString(System.nanoTime()) + TEMPORARY_SUFFIX);
+
       // Write using JVector's native serialization with IndexWriter
-      try (SimpleFileIndexWriter writer = new SimpleFileIndexWriter(pqFilePath)) {
+      try (SimpleFileIndexWriter writer = new SimpleFileIndexWriter(temporary)) {
         // Write ProductQuantization codebook first
         pq.write(writer, OnDiskGraphIndex.CURRENT_VERSION);
         // Write encoded vectors
         vectors.write(writer, OnDiskGraphIndex.CURRENT_VERSION);
+        // The rename is atomic, the content behind the new name is not durable until it is forced
+        writer.force();
       }
 
+      // Rename over the live file and force the directory, so the new name survives a crash: without it the previous
+      // name can come back, and with it a previous file that no longer matches the graph persisted before this one.
+      // The writer re-asserts an interrupt it absorbed when it closes, and the directory force is an interruptible
+      // channel operation that an interrupted thread fails: in exactly the cancel scenario this write is built for,
+      // the directory would never be forced. Cleared around the publish and restored after, so the caller is still told.
+      final boolean interrupted = Thread.interrupted();
+      try {
+        FileUtils.publishAtomically(temporary, pqFilePath, true);
+      } finally {
+        // "interrupted" is the interrupt that was pending before the publish, cleared above so the directory force could
+        // run; Thread.interrupted() catches one that landed during the publish itself. Either means the caller is told.
+        if (interrupted || Thread.interrupted())
+          Thread.currentThread().interrupt();
+      }
+      temporary = null;
+
       // Update cached references
+      this.loadFailed = false;
       this.productQuantization = pq;
       this.pqVectors = vectors;
 
@@ -132,6 +195,16 @@ public class LSMVectorIndexPQFile {
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error writing PQ data to %s: %s", pqFilePath, e.getMessage());
       throw new IndexException("Failed to write PQ data", e);
+    } finally {
+      // Still set only when the write did not reach the rename, and an Error (an OutOfMemoryError while streaming a
+      // large file) gets here too: the temporary is never left behind, and the live file was not touched
+      if (temporary != null) {
+        try {
+          Files.deleteIfExists(temporary);
+        } catch (final IOException ignored) {
+          // NOTHING ELSE TO DO
+        }
+      }
     }
   }
 
@@ -164,6 +237,8 @@ public class LSMVectorIndexPQFile {
         this.pqVectors = PQVectors.load(reader, reader.getPosition());
       }
 
+      this.loadFailed = false;
+
       final long elapsed = System.currentTimeMillis() - startTime;
       LogManager.instance().log(this, Level.INFO,
           "PQ data loaded: %d vectors, %d subspaces in %d ms",
@@ -172,10 +247,13 @@ public class LSMVectorIndexPQFile {
       return true;
 
     } catch (final Exception e) {
-      LogManager.instance().log(this, Level.WARNING, "Error loading PQ data from %s: %s", pqFilePath, e.getMessage());
+      LogManager.instance().log(this, Level.WARNING,
+          "Error loading PQ data from %s: %s. The file is treated as missing: the next graph load rebuilds the graph and the PQ together",
+          pqFilePath, e.getMessage());
       // Clear cached data on failure
       this.productQuantization = null;
       this.pqVectors = null;
+      this.loadFailed = true;
       return false;
     }
   }
@@ -192,16 +270,46 @@ public class LSMVectorIndexPQFile {
   /**
    * Delete the PQ file from disk.
    * Called when the index is being dropped or rebuilt.
+   *
+   * @return {@code true} when the file is gone afterwards (deleted, or never there), {@code false} when it could not be
+   * deleted. A caller that drops a stale file has to know: one left behind is paired with the next graph on the
+   * following open (issue #9796)
    */
-  public void deletePQFile() {
+  public boolean deletePQFile() {
     try {
       if (Files.exists(pqFilePath)) {
         Files.delete(pqFilePath);
         LogManager.instance().log(this, Level.INFO, "Deleted PQ file: %s", pqFilePath);
       }
+      deleteLeftoverTemporaries();
+      this.loadFailed = false;
       clearPQCache();
+      return true;
     } catch (final IOException e) {
       LogManager.instance().log(this, Level.WARNING, "Error deleting PQ file: %s", e.getMessage());
+      return false;
+    }
+  }
+
+  private void deleteLeftoverTemporaries() {
+    final Path parent = pqFilePath.getParent();
+    if (parent == null || !Files.isDirectory(parent))
+      return;
+
+    // A filter, not a glob built from the file name: the name is the index's and may carry glob metacharacters, which
+    // would throw or match another file's temporary, with the failure swallowed below
+    final String prefix = pqFilePath.getFileName() + ".";
+    final DirectoryStream.Filter<Path> temporaries = entry -> {
+      final String name = entry.getFileName().toString();
+      return name.length() > prefix.length() + TEMPORARY_SUFFIX.length() && name.startsWith(prefix) && name.endsWith(
+          TEMPORARY_SUFFIX);
+    };
+    try (final DirectoryStream<Path> leftovers = Files.newDirectoryStream(parent, temporaries)) {
+      for (final Path leftover : leftovers)
+        Files.deleteIfExists(leftover);
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.FINE, "Could not remove leftover PQ temporaries next to '%s': %s", pqFilePath,
+          e.getMessage());
     }
   }
 
