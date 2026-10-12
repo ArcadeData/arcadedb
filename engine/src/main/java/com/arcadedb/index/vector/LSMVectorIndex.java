@@ -1937,8 +1937,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
     if (needsGraphRebuildForPQ) {
       LogManager.instance().log(this, Level.INFO,
           """
-              PRODUCT quantization enabled but PQ file missing - rebuilding graph from scratch for ordinal \
-              consistency: %s""",
+              PRODUCT quantization enabled but there is no usable PQ file (missing, or present and unreadable) - \
+              rebuilding graph from scratch for ordinal consistency: %s""",
           indexName);
     }
 
