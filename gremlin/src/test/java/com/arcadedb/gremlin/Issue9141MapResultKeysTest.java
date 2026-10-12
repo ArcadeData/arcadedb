@@ -32,6 +32,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * https://github.com/ArcadeData/arcadedb/issues/9141
@@ -120,13 +121,13 @@ class Issue9141MapResultKeysTest {
   }
 
   @Test
-  void aPropertyNamedLikeATokenKeyIsKept() {
-    graph.addVertex(T.label, "person", "name", "g", "@rid", "mine");
-    graph.tx().commit();
-    final Result result = run("g.V().has('name','g').elementMap()").get(0);
-    assertThat(result.<String>getProperty("@type")).isEqualTo("person");
-    assertThat(result.<String>getProperty("@rid:String")).isEqualTo("mine");
-    assertThat(result.<String>getProperty("@rid")).startsWith("#");
+  void aPropertyNamedLikeATokenKeyIsRefused() {
+    // #9799: @rid is record metadata on every API, so it cannot also be a property. One stored under it was
+    // readable here but replaced by the record's own RID in every SQL projection and JSON/HTTP answer
+    assertThatThrownBy(() -> graph.addVertex(T.label, "person", "name", "g", "@rid", "mine"))
+        .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("@rid");
+    graph.tx().rollback();
+    assertThat(run("g.V().has('name','g')")).isEmpty();
   }
 
   @Test
