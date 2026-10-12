@@ -550,7 +550,10 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
               + "records are unaffected", null, failures);
     }
 
-    schema.saveConfiguration();
+    // No saveConfiguration() here (issue #9764): the restore ran inside a schema recording session, which saves the
+    // schema (when it closes, or when the import's open transaction commits) and, under Raft HA, ships it to the
+    // followers. A bare save after it wrote this node's
+    // schema.json alone, and was the whole of what used to persist the restore.
 
     // Counted off the EXPORT rather than off the target's schema: the target's own counts include whatever predated
     // the import - a function library registered programmatically from native Java code is in every database's

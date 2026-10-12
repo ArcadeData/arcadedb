@@ -3749,7 +3749,28 @@ public class LocalSchema implements Schema {
    *
    * @return how many members could not be restored, for a caller that reports warnings
    */
-  public synchronized int restoreSchemaMembersFromJSON(final JSONObject root, final SchemaMemberSource source) {
+  public int restoreSchemaMembersFromJSON(final JSONObject root, final SchemaMemberSource source) {
+    if (source == SchemaMemberSource.SCHEMA_FILE)
+      // The database's own schema.json being read back: what it names is already this node's (and, under HA, the
+      // cluster's) state, so there is nothing to publish. Its one caller is the schema-file loader, which already
+      // holds this schema's monitor
+      return restoreSchemaMembersFromJSONLocked(root, source);
+
+    // Issue #9764: AN IMPORTED FILE IS A SCHEMA CHANGE, SO IT RUNS INSIDE A SCHEMA RECORDING SESSION. Restored and then
+    // saved with a bare saveConfiguration(), the members reached this node's schema.json and nothing else: under Raft HA
+    // no SCHEMA_ENTRY carried them, and the followers held the imported types and records without the triggers, views,
+    // aggregates and function libraries. The frame ships the schema document the restore produced, like any DDL.
+    //
+    // THE FRAME IS ENTERED BEFORE THE MONITOR IS TAKEN, NEVER UNDER IT (#7457). Entering it waits for the database
+    // write lock, and every schema save runs under that lock and takes this monitor: holding the monitor while waiting
+    // for the write lock is the reverse order, and it deadlocks against any concurrent DDL that is saving. Installing
+    // the restored members' listeners and schedules under the write lock is what dropMaterializedView and
+    // alterMaterializedView already do.
+    final Integer failures = recordFileChanges(() -> restoreSchemaMembersFromJSONLocked(root, source));
+    return failures != null ? failures : 0;
+  }
+
+  private synchronized int restoreSchemaMembersFromJSONLocked(final JSONObject root, final SchemaMemberSource source) {
     // The schema file IS the database's own state: what it names is already installed, so re-reading it replaces
     // rather than merges. An imported file is a second database's state arriving into a live one, which keeps
     // whatever the export did not name.
