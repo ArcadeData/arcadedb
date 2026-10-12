@@ -18,18 +18,24 @@
  */
 package com.arcadedb.schema;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.graph.StripedEdgeList;
 
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 
 public class LocalVertexType extends LocalDocumentType implements VertexType {
-  private final List<Bucket> additionalBuckets = new ArrayList<>();
+  private final    List<Bucket> additionalBuckets = new ArrayList<>();
+  // The name this type had while a rename is moving its super-node stripe pool, else null. The pool is found by name, and
+  // the per-file maps are rebuilt in the middle of a rename, when the pool may still answer to the old name only: listing
+  // both names' pools until the move is over keeps it in the permission map and the explicit lock throughout (issue #9780).
+  private volatile String       renamingFrom;
 
   public LocalVertexType(final LocalSchema schema, final String name) {
     super(schema, name);
@@ -55,6 +61,15 @@ public class LocalVertexType extends LocalDocumentType implements VertexType {
   private void renameInternal(final String newName) {
     final String oldName = name;
 
+    renamingFrom = oldName;
+    try {
+      renameInternal(oldName, newName);
+    } finally {
+      renamingFrom = null;
+    }
+  }
+
+  private void renameInternal(final String oldName, final String newName) {
     super.rename(newName);
 
     final List<Bucket> removedBuckets = new ArrayList<>();
@@ -80,6 +95,8 @@ public class LocalVertexType extends LocalDocumentType implements VertexType {
         rekeyBucket(bucket, oldBucketName);
       }
 
+      renameSuperNodeStripePool(oldName, newName, removedBuckets);
+
       // SchemaException too: it is a RuntimeException, and letting it past this catch would leave the edge buckets
       // already renamed on disk with a schema.json that still names the old files.
     } catch (IOException | SchemaException e) {
@@ -89,8 +106,7 @@ public class LocalVertexType extends LocalDocumentType implements VertexType {
       for (Bucket bucket : removedBuckets) {
         final String renamedBucketName = bucket.getName();
         try {
-          final String restoredName = LocalSchema.rebaseComponentName(renamedBucketName, newName, oldName,
-              schema.getEncoding());
+          final String restoredName = restoredBucketName(renamedBucketName, oldName, newName);
           if (restoredName == null)
             corrupted = true;
           else
@@ -110,11 +126,78 @@ public class LocalVertexType extends LocalDocumentType implements VertexType {
     }
   }
 
+  /**
+   * The type's own buckets, their edge-list buckets and their paired external buckets, plus the super-node stripe pool the
+   * type's promoted vertices keep their edge chunks in (issue #9780). The per-file permission map and the explicit type
+   * lock are both built from this list: a pool left out of it was default-allow for every grant, and an explicitly locked
+   * append to a promoted vertex wrote a file it had not locked and failed the commit.
+   */
   @Override
   public List<Bucket> getInvolvedBuckets() {
-    final ArrayList<Bucket> result = new ArrayList<>(super.getInvolvedBuckets());
+    final List<Bucket> own = super.getInvolvedBuckets();
+    final ArrayList<Bucket> result = new ArrayList<>(own.size() + additionalBuckets.size() + 16);
+    result.addAll(own);
     result.addAll(additionalBuckets);
+    addStripes(result, getSuperNodeStripePool(name));
+    final String previousName = renamingFrom;
+    if (previousName != null && !previousName.equals(name))
+      addStripes(result, getSuperNodeStripePool(previousName));
     return result;
+  }
+
+  private static void addStripes(final List<Bucket> result, final Bucket[] stripePool) {
+    for (final Bucket stripe : stripePool)
+      if (stripe != null)
+        result.add(stripe);
+  }
+
+  /** The stripe pool named after {@code typeName}, indexed by slot: see {@link StripedEdgeList#getStripePool}. */
+  private Bucket[] getSuperNodeStripePool(final String typeName) {
+    return StripedEdgeList.getStripePool(schema, typeName,
+        schema.getDatabase().getConfiguration().getValueAsInteger(GlobalConfiguration.GRAPH_SUPERNODE_STRIPES));
+  }
+
+  /**
+   * Moves the super-node stripe pool under the new type name (issue #9780). The pool is found, dropped and listed among the
+   * type's involved buckets by its name alone, so one left under the old name would fall out of the type's permission map
+   * and explicit lock again, be orphaned when the type is dropped, and be adopted by the next type created under the old
+   * name. Every moved bucket is added to {@code renamedBuckets} so a failure further on puts it back.
+   */
+  private void renameSuperNodeStripePool(final String oldName, final String newName, final List<Bucket> renamedBuckets)
+      throws IOException {
+    final Bucket[] pool = getSuperNodeStripePool(oldName);
+    for (int slot = 0; slot < pool.length; slot++)
+      if (pool[slot] != null && schema.existsBucket(StripedEdgeList.stripeBucketName(newName, slot)))
+        throw new SchemaException(
+            "Cannot rename the super-node stripe bucket '" + pool[slot].getName() + "': a bucket named '" + StripedEdgeList.stripeBucketName(
+                newName, slot) + "' already exists");
+
+    for (int slot = 0; slot < pool.length; slot++) {
+      final Bucket bucket = pool[slot];
+      if (bucket == null)
+        continue;
+      final String oldBucketName = bucket.getName();
+      ((LocalBucket) bucket).rename(StripedEdgeList.stripeBucketName(newName, slot));
+      renamedBuckets.add(bucket);
+      rekeyBucket(bucket, oldBucketName);
+    }
+
+    if (pool.length > 0)
+      // The per-file maps were rebuilt by the type rename, when the pool still answered to the old name only
+      schema.saveConfiguration();
+  }
+
+  /** The name a bucket this rename moved goes back to when the rename is rolled back, or {@code null} if none can be told. */
+  private String restoredBucketName(final String renamedBucketName, final String oldName, final String newName) {
+    final String stripePrefix = InternalBucketNaming.Convention.SUPER_NODE_STRIPE.compose(newName);
+    if (renamedBucketName.startsWith(stripePrefix)) {
+      try {
+        return StripedEdgeList.stripeBucketName(oldName, Integer.parseInt(renamedBucketName.substring(stripePrefix.length())));
+      } catch (final NumberFormatException e) {
+        // NOT A STRIPE BUCKET: AN EDGE BUCKET WHOSE NAME HAPPENS TO START THE SAME WAY
+      }
+    }
+    return LocalSchema.rebaseComponentName(renamedBucketName, newName, oldName, schema.getEncoding());
   }
 
   @Override

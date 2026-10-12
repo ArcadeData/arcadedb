@@ -457,22 +457,14 @@ public class GraphDatabaseChecker {
         addSegmentBucketIfInternal(ids, InternalBucketNaming.outEdgesBucketName(vb.getName()));
         addSegmentBucketIfInternal(ids, InternalBucketNaming.inEdgesBucketName(vb.getName()));
       }
-      // Super-node stripe pool (per type). Pools are created contiguously from slot 0 (see
-      // GraphEngine.dropVertexType): sweep until the first gap AT OR PAST the configured pool size, stepping over
-      // gaps below it (a partially-created pool). No slot 0 means the type never promoted - skip the whole sweep.
-      // NOTE: the bound is the LIVE GRAPH_SUPERNODE_STRIPES, not the size persisted at promotion (same assumption
-      // as dropVertexType). If it was shrunk since promotion, buckets past the new size are simply not scanned -
-      // never deleted, and their live segments are still marked via the phase-1 directory walk - so orphans there
-      // just leak; not a data-loss path.
-      for (int i = 0; ; i++) {
-        final String stripeBucketName = StripedEdgeList.stripeBucketName(type.getName(), i);
-        if (!schema.existsBucket(stripeBucketName)) {
-          if (i == 0 || i >= configuredStripes)
-            break;
-          continue;
-        }
-        addSegmentBucketIfInternal(ids, stripeBucketName);
-      }
+      // Super-node stripe pool (per type), walked by StripedEdgeList.getStripePool like the type's drop and rename.
+      // NOTE: the bound is the LIVE GRAPH_SUPERNODE_STRIPES, not the size persisted at promotion. A pool is walked past
+      // it as long as it stays contiguous; buckets past a gap beyond it are simply not scanned - never deleted, and
+      // their live segments are still marked via the phase-1 directory walk - so orphans there just leak; not a
+      // data-loss path.
+      for (final Bucket stripe : StripedEdgeList.getStripePool(schema, type.getName(), configuredStripes))
+        if (stripe != null)
+          addSegmentBucketIfInternal(ids, stripe.getName());
     }
     return ids;
   }

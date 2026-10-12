@@ -507,6 +507,16 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
             .send(exchange);
         return;
       }
+      // The query-tag header is part of every request's envelope, so it is refused here, before any route runs and before
+      // anything is allocated for the request: a route that checks it late gives back what it took first, or does not -
+      // /begin used to publish its transaction session and then refuse the header, leaving a session whose id no client
+      // was ever sent (issue #9775). The message names the header and is not the concealed free-form detail.
+      try {
+        queryTag(exchange);
+      } catch (final IllegalArgumentException e) {
+        sendErrorResponse(exchange, 400, e.getMessage(), null, null);
+        return;
+      }
       // The supplier is an SPI: tolerate an array shorter than 2 (or null) instead of indexing blindly.
       final String[] traceContext = LogManager.instance().currentTraceContext();
       final String traceId = traceContext != null && traceContext.length > 0 ? traceContext[0] : null;

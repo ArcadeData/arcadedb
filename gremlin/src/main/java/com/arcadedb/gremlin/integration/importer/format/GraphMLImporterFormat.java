@@ -19,7 +19,6 @@
 package com.arcadedb.gremlin.integration.importer.format;
 
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.gremlin.ArcadeGraph;
 import com.arcadedb.integration.importer.AnalyzedEntity;
 import com.arcadedb.integration.importer.AnalyzedSchema;
 import com.arcadedb.integration.importer.ImportException;
@@ -27,46 +26,20 @@ import com.arcadedb.integration.importer.ImporterContext;
 import com.arcadedb.integration.importer.ImporterSettings;
 import com.arcadedb.integration.importer.Parser;
 import com.arcadedb.integration.importer.SourceSchema;
-import com.arcadedb.integration.importer.format.CSVImporterFormat;
-import com.arcadedb.schema.EdgeType;
-import com.arcadedb.schema.VertexType;
 import org.apache.tinkerpop.gremlin.structure.io.IoCore;
 
 import java.io.IOException;
 import java.io.InputStream;
 
-public class GraphMLImporterFormat extends CSVImporterFormat {
+public class GraphMLImporterFormat extends AbstractTinkerPopImporterFormat {
   @Override
   public void load(final SourceSchema sourceSchema, final AnalyzedEntity.EntityType entityType, final Parser parser, final DatabaseInternal database,
       final ImporterContext context, final ImporterSettings settings) throws ImportException {
 
-    final ArcadeGraph graph = ArcadeGraph.open(database);
-
-    // TinkerPop's own GraphML reader reports no per-record progress, so the statistics this format owes the caller
-    // (context.parsed/createdVertices/createdEdges - see ImporterContext#toMap()) are taken as a before/after delta
-    // across the whole schema instead of counted as the reader writes (issue #8054).
-    final long verticesBefore = countRecordsOfKind(database, VertexType.class);
-    final long edgesBefore = countRecordsOfKind(database, EdgeType.class);
-
-    // The before/after delta is taken in a finally, not just after a successful read: TinkerPop's reader can fail
-    // partway through with a RuntimeException (a malformed record, a schema conflict) rather than the IOException
-    // caught below, and on the caller-owned-transaction path #8073 added, whatever it already wrote stays durable
-    // until the caller resolves the transaction either way - so the count must still reach the caller even when
-    // readGraph() throws, the same way Neo4jImporter/OrientDBImporter/RDFImporterFormat preserve an accurate
-    // counter across a partial failure elsewhere in this same code path.
-    try {
-      try (final InputStream is = parser.getInputStream()) {
-        graph.io(IoCore.graphml()).reader().create().readGraph(is, graph);
-      } catch (final IOException e) {
-        throw new ImportException("Error on importing GraphML", e);
-      }
-    } finally {
-      final long createdVertices = countRecordsOfKind(database, VertexType.class) - verticesBefore;
-      final long createdEdges = countRecordsOfKind(database, EdgeType.class) - edgesBefore;
-
-      context.createdVertices.addAndGet(createdVertices);
-      context.createdEdges.addAndGet(createdEdges);
-      context.parsed.addAndGet(createdVertices + createdEdges);
+    try (final InputStream is = parser.getInputStream()) {
+      readGraph(is, database, context, graph -> graph.io(IoCore.graphml()).reader().create(), "GraphML");
+    } catch (final IOException e) {
+      throw new ImportException("Error on importing GraphML", e);
     }
   }
 

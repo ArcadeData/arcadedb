@@ -24,11 +24,24 @@ import org.apache.tinkerpop.gremlin.structure.util.StringFactory;
 
 public class ArcadeGraphFeatures implements Graph.Features {
 
-  protected GraphFeatures          graphFeatures          = new ArcadeGraphGraphFeatures();
+  protected GraphFeatures          graphFeatures;
   protected VertexFeatures         vertexFeatures         = new ArcadeVertexFeatures();
   protected EdgeFeatures           edgeFeatures           = new ArcadeEdgeFeatures();
   protected VertexPropertyFeatures vertexPropertyFeatures = new ArcadeVertexPropertyFeatures();
   protected EdgePropertyFeatures   edgePropertyFeatures   = new ArcadeEdgePropertyFeatures();
+
+  public ArcadeGraphFeatures() {
+    this(true);
+  }
+
+  /**
+   * @param supportsTransactions what {@code graph().supportsTransactions()} answers: {@code false} for a graph that writes
+   *                             into a transaction its caller owns and must never resolve (see
+   *                             {@link ArcadeGraph#openInCallerTransaction})
+   */
+  public ArcadeGraphFeatures(final boolean supportsTransactions) {
+    this.graphFeatures = new ArcadeGraphGraphFeatures(supportsTransactions);
+  }
 
   @Override
   public GraphFeatures graph() {
@@ -53,6 +66,20 @@ public class ArcadeGraphFeatures implements Graph.Features {
   public static class ArcadeGraphGraphFeatures implements GraphFeatures {
 
     private final VariableFeatures variableFeatures = new ArcadeVariableFeatures();
+    private final boolean          supportsTransactions;
+
+    public ArcadeGraphGraphFeatures() {
+      this(true);
+    }
+
+    public ArcadeGraphGraphFeatures(final boolean supportsTransactions) {
+      this.supportsTransactions = supportsTransactions;
+    }
+
+    @Override
+    public boolean supportsTransactions() {
+      return supportsTransactions;
+    }
 
     @Override
     public boolean supportsConcurrentAccess() {

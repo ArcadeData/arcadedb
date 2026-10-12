@@ -24,6 +24,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.TransactionContext;
+import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DatabaseOperationException;
@@ -100,6 +101,7 @@ public class StripedEdgeList extends EdgeLinkedList {
    * EdgeLinkedList.loadChunkForWrite), a read skips the momentarily unresolvable chain, so counts/iterations
    * during a concurrent commit can transiently under-report instead of failing. */
   private static final AtomicLong                      LAST_SKIPPED_CHAIN_WARN = new AtomicLong();
+  private static final Bucket[]                        EMPTY_POOL              = new Bucket[0];
 
   private final DatabaseInternal database;
   private       StripeDirectory  directory;
@@ -119,6 +121,36 @@ public class StripedEdgeList extends EdgeLinkedList {
    */
   public static String stripeBucketName(final String typeName, final int slot) {
     return InternalBucketNaming.superNodeStripeBucketName(typeName, slot);
+  }
+
+  /**
+   * The existing buckets of the stripe pool of {@code typeName}, indexed by slot ({@code null} for a slot with no bucket),
+   * or an empty array when the type never promoted a vertex. Pools are created contiguously from slot 0
+   * ({@link #createStripePool}), so the walk stops at the first gap AT OR PAST {@code configuredStripes} and covers a pool
+   * of any size, past or present; gaps below it (a partially created pool) are stepped over.
+   * <p>
+   * The one answer to "which files hold this type's stripe chains?": the type's involved buckets (per-file permission map
+   * and explicit type lock, issue #9780), its rename and its drop all read it.
+   */
+  public static Bucket[] getStripePool(final Schema schema, final String typeName, final int configuredStripes) {
+    // POOLS ARE CREATED FROM SLOT 0: no slot 0 = this type never promoted. The common case, one lookup.
+    final Bucket first = schema.getBucketByNameIfExists(stripeBucketName(typeName, 0));
+    if (first == null)
+      return EMPTY_POOL;
+
+    final List<Bucket> pool = new ArrayList<>(Math.max(configuredStripes, 1));
+    pool.add(first);
+    for (int i = 1; ; i++) {
+      final Bucket bucket = schema.getBucketByNameIfExists(stripeBucketName(typeName, i));
+      if (bucket == null && i >= configuredStripes)
+        break;
+      pool.add(bucket);
+    }
+    // Trailing gaps below the configured count carry no bucket
+    int size = pool.size();
+    while (pool.get(size - 1) == null)
+      --size;
+    return pool.subList(0, size).toArray(new Bucket[size]);
   }
 
   /**

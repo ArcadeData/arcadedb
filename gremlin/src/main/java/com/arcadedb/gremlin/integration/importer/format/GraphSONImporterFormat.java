@@ -23,7 +23,6 @@ import com.arcadedb.database.RID;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
-import com.arcadedb.gremlin.ArcadeGraph;
 import com.arcadedb.integration.importer.AnalyzedEntity;
 import com.arcadedb.integration.importer.AnalyzedSchema;
 import com.arcadedb.integration.importer.ImportException;
@@ -31,7 +30,6 @@ import com.arcadedb.integration.importer.ImporterContext;
 import com.arcadedb.integration.importer.ImporterSettings;
 import com.arcadedb.integration.importer.Parser;
 import com.arcadedb.integration.importer.SourceSchema;
-import com.arcadedb.integration.importer.format.CSVImporterFormat;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.VertexType;
@@ -56,7 +54,7 @@ import java.util.logging.Level;
  * For non-RID IDs, the original ID is preserved in a property called {@code @id} to allow
  * querying vertices by their original identifiers.
  */
-public class GraphSONImporterFormat extends CSVImporterFormat {
+public class GraphSONImporterFormat extends AbstractTinkerPopImporterFormat {
 
   /**
    * Property name used to store the original vertex/edge ID when it's not an ArcadeDB RID.
@@ -95,44 +93,13 @@ public class GraphSONImporterFormat extends CSVImporterFormat {
       // Use custom import that handles non-RID IDs
       importWithIdMapping(lines, database, context);
     } else {
-      // Use standard TinkerPop import for RID-format IDs.
-      //
-      // No ownership guard here, unlike importWithIdMapping() above, and not an oversight: this branch never pushes a
-      // transaction level of its own. ArcadeGraphTransaction#doOpen() does call database.begin(), but
-      // AbstractThreadLocalTransaction only calls it when isOpen() is false, and ArcadeGraphTransaction#isOpen()
-      // reads database.isTransactionActive() - the database's own live state, not a flag of its own. So an already
-      // active transaction is JOINED rather than nested under, and #7771's mechanism (a level nobody pops, which the
-      // caller's next commit() then commits in place of their own) cannot arise. Same reason GraphMLImporterFormat,
-      // which takes this route for every file, needed nothing.
-      // Convert the lines back to an InputStream
+      // Standard TinkerPop import for RID-format IDs, or a first line with no id at all. Inside a caller-owned
+      // transaction the reader must not commit it (issue #9783): see AbstractTinkerPopImporterFormat.
       final String content = String.join("\n", lines);
-
-      // TinkerPop's own GraphSON reader reports no per-record progress on this route, so the statistics this format
-      // owes the caller (context.parsed/createdVertices/createdEdges - see ImporterContext#toMap()) are taken as a
-      // before/after delta across the whole schema instead of counted as the reader writes (issue #8054).
-      final long verticesBefore = countRecordsOfKind(database, VertexType.class);
-      final long edgesBefore = countRecordsOfKind(database, EdgeType.class);
-
-      // The before/after delta is taken in a finally, not just after a successful read: TinkerPop's reader can
-      // fail partway through with a RuntimeException (a malformed record, a schema conflict) rather than the
-      // IOException caught below, and on the caller-owned-transaction path #8073 added, whatever it already wrote
-      // stays durable until the caller resolves the transaction either way - so the count must still reach the
-      // caller even when readGraph() throws, the same way Neo4jImporter/OrientDBImporter/RDFImporterFormat
-      // preserve an accurate counter across a partial failure elsewhere in this same code path.
-      try {
-        try (final InputStream is = new ByteArrayInputStream(content.getBytes(StandardCharsets.UTF_8))) {
-          final ArcadeGraph graph = ArcadeGraph.open(database);
-          graph.io(IoCore.graphson()).reader().create().readGraph(is, graph);
-        } catch (final IOException e) {
-          throw new ImportException("Error on importing GraphSON", e);
-        }
-      } finally {
-        final long createdVertices = countRecordsOfKind(database, VertexType.class) - verticesBefore;
-        final long createdEdges = countRecordsOfKind(database, EdgeType.class) - edgesBefore;
-
-        context.createdVertices.addAndGet(createdVertices);
-        context.createdEdges.addAndGet(createdEdges);
-        context.parsed.addAndGet(createdVertices + createdEdges);
+      try (final InputStream is = new ByteArrayInputStream(content.getBytes(StandardCharsets.UTF_8))) {
+        readGraph(is, database, context, graph -> graph.io(IoCore.graphson()).reader().create(), "GraphSON");
+      } catch (final IOException e) {
+        throw new ImportException("Error on importing GraphSON", e);
       }
     }
   }
