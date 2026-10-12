@@ -18,8 +18,11 @@
  */
 package com.arcadedb.query.sql.method;
 
+import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.Record;
 import com.arcadedb.query.sql.executor.MultiValue;
+import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.SQLMethod;
 import com.arcadedb.utility.NumberUtils;
 
@@ -197,6 +200,58 @@ public abstract class AbstractSQLMethod implements SQLMethod {
     for (final Iterator<?> iterator = MultiValue.getMultiValueIterator(value); iterator.hasNext(); )
       materialised.add(iterator.next());
     return materialised;
+  }
+
+  /**
+   * Reads one value a projection method ({@code include()}, {@code exclude()}) filters, as the map of property names to
+   * values the projection is built from: a record answers its properties, plus the {@code @rid}/{@code @type}/
+   * {@code @cat} (and on an edge {@code @in}/{@code @out}) metadata when {@code includeMetadata} is set; a
+   * {@link Result} answers its {@link Result#toMap()}; a map answers itself. Anything else answers {@code null}.
+   * <p>
+   * A projection is a VALUE, never a record. Both methods used to build their answer as a brand-new record of the same
+   * type ({@code newVertex()} / {@code newDocument()}) stamped with the RID of the record on disk, so the caller was
+   * handed a dirty {@code MutableVertex} whose {@code save()} overwrote that RID with only the projected properties and
+   * null edge-list heads, orphaning every edge of the vertex; an edge could not be built that way at all and threw; and
+   * the answer was a record or a map depending on whether one of the names started with {@code @} (issue #9840). A map
+   * needs no record to be created, carries no live identity, and is the same type whatever the names are.
+   * <p>
+   * The returned map may be the caller's own (a map receiver, a {@link Result}'s content): callers copy before they
+   * change it.
+   *
+   * @param value           the value the method was invoked on, or one element of it
+   * @param includeMetadata whether a record's metadata fields are part of the answer, see {@link #referencesMetadata}
+   *
+   * @return the properties to project, or {@code null} when the value is not a record, a result or a map
+   */
+  @SuppressWarnings("unchecked")
+  protected static Map<String, Object> projectionSource(final Object value, final boolean includeMetadata) {
+    if (value instanceof Identifiable identifiable) {
+      final Record record = identifiable.getRecord();
+      return record instanceof Document document ? document.toMap(includeMetadata) : null;
+    }
+    if (value instanceof Result result)
+      return result.toMap();
+    if (value instanceof Map)
+      return (Map<String, Object>) value;
+    return null;
+  }
+
+  /**
+   * Whether any of a projection method's field names is a metadata field ({@code @rid}, {@code @type}, {@code @*},
+   * ...). Metadata is part of a record's projection only when the caller names it, so a plain
+   * {@code exclude('secret')} answers the record's properties - a value that can be stored back as an embedded map -
+   * and not a map carrying {@code @type}, which a store converts into an embedded record of that type. Shared by
+   * {@code include()} and {@code exclude()} so the two cannot drift apart on which fields a projection starts from.
+   *
+   * @param fieldNames the method's arguments
+   *
+   * @return true if at least one argument starts with {@code @}
+   */
+  protected static boolean referencesMetadata(final Object[] fieldNames) {
+    for (final Object fn : fieldNames)
+      if (fn != null && fn.toString().startsWith("@"))
+        return true;
+    return false;
   }
 
   protected Object getParameterValue(final Identifiable iRecord, final String iValue) {
