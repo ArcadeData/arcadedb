@@ -707,7 +707,8 @@ public class RedisNetworkExecutor extends Thread {
     if (secondArg.startsWith("{")) {
       // Transient mode: store JSON objects in globalVariables. Every element is parsed and validated BEFORE the first is written:
       // setGlobalVariable is a plain map put that no transaction undoes, so a malformed element k used to leave elements 1..k-1
-      // stored behind an error reply (#9837). The same order as the RID parsing of hDel's transient branch
+      // stored behind an error reply (#9837). The same order as the RID parsing of hDel's transient branch. The stores that follow
+      // cannot fail, but they are still one put at a time: a concurrent reader may see some of the elements and not the others
       final DatabaseInternal database = getAuthorizedDatabase(databaseName);
       final int count = list.size() - 2;
       final String[] keys = new String[count];

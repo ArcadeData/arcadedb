@@ -263,7 +263,7 @@ public class CypherFunctionFactory {
       // here. A class-registered one (the stateful aggregates) is a fresh instance of ours, configured as the bridge does it:
       // whether some SQL functions aggregate depends on their arguments (sum(a) does, sum(a, b) does not), and the values are
       // irrelevant to that decision
-      if (function == factory.getFunctionInstance(sqlFunctionName))
+      if (factory.isSharedInstance(sqlFunctionName))
         return function.aggregateResults();
 
       final Object[] placeholders = new Object[argumentCount];

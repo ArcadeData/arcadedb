@@ -207,6 +207,16 @@ class Issue9768CypherDottedAggregateTest extends TestHelper {
   }
 
   @Test
+  void aFunctionRegisteredAsAClassIsFreshAndOneRegisteredAsAnInstanceIsShared() {
+    final DefaultSQLFunctionFactory factory = DefaultSQLFunctionFactory.getInstance();
+    assertThat(factory.isSharedInstance("vector.sum")).as("stateful aggregate").isFalse();
+    assertThat(factory.getFunctionInstance("vector.sum")).isNotSameAs(factory.getFunctionInstance("vector.sum"));
+    assertThat(factory.isSharedInstance("geo.point")).as("stateless function").isTrue();
+    assertThat(factory.getFunctionInstance("geo.point")).isSameAs(factory.getFunctionInstance("geo.point"));
+    assertThat(factory.isSharedInstance("no.such_function")).isFalse();
+  }
+
+  @Test
   void theRegistryAnswersWhichNamespacedCallsAggregate() {
     assertThat(CypherFunctionFactory.isNamespacedAggregation("vector.sum", 1)).isTrue();
     assertThat(CypherFunctionFactory.isNamespacedAggregation("vector.avg", 1)).isTrue();
