@@ -118,6 +118,30 @@ class Issue9780SuperNodeStripeInvolvedTest extends TestHelper {
   }
 
   /**
+   * The parent's lock reaches every level below it, and a type reached through two supertypes (a diamond) is covered once:
+   * edges appended to promoted hubs two levels down commit under a lock of the root type alone.
+   */
+  @Test
+  void explicitRootTypeLockCoversAMultiLevelAndDiamondHierarchy() {
+    final Schema schema = database.getSchema();
+    schema.buildVertexType().withName("Left").withSuperType("V").withTotalBuckets(1).create();
+    schema.buildVertexType().withName("Right").withSuperType("V").withTotalBuckets(1).create();
+    schema.buildVertexType().withName("Bottom").withSuperType("Left").withTotalBuckets(1).create().addSuperType("Right");
+    assertThat(schema.getType("Bottom").getSuperTypes()).hasSize(2);
+
+    final RID hub = createPromotedHub("Bottom");
+
+    database.transaction(() -> {
+      database.acquireLock().type("V").type("E").lock();
+      final MutableVertex other = database.newVertex("Bottom").save();
+      for (int i = 0; i < 2 * STRIPES; i++)
+        hub.asVertex().newEdge("E", other);
+    });
+
+    assertThat(countOut(hub)).isEqualTo(400 + 2 * STRIPES);
+  }
+
+  /**
    * A rename moves the pool under the new name, so it stays the type's own, keeps serving the promoted vertices, and is
    * dropped with the type rather than left behind for a later type created under the old name.
    */
