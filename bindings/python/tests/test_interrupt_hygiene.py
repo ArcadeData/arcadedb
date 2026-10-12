@@ -12,9 +12,8 @@ had not reached (#9813).
 @author Luca Garulli (l.garulli@arcadedata.com)
 """
 
-import pytest
-
 import arcadedb_embedded as arcadedb
+import pytest
 from arcadedb_embedded import ArcadeDBError
 from arcadedb_embedded.core import Database
 from arcadedb_embedded.server import ArcadeDBServer

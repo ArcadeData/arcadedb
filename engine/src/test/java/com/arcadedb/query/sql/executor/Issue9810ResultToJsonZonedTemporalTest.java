@@ -29,6 +29,7 @@ import org.junit.jupiter.api.Test;
 import java.time.LocalTime;
 import java.time.OffsetTime;
 import java.time.ZonedDateTime;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -132,6 +133,26 @@ class Issue9810ResultToJsonZonedTemporalTest extends TestHelper {
     final JSONObject json = new JSONObject().put("t", OffsetTime.parse(OFFSET)).put("l", LocalTime.parse("07:15:30"));
     assertThat(json.getString("t")).isEqualTo(OFFSET);
     assertThat(json.getString("l")).isEqualTo("07:15:30");
+  }
+
+  /** The Map arm recurses now: what it did for a nested Map, a List, a null and plain scalars must not change. */
+  @Test
+  void aMapKeepsItsNestedMapListNullAndScalarValues() {
+    final Map<String, Object> inner = new LinkedHashMap<>();
+    inner.put("x", "y");
+    inner.put("t", OffsetTime.parse(OFFSET));
+    final Map<String, Object> map = new LinkedHashMap<>();
+    map.put("n", null);
+    map.put("i", 1);
+    map.put("b", true);
+    map.put("s", "text");
+    map.put("m", inner);
+    map.put("l", List.of(1, 2));
+
+    final JSONObject json = (JSONObject) new ResultInternal(database).valueToJSON(map);
+
+    assertThat(json.toString()).isEqualTo(
+        "{\"n\":null,\"i\":1,\"b\":true,\"s\":\"text\",\"m\":{\"x\":\"y\",\"t\":\"" + OFFSET + "\"},\"l\":[1,2]}");
   }
 
   @Test
