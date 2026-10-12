@@ -87,7 +87,7 @@ class Issue9853TextFormCoversEveryValueTest {
   }
 
   private static void assertCovered(final Object value) {
-    final DocumentValidator.TextForm form = DocumentValidator.textForm(value.getClass());
+    final TextForm form = TextForm.of(value.getClass());
     final String text = value.toString();
     assertThat(form).as(value.getClass().getSimpleName()).isNotNull();
     assertThat(form.shape().matcher(text).matches()).as("'%s' of the shape '%s'", text, form.shape().pattern()).isTrue();
