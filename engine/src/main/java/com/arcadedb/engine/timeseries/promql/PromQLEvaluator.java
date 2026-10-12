@@ -729,22 +729,12 @@ public class PromQLEvaluator {
       // tag is null, an old row may hold ""): matchesPostFilters() decides it (issue #9363)
       if (m.op() != MatchOp.EQ || isEmptyEquality(m) || "__name__".equals(m.name()))
         continue;
-      int idx = -1;
-      ColumnDefinition column = null;
-      for (final ColumnDefinition col : columns) {
-        if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
-          continue;
-        ++idx;
-        if (col.getName().equals(m.name())) {
-          column = col;
-          break;
-        }
-      }
-      if (column == null)
+      final int idx = findNonTsColumnIndex(m.name(), columns);
+      if (idx < 0)
         continue;
       // A matcher value is always text and the stored tag is of the column's declared type: compared as text, a LONG or
       // BOOLEAN tag matched nothing. Coerced as every other tag push-down coerces it (issues #5475, #9803)
-      final Object value = column.coerceValue(m.value());
+      final Object value = nonTsColumn(idx, columns).coerceValue(m.value());
       filter = filter == null ? TagFilter.eq(idx, value) : filter.and(idx, value);
     }
     return filter;
@@ -918,6 +908,29 @@ public class PromQLEvaluator {
     }
   }
 
+  private int findNonTsColumnIndex(final String name, final List<ColumnDefinition> columns) {
+    int nonTsIdx = -1;
+    for (final ColumnDefinition col : columns) {
+      if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
+        continue;
+      nonTsIdx++;
+      if (col.getName().equals(name))
+        return nonTsIdx;
+    }
+    return -1;
+  }
+
+  /** The column at {@code nonTsIndex} among the non-timestamp columns, as {@link #findNonTsColumnIndex} counts them. */
+  private static ColumnDefinition nonTsColumn(final int nonTsIndex, final List<ColumnDefinition> columns) {
+    int nonTsIdx = -1;
+    for (final ColumnDefinition col : columns) {
+      if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
+        continue;
+      if (++nonTsIdx == nonTsIndex)
+        return col;
+    }
+    throw new IllegalArgumentException("No non-timestamp column at index " + nonTsIndex);
+  }
 
   /**
    * Returns the row index for a named column in the engine row format

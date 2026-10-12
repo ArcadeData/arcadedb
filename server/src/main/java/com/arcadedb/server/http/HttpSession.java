@@ -143,7 +143,9 @@ public class HttpSession implements QuerySession {
    * request thread ending the session on an administrator's behalf, {@code terminate transaction} (issue #9774). The wait of
    * {@link #cancel()} is unbounded so a removed session cannot leak its transaction; this one is bounded for the same
    * guarantee by other means: the rollback is asked of the session first, and whichever of the two lets go of the lock
-   * first performs it - this call if it gets the lock in time, the in-flight request on its way out otherwise.
+   * first performs it - this call if it gets the lock in time, the in-flight request on its way out otherwise. The
+   * request's way out is the {@code finally} of {@link #execute}, which a request cannot skip; only a thread that never
+   * returns from its command would leave the transaction open, and such a thread holds the session in any case.
    *
    * @return {@code true} when the transaction was rolled back here (or there was none to roll back), {@code false} when a
    * request still runs in the session and will roll it back as it ends

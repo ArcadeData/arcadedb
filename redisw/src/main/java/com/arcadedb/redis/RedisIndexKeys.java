@@ -20,6 +20,7 @@ package com.arcadedb.redis;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.ConsistentKeyLookup;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
@@ -72,8 +73,18 @@ public class RedisIndexKeys {
   public static Identifiable lookup(final Database database, final String indexName, final String key) {
     final Object[] keys = parse(key);
     for (int attempt = 1; ; attempt++) {
-      // resolved on every attempt: a DROP and a CREATE replace the index object under the same name
-      final Index index = database.getSchema().getIndexByName(indexName);
+      // resolved on every attempt: a DROP and a CREATE replace the index object under the same name, and between the two the
+      // name resolves to nothing. That is retried as well; a name still unknown after the last attempt is reported as such,
+      // since it may simply not exist
+      final Index index;
+      try {
+        index = database.getSchema().getIndexByName(indexName);
+      } catch (final SchemaException e) {
+        if (attempt >= MAX_LOOKUP_ATTEMPTS)
+          throw e;
+        pause(attempt, e);
+        continue;
+      }
       try {
         try (final IndexCursor cursor = index instanceof TypeIndex typeIndex ?
             ConsistentKeyLookup.getForQuery(database, typeIndex, keys) :
@@ -89,14 +100,18 @@ public class RedisIndexKeys {
           retry.initCause(e);
           throw retry;
         }
-        try {
-          // a short, growing pause: the DDL is usually over in a few milliseconds
-          Thread.sleep(attempt);
-        } catch (final InterruptedException ie) {
-          Thread.currentThread().interrupt();
-          throw e;
-        }
+        pause(attempt, e);
       }
+    }
+  }
+
+  /** A short, growing pause between two attempts: a DDL on the index is usually over in a few milliseconds. */
+  private static void pause(final int attempt, final RuntimeException cause) {
+    try {
+      Thread.sleep(attempt);
+    } catch (final InterruptedException ie) {
+      Thread.currentThread().interrupt();
+      throw cause;
     }
   }
 

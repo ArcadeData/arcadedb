@@ -669,6 +669,11 @@ public class MCPDispatcher {
     return result(id, result);
   }
 
+  /** The member when it is a string, {@code null} otherwise. */
+  private static String textMember(final JSONObject json, final String name) {
+    return json.opt(name) instanceof String string ? string : null;
+  }
+
   /**
    * Reads a member that the protocol types as a string, deciding on the value's own JSON type rather than on what
    * a converting accessor makes of it. {@link JSONObject#getString(String, String)} delegates to Gson, which
@@ -682,11 +687,6 @@ public class MCPDispatcher {
    * @throws IllegalArgumentException when the member is present with any other JSON type. Callers translate this
    *                                  into the JSON-RPC error that fits where the member sits.
    */
-  /** The member when it is a string, {@code null} otherwise. */
-  private static String textMember(final JSONObject json, final String name) {
-    return json.opt(name) instanceof String string ? string : null;
-  }
-
   private static String stringMember(final JSONObject json, final String name, final String defaultValue) {
     final Object value = json.opt(name);
     if (value == null)
