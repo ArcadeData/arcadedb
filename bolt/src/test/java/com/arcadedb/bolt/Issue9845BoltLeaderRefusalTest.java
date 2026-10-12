@@ -107,6 +107,14 @@ class Issue9845BoltLeaderRefusalTest {
   }
 
   @Test
+  void theRoutingTableAddressIsStrippedOfControlCharacters() {
+    final HAServerPlugin ha = new RoutingHA(new HAServerPlugin.RoutingTable(HAServerPlugin.ROUTING_PROTOCOL.BOLT,
+        "arcadedb-0\n:7687", List.of()));
+    assertThat(BoltNetworkExecutor.withLeaderRedirect("Commit error", refusal(LEADER), ha)).doesNotContain("\n")
+        .contains("'arcadedb-0 :7687'");
+  }
+
+  @Test
   void theMessageFallsBackToTheRefusalsAddressWhenTheRoutingTableHasNone() {
     assertThat(BoltNetworkExecutor.withLeaderRedirect("Commit error", refusal(LEADER), new RoutingHA(null)))
         .isEqualTo("Commit error. The leader is server '" + LEADER + "' (HTTP address; use its Bolt port). Retry there");

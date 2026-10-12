@@ -1923,7 +1923,7 @@ public class BoltNetworkExecutor extends Thread {
     final HAServerPlugin.RoutingTable routing = ha != null ? ha.getRoutingTable(HAServerPlugin.ROUTING_PROTOCOL.BOLT) : null;
     final String boltLeader = routing != null ? routing.writer() : null;
     if (boltLeader != null && !boltLeader.isBlank())
-      return text + ". Reconnect to the leader at '" + boltLeader + "' (Bolt address) and retry";
+      return text + ". Reconnect to the leader at '" + ServerIsNotTheLeaderException.wireSafe(boltLeader) + "' (Bolt address) and retry";
     // What the refusal carries is the leader's HTTP address (or its server name), not a Bolt endpoint: say so
     return text + ". " + refusal.leaderSentence() + " (HTTP address; use its Bolt port). Retry there";
   }

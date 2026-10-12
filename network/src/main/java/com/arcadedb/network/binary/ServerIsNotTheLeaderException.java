@@ -68,11 +68,19 @@ public class ServerIsNotTheLeaderException extends NeedRetryException {
    * either early.
    */
   public String leaderSentence() {
-    final char[] chars = String.valueOf(leaderURL).toCharArray();
+    return "The leader is server '" + wireSafe(leaderURL) + "'";
+  }
+
+  /**
+   * {@code address} with every control character replaced by a space, for a transport that names a leader address it
+   * read elsewhere (a routing table) in the same error text {@link #leaderSentence} goes into.
+   */
+  public static String wireSafe(final String address) {
+    final char[] chars = String.valueOf(address).toCharArray();
     for (int i = 0; i < chars.length; i++)
       if (Character.isISOControl(chars[i]))
         chars[i] = ' ';
-    return "The leader is server '" + new String(chars) + "'";
+    return new String(chars);
   }
 
   @Override
