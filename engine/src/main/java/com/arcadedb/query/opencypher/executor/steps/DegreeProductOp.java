@@ -406,7 +406,7 @@ public final class DegreeProductOp implements CountOp {
     for (int v = 0; v < nodeIdUpperBound; v++) {
       guard.checkPeriodically(v);
       if (provider.isNodeLive(v))
-        bucketIds[v] = provider.getRID(v).getBucketId();
+        bucketIds[v] = provider.getBucketId(v);
     }
     return bucketIds;
   }
