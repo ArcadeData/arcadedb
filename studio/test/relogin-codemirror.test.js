@@ -27,8 +27,8 @@
 //
 //     node --test studio/test/relogin-codemirror.test.js
 //
-// renderCodeEditor() and getEditorMode() live in query.html (there is no bundler for the
-// application JS), so we extract them from the HTML and exercise them against a mock
+// renderCodeEditor() and getEditorMode() live in js/studio-query.js (there is no bundler for the
+// application JS), so we extract them from the script and exercise them against a mock
 // CodeMirror that models the fromTextArea/toTextArea DOM lifecycle.
 
 const { test } = require("node:test");
@@ -36,12 +36,12 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 
-const HTML_PATH = path.join(__dirname, "..", "src", "main", "resources", "static", "query.html");
+const HTML_PATH = path.join(__dirname, "..", "src", "main", "resources", "static", "js", "studio-query.js");
 const html = fs.readFileSync(HTML_PATH, "utf8");
 
 function extractFn(src, name) {
   const start = src.indexOf("function " + name + "(");
-  if (start < 0) throw new Error("function not found in query.html: " + name);
+  if (start < 0) throw new Error("function not found in js/studio-query.js: " + name);
   let i = src.indexOf("{", start);
   let depth = 1;
   i++;

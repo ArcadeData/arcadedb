@@ -8,13 +8,7 @@
     <link rel="shortcut icon" href="images/arcade-favico.png" type="image/png" />
 
     <!-- Theme init (before CSS to prevent FOUC) -->
-    <script>
-    (function() {
-      var p = localStorage.getItem('studio-theme') || 'light';
-      var t = p === 'system' ? (matchMedia('(prefers-color-scheme:dark)').matches ? 'dark' : 'light') : p;
-      document.documentElement.setAttribute('data-theme', t);
-    })();
-    </script>
+    <script src="js/studio-theme-init.js"></script>
 
     <!-- SECURE NPM-MANAGED CSS DEPENDENCIES -->
     <link rel="stylesheet" href="dist/css/bootstrap.min.css" />
@@ -75,100 +69,11 @@
     <script src="dist/js/cytoscape-node-html-label.min.js"></script>
     <script src="dist/js/apexcharts.min.js"></script>
 
+    <!-- Delegated data-on-* handlers: the Content-Security-Policy refuses inline on*="..." attributes (issue #9681) -->
+    <script src="js/studio-actions.js"></script>
+
     <!-- COMPATIBILITY LAYER -->
-    <script>
-      // Bootstrap 4 → 5 Compatibility Shims
-      $(document).ready(function() {
-        $('[data-toggle]').each(function() {
-          const toggle = $(this).attr('data-toggle');
-          $(this).attr('data-bs-toggle', toggle);
-        });
-        $('[data-dismiss]').each(function() {
-          const dismiss = $(this).attr('data-dismiss');
-          $(this).attr('data-bs-dismiss', dismiss);
-        });
-      });
-
-      // Notification system using Bootstrap Toasts
-      var isToastReady = false;
-      var notificationQueue = [];
-
-      document.addEventListener('DOMContentLoaded', function() {
-        isToastReady = true;
-        processNotificationQueue();
-      });
-
-      function processNotificationQueue() {
-        while (notificationQueue.length > 0 && isToastReady) {
-          var n = notificationQueue.shift();
-          showNotification(n.title, n.message, n.type, n.delay, n.tag);
-        }
-      }
-
-      function showNotification(title, message, type, delay, tag) {
-        var container = document.getElementById('toastContainer');
-        if (!container) return;
-
-        var isError = (type === 'danger' || type === 'error');
-        var isWarning = (type === 'warning');
-        var iconClass = isError ? 'fa-circle-exclamation' : (isWarning ? 'fa-triangle-exclamation' : 'fa-circle-check');
-        var iconColor = isError ? '#dc3545' : (isWarning ? '#ffc107' : '#28a745');
-
-        var toastEl = document.createElement('div');
-        toastEl.className = 'toast studio-toast';
-        toastEl.setAttribute('role', 'alert');
-        if (tag) toastEl.setAttribute('data-notify-tag', tag);
-        toastEl.innerHTML =
-          '<div class="toast-header">' +
-            '<i class="fa ' + iconClass + ' me-2" style="color:' + iconColor + '"></i>' +
-            '<strong class="me-auto"></strong>' +
-            '<button type="button" class="btn-close" data-bs-dismiss="toast"></button>' +
-          '</div>' +
-          '<div class="toast-body"></div>';
-        toastEl.querySelector('.toast-header strong').textContent = title || '';
-        toastEl.querySelector('.toast-body').textContent = message || '';
-
-        container.appendChild(toastEl);
-        // Errors and warnings stay visible until the user dismisses them; informational toasts auto-hide.
-        var options = (isError || isWarning)
-          ? (delay ? { delay: delay } : { autohide: false })
-          : { delay: delay || 3500 };
-        var toast = new bootstrap.Toast(toastEl, options);
-        toast.show();
-        toastEl.addEventListener('hidden.bs.toast', function() { toastEl.remove(); });
-      }
-
-      function globalNotify(title, message, type, delay, tag) {
-        if (!isToastReady) {
-          notificationQueue.push({ title: title, message: message, type: type, delay: delay, tag: tag });
-          return;
-        }
-        showNotification(title, message, type, delay, tag);
-      }
-
-      // Dismisses any currently visible (or still-queued) toast created with the given tag.
-      // Used to clear a still-open "Session Expired" warning once the user logs back in,
-      // since Bootstrap warning toasts don't auto-hide on their own (see #8231).
-      function dismissNotification(tag) {
-        if (!tag) return;
-
-        for (var i = notificationQueue.length - 1; i >= 0; i--) {
-          if (notificationQueue[i].tag === tag) notificationQueue.splice(i, 1);
-        }
-
-        var container = document.getElementById('toastContainer');
-        if (!container) return;
-        // Compare the attribute directly instead of interpolating `tag` into a CSS selector string.
-        var toasts = container.querySelectorAll('.studio-toast');
-        for (var j = 0; j < toasts.length; j++) {
-          var el = toasts[j];
-          if (el.getAttribute('data-notify-tag') !== tag) continue;
-          var instance = bootstrap.Toast.getInstance(el);
-          if (instance) instance.hide();
-          else el.remove();
-        }
-      }
-    </script>
+    <script src="js/studio-notify.js"></script>
 
     <script src="js/studio-utils.js"></script>
     <script src="js/studio-database.js"></script>
@@ -304,7 +209,9 @@
               <!-- Logout (pinned bottom) -->
               <li class="nav-item">
                 <a
-                  href="javascript:logout()"
+                  href="#"
+                  data-on-click="logout"
+                  data-prevent-default
                   class="vertical-tab nav-link"
                   id="logout-sel"
                   title="Logout"
@@ -325,7 +232,7 @@
                   <i class="fa fa-rocket" style="font-size: 2.5rem; color: #00aeee; margin-bottom: 12px; display: block;"></i>
                   <h3 style="font-weight: 600; margin-bottom: 8px;">Get Started with ArcadeDB</h3>
                   <p style="color: var(--text-secondary, #888); margin-bottom: 20px;">No databases found. Create an empty one or import a sample dataset with one click.</p>
-                  <button class="btn db-action-btn" onclick="createDatabase()" style="padding: 8px 24px; font-size: 0.95rem;">
+                  <button class="btn db-action-btn" data-on-click="createDatabase" style="padding: 8px 24px; font-size: 0.95rem;">
                     <i class="fa fa-plus"></i> Create Empty Database
                   </button>
                 </div>
@@ -390,79 +297,6 @@
 
     ${include:popup-login.html}
 
-    <script>
-      var studioCurrentTab = "query";
-
-      $(function () {
-        $("#loginForm").on("keypress", function (e) {
-          if (e.which == 13) {
-            login();
-          }
-        });
-
-        $('a[data-bs-toggle="tab"]').on("shown.bs.tab", function (e) {
-          var activeTab = this.id;
-
-          // Tabs that don't require a database - always show main content
-          var noDatabaseTabs = ["tab-server-sel", "tab-profiler-sel", "tab-security-sel",
-            "tab-cluster-sel", "tab-api-sel", "tab-resources-sel", "tab-support-sel", "tab-settings-sel"];
-          if (noDatabaseTabs.indexOf(activeTab) >= 0) {
-            $("#quickStartPanel").hide();
-            $("#mainTabContent").show();
-          }
-
-          // Tabs that require a database - show quick start if none exists
-          var databaseTabs = ["tab-query-sel", "tab-database-sel"];
-          if (databaseTabs.indexOf(activeTab) >= 0 && !getCurrentDatabase()) {
-            $("#mainTabContent").hide();
-            showQuickStart();
-          }
-
-          if (activeTab == "tab-query-sel") {
-            studioCurrentTab = "query";
-            editorFocus();
-          } else if (activeTab == "tab-server-sel") {
-            studioCurrentTab = "server";
-            updateServer();
-          } else if (activeTab == "tab-profiler-sel") {
-            studioCurrentTab = "profiler";
-            initProfiler();
-          } else if (activeTab == "tab-security-sel") {
-            studioCurrentTab = "security";
-            initSecurity();
-          } else if (activeTab == "tab-cluster-sel") {
-            studioCurrentTab = "cluster";
-            updateCluster();
-          } else if (activeTab == "tab-database-sel") {
-            studioCurrentTab = "database";
-          } else if (activeTab == "tab-api-sel") {
-            studioCurrentTab = "api";
-          } else if (activeTab == "tab-resources-sel") {
-            studioCurrentTab = "resources";
-          } else if (activeTab == "tab-support-sel") {
-            studioCurrentTab = "support";
-            initSupportTab();
-          } else if (activeTab == "tab-settings-sel") {
-            studioCurrentTab = "settings";
-          }
-        });
-
-        // Initialize searchable database selectors
-        initSearchableDbSelect("queryDbSelectContainer");
-        initSearchableDbSelect("schemaDbSelectContainer");
-
-        // Check for existing session in localStorage
-        if (initSessionFromStorage()) {
-          console.log("Found stored session, attempting auto-login");
-          updateDatabases(function () {
-            console.log("Auto-login successful, initializing query editor");
-            initQuery();
-            studioRouteReady();
-          });
-        } else if (globalCredentials == null) {
-          showLoginPopup();
-        }
-      });
-    </script>
+    <script src="js/studio-main.js"></script>
   </body>
 </html>

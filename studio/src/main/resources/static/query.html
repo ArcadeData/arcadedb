@@ -10,19 +10,19 @@
   <div class="d-flex" style="flex: 1; min-height: 0;">
     <!-- Icon Sidebar -->
     <div id="queryIconSidebar">
-      <button class="icon-sidebar-btn active" data-panel="overview" onclick="switchSidebarPanel('overview')" title="Database Overview">
+      <button class="icon-sidebar-btn active" data-panel="overview" data-on-click="switchSidebarPanel" data-args='["overview"]' title="Database Overview">
         <i class="fa fa-database"></i>
       </button>
-      <button class="icon-sidebar-btn" data-panel="history" onclick="switchSidebarPanel('history')" title="History">
+      <button class="icon-sidebar-btn" data-panel="history" data-on-click="switchSidebarPanel" data-args='["history"]' title="History">
         <i class="fa fa-clock"></i>
       </button>
-      <button class="icon-sidebar-btn" data-panel="saved" onclick="switchSidebarPanel('saved')" title="Saved Queries">
+      <button class="icon-sidebar-btn" data-panel="saved" data-on-click="switchSidebarPanel" data-args='["saved"]' title="Saved Queries">
         <i class="fa fa-bookmark"></i>
       </button>
-      <button class="icon-sidebar-btn" data-panel="reference" onclick="switchSidebarPanel('reference')" title="Reference">
+      <button class="icon-sidebar-btn" data-panel="reference" data-on-click="switchSidebarPanel" data-args='["reference"]' title="Reference">
         <i class="fa fa-book"></i>
       </button>
-      <button class="icon-sidebar-btn" data-panel="settings" onclick="switchSidebarPanel('settings')" title="Settings">
+      <button class="icon-sidebar-btn" data-panel="settings" data-on-click="switchSidebarPanel" data-args='["settings"]' title="Settings">
         <i class="fa fa-gear"></i>
       </button>
     </div>
@@ -31,7 +31,7 @@
     <div id="querySidebar">
       <div class="sidebar-header">
         <span class="sidebar-title" id="sidebarPanelTitle">Database Info</span>
-        <button class="btn btn-sm btn-light sidebar-refresh-btn" id="sidebarRefreshBtn" onclick="refreshQuerySidebar()" title="Refresh">
+        <button class="btn btn-sm btn-light sidebar-refresh-btn" id="sidebarRefreshBtn" data-on-click="refreshQuerySidebar" title="Refresh">
           <i class="fa fa-sync"></i>
         </button>
       </div>
@@ -222,14 +222,14 @@
         <div id="vecNoIndexes" class="text-muted mt-1" style="font-size: 0.8rem; display: none;">This database has no LSM_VECTOR, LSM_SPARSE_VECTOR or FULL_TEXT index.</div>
             </div>
             <div class="query-editor-actions">
-              <button class="editor-action-btn editor-clear-btn" onclick="clearQuery()" title="Clear query">
+              <button class="editor-action-btn editor-clear-btn" data-on-click="clearQuery" title="Clear query">
                 <i class="fa fa-eraser"></i>
               </button>
-              <button class="editor-action-btn editor-save-btn" onclick="saveCurrentQuery()" title="Save query">
+              <button class="editor-action-btn editor-save-btn" data-on-click="saveCurrentQuery" title="Save query">
                 <i class="fa fa-bookmark"></i>
               </button>
               <div class="editor-action-divider"></div>
-              <button class="editor-action-btn editor-run-btn" data-testid="execute-query-button" onclick="resetHistoryNavigation(); executeCommand()" title="Run (Ctrl+Enter)">
+              <button class="editor-action-btn editor-run-btn" data-testid="execute-query-button" data-on-click="runQueryFromEditor" title="Run (Ctrl+Enter)">
                 <i class="fa fa-play"></i>
                 <img id="executeSpinner" class="ui-loading" src="images/color-spin-small.svg" style="display: none" />
               </button>
@@ -301,14 +301,14 @@
                     <div class="collapse navbar-collapse" id="navbarSupportedContent">
                       <div class="d-flex my-2 my-lg-0">
                         <input id="inputGraphSearch" class="form-control me-sm-2" type="search" placeholder="Search" aria-label="Search" autocomplete="off" />
-                        <button class="btn btn-secondary" onclick="searchInGraph()" href="#"><i class="fa fa-search"></i></button>
+                        <button class="btn btn-secondary" data-on-click="searchInGraph" href="#"><i class="fa fa-search"></i></button>
                       </div>
                       <ul class="navbar-nav me-auto">
                         <li class="nav-item"></li>
                       </ul>
                       <ul class="navbar-nav">
                         <li class="nav-item">
-                          <a class="nav-link btn btn-secondary" href="#" onclick="renderGraph()"><i class="fa fa-sync"></i> Redraw</a>
+                          <a class="nav-link btn btn-secondary" href="#" data-on-click="renderGraph"><i class="fa fa-sync"></i> Redraw</a>
                         </li>
                         <li class="nav-item dropdown">
                           <a
@@ -324,24 +324,24 @@
                           </a>
                           <ul class="dropdown-menu" aria-labelledby="navbarDropdown" style="width: 300px">
                             <li class="dropdown-item">
-                              <a class="nav-link" href="#" onclick="selectNeighbors(1)" disabled>Direct Neighbors</a>
+                              <a class="nav-link" href="#" data-on-click="selectNeighbors" data-args='[1]' disabled>Direct Neighbors</a>
                             </li>
                             <li class="dropdown-item">
-                              <a class="nav-link" href="#" onclick="selectOrphanVertices()" disabled>Orphan Vertices</a>
+                              <a class="nav-link" href="#" data-on-click="selectOrphanVertices" disabled>Orphan Vertices</a>
                             </li>
                             <li class="dropdown-item">
-                              <a class="nav-link" href="#" onclick="invertVertexSelection()" disabled>Invert Node Selection</a>
+                              <a class="nav-link" href="#" data-on-click="invertVertexSelection" disabled>Invert Node Selection</a>
                             </li>
                             <li class="dropdown-item">
-                              <a class="nav-link" href="#" onclick="shortestPath()" disabled>Shortest Path</a>
+                              <a class="nav-link" href="#" data-on-click="shortestPath" disabled>Shortest Path</a>
                             </li>
                           </ul>
                         </li>
                         <li class="nav-item">
-                          <a class="nav-link btn btn-secondary" href="#" onclick="cutSelection()"><i class="fa fa-cut"></i> Cut</a>
+                          <a class="nav-link btn btn-secondary" href="#" data-on-click="cutSelection"><i class="fa fa-cut"></i> Cut</a>
                         </li>
                         <li class="nav-item">
-                          <a class="nav-link btn btn-secondary" href="#" onclick="cropSelection()"><i class="fa fa-crop"></i> Crop</a>
+                          <a class="nav-link btn btn-secondary" href="#" data-on-click="cropSelection"><i class="fa fa-crop"></i> Crop</a>
                         </li>
                         <li class="nav-item dropdown">
                           <a
@@ -357,7 +357,7 @@
                           </a>
                           <ul class="dropdown-menu" aria-labelledby="navbarDropdown" style="width: 300px">
                             <li class="dropdown-item">
-                              <a class="nav-link" href="#" onclick="importGraph('json')">JSON</a>
+                              <a class="nav-link" href="#" data-on-click="importGraph" data-args='["json"]'>JSON</a>
                             </li>
 
                             <li class="dropdown-item">
@@ -365,7 +365,7 @@
                             </li>
 
                             <li class="dropdown-item">
-                              <a class="nav-link" href="#" onclick="importSettings()">Settings</a>
+                              <a class="nav-link" href="#" data-on-click="importSettings">Settings</a>
                             </li>
                           </ul>
                         </li>
@@ -383,23 +383,23 @@
                           </a>
                           <ul class="dropdown-menu" aria-labelledby="navbarDropdown" style="width: 300px">
                             <li class="dropdown-item">
-                              <a class="nav-link" href="#" onclick="exportGraph('json')">JSON</a>
+                              <a class="nav-link" href="#" data-on-click="exportGraph" data-args='["json"]'>JSON</a>
                             </li>
 
                             <li class="dropdown-item">
-                              <a class="nav-link" href="#" onclick="exportGraph('graphml')">GraphML</a>
+                              <a class="nav-link" href="#" data-on-click="exportGraph" data-args='["graphml"]'>GraphML</a>
                             </li>
 
                             <li class="dropdown-item">
-                              <a class="nav-link" href="#" onclick="exportGraph('png')">PNG image</a>
+                              <a class="nav-link" href="#" data-on-click="exportGraph" data-args='["png"]'>PNG image</a>
                             </li>
 
                             <li class="dropdown-item">
-                              <a class="nav-link" href="#" onclick="exportGraph('jpeg')">JPEG image</a>
+                              <a class="nav-link" href="#" data-on-click="exportGraph" data-args='["jpeg"]'>JPEG image</a>
                             </li>
 
                             <li class="dropdown-item">
-                              <a class="nav-link" href="#" onclick="exportSettings()">Settings</a>
+                              <a class="nav-link" href="#" data-on-click="exportSettings">Settings</a>
                             </li>
                           </ul>
                         </li>
@@ -408,7 +408,7 @@
                             id="toggleGraphFullscreenBtn"
                             type="button"
                             class="btn btn-secondary fullscreen-toggle-btn"
-                            onclick="toggleWorkareaFullscreen()"
+                            data-on-click="toggleWorkareaFullscreen"
                             title="Maximize"
                           >
                             <i class="fa fa-expand"></i>
@@ -464,9 +464,9 @@
                   <div id="chartYs"></div>
                 </div>
                 <div class="btn-group btn-group-sm ms-auto" id="chartTypeBtns" role="group" aria-label="Chart type">
-                  <button type="button" class="btn btn-outline-secondary active" data-chart-type="line" onclick="chartSetType('line')">Line</button>
-                  <button type="button" class="btn btn-outline-secondary" data-chart-type="area" onclick="chartSetType('area')">Area</button>
-                  <button type="button" class="btn btn-outline-secondary" data-chart-type="bar" onclick="chartSetType('bar')">Bar</button>
+                  <button type="button" class="btn btn-outline-secondary active" data-chart-type="line" data-on-click="chartSetType" data-args='["line"]'>Line</button>
+                  <button type="button" class="btn btn-outline-secondary" data-chart-type="area" data-on-click="chartSetType" data-args='["area"]'>Area</button>
+                  <button type="button" class="btn btn-outline-secondary" data-chart-type="bar" data-on-click="chartSetType" data-args='["bar"]'>Bar</button>
                 </div>
               </div>
               <div id="queryChartEmpty" class="text-muted text-center py-5">Run a query to chart its result.</div>
@@ -511,230 +511,4 @@
   </div>
 </div>
 
-<script>
-  // Initialize Bootstrap 5 tooltips
-  document.querySelectorAll('[data-toggle="tooltip"]').forEach(function(el) {
-    new bootstrap.Tooltip(el);
-  });
-
-  var editor = null;
-  var historyNavIndex = -1;
-  var historyNavBuffer = "";
-
-  function getFilteredHistory() {
-    let queryHistory = getQueryHistory();
-    let database = escapeHtml(getCurrentDatabase());
-    let filtered = [];
-    for (let i = 0; i < queryHistory.length; i++) {
-      let q = queryHistory[i];
-      if (q != null && q.d == database && q.l != null && q.c != null)
-        filtered.push(q);
-    }
-    return filtered;
-  }
-
-  function historyPrevious() {
-    let filtered = getFilteredHistory();
-    if (filtered.length == 0) return;
-
-    // Save current input when starting navigation
-    if (historyNavIndex == -1)
-      historyNavBuffer = editor.getValue();
-    if (historyNavIndex < filtered.length - 1) {
-      historyNavIndex++;
-      let q = filtered[historyNavIndex];
-      setEditorLanguage(q.l);
-      editor.setValue(q.c);
-      editor.setCursor(editor.lineCount(), 0);
-    }
-  }
-
-  function historyNext() {
-    if (historyNavIndex == -1) return;
-    let filtered = getFilteredHistory();
-    if (historyNavIndex > 0) {
-      historyNavIndex--;
-      let q = filtered[historyNavIndex];
-      setEditorLanguage(q.l);
-      editor.setValue(q.c);
-      editor.setCursor(editor.lineCount(), 0);
-    } else {
-      historyNavIndex = -1;
-      editor.setValue(historyNavBuffer);
-      editor.setCursor(editor.lineCount(), 0);
-    }
-  }
-
-  function resetHistoryNavigation() {
-    historyNavIndex = -1;
-    historyNavBuffer = "";
-  }
-
-  function clearQuery() {
-    if (editor == null) return;
-    if (editor.getValue() === "") {
-      editor.focus();
-      return;
-    }
-    editor.setValue("");
-    editor.setCursor(0, 0);
-    resetHistoryNavigation();
-    editor.focus();
-  }
-
-  function initQuery() {
-    document.querySelectorAll('[data-toggle="tooltip"]').forEach(function(el) {
-      new bootstrap.Tooltip(el);
-    });
-
-    $('a[data-toggle="tab"]').on("shown.bs.tab", function (e) {
-      let activeTab = $("#tabs-command .active").attr("id");
-      if (activeTab == "tab-table-sel") renderTable();
-      else if (activeTab == "tab-graph-sel" && globalCy == null) renderGraph();
-      else if (activeTab == "tab-chart-sel") renderQueryChart();
-
-      if ($(e.target).closest("#tabs-command").length > 0 && activeTab != null)
-        globalStorageSave("query.tab", activeTab);
-    });
-
-    $("#inputLanguage").change(function () {
-      editor.setOption("mode", getEditorMode());
-      vecLanguageChanged();
-      chartLanguageChanged();
-    });
-
-    $(".dropdown-menu").on("click.bs.dropdown", function (e) {
-      e.stopPropagation();
-      e.preventDefault();
-    });
-
-    $("#jsonToClipboard").off("click").on("click", async function(e) {
-      e.preventDefault();
-      const text = $("#resultJson").val() || $("#resultJson").text();
-      try {
-        await navigator.clipboard.writeText(text);
-        globalNotify("Content", "successfully copied in the clipboard", "success");
-      } catch (err) {
-        globalNotify("Error", "Failed to copy to clipboard", "danger");
-      }
-    });
-
-    renderCodeEditor();
-    loadFunctionReference();
-    initSidebarPanels();
-    populateQuerySidebar();
-
-    let savedQueryTab = globalStorageLoad("query.tab", null);
-    if (savedQueryTab != null && savedQueryTab != "tab-table-sel" && $("#" + savedQueryTab).length > 0)
-      $("#" + savedQueryTab).tab("show");
-
-    executeCommand();
-
-    var dbPar = getURLParameter("db");
-    if (dbPar != null && dbPar != "null") setCurrentDatabase(dbPar);
-
-    var limitPar = getURLParameter("limit");
-    if (limitPar != null && limitPar != "null") {
-      if (limitPar != "20" && limitPar != "100" && limitPar != "500" && limitPar != "-1") {
-        var sanitizedLimitPar = escapeHtml(limitPar);
-        $("#inputLimit").append("<option value='" + sanitizedLimitPar + "' selected='selected'>" + sanitizedLimitPar + "</option>");
-      }
-      $("#inputLimit").val(escapeHtml(limitPar));
-    }
-
-    $(document).on("databaseChanged", function (e, dbName) {
-      if (dbName) {
-        globalStorageSave("database.current", dbName);
-        resetHistoryNavigation();
-        displaySchema();
-        displayDatabaseSettings();
-        // Refresh active sidebar panel on database change
-        refreshActiveSidebarPanel();
-        // Reload timeseries types if on that tab
-        if (typeof tsLoadTypes === "function")
-          tsLoadTypes();
-      }
-    });
-  }
-
-  function renderCodeEditor() {
-    // Dispose any previous CodeMirror instance before creating a new one. initQuery()
-    // (and therefore renderCodeEditor()) runs on every login, so without this a fresh
-    // CodeMirror wrapper div would be stacked on top of the old one at each re-login
-    // (see issue #4893). toTextArea() removes the wrapper and restores the original
-    // hidden <textarea id="inputCommand"> so fromTextArea() below can run cleanly again.
-    if (editor != null) {
-      editor.toTextArea();
-      editor = null;
-    }
-
-    editor = CodeMirror.fromTextArea(document.getElementById("inputCommand"), {
-      mode: getEditorMode(),
-      lineWrapping: true,
-      indentWithTabs: false,
-      smartIndent: true,
-      lineNumbers: true,
-      matchBrackets: true,
-      autofocus: true,
-      viewportMargin: Infinity,
-      theme: "neo",
-    });
-
-    editor.addKeyMap({
-      "Ctrl-Enter": function (cm) {
-        resetHistoryNavigation();
-        executeCommand();
-      },
-      "Cmd-Enter": function (cm) {
-        resetHistoryNavigation();
-        executeCommand();
-      },
-      "Ctrl-Up": function (cm) { historyPrevious(); },
-      "Ctrl-Down": function (cm) { historyNext(); },
-      "Cmd-Up": function (cm) { historyPrevious(); },
-      "Cmd-Down": function (cm) { historyNext(); },
-      "Alt-/": function (cm) {
-        CodeMirror.showHint(cm, arcadedbHint, { completeSingle: false });
-      },
-      "Ctrl-Space": function (cm) {
-        CodeMirror.showHint(cm, arcadedbHint, { completeSingle: false });
-      }
-    });
-
-    // HISTORY, SAVED QUERIES AND REPLAY SET THE EDITOR TEXT: THE INDEX SEARCH FORM FOLLOWS IT
-    editor.on("change", function () {
-      vecLoadFormFromEditor();
-    });
-
-    editor.on("inputRead", function (cm, event) {
-      if (event.origin !== "+input")
-        return;
-      var cur = cm.getCursor();
-      var line = cm.getLine(cur.line);
-      var end = cur.ch;
-      var start = end;
-      while (start > 0 && /[\w._]/.test(line.charAt(start - 1)))
-        start--;
-      if (end - start >= 2)
-        CodeMirror.showHint(cm, arcadedbHint, { completeSingle: false });
-    });
-
-    setTimeout(function () { editor.refresh(); }, 1);
-  }
-
-  function getEditorMode() {
-    let language = $("#inputLanguage").val();
-    let mime = null;
-    if (vecModeForLanguage(language) != null) mime = "application/json";
-    else if (chartIsPromQL(language)) mime = "text/plain";
-    if (language == "sql") mime = "arcadedb-sql";
-    else if (language == "sqlScript") mime = "arcadedb-sql";
-    else if (language == "cypher") mime = "application/x-cypher-query";
-    else if (language == "opencypher") mime = "application/x-cypher-query";
-    else if (language == "gremlin") mime = "sql";
-    else if (language == "mongodb") mime = "application/json";
-    else if (language == "graphql") mime = "application/json";
-    else if (language == "redis") mime = "text/plain";
-    return mime;
-  }
-</script>
+<script src="js/studio-query.js"></script>

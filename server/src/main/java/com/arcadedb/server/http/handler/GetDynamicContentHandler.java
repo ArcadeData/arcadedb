@@ -145,6 +145,10 @@ public class GetDynamicContentHandler extends AbstractServerHttpHandler {
       processTemplate = false;
 
     exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, contentType);
+    if ("text/html".equals(contentType))
+      // A policy governs documents only: Studio's pages refuse inline script, so an HTML-injection bug cannot run any
+      // (issue #9681). Scripts, styles and fonts do not need it.
+      setContentSecurityPolicy(exchange, null);
 
     Metrics.counter("http.static-content").increment();
 

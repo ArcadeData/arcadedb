@@ -56,6 +56,7 @@ function extractFrom(source, name) {
 const extractFn = (name) => extractFrom(src, name);
 
 eval(extractFrom(utilsSrc, "escapeHtml"));
+eval(fs.readFileSync(path.join(STATIC_JS, "studio-actions.js"), "utf8"));
 eval(extractFn("schemaActionAttrs"));
 eval(extractFn("renderTypeLink"));
 eval(extractFn("renderTypeSidebarBadge"));

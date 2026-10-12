@@ -105,6 +105,15 @@ function isComment(line) {
   return t.startsWith("//") || t.startsWith("*") || t.startsWith("/*");
 }
 
+// The API tab's endpoint reference spells each route as a template, `/api/v1/query/{database}`: a placeholder the
+// playground fills with encodeURIComponent, not a name concatenated into a URL. Only a segment that is NOT the literal
+// `{database}` placeholder builds a URL from a name.
+function buildsDatabaseSegment(line) {
+  for (const m of line.matchAll(new RegExp(DATABASE_SEGMENT_RE.source, "g")))
+    if (!line.startsWith("{database}", m.index + m[0].length)) return true;
+  return false;
+}
+
 test("every api/v1 URL in the Studio builds its database segment with encodeDatabaseName", () => {
   // Match the endpoint prefix in ANY form - string concatenation, a template literal, a parenthesized
   // expression - and require the helper on the same line, rather than matching only the `"..." + identifier`
@@ -113,7 +122,7 @@ test("every api/v1 URL in the Studio builds its database segment with encodeData
   for (const file of fs.readdirSync(JS_DIR).filter((f) => f.endsWith(".js"))) {
     const src = fs.readFileSync(path.join(JS_DIR, file), "utf8");
     src.split("\n").forEach((line, i) => {
-      if (DATABASE_SEGMENT_RE.test(line) && !isComment(line) && !line.includes("encodeDatabaseName"))
+      if (buildsDatabaseSegment(line) && !isComment(line) && !line.includes("encodeDatabaseName"))
         offenders.push(file + ":" + (i + 1) + " -> " + line.trim());
     });
   }

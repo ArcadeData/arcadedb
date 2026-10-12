@@ -43,7 +43,7 @@ function renderRecordEditorContent() {
   html += "<span class='badge bg-primary me-2'>" + escapeHtml(type) + "</span>";
   html += "<strong>" + escapeHtml(rid) + "</strong>";
   html += "</div>";
-  html += "<button class='btn btn-sm btn-outline-secondary' onclick='cancelRecordEditor()' title='Close'><i class='fa fa-times'></i></button>";
+  html += "<button class='btn btn-sm btn-outline-secondary'" + studioAction("cancelRecordEditor") + " title='Close'><i class='fa fa-times'></i></button>";
   html += "</div>";
 
   // Editable fields
@@ -62,7 +62,7 @@ function renderRecordEditorContent() {
     html += "<div class='d-flex align-items-center justify-content-between'>";
     html += "<label class='form-label mb-0'>" + escapeHtml(p) + "</label>";
     if (!isMetadata && !isBinary)
-      html += "<button class='btn btn-sm record-editor-delete-prop' onclick='deletePropertyFromRecord(\"" + escapeHtml(p).replace(/"/g, "&quot;") + "\")' title='Remove property'><i class='fa fa-times'></i></button>";
+      html += "<button class='btn btn-sm record-editor-delete-prop'" + studioAction("deletePropertyFromRecord", [p]) + " title='Remove property'><i class='fa fa-times'></i></button>";
     html += "</div>";
     if (isBinary) {
       var sizeInfo = properties["contentLength"] || properties[p + "Length"] || "";
@@ -74,16 +74,16 @@ function renderRecordEditorContent() {
       html += "<input type='text' class='form-control record-editor-field' data-prop='" + escapeHtml(p) + "' data-original='" + escapeHtml(displayValue) + "' value='" + escapeHtml(displayValue) + "'" + (isMetadata ? " disabled" : "") + " />";
     html += "</div>";
   }
-  html += "<button class='btn btn-sm btn-outline-secondary w-100 mt-1' onclick='addPropertyToRecord()'><i class='fa fa-plus'></i> Add Property</button>";
+  html += "<button class='btn btn-sm btn-outline-secondary w-100 mt-1'" + studioAction("addPropertyToRecord") + "><i class='fa fa-plus'></i> Add Property</button>";
   html += "</div>";
 
   // Action buttons
   html += "<div class='record-editor-buttons'>";
-  html += "<button class='btn btn-sm btn-primary' onclick='saveRecordEditor()'><i class='fa fa-save'></i> Save</button>";
-  html += "<button class='btn btn-sm btn-secondary' onclick='cancelRecordEditor()'>Cancel</button>";
+  html += "<button class='btn btn-sm btn-primary'" + studioAction("saveRecordEditor") + "><i class='fa fa-save'></i> Save</button>";
+  html += "<button class='btn btn-sm btn-secondary'" + studioAction("cancelRecordEditor") + ">Cancel</button>";
   if (source === "table")
-    html += "<button class='btn btn-sm btn-outline-primary' onclick='showRecordInGraph()'><i class='fa fa-project-diagram'></i> Graph</button>";
-  html += "<button class='btn btn-sm btn-outline-danger ms-auto' onclick='deleteRecord()'><i class='fa fa-trash'></i> Delete</button>";
+    html += "<button class='btn btn-sm btn-outline-primary'" + studioAction("showRecordInGraph") + "><i class='fa fa-project-diagram'></i> Graph</button>";
+  html += "<button class='btn btn-sm btn-outline-danger ms-auto'" + studioAction("deleteRecord") + "><i class='fa fa-trash'></i> Delete</button>";
   html += "</div>";
 
   // Graph appearance + actions (only for graph source)
@@ -97,6 +97,11 @@ function renderRecordEditorContent() {
     bindGraphAppearanceEvents(type);
 }
 
+// The graph panel's Hide button: hides the selected elements.
+function hideSelectedGraphElements() {
+  removeGraphElement(globalSelected);
+}
+
 function renderGraphAppearanceSection(type, rid) {
   var element = getOrCreateStyleTypeAttrib(type, "element");
   var isVertex = (element === "v");
@@ -108,14 +113,14 @@ function renderGraphAppearanceSection(type, rid) {
   html += "<div class='record-editor-section-header'><i class='fa fa-bolt'></i> Actions</div>";
   if (isVertex) {
     html += "<div class='d-flex gap-1 mb-2'>";
-    html += "<button class='btn btn-sm btn-outline-primary flex-fill' onclick='loadNodeNeighbors(\"in\", \"" + rid + "\")'><i class='fa fa-arrow-left'></i> Incoming</button>";
-    html += "<button class='btn btn-sm btn-outline-primary flex-fill' onclick='loadNodeNeighbors(\"both\", \"" + rid + "\")'><i class='fa fa-arrows-left-right'></i> Both</button>";
-    html += "<button class='btn btn-sm btn-outline-primary flex-fill' onclick='loadNodeNeighbors(\"out\", \"" + rid + "\")'><i class='fa fa-arrow-right'></i> Outgoing</button>";
+    html += "<button class='btn btn-sm btn-outline-primary flex-fill'" + studioAction("loadNodeNeighbors", ["in", rid]) + "><i class='fa fa-arrow-left'></i> Incoming</button>";
+    html += "<button class='btn btn-sm btn-outline-primary flex-fill'" + studioAction("loadNodeNeighbors", ["both", rid]) + "><i class='fa fa-arrows-left-right'></i> Both</button>";
+    html += "<button class='btn btn-sm btn-outline-primary flex-fill'" + studioAction("loadNodeNeighbors", ["out", rid]) + "><i class='fa fa-arrow-right'></i> Outgoing</button>";
     html += "</div>";
   }
   html += "<div class='d-flex flex-wrap gap-1'>";
-  html += "<button class='btn btn-sm btn-outline-secondary' onclick='removeGraphElement(globalSelected)'><i class='fa fa-eye-slash'></i> Hide</button>";
-  html += "<button class='btn btn-sm btn-outline-secondary' onclick='selectGraphElementByType(\"" + escapeHtml(type) + "\")'><i class='fa fa-object-group'></i> Select all " + escapeHtml(type) + "</button>";
+  html += "<button class='btn btn-sm btn-outline-secondary'" + studioAction("hideSelectedGraphElements") + "><i class='fa fa-eye-slash'></i> Hide</button>";
+  html += "<button class='btn btn-sm btn-outline-secondary'" + studioAction("selectGraphElementByType", [type]) + "><i class='fa fa-object-group'></i> Select all " + escapeHtml(type) + "</button>";
   html += "</div></div>";
 
   // --- Appearance Section ---
@@ -124,8 +129,8 @@ function renderGraphAppearanceSection(type, rid) {
   html += "<div class='d-flex align-items-center justify-content-between'>";
   html += "<div class='record-editor-section-header' style='margin-bottom:0'><i class='fa fa-palette'></i> Appearance <small>(" + escapeHtml(type) + ")</small></div>";
   html += "<div class='d-flex gap-1'>";
-  html += "<button class='btn btn-sm btn-outline-secondary record-editor-appearance-toggle' style='font-size:0.68rem; padding:1px 6px;' onclick='toggleGraphAppearanceSection()' title='Show/hide appearance'><i class='fa fa-chevron-" + (appearanceCollapsed ? "down" : "up") + "'></i></button>";
-  html += "<button class='btn btn-sm btn-outline-secondary' style='font-size:0.68rem; padding:1px 6px;' onclick='resetGraphTypeStyle(\"" + escapeHtml(type).replace(/"/g, "&quot;") + "\")' title='Reset to defaults'><i class='fa fa-rotate-left'></i> Reset</button>";
+  html += "<button class='btn btn-sm btn-outline-secondary record-editor-appearance-toggle' style='font-size:0.68rem; padding:1px 6px;'" + studioAction("toggleGraphAppearanceSection") + " title='Show/hide appearance'><i class='fa fa-chevron-" + (appearanceCollapsed ? "down" : "up") + "'></i></button>";
+  html += "<button class='btn btn-sm btn-outline-secondary' style='font-size:0.68rem; padding:1px 6px;'" + studioAction("resetGraphTypeStyle", [type]) + " title='Reset to defaults'><i class='fa fa-rotate-left'></i> Reset</button>";
   html += "</div>";
   html += "</div>";
   html += "<div id='geAppearanceBody'" + (appearanceCollapsed ? " style='display:none'" : "") + "><div style='margin-top:10px'></div>";

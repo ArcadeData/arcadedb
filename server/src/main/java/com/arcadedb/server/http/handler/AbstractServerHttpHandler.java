@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.http.handler;
 
+import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseFactory;
@@ -77,11 +78,13 @@ import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.Arrays;
 import java.util.Base64;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Deque;
 import java.util.IdentityHashMap;
+import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
@@ -136,6 +139,8 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   private static final HttpString REPLAY_PROTECTION_HEADER = HttpString.tryFromString(IdempotencyCache.HEADER_REPLAY_PROTECTION);
   protected static final String   EVENT_STREAM_CONTENT_TYPE = "text/event-stream";
   private static final HttpString X_ACCEL_BUFFERING_HEADER  = HttpString.tryFromString("X-Accel-Buffering");
+  private static final HttpString CSP_HEADER                = HttpString.tryFromString("Content-Security-Policy");
+  private static final HttpString CSP_REPORT_ONLY_HEADER    = HttpString.tryFromString("Content-Security-Policy-Report-Only");
   // Response header set by session-establishing routes (e.g. /begin). Its presence means the response
   // is session-scoped and must not be replayed from the idempotency cache (the session id would be lost).
   private static final HttpString SESSION_ID_HEADER = HttpString.tryFromString(HttpSessionManager.ARCADEDB_SESSION_ID);
@@ -250,6 +255,64 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
    */
   protected int getMaxResultRows() {
     return httpServer.getServer().getConfiguration().getValueAsInteger(GlobalConfiguration.SERVER_HTTP_QUERY_MAX_RESULT_ROWS);
+  }
+
+  /**
+   * Sets the configured Content-Security-Policy on an HTML document response (issue #9681), or nothing when the
+   * setting is empty. {@code inlineScriptSource} is a CSP source expression (a {@code 'sha256-...'} hash) the page
+   * needs for its own inline script, or {@code null}: see {@link #allowInlineScript(String, String)}.
+   */
+  protected void setContentSecurityPolicy(final HttpServerExchange exchange, final String inlineScriptSource) {
+    final ContextConfiguration config = httpServer.getServer().getConfiguration();
+    String policy = config.getValueAsString(GlobalConfiguration.SERVER_HTTP_CONTENT_SECURITY_POLICY);
+    if (policy == null || policy.isBlank())
+      return;
+
+    policy = policy.trim();
+    if (inlineScriptSource != null)
+      policy = allowInlineScript(policy, inlineScriptSource);
+
+    final HttpString header = config.getValueAsBoolean(GlobalConfiguration.SERVER_HTTP_CONTENT_SECURITY_POLICY_REPORT_ONLY) ?
+        CSP_REPORT_ONLY_HEADER :
+        CSP_HEADER;
+    exchange.getResponseHeaders().put(header, policy);
+  }
+
+  /**
+   * Adds {@code source} to the directive that governs scripts in {@code policy}: to {@code script-src} when there is
+   * one; otherwise, when {@code default-src} governs scripts, to a new {@code script-src} carrying the
+   * {@code default-src} sources, since a {@code script-src} replaces {@code default-src} for scripts rather than adding
+   * to it. A policy with neither places no limit on scripts and is returned unchanged.
+   */
+  static String allowInlineScript(final String policy, final String source) {
+    final String[] directives = policy.split(";");
+    String defaultSources = null;
+    for (int i = 0; i < directives.length; i++) {
+      final String directive = directives[i].trim();
+      final String name = directiveName(directive);
+      if ("script-src".equals(name)) {
+        directives[i] = directive + " " + source;
+        return String.join("; ", trimAll(directives));
+      }
+      if ("default-src".equals(name))
+        defaultSources = directive.substring(name.length()).trim();
+    }
+
+    if (defaultSources == null)
+      return policy;
+
+    final String scriptSrc = "script-src " + (defaultSources.isEmpty() ? "" : defaultSources + " ") + source;
+    final String joined = String.join("; ", trimAll(directives));
+    return joined.isEmpty() ? scriptSrc : joined + "; " + scriptSrc;
+  }
+
+  private static String directiveName(final String directive) {
+    final int space = directive.indexOf(' ');
+    return (space < 0 ? directive : directive.substring(0, space)).toLowerCase(Locale.ROOT);
+  }
+
+  private static String[] trimAll(final String[] directives) {
+    return Arrays.stream(directives).map(String::trim).filter(d -> !d.isEmpty()).toArray(String[]::new);
   }
 
   /**

@@ -274,7 +274,7 @@ test.describe('DataTables Compatibility Suite', () => {
       // Test clickable value links (custom render function)
       const valueLink = page.locator('#dbSettings tbody tr:first-child td:nth-child(2) a');
       if (await valueLink.isVisible()) {
-        await expect(valueLink).toHaveAttribute('onclick');
+        await expect(valueLink).toHaveAttribute('data-on-click', 'updateDatabaseSetting');
       }
     });
   });
