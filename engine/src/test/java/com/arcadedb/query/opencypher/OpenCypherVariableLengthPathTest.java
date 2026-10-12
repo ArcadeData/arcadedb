@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
@@ -250,6 +251,19 @@ class OpenCypherVariableLengthPathTest {
     while (rs.hasNext())
       list.add(rs.next());
     return list;
+  }
+
+  private static List<String> endpointTypes(final Database db, final String query) {
+    final List<String> ends = new ArrayList<>();
+    try (final ResultSet rs = db.query("opencypher", query)) {
+      while (rs.hasNext()) {
+        final Result row = rs.next();
+        final Vertex first = row.getProperty("first");
+        final Vertex second = row.getProperty("second");
+        ends.add(first.getTypeName() + "->" + second.getTypeName());
+      }
+    }
+    return ends;
   }
 
   // ---------------------------------------------------------------------------
@@ -1489,6 +1503,97 @@ class OpenCypherVariableLengthPathTest {
           .as("node 2's SET must be visible through the GROUP BY collect() path too").isEmpty();
     } finally {
       database.drop();
+    }
+  }
+
+  // Issue #9828 / TCK Match4 [8] and Match9 [6], [7]: a variable-length pattern whose relationship
+  // variable is already a list matches that list, in that order, and nothing else in the graph.
+  @Test
+  void boundRelationshipListIsTheVariableLengthPath() {
+    final Database db = new DatabaseFactory("./target/databases/testopencypher-9828").create();
+    try {
+      db.transaction(() -> db.command("opencypher",
+          """
+          CREATE (a:A), (b:B), (c:C), (d:D) \
+          CREATE (a)-[:Y]->(b), (b)-[:Y]->(c), (a)-[:OTHER]->(d)"""));
+
+      final String chain =
+          """
+          MATCH ()-[r1]->()-[r2]->() \
+          WITH [r1, r2] AS rs \
+          LIMIT 1 \
+          """;
+
+      assertThat(endpointTypes(db, chain + "MATCH (first)-[rs*]->(second) RETURN first, second"))
+          .as("(:A)->(:C) only; the one-hop rows must be absent").containsExactly("A->C");
+      assertThat(endpointTypes(db, """
+          MATCH ()-[r1]->()-[r2]->() \
+          WITH ([r1, r2]) AS rs \
+          LIMIT 1 \
+          MATCH (first)-[rs*]->(second) \
+          RETURN first, second""")).containsExactly("A->C");
+      assertThat(endpointTypes(db, """
+          MATCH (a:A)-[r1:Y]->(b:B)-[r2:Y]->(c:C) \
+          WITH [r1, r2] AS rs \
+          MATCH (first)-[rs*]->(second) \
+          RETURN first, second""")).containsExactly("A->C");
+      assertThat(endpointTypes(db, """
+          MATCH (a)-[r1]->()-[r2]->(b) \
+          WITH [r1, r2] AS rs, a AS first, b AS second \
+          LIMIT 1 \
+          MATCH (first)-[rs*]->(second) \
+          RETURN first, second""")).containsExactly("A->C");
+      assertThat(endpointTypes(db, """
+          MATCH (a)-[r1]->()-[r2]->(b) \
+          WITH [r1, r2] AS rs, a AS second, b AS first \
+          LIMIT 1 \
+          MATCH (first)-[rs*]->(second) \
+          RETURN first, second"""))
+          .as("endpoints swapped against the directed pattern").isEmpty();
+      assertThat(endpointTypes(db, chain + "MATCH (first)-[rs*2..2]->(second) RETURN first, second"))
+          .containsExactly("A->C");
+      assertThat(endpointTypes(db, chain + "MATCH (first)-[rs*1..1]->(second) RETURN first, second"))
+          .as("hop bounds are the list length").isEmpty();
+      assertThat(endpointTypes(db, """
+          MATCH ()-[r1]->()-[r2]->() \
+          WITH [r2, r1] AS rs \
+          LIMIT 1 \
+          MATCH (first)-[rs*]->(second) \
+          RETURN first, second"""))
+          .as("reversed edge order is not an outgoing walk").isEmpty();
+      assertThat(endpointTypes(db, chain + "MATCH (first)-[rs:Y*]->(second) RETURN first, second"))
+          .containsExactly("A->C");
+      assertThat(endpointTypes(db, chain + "MATCH (first)-[rs:OTHER*]->(second) RETURN first, second"))
+          .as("type predicate rejects the bound Y edges; the unrelated OTHER edge is not expanded").isEmpty();
+
+      final List<Result> named = collect(db.query("opencypher", chain + """
+          MATCH p = (first)-[rs*]->(second) \
+          RETURN p, rs, first, second"""));
+      assertThat(named).hasSize(1);
+      final TraversalPath path = (TraversalPath) named.get(0).getProperty("p");
+      final List<?> relationships = (List<?>) named.get(0).getProperty("rs");
+      assertThat(path.getStartVertex().getTypeName()).isEqualTo("A");
+      assertThat(path.getVertices().get(1).getTypeName()).isEqualTo("B");
+      assertThat(path.getEndVertex().getTypeName()).isEqualTo("C");
+      assertThat(relationships).hasSize(2);
+      assertThat(path.getEdges().get(0).getIdentity()).isEqualTo(((Edge) relationships.get(0)).getIdentity());
+      assertThat(path.getEdges().get(1).getIdentity()).isEqualTo(((Edge) relationships.get(1)).getIdentity());
+
+      assertThat(endpointTypes(db, """
+          MATCH ()-[r1]->()-[r2]->() \
+          WITH [x IN [r1, r2] WHERE false | x] AS rs \
+          LIMIT 1 \
+          MATCH (first)-[rs*]->(second) \
+          RETURN first, second"""))
+          .as("empty list on a bare * (minimum 1 hop)").isEmpty();
+      assertThat(endpointTypes(db, """
+          MATCH (a:A) \
+          WITH null AS rs \
+          MATCH (first)-[rs*]->(second) \
+          RETURN first, second"""))
+          .as("null must not expand the graph").isEmpty();
+    } finally {
+      db.drop();
     }
   }
 }
