@@ -4578,13 +4578,18 @@ public class LSMVectorIndex implements Index, IndexInternal {
   private void persistProductQuantization(final ProductQuantization pq, final PQVectors codes) {
     try {
       pqFile.writePQ(pq, codes);
-    } catch (final IndexException e) {
+    } catch (final Throwable e) {
+      // Throwable, not IndexException: writePQ wraps every Exception in it, but an Error (an OutOfMemoryError while
+      // streaming) passes straight through, and the stale file must be gone whichever way the write failed. An Error
+      // is not absorbed: it goes on to the build's own handler, which already takes Throwable.
       LogManager.instance().log(this, Level.WARNING,
           "PQ data of index %s could not be persisted (%s): the previous PQ file belongs to the previous graph and is "
               + "dropped, the next open rebuilds the graph and the PQ together. Approximate search stays available "
               + "until then",
           indexName, e.getMessage());
       pqFile.deletePQFile();
+      if (e instanceof Error error)
+        throw error;
     }
     this.productQuantization = pq;
     this.pqVectors = codes;

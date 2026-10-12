@@ -95,6 +95,25 @@ class Issue9796PQFileAtomicRewriteTest {
   }
 
   @Test
+  void anErrorDuringTheRewriteLeavesThePreviousFileAndNoTemporary() throws IOException {
+    final String base = tempDir.resolve("index").toString();
+    final LSMVectorIndexPQFile pqFile = new LSMVectorIndexPQFile(base);
+
+    final Fixture first = new Fixture(1, 300);
+    pqFile.writePQ(first.pq, first.codes);
+    final byte[] firstBytes = Files.readAllBytes(pqFile.getFilePath());
+
+    // An OutOfMemoryError while encoding or streaming a large file is not an Exception: it used to skip the cleanup
+    final Fixture second = new Fixture(2, 600);
+    final MutablePQVectors failing = new FailingPQVectors(second.pq, 600, 512, new OutOfMemoryError("injected"));
+    assertThatThrownBy(() -> pqFile.writePQ(second.pq, failing)).isInstanceOf(OutOfMemoryError.class);
+
+    assertThat(Files.readAllBytes(pqFile.getFilePath())).isEqualTo(firstBytes);
+    assertThat(listTemporaries()).as("an Error must not leave the temporary file behind either").isEmpty();
+    assertThat(pqFile.getPQVectors()).isSameAs(first.codes);
+  }
+
+  @Test
   void aSuccessfulRewriteReplacesThePreviousFileAndPublishesTheNewOne() throws IOException {
     final String base = tempDir.resolve("index").toString();
     final LSMVectorIndexPQFile pqFile = new LSMVectorIndexPQFile(base);
@@ -239,13 +258,19 @@ class Issue9796PQFileAtomicRewriteTest {
 
   /** Codes that fail after streaming part of themselves, like a full disk or an I/O error halfway through. */
   static final class FailingPQVectors extends MutablePQVectors {
-    private final int vectorCount;
-    private final int failAfterBytes;
+    private final int       vectorCount;
+    private final int       failAfterBytes;
+    private final Throwable failure;
 
     FailingPQVectors(final ProductQuantization pq, final int vectorCount, final int failAfterBytes) {
+      this(pq, vectorCount, failAfterBytes, new IOException("injected failure after " + failAfterBytes + " bytes of codes"));
+    }
+
+    FailingPQVectors(final ProductQuantization pq, final int vectorCount, final int failAfterBytes, final Throwable failure) {
       super(pq);
       this.vectorCount = vectorCount;
       this.failAfterBytes = failAfterBytes;
+      this.failure = failure;
     }
 
     @Override
@@ -256,7 +281,11 @@ class Issue9796PQFileAtomicRewriteTest {
     @Override
     public void write(final IndexWriter out, final int version) throws IOException {
       out.write(new byte[failAfterBytes]);
-      throw new IOException("injected failure after " + failAfterBytes + " bytes of codes");
+      if (failure instanceof IOException e)
+        throw e;
+      if (failure instanceof RuntimeException e)
+        throw e;
+      throw (Error) failure;
     }
   }
 }
