@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.RID;
 import com.arcadedb.query.opencypher.temporal.CypherDuration;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.JsonSerializer;
@@ -147,13 +148,14 @@ class Issue9810ResultToJsonZonedTemporalTest extends TestHelper {
     map.put("i", 1);
     map.put("b", true);
     map.put("s", "text");
+    map.put("r", new RID(1, 0));
     map.put("m", inner);
     map.put("l", List.of(1, 2));
 
     final JSONObject json = (JSONObject) new ResultInternal(database).valueToJSON(map);
 
     assertThat(json.toString()).isEqualTo(
-        "{\"n\":null,\"i\":1,\"b\":true,\"s\":\"text\",\"m\":{\"x\":\"y\",\"t\":\"" + OFFSET + "\"},\"l\":[1,2]}");
+        "{\"n\":null,\"i\":1,\"b\":true,\"s\":\"text\",\"r\":\"#1:0\",\"m\":{\"x\":\"y\",\"t\":\"" + OFFSET + "\"},\"l\":[1,2]}");
   }
 
   /** A null key is written as the text "null" rather than refusing the whole map: a deliberate contract, pinned here. */

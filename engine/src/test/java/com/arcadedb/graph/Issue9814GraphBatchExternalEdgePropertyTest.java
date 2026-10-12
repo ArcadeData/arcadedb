@@ -19,8 +19,10 @@
 package com.arcadedb.graph;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.Bucket;
+import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.Schema;
@@ -155,6 +157,34 @@ class Issue9814GraphBatchExternalEdgePropertyTest extends TestHelper {
     assertThat(externalRecords("DChild9814")).isEqualTo(1);
     assertThat(externalRecords("EChildApi9814")).isEqualTo(1);
     assertThat(database.query("sql", "SELECT blob FROM DChild9814").next().<String>getProperty("blob")).isEqualTo(BLOB);
+  }
+
+  /** Records written inline before the property turned EXTERNAL keep reading, and move out of the record when they are updated. */
+  @Test
+  void anOldInlineRecordOfASubtypeStillReadsAndMovesOutWhenUpdated() {
+    final DocumentType parent = database.getSchema().createDocumentType("DParentOld9814", 1);
+    parent.createProperty("blob", Type.STRING);
+    database.getSchema().buildDocumentType().withName("DChildOld9814").withSuperType("DParentOld9814").withTotalBuckets(1).create();
+    final RID[] rids = new RID[2];
+    database.transaction(() -> {
+      rids[0] = database.newDocument("DChildOld9814").set("blob", BLOB + "0").save().getIdentity();
+      rids[1] = database.newDocument("DChildOld9814").set("blob", BLOB + "1").save().getIdentity();
+    });
+
+    parent.getProperty("blob").setExternal(true);
+    assertThat(externalRecords("DChildOld9814")).as("both records are still inline").isZero();
+
+    database.transaction(() -> {
+      final MutableDocument updated = rids[0].asDocument().modify();
+      updated.set("blob", BLOB + "updated");
+      updated.save();
+    });
+
+    assertThat(externalRecords("DChildOld9814")).as("only the updated record moved out").isEqualTo(1);
+    database.transaction(() -> {
+      assertThat(rids[0].asDocument().getString("blob")).isEqualTo(BLOB + "updated");
+      assertThat(rids[1].asDocument().getString("blob")).isEqualTo(BLOB + "1");
+    });
   }
 
   @Test

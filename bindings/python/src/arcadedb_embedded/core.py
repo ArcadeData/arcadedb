@@ -445,7 +445,10 @@ class Database:
         duplicated_key_retried = False
         for attempt in range(retries + 1):
             # A transaction the caller already holds is not this call's to roll
-            # back when begin() refuses; one opened here is (#9813).
+            # back when begin() refuses; one opened here is (#9813). Once begin()
+            # has returned, the transaction at the top is this call's own (a
+            # nested level when the caller holds one), so a failure of fn rolls it
+            # back exactly as before.
             was_active = self.is_transaction_active()
             begun = False
             tx_at_start, commits_at_start = None, 0
