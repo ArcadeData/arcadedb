@@ -23,11 +23,20 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.ValidationException;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
+import com.arcadedb.query.opencypher.temporal.CypherDuration;
 import com.arcadedb.schema.Type;
+import com.arcadedb.utility.RegexOverAlphabet;
 import com.arcadedb.utility.TimeBoundRegex;
 
 import java.lang.reflect.Array;
 import java.math.BigDecimal;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.time.OffsetDateTime;
+import java.time.OffsetTime;
+import java.time.ZonedDateTime;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Date;
@@ -284,43 +293,190 @@ public class DocumentValidator {
    * Throws when {@code regexp} cannot serve as the REGEXP of {@code p}, see {@link #unusableRegexp}: the REGEXP twin of
    * {@link #requireReadableBound}, for the paths that check a declaration before applying it.
    */
-  public static void requireUsableRegexp(final DocumentType owner, final Property p, final String regexp) {
-    final String reason = unusableRegexp(p.getType(), regexp);
+  public static void requireUsableRegexp(final Database database, final DocumentType owner, final Property p,
+      final String regexp) {
+    final String reason = unusableRegexp(database, p.getType(), regexp);
     if (reason != null)
       throw new CommandExecutionException("The REGEXP '" + regexp + "' of property '" + owner.getName() + "." + p.getName()
           + "' " + reason);
   }
 
   /**
-   * Why {@code regexp} cannot serve as the REGEXP of a property of {@code type}, or null when it can (issue #9808). A pattern
-   * is matched against the text form of the value ({@code toString()}), which only a scalar has: on a BINARY, a LIST, a
-   * MAP, an EMBEDDED document, a LINK or an ARRAY_OF_* it is a class name, a hash or a bracketed dump no pattern was
-   * written for. On a BOOLEAN the text forms are {@code true} and {@code false}, so a pattern matching neither refuses
-   * every value. A pattern on a number or a temporal stays legal ({@code '[0-9]{5}'} on a LONG): nothing tells, in general,
-   * a pattern no number satisfies from one some number does. Kept next to {@link #unreadableBound}, its MIN/MAX twin.
+   * Why {@code regexp} cannot serve as the REGEXP of a property of {@code type}, or null when it can, see
+   * {@link #regexpUsability}.
    */
-  public static String unusableRegexp(final Type type, final String regexp) {
+  public static String unusableRegexp(final Database database, final Type type, final String regexp) {
+    return regexpUsability(database, type, regexp).refusal();
+  }
+
+  /**
+   * What is known about {@code regexp} as the REGEXP of a property of {@code type}.
+   *
+   * @param refusal why the pattern cannot serve, or null when it can
+   * @param doubt   when the pattern is not refused, why it may still refuse every value: no value of the type was shown to
+   *                match it within the search budget. Null when one was, or when the type has no fixed set of characters
+   */
+  public record RegexpUsability(String refusal, String doubt) {
+    private static final RegexpUsability USABLE = new RegexpUsability(null, null);
+  }
+
+  // the budget of the search for a text form a pattern on a number or a temporal can match, paid once per declaration. The
+  // probes are what normally ends it (every BYTE is about 12,000 of them, a few milliseconds); the time only stops a
+  // pattern that backtracks catastrophically on a probe
+  private static final int    REGEXP_SEARCH_MAX_LENGTH = 64;
+  private static final int    REGEXP_SEARCH_MAX_PROBES = 65_536;
+  private static final long   REGEXP_SEARCH_TIMEOUT_MS = 1_000;
+  private static final String DIGITS                   = "0123456789";
+  private static final String LETTERS                  = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+
+  /**
+   * Every text the {@code toString()} of a value of some class can be: the characters it is written with, and a pattern of
+   * its shape. Both may describe MORE than the class writes, never less: a REGEXP is refused only when no string over the
+   * characters, of the shape, matches it, so a text left out would refuse a pattern that value satisfies.
+   */
+  record TextForm(String characters, Pattern shape) {
+    TextForm(final String characters, final String shape) {
+      this(characters, Pattern.compile(shape));
+    }
+  }
+
+  private static final String   LOCAL_DATE_SHAPE  = "[+-]?[0-9]{4,}-[0-9]{2}-[0-9]{2}";
+  // seconds and their fraction are left out when zero, the fraction is written with 3, 6 or 9 digits
+  private static final String   LOCAL_TIME_SHAPE  = "[0-9]{2}:[0-9]{2}(:[0-9]{2}(\\.[0-9]{1,9})?)?";
+  private static final String   OFFSET_SHAPE      = "(Z|[+-][0-9]{2}:[0-9]{2}(:[0-9]{2})?)";
+  // the most digits each width writes: 127, 32767, 2147483647, 9223372036854775807
+  private static final TextForm BYTE_FORM         = new TextForm(DIGITS + "-", "-?[0-9]{1,3}");
+  private static final TextForm SHORT_FORM        = new TextForm(DIGITS + "-", "-?[0-9]{1,5}");
+  private static final TextForm INTEGER_FORM      = new TextForm(DIGITS + "-", "-?[0-9]{1,10}");
+  private static final TextForm LONG_FORM         = new TextForm(DIGITS + "-", "-?[0-9]{1,19}");
+  private static final TextForm FLOATING_FORM     = new TextForm(DIGITS + "-.EINafinty",
+      "-?([0-9]+\\.[0-9]+(E-?[0-9]+)?|Infinity)|NaN");
+  private static final TextForm DECIMAL_FORM      = new TextForm(DIGITS + "-+.E", "-?[0-9]+(\\.[0-9]+)?(E[+-][0-9]+)?");
+  private static final TextForm LOCAL_DATE_FORM   = new TextForm(DIGITS + "-+", LOCAL_DATE_SHAPE);
+  private static final TextForm LOCAL_DT_FORM     = new TextForm(DIGITS + "-+:T.", LOCAL_DATE_SHAPE + "T" + LOCAL_TIME_SHAPE);
+  private static final TextForm OFFSET_DT_FORM    = new TextForm(DIGITS + "-+:T.Z",
+      LOCAL_DATE_SHAPE + "T" + LOCAL_TIME_SHAPE + OFFSET_SHAPE);
+  // the zone id: Europe/Rome, America/Port-au-Prince, Etc/GMT+5
+  private static final TextForm ZONED_DT_FORM     = new TextForm(DIGITS + "-+:T.Z[]/_" + LETTERS,
+      LOCAL_DATE_SHAPE + "T" + LOCAL_TIME_SHAPE + OFFSET_SHAPE + "(\\[[^\\]]+\\])?");
+  private static final TextForm LOCAL_TIME_FORM   = new TextForm(DIGITS + ":.", LOCAL_TIME_SHAPE);
+  private static final TextForm OFFSET_TIME_FORM  = new TextForm(DIGITS + "-+:.Z", LOCAL_TIME_SHAPE + OFFSET_SHAPE);
+  // Mon Jan 15 10:30:00 GMT+01:00 2024
+  private static final TextForm DATE_FORM         = new TextForm(DIGITS + " -+:" + LETTERS,
+      "[A-Z][a-z]{2} [A-Z][a-z]{2} [0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2} .+");
+  // P1Y2M3DT4H5M6.5S, PT-0.5S
+  private static final TextForm DURATION_FORM     = new TextForm(DIGITS + "-.PYMWDTHS", "P[0-9YMWDTHS.-]*");
+
+  /**
+   * The texts a value held as {@code held} can be written as, or null when the class is not one a fixed set of characters
+   * describes (a Calendar is written as a dump of its fields, a String as anything).
+   */
+  static TextForm textForm(final Class<?> held) {
+    if (held == Long.class)
+      return LONG_FORM;
+    if (held == Integer.class)
+      return INTEGER_FORM;
+    if (held == Short.class)
+      return SHORT_FORM;
+    if (held == Byte.class)
+      return BYTE_FORM;
+    if (held == Double.class || held == Float.class)
+      return FLOATING_FORM;
+    if (held == BigDecimal.class)
+      return DECIMAL_FORM;
+    if (held == LocalDate.class)
+      return LOCAL_DATE_FORM;
+    if (held == LocalDateTime.class)
+      return LOCAL_DT_FORM;
+    if (held == Instant.class || held == OffsetDateTime.class)
+      return OFFSET_DT_FORM;
+    if (held == ZonedDateTime.class)
+      return ZONED_DT_FORM;
+    if (held == LocalTime.class)
+      return LOCAL_TIME_FORM;
+    if (held == OffsetTime.class)
+      return OFFSET_TIME_FORM;
+    if (held == Date.class)
+      return DATE_FORM;
+    if (held == CypherDuration.class)
+      return DURATION_FORM;
+    return null;
+  }
+
+  /**
+   * Whether {@code regexp} can serve as the REGEXP of a property of {@code type} (issues #9808, #9853). A pattern is matched
+   * against the text form of the value ({@code toString()}), which only a scalar has: on a BINARY, a LIST, a MAP, an
+   * EMBEDDED document, a LINK or an ARRAY_OF_* it is a class name, a hash or a bracketed dump no pattern was written for. On
+   * a BOOLEAN the text forms are {@code true} and {@code false}, so a pattern matching neither refuses every value.
+   * <p>
+   * A number or a temporal has a great many text forms, but all of them are written with a small, fixed set of characters
+   * and have a known shape ({@link #textForm}): a pattern no string over those characters, of that shape, matches cannot
+   * match any value either, and is refused. A pattern some such string matches stays legal ({@code '[0-9]{5}'} on a LONG),
+   * even when no actual value happens to be written that way: the form over-approximates the texts, it does not enumerate
+   * them. When the search for such a string runs out of budget the pattern is not refused but carries a {@code doubt}.
+   * Kept next to {@link #unreadableBound}, its MIN/MAX twin.
+   *
+   * @param database the database the property belongs to, which decides how a DATE or DATETIME value is held (and so
+   *                 written as text); null for the default implementations
+   */
+  public static RegexpUsability regexpUsability(final Database database, final Type type, final String regexp) {
+    return regexpUsability(database, type, regexp, true);
+  }
+
+  /**
+   * @param searchTextForm false to skip the search over the text forms of a number or a temporal, the one part of the check
+   *                       that costs more than a few comparisons: a schema loaded from disk only warns anyway, and is loaded
+   *                       on every open and every replicated schema change
+   */
+  public static RegexpUsability regexpUsability(final Database database, final Type type, final String regexp,
+      final boolean searchTextForm) {
     if (regexp == null)
-      return null;
+      return RegexpUsability.USABLE;
     switch (type) {
     case BINARY, LIST, MAP, EMBEDDED, LINK, ARRAY_OF_SHORTS, ARRAY_OF_INTEGERS, ARRAY_OF_LONGS, ARRAY_OF_FLOATS, ARRAY_OF_DOUBLES -> {
-      return "is not applicable to type " + type + ": its values have no text form a pattern can describe";
+      return new RegexpUsability("is not applicable to type " + type + ": its values have no text form a pattern can describe",
+          null);
     }
-    case BOOLEAN -> {
-      final Pattern pattern;
-      try {
-        pattern = Pattern.compile(regexp);
-      } catch (final PatternSyntaxException e) {
-        return "is not a valid regular expression: " + e.getDescription();
-      }
-      if (!pattern.matcher("true").matches() && !pattern.matcher("false").matches())
-        return "matches neither 'true' nor 'false', so it would refuse every value of a BOOLEAN";
-      return null;
+    case STRING -> {
+      return RegexpUsability.USABLE;
     }
     default -> {
-      return null;
     }
     }
+
+    final Pattern pattern;
+    try {
+      pattern = Pattern.compile(regexp);
+    } catch (final PatternSyntaxException e) {
+      return new RegexpUsability("is not a valid regular expression: " + e.getDescription(), null);
+    }
+
+    if (type == Type.BOOLEAN) {
+      if (!pattern.matcher("true").matches() && !pattern.matcher("false").matches())
+        return new RegexpUsability("matches neither 'true' nor 'false', so it would refuse every value of a BOOLEAN", null);
+      return RegexpUsability.USABLE;
+    }
+
+    if (!searchTextForm)
+      return RegexpUsability.USABLE;
+
+    final Class<?> held = type.getJavaImplementation(database);
+    final TextForm form = textForm(held);
+    if (form == null)
+      return RegexpUsability.USABLE;
+
+    // how a DATE or DATETIME is written depends on the class the database holds it as, so the message names it
+    final String typeName = type.isDateOrDateTime() ? type + " (held as " + held.getSimpleName() + ")" : type.toString();
+    return switch (RegexOverAlphabet.check(pattern, form.shape(), form.characters(), REGEXP_SEARCH_MAX_LENGTH,
+        REGEXP_SEARCH_MAX_PROBES, TimeBoundRegex.newDeadline(REGEXP_SEARCH_TIMEOUT_MS))) {
+      case SATISFIABLE -> RegexpUsability.USABLE;
+      case UNSATISFIABLE -> new RegexpUsability(
+          "matches no text a value of " + typeName + " can be written as (one of the shape '" + form.shape().pattern()
+              + "'), so it would refuse every value", null);
+      case UNDECIDED -> new RegexpUsability(null,
+          "was not shown to match any text a value of " + typeName + " can be written as (one of the shape '"
+              + form.shape().pattern() + "')");
+    };
   }
 
   /**
