@@ -156,15 +156,17 @@ class Issue9795RecoveryTransactionIdCounterTest extends TestHelper {
       tx.commit2ndPhase(phase1);
     });
 
-    assertThat(phase1Done.await(30, TimeUnit.SECONDS)).isTrue();
     try {
-      betweenPhases.run();
-    } finally {
-      resumeA.countDown();
-    }
-    try {
+      assertThat(phase1Done.await(30, TimeUnit.SECONDS)).isTrue();
+      try {
+        betweenPhases.run();
+      } finally {
+        resumeA.countDown();
+      }
       a.get(30, TimeUnit.SECONDS);
     } finally {
+      // ALSO ON A TIMEOUT OR A FAILED CALLBACK: NEVER LEAVE A'S THREAD PARKED OR ALIVE PAST THE TEST
+      resumeA.countDown();
       executor.shutdownNow();
     }
   }
