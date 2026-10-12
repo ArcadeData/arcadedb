@@ -91,6 +91,10 @@ public sealed interface PromQLExpr {
     public boolean isComparison() {
       return this == EQ || this == NEQ || this == LT || this == GT || this == LTE || this == GTE;
     }
+
+    public boolean isSetOperator() {
+      return this == AND || this == OR || this == UNLESS;
+    }
   }
 
   enum MatchOp {
