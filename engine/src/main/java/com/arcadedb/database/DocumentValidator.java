@@ -45,6 +45,13 @@ import java.util.regex.PatternSyntaxException;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class DocumentValidator {
+  // the budget of the search for a text form a pattern on a number or a temporal can match, paid once per declaration. The
+  // probes are what normally ends it (every BYTE is about 12,000 of them, a few milliseconds); the time only stops a
+  // pattern that backtracks catastrophically on a probe
+  private static final int  REGEXP_SEARCH_MAX_LENGTH = 64;
+  private static final int  REGEXP_SEARCH_MAX_PROBES = 65_536;
+  private static final long REGEXP_SEARCH_TIMEOUT_MS = 1_000;
+
   public static void validate(final MutableDocument document) throws ValidationException {
     document.checkForLazyLoadingProperties();
     // One shared deadline for every REGEXP-constrained property on this document (issue #5886 follow-up): each
@@ -327,12 +334,6 @@ public class DocumentValidator {
     private static final RegexpUsability USABLE = new RegexpUsability(null, null);
   }
 
-  // the budget of the search for a text form a pattern on a number or a temporal can match, paid once per declaration. The
-  // probes are what normally ends it (every BYTE is about 12,000 of them, a few milliseconds); the time only stops a
-  // pattern that backtracks catastrophically on a probe
-  private static final int    REGEXP_SEARCH_MAX_LENGTH = 64;
-  private static final int    REGEXP_SEARCH_MAX_PROBES = 65_536;
-  private static final long   REGEXP_SEARCH_TIMEOUT_MS = 1_000;
   /**
    * Whether {@code regexp} can serve as the REGEXP of a property of {@code type} (issues #9808, #9853). A pattern is matched
    * against the text form of the value ({@code toString()}), which only a scalar has: on a BINARY, a LIST, a MAP, an

@@ -346,7 +346,8 @@ public class LocalProperty extends AbstractProperty {
     final RegexpUsability usability = DocumentValidator.regexpUsability(owner.getSchema().getEmbedded().getDatabase(), type,
         regexp, !readingFromFile);
     String reason = usability.refusal();
-    if (reason == null)
+    if (reason == null && type == Type.STRING)
+      // every other type compiled it in regexpUsability, which reports an invalid pattern as its refusal
       try {
         Pattern.compile(regexp);
       } catch (final PatternSyntaxException e) {

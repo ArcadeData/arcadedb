@@ -82,10 +82,13 @@ class RegexOverAlphabetTest {
     // the constructs Matcher.hitEnd() is subtle about: a refusal here would reject a pattern a LONG satisfies
     final String longShape = "-?[0-9]{1,19}";
     for (final String regexp : new String[] { "(?=.*5)[0-9]+", "[0-9]+(?<=5)", "\\b[0-9]+\\b", "[0-9]+$", "^-?[0-9]+\\z",
-        "(?>[0-9]+)", "[0-9]++", "(?!0)[0-9]+", "[0-9]+(?<!0)" }) {
+        "(?>[0-9]+)", "[0-9]++", "(?!0)[0-9]+", "[0-9]+(?<!0)", "([0-9])\\1", "-?([1-9])[0-9]*\\1", "(?<![0-9])[0-9]+",
+        "[0-9]+(?=$)" }) {
       assertThat(check(regexp, longShape, NUMBER)).as(regexp).isEqualTo(Verdict.SATISFIABLE);
       assertThat(check(regexp, NUMBER)).as(regexp).isEqualTo(Verdict.SATISFIABLE);
     }
+    // a lookbehind for a character before the start of the text: matches() never sees one, so no value can satisfy it
+    assertThat(check("(?<=-)[0-9]+", longShape, NUMBER)).isEqualTo(Verdict.UNSATISFIABLE);
     // a lookahead for a character no number has is never satisfiable, whatever the search manages to show
     assertThat(check("(?=.*x)[0-9]+", longShape, NUMBER)).isNotEqualTo(Verdict.SATISFIABLE);
     assertThat(check("[0-9]+(?<=x)", longShape, NUMBER)).isNotEqualTo(Verdict.SATISFIABLE);
