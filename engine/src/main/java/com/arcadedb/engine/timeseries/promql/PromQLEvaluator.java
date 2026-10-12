@@ -266,6 +266,7 @@ public class PromQLEvaluator {
       return new InstantVector(List.of());
 
     final TagFilter tagFilter = buildTagFilter(vs.matchers(), columns);
+    final RowMatchers rowMatchers = rowMatchers(vs.matchers(), columns);
     final long offset = vs.offsetMs();
     final long queryEnd = evalTimeMs - offset;
     final long queryStart = windowScanStart(queryEnd, lookbackMs);
@@ -280,7 +281,7 @@ public class PromQLEvaluator {
     // post-filter regex logic now runs INSIDE the visitor, on the same call stack as the scan, and
     // excludesEverySeries()'s contract - a malformed or ReDoS-shaped =~/!~ propagates rather than being read as
     // an empty result - has to hold for it exactly as it already does for excludesEverySeries() itself. A
-    // TimeoutException/IllegalArgumentException from matchesPostFilters() is a RuntimeException, not an
+    // TimeoutException/IllegalArgumentException from matchesRow() is a RuntimeException, not an
     // IOException, so it is unaffected by this catch and still reaches the caller.
     final Map<String, VectorSample> latestByLabels = new LinkedHashMap<>();
     try {
@@ -289,7 +290,7 @@ public class PromQLEvaluator {
       // anything less than one shared deadline for the whole query would let a crafted pattern tie up the
       // thread for rowCount * stepCount * regexTimeout.
       engine.forEachRow(queryStart, queryEnd, null, tagFilter, readMetrics, row -> {
-        if (!matchesPostFilters(row, vs.matchers(), columns, regexDeadline()))
+        if (!matchesRow(row, rowMatchers))
           return true;
         final Map<String, String> labels = extractLabels(row, columns, vs.metricName());
         final String key = labelKey(labels);
@@ -348,6 +349,7 @@ public class PromQLEvaluator {
       return new RangeVector(List.of());
 
     final TagFilter tagFilter = buildTagFilter(vs.matchers(), columns);
+    final RowMatchers rowMatchers = rowMatchers(vs.matchers(), columns);
     final long offset = vs.offsetMs();
     final long queryEnd = evalTimeMs - offset;
     final long windowStart = queryEnd - ms.rangeMs();
@@ -361,7 +363,7 @@ public class PromQLEvaluator {
     try {
       // One shared regexDeadline() for the whole evaluator instance - see evaluateVectorSelector().
       engine.forEachRow(queryStart, queryEnd, null, tagFilter, readMetrics, row -> {
-        if (!matchesPostFilters(row, vs.matchers(), columns, regexDeadline()))
+        if (!matchesRow(row, rowMatchers))
           return true;
         final Map<String, String> labels = extractLabels(row, columns, vs.metricName());
         final String key = labelKey(labels);
@@ -646,53 +648,6 @@ public class PromQLEvaluator {
   }
 
   /**
-   * Resolves, once per scan, the position in {@code tagNames} of the tag each matcher names, or {@code -1} for a
-   * matcher that {@link #matchesTagRow} does not decide ({@code __name__} or a label the type does not declare, which
-   * {@link #selectsNoSeries} settles for the whole type). Keeps the per-row work free of name lookups (issue #9386).
-   */
-  public int[] resolveTagMatchers(final List<LabelMatcher> matchers, final String[] tagNames) {
-    final int[] resolved = new int[matchers.size()];
-    for (int m = 0; m < resolved.length; m++) {
-      resolved[m] = -1;
-      final String name = matchers.get(m).name();
-      if (METRIC_NAME_LABEL.equals(name))
-        continue;
-      for (int i = 0; i < tagNames.length; i++)
-        if (tagNames[i].equals(name)) {
-          resolved[m] = i;
-          break;
-        }
-    }
-    return resolved;
-  }
-
-  /**
-   * Applies the label matchers of a selector to one row that carries only TAG columns: {@code row[0]} is the
-   * timestamp and {@code row[i + 1]} the value of the tag {@code tagNames[i]}, the layout a tag projection scan
-   * produces. A null or empty value is an absent label. {@code tagIndexes} comes from
-   * {@link #resolveTagMatchers} (issue #9386).
-   */
-  public boolean matchesTagRow(final List<LabelMatcher> matchers, final int[] tagIndexes, final Object[] row) {
-    for (int m = 0; m < tagIndexes.length; m++) {
-      final int tagIdx = tagIndexes[m];
-      if (tagIdx < 0)
-        continue;
-      final LabelMatcher matcher = matchers.get(m);
-      final Object val = tagIdx + 1 < row.length ? row[tagIdx + 1] : null;
-      final String strVal = val != null ? val.toString() : "";
-      final boolean matches = switch (matcher.op()) {
-        case EQ -> strVal.equals(matcher.value());
-        case NEQ -> !strVal.equals(matcher.value());
-        case RE -> TimeBoundRegex.matchesUntil(compilePattern(matcher.value()), strVal, regexDeadline());
-        case NRE -> !TimeBoundRegex.matchesUntil(compilePattern(matcher.value()), strVal, regexDeadline());
-      };
-      if (!matches)
-        return false;
-    }
-    return true;
-  }
-
-  /**
    * The part of a selector's label matchers a scan can apply itself: its non-empty equalities on declared columns, as a tag
    * filter, or {@code null} when it has none. Every other matcher is decided per row by {@link #matchesRow}, which skips what
    * this filter already applied, and {@link #selectsNoSeries} settles a matcher on an undeclared label for the whole type:
@@ -703,12 +658,61 @@ public class PromQLEvaluator {
   }
 
   /**
-   * Whether a row of the scan {@link #tagFilter} narrowed passes the selector's other label matchers ({@code !=}, {@code =~},
-   * {@code !~}, {@code label=""}), under this evaluator's shared regex deadline. A malformed or ReDoS-shaped pattern raises
-   * an {@link IllegalArgumentException} rather than reading as "no match" (issue #9803).
+   * Binds a selector's label matchers to the rows of a scan {@link #tagFilter} narrowed, whose layout is the engine's
+   * {@code [timestamp, non-ts-col-0, non-ts-col-1, ...]}: the matchers that filter did not apply ({@code !=}, {@code =~},
+   * {@code !~}, {@code label=""}), each with its tag's position in the row and the values its text reads as in the tag's declared
+   * type. Resolved once per scan, so the per-row work is a membership test and, for a pattern, a match (issue #9833).
+   * <p>
+   * The three - {@link #tagFilter}, this and {@link #selectsNoSeries} - are one unit, public for the remote-read endpoint so it
+   * selects exactly what {@code /query} does (issue #9803).
    */
-  public boolean matchesRow(final Object[] row, final List<LabelMatcher> matchers, final List<ColumnDefinition> columns) {
-    return matchesPostFilters(row, matchers, columns, regexDeadline());
+  public RowMatchers rowMatchers(final List<LabelMatcher> matchers, final List<ColumnDefinition> columns) {
+    final List<ColumnDefinition> rowColumns = new ArrayList<>(columns.size());
+    for (final ColumnDefinition col : columns)
+      if (col.getRole() != ColumnDefinition.ColumnRole.TIMESTAMP)
+        rowColumns.add(col);
+    return bindMatchers(matchers, rowColumns, true);
+  }
+
+  /**
+   * Binds every label matcher of a selector to the rows of a scan that projects some columns and pushes no tag filter down,
+   * as the series endpoint's tag projection does: {@code row[0]} is the timestamp and {@code row[i + 1]} the value of
+   * {@code rowColumns.get(i)}. A matcher on a label the type does not declare is left to {@link #selectsNoSeries} (issue #9386).
+   */
+  public RowMatchers projectedRowMatchers(final List<LabelMatcher> matchers, final List<ColumnDefinition> rowColumns) {
+    return bindMatchers(matchers, rowColumns, false);
+  }
+
+  /**
+   * Whether a row passes the matchers bound by {@link #rowMatchers} or {@link #projectedRowMatchers}, under this evaluator's
+   * shared regex deadline. A malformed or ReDoS-shaped pattern raises an {@link IllegalArgumentException} rather than reading
+   * as "no match" (issue #9803).
+   */
+  public boolean matchesRow(final Object[] row, final RowMatchers rowMatchers) {
+    final long regexDeadline = rowMatchers.matchers.length == 0 ? 0L : regexDeadline();
+    for (int i = 0; i < rowMatchers.matchers.length; i++) {
+      final int rowIdx = rowMatchers.rowIndexes[i];
+      if (!matchesTag(rowMatchers.matchers[i], rowMatchers.valueForms[i], rowIdx < row.length ? row[rowIdx] : null,
+          regexDeadline))
+        return false;
+    }
+    return true;
+  }
+
+  /**
+   * A selector's label matchers bound to one scan's row layout by {@link #rowMatchers} or {@link #projectedRowMatchers}.
+   * Immutable; valid for the columns it was bound to.
+   */
+  public static final class RowMatchers {
+    private final LabelMatcher[] matchers;
+    private final int[]          rowIndexes;
+    private final Set<Object>[]  valueForms;
+
+    private RowMatchers(final LabelMatcher[] matchers, final int[] rowIndexes, final Set<Object>[] valueForms) {
+      this.matchers = matchers;
+      this.rowIndexes = rowIndexes;
+      this.valueForms = valueForms;
+    }
   }
 
   /**
@@ -735,7 +739,7 @@ public class PromQLEvaluator {
     TagFilter filter = null;
     for (final LabelMatcher m : matchers) {
       // {label=""} selects the series that do NOT carry the label, which a tag equality filter cannot express (a missing
-      // tag is null, an old row may hold ""): matchesPostFilters() decides it (issue #9363)
+      // tag is null, an old row may hold ""): the row matchers decide it (issue #9363)
       if (m.op() != MatchOp.EQ || isEmptyEquality(m) || "__name__".equals(m.name()))
         continue;
       final int idx = findNonTsColumnIndex(m.name(), columns);
@@ -758,13 +762,13 @@ public class PromQLEvaluator {
    * {@code !=} with a non-empty value, {@code =""} and any regex the empty string satisfies select everything.
    * The evaluator used to get both directions backwards - {@link #buildTagFilter} silently dropped an unknown
    * {@code =} matcher (so a typo like {@code up{jobb="api"}} widened the query to every series instead of
-   * narrowing it to none) and {@link #matchesPostFilters} rejected every row for an unknown {@code !=}/{@code !~}.
+   * narrowing it to none) and the per-row matcher rejected every row for an unknown {@code !=}/{@code !~}.
    * Deciding it here, before the scan, also means the query never runs when the answer is already known.
    * <p>
    * Deliberately outside the {@code try/catch} that turns an {@code iterateQuery()} failure into an empty
    * result: the {@code IllegalArgumentException}/{@code TimeoutException} a bad or ReDoS-shaped {@code =~} can
    * raise from here propagates to the caller, exactly as the same pattern already does from
-   * {@link #matchesPostFilters}, which runs outside that {@code try} too. A rejected query is not an empty one.
+   * {@link #matchesRow}, which runs outside that {@code try} too. A rejected query is not an empty one.
    */
   private boolean excludesEverySeries(final List<LabelMatcher> matchers, final List<ColumnDefinition> columns,
       final long regexDeadline) {
@@ -784,7 +788,7 @@ public class PromQLEvaluator {
    * <p>
    * Deliberate change of error behaviour for {@code =~}/{@code !~} on an unknown column: the pattern is now
    * compiled - and therefore validated by {@link #compilePattern}, syntax and ReDoS guard alike - where
-   * {@link #matchesPostFilters} used to bail out on {@code rowIdx < 0} before ever reaching the switch, so a
+   * the per-row matcher used to bail out on {@code rowIdx < 0} before ever reaching the switch, so a
    * malformed or ReDoS-shaped regex against a nonexistent label silently produced an empty vector instead of
    * the {@code IllegalArgumentException} the same pattern raises against a label that does exist. Prometheus
    * validates the regex regardless of whether any series carries the label, and a typo'd label name is exactly
@@ -801,49 +805,116 @@ public class PromQLEvaluator {
 
   /**
    * Whether {@code m} is {@code label=""}: it selects the series that do not carry the label, so it cannot go through the
-   * tag equality filter and is decided by {@link #matchesPostFilters} instead (issue #9363). Kept in one place so the two
+   * tag equality filter and is decided by {@link #matchesRow} instead (issue #9363). Kept in one place so the two
    * sides of that split cannot disagree.
    */
   private static boolean isEmptyEquality(final LabelMatcher m) {
     return m.op() == MatchOp.EQ && m.value().isEmpty();
   }
 
-  private boolean matchesPostFilters(final Object[] row, final List<LabelMatcher> matchers,
-      final List<ColumnDefinition> columns, final long regexDeadline) {
+  @SuppressWarnings("unchecked")
+  private RowMatchers bindMatchers(final List<LabelMatcher> matchers, final List<ColumnDefinition> rowColumns,
+      final boolean equalitiesPushedDown) {
+    final List<LabelMatcher> bound = new ArrayList<>(matchers.size());
+    final List<Integer> rowIndexes = new ArrayList<>(matchers.size());
+    final List<Set<Object>> forms = new ArrayList<>(matchers.size());
     for (final LabelMatcher m : matchers) {
       // a non-empty EQ was already applied by the tag filter; an empty one is decided here
-      if ((m.op() == MatchOp.EQ && !isEmptyEquality(m)) || "__name__".equals(m.name()))
+      if ((equalitiesPushedDown && m.op() == MatchOp.EQ && !isEmptyEquality(m)) || METRIC_NAME_LABEL.equals(m.name()))
         continue;
-      final int rowIdx = findNonTsRowIndex(m.name(), columns);
-      if (rowIdx < 0)
+      int col = -1;
+      for (int i = 0; i < rowColumns.size(); i++)
+        if (rowColumns.get(i).getName().equals(m.name())) {
+          col = i;
+          break;
+        }
+      if (col < 0)
         // The column is absent from the schema, so the label is absent from every series. excludesEverySeries()
         // already settled such a matcher for the whole type before the scan started: reaching a row at all
         // means it selected everything, so it cannot reject this one (issue #6938).
         continue;
-      final Object val = rowIdx < row.length ? row[rowIdx] : null;
-      final String strVal = val != null ? val.toString() : "";
-      switch (m.op()) {
-        case EQ:
-          if (!strVal.isEmpty())
-            return false;
-          break;
-        case NEQ:
-          if (strVal.equals(m.value()))
-            return false;
-          break;
-        case RE:
-          if (!TimeBoundRegex.matchesUntil(compilePattern(m.value()), strVal, regexDeadline))
-            return false;
-          break;
-        case NRE:
-          if (TimeBoundRegex.matchesUntil(compilePattern(m.value()), strVal, regexDeadline))
-            return false;
-          break;
-        default:
-          break;
-      }
+      bound.add(m);
+      rowIndexes.add(col + 1);
+      forms.add(valueFormsOf(rowColumns.get(col), m));
     }
-    return true;
+    final int[] indexes = new int[rowIndexes.size()];
+    for (int i = 0; i < indexes.length; i++)
+      indexes[i] = rowIndexes.get(i);
+    return new RowMatchers(bound.toArray(new LabelMatcher[0]), indexes, forms.toArray(new Set[0]));
+  }
+
+  /**
+   * The stored values a matcher's text names in its tag's declared type, as the tag push-down reads them: {@code 007} names the
+   * LONG 7, {@code 5} the DOUBLE 5.0, a date the epoch count a DATETIME tag holds (issues #5475, #9724, #9803, #9833). For a
+   * pattern, the values the pattern names when read as a literal: its text as written, and, when every metacharacter in it is
+   * escaped, the text it matches. Empty for {@code label=""}/{@code label!=""}, which test presence instead.
+   */
+  private Set<Object> valueFormsOf(final ColumnDefinition column, final LabelMatcher m) {
+    final String value = m.value();
+    if (value.isEmpty() && (m.op() == MatchOp.EQ || m.op() == MatchOp.NEQ))
+      return Set.of();
+    final Set<Object> forms = new HashSet<>();
+    addEqualityForms(forms, column, value);
+    if (m.op() == MatchOp.RE || m.op() == MatchOp.NRE) {
+      final String literal = literalOfPattern(value);
+      if (literal != null && !literal.equals(value))
+        addEqualityForms(forms, column, literal);
+    }
+    return forms;
+  }
+
+  private void addEqualityForms(final Set<Object> forms, final ColumnDefinition column, final String text) {
+    final Object typed = coerceTagValue(column, text);
+    if (typed != null)
+      forms.addAll(TagFilter.equalityForms(typed));
+  }
+
+  /**
+   * The one text {@code pattern} matches when it is a plain literal - every character either ordinary or a backslash-escaped
+   * punctuation character, as in {@code 5\.00} - or {@code null} when it is a real pattern.
+   */
+  static String literalOfPattern(final String pattern) {
+    final StringBuilder sb = new StringBuilder(pattern.length());
+    for (int i = 0; i < pattern.length(); i++) {
+      final char c = pattern.charAt(i);
+      if (c == '\\') {
+        if (++i >= pattern.length() || Character.isLetterOrDigit(pattern.charAt(i)))
+          return null;
+        sb.append(pattern.charAt(i));
+      } else if (".[]{}()*+?^$|".indexOf(c) >= 0)
+        return null;
+      else
+        sb.append(c);
+    }
+    return sb.toString();
+  }
+
+  /**
+   * The one decision of whether a tag holds a matcher, for every operator (issue #9833). Equality is membership in
+   * {@code valueForms}, the forms the tag push-down compares a row with ({@link TagFilter#equalityForms}), so {@code =} and
+   * {@code !=} are complements whichever of the two decides a row. A pattern selects a tag it names as a literal, which is how
+   * {@code =~"007"} agrees with {@code ="007"} on a LONG tag, and otherwise a tag whose label text - what the series is
+   * reported under - it matches. An absent tag (null, or {@code ""} in a row an older build stored) is the empty string.
+   */
+  private boolean matchesTag(final LabelMatcher m, final Set<Object> valueForms, final Object stored, final long regexDeadline) {
+    final String text = stored != null ? stored.toString() : "";
+    return switch (m.op()) {
+      case EQ -> m.value().isEmpty() ? text.isEmpty() : isNamedValue(valueForms, stored, text);
+      case NEQ -> m.value().isEmpty() ? !text.isEmpty() : !isNamedValue(valueForms, stored, text);
+      case RE -> matchesTagPattern(m, valueForms, stored, text, regexDeadline);
+      case NRE -> !matchesTagPattern(m, valueForms, stored, text, regexDeadline);
+    };
+  }
+
+  private boolean matchesTagPattern(final LabelMatcher m, final Set<Object> valueForms, final Object stored, final String text,
+      final long regexDeadline) {
+    // compiled first, so a malformed or ReDoS-shaped pattern is refused on every row, not only on one it fails to name
+    final Pattern pattern = compilePattern(m.value());
+    return isNamedValue(valueForms, stored, text) || TimeBoundRegex.matchesUntil(pattern, text, regexDeadline);
+  }
+
+  private static boolean isNamedValue(final Set<Object> valueForms, final Object stored, final String text) {
+    return !text.isEmpty() && valueForms.contains(stored);
   }
 
   /**
@@ -923,10 +994,11 @@ public class PromQLEvaluator {
    * selects no series: {@code coerceValue} already leaves a number that does not parse as it is, but reads any text that is not
    * {@code true} as {@code false}, which would select the series whose tag is false.
    */
-  static Object coerceTagValue(final ColumnDefinition column, final String text) {
+  private Object coerceTagValue(final ColumnDefinition column, final String text) {
     if (column.getDataType() == Type.BOOLEAN && !"true".equalsIgnoreCase(text) && !"false".equalsIgnoreCase(text))
       return text;
-    return column.coerceValue(text);
+    // read with the database, in its time zone, as the INSERT that wrote the tag read it (issue #9833)
+    return column.coerceValue(database, text);
   }
 
   private int findNonTsColumnIndex(final String name, final List<ColumnDefinition> columns) {
