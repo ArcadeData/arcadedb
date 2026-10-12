@@ -1920,16 +1920,28 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       item.expression = (Expression) visit(ctx.expression());
 
     // Right wildcard (expression followed by *)
-    if (ctx.expression() != null && ctx.STAR() != null)
+    if (ctx.expression() != null && ctx.STAR() != null) {
+      // The wildcard is a prefix of property NAMES (NestedProjectionItem.matches): on anything but a plain property name,
+      // such as `a.b*` or `f()*`, no property can ever match it
+      if (!item.expression.isBaseIdentifier())
+        throw new CommandSQLParsingException(
+            "The wildcard projection item '" + ctx.expression().getText() + "*' is not valid: a wildcard must follow a plain property name prefix");
       item.rightWildcard = true;
+    }
 
     // Nested expansion
     if (ctx.nestedProjection() != null)
       item.expansion = (NestedProjection) visit(ctx.nestedProjection());
 
     // Alias
-    if (ctx.identifier() != null)
+    if (ctx.identifier() != null) {
+      // A prefix wildcard names any number of properties, each projected under its own name: one alias cannot name them all
+      if (item.rightWildcard && !item.exclude)
+        throw new CommandSQLParsingException(
+            "Alias '" + ctx.identifier().getText() + "' is not allowed on the wildcard projection item '" + ctx.expression().getText()
+                + "*': the wildcard can match several properties, each projected under its own name");
       item.alias = (Identifier) visit(ctx.identifier());
+    }
 
     return item;
   }
