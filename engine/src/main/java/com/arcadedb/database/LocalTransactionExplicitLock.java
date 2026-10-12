@@ -117,17 +117,11 @@ public class LocalTransactionExplicitLock implements TransactionExplicitLock {
       for (final IndexInternal idx : typeIndex.getIndexesOnBuckets())
         addIndexFileIds(idx);
 
-    // Lock all currently involved buckets for this type
-    for (final Bucket b : type.getInvolvedBuckets())
-      addNonNegative(b.getFileId());
-
-    // COMPREHENSIVE BUCKET LOCKING: Also lock all polymorphic buckets (includes subtypes)
-    // This helps handle cases where records might be created in buckets not initially involved
-    for (final Bucket b : type.getBuckets(true)) {
-      addNonNegative(b.getFileId());
-      // A SUBTYPE'S PRIMARY BUCKET HAS ITS OWN PAIRED EXTERNAL BUCKET, OWNED BY THE SUBTYPE
-      addExternalBucketOf(transactionContext.getDatabase().getSchema().getTypeByBucketId(b.getFileId()), b.getFileId());
-    }
+    // Lock all currently involved buckets for this type and for every subtype: locking a type locks its subtypes' records,
+    // and with them every file a subtype writes on their behalf - its primary buckets, their paired external buckets, the
+    // edge-list buckets of its vertices and the stripe pool of its promoted ones. Taking only the subtypes' primary buckets
+    // failed the commit of any edge appended to a subtype vertex under the parent's lock (issue #9780)
+    collectInvolvedBucketsPolymorphic(type);
 
     LogManager.instance().log(this, Level.FINE,
       "Explicit lock for type '%s' will lock %d bucket files (threadId=%d)",
@@ -138,6 +132,14 @@ public class LocalTransactionExplicitLock implements TransactionExplicitLock {
    * A write into a primary bucket also writes the values of its EXTERNAL properties into the paired {@code _ext} bucket,
    * so locking the primary bucket without it fails the commit-time lock coverage check (issue #9637).
    */
+  private void collectInvolvedBucketsPolymorphic(final DocumentType type) {
+    for (final Bucket b : type.getInvolvedBuckets())
+      addNonNegative(b.getFileId());
+    // A type reached through two supertypes is collected twice: the set keeps one copy
+    for (final DocumentType subType : type.getSubTypes())
+      collectInvolvedBucketsPolymorphic(subType);
+  }
+
   private void addExternalBucketOf(final DocumentType owner, final int primaryBucketId) {
     if (owner instanceof LocalDocumentType localType) {
       final Integer externalBucketId = localType.getExternalBucketIdFor(primaryBucketId);

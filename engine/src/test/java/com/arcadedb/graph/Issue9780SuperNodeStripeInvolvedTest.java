@@ -97,6 +97,27 @@ class Issue9780SuperNodeStripeInvolvedTest extends TestHelper {
   }
 
   /**
+   * Locking a parent type locks its subtypes' records: the edge-list buckets and the stripe pool of a subtype's vertices come
+   * with them, or an edge appended to a subtype vertex under the parent's lock fails the commit.
+   */
+  @Test
+  void explicitParentTypeLockCoversTheSubtypeEdgeBucketsAndStripePool() {
+    database.getSchema().buildVertexType().withName("Child").withSuperType("V").withTotalBuckets(1).create();
+    final RID hub = createPromotedHub("Child");
+
+    database.transaction(() -> {
+      database.acquireLock().type("V").type("E").lock();
+      final MutableVertex plain = database.newVertex("Child").save();
+      final MutableVertex other = database.newVertex("Child").save();
+      plain.newEdge("E", other);
+      for (int i = 0; i < 2 * STRIPES; i++)
+        hub.asVertex().newEdge("E", other);
+    });
+
+    assertThat(countOut(hub)).isEqualTo(400 + 2 * STRIPES);
+  }
+
+  /**
    * A rename moves the pool under the new name, so it stays the type's own, keeps serving the promoted vertices, and is
    * dropped with the type rather than left behind for a later type created under the old name.
    */

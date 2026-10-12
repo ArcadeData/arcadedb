@@ -139,8 +139,13 @@ public class ArcadeGraph implements Graph, Closeable {
   }
 
   protected ArcadeGraph(final BasicDatabase database, final boolean sharedDatabase) {
+    this(database, sharedDatabase, new ArcadeGraphFeatures());
+  }
+
+  protected ArcadeGraph(final BasicDatabase database, final boolean sharedDatabase, final Features features) {
     this.database = database;
     this.sharedDatabase = sharedDatabase;
+    this.features = features;
     this.transaction = new ArcadeGraphTransaction(this);
     init();
   }
@@ -177,9 +182,7 @@ public class ArcadeGraph implements Graph, Closeable {
    * transaction to commit or roll back. The database's lifecycle is the caller's too: closing the graph does not close it.
    */
   public static ArcadeGraph openInCallerTransaction(final BasicDatabase database) {
-    final ArcadeGraph graph = new ArcadeGraph(database, true);
-    graph.features = new ArcadeGraphFeatures(false);
-    return graph;
+    return new ArcadeGraph(database, true, new ArcadeGraphFeatures(false));
   }
 
   /**
