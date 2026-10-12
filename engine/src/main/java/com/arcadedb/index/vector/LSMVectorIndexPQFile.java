@@ -130,6 +130,10 @@ public class LSMVectorIndexPQFile {
    * The data goes to a temporary sibling that replaces the live file only once it is complete and forced to the
    * device, so a failure at any point (an interrupt, a full disk, an I/O error, a crash) leaves the previous file
    * exactly as it was and never a fragment. The cached references are published only after the rename.
+   * <p>
+   * Writers of one file are serialized by the caller ({@code LSMVectorIndex} holds its graph build lock around both
+   * of them): a second writer would race on the rename, and {@link #deleteLeftoverTemporaries()} would remove the
+   * first one's in-flight temporary.
    *
    * @param pq      The ProductQuantization codebook to persist
    * @param vectors The PQVectors containing encoded vectors
@@ -172,6 +176,8 @@ public class LSMVectorIndexPQFile {
       try {
         FileUtils.publishAtomically(temporary, pqFilePath, true);
       } finally {
+        // "interrupted" is the interrupt that was pending before the publish, cleared above so the directory force could
+        // run; Thread.interrupted() catches one that landed during the publish itself. Either means the caller is told.
         if (interrupted || Thread.interrupted())
           Thread.currentThread().interrupt();
       }
