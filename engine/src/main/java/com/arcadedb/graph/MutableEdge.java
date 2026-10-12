@@ -162,7 +162,8 @@ public class MutableEdge extends MutableDocument implements Edge {
     final RID newEndpoint = toRID(value);
     if (newEndpoint == null)
       throw new IllegalArgumentException(
-          "Cannot set " + name + " to " + (value == null ? "null" : "'" + value + "'") + ": edges require both endpoints");
+          "Cannot set " + name + " to " + (value == null ? "null" : "'" + abbreviate(value.toString()) + "'")
+              + ": an edge endpoint must be a record, a RID or a RID string");
 
     // A move needs an endpoint to move FROM: an instance whose endpoint is still unknown is being initialized, as when
     // JavaBinarySerializer rebuilds an edge from its toMap() before the trailing endpoint block is read
@@ -242,6 +243,11 @@ public class MutableEdge extends MutableDocument implements Edge {
     this.out = newOut;
     this.in = newIn;
     this.buffer = null;
+  }
+
+  /** Keeps an arbitrary caller value from flooding the exception message and the logs that carry it. */
+  private static String abbreviate(final String text) {
+    return text.length() <= 64 ? text : text.substring(0, 64) + "...";
   }
 
   private RID toRID(final Object value) {
