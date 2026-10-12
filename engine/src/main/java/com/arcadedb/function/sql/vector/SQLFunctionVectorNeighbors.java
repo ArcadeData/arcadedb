@@ -233,38 +233,50 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
     // Get the query vector
     final float[] queryVector = extractQueryVector(key, vectorIndexes.getFirst(), context);
 
+    // Memory-budget guard for the grouped path (issue #4071): the per-group accounting is O(limit * groupSize)
+    // per bucket, but we still reject pathological combinations (e.g. limit=10000, groupSize=10000 = 100M
+    // candidates) so the search loop does not allocate arrays in the GiB range. Same shape (and exception text)
+    // as the MVP cap so existing tests probing the boundary remain valid.
+    if (groupBy != null && groupedFetchBudget(limit, groupSize) > MAX_FETCH_CANDIDATES)
+      throw new CommandSQLParsingException(NAME + " over-fetch budget exceeded: limit=" + limit
+          + ", groupSize=" + groupSize + " would require " + groupedFetchBudget(limit, groupSize)
+          + " candidates (cap " + MAX_FETCH_CANDIDATES + "). Reduce limit or groupSize.");
+
     // A record deleted by a commit that overlaps the search can still be in the index's answer for a short while. The
     // non-grouped path asks for exactly `limit` candidates, so each such record would cost the caller a row (#9368).
     // When a stale candidate was skipped, the answer is short, and the index could have given more (a search that
     // returned fewer candidates than asked has nothing left), ask again with a wider fetch so a stale entry costs a
     // candidate and not an answer row. Bounded by MAX_FETCH_CANDIDATES.
+    //
+    // The grouped path has the same hole one level up (issue #9697), where `limit` is a group budget: each pass re-runs
+    // the per-index grouped search and the #8002 second phase - see searchGroupedWithStaleTopUp.
+    if (groupBy != null)
+      return searchGroupedWithStaleTopUp(limit, groupSize, MAX_FETCH_CANDIDATES,
+          (fetchGroups, fetchGroupSize, staleSkipped) -> searchAndEmit(vectorIndexes, queryVector, limit, fetchGroups, efSearch,
+              allowedRIDs, groupBy, fetchGroupSize, groupSize, maxDistance, context, staleSkipped, null));
+
     int fetchK = limit;
     while (true) {
-      final boolean[] staleSkipped = new boolean[1];
+      final int[] staleSkipped = new int[1];
       final boolean[] saturated = new boolean[1];
       final ArrayList<Object> result = searchAndEmit(vectorIndexes, queryVector, limit, fetchK, efSearch, allowedRIDs,
-          groupBy, groupSize, maxDistance, context, staleSkipped, saturated);
-      if (groupBy != null || result.size() >= limit || !staleSkipped[0] || !saturated[0] || fetchK >= MAX_FETCH_CANDIDATES)
+          null, groupSize, groupSize, maxDistance, context, staleSkipped, saturated);
+      if (result.size() >= limit || staleSkipped[0] == 0 || !saturated[0] || fetchK >= MAX_FETCH_CANDIDATES)
         return result;
       fetchK = (int) Math.min((long) fetchK * 2L, MAX_FETCH_CANDIDATES);
     }
   }
 
+  /**
+   * One search and emit pass. {@code fetchK} and {@code fetchGroupSize} size what the indexes are asked for: candidates
+   * on the plain path, the group budget and the per-group cap on the grouped one. The answer is always capped at the
+   * caller's own {@code limit} rows, or {@code limit} groups of {@code groupSize}. {@code saturated} is only tracked,
+   * and only non-null, on the plain path.
+   */
   private ArrayList<Object> searchAndEmit(final List<LSMVectorIndex> vectorIndexes, final float[] queryVector, final int limit,
-      final int fetchK, final int efSearch, final Set<RID> allowedRIDs, final String groupBy, final int groupSize,
-      final float maxDistance, final CommandContext context, final boolean[] staleSkipped, final boolean[] saturated) {
-
-    // Memory-budget guard for the grouped path (issue #4071): the per-group accounting is O(limit * groupSize)
-    // per bucket, but we still reject pathological combinations (e.g. limit=10000, groupSize=10000 = 100M
-    // candidates) so the search loop does not allocate arrays in the GiB range. Same shape (and exception text)
-    // as the MVP cap so existing tests probing the boundary remain valid.
-    if (groupBy != null) {
-      final long requested = Math.max((long) limit * groupSize * 5L, (long) limit);
-      if (requested > MAX_FETCH_CANDIDATES)
-        throw new CommandSQLParsingException(NAME + " over-fetch budget exceeded: limit=" + limit
-            + ", groupSize=" + groupSize + " would require " + requested
-            + " candidates (cap " + MAX_FETCH_CANDIDATES + "). Reduce limit or groupSize.");
-    }
+      final int fetchK, final int efSearch, final Set<RID> allowedRIDs, final String groupBy, final int fetchGroupSize,
+      final int groupSize, final float maxDistance, final CommandContext context, final int[] staleSkipped,
+      final boolean[] saturated) {
 
     final BasicDatabase db = context.getDatabase();
 
@@ -280,21 +292,22 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
       }
     };
 
-    // Per-bucket fetch cap. Non-grouped path keeps the original {@code fetchPerIndex = limit}
-    // shape; the grouped path uses {@code limit} as the distinct-group budget on each bucket and
-    // relies on the SQL-layer global GroupAdmissionState to reduce cross-bucket overlap.
+    // Per-bucket fetch cap. The non-grouped path asks each bucket for {@code fetchK} candidates; the grouped path uses
+    // {@code fetchK} as the distinct-group budget on each bucket (with {@code fetchGroupSize} members each) and relies on
+    // the SQL-layer global GroupAdmissionState to reduce cross-bucket overlap.
     final List<Pair<RID, Float>> allNeighbors = new ArrayList<>();
 
-    final GroupedTopUpPlanner planner = groupBy != null && vectorIndexes.size() > 1 ? new GroupedTopUpPlanner(limit, groupSize) : null;
+    final GroupedTopUpPlanner planner =
+        groupBy != null && vectorIndexes.size() > 1 ? new GroupedTopUpPlanner(fetchK, fetchGroupSize) : null;
     for (final LSMVectorIndex lsmIndex : vectorIndexes) {
       final List<Pair<RID, Float>> neighbors;
       if (groupBy == null)
         neighbors = lsmIndex.findNeighborsFromVector(queryVector, fetchK, efSearch, allowedRIDs);
       else
-        neighbors = lsmIndex.findNeighborsFromVectorGrouped(queryVector, limit, groupSize, efSearch, allowedRIDs,
+        neighbors = lsmIndex.findNeighborsFromVectorGrouped(queryVector, fetchK, fetchGroupSize, efSearch, allowedRIDs,
             groupKeyResolver);
       allNeighbors.addAll(neighbors);
-      if (groupBy == null && neighbors.size() >= fetchK)
+      if (saturated != null && neighbors.size() >= fetchK)
         saturated[0] = true;
       if (planner != null) {
         final List<RID> rids = new ArrayList<>(neighbors.size());
@@ -317,7 +330,7 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
     if (planner != null)
       for (final GroupedTopUpPlanner.TopUp topUp : planner.plan())
         allNeighbors.addAll(vectorIndexes.get(topUp.source())
-            .findNeighborsFromVectorForGroups(queryVector, topUp.groupKeys(), groupSize, efSearch, allowedRIDs,
+            .findNeighborsFromVectorForGroups(queryVector, topUp.groupKeys(), fetchGroupSize, efSearch, allowedRIDs,
                 groupKeyResolver, -topUp.floor()));
 
     // Sort by distance (ascending - closer is better for similarity search)
@@ -366,7 +379,7 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
         // Skip records that no longer exist in the bucket (issue #3717).
         // This can happen when the vector index has stale entries pointing to deleted records,
         // e.g., after crash recovery, backup restore, or index/storage inconsistencies.
-        staleSkipped[0] = true;
+        staleSkipped[0]++;
         continue;
       }
 
