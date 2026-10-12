@@ -20,7 +20,7 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.graph.MutableVertex;
-import com.arcadedb.index.IndexCursor;
+import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.serializer.json.JSONObject;
@@ -146,6 +146,31 @@ class Issue9762TypeRenameReplicationIT extends BaseRaftHATest {
     restartServer(followerIndex);
 
     assertRenamedOnEveryNode("S", "S2", RECORDS);
+  }
+
+  /**
+   * The Java API on a FOLLOWER's database has no exchange to forward through: the rename is refused there before a single
+   * file moves, rather than renaming the files on that node alone.
+   */
+  @Test
+  void aRenameOnAFollowerIsRefusedAndNothingMoves() throws Exception {
+    final int leaderIndex = findLeaderIndex();
+    assertThat(leaderIndex).isGreaterThanOrEqualTo(0);
+    final int followerIndex = (leaderIndex + 1) % getServerCount();
+    leader().command("sql", "CREATE DOCUMENT TYPE F");
+    assertClusterConsistency();
+
+    final Database follower = getServerDatabase(followerIndex, getDatabaseName());
+    final Throwable refusal = catchThrowable(() -> follower.getSchema().getType("F").rename("F2"));
+    assertThat(causeChainOf(refusal)).as("refused on the follower: %s", refusal)
+        .anyMatch(ServerIsNotTheLeaderException.class::isInstance);
+
+    for (int i = 0; i < getServerCount(); i++) {
+      final Database database = getServerDatabase(i, getDatabaseName());
+      assertThat(database.getSchema().existsType("F")).as("server %d", i).isTrue();
+      assertThat(database.getSchema().existsType("F2")).as("server %d", i).isFalse();
+      assertThat(filesNamedAfter(database, "F2")).as("server %d", i).isEmpty();
+    }
   }
 
   /**

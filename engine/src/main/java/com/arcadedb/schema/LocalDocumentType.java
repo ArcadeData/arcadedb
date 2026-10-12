@@ -394,11 +394,12 @@ public class LocalDocumentType implements DocumentType {
       schema.recordFileChanges(() -> {
         sessionStarted[0] = true;
         final FileManager fileManager = database.getFileManager();
-        for (final Map.Entry<Integer, String> entry : componentNamesBefore.entrySet()) {
-          final ComponentFile file = fileManager.getFileIfExists(entry.getKey());
-          if (file != null && !entry.getValue().equals(file.getComponentName()))
-            fileManager.recordRename(entry.getKey(), file.getComponentName());
-        }
+        // The type's files as they are NOW, not only the ones listed before the move: a component attached to the type
+        // in between (an index built concurrently) was moved with the others but has no "before" name. Recording a file
+        // under the name it already has costs a follower nothing - it skips a file already carrying the name.
+        for (final Map.Entry<Integer, String> entry : componentNamesOfFiles(fileManager).entrySet())
+          if (!entry.getValue().equals(componentNamesBefore.get(entry.getKey())))
+            fileManager.recordRename(entry.getKey(), entry.getValue());
         return null;
       });
     } catch (final RuntimeException e) {
