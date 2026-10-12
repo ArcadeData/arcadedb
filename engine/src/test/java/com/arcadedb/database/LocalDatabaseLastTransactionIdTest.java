@@ -73,7 +73,8 @@ class LocalDatabaseLastTransactionIdTest extends TestHelper {
     reopenDatabase();
 
     final long after = ((LocalDatabase) database).getLastTransactionId();
-    // After WAL recovery the counter is set to last-applied + 1, so post-reopen the "last" value
+    // After WAL recovery the counter is past the highest applied id and never below the persisted marker
+    // (#9795), so post-reopen the "last" value
     // can equal or exceed pre-close. What matters for the bootstrap protocol is that we never
     // regress to -1 after a database that committed transactions.
     assertThat(after).as("lastTxId must not regress after close+reopen")
