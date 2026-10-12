@@ -3756,23 +3756,16 @@ public class LocalSchema implements Schema {
       // holds this schema's monitor
       return restoreSchemaMembersFromJSONLocked(root, source);
 
-    // Issue #9764: AN IMPORTED FILE IS A SCHEMA CHANGE, SO IT RUNS INSIDE A SCHEMA RECORDING SESSION. Restored and then
-    // saved with a bare saveConfiguration(), the members reached this node's schema.json and nothing else: under Raft HA
-    // no SCHEMA_ENTRY carried them, and the followers held the imported types and records without the triggers, views,
-    // aggregates and function libraries. The frame ships the schema document the restore produced, like any DDL.
+    // Issue #9764: an imported file is a schema change, so it runs inside a schema recording session, which saves the
+    // schema and, under Raft HA, ships it as a SCHEMA_ENTRY. A bare saveConfiguration() reached this node's schema.json
+    // only, and the followers never got the triggers, views, aggregates and function libraries.
     //
-    // THE FRAME IS ENTERED BEFORE THE MONITOR IS TAKEN, NEVER UNDER IT (#7457). Entering it waits for the database
-    // write lock, and every schema save runs under that lock and takes this monitor: holding the monitor while waiting
-    // for the write lock is the reverse order, and it deadlocks against any concurrent DDL that is saving. Installing
-    // the restored members' listeners and schedules under the write lock is what dropMaterializedView and
-    // alterMaterializedView already do.
+    // THE FRAME IS ENTERED BEFORE THE MONITOR IS TAKEN (#7457): entering it waits for the database write lock, and a
+    // thread holding the monitor while waiting for that lock deadlocks against any DDL that is saving.
     //
-    // A FAILURE IS SWALLOWED INSIDE THE FRAME AND RETHROWN AFTER IT, AS bulkChange() DOES AND FOR THE SAME REASON. Each
-    // member is restored under its own try, so the body throws only on something outside them - a malformed section of
-    // the file. By then the members before it are installed in memory, and no schema rollback exists to take them out.
-    // Escaping the frame would fail it unpublished: the leader would keep members no follower, and no leader after a
-    // failover, ever receives. Closing it normally saves and ships that prefix, so every node holds the same thing, and
-    // the caller still sees the failure.
+    // A FAILURE IS RETHROWN AFTER THE FRAME, NOT THROUGH IT, as in bulkChange(). The members restored before it are
+    // installed and no schema rollback exists; failing the frame would keep them on this node only. Closing it normally
+    // saves and ships that prefix, so every node holds the same thing, and the caller still sees the failure.
     final RuntimeException[] failure = new RuntimeException[1];
     final Integer failures = recordFileChanges(() -> {
       try {
@@ -3786,8 +3779,7 @@ public class LocalSchema implements Schema {
     if (failure[0] != null)
       throw failure[0];
 
-    // The callback's own result on every path, the pass-through of a schema still loading included: null only when it
-    // failed, which threw just above
+    // Null only when the callback failed, which threw just above
     return failures;
   }
 
