@@ -215,7 +215,7 @@ class Issue9794DeclaredTypePatternTest extends TestHelper {
         "127", "128", "-129", "32768", "2147483647", "2147483648", "9223372036854775807", "9223372036854775808",
         "99999999999999999999", "2.5", "2.50", " 2.5", "25e-1", ".5", "-.5", "NaN", "Infinity", "-Infinity", "0x1p3", "1.5d", "x2.5",
         "true", "TRUE", "False", "yes", "1", "0", "2024-01-02", "2024-01-02T10:00:00", "2024-13-45", "foo", "P1D", "10:15:30",
-        "1704153600000");
+        "1704153600000", "-0", "1e3", "Nope", "Inf", "-NaN", "+Infinity", "+.5", "5.");
     for (final Type declared : List.of(Type.BYTE, Type.SHORT, Type.INTEGER, Type.LONG, Type.FLOAT, Type.DOUBLE, Type.DECIMAL,
         Type.BOOLEAN, Type.DATE, Type.DATETIME, Type.DATETIME_MICROS, Type.LOCAL_TIME, Type.DURATION)) {
       final Property property = type.createProperty("p" + declared.name().toLowerCase(), declared);
