@@ -410,6 +410,42 @@ test("the memory is written only once the portal took the answer, so a refused s
   assert.deepEqual(memoryOf(store), { note: true }, "accepted: remembered");
 });
 
+// supportApi that does not answer until the test says so: the page stays usable while the portal call is pending.
+function slowPortal(run) {
+  run(`supportCurrentIssue = { number: 7, timeline: [{ requests: [request] }] };
+    globalNotify = function () {}; loadSupportIssue = function () {}; supportShowError = function () {}; supportError = function () { return {}; }; supportReqRefresh = function () {};
+    supportApi = function () {
+      var chain = { done: function (f) { accepted = f; return chain; }, fail: function () { return chain; } };
+      return chain;
+    };`);
+}
+
+test("what is remembered is the mask that was sent, not the one on the page when the portal replies", async () => {
+  const { run, store } = load();
+  answered(run, ["name", "note", "other"]);
+  run(`supportReqToggleColumn(s.mask, s.table, 1)`); // note is masked, and sent that way
+  slowPortal(run);
+  run(`supportReqSendOne(request)`);
+  await settle();
+  run(`supportReqToggleColumn(s.mask, s.table, 2)`); // while the portal thinks: other is masked ...
+  run(`supportReqToggleColumn(s.mask, s.table, 1)`); // ... and note is unmasked
+  run(`accepted()`);
+  assert.deepEqual(memoryOf(store), { note: true });
+});
+
+test("Send all remembers the masks that were sent, not the ones on the page when the portal replies", async () => {
+  const { run, store } = load();
+  answered(run, ["name", "note", "other"]);
+  run(`supportReqToggleColumn(s.mask, s.table, 1)`);
+  slowPortal(run);
+  run(`supportReqSendAll()`);
+  await settle();
+  run(`supportReqToggleColumn(s.mask, s.table, 2)`);
+  run(`supportReqToggleColumn(s.mask, s.table, 1)`);
+  run(`accepted()`);
+  assert.deepEqual(memoryOf(store), { note: true });
+});
+
 test("Send all remembers every answered table only after the portal took the batch", async () => {
   const { run, store } = load();
   answered(run, ["name", "note"]);
