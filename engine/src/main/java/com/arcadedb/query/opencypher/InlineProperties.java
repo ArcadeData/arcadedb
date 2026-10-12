@@ -94,35 +94,59 @@ public final class InlineProperties {
 
   /**
    * Returns true if the property {@code key} of the record satisfies an already resolved expected value: the comparison of
-   * {@link #matchesResolvedValue(Object, Object)}, plus the declared-type coercion only the record can tell about. A
-   * property declared {@code STRING} stores the text of whatever a pattern writes into it ({@code '1'} for {@code 1}), so
-   * the same pattern has to find that text again, or a repeated MERGE duplicates the node (issue #9695). Likewise a DATE
-   * that {@code arcadedb.dateImplementation} read back as an instant still compares as a date (issue #9647).
+   * {@link #matchesResolvedValue(Object, Object)}, plus what only the record can tell about the stored value:
+   * <ul>
+   * <li>its declaration, which defines the text form of the property's values in both directions: a property declared
+   * {@code STRING} stores the text of whatever is written into it ({@code '1'} for {@code 1}), and any other declaration
+   * reads a text written into it as its own type ({@code 5} for {@code '5'} in an INTEGER). The same pattern has to find
+   * that value again, or a repeated MERGE duplicates the node (issues #9695, #9794), see
+   * {@link #declaredValue(Document, String, Object)};</li>
+   * <li>a DATE that {@code arcadedb.dateImplementation} read back as an instant still compares as a date (issue #9647);</li>
+   * <li>the ISO text a release before the native temporal types stored a temporal as is that temporal, as a property read
+   * already restores it (issue #9806).</li>
+   * </ul>
+   * Every pattern path (node, relationship, variable-length, pattern predicate and comprehension, MERGE,
+   * {@code merge.relationship}) compares through here, so none of them can miss one of the three.
    */
   public static boolean matchesProperty(final Document record, final String key, final Object expected) {
-    final Object actual = record.get(key);
-    // A temporal is compared as the type the schema declares: a DATE that arcadedb.dateImplementation read back as an
-    // instant is still a date (issue #9647). Only looked up against a temporal, so any other entry pays nothing
-    if (matchesResolvedValue(expected instanceof CypherTemporalValue ? TemporalUtil.asDeclaredDate(record, key, actual) : actual,
-        expected))
+    Object actual = record.get(key);
+    if (expected instanceof CypherTemporalValue) {
+      // Only looked up against a temporal, so any other entry pays nothing
+      if (actual instanceof String text)
+        actual = TemporalUtil.restoreLegacyText(record, key, text);
+      if (matchesResolvedValue(TemporalUtil.asDeclaredDate(record, key, actual), expected))
+        return true;
+    } else if (matchesResolvedValue(actual, expected))
       return true;
-    // Only the mismatch of a stored text against a non-text operand pays for the schema lookup
-    return actual instanceof String text && expected != null && !(expected instanceof String) && text.equals(
-        declaredText(record, key, expected));
+    // Only a text met by a non-text pays for the schema lookup
+    return isTextAgainstNonText(actual, expected) && matchesResolvedValue(actual, declaredValue(record, key, expected));
   }
 
   /**
-   * The text a write of {@code operand} stores in the property {@code key} of the record when the property is declared
-   * {@code STRING} (the conversion of CREATE, MERGE and SET: the Cypher value's storage form, then the schema conversion
-   * to text), or null when the property is not declared {@code STRING} or the operand has no text form there. Comparing a
-   * stored text with this, instead of with the operand itself, is what lets a pattern match the value it would store: a
-   * schemaless property keeps the Cypher typing of {@code =}, under which {@code '1' = 1} is false.
+   * The value a write of {@code operand} stores in the property {@code key} of the record when the declaration converts it
+   * through its text form (the conversion of CREATE, MERGE and SET: the Cypher value's storage form, then the schema
+   * conversion to the declared type): a non-text operand into a property declared {@code STRING}, or a text into a property
+   * declared with any other scalar type. Null otherwise, or when the declaration cannot store the operand. Comparing a
+   * stored value with this, instead of with the operand itself, is what lets a pattern match the value it would store.
+   * <p>
+   * Only the text form is converted: two values of the same kind keep the Cypher typing of {@code =}, so a fraction equals
+   * no integer although a write truncates it, as every index path already decides it does. A schemaless property keeps the
+   * Cypher typing too, under which {@code '1' = 1} is false.
    */
-  public static String declaredText(final Document record, final String key, final Object operand) {
-    if (operand == null || operand instanceof String || operand instanceof Map)
+  public static Object declaredValue(final Document record, final String key, final Object operand) {
+    if (operand == null || operand instanceof Map)
       return null;
-    final Property property = declaredStringProperty(record, key);
-    return property != null ? declaredText(property, record.getDatabase(), operand) : null;
+    final Property property = declaredProperty(record, key);
+    return property != null ? declaredValue(property, record.getDatabase(), operand) : null;
+  }
+
+  /**
+   * Whether exactly one of the two values is a text: the only mismatch a declaration can turn into a match (see
+   * {@link #declaredValue(Document, String, Object)}), and so the gate in front of its schema lookup. A scan comparing
+   * every record against one value pays that lookup only on such a mismatch.
+   */
+  public static boolean isTextAgainstNonText(final Object actual, final Object operand) {
+    return actual != null && operand != null && (actual instanceof String) != (operand instanceof String) && !(operand instanceof Map);
   }
 
   /**
@@ -142,29 +166,51 @@ public final class InlineProperties {
     return null;
   }
 
-  /** The property {@code key} of the record's type (or of a supertype) when it is declared {@code STRING}, otherwise null. */
-  public static Property declaredStringProperty(final Document record, final String key) {
+  /**
+   * The property {@code key} of the record's type (or of a supertype) when it is declared with a scalar type, whose values
+   * have a text form a write converts to or from; otherwise null.
+   */
+  public static Property declaredProperty(final Document record, final String key) {
     final DocumentType type = record.getType();
     if (type == null)
       return null;
     final Property property = type.getPolymorphicPropertyIfExists(key);
-    return property != null && property.getType() == Type.STRING ? property : null;
+    return property != null && isScalarDeclaration(property.getType()) ? property : null;
   }
 
   /**
-   * {@link #declaredText(Document, String, Object)} for a caller that holds the property instead of a record, such as an
+   * {@link #declaredValue(Document, String, Object)} for a caller that holds the property instead of a record, such as an
    * index lookup building its key.
    */
-  public static String declaredText(final Property property, final Database database, final Object operand) {
-    if (property == null || property.getType() != Type.STRING || operand == null || operand instanceof String
-        || operand instanceof Map)
+  public static Object declaredValue(final Property property, final Database database, final Object operand) {
+    if (property == null || operand == null || operand instanceof Map || !isScalarDeclaration(property.getType()))
+      return null;
+    // the text form, in one direction or the other: a text into a STRING, or a non-text into anything else, is not converted
+    if ((property.getType() == Type.STRING) == (operand instanceof String))
       return null;
     // NaN equals nothing, not even the 'NaN' it was stored as
     if ((operand instanceof Double d && d.isNaN()) || (operand instanceof Float f && f.isNaN()))
       return null;
-    return Type.convertOrNull(database, TemporalUtil.toCoreJavaType(operand), String.class, property) instanceof String text ?
-        text :
-        null;
+    try {
+      final Object stored = Type.convert(database, TemporalUtil.toCoreJavaType(operand),
+          property.getType().getJavaImplementation(database), property);
+      return stored instanceof Double d && d.isNaN() || stored instanceof Float f && f.isNaN() ? null : stored;
+    } catch (final RuntimeException e) {
+      // a value the declaration cannot store is refused by the write: no record holds what it would have stored
+      return null;
+    }
+  }
+
+  /**
+   * The declared types whose values have a text form a write converts to or from. A collection, an embedded document, a
+   * link or a binary is compared as it is.
+   */
+  private static boolean isScalarDeclaration(final Type type) {
+    return switch (type) {
+      case STRING, BOOLEAN, BYTE, SHORT, INTEGER, LONG, FLOAT, DOUBLE, DECIMAL, DATE, DATETIME, DATETIME_SECOND, DATETIME_MICROS,
+           DATETIME_NANOS, OFFSET_TIME, LOCAL_TIME, ZONED_DATETIME, DURATION -> true;
+      default -> false;
+    };
   }
 
   /**

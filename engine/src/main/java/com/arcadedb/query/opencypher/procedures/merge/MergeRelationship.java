@@ -219,8 +219,8 @@ public class MergeRelationship implements CypherProcedure {
           final Object matchValue = entry.getValue();
 
           // A value is compared the way a MATCH compares an inline property, so a stored FLOAT or INTEGER is found by the
-          // DOUBLE or LONG a query supplies instead of creating a duplicate (issue #9693), and a declared STRING property
-          // by the text the same value was stored as (issue #9695)
+          // DOUBLE or LONG a query supplies instead of creating a duplicate (issue #9693), a declared property by what the
+          // same value was stored as (issues #9695, #9794), and a legacy temporal text by its temporal (issue #9806)
           if (matchValue == null) {
             if (edgeValue != null) {
               allMatch = false;
