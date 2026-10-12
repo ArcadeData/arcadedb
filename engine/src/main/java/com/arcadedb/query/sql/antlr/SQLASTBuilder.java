@@ -7197,8 +7197,9 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     if (bodyCtx.edgeTypeList != null)
       stmt.edgeTypes = visitIdentifierList(bodyCtx.edgeTypeList.identifier());
 
-    if (bodyCtx.propertyList != null)
-      stmt.properties = visitIdentifierList(bodyCtx.propertyList.identifier());
+    // PROPERTIES () is an empty list, not a missing clause: the view then copies no vertex property (issue #9831)
+    if (bodyCtx.props != null)
+      stmt.properties = bodyCtx.propertyList != null ? visitIdentifierList(bodyCtx.propertyList.identifier()) : new Identifier[0];
 
     if (bodyCtx.edgePropertyList != null)
       stmt.edgeProperties = visitIdentifierList(bodyCtx.edgePropertyList.identifier());
