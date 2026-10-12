@@ -22,6 +22,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.function.sql.vector.SQLFunctionVectorAbstract;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexInternal;
@@ -73,6 +74,9 @@ import java.util.stream.Stream;
 public class DbIndexVectorQueryNodes implements CypherProcedure {
   public static final String NAME = "db.index.vector.querynodes";
 
+  // Same cap as vectorNeighbors (#9368).
+  private static final int MAX_FETCH_CANDIDATES = 100_000;
+
   @Override
   public String getName() {
     return NAME;
@@ -117,11 +121,28 @@ public class DbIndexVectorQueryNodes implements CypherProcedure {
     // Get the query vector
     final float[] queryVector = extractQueryVector(key, vectorIndexes.getFirst(), context);
 
+    // Skip deleted candidates, then top up (#9858).
+    int fetchK = limit;
+    while (true) {
+      final int[] staleSkipped = new int[1];
+      final boolean[] saturated = new boolean[1];
+      final List<Result> results = searchAndEmit(vectorIndexes, queryVector, limit, fetchK, staleSkipped, saturated);
+      if (results.size() >= limit || staleSkipped[0] == 0 || !saturated[0] || fetchK >= MAX_FETCH_CANDIDATES)
+        return results.stream();
+      fetchK = (int) Math.min((long) fetchK * 2L, MAX_FETCH_CANDIDATES);
+    }
+  }
+
+  /** One search pass, skipping deleted candidates. */
+  private static List<Result> searchAndEmit(final List<LSMVectorIndex> vectorIndexes, final float[] queryVector,
+      final int limit, final int fetchK, final int[] staleSkipped, final boolean[] saturated) {
     // Search across all indexes and collect results
     final List<Pair<RID, Float>> allNeighbors = new ArrayList<>();
     for (final LSMVectorIndex lsmIndex : vectorIndexes) {
-      final List<Pair<RID, Float>> neighbors = lsmIndex.findNeighborsFromVector(queryVector, limit);
+      final List<Pair<RID, Float>> neighbors = lsmIndex.findNeighborsFromVector(queryVector, fetchK);
       allNeighbors.addAll(neighbors);
+      if (neighbors.size() >= fetchK)
+        saturated[0] = true;
     }
 
     // Sort by distance (ascending - closer is better)
@@ -146,7 +167,14 @@ public class DbIndexVectorQueryNodes implements CypherProcedure {
       if (!emitted.add(neighbor.getFirst()))
         continue;
 
-      final Document record = neighbor.getFirst().asDocument();
+      final Document record;
+      try {
+        record = neighbor.getFirst().asDocument();
+      } catch (final RecordNotFoundException e) {
+        // Deleted after the index answered.
+        staleSkipped[0]++;
+        continue;
+      }
       final float distance = neighbor.getSecond();
 
       final float score = toNeo4jScore(similarityFunction, distance);
@@ -157,7 +185,7 @@ public class DbIndexVectorQueryNodes implements CypherProcedure {
       results.add(r);
     }
 
-    return results.stream();
+    return results;
   }
 
   /**
