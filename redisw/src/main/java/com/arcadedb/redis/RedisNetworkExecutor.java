@@ -508,11 +508,8 @@ public class RedisNetworkExecutor extends Thread {
    */
   static String withLeaderRedirect(final String text, final Throwable error) {
     final ServerIsNotTheLeaderException refusal = ServerIsNotTheLeaderException.redirectIn(error);
-    if (refusal == null)
-      return text;
-    // A RESP simple error is one line: the address is appended after respErrorMessage stripped the line breaks, so it is
-    // stripped here too
-    return text + ". The leader is server '" + refusal.getLeaderAddress().replace('\r', ' ').replace('\n', ' ') + "'";
+    // A RESP simple error is one line: leaderSentence strips the address's control characters, line breaks included
+    return refusal != null ? text + ". " + refusal.leaderSentence() : text;
   }
 
   /**

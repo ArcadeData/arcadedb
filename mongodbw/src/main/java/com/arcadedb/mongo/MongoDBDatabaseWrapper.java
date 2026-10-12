@@ -256,7 +256,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     final ServerIsNotTheLeaderException notTheLeader = ServerIsNotTheLeaderException.redirectIn(e);
     if (notTheLeader != null)
       return new MongoServerError(10107, "NotWritablePrimary",
-          message + ": not primary, the leader is server '" + notTheLeader.getLeaderAddress() + "'", e);
+          message + ": not primary. " + notTheLeader.leaderSentence(), e);
 
     return switch (ErrorCategory.of(e)) {
       case RETRY -> new MongoServerError(112, "WriteConflict", message, e);

@@ -62,6 +62,12 @@ class Issue9845PostgresLeaderRefusalTest {
   }
 
   @Test
+  void theAddressCannotEndTheNulTerminatedField() {
+    assertThat(PostgresNetworkExecutor.withLeaderRedirect("refused", refusal("host\u0000tail"))).doesNotContain("\u0000")
+        .endsWith("'host tail'");
+  }
+
+  @Test
   void aRefusalNamingNoLeaderAddsNothing() {
     assertThat(PostgresNetworkExecutor.withLeaderRedirect("refused", refusal(null))).isEqualTo("refused");
     assertThat(PostgresNetworkExecutor.withLeaderRedirect("refused", refusal(" "))).isEqualTo("refused");

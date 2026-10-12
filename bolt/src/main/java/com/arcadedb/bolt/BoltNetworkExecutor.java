@@ -1925,7 +1925,7 @@ public class BoltNetworkExecutor extends Thread {
     if (boltLeader != null && !boltLeader.isBlank())
       return text + ". Reconnect to the leader at '" + boltLeader + "' (Bolt address) and retry";
     // What the refusal carries is the leader's HTTP address (or its server name), not a Bolt endpoint: say so
-    return text + ". The leader is server '" + refusal.getLeaderAddress() + "' (HTTP address; use its Bolt port) and retry";
+    return text + ". " + refusal.leaderSentence() + " (HTTP address; use its Bolt port). Retry there";
   }
 
   /** {@link #clientMessage} for a failure the handler has already logged with its stack trace: nothing is logged twice. */
@@ -1980,7 +1980,8 @@ public class BoltNetworkExecutor extends Thread {
       return BoltErrorCodes.TYPE_ERROR;
 
     // A follower's refusal of leader-only work that names the leader: a redirect, not a conflict to retry in place (#9845)
-    if (category == ErrorCategory.RETRY && ServerIsNotTheLeaderException.redirectIn(error) != null)
+    // (redirectIn asks for the RETRY category itself, so a termination still wins)
+    if (ServerIsNotTheLeaderException.redirectIn(error) != null)
       return BoltErrorCodes.NOT_A_LEADER_ERROR;
 
     return switch (category) {

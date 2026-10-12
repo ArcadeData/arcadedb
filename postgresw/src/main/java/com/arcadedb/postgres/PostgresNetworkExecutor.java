@@ -4179,7 +4179,7 @@ public class PostgresNetworkExecutor extends Thread {
    */
   static String withLeaderRedirect(final String text, final Throwable error) {
     final ServerIsNotTheLeaderException refusal = ServerIsNotTheLeaderException.redirectIn(error);
-    return refusal != null ? text + ". The leader is server '" + refusal.getLeaderAddress() + "'" : text;
+    return refusal != null ? text + ". " + refusal.leaderSentence() : text;
   }
 
   /** {@link #clientMessage} without the leader redirect: the message, or the placeholder in production mode. */

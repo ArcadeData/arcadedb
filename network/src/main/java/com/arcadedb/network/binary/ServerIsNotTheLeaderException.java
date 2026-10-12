@@ -61,6 +61,20 @@ public class ServerIsNotTheLeaderException extends NeedRetryException {
     return refusal != null && refusal.namesLeader() ? refusal : null;
   }
 
+  /**
+   * {@code "The leader is server '<address>'"}, the sentence a wire protocol appends to its error text for a refusal
+   * {@link #redirectIn} found, so every transport words it the same way. Control characters in the address are replaced
+   * by spaces: the text goes into one-line (RESP) and NUL-terminated (Postgres) fields, and an address must not end
+   * either early.
+   */
+  public String leaderSentence() {
+    final char[] chars = String.valueOf(leaderURL).toCharArray();
+    for (int i = 0; i < chars.length; i++)
+      if (Character.isISOControl(chars[i]))
+        chars[i] = ' ';
+    return "The leader is server '" + new String(chars) + "'";
+  }
+
   @Override
   public String toString() {
     return super.toString() + ". The leader is server " + leaderURL;

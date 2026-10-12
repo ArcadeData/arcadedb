@@ -50,7 +50,7 @@ class Issue9845MongoLeaderRefusalTest {
     final MongoServerError error = (MongoServerError) wrapped;
     assertThat(error.getCode()).isEqualTo(10107);
     assertThat(error.getCodeName()).isEqualTo("NotWritablePrimary");
-    assertThat(error.getMessage()).contains("not primary").contains("'" + LEADER + "'");
+    assertThat(error.getMessage()).contains("not primary").contains("The leader is server '" + LEADER + "'");
     assertThat(error.getCause()).isInstanceOf(ServerIsNotTheLeaderException.class);
   }
 
