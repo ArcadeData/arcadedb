@@ -22,7 +22,9 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.query.literal.LiteralParameterizer.Lookup;
 import com.arcadedb.query.sql.antlr.SQLAntlrParser;
 import com.arcadedb.query.sql.antlr.SQLLiteralParameterizer;
+import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.NamedParameter;
 import com.arcadedb.query.sql.parser.Statement;
 import org.junit.jupiter.api.Test;
@@ -100,6 +102,27 @@ class Issue9818RepeatedLiteralTextCostTest extends TestHelper {
   }
 
   @Test
+  void bindingANamedParameterKeepsItsKeyBoundToNullAndItsFallbacks() {
+    final Map<String, Object> plainNull = new HashMap<>();
+    plainNull.put("p", null);
+    plainNull.put("3", 7);
+    assertThat(named("p").bindFromInputParams(plainNull)).as("a key bound to null binds null, not the position").isInstanceOf(Expression.class);
+    assertThat(((Expression) named("p").bindFromInputParams(plainNull)).execute((Result) null, null)).isNull();
+
+    final Map<String, Object> plain = new HashMap<>();
+    plain.put("p", 5);
+    plain.put("3", 7);
+    assertThat(named("p").bindFromInputParams(plain)).hasToString("5");
+
+    final Map<String, Object> positional = new HashMap<>();
+    positional.put("3", 7);
+    assertThat(named("p").bindFromInputParams(positional)).hasToString("7");
+
+    final NamedParameter unbound = named("p");
+    assertThat(unbound.bindFromInputParams(null)).as("without parameters the parameter stays itself").isSameAs(unbound);
+  }
+
+  @Test
   void aNamedParameterFollowsARenamedField() {
     // paramName is a public field: a name changed after the first read must be the one the next read looks up
     final NamedParameter parameter = named("first");
@@ -147,7 +170,9 @@ class Issue9818RepeatedLiteralTextCostTest extends TestHelper {
         go.await();
         for (int i = 0; i < 400; i++) {
           cache.clear();
-          Thread.sleep(0, 200_000);
+          // a yield rather than a timed sleep, whose granularity depends on the platform: clear() lands between the hits at an
+          // arbitrary point on every OS, which is all this stress needs
+          Thread.yield();
         }
         return null;
       });
@@ -165,10 +190,10 @@ class Issue9818RepeatedLiteralTextCostTest extends TestHelper {
     // end to end through the engine: the same text over and over, interleaved with other values of its shape
     for (int round = 0; round < 5; round++)
       for (int value = 0; value < 20; value++)
-        try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM V WHERE a = " + value)) {
+        try (final ResultSet rs = database.query("sql", "SELECT count(@rid) AS c FROM V WHERE a = " + value)) {
           assertThat(rs.next().<Long>getProperty("c")).isEqualTo(1L);
         }
-    try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM V WHERE a = 1000")) {
+    try (final ResultSet rs = database.query("sql", "SELECT count(@rid) AS c FROM V WHERE a = 1000")) {
       assertThat(rs.next().<Long>getProperty("c")).isZero();
     }
   }
