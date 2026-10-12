@@ -18,15 +18,12 @@
  */
 package com.arcadedb.graph;
 
-import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.RecordNotFoundException;
-import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 
 import java.util.NoSuchElementException;
-import java.util.logging.Level;
 
 public class EdgeIterator extends ResettableIteratorBase<Edge> {
   private final RID              vertex;
@@ -54,6 +51,7 @@ public class EdgeIterator extends ResettableIteratorBase<Edge> {
 
   @Override
   public boolean hasNext() {
+    checkNotInvalidated();
     if (pending)
       return true;
 
@@ -108,6 +106,7 @@ public class EdgeIterator extends ResettableIteratorBase<Edge> {
       throw new NoSuchElementException();
 
     pending = false;
+    entryReturned(currentContainer, lastElementPosition, currentPosition.get(), nextEdgeRID, nextVertexRID);
 
     if (nextEdgeRID.getPosition() < 0) {
       // CREATE LIGHTWEIGHT EDGE
@@ -145,31 +144,16 @@ public class EdgeIterator extends ResettableIteratorBase<Edge> {
     lastElementPosition = currentPosition.get();
   }
 
+  /** See {@link ResettableIteratorBase#removeReturnedEntry}: the refusal of the delete reaches the caller (#9779). */
   @Override
   public void remove() {
-    if (nextEdgeRID == null)
-      throw new NoSuchElementException();
+    removeReturnedEntry(vertex, direction);
+  }
 
-    try {
-      if (nextEdgeRID.getPosition() < 0) {
-        // CREATE LIGHTWEIGHT EDGE
-        final DocumentType edgeType = currentContainer.getDatabase().getSchema().getTypeByBucketId(nextEdgeRID.getBucketId());
-
-        if (direction == Vertex.DIRECTION.OUT)
-          new ImmutableLightEdge(currentContainer.getDatabase(), edgeType, nextEdgeRID.getBucketId(), vertex, nextVertexRID).delete();
-        else
-          new ImmutableLightEdge(currentContainer.getDatabase(), edgeType, nextEdgeRID.getBucketId(), nextVertexRID, vertex).delete();
-      } else
-        ((Edge) currentContainer.getDatabase().lookupByRID(nextEdgeRID, false)).delete();
-    } catch (final RecordNotFoundException e) {
-      // IGNORE IT
-    } catch (final Exception e) {
-      LogManager.instance().log(this, Level.WARNING, "Error on deleting edge record %s", e, nextEdgeRID);
-    }
-
-    currentContainer.removeEntry(lastElementPosition, currentPosition.get());
-    ((DatabaseInternal) currentContainer.getDatabase()).updateRecord(currentContainer);
-
-    currentPosition.set(lastElementPosition);
+  @Override
+  protected void entriesShiftedBack(final int removed) {
+    if (pending)
+      // THE ENTRY hasNext() ALREADY PEEKED FOLLOWS THE REMOVED ONE IN THE SAME SEGMENT
+      lastElementPosition -= removed;
   }
 }

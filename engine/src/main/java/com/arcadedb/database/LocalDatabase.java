@@ -1791,16 +1791,13 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   }
 
   @Override
-  public void deleteEdgeSkippingEndpoint(final Edge edge, final RID skipEndpoint) {
-    executeInReadLock(() -> {
-      deleteRecordNoLock(edge, skipEndpoint);
-      return null;
-    });
+  public boolean deleteEdgeSkippingEndpoint(final Edge edge, final RID skipEndpoint, final Vertex.DIRECTION skipDirection) {
+    return executeInReadLock(() -> deleteRecordNoLock(edge, skipEndpoint, skipDirection));
   }
 
   @Override
   public boolean deleteRecordNoLock(final Record record) {
-    return deleteRecordNoLock(record, null);
+    return deleteRecordNoLock(record, null, null);
   }
 
   /**
@@ -1828,10 +1825,12 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   /**
    * @param skipEdgeEndpoint when {@code record} is an edge, the endpoint vertex whose edge list must NOT be
    *                         touched by the disconnection (#5760, see
-   *                         {@link #deleteEdgeSkippingEndpoint(Edge, RID)}). Ignored for any other record type,
-   *                         and always {@code null} on the ordinary delete path.
+   *                         {@link #deleteEdgeSkippingEndpoint(Edge, RID, Vertex.DIRECTION)}). Ignored for any other
+   *                         record type, and always {@code null} on the ordinary delete path.
+   * @param skipEdgeDirection  the one list of {@code skipEdgeEndpoint} to leave alone, {@code null} for both of them
    */
-  private boolean deleteRecordNoLock(final Record record, final RID skipEdgeEndpoint) {
+  private boolean deleteRecordNoLock(final Record record, final RID skipEdgeEndpoint,
+      final Vertex.DIRECTION skipEdgeDirection) {
     markModified();
     if (record.getIdentity() == null)
       throw new IllegalArgumentException("Cannot delete a non persistent record");
@@ -1915,7 +1914,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
       try {
         if (record instanceof Edge edge) {
-          graphEngine.deleteEdge(edge, skipEdgeEndpoint);
+          graphEngine.deleteEdge(edge, skipEdgeEndpoint, skipEdgeDirection);
         } else if (record instanceof Vertex) {
           try {
             graphEngine.deleteVertex((VertexInternal) record, forceBrokenChainDelete);

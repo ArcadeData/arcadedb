@@ -4468,6 +4468,10 @@ public enum GlobalConfiguration {
    * reassembling it: reassembly silently normalises what it did not think to preserve - a trailing {@code ';'},
    * {@code ','} or {@code ':'} vanished, so the value reported back was not the value configured.
    * <p>
+   * A MALFORMED entry fails closed instead, because the server's own error line for it quotes it through this method
+   * (issue #9773): an unclosed {@code '['} masks the rest of the entry, and an entry with no {@code '['} at all is
+   * masked from its first {@code ':'} on, which is where a credential block written without its brackets starts.
+   * <p>
    * The field boundaries mirror {@code ArcadeDBServer.parseCredentials} exactly - {@code ','} between
    * credentials, then {@code ':'} between fields - so what is treated as a password here is what the server
    * authenticates with. That parity is the point, and it is positional on both sides: the server uses field 1
@@ -4499,8 +4503,18 @@ public enum GlobalConfiguration {
       final int end) {
     final int credentialsBegin = databases.indexOf('[', begin);
     if (credentialsBegin < 0 || credentialsBegin >= end) {
-      // A bare database name. There is no credential block, so there is nothing in it to hide.
-      redacted.append(databases, begin, end);
+      // No credential block. ArcadeDBServer.loadDefaultDatabases refuses such an entry, so whatever it holds is a
+      // mistake, and the commonest one is a block written without its brackets: "mydb:jay:hunter2". ':' is the format's
+      // own field separator, so the entry is published up to its first ':' and masked from there on, the way an
+      // unclosed '[' masks the remainder below (issue #9773: the server's own error line quotes this entry). A bare
+      // database name, the other way to forget the credentials, carries no ':' and is copied through as written.
+      final int separator = databases.indexOf(':', begin);
+      // NOTHING AFTER THE ':' IS NOTHING TO HIDE, AS FOR AN EMPTY PASSWORD INSIDE A BLOCK
+      if (separator < 0 || separator >= end - 1) {
+        redacted.append(databases, begin, end);
+        return;
+      }
+      redacted.append(databases, begin, separator + 1).append("*****");
       return;
     }
 

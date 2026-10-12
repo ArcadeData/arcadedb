@@ -454,8 +454,8 @@ public class ServerDatabase implements DatabaseInternal {
   }
 
   @Override
-  public void deleteEdgeSkippingEndpoint(final Edge edge, final RID skipEndpoint) {
-    current().deleteEdgeSkippingEndpoint(edge, skipEndpoint);
+  public boolean deleteEdgeSkippingEndpoint(final Edge edge, final RID skipEndpoint, final Vertex.DIRECTION skipDirection) {
+    return current().deleteEdgeSkippingEndpoint(edge, skipEndpoint, skipDirection);
   }
 
   @Override

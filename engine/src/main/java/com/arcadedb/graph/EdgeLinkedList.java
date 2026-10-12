@@ -64,7 +64,8 @@ public class EdgeLinkedList {
   public Iterator<Pair<RID, RID>> entryIterator(final String... edgeTypes) {
     if (edgeTypes == null || edgeTypes.length == 0)
       return new EdgeVertexIterator(lastSegment, vertex.getIdentity(), direction);
-    return new EdgeVertexIteratorFilter((DatabaseInternal) vertex.getDatabase(), lastSegment, edgeTypes);
+    return new EdgeVertexIteratorFilter((DatabaseInternal) vertex.getDatabase(), lastSegment, edgeTypes, vertex.getIdentity(),
+        direction);
   }
 
   public Iterator<Edge> edgeIterator(final String... edgeTypes) {
@@ -199,8 +200,9 @@ public class EdgeLinkedList {
 
   public Iterator<Vertex> vertexIterator(final String... edgeTypes) {
     if (edgeTypes == null || edgeTypes.length == 0)
-      return new VertexIterator((DatabaseInternal) vertex.getDatabase(), lastSegment);
-    return new VertexIteratorFilter((DatabaseInternal) vertex.getDatabase(), lastSegment, edgeTypes);
+      return new VertexIterator((DatabaseInternal) vertex.getDatabase(), lastSegment, vertex.getIdentity(), direction);
+    return new VertexIteratorFilter((DatabaseInternal) vertex.getDatabase(), lastSegment, edgeTypes, vertex.getIdentity(),
+        direction);
   }
 
   public Iterator<RID> ridIterator(final String... edgeTypes) {

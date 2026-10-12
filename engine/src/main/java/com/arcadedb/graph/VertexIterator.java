@@ -25,13 +25,21 @@ import com.arcadedb.exception.RecordNotFoundException;
 import java.util.NoSuchElementException;
 
 public class VertexIterator extends ResettableIteratorBase<Vertex> {
+  // THE VERTEX AND DIRECTION OF THE LIST WALKED, FOR remove()
+  private final RID              vertex;
+  private final Vertex.DIRECTION direction;
 
-  public VertexIterator(final DatabaseInternal database, final EdgeSegment current) {
+  /** With the vertex and direction of the list walked, so {@link #remove()} can delete the edge of the entry. */
+  public VertexIterator(final DatabaseInternal database, final EdgeSegment current, final RID vertex,
+      final Vertex.DIRECTION direction) {
     super(database, current);
+    this.vertex = vertex;
+    this.direction = direction;
   }
 
   @Override
   public boolean hasNext() {
+    checkNotInvalidated();
     if (currentContainer == null)
       return false;
 
@@ -54,17 +62,29 @@ public class VertexIterator extends ResettableIteratorBase<Vertex> {
       if (!hasNext())
         throw new NoSuchElementException();
 
-      currentContainer.getRID(currentPosition); // SKIP EDGE
+      final int begin = currentPosition.get();
+      final RID edgeRID = currentContainer.getRID(currentPosition);
       final RID rid = currentContainer.getRID(currentPosition);
 
       ++browsed;
 
       try {
         // LAZY LOAD THE CONTENT TO IMPROVE PERFORMANCE WITH TRAVERSAL. NOTE: THE RECORD NOT FOUND WILL NEVER BE TRIGGERED HERE ANYMORE
-        return (Vertex) database.lookupByRID(rid, false);
+        final Vertex result = (Vertex) database.lookupByRID(rid, false);
+        entryReturned(currentContainer, begin, currentPosition.get(), edgeRID, rid);
+        return result;
       } catch (final RecordNotFoundException e) {
         // SKIP
       }
     }
+  }
+
+  /**
+   * Deletes the edge that leads to the vertex the last {@code next()} returned, see
+   * {@link ResettableIteratorBase#removeReturnedEntry} (#9779).
+   */
+  @Override
+  public void remove() {
+    removeReturnedEntry(vertex, direction);
   }
 }
