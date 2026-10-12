@@ -76,6 +76,11 @@ class TransactionManagerWalFileLostFencesTest extends TestHelper {
 
     assertThat(db.isFencedForRecovery()).isFalse();
 
+    // The capture below counts every SEVERE line in the JVM. Pages the setup dirtied and the background flusher has not
+    // written yet would be refused once the database is fenced, adding a "Cannot flush page" line that only a loaded
+    // machine is slow enough to land inside the capture: drain them first, so the count measures the fence alone.
+    assertThat(db.getPageManager().waitAllPagesOfDatabaseAreFlushed(db)).isTrue();
+
     final WALFile vanished = new VanishedWALFile(db.getDatabasePath() + "/txlog_vanished_7479.wal");
     WALFile displaced = null;
     try {
