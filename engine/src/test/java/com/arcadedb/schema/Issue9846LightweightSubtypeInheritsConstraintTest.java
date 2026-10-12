@@ -35,6 +35,7 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
@@ -152,6 +153,18 @@ class Issue9846LightweightSubtypeInheritsConstraintTest extends TestHelper {
     assertThat(since.isMandatory()).isFalse();
     assertThat(weight.getDefaultValueDefinition()).isNull();
     assertThat(parent.existsProperty("stamp")).as("CREATE PROPERTY takes the property back when its attributes are refused").isFalse();
+  }
+
+  /** A null default fills in nothing, so it is not refused: only a default that would apply to a lightweight edge is. */
+  @Test
+  void aNullDefaultIsStillAcceptedUnderALightweightSubtype() {
+    final EdgeType parent = database.getSchema().createEdgeType(PARENT);
+    final Property weight = parent.createProperty("weight", Type.INTEGER);
+    database.getSchema().buildEdgeType().withName(CHILD).withSuperType(PARENT).withLightweight(true).create();
+
+    assertThatThrownBy(() -> weight.setDefaultValue(2)).isInstanceOf(SchemaException.class).hasMessageContaining(CHILD);
+    assertThatCode(() -> weight.setDefaultValue(null)).doesNotThrowAnyException();
+    assertThat(weight.getDefaultValueDefinition()).isNull();
   }
 
   @Test

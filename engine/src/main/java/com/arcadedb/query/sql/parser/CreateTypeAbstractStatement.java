@@ -172,6 +172,7 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
    * Validates the super types against what this statement declares, BEFORE the type is created. The default accepts all.
    */
   protected void checkSuperTypesBeforeCreate(final String typeName, final DocumentType[] superclasses) {
+    // Nothing to refuse for a statement that declares nothing about its super types. CreateEdgeTypeStatement overrides this
   }
 
   protected DocumentType[] getSuperTypes(final Schema schema) {
