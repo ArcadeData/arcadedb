@@ -3767,11 +3767,28 @@ public class LocalSchema implements Schema {
     // the restored members' listeners and schedules under the write lock is what dropMaterializedView and
     // alterMaterializedView already do.
     //
-    // Each member is restored under its own try, so the body throws only on something outside them. A throw then
-    // fails the frame as it would fail any DDL: whatever was restored before it stays in memory unsaved and unshipped,
-    // which is what the bare save that used to follow it did too (it never ran).
-    final Integer failures = recordFileChanges(() -> restoreSchemaMembersFromJSONLocked(root, source));
-    return failures != null ? failures : 0;
+    // A FAILURE IS SWALLOWED INSIDE THE FRAME AND RETHROWN AFTER IT, AS bulkChange() DOES AND FOR THE SAME REASON. Each
+    // member is restored under its own try, so the body throws only on something outside them - a malformed section of
+    // the file. By then the members before it are installed in memory, and no schema rollback exists to take them out.
+    // Escaping the frame would fail it unpublished: the leader would keep members no follower, and no leader after a
+    // failover, ever receives. Closing it normally saves and ships that prefix, so every node holds the same thing, and
+    // the caller still sees the failure.
+    final RuntimeException[] failure = new RuntimeException[1];
+    final Integer failures = recordFileChanges(() -> {
+      try {
+        return restoreSchemaMembersFromJSONLocked(root, source);
+      } catch (final RuntimeException e) {
+        failure[0] = e;
+        return null;
+      }
+    });
+
+    if (failure[0] != null)
+      throw failure[0];
+
+    // The callback's own result on every path, the pass-through of a schema still loading included: null only when it
+    // failed, which threw just above
+    return failures;
   }
 
   private synchronized int restoreSchemaMembersFromJSONLocked(final JSONObject root, final SchemaMemberSource source) {

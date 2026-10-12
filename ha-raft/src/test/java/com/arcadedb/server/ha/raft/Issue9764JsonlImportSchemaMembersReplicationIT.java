@@ -38,9 +38,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Issue #9764: a JSONL import restored the export's triggers, materialized views, continuous aggregates and function
  * libraries through {@code LocalSchema.restoreSchemaMembersFromJSON} followed by a bare {@code saveConfiguration()},
- * outside any schema recording session. The leader's {@code schema.json} got the members and no {@code SCHEMA_ENTRY} carried them, so the
- * followers held the imported types and records but none of the members: a trigger enforced on the leader did not
- * exist on a node that became leader after a failover.
+ * outside any schema recording session. The leader's {@code schema.json} got the members and no {@code SCHEMA_ENTRY}
+ * carried them, so the followers held the imported types and records but none of the members: a trigger enforced on
+ * the leader did not exist on a node that became leader after a failover.
  * <p>
  * The import runs on the leader against the replicated database, the way {@code IMPORT DATABASE} drives it. Every node
  * is then read back twice: its in-memory schema (what a query there runs against) and its own {@code schema.json}
