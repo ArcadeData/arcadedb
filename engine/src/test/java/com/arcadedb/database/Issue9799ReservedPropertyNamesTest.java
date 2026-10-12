@@ -65,9 +65,18 @@ class Issue9799ReservedPropertyNamesTest extends TestHelper {
       assertThatThrownBy(() -> d.set("@props", "x")).isInstanceOf(IllegalArgumentException.class);
       assertThatThrownBy(() -> d.set("@this", "x")).isInstanceOf(IllegalArgumentException.class);
 
+      // A name that is not one: refused with a message rather than a NullPointerException/ClassCastException
+      assertThatThrownBy(() -> d.set((String) null, 1)).isInstanceOf(IllegalArgumentException.class);
+      assertThatThrownBy(() -> d.set(new Object[] { "a", 1, 2, 3 })).isInstanceOf(IllegalArgumentException.class)
+          .hasMessageContaining("must be a String");
+
       // A refused call assigns nothing, not even the names that precede the reserved one
       assertThat(d.getPropertyNames()).isEmpty();
       assertThat(d.isDirty()).isFalse();
+
+      final Map<String, Object> nullKey = new HashMap<>();
+      nullKey.put(null, 1);
+      assertThatThrownBy(() -> d.set(nullKey)).isInstanceOf(IllegalArgumentException.class);
 
       d.set("q", 1);
       d.save();

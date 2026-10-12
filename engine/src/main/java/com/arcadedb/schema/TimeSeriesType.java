@@ -43,16 +43,16 @@ import java.util.List;
 @ExcludeFromJacocoGeneratedReport
 public interface TimeSeriesType extends DocumentType {
   /**
-   * Name of the column holding the sample timestamp, the one declared as {@code TIMESTAMP} in
-   * {@code CREATE TIMESERIES TYPE}.
-   */
-  String getTimestampColumn();
-
-  /**
    * The only timestamp precision a TIMESERIES type can be created with. Every path that turns a wall-clock instant
    * or duration into a stored timestamp (ingestion, SQL, retention, downsampling, PromQL) counts in milliseconds.
    */
   String MILLISECOND_PRECISION = "MILLISECOND";
+
+  /**
+   * Name of the column holding the sample timestamp, the one declared as {@code TIMESTAMP} in
+   * {@code CREATE TIMESERIES TYPE}.
+   */
+  String getTimestampColumn();
 
   /**
    * Timestamp precision as declared, or {@code null} when the type did not declare one (which means milliseconds).

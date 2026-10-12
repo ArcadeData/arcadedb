@@ -287,7 +287,10 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
       throw new IllegalArgumentException("Properties must be an even pair of key/values");
 
     for (int p = 0; p < properties.length; p += 2)
-      checkPropertyName((String) properties[p]);
+      if (properties[p] instanceof String name)
+        checkPropertyName(name);
+      else
+        throw new IllegalArgumentException("Property name at position " + p + " must be a String, found: " + properties[p]);
 
     checkForLazyLoadingProperties();
     dirty = true;
@@ -479,6 +482,8 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
    * turns {@code UPDATE ... SET `@type` = ...} into an error instead of a write the statement counts and discards.
    */
   private void checkPropertyName(final String name) {
+    if (name == null)
+      throw new IllegalArgumentException("Property name cannot be null");
     if (isReservedName(name) && !isAssignableMetadata(name))
       throw new IllegalArgumentException(
           "Cannot set property '" + name + "' on a record of type '" + getTypeName()
@@ -502,7 +507,9 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
    * always was, except the ones the record type assigns.
    */
   private void putFromMap(final String name, final Object value) {
-    if (name == null || name.isEmpty() || name.charAt(0) != '@' || isAssignableMetadata(name))
+    if (name == null)
+      throw new IllegalArgumentException("Property name cannot be null");
+    if (name.isEmpty() || name.charAt(0) != '@' || isAssignableMetadata(name))
       putProperty(name, value);
   }
 
