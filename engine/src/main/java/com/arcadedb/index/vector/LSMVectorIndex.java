@@ -1925,8 +1925,15 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // "No PQ data to use" is asked of hasUsableData(), not exists() (issue #9796): a file that is on disk but cannot be
     // read is no PQ data, and exists() answers it the opposite way from isPQReady(), which sent the open down the route
     // this comment warns against.
-    final boolean needsGraphRebuildForPQ = metadata.quantizationType == VectorQuantizationType.PRODUCT &&
-        pqFile != null && !pqFile.hasUsableData();
+    //
+    // hasUsableData() only learns that a file is unreadable once a load has been tried, and the PQ is loaded together
+    // with the locations (see materializeLocations). ensureGraphAvailable() has done that by the time it gets here, but
+    // the async rebuild path has not: so the locations are materialised first, here, rather than assuming the caller did.
+    // Only for a PRODUCT-quantized index, and the walk below needs them anyway.
+    final boolean productQuantized = metadata.quantizationType == VectorQuantizationType.PRODUCT && pqFile != null;
+    if (productQuantized)
+      vectorIndex();
+    final boolean needsGraphRebuildForPQ = productQuantized && !pqFile.hasUsableData();
     if (needsGraphRebuildForPQ) {
       LogManager.instance().log(this, Level.INFO,
           """
@@ -4574,6 +4581,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * old file, which the next open reads as "no PQ data" and answers by rebuilding graph and PQ together. The codes in
    * hand are right for the graph in memory, so they are published either way: a disk failure does not cost this
    * session its approximate search.
+   * <p>
+   * Both callers run under {@link #graphBuildLock} (the post-load PQ build inside
+   * {@link #loadPersistedGraphOrDecidePrefix()}, and the persist at the end of a build), which is what keeps two
+   * writers of the same PQ file from racing on its temporary and its rename.
    */
   private void persistProductQuantization(final ProductQuantization pq, final PQVectors codes) {
     try {

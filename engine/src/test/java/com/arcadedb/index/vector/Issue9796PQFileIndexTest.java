@@ -40,6 +40,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Random;
+import java.util.concurrent.locks.ReentrantLock;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -160,6 +161,56 @@ class Issue9796PQFileIndexTest extends TestHelper {
     assertThat(fresh.loadPQ()).as("the file on disk must load after the rebuild").isTrue();
     assertThat(fresh.getPQVectors().count()).isGreaterThanOrEqualTo(VECTORS);
     assertThat(temporariesNextTo(pqPath)).isEmpty();
+  }
+
+  /**
+   * The async rebuild path reaches the persisted-graph decision without the deferred vector load having run, and the
+   * PQ is loaded by that load: a fragment nobody has tried to read yet answers "usable". The decision has to try the
+   * load itself before it asks.
+   */
+  @Test
+  void theGraphDecisionTriesToLoadThePQBeforeAskingWhetherItIsUsable() throws Exception {
+    final LSMVectorIndex index = buildIndexWithPersistedPQ();
+    final Path pqPath = pqFileOf(index).getFilePath();
+
+    database.close();
+    final byte[] whole = Files.readAllBytes(pqPath);
+    Files.write(pqPath, Arrays.copyOf(whole, whole.length / 3));
+    database = factory.open();
+
+    // Nothing has touched the reopened index: the locations and the PQ are still to be loaded
+    final LSMVectorIndex reopened = indexOf(database);
+    final LSMVectorIndexPQFile fragment = pqFileOf(reopened);
+    assertThat(fragment.exists()).isTrue();
+    assertThat(fragment.isPQReady()).isFalse();
+    assertThat(fragment.hasUsableData()).as("no load has been tried, so the fragment still reads as usable").isTrue();
+
+    final Object graphFile = field("graphFile").get(reopened);
+    assertThat(graphFile).as("the scenario needs a persisted graph to decide about").isNotNull();
+    final Method hasPersistedGraph = graphFile.getClass().getDeclaredMethod("hasPersistedGraph");
+    hasPersistedGraph.setAccessible(true);
+    assertThat((boolean) hasPersistedGraph.invoke(graphFile)).isTrue();
+
+    final ReentrantLock graphBuildLock = (ReentrantLock) field("graphBuildLock").get(reopened);
+    final Method decide = LSMVectorIndex.class.getDeclaredMethod("loadPersistedGraphOrDecidePrefix");
+    decide.setAccessible(true);
+    final Object check;
+    graphBuildLock.lock();
+    try {
+      check = decide.invoke(reopened);
+    } finally {
+      graphBuildLock.unlock();
+    }
+
+    final Method fullyLoaded = check.getClass().getDeclaredMethod("fullyLoaded");
+    fullyLoaded.setAccessible(true);
+    final Method prefix = check.getClass().getDeclaredMethod("prefix");
+    prefix.setAccessible(true);
+    assertThat((boolean) fullyLoaded.invoke(check))
+        .as("PRODUCT quantization without PQ data to use must rebuild the graph from scratch, not load it")
+        .isFalse();
+    assertThat(prefix.invoke(check)).isNull();
+    assertThat(fragment.hasUsableData()).as("the decision tried the load, and the fragment failed it").isFalse();
   }
 
   private LSMVectorIndex buildIndexWithPersistedPQ() throws Exception {
