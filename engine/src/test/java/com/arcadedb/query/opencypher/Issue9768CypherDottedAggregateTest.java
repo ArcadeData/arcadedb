@@ -22,6 +22,8 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.function.CypherBuiltinFunctions;
 import com.arcadedb.function.CypherFunctionRegistry;
+import com.arcadedb.function.FunctionRegistry;
+import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
@@ -204,6 +206,21 @@ class Issue9768CypherDottedAggregateTest extends TestHelper {
 
     assertThat(refused).as("registered dotted functions that refuse the planner's probe configuration").isEmpty();
     assertThat(aggregates).as("the dotted aggregates of the registry").contains("vector.sum", "vector.avg", "vector.min", "vector.max");
+  }
+
+  /** The functions only the Cypher registry holds say whether they aggregate themselves, with no configuration to refuse. */
+  @Test
+  void everyDottedFunctionOfTheCypherRegistryIsPlannedAsItsOwnFlagSays() {
+    final List<String> aggregates = new ArrayList<>();
+    for (final String name : new TreeSet<>(FunctionRegistry.getFunctionNames())) {
+      final StatelessFunction function = CypherFunctionRegistry.get(name);
+      if (name.indexOf('.') < 1 || function == null || CypherBuiltinFunctions.isBuiltin(name))
+        continue;
+      if (function.aggregateResults())
+        aggregates.add(name);
+      assertThat(CypherFunctionFactory.isNamespacedAggregation(name, 1)).as(name).isEqualTo(function.aggregateResults());
+    }
+    assertThat(aggregates).as("dotted aggregates that only the Cypher registry holds").doesNotContain("vector.sum");
   }
 
   @Test
