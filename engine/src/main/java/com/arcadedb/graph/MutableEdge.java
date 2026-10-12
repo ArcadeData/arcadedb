@@ -158,7 +158,7 @@ public class MutableEdge extends MutableDocument implements Edge {
 
   @Override
   protected void setMetadata(final String name, final Object value) {
-    final Vertex.DIRECTION direction = Property.IN_PROPERTY.equals(name) ?Vertex.DIRECTION.IN : Vertex.DIRECTION.OUT;
+    final Vertex.DIRECTION direction = Property.IN_PROPERTY.equals(name) ? Vertex.DIRECTION.IN : Vertex.DIRECTION.OUT;
     final RID newEndpoint = toRID(value);
     if (newEndpoint == null)
       throw new IllegalArgumentException(

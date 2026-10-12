@@ -101,6 +101,7 @@ class Issue9800TimeSeriesPrecisionTest extends TestHelper {
 
     TimeSeriesMaintenanceScheduler.runMaintenance(database, type, "ns_metric");
     assertThat(count("ns_metric")).as("retention suspended").isEqualTo(5L);
+    assertThat(maintenanceSuspended("ns_metric")).isTrue();
 
     try (final ResultSet rs = database.command("sql", "ALTER TIMESERIES TYPE ns_metric PRECISION MILLISECOND")) {
       final Result r = rs.next();
@@ -108,6 +109,7 @@ class Issue9800TimeSeriesPrecisionTest extends TestHelper {
       assertThat(r.<String>getProperty("precision")).isEqualTo("MILLISECOND");
     }
     assertThat(type.isPrecisionHonoured()).isTrue();
+    assertThat(maintenanceSuspended("ns_metric")).isFalse();
 
     TimeSeriesMaintenanceScheduler.runMaintenance(database, type, "ns_metric");
     assertThat(count("ns_metric")).as("the 3-day-old sample is past the 1-day retention").isEqualTo(4L);
@@ -150,6 +152,12 @@ class Issue9800TimeSeriesPrecisionTest extends TestHelper {
 
   private void insert(final String type, final long ts) {
     database.transaction(() -> database.command("sql", "INSERT INTO " + type + " SET ts = ?, host = 'h1', v = 1.0", ts));
+  }
+
+  private boolean maintenanceSuspended(final String type) {
+    try (final ResultSet rs = database.query("sql", "SELECT maintenanceSuspended FROM schema:types WHERE name = ?", type)) {
+      return Boolean.TRUE.equals(rs.next().getProperty("maintenanceSuspended"));
+    }
   }
 
   private long count(final String type) {
