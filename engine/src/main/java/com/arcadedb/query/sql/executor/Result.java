@@ -185,7 +185,8 @@ public interface Result {
         return array;
       } else if (val instanceof Map<?, ?> map) {
         // Recursing, as the Iterable arm does: JSONObject(Map) writes a nested ZonedDateTime as epoch millis (the zone is
-        // gone) and a nested OffsetTime as null (issue #9810)
+        // gone) and a nested OffsetTime as null (issue #9810). A null key is written as the text "null", where the former
+        // JSONObject(Map) conversion refused the whole map: a projection should not fail because of one odd key
         final JSONObject object = new JSONObject();
         for (final Map.Entry<?, ?> entry : map.entrySet())
           object.put(String.valueOf(entry.getKey()), valueToJSON(entry.getValue()));
