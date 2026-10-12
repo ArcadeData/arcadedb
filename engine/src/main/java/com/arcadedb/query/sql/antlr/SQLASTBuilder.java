@@ -22,6 +22,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.engine.timeseries.DownsamplingTier;
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.query.literal.LiteralParameterizer;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -237,16 +238,15 @@ import java.util.Set;
 public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
   /**
-   * Namespaces that are recognized as function call prefixes in dotted SQL syntax (e.g. {@code geo.point(x, y)}).
-   * This rewriting is performed in {@link #visitIdentifierChain} for the ANTLR parser only.
-   * The JavaCC parser does not support unquoted dotted function names; use backtick-quoted names
-   * (e.g. {@code `geo.point`(x, y)}) for compatibility with both parsers.
-   * Known function namespace prefixes. When the parser sees {@code namespace.method(args)} and the namespace
-   * is in this set, the AST builder produces a {@link FunctionCall} node with the qualified name
-   * (e.g., "ts.first") instead of an identifier chain with a method modifier.
-   * Identifier prefixes that are treated as function namespaces rather than field names.
-   * When an identifierChain matches "namespace.method(args)", it is rewritten as a
-   * namespace-qualified function call (e.g. "geo.point(x,y)" → FunctionCall("geo.point")).
+   * Namespaces whose dotted call is ALWAYS read as a function call: {@code geo.point(x, y)} is the function {@code geo.point}
+   * even when the function does not exist, so a typo ({@code ts.frist(...)}) is reported as an unknown function and not read as a
+   * method call on a property called {@code ts}.
+   * <p>
+   * It is NOT the list of what is callable that way. Any other {@code <id>.<method>(...)} is a function call as well exactly when
+   * {@code <id>.<method>} is a registered function ({@link #isNamespacedFunctionCall}), which is the question the planner needs
+   * answered while it still has only the AST: an aggregate that stays an identifier carrying a method call builds no aggregation
+   * step and answers one NULL per row (issue #9768). A property named like a namespace keeps its own methods ({@code
+   * vector.size()}) for as long as no function is registered under that name.
    */
   private static final Set<String> FUNCTION_NAMESPACES = Set.of("ts", "geo", "text", "math", "convert", "date", "util", "coll",
       "map", "agg", "node", "rel", "path", "create");
@@ -3753,16 +3753,17 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     if (ctx.identifier() != null) {
       final SQLParser.IdentifierContext firstIdCtx = ctx.identifier();
 
-      // Detect namespace-qualified function calls: geo.methodName(args)
-      // Pattern: exactly one base identifier that is a known namespace, no additional DOT-identifiers,
-      // and exactly one methodCall → rewrite as FunctionCall("namespace.methodName", args).
-      if (ctx.propertyName().isEmpty() && CollectionUtils.isNotEmpty(ctx.methodCall()) && ctx.methodCall().size() == 1
+      // Detect namespace-qualified function calls: geo.methodName(args), vector.sum(v)
+      // Pattern: exactly one base identifier, no additional DOT-identifiers and at least one methodCall, where the first
+      // methodCall names a function of that namespace → rewrite as FunctionCall("namespace.methodName", args) and chain
+      // whatever follows it as modifiers. Done here, on the AST, because everything the planner decides about a call (whether
+      // it aggregates above all) it decides by walking the AST.
+      if (ctx.propertyName().isEmpty() && CollectionUtils.isNotEmpty(ctx.methodCall())
           && firstIdCtx.RID_ATTR() == null && firstIdCtx.TYPE_ATTR() == null
           && firstIdCtx.IN_ATTR() == null && firstIdCtx.OUT_ATTR() == null && firstIdCtx.THIS() == null) {
         final String baseIdText = firstIdCtx.getText();
-        if (FUNCTION_NAMESPACES.contains(baseIdText.toLowerCase(Locale.ROOT))) {
-          return buildNamespaceQualifiedFunctionCall(baseIdText, ctx.methodCall(0), ctx);
-        }
+        if (isNamespacedFunctionCall(baseIdText, ctx.methodCall(0)))
+          return buildNamespaceQualifiedFunctionCall(baseIdText, ctx.methodCall(), ctx);
       }
 
       // Check if the first identifier is a record attribute (@rid, @type, @in, @out, @this),
@@ -3771,36 +3772,6 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       final BaseIdentifier baseId = new BaseIdentifier();
       baseId.suffix = firstSuffix;
       baseExpr.identifier = baseId;
-
-      // Check for namespaced function call pattern: namespace.method(args)
-      // e.g., ts.first(value, ts) → builds FunctionCall with name "ts.first"
-      if (ctx.propertyName().isEmpty()
-          && ctx.methodCall() != null && ctx.methodCall().size() == 1
-          && (ctx.arraySelector() == null || ctx.arraySelector().isEmpty())
-          && (ctx.modifier() == null || ctx.modifier().isEmpty())) {
-        final String baseIdName = ctx.identifier().getText();
-
-        if (FUNCTION_NAMESPACES.contains(baseIdName)) {
-          final SQLParser.MethodCallContext methodCtx = ctx.methodCall(0);
-          final String qualifiedName = baseIdName + "." + methodCtx.identifier().getText();
-
-          final FunctionCall funcCall = new FunctionCall();
-          funcCall.name = new Identifier(qualifiedName);
-          funcCall.params = new ArrayList<>();
-          if (methodCtx.expression() != null)
-            for (final SQLParser.ExpressionContext exprCtx : methodCtx.expression())
-              funcCall.params.add((Expression) visit(exprCtx));
-
-          final LevelZeroIdentifier levelZero = new LevelZeroIdentifier();
-          levelZero.functionCall = funcCall;
-
-          final BaseIdentifier baseId2 = new BaseIdentifier();
-          baseId2.levelZero = levelZero;
-
-          baseExpr.identifier = baseId2;
-          return baseExpr;
-        }
-      }
 
       // Build modifier chain from additional identifiers, methodCalls, arraySelectors and modifiers
       Modifier firstModifier = null;
@@ -3881,6 +3852,18 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   }
 
   /**
+   * Whether {@code <baseIdText>.<methodCall>(...)} is a call of the function {@code <baseIdText>.<methodCall>} rather than a
+   * method call on a property called {@code baseIdText}: the namespaces of {@link #FUNCTION_NAMESPACES} always are, any other is
+   * exactly when that function is registered. A back-ticked identifier is a property, never a namespace (issue #9076), and its
+   * text keeps the back-ticks, so it matches neither.
+   */
+  private static boolean isNamespacedFunctionCall(final String baseIdText, final SQLParser.MethodCallContext methodCtx) {
+    if (FUNCTION_NAMESPACES.contains(baseIdText.toLowerCase(Locale.ROOT)))
+      return true;
+    return DefaultSQLFunctionFactory.getInstance().hasNamespacedFunction(baseIdText + "." + methodCtx.identifier().getText());
+  }
+
+  /**
    * Builds a namespace-qualified FunctionCall BaseExpression from an identifierChain that looks like
    * "namespace.functionName(args)" — e.g. "geo.point(x, y)" or "geo.within(geom, geo.point(x, y))".
    * <p>
@@ -3888,12 +3871,13 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
    * as a methodCall. This helper recombines them into a proper FunctionCall AST node so that the
    * execution engine resolves "geo.point" as a registered SQL function rather than a field access.
    * <p>
-   * Any arraySelectors or modifiers that follow the method call on the identifierChain are preserved
-   * and chained onto the returned BaseExpression.
+   * Any further method calls, arraySelectors or modifiers that follow the first method call on the identifierChain are preserved
+   * and chained onto the returned BaseExpression, in the order the generic path chains them: {@code vector.fuse(a, b).size()}.
    */
   private BaseExpression buildNamespaceQualifiedFunctionCall(final String namespace,
-      final SQLParser.MethodCallContext methodCtx, final SQLParser.IdentifierChainContext chainCtx) {
+      final List<SQLParser.MethodCallContext> methodCalls, final SQLParser.IdentifierChainContext chainCtx) {
     final BaseExpression baseExpr = new BaseExpression();
+    final SQLParser.MethodCallContext methodCtx = methodCalls.getFirst();
 
     try {
       // Build the combined function name: "geo.point", "geo.within", etc.
@@ -3917,9 +3901,20 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       baseId.levelZero = levelZero;
       baseExpr.identifier = baseId;
 
-      // Preserve any arraySelectors or modifiers that follow the method call
+      // Preserve any method calls, arraySelectors or modifiers that follow the function call
       Modifier firstModifier = null;
       Modifier currentModifier = null;
+
+      for (int i = 1; i < methodCalls.size(); i++) {
+        final Modifier modifier = createModifierForMethodCall(methodCalls.get(i));
+        if (firstModifier == null) {
+          firstModifier = modifier;
+          currentModifier = modifier;
+        } else {
+          currentModifier.next = modifier;
+          currentModifier = modifier;
+        }
+      }
 
       if (CollectionUtils.isNotEmpty(chainCtx.arraySelector())) {
         for (final SQLParser.ArraySelectorContext selectorCtx : chainCtx.arraySelector()) {

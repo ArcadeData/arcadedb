@@ -425,7 +425,7 @@ public class JsonSerializer {
           .setDateTimeFormat(database.getSchema().getDateTimeFormat());
       final TemporalFormats formats = new TemporalFormats(database);
       for (final Map.Entry<Object, Object> entry : value.entrySet())
-        map.put(entry.getKey().toString(), formatNestedTemporal(serializeObject(database, entry.getValue()), formats));
+        map.put(String.valueOf(entry.getKey()), formatNestedTemporal(serializeObject(database, entry.getValue()), formats));
       result = map;
     }
     return result;
@@ -560,11 +560,11 @@ public class JsonSerializer {
     else if (value instanceof Temporal)
       value = DateUtils.dateTimeToTimestamp(value, type != null ? DateUtils.getPrecisionFromType(type) :
           ChronoUnit.MILLIS);
-    else if (value instanceof Map) {
-      final Map<String, Object> m = (Map<String, Object>) value;
+    else if (value instanceof Map<?, ?> m) {
+      // a member name is derived from the key, whatever its class (#9805)
       final JSONObject map = new JSONObject();
-      for (final Map.Entry<String, Object> entry : m.entrySet())
-        map.put(entry.getKey(), convertToJSONType(entry.getValue(), null));
+      for (final Map.Entry<?, ?> entry : m.entrySet())
+        map.put(String.valueOf(entry.getKey()), convertToJSONType(entry.getValue(), null));
       value = map;
     }
 

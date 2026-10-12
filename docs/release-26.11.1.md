@@ -54,3 +54,20 @@ one the adjacency listed.
 **Embedded API.** The `protected static final float MIN` constant of `SQLFunctionHeuristicPathFinderAbstract` is gone:
 it was the 0 weight of an edge without one. A custom subclass that referenced it reads the shared rule from
 `com.arcadedb.graph.EdgeWeight` instead (`MISSING`, `of(Object)`, `isWalkable(double)`).
+
+## Fixes
+
+- **`vector.sum`, `vector.avg`, `vector.min` and `vector.max` aggregate when written with the dotted name (#9768).** In SQL
+  they answered one NULL row per record (`vectorSum(...)` and `` `vector.sum`(...) `` were fine) and in openCypher
+  (`RETURN vector.sum(d.v)`) they had no working spelling at all. A dotted call is now a function call exactly when the
+  function is registered, in both languages, so the next namespace somebody adds cannot drift again. A property named like
+  a namespace keeps its own methods (`vector.size()` on a `vector` column).
+- **A map with a non-String key renders as JSON (#9805).** A `MAP` property accepts an Integer key and a Gremlin
+  `elementMap()` is keyed by the `T` enum, but `Result.toJSON()`, `convert.toJson()`, `asJSON()` and the Postgres wire threw
+  `ClassCastException` for such a row (and a `null` key an `IllegalArgumentException`). The member name is now the text of
+  the key, a `null` key being named `"null"`, as the HTTP serializer already did. `JSONObject(Map)` takes any `Map<?, ?>`.
+- **Redis `HDEL` replies the number of records it removed, and a multi-key `HDEL` / `HSET` is one unit of work (#9837).** A
+  delete a `BeforeRecordDeleteListener` vetoed was counted as a deletion on every branch. On the Redis protocol, `HDEL` by
+  index key left the first keys deleted behind an error reply and was not retried on a conflict, and the transient `HSET`
+  left the first JSON objects stored behind an error reply. A new `DatabaseInternal.deleteRecordReportingVeto(Record)` keeps
+  the answer `Record.delete()` throws away, for any caller that counts deletions.

@@ -119,6 +119,7 @@ import com.arcadedb.function.vector.VectorSimilarityCosineFunction;
 import com.arcadedb.function.vector.VectorSimilarityEuclideanFunction;
 import com.arcadedb.query.sql.executor.SQLFunction;
 
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
@@ -223,6 +224,42 @@ public class CypherFunctionFactory {
 
     // Try direct lookup in SQL functions
     return sqlFunctionFactory.hasFunction(functionName);
+  }
+
+  /**
+   * Whether a call of the NAMESPACED function {@code lowercaseName} ({@code vector.sum}, {@code sql.vector.sum}) with
+   * {@code argumentCount} arguments aggregates, because the function it resolves to says so. The resolution is
+   * {@link #getFunctionExecutor}'s, minus the Cypher-specific functions, whose aggregates the caller lists by name.
+   * <p>
+   * It is asked while the query is still an AST: the planner decides what aggregates by walking it, and a list of names kept
+   * beside the planner is a second answer that drifts from the registry - silently, and in the direction that loses rows: an
+   * aggregate it does not know is called once per row and answers a NULL for each (issue #9768). An undotted name is never
+   * asked, since a Cypher function can mean something else than the SQL function of the same name ({@code last(list)} is
+   * scalar here and an aggregate there).
+   */
+  public static boolean isNamespacedAggregation(final String lowercaseName, final int argumentCount) {
+    if (lowercaseName.indexOf('.') < 1 || CypherBuiltinFunctions.isBuiltin(lowercaseName))
+      return false;
+
+    final String sqlFunctionName;
+    if (lowercaseName.startsWith(SQL_PREFIX))
+      sqlFunctionName = lowercaseName.substring(SQL_PREFIX.length());
+    else {
+      final StatelessFunction registryFunction = CypherFunctionRegistry.get(lowercaseName);
+      if (registryFunction != null)
+        return registryFunction.aggregateResults();
+      sqlFunctionName = lowercaseName;
+    }
+
+    final DefaultSQLFunctionFactory factory = DefaultSQLFunctionFactory.getInstance();
+    if (!factory.hasFunction(sqlFunctionName))
+      return false;
+
+    // configured as the bridge does it: whether some SQL functions aggregate depends on their arguments (sum(a) does, sum(a, b)
+    // does not), and the values are irrelevant to that decision
+    final Object[] placeholders = new Object[argumentCount];
+    Arrays.fill(placeholders, "dummy");
+    return factory.getFunctionInstance(sqlFunctionName).config(placeholders).aggregateResults();
   }
 
   /**
