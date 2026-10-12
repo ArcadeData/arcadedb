@@ -195,20 +195,10 @@ public class LocalVertexType extends LocalDocumentType implements VertexType {
 
   /** The name a bucket this rename moved goes back to when the rename is rolled back, or {@code null} if none can be told. */
   private String restoredBucketName(final String renamedBucketName, final String oldName, final String newName) {
-    final String stripePrefix = InternalBucketNaming.Convention.SUPER_NODE_STRIPE.compose(newName);
-    // A stripe name is the prefix followed by the bare slot number. An edge bucket whose name happens to start the same way
-    // ends in '_out_edges'/'_in_edges' instead, so it cannot be misread as one
-    if (renamedBucketName.length() > stripePrefix.length() && renamedBucketName.startsWith(stripePrefix) && isDigits(
-        renamedBucketName, stripePrefix.length()))
-      return StripedEdgeList.stripeBucketName(oldName, Integer.parseInt(renamedBucketName.substring(stripePrefix.length())));
+    final int slot = StripedEdgeList.stripeSlotOf(newName, renamedBucketName);
+    if (slot > -1)
+      return StripedEdgeList.stripeBucketName(oldName, slot);
     return LocalSchema.rebaseComponentName(renamedBucketName, newName, oldName, schema.getEncoding());
-  }
-
-  private static boolean isDigits(final String text, final int from) {
-    for (int i = from; i < text.length(); i++)
-      if (!Character.isDigit(text.charAt(i)))
-        return false;
-    return true;
   }
 
   @Override
