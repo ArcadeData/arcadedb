@@ -28,7 +28,9 @@ import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.utility.IntHashSet;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.logging.Level;
 
 /**
@@ -121,19 +123,21 @@ public class LocalTransactionExplicitLock implements TransactionExplicitLock {
     // and with them every file a subtype writes on their behalf - its primary buckets, their paired external buckets, the
     // edge-list buckets of its vertices and the stripe pool of its promoted ones. Taking only the subtypes' primary buckets
     // failed the commit of any edge appended to a subtype vertex under the parent's lock (issue #9780)
-    collectInvolvedBucketsPolymorphic(type);
+    collectInvolvedBucketsPolymorphic(type, new HashSet<>());
 
     LogManager.instance().log(this, Level.FINE,
       "Explicit lock for type '%s' will lock %d bucket files (threadId=%d)",
       typeName, filesToLock.size(), Thread.currentThread().getId());
   }
 
-  private void collectInvolvedBucketsPolymorphic(final DocumentType type) {
+  private void collectInvolvedBucketsPolymorphic(final DocumentType type, final Set<String> visited) {
+    // A type reached through two supertypes (a diamond) is walked once, not once per path down to it
+    if (!visited.add(type.getName()))
+      return;
     for (final Bucket b : type.getInvolvedBuckets())
       addNonNegative(b.getFileId());
-    // A type reached through two supertypes is collected twice: the set keeps one copy
     for (final DocumentType subType : type.getSubTypes())
-      collectInvolvedBucketsPolymorphic(subType);
+      collectInvolvedBucketsPolymorphic(subType, visited);
   }
 
   /**
