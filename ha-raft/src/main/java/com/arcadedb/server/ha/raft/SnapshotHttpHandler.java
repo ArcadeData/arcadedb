@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
+import com.arcadedb.engine.NodeLocalFiles;
 import com.arcadedb.engine.TransactionManager;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.PageSnapshot;
@@ -31,7 +32,6 @@ import com.arcadedb.engine.timeseries.TimeSeriesCompactionPause;
 import com.arcadedb.engine.timeseries.TimeSeriesSealedStore;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.PageSnapshotException;
-import com.arcadedb.index.vector.LSMVectorIndexGraphFile;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.CodeUtils;
 import com.arcadedb.schema.LocalSchema;
@@ -1162,13 +1162,11 @@ public class SnapshotHttpHandler implements HttpHandler {
    * keeps the component registered under the leader's file id, so the id space it allocates from stays the leader's,
    * and its first search builds a graph of its own - with a manifest - from the vectors the index pages DO carry.
    * <p>
-   * Matched by the final extension, the same rule {@code NodeLocalFiles.isVectorGraphFileName} uses, so a bucket of a
-   * type merely named {@code vecgraph} is still shipped in full.
+   * Matched by the final extension ({@link NodeLocalFiles#isVectorGraphComponentFileName}), so a bucket of a type merely
+   * named {@code vecgraph} is still shipped in full.
    */
   static boolean isShippedEmpty(final String fileName) {
-    final String extension = LSMVectorIndexGraphFile.FILE_EXT;
-    final int dot = fileName.length() - extension.length() - 1;
-    return dot > 0 && fileName.charAt(dot) == '.' && fileName.endsWith(extension);
+    return NodeLocalFiles.isVectorGraphComponentFileName(fileName);
   }
 
   /**
