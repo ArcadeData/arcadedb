@@ -18,6 +18,8 @@
  */
 package com.arcadedb.network.binary;
 
+import com.arcadedb.exception.CauseChain;
+import com.arcadedb.exception.ErrorCategory;
 import com.arcadedb.exception.NeedRetryException;
 
 public class ServerIsNotTheLeaderException extends NeedRetryException {
@@ -31,6 +33,32 @@ public class ServerIsNotTheLeaderException extends NeedRetryException {
 
   public String getLeaderAddress() {
     return leaderURL;
+  }
+
+  /**
+   * Whether this refusal names a leader a client could be sent to. One raised mid-election names none ({@code null} or
+   * blank), and is the ordinary retryable condition its {@link NeedRetryException} ancestry says it is: the same request
+   * succeeds once the election settles.
+   */
+  public boolean namesLeader() {
+    return leaderURL != null && !leaderURL.isBlank();
+  }
+
+  /**
+   * The leader refusal a wire protocol must answer as a redirect rather than as a retryable conflict, or {@code null}
+   * when {@code error} is anything else (issue #9845).
+   * <p>
+   * Found anywhere along the cause chain, because the engine wraps what it raises (a commit failure, a planner
+   * failure). Only when {@link ErrorCategory#of} reads the chain as {@link ErrorCategory#RETRY}, so a chain the
+   * category ranks above it - a statement terminated on request - keeps that verdict. And only when the refusal names
+   * a leader: without an address there is nowhere to redirect to, and the retryable answer every transport already
+   * gives is the right one, which is what the HTTP handler does for that case too.
+   */
+  public static ServerIsNotTheLeaderException redirectIn(final Throwable error) {
+    if (ErrorCategory.of(error) != ErrorCategory.RETRY)
+      return null;
+    final ServerIsNotTheLeaderException refusal = CauseChain.find(error, ServerIsNotTheLeaderException.class);
+    return refusal != null && refusal.namesLeader() ? refusal : null;
   }
 
   @Override

@@ -28,6 +28,7 @@ import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ChannelBinaryServer;
+import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.query.RunningQuery;
 import com.arcadedb.query.sql.executor.QueryAdmissionGate;
 import com.arcadedb.schema.DocumentType;
@@ -470,6 +471,11 @@ public class RedisNetworkExecutor extends Thread {
     if (error instanceof RedisException redisException && redisException.getKind() != null)
       return redisException.getKind();
 
+    // A follower refusing leader-only work, naming the leader (issue #9845): what Redis answers a write sent to a
+    // replica, and what a Sentinel-aware client reconnects to the master on. TRYAGAIN would have it retry the replica.
+    if (ServerIsNotTheLeaderException.redirectIn(error) != null)
+      return "READONLY";
+
     return switch (ErrorCategory.of(error)) {
       case RETRY -> "TRYAGAIN";
       case SECURITY -> "NOPERM";
@@ -490,7 +496,19 @@ public class RedisNetworkExecutor extends Thread {
     final String message = respErrorMessage(error);
     if (error instanceof RedisException || error instanceof ServerSecurityException)
       return message;
-    return ErrorConcealment.clientMessage(ErrorConcealment.isConcealing(server), this, "Redis", message, error);
+    return withLeaderRedirect(ErrorConcealment.clientMessage(ErrorConcealment.isConcealing(server), this, "Redis", message, error),
+        error);
+  }
+
+  /**
+   * {@code text}, followed by the leader's address when {@code error} is a follower's refusal that names one - the
+   * failure {@link #respErrorPrefix} answers with {@code READONLY} (issue #9845). Appended after concealment, as the
+   * gRPC transport does: it is an address the cluster put there, not engine detail, and the only thing that makes the
+   * refusal actionable.
+   */
+  static String withLeaderRedirect(final String text, final Throwable error) {
+    final ServerIsNotTheLeaderException refusal = ServerIsNotTheLeaderException.redirectIn(error);
+    return refusal != null ? text + ". The leader is server '" + refusal.getLeaderAddress() + "'" : text;
   }
 
   /**

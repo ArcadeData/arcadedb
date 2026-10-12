@@ -40,6 +40,7 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ChannelBinaryServer;
+import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.query.RunningQuery;
 import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
@@ -4126,7 +4127,9 @@ public class PostgresNetworkExecutor extends Thread {
     if (error instanceof PostgresSessionSettings.SettingException setting)
       return setting.sqlState;
     return switch (ErrorCategory.of(error)) {
-      case RETRY -> "40001";          // serialization_failure - the code drivers auto-retry on
+      // serialization_failure - the code drivers auto-retry on. Also a follower's refusal naming the leader (issue
+      // #9845): the wire has no redirect code, so the leader is named in the message instead (see withLeaderRedirect)
+      case RETRY -> "40001";
       case ARITHMETIC -> arithmeticSqlState(error);
       case DUPLICATED_KEY -> "23505"; // unique_violation
       case NOT_FOUND -> "P0002";      // no_data_found - class 02 is a completion condition, not an error
@@ -4159,8 +4162,28 @@ public class PostgresNetworkExecutor extends Thread {
    * the bounded part a driver acts on and stays. Without it the {@code M} field carried the raw exception text, which
    * for a duplicated key holds the customer's stored values (issue #8931). Errors the protocol layer itself words
    * ({@link PostgresProtocolException}) are bounded text and do not go through here.
+   * <p>
+   * A follower's refusal that names the leader also gets the leader's address, in every mode: see
+   * {@link #withLeaderRedirect}.
    */
   private String clientMessage(final String message, final Throwable cause) {
+    return withLeaderRedirect(concealableMessage(message, cause), cause);
+  }
+
+  /**
+   * {@code text}, followed by the leader's address when {@code error} is a follower's refusal of leader-only work that
+   * names one (issue #9845). The Postgres wire has no redirect and the SQLSTATE stays {@code 40001} - see
+   * {@link #sqlStateFor} - so the address in the message is the only thing a client, a connection pool or an operator
+   * can act on, and it used to be dropped. Appended after concealment, as the gRPC transport does: it is an address the
+   * cluster put there, not engine detail.
+   */
+  static String withLeaderRedirect(final String text, final Throwable error) {
+    final ServerIsNotTheLeaderException refusal = ServerIsNotTheLeaderException.redirectIn(error);
+    return refusal != null ? text + ". The leader is server '" + refusal.getLeaderAddress() + "'" : text;
+  }
+
+  /** {@link #clientMessage} without the leader redirect: the message, or the placeholder in production mode. */
+  private String concealableMessage(final String message, final Throwable cause) {
     // A refused SET/DISCARD is text the protocol layer wrote, with no user data in it, and the explanation is what the
     // client is owed; it is also a client mistake, never a server fault (issue #9327)
     if (!server.isProductionMode() || cause instanceof PostgresSessionSettings.SettingException)

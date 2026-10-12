@@ -26,6 +26,7 @@ import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.ErrorCategory;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.query.sql.executor.IteratorResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -237,7 +238,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
    * the translation into MongoDB's error codes is here. The categories MongoDB has no code for keep the uncoded
    * exception they already had.
    * <p>
-   * WriteConflict, NamespaceNotFound, Unauthorized and MaxTimeMSExpired are given as literals because the bundled
+   * WriteConflict, NotWritablePrimary, NamespaceNotFound, Unauthorized and MaxTimeMSExpired are given as literals because the bundled
    * {@code de.bwaldvogel} {@link ErrorCode} enum does not define them; the rest come from the enum.
    */
   static MongoServerException wireException(final String message, final Exception e) {
@@ -246,6 +247,16 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     // entirely, so the client saw an uncoded error. Keep what the backend decided.
     if (e instanceof MongoServerError alreadyCoded)
       return alreadyCoded;
+
+    // A follower refusing leader-only work, naming the leader (issue #9845). Its NeedRetryException ancestry would make
+    // it a WriteConflict, which a driver retries in place - on the one node that will refuse again. NotWritablePrimary is
+    // what MongoDB itself answers a write sent to a secondary with, and a driver answers it by marking this server
+    // Unknown and rescanning the topology. The wording keeps "not primary", which older drivers match on, and names the
+    // leader so a client without topology discovery, or an operator, has the address to act on.
+    final ServerIsNotTheLeaderException notTheLeader = ServerIsNotTheLeaderException.redirectIn(e);
+    if (notTheLeader != null)
+      return new MongoServerError(10107, "NotWritablePrimary",
+          message + ": not primary, the leader is server '" + notTheLeader.getLeaderAddress() + "'", e);
 
     return switch (ErrorCategory.of(e)) {
       case RETRY -> new MongoServerError(112, "WriteConflict", message, e);
