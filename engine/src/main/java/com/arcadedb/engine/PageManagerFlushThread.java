@@ -1376,7 +1376,9 @@ public class PageManagerFlushThread extends Thread {
                   break;
                 } catch (final InterruptedException e) {
                   // The flag is already cleared by the throw, so the retry parks normally until a slot frees up or the
-                  // flush thread shuts down; only a further interrupt brings it back here.
+                  // flush thread shuts down; only a further interrupt brings it back here. Deliberately uncapped: a
+                  // caller interrupting in a tight loop only delays the resume, while giving up would abandon the batch.
+                  // reserveQueueSlot cannot park past a shutdown either - it re-checks `running` every poll interval.
                   restoreCallerInterrupt = true;
                 }
               }
