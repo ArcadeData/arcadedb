@@ -215,12 +215,17 @@ final class ScanPropertyHashIndex {
    */
   private static Long integralOf(final String text) {
     final int length = text.length();
-    final int start = length > 0 && (text.charAt(0) == '-' || text.charAt(0) == '+') ? 1 : 0;
-    if (start == length || length - start > 19)
+    int start = length > 0 && (text.charAt(0) == '-' || text.charAt(0) == '+') ? 1 : 0;
+    if (start == length)
       return null;
     for (int i = start; i < length; i++)
       if (text.charAt(i) < '0' || text.charAt(i) > '9')
         return null;
+    // leading zeros are no digits of the value, as for the declaration's own reading of the text (InlineProperties)
+    while (start < length - 1 && text.charAt(start) == '0')
+      start++;
+    if (length - start > 19)
+      return null;
     try {
       return Long.parseLong(text);
     } catch (final NumberFormatException e) {

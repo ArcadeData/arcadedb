@@ -105,6 +105,8 @@ class ScanPropertyHashIndexTest extends TestHelper {
     // the spellings Integer.parseInt reads as 5 too
     assertThat(count(index.candidates("+5"))).isEqualTo(2);
     assertThat(count(index.candidates("005"))).isEqualTo(2);
+    // padded past 19 characters it is still 5; that long a run of digits also has a temporal text's shape, so the date is offered
+    assertThat(count(index.candidates("00000000000000000000005"))).isEqualTo(3);
     assertThat(count(index.candidates("TRUE"))).isEqualTo(1);
     assertThat(count(index.candidates("2024-01-02"))).isEqualTo(1);
     assertThat(count(index.candidates("y"))).isZero();
