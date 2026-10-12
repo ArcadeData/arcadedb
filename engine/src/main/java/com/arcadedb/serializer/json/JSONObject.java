@@ -175,11 +175,15 @@ public class JSONObject implements Map<String, Object> {
         object.addProperty(name, dateFormat.format(localDate.atStartOfDay()));
     }
     case TemporalAccessor temporalAccessor -> {
-      if (dateFormatAsString == null)
-        // SAVE AS TIMESTAMP
-        object.addProperty(name,
-            DateUtils.dateTimeToTimestamp(value, ChronoUnit.MILLIS));
-      else if (temporalAccessor instanceof Instant instant)
+      if (dateFormatAsString == null) {
+        // SAVE AS TIMESTAMP. A value with no epoch form (a time of day) keeps its text: it used to be written as a JSON null,
+        // so the value was gone (issue #9810), while the conversion of a JSON array element already did this
+        final Long timestamp = DateUtils.dateTimeToTimestamp(value, ChronoUnit.MILLIS);
+        if (timestamp != null)
+          object.addProperty(name, timestamp);
+        else
+          object.addProperty(name, temporalAccessor.toString());
+      } else if (temporalAccessor instanceof Instant instant)
         // SAVE AS STRING: an Instant has no date fields, so it must be anchored to UTC before the
         // schema-wide pattern can be applied (arcadedb.dateTimeImplementation=java.time.Instant).
         object.addProperty(name, dateTimeFormat.format(LocalDateTime.ofInstant(instant, ZoneOffset.UTC)));
