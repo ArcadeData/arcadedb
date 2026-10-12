@@ -125,49 +125,50 @@ public class ComparisonExpression implements BooleanExpression {
 
   /**
    * {@link #evaluateWithValues(Object, Object)} for a caller that evaluated this comparison's own operands against
-   * {@code result}: also applies the declared-STRING coercion, which needs the row to find the record an operand reads.
+   * {@code result}: also applies the declared-type coercion, which needs the row to find the record an operand reads.
+   * Without a context only a property of a bound variable ({@code n.v}) is resolved; with one, every spelling of a stored
+   * property read is (#9701).
    */
   public Object evaluateWithValues(final Object leftValue, final Object rightValue, final Result result) {
     final Object plain = compareValuesTernary(leftValue, rightValue);
 
-    // A property declared STRING holds the text of what was written into it: = and <> also compare that text with the text
-    // the other operand would be stored as, so a pattern finds what it stored (issue #9695). On top of the plain comparison,
-    // not instead of it, so an equality it already grants (a RID spelled as text against its id()) stands. Only a stored
-    // text that did not equal a non-text operand pays for the schema lookup
+    // A declaration defines the text form of its values: a property declared STRING holds the text of what was written into
+    // it ('1' for 1), any other declaration reads a text written into it as its own type (5 for '5' in an INTEGER). = and <>
+    // also compare the stored value with what the other operand would be stored as, so a pattern finds what it stored
+    // (issues #9695, #9794). On top of the plain comparison, not instead of it, so an equality it already grants (a RID
+    // spelled as text against its id()) stands. Only a text met by a non-text pays for the schema lookup
     if (((operator == Operator.EQUALS && !Boolean.TRUE.equals(plain)) || (operator == Operator.NOT_EQUALS && !Boolean.FALSE.equals(
-        plain))) && leftValue != null && rightValue != null) {
-      if (leftValue instanceof String && !(rightValue instanceof String)) {
-        final Object text = toDeclaredText(left, rightValue, result);
-        if (text != rightValue)
-          return compareValuesTernary(leftValue, text);
-      } else if (rightValue instanceof String && !(leftValue instanceof String)) {
-        final Object text = toDeclaredText(right, leftValue, result);
-        if (text != leftValue)
-          return compareValuesTernary(text, rightValue);
-      }
+        plain))) && InlineProperties.isTextAgainstNonText(leftValue, rightValue)) {
+      final Object storedRight = toDeclaredValue(left, rightValue, result, context);
+      if (storedRight != rightValue)
+        return compareValuesTernary(leftValue, storedRight);
+      final Object storedLeft = toDeclaredValue(right, leftValue, result, context);
+      if (storedLeft != leftValue)
+        return compareValuesTernary(storedLeft, rightValue);
     }
 
     return plain;
   }
 
   /**
-   * The text {@code operand} would be stored as in the property {@code propertySide} reads, when that is a property of a
-   * record declared {@code STRING}; the operand itself otherwise, so the Cypher typing of {@code =} is untouched wherever
-   * no declaration says what the stored text stands for.
+   * The value {@code operand} would be stored as in the property {@code propertySide} reads, when that is a property of a
+   * record declared with a scalar type; the operand itself otherwise, so the Cypher typing of {@code =} is untouched
+   * wherever no declaration says what the stored value stands for. Every spelling of the read counts ({@code n.v},
+   * {@code n['v']}, {@code properties(n).v}, {@code a.link.v}, see {@link PropertyReadExpression}), so they all answer as
+   * {@code n.v} does (#9701). A value projected first ({@code WITH n.v AS v}) carries no record, and keeps the Cypher typing.
    */
-  private static Object toDeclaredText(final Expression propertySide, final Object operand, final Result result) {
-    if (!(propertySide instanceof PropertyAccessExpression access) || result == null)
+  static Object toDeclaredValue(final Expression propertySide, final Object operand, final Result result,
+      final CommandContext context) {
+    final PropertyReadExpression.PropertyRead read = PropertyReadExpression.of(propertySide, result, context);
+    if (read == null || read.record() == null)
       return operand;
-    final Document record = InlineProperties.boundRecord(result.getProperty(access.getVariableName()));
-    if (record == null)
-      return operand;
-    final String text = InlineProperties.declaredText(record, access.getPropertyName(), operand);
-    return text != null ? text : operand;
+    final Object stored = InlineProperties.declaredValue(read.record(), read.key(), operand);
+    return stored != null ? stored : operand;
   }
 
   /**
-   * Compares two already evaluated values with this operator's Cypher semantics, without the declared-STRING coercion of
-   * issue #9695, which needs the row the operands were read from: a caller that evaluated this comparison's own operands
+   * Compares two already evaluated values with this operator's Cypher semantics, without the declared-type coercion of
+   * issues #9695 and #9794, which needs the row the operands were read from: a caller that evaluated this comparison's own operands
    * uses {@link #evaluateWithValues(Object, Object, Result)}.
    */
   public Object evaluateWithValues(final Object leftValue, final Object rightValue) {

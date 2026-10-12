@@ -27,6 +27,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.schema.Property;
+import com.arcadedb.schema.Type;
 import com.arcadedb.utility.LongRangeList;
 
 import java.util.ArrayList;
@@ -121,17 +122,23 @@ public class InExpression implements BooleanExpression {
       // non-empty list makes this uncertain, an empty one leaves nothing to be uncertain about.
       return valuesToCheck.iterator().hasNext() ? null : Boolean.FALSE;
 
-    // A property declared STRING holds the text of what was written into it, so membership compares it with the text each
-    // element would be stored as, like = does (issue #9695)
-    final Property declared = value instanceof String ? declaredStringProperty(result) : null;
+    // A declaration defines the text form of its values ('1' for 1 in a STRING, 5 for '5' in an INTEGER), so membership
+    // compares the stored value with what each element would be stored as, like = does (issues #9695, #9794). The
+    // declaration is looked up once, and only for a text met by a non-text
+    Property declared = null;
+    boolean declaredResolved = false;
 
     if (valuesToCheck instanceof LongRangeList range) {
       Boolean found = rangeMembership(range, value);
-      // A range holds longs: a declared text is also a member when it is the canonical spelling of one of them
-      if (declared != null && !Boolean.TRUE.equals(found)) {
-        final Object number = canonicalLong((String) value);
-        if (number != value)
-          found = rangeMembership(range, number);
+      // A range holds longs: a text declared STRING is also a member when it is the canonical spelling of one of them
+      if (!Boolean.TRUE.equals(found) && value instanceof String text) {
+        declared = declaredProperty(result, context);
+        declaredResolved = true;
+        if (declared != null && declared.getType() == Type.STRING) {
+          final Object number = canonicalLong(text);
+          if (number != value)
+            found = rangeMembership(range, number);
+        }
       }
       if (found != null)
         return found;
@@ -141,10 +148,16 @@ public class InExpression implements BooleanExpression {
     boolean foundNull = false;
     for (final Object element : valuesToCheck) {
       Boolean cmp = valuesCompare(value, element);
-      if (declared != null && !Boolean.TRUE.equals(cmp) && element != null && !(element instanceof String)) {
-        final String text = InlineProperties.declaredText(declared, context != null ? context.getDatabase() : null, element);
-        if (text != null)
-          cmp = valuesCompare(value, text);
+      if (!Boolean.TRUE.equals(cmp) && InlineProperties.isTextAgainstNonText(value, element)) {
+        if (!declaredResolved) {
+          declared = declaredProperty(result, context);
+          declaredResolved = true;
+        }
+        final Object stored = declared != null ?
+            InlineProperties.declaredValue(declared, context != null ? context.getDatabase() : null, element) :
+            null;
+        if (stored != null)
+          cmp = valuesCompare(value, stored);
       }
       if (cmp == null)
         foundNull = true;
@@ -188,12 +201,12 @@ public class InExpression implements BooleanExpression {
   }
 
   /**
-   * The declared STRING property the left operand reads, when it reads a stored property of a record in any spelling
-   * ({@link PropertyReadExpression}, #9701); otherwise null.
+   * The declared property the left operand reads, when it reads a stored property of a record in any spelling
+   * ({@link PropertyReadExpression}, #9701) and the property is declared with a scalar type; otherwise null.
    */
-  private Property declaredStringProperty(final Result result, final CommandContext context) {
+  private Property declaredProperty(final Result result, final CommandContext context) {
     final PropertyReadExpression.PropertyRead read = PropertyReadExpression.of(expression, result, context);
-    return read != null && read.record() != null ? InlineProperties.declaredStringProperty(read.record(), read.key()) : null;
+    return read != null && read.record() != null ? InlineProperties.declaredProperty(read.record(), read.key()) : null;
   }
 
   /**

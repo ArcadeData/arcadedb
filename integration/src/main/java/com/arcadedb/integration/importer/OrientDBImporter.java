@@ -1538,8 +1538,13 @@ public class OrientDBImporter {
             logger.logLine(1, "- Ignoring the MAX of '%s.%s': %s", t.getName(), entry.getKey(), e.getMessage());
           }
 
+        // ...and so is a pattern this type has no text for (#9808)
         if (orientdbProperty.regexp != null)
-          property.setRegexp(orientdbProperty.regexp);
+          try {
+            property.setRegexp(orientdbProperty.regexp);
+          } catch (final IllegalArgumentException e) {
+            logger.logLine(1, "- Ignoring the REGEXP of '%s.%s': %s", t.getName(), entry.getKey(), e.getMessage());
+          }
 
         if (orientdbProperty.defaultValue != null && setImportedDefaultValue(property, orientdbProperty.defaultValue))
           logger.logLine(2,
