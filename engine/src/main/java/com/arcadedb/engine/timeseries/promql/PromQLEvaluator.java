@@ -48,6 +48,7 @@ import com.arcadedb.engine.timeseries.promql.ast.PromQLExpr.UnaryExpr;
 import com.arcadedb.engine.timeseries.promql.ast.PromQLExpr.VectorSelector;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalTimeSeriesType;
+import com.arcadedb.schema.Type;
 import com.arcadedb.security.SecurityDatabaseUser;
 
 import java.io.IOException;
@@ -734,7 +735,11 @@ public class PromQLEvaluator {
         continue;
       // A matcher value is always text and the stored tag is of the column's declared type: compared as text, a LONG or
       // BOOLEAN tag matched nothing. Coerced as every other tag push-down coerces it (issues #5475, #9803)
-      final Object value = nonTsColumn(idx, columns).coerceValue(m.value());
+      final ColumnDefinition column = nonTsColumn(idx, columns);
+      // Text that is not a boolean selects no series of a BOOLEAN tag: coerced, it would read as false and select those. Kept
+      // as text, it equals no stored value, as a number that does not parse already does for a numeric tag
+      final Object value = column.getDataType() == Type.BOOLEAN && !"true".equalsIgnoreCase(m.value()) && !"false".equalsIgnoreCase(
+          m.value()) ? m.value() : column.coerceValue(m.value());
       filter = filter == null ? TagFilter.eq(idx, value) : filter.and(idx, value);
     }
     return filter;
