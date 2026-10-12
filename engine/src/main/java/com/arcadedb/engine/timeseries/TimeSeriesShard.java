@@ -1584,10 +1584,13 @@ public class TimeSeriesShard implements AutoCloseable {
       // A repair writes a page, so it needs a transaction; a caller that already has one keeps it, since the
       // commit below is only this method's to make when the transaction is.
       final boolean ownTransaction = options.fix() && !db.isTransactionActive();
+      // The transaction this check began, if it did, and the only one the failure arms below may roll back (issue #9851): held
+      // by identity, so they stay correct whatever a commit that threw left on the thread's stack.
+      OwnTransaction ownTx = null;
       boolean transactionOpen = false;
       try {
         if (ownTransaction) {
-          db.begin();
+          ownTx = OwnTransaction.begin(db);
           transactionOpen = true;
         }
 
@@ -1605,7 +1608,7 @@ public class TimeSeriesShard implements AutoCloseable {
           }
           transactionOpen = false;
           if (mutableOutcome.repairs().isEmpty())
-            db.rollback();
+            ownTx.rollbackIfMine();
           else {
             // Test-only fault injection (issue #6406 item 5), fired only on the path a real
             // concurrent compaction could actually contend: a repair with something to commit,
@@ -1623,7 +1626,7 @@ public class TimeSeriesShard implements AutoCloseable {
             final Consumer<String> fixCommitFault = TEST_FIX_COMMIT_FAULT;
             if (fixCommitFault != null)
               fixCommitFault.accept(typeName + "_shard_" + shardIndex);
-            db.commit();
+            ownTx.commit();
           }
         }
 
@@ -1633,8 +1636,8 @@ public class TimeSeriesShard implements AutoCloseable {
         for (final String repair : mutableOutcome.repairs())
           repairs.add("mutable bucket: " + repair);
       } catch (final ConcurrentModificationException e) {
-        if (db.isTransactionActive() && ownTransaction)
-          db.rollback();
+        if (ownTx != null)
+          ownTx.rollbackIfMine();
         if (!options.fix())
           // A reporting run writes nothing, so a conflict here is not a repair that lost a race and there is
           // nothing to tell an operator to run again.
@@ -1646,12 +1649,12 @@ public class TimeSeriesShard implements AutoCloseable {
         samples = mutableBucket.getSampleCount() + sealedStore.getTotalSampleCount();
         sealedBlocks = sealedStore.getBlockCount();
       } catch (final IOException e) {
-        if (db.isTransactionActive() && ownTransaction)
-          db.rollback();
+        if (ownTx != null)
+          ownTx.rollbackIfMine();
         throw e;
       } catch (final Exception e) {
-        if (db.isTransactionActive() && ownTransaction)
-          db.rollback();
+        if (ownTx != null)
+          ownTx.rollbackIfMine();
         throw new IOException("Failed to check TimeSeries shard " + shardIndex, e);
       } finally {
         if (readLockHeld)

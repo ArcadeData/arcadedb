@@ -29,11 +29,20 @@ package com.arcadedb.server.http;
  * to distrust. Throw it ONLY where that is provable, that is ahead of the call that hands the statement to the engine; a
  * refusal raised once the statement has run (a result over the row ceiling, a streamed {@code EXPLAIN}) is not one, because a
  * script can have written before it got there.
+ * <p>
+ * That covers the validation of the request itself, not only the negotiation of its encoding (issue #9852): a missing or
+ * mistyped field of the envelope, a {@code limit} the server cannot apply, a typed parameter marker that does not decode. The
+ * helpers that validate those ({@code requireIntLimit}, {@code decodeTypedJsonMarkers}) throw this type themselves, so every
+ * route that reads a field through them gets the rule without having to remember it.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class RequestRefusedBeforeExecutionException extends IllegalArgumentException {
   public RequestRefusedBeforeExecutionException(final String message) {
     super(message);
+  }
+
+  public RequestRefusedBeforeExecutionException(final String message, final Throwable cause) {
+    super(message, cause);
   }
 }
