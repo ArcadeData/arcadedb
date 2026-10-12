@@ -868,14 +868,8 @@ public class RedisQueryEngine implements QueryEngine {
         throw new CommandParsingException("Index '" + firstArg + "' not found");
       database.transaction(() -> {
         int removed = 0;
-        for (int i = 2; i < parts.size(); i++) {
-          // a key a concurrent index DDL hid is retried or refused, never counted as "nothing to delete" (#9811)
-          final Identifiable found = RedisIndexKeys.lookup(database, firstArg, parts.get(i));
-          if (found != null) {
-            found.getRecord().delete();
-            removed++;
-          }
-        }
+        for (int i = 2; i < parts.size(); i++)
+          removed += RedisRecords.deleteByKey(database, firstArg, parts.get(i)) ? 1 : 0;
         deleted[0] = removed;
       });
     }

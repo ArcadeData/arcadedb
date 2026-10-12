@@ -783,7 +783,6 @@ public enum PostgresType {
    * column in text format, and what {@code COPY ... TO STDOUT} in text or CSV format escapes and delimits
    * (issue #7188). Null for a SQL NULL.
    */
-  @SuppressWarnings("unchecked")
   public String toText(final PostgresType pgType, final Object value) {
     String serializedValue = null;
     final byte[] byteaValue = pgType == BYTEA ? byteaValueOf(value) : null;
@@ -823,7 +822,7 @@ public enum PostgresType {
     } else if (value instanceof JSONObject json) {
       serializedValue = json.toString();
     } else if (value instanceof Map<?, ?> map) {
-      serializedValue = new JSONObject((Map<String, ?>) map).toString();
+      serializedValue = new JSONObject(map).toString();
     } else if (value instanceof Record record) {
       serializedValue = record.toJSON(true).toString();
     } else if (value instanceof Result result) {
@@ -972,33 +971,22 @@ public enum PostgresType {
   }
 
   /** The text of one element of a text[] or json[] array: what {@link #serializeArrayToString} writes, without the literal quoting. */
-  @SuppressWarnings("unchecked")
   private String arrayElementToText(final Object element) {
-    if (element instanceof String str)
-      return str;
-    else if (element instanceof Float f)
-      return String.valueOf(f.floatValue());
-    else if (element instanceof Double d)
-      return String.valueOf(d.doubleValue());
-    else if (element instanceof Date date)
-      return LocalDateTime.ofInstant(date.toInstant(), ZoneOffset.UTC).format(POSTGRES_DATETIME_FORMATTER);
-    else if (element instanceof LocalDateTime ldt)
-      return ldt.format(POSTGRES_DATETIME_FORMATTER);
-    else if (element instanceof Binary binary)
-      return binary.getString();
-    else if (element instanceof Collection<?> nested)
-      return new JSONArray(nested).toString();
-    else if (element instanceof Result result)
-      return result.toJSON().toString();
-    else if (element instanceof JSONObject json)
-      return json.toString();
-    else if (element instanceof Map<?, ?> map)
-      return new JSONObject((Map<String, ?>) map).toString();
-    else if (element instanceof EmbeddedDocument embeddedDocument)
-      return embeddedDocument.toJSON(true).toString();
-    else if (element instanceof Record record)
-      return record.toJSON(true).toString();
-    return element.getClass().isArray() ? new JSONArray(convertPrimitiveArrayToCollection(element)).toString() : element.toString();
+    return switch (element) {
+      case String str -> str;
+      case Float f -> String.valueOf(f.floatValue());
+      case Double d -> String.valueOf(d.doubleValue());
+      case Date date -> LocalDateTime.ofInstant(date.toInstant(), ZoneOffset.UTC).format(POSTGRES_DATETIME_FORMATTER);
+      case LocalDateTime ldt -> ldt.format(POSTGRES_DATETIME_FORMATTER);
+      case Binary binary -> binary.getString();
+      case Collection<?> nested -> new JSONArray(nested).toString();
+      case Result result -> result.toJSON().toString();
+      case JSONObject json -> json.toString();
+      case Map<?, ?> map -> new JSONObject(map).toString();
+      case EmbeddedDocument embeddedDocument -> embeddedDocument.toJSON(true).toString();
+      case Record record -> record.toJSON(true).toString();
+      default -> element.getClass().isArray() ? new JSONArray(convertPrimitiveArrayToCollection(element)).toString() : element.toString();
+    };
   }
 
   private void writeString(final Binary typeBuffer, final String value) {
@@ -1015,7 +1003,6 @@ public enum PostgresType {
   /**
    * Serializes a Collection into a PostgreSQL array string format.
    */
-  @SuppressWarnings("unchecked")
   private String serializeArrayToString(Collection<?> collection, PostgresType pgType) {
     if (collection.isEmpty())
       return "{}";
@@ -1066,7 +1053,7 @@ public enum PostgresType {
       } else if (element instanceof JSONObject json) {
         appendQuoted(sb, json.toString());
       } else if (element instanceof Map<?, ?> map) {
-        appendQuoted(sb, new JSONObject((Map<String, ?>) map).toString());
+        appendQuoted(sb, new JSONObject(map).toString());
       } else if (element instanceof Record record) {
         appendQuoted(sb, record.toJSON(true).toString());
       } else if (element instanceof EmbeddedDocument embeddedDocument) {
@@ -1104,32 +1091,21 @@ public enum PostgresType {
    * Converts a single collection element into a value the JSON serializer renders natively. Documents keep
    * their "@type" attribute, temporal values use the Postgres text format, and nested collections recurse.
    */
-  @SuppressWarnings("unchecked")
   private Object toJsonElement(final Object element) {
-    if (element == null)
-      return null;
-    else if (element instanceof JSONObject json)
-      return json;
-    else if (element instanceof JSONArray json)
-      return json;
-    else if (element instanceof Result result)
-      return result.toJSON();
-    else if (element instanceof EmbeddedDocument embeddedDocument)
-      return embeddedDocument.toJSON(true);
-    else if (element instanceof Record record)
-      return record.toJSON(true);
-    else if (element instanceof Map<?, ?> map)
-      return new JSONObject((Map<String, ?>) map);
-    else if (element instanceof Collection<?> nested)
-      return serializeNestedAsJsonArray(nested);
-    else if (element instanceof Binary binary)
-      return binary.getString();
-    else if (element instanceof Date date)
-      return LocalDateTime.ofInstant(date.toInstant(), ZoneOffset.UTC).format(POSTGRES_DATETIME_FORMATTER);
-    else if (element instanceof LocalDateTime ldt)
-      return ldt.format(POSTGRES_DATETIME_FORMATTER);
-    else
-      return element.getClass().isArray() ? serializeNestedAsJsonArray(convertPrimitiveArrayToCollection(element)) : element;
+    return switch (element) {
+      case null -> null;
+      case JSONObject json -> json;
+      case JSONArray json -> json;
+      case Result result -> result.toJSON();
+      case EmbeddedDocument embeddedDocument -> embeddedDocument.toJSON(true);
+      case Record record -> record.toJSON(true);
+      case Map<?, ?> map -> new JSONObject(map);
+      case Collection<?> nested -> serializeNestedAsJsonArray(nested);
+      case Binary binary -> binary.getString();
+      case Date date -> LocalDateTime.ofInstant(date.toInstant(), ZoneOffset.UTC).format(POSTGRES_DATETIME_FORMATTER);
+      case LocalDateTime ldt -> ldt.format(POSTGRES_DATETIME_FORMATTER);
+      default -> element.getClass().isArray() ? serializeNestedAsJsonArray(convertPrimitiveArrayToCollection(element)) : element;
+    };
   }
 
   private JSONArray serializeNestedAsJsonArray(final Collection<?> collection) {
