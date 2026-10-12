@@ -150,6 +150,20 @@ class Issue9841NestedProjectionPrefixWildcardTest extends TestHelper {
   }
 
   @Test
+  void aliasOnAnExcludeWildcardIsIgnoredLikeOnAnyExcludeItem() {
+    // An exclude item produces no column, so its alias has nothing to name: it is accepted and ignored, as on `!secret as k`
+    final Result p = project("@this:{!se* as k}");
+    assertThat(p.getPropertyNames()).doesNotContain("secret", "k").contains("n", "m", "nested");
+  }
+
+  @Test
+  void prefixWildcardNextToTheBareStarAddsNothingTheStarDidNotSelect() {
+    final Result p = project("@this:{*, s*}");
+    assertThat(p.getPropertyNames()).contains("n", "m", "nested", "secret");
+    assertThat(p.<String>getProperty("secret")).isEqualTo("s");
+  }
+
+  @Test
   void excludeWildcardStillFilters() {
     final Result p = project("@this:{!s*}");
     assertThat(p.getPropertyNames()).doesNotContain("secret").contains("n", "m", "nested");
