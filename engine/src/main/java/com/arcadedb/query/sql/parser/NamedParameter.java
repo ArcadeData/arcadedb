@@ -43,7 +43,7 @@ public class NamedParameter extends InputParameter {
 
   private PrefixedName prefixedName() {
     PrefixedName result = prefixedName;
-    if (result == null || result.name != paramName) {
+    if (result == null || !Objects.equals(result.name, paramName)) {
       result = new PrefixedName(paramName, ":" + paramName);
       prefixedName = result;
     }

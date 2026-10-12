@@ -60,7 +60,7 @@ class Issue9818RepeatedLiteralTextCostBenchmark extends TestHelper {
     // an exact-text hit is one probe; a repeated text with extracted literals reads the remembered text and then the statement
     // under its key, under one lock, and fills a map of its own with the values. Measured: 3.5 for one literal and 4.8 for five.
     // Three locks, a scan of the text for the generated-name prefix and a copy of the map through its entry iterator (the cost
-    // before #9818) measured 5.7 and 10.8
+    // before #9818) measured 5.7 and 10.8. The bounds are tripwires between that cost and this one, not latency budgets
     assertThat(lookupRatio(ONE_LITERAL)).as("1 literal, lookup of a repeated text, on / off").isLessThan(4.5);
     assertThat(lookupRatio(FIVE_LITERALS)).as("5 literals, lookup of a repeated text, on / off").isLessThan(7.5);
   }

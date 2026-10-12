@@ -80,7 +80,8 @@ public abstract class LiteralParameterizer<S> {
 
   /**
    * The generated key of a text and the literal values extracted from it, as parallel arrays by generated parameter name (a hit
-   * fills a map of its own from them, which costs no entry iterator).
+   * fills a map of its own from them, which costs no entry iterator). Never compared or printed: the arrays make the record's
+   * {@code equals}, {@code hashCode} and {@code toString} reference-based.
    */
   private record ExtractedText(String cacheKey, String[] names, Object[] values) {
     private static ExtractedText of(final String cacheKey, final Map<String, Object> parameters) {
