@@ -97,9 +97,9 @@ public class LocalVertexType extends LocalDocumentType implements VertexType {
 
       renameSuperNodeStripePool(oldName, newName, removedBuckets);
 
-      // SchemaException too: it is a RuntimeException, and letting it past this catch would leave the edge buckets
-      // already renamed on disk with a schema.json that still names the old files.
-    } catch (IOException | SchemaException e) {
+      // Any RuntimeException too, SchemaException included: letting one past this catch would leave the edge buckets and
+      // the stripe pool already renamed on disk with a schema.json that still names the old files.
+    } catch (IOException | RuntimeException e) {
       super.rename(oldName);
 
       boolean corrupted = false;
@@ -172,11 +172,12 @@ public class LocalVertexType extends LocalDocumentType implements VertexType {
   private void renameSuperNodeStripePool(final String oldName, final String newName, final List<Bucket> renamedBuckets)
       throws IOException {
     final Bucket[] pool = getSuperNodeStripePool(oldName);
-    for (int slot = 0; slot < pool.length; slot++)
-      if (pool[slot] != null && schema.existsBucket(StripedEdgeList.stripeBucketName(newName, slot)))
+    for (int slot = 0; slot < pool.length; slot++) {
+      final String target = StripedEdgeList.stripeBucketName(newName, slot);
+      if (pool[slot] != null && schema.existsBucket(target))
         throw new SchemaException(
-            "Cannot rename the super-node stripe bucket '" + pool[slot].getName() + "': a bucket named '" + StripedEdgeList.stripeBucketName(
-                newName, slot) + "' already exists");
+            "Cannot rename the super-node stripe bucket '" + pool[slot].getName() + "': a bucket named '" + target + "' already exists");
+    }
 
     for (int slot = 0; slot < pool.length; slot++) {
       final Bucket bucket = pool[slot];
