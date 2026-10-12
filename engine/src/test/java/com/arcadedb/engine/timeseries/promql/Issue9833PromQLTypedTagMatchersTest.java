@@ -29,6 +29,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 
+import java.util.TimeZone;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -120,6 +121,38 @@ class Issue9833PromQLTypedTagMatchersTest extends TestHelper {
     assertThat(count(type + "{code!=\"yes\"}")).isEqualTo(1);
     assertThat(count(type + "{code=~\"yes\"}")).isZero();
     assertThat(count(type + "{code!~\"yes\"}")).isEqualTo(1);
+  }
+
+  @Test
+  void aDateTimeMatcherIsReadAsTheInsertReadItWhateverTheJvmTimeZone() {
+    // The INSERT reads the text through the database; the matcher used to be read with no database, in the JVM's default
+    // zone, and so named another instant whenever that zone is not the database's. CI runs in UTC, where the two coincide:
+    // a zone with an offset on the stored date is forced for the duration of the test so the difference shows anywhere.
+    final TimeZone jvmZone = TimeZone.getDefault();
+    try {
+      TimeZone.setDefault(TimeZone.getTimeZone(jvmZone.getRawOffset() == 9 * 3_600_000 ? "America/New_York" : "Asia/Tokyo"));
+      final String type = createType("DATETIME", "'2024-01-01 00:00:00'");
+      assertOperatorsAgree(type, "2024-01-01 00:00:00", true);
+    } finally {
+      TimeZone.setDefault(jvmZone);
+    }
+  }
+
+  @Test
+  void aPatternIsReadAsALiteralOnlyWhenItHasNoUnescapedMetacharacter() {
+    assertThat(PromQLEvaluator.literalOfPattern("007")).isEqualTo("007");
+    assertThat(PromQLEvaluator.literalOfPattern("5\\.00")).isEqualTo("5.00");
+    assertThat(PromQLEvaluator.literalOfPattern("\\+7")).isEqualTo("+7");
+    assertThat(PromQLEvaluator.literalOfPattern("a\\\\b")).as("an escaped backslash").isEqualTo("a\\b");
+    assertThat(PromQLEvaluator.literalOfPattern("2024-01-01 00:00:00")).as("- is no metacharacter").isEqualTo("2024-01-01 00:00:00");
+    assertThat(PromQLEvaluator.literalOfPattern("")).isEmpty();
+
+    assertThat(PromQLEvaluator.literalOfPattern("5.00")).as("an unescaped dot").isNull();
+    assertThat(PromQLEvaluator.literalOfPattern("7|8")).isNull();
+    assertThat(PromQLEvaluator.literalOfPattern("0+7")).isNull();
+    assertThat(PromQLEvaluator.literalOfPattern("\\d")).as("an escaped letter is a character class").isNull();
+    assertThat(PromQLEvaluator.literalOfPattern("\\1")).as("an escaped digit is a back reference").isNull();
+    assertThat(PromQLEvaluator.literalOfPattern("7\\")).as("a trailing backslash").isNull();
   }
 
   private void assertOperatorsAgree(final String type, final String value, final boolean expectedEquality) {

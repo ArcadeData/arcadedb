@@ -53,6 +53,7 @@ import com.arcadedb.security.SecurityDatabaseUser;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -815,9 +816,10 @@ public class PromQLEvaluator {
   @SuppressWarnings("unchecked")
   private RowMatchers bindMatchers(final List<LabelMatcher> matchers, final List<ColumnDefinition> rowColumns,
       final boolean equalitiesPushedDown) {
-    final List<LabelMatcher> bound = new ArrayList<>(matchers.size());
-    final List<Integer> rowIndexes = new ArrayList<>(matchers.size());
-    final List<Set<Object>> forms = new ArrayList<>(matchers.size());
+    final LabelMatcher[] bound = new LabelMatcher[matchers.size()];
+    final int[] rowIndexes = new int[matchers.size()];
+    final Set<Object>[] forms = new Set[matchers.size()];
+    int count = 0;
     for (final LabelMatcher m : matchers) {
       // a non-empty EQ was already applied by the tag filter; an empty one is decided here
       if ((equalitiesPushedDown && m.op() == MatchOp.EQ && !isEmptyEquality(m)) || METRIC_NAME_LABEL.equals(m.name()))
@@ -833,14 +835,11 @@ public class PromQLEvaluator {
         // already settled such a matcher for the whole type before the scan started: reaching a row at all
         // means it selected everything, so it cannot reject this one (issue #6938).
         continue;
-      bound.add(m);
-      rowIndexes.add(col + 1);
-      forms.add(valueFormsOf(rowColumns.get(col), m));
+      bound[count] = m;
+      rowIndexes[count] = col + 1;
+      forms[count++] = valueFormsOf(rowColumns.get(col), m);
     }
-    final int[] indexes = new int[rowIndexes.size()];
-    for (int i = 0; i < indexes.length; i++)
-      indexes[i] = rowIndexes.get(i);
-    return new RowMatchers(bound.toArray(new LabelMatcher[0]), indexes, forms.toArray(new Set[0]));
+    return new RowMatchers(Arrays.copyOf(bound, count), Arrays.copyOf(rowIndexes, count), Arrays.copyOf(forms, count));
   }
 
   /**
@@ -997,7 +996,7 @@ public class PromQLEvaluator {
   private Object coerceTagValue(final ColumnDefinition column, final String text) {
     if (column.getDataType() == Type.BOOLEAN && !"true".equalsIgnoreCase(text) && !"false".equalsIgnoreCase(text))
       return text;
-    // read with the database, in its time zone, as the INSERT that wrote the tag read it (issue #9833)
+    // read through the database, as the INSERT that wrote the tag read it, not in the JVM's default zone (issue #9833)
     return column.coerceValue(database, text);
   }
 
