@@ -26,11 +26,13 @@ import io.github.jbellis.jvector.quantization.PQVectors;
 import io.github.jbellis.jvector.quantization.ProductQuantization;
 
 import java.io.IOException;
+import java.nio.channels.FileChannel;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
 import java.util.logging.Level;
 
 /**
@@ -112,6 +114,10 @@ public class LSMVectorIndexPQFile {
    * for the data to be loaded: true when the PQ is loaded, or when a file is on disk that no load has found
    * unreadable. A file that exists and failed to load counts as no data - {@link #exists()} alone reports it as
    * present, which is the answer that sent an open down the wrong route (issue #9796).
+   * <p>
+   * A point-in-time answer: it reads a flag and then the file system, so it is not atomic against a concurrent
+   * {@link #writePQ} or {@link #deletePQFile()}. The open-time decision that asks it runs before any writer of this
+   * index does.
    */
   public boolean hasUsableData() {
     return isPQReady() || (!loadFailed && exists());
@@ -163,6 +169,10 @@ public class LSMVectorIndexPQFile {
       }
       temporary = null;
 
+      // The rename is only durable once the directory entry is: without it a crash right after can bring back the
+      // previous name, and with it a previous file that no longer matches the graph persisted before this one
+      syncDirectory(parent);
+
       // Update cached references
       this.loadFailed = false;
       this.productQuantization = pq;
@@ -173,6 +183,11 @@ public class LSMVectorIndexPQFile {
           Files.size(pqFilePath) / (1024.0 * 1024.0));
 
     } catch (final Exception e) {
+      LogManager.instance().log(this, Level.SEVERE, "Error writing PQ data to %s: %s", pqFilePath, e.getMessage());
+      throw new IndexException("Failed to write PQ data", e);
+    } finally {
+      // Still set only when the write did not reach the rename, and an Error (an OutOfMemoryError while streaming a
+      // large file) gets here too: the temporary is never left behind, and the live file was not touched
       if (temporary != null) {
         try {
           Files.deleteIfExists(temporary);
@@ -180,8 +195,22 @@ public class LSMVectorIndexPQFile {
           // NOTHING ELSE TO DO
         }
       }
-      LogManager.instance().log(this, Level.SEVERE, "Error writing PQ data to %s: %s", pqFilePath, e.getMessage());
-      throw new IndexException("Failed to write PQ data", e);
+    }
+  }
+
+  /**
+   * Best effort: opening a directory for a force is a POSIX facility, and a platform that refuses it (Windows) has no
+   * directory entry to lose to a crash in the first place. A failure is not a reason to fail a write that completed.
+   */
+  private void syncDirectory(final Path directory) {
+    if (directory == null)
+      return;
+
+    try (final FileChannel channel = FileChannel.open(directory, StandardOpenOption.READ)) {
+      channel.force(true);
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.FINE, "Could not force directory '%s' after replacing the PQ file: %s", directory,
+          e.getMessage());
     }
   }
 

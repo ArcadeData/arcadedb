@@ -30,6 +30,7 @@ import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.lang.reflect.Field;
+import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
@@ -64,6 +65,27 @@ class Issue9796PQFileIndexTest extends TestHelper {
 
   @Test
   void aFailedPersistDropsThePreviousFileAndStillPublishesTheCodesInHand() throws Exception {
+    assertFailedPersistDropsThePreviousFile(null);
+  }
+
+  @Test
+  void aRuntimeFailureOfThePersistDropsThePreviousFileToo() throws Exception {
+    assertFailedPersistDropsThePreviousFile(new IllegalStateException("injected runtime failure"));
+  }
+
+  @Test
+  void anErrorDuringThePersistDropsThePreviousFileBeforeItPropagates() throws Exception {
+    // The build's handler catches Throwable and carries on: whatever it decides, the stale file must already be gone
+    final Throwable thrown = assertFailedPersistDropsThePreviousFile(new OutOfMemoryError("injected"));
+    assertThat(thrown).isInstanceOf(OutOfMemoryError.class);
+  }
+
+  /**
+   * @param failure what the codes' write throws after streaming part of itself, or {@code null} for an I/O error
+   *
+   * @return what {@code persistProductQuantization} let escape, or {@code null} when it absorbed the failure
+   */
+  private Throwable assertFailedPersistDropsThePreviousFile(final Throwable failure) throws Exception {
     final LSMVectorIndex index = buildIndexWithPersistedPQ();
     final LSMVectorIndexPQFile pqFile = pqFileOf(index);
     final Path pqPath = pqFile.getFilePath();
@@ -75,20 +97,28 @@ class Issue9796PQFileIndexTest extends TestHelper {
     assertThat(liveCodes).isNotNull();
 
     // Codes whose write dies halfway through: the persist after a rebuild whose disk gave out.
-    final Issue9796PQFileAtomicRewriteTest.FailingPQVectors failing =
-        new Issue9796PQFileAtomicRewriteTest.FailingPQVectors(pq, liveCodes.count(), 64);
+    final Issue9796PQFileAtomicRewriteTest.FailingPQVectors failing = failure == null ?
+        new Issue9796PQFileAtomicRewriteTest.FailingPQVectors(pq, liveCodes.count(), 64) :
+        new Issue9796PQFileAtomicRewriteTest.FailingPQVectors(pq, liveCodes.count(), 64, failure);
 
     final Method persist = LSMVectorIndex.class.getDeclaredMethod("persistProductQuantization", ProductQuantization.class,
         PQVectors.class);
     persist.setAccessible(true);
-    persist.invoke(index, pq, failing);
+    Throwable escaped = null;
+    try {
+      persist.invoke(index, pq, failing);
+    } catch (final InvocationTargetException e) {
+      escaped = e.getCause();
+    }
 
     assertThat(pqPath)
         .as("the previous file belongs to the previous graph: it must not survive a failed persist")
         .doesNotExist();
     assertThat(temporariesNextTo(pqPath)).isEmpty();
-    assertThat(field("pqVectors").get(index)).as("the codes in hand are right for the graph in memory").isSameAs(failing);
     assertThat(pqFile.hasUsableData()).isFalse();
+    if (escaped == null)
+      assertThat(field("pqVectors").get(index)).as("the codes in hand are right for the graph in memory").isSameAs(failing);
+    return escaped;
   }
 
   @Test
