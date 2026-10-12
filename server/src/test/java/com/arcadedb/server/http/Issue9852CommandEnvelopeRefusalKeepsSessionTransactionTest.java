@@ -116,7 +116,7 @@ class Issue9852CommandEnvelopeRefusalKeepsSessionTransactionTest extends BaseGra
         final HttpResponse<String> refused = send("/command/" + getDatabaseName(), sessionId, refusal.getValue());
         assertThat(refused.statusCode()).as("%s must be refused with a 400: %s", refusal.getKey(), refused.body()).isEqualTo(400);
 
-        final HttpResponse<String> count = command(sessionId, "SELECT count(*) AS cnt FROM " + DOC_TYPE);
+        final HttpResponse<String> count = command(sessionId, "SELECT count() AS cnt FROM " + DOC_TYPE);
         assertThat(count.statusCode()).as("after '%s' the session must still be usable: %s", refusal.getKey(), count.body()).isEqualTo(200);
         assertThat(new JSONObject(count.body()).getJSONArray("result").getJSONObject(0).getLong("cnt"))
             .as("after '%s' the session must still see the rows it wrote", refusal.getKey()).isEqualTo(3L);
