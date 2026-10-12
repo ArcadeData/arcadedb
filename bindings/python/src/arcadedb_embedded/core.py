@@ -448,7 +448,10 @@ class Database:
             # back when begin() refuses; one opened here is (#9813). Once begin()
             # has returned, the transaction at the top is this call's own (a
             # nested level when the caller holds one), so a failure of fn rolls it
-            # back exactly as before.
+            # back exactly as before. Accepted gap: with a caller transaction open,
+            # an interrupt landing after begin() pushed its nested level but before
+            # `begun` is set leaves that level open - a window of one statement,
+            # against the full call that the guard above closed.
             was_active = self.is_transaction_active()
             begun = False
             tx_at_start, commits_at_start = None, 0
