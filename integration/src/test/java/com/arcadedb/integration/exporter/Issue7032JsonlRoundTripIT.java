@@ -150,6 +150,7 @@ class Issue7032JsonlRoundTripIT {
       final LocalTimeSeriesType policy = (LocalTimeSeriesType) target.getSchema().getType("SensorPolicy");
       assertThat(policy.getTimestampColumn()).isEqualTo("ts");
       assertThat(policy.getPrecision()).isEqualTo("MICROSECOND");
+      assertThat(policy.isPrecisionHonoured()).isFalse();
       assertThat(policy.getShardCount()).isEqualTo(3);
       assertThat(policy.getRetentionMs()).isEqualTo(90L * 86_400_000L);
       assertThat(policy.getCompactionBucketIntervalMs()).isEqualTo(30_000L);
@@ -275,15 +276,11 @@ class Issue7032JsonlRoundTripIT {
       // A second TIMESERIES type whose retention / precision / compaction / downsampling settings are all
       // NON-default, so the restore of each one is actually pinned. It carries no samples on purpose: a retention
       // policy would otherwise expire the epoch-1970 timestamps the sample-carrying type uses.
-      source.command("sql", """
-          CREATE TIMESERIES TYPE SensorPolicy
-            TIMESTAMP ts PRECISION MICROSECOND
-            TAGS (host STRING)
-            FIELDS (value DOUBLE)
-            SHARDS 3
-            RETENTION 90 DAYS
-            COMPACTION INTERVAL 30 SECONDS
-          """);
+      // Its MICROSECOND precision is the legacy declaration CREATE no longer accepts (issue #9800), which a restore
+      // must still bring back: the restored type keeps retention suspended until its owner confirms the unit.
+      source.getSchema().buildTimeSeriesType().withName("SensorPolicy").withTimestamp("ts")
+          .withLegacyPrecision("MICROSECOND").withTag("host", Type.STRING).withField("value", Type.DOUBLE)
+          .withShards(3).withRetention(90L * 86_400_000L).withCompactionBucketInterval(30_000L).create();
       source.command("sql",
           "ALTER TIMESERIES TYPE SensorPolicy ADD DOWNSAMPLING POLICY AFTER 7 DAYS GRANULARITY 1 HOURS "
               + "AFTER 30 DAYS GRANULARITY 1 DAYS");

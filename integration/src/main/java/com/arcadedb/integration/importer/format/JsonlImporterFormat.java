@@ -608,8 +608,10 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
       }
     }
 
+    // A type exported before issue #9800 can carry a precision CREATE no longer accepts. The restore keeps it, and
+    // with it the suspension of retention and downsampling that protects data whose unit was never established
     if (type.has("precision"))
-      builder.withPrecision(type.getString("precision"));
+      builder.withLegacyPrecision(type.getString("precision"));
     // 0 is the builder's own "use the default" (it resolves to ASYNC_WORKER_THREADS), which is the right answer
     // for an export written before the count was persisted.
     builder.withShards(type.getInt("shardCount", 0));

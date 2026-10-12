@@ -211,17 +211,17 @@ class Issue7702InterleavedTagAndFieldOrderTest extends TestHelper {
     final String sql = database.getSchema().buildTimeSeriesType().withName("TimestampClauses")
         .withTag("t1", Type.STRING)
         .withColumn(new ColumnDefinition("ts", Type.LONG, ColumnDefinition.ColumnRole.TIMESTAMP, TimeSeriesCodec.DELTA_OF_DELTA))
-        .withPrecision("microsecond")
+        .withPrecision("millisecond")
         .withField("f1", Type.DOUBLE)
         .toSQL().getFirst();
 
     assertThat(sql).isEqualTo("CREATE TIMESERIES TYPE `TimestampClauses` TAGS (`t1` STRING) "
-        + "TIMESTAMP `ts` PRECISION MICROSECOND CODEC DELTA_OF_DELTA FIELDS (`f1` DOUBLE)");
+        + "TIMESTAMP `ts` PRECISION MILLISECOND CODEC DELTA_OF_DELTA FIELDS (`f1` DOUBLE)");
 
     database.command("sql", sql);
     final TimeSeriesType type = typeOf("TimestampClauses");
     assertThat(columnNames(type)).containsExactly("t1", "ts", "f1");
-    assertThat(type.getPrecision()).isEqualTo("MICROSECOND");
+    assertThat(type.getPrecision()).isEqualTo("MILLISECOND");
     assertThat(type.getTsColumn("ts").getCompressionHint()).isEqualTo(TimeSeriesCodec.DELTA_OF_DELTA);
   }
 

@@ -154,11 +154,28 @@ public class TimeSeriesMaintenanceScheduler {
       // Each setting is read ONCE: the type can be altered concurrently, and a retention checked as positive but
       // re-read as 0 would compute a cutoff of "now" and drop every sample (issue #7866).
       final long retentionMs = type.getRetentionMs();
+      final List<DownsamplingTier> tiers = type.getDownsamplingTiers();
+      if (retentionMs <= 0 && tiers.isEmpty())
+        return;
+
+      // Both cutoffs are milliseconds. A type declared with another precision before issue #9800 holds timestamps
+      // whose unit nothing established - the declared one when written by SQL, milliseconds when ingested through
+      // line protocol, Prometheus or gRPC - and comparing a millisecond cutoff with SECOND data deleted every sample
+      // at the first pass. Nothing destructive runs on such a type until its owner confirms the unit
+      if (!type.isPrecisionHonoured()) {
+        if (type.firstLegacyPrecisionWarning())
+          LogManager.instance().log(TimeSeriesMaintenanceScheduler.class, Level.WARNING,
+              "Retention and downsampling of TimeSeries type '%s' are suspended: it declares PRECISION %s, which was "
+                  + "never honoured (every time computation counts in milliseconds). If its timestamps are milliseconds, "
+                  + "run 'ALTER TIMESERIES TYPE `%s` PRECISION MILLISECOND' to resume them (issue #9800)", typeName,
+              type.getPrecision(), typeName);
+        return;
+      }
+
       if (retentionMs > 0)
         engine.applyRetention(nowMs - retentionMs);
 
       // Apply downsampling tiers
-      final List<DownsamplingTier> tiers = type.getDownsamplingTiers();
       if (!tiers.isEmpty())
         engine.applyDownsampling(tiers, nowMs);
 
