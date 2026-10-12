@@ -20,6 +20,8 @@ package com.arcadedb.query.opencypher;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.function.CypherBuiltinFunctions;
+import com.arcadedb.function.CypherFunctionRegistry;
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
@@ -31,7 +33,9 @@ import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
+import java.util.TreeSet;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -167,6 +171,39 @@ class Issue9768CypherDottedAggregateTest extends TestHelper {
     } finally {
       factory.unregister("acme9768.strict");
     }
+  }
+
+  /**
+   * The planner can only decide on what the probe configuration lets it see, so a registered function that refuses it would be
+   * planned as a scalar again - one NULL per row, no error, which is the bug. This fails by name for such a function, and for any
+   * registered dotted function the probe and the function itself disagree about.
+   */
+  @Test
+  void everyRegisteredDottedSqlFunctionAcceptsTheProbeAndIsPlannedAsItsOwnFlagSays() {
+    final DefaultSQLFunctionFactory factory = DefaultSQLFunctionFactory.getInstance();
+    final List<String> refused = new ArrayList<>();
+    final List<String> aggregates = new ArrayList<>();
+    for (final String name : new TreeSet<>(factory.getFunctionNames())) {
+      if (name.indexOf('.') < 1 || CypherBuiltinFunctions.isBuiltin(name) || CypherFunctionRegistry.get(name) != null)
+        continue;
+
+      final int arguments = Math.max(1, factory.getFunctionInstance(name).getMinArgs());
+      final Object[] placeholders = new Object[arguments];
+      Arrays.fill(placeholders, "dummy");
+      final boolean aggregatesByFlag;
+      try {
+        aggregatesByFlag = factory.getFunctionInstance(name).config(placeholders).aggregateResults();
+      } catch (final RuntimeException e) {
+        refused.add(name + " (" + e.getMessage() + ")");
+        continue;
+      }
+      if (aggregatesByFlag)
+        aggregates.add(name);
+      assertThat(CypherFunctionFactory.isNamespacedAggregation(name, arguments)).as(name).isEqualTo(aggregatesByFlag);
+    }
+
+    assertThat(refused).as("registered dotted functions that refuse the planner's probe configuration").isEmpty();
+    assertThat(aggregates).as("the dotted aggregates of the registry").contains("vector.sum", "vector.avg", "vector.min", "vector.max");
   }
 
   @Test

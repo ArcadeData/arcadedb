@@ -163,6 +163,45 @@ public class Issue9837RedisHDelAccountingAndAtomicityTest extends BaseRedisServe
   }
 
   @Test
+  void wireHDelCountDoesNotAccumulateAcrossARetryThatAlsoHasAVeto() {
+    final Database database = createRows();
+    final AtomicInteger seen = new AtomicInteger();
+    // the third delete of the first attempt conflicts, the retry then deletes k1 and k2 and k3 is vetoed
+    database.getSchema().getType(TYPE).getEvents().registerListener((BeforeRecordDeleteListener) record -> {
+      if (seen.incrementAndGet() == 3)
+        throw new ConcurrentModificationException("forced MVCC conflict (issue #9837 repro)");
+      return !"k3".equals(record.asDocument().getString("pid"));
+    });
+    try (final Jedis jedis = newClient()) {
+      assertThat(jedis.hdel(getDatabaseName() + "." + TYPE + "[pid]", "k1", "k2", "k3")).isEqualTo(2L);
+    }
+    assertThat(countRows(database)).isEqualTo(1L);
+  }
+
+  @Test
+  void theSameKeyTwiceInOneHDelIsCountedOnce() {
+    final Database database = createRows();
+    try (final Jedis jedis = newClient()) {
+      assertThat(jedis.hdel(getDatabaseName() + "." + TYPE + "[pid]", "k1", "k1", "k2")).isEqualTo(2L);
+    }
+    assertThat(countRows(database)).isEqualTo(1L);
+
+    assertThat(queryHDel(database, "HDEL " + TYPE + "[pid] k3 k3")).isEqualTo(1);
+    assertThat(countRows(database)).isZero();
+  }
+
+  @Test
+  void theSameRidTwiceInOneHDelIsCountedOnce() {
+    final Database database = createRows();
+    final String[] rids = ridsOf(database);
+    try (final Jedis jedis = newClient()) {
+      assertThat(jedis.hdel(getDatabaseName() + "." + rids[0], rids[0], rids[1], rids[1])).isEqualTo(2L);
+    }
+    assertThat(queryHDel(database, "HDEL " + rids[2] + " " + rids[2])).isEqualTo(1);
+    assertThat(countRows(database)).isZero();
+  }
+
+  @Test
   void wireTransientHSetWithAMalformedElementStoresNothing() {
     final DatabaseInternal database = (DatabaseInternal) getServer(0).getDatabase(getDatabaseName());
     try (final Jedis jedis = newClient()) {
