@@ -108,6 +108,21 @@ class Issue9841NestedProjectionPrefixWildcardTest extends TestHelper {
   }
 
   @Test
+  void prefixWildcardOnMapValueHonorsExcludeItems() {
+    final Result p = project("nested:{a*, !ab}");
+    assertThat(p.getPropertyNames()).containsExactly("a");
+  }
+
+  @Test
+  void overlappingItemsLetTheLastOneWin() {
+    // n* emits nested as stored, then ne*:{a} names it again with an expansion: the later item's value is the one kept
+    final Result p = project("@this:{n*, ne*:{a}}");
+    assertThat(p.getPropertyNames()).containsExactlyInAnyOrder("n", "nested");
+    final Result nested = p.getProperty("nested");
+    assertThat(nested.getPropertyNames()).containsExactly("a");
+  }
+
+  @Test
   void nonWildcardIncludeItemsKeepTheirBehaviour() {
     final Result p = project("@this:{n, nested.a as na}");
     assertThat(p.getPropertyNames()).containsExactlyInAnyOrder("n", "na");

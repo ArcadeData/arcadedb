@@ -159,20 +159,25 @@ public class NestedProjection extends SimpleNode {
    * right wildcard ({@code s*}) names every property of the source whose name it {@link NestedProjectionItem#matches(String)},
    * the same rule the exclude items use, and emits each one under its own name, minus those an exclude item of the same
    * braces removes. Any other item is evaluated as an expression, which is what makes {@code a.b.c} and function calls work as
-   * projection items.
+   * projection items. When several items name the same property, the last one in the braces wins.
    *
    * @param source a {@link Result} or a {@link Document}
    */
   private void applyIncludeItems(final Expression expression, final Object source, final CommandContext context,
       final int recursion, final ResultInternal result) {
+    final Result sourceResult = source instanceof Result r ? r : null;
+    final Document sourceDocument = sourceResult == null ? (Document) source : null;
+    Collection<String> propertyNames = null;
+
     for (final NestedProjectionItem item : includeItems) {
       if (item.rightWildcard) {
-        final Collection<String> propertyNames = source instanceof Result r ? r.getPropertyNames() : ((Document) source).getPropertyNames();
+        if (propertyNames == null)
+          propertyNames = sourceResult != null ? sourceResult.getPropertyNames() : sourceDocument.getPropertyNames();
         for (final String propertyName : propertyNames) {
           if (!item.matches(propertyName) || isExclude(propertyName))
             continue;
 
-          Object value = source instanceof Result r ? r.getProperty(propertyName) : ((Document) source).get(propertyName);
+          Object value = sourceResult != null ? sourceResult.getProperty(propertyName) : sourceDocument.get(propertyName);
           if (item.expansion != null)
             value = item.expand(expression, propertyName, value, context, recursion - 1);
           result.setProperty(propertyName, value);
@@ -181,7 +186,7 @@ public class NestedProjection extends SimpleNode {
       }
 
       final String alias = item.alias != null ? item.alias.getStringValue() : item.expression.getDefaultAlias().getStringValue();
-      Object value = source instanceof Result r ? item.expression.execute(r, context) : item.expression.execute((Document) source, context);
+      Object value = sourceResult != null ? item.expression.execute(sourceResult, context) : item.expression.execute(sourceDocument, context);
       if (item.expansion != null)
         value = item.expand(expression, alias, value, context, recursion - 1);
       result.setProperty(alias, value);
