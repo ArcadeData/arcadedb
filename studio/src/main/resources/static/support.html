@@ -29,10 +29,10 @@
       <div id="aiDbSelectContainer" class="searchable-db-select"></div>
       <span id="aiUsage" style="display: none; color: var(--text-muted); font-size: 0.8rem;"></span>
       <div class="btn-group btn-group-sm" id="aiModeToggle">
-        <button type="button" class="btn btn-sm" data-mode="auto" onclick="aiSetMode('auto')"
+        <button type="button" class="btn btn-sm" data-mode="auto" data-on-click="aiSetMode" data-args='["auto"]'
           title="AI runs read-only queries and gives you answers directly">
           <i class="fa fa-bolt me-1"></i>Auto Run Read Only Queries</button>
-        <button type="button" class="btn btn-sm" data-mode="review" onclick="aiSetMode('review')"
+        <button type="button" class="btn btn-sm" data-mode="review" data-on-click="aiSetMode" data-args='["review"]'
           title="AI suggests queries for you to review and execute">
           <i class="fa fa-eye me-1"></i>Review First</button>
       </div>
@@ -76,8 +76,8 @@
               <input type="text" id="aiSubscriptionKey" class="form-control"
                 placeholder="Enter your subscription key"
                 style="background: var(--bg-input); color: var(--text-primary); border-color: var(--border-main);"
-                onkeydown="if(event.key==='Enter') aiActivate()">
-              <button id="aiActivateBtn" class="btn" style="background: var(--color-brand); color: white; border: none; min-width: 100px;" onclick="aiActivate()">
+                data-on-enter="aiActivate">
+              <button id="aiActivateBtn" class="btn" style="background: var(--color-brand); color: white; border: none; min-width: 100px;" data-on-click="aiActivate">
                 Activate
               </button>
             </div>
@@ -96,7 +96,7 @@
       <!-- Left sidebar: Chat History -->
       <div id="aiSidebar" style="width: 260px; min-width: 260px; border-right: 1px solid var(--border-main); background: var(--bg-sidebar); display: flex; flex-direction: column;">
         <div style="padding: 12px;">
-          <button class="btn btn-sm w-100" style="background: var(--color-brand); color: white; border: none;" onclick="aiNewChat()">
+          <button class="btn btn-sm w-100" style="background: var(--color-brand); color: white; border: none;" data-on-click="aiNewChat">
             <i class="fa fa-plus me-1"></i> New Chat
           </button>
         </div>
@@ -129,8 +129,8 @@
             <textarea id="aiInput" class="form-control" rows="2"
               placeholder="Ask about your database..."
               style="resize: none; background: var(--bg-input); color: var(--text-primary); border-color: var(--border-main);"
-              onkeydown="aiHandleInputKeydown(event)"></textarea>
-            <button class="btn align-self-end" style="background: var(--color-brand); color: white; border: none; height: 38px; min-width: 70px; white-space: nowrap; display: inline-flex; align-items: center; justify-content: center;" onclick="aiSendMessage()" id="aiSendBtn">
+              data-on-keydown="aiHandleInputKeydown" data-args='[{"$":"event"}]'></textarea>
+            <button class="btn align-self-end" style="background: var(--color-brand); color: white; border: none; height: 38px; min-width: 70px; white-space: nowrap; display: inline-flex; align-items: center; justify-content: center;" data-on-click="aiSendMessage" id="aiSendBtn">
               Send
             </button>
           </div>

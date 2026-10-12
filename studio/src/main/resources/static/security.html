@@ -1,7 +1,7 @@
 <div class="tab-pane fade" id="tab-security" role="tabpanel">
   <div class="d-flex align-items-center px-2 py-1">
     <div class="d-flex align-items-center gap-2">
-      <button class="btn btn-sm db-action-btn" onclick="refreshCurrentSecurityTab()"><i class="fa fa-sync"></i> Refresh</button>
+      <button class="btn btn-sm db-action-btn" data-on-click="refreshCurrentSecurityTab"><i class="fa fa-sync"></i> Refresh</button>
     </div>
     <div class="flex-grow-1">
       <ul class="nav nav-tabs text-center" id="tabs-security" style="float: right">
@@ -17,7 +17,7 @@
     <div class="tab-pane fade show active" id="tab-security-users" role="tabpanel">
       <div class="d-flex justify-content-between align-items-center mb-3">
         <span class="text-muted small">Manage server users and their database access permissions.</span>
-        <button class="btn btn-sm btn-success" onclick="showCreateUserForm()"><i class="fa fa-plus"></i> Create User</button>
+        <button class="btn btn-sm btn-success" data-on-click="showCreateUserForm"><i class="fa fa-plus"></i> Create User</button>
       </div>
 
       <div class="row">
@@ -77,13 +77,13 @@
               <div class="mb-3">
                 <div class="input-group input-group-sm" style="max-width: 400px">
                   <select id="userNewDatabase" class="form-select"><option value="">Add database...</option></select>
-                  <button class="btn btn-outline-secondary" onclick="addUserDatabaseRow()">Add</button>
+                  <button class="btn btn-outline-secondary" data-on-click="addUserDatabaseRow">Add</button>
                 </div>
               </div>
             </div>
             <div class="modal-footer">
               <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-              <button type="button" class="btn btn-primary" id="userModalSaveBtn" onclick="saveUser()">Create</button>
+              <button type="button" class="btn btn-primary" id="userModalSaveBtn" data-on-click="saveUser">Create</button>
             </div>
           </div>
         </div>
@@ -94,7 +94,7 @@
     <div class="tab-pane fade" id="tab-security-groups" role="tabpanel">
       <div class="d-flex justify-content-between align-items-center mb-3">
         <span class="text-muted small">Manage security groups that define per-type CRUD permissions and database-level access.</span>
-        <button class="btn btn-sm btn-success" id="btnCreateGroup" onclick="showCreateGroupForm()"><i class="fa fa-plus"></i> Create Group</button>
+        <button class="btn btn-sm btn-success" id="btnCreateGroup" data-on-click="showCreateGroupForm"><i class="fa fa-plus"></i> Create Group</button>
       </div>
 
       <!-- Cluster readiness for a replicated group change (issues #7511, #7538, #7548). Populated by JS and
@@ -103,7 +103,7 @@
 
       <div class="mb-3">
         <label for="groupDatabaseFilter" class="form-label small text-muted">Database:</label>
-        <select id="groupDatabaseFilter" class="form-select form-select-sm" style="max-width:250px;display:inline-block" onchange="onGroupDatabaseFilterChange()">
+        <select id="groupDatabaseFilter" class="form-select form-select-sm" style="max-width:250px;display:inline-block" data-on-change="onGroupDatabaseFilterChange">
           <option value="*">* (default)</option>
         </select>
       </div>
@@ -131,7 +131,7 @@
               <div class="row mb-3">
                 <div class="col-md-4">
                   <label for="groupDatabase" class="form-label">Database</label>
-                  <select id="groupDatabase" class="form-select" onchange="loadTypesForGroupDatabase()">
+                  <select id="groupDatabase" class="form-select" data-on-change="loadTypesForGroupDatabase">
                     <option value="*">* (All databases)</option>
                   </select>
                 </div>
@@ -180,7 +180,7 @@
               <div class="mb-3">
                 <div class="input-group input-group-sm" style="max-width: 350px">
                   <select id="groupNewType" class="form-select"><option value="">Add type...</option></select>
-                  <button class="btn btn-outline-secondary" onclick="addGroupTypeRow()">Add</button>
+                  <button class="btn btn-outline-secondary" data-on-click="addGroupTypeRow">Add</button>
                 </div>
               </div>
 
@@ -191,7 +191,7 @@
             </div>
             <div class="modal-footer">
               <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-              <button type="button" class="btn btn-primary" id="groupModalSaveBtn" onclick="saveGroup()">Create</button>
+              <button type="button" class="btn btn-primary" id="groupModalSaveBtn" data-on-click="saveGroup">Create</button>
             </div>
           </div>
         </div>
@@ -202,7 +202,7 @@
     <div class="tab-pane fade" id="tab-security-tokens" role="tabpanel">
       <div class="d-flex justify-content-between align-items-center mb-3">
         <span class="text-muted small">Manage long-lived API tokens for programmatic access (MCP, REST API integrations).</span>
-        <button class="btn btn-sm btn-success" id="btnCreateToken" onclick="showCreateTokenForm()"><i class="fa fa-plus"></i> Create Token</button>
+        <button class="btn btn-sm btn-success" id="btnCreateToken" data-on-click="showCreateTokenForm"><i class="fa fa-plus"></i> Create Token</button>
       </div>
 
       <!-- Same gate as the Groups tab: a mint AND a revocation both travel as a security-api-tokens-entry. -->
@@ -232,7 +232,7 @@
                 </div>
                 <div class="col-md-4">
                   <label for="tokenDatabase" class="form-label">Database</label>
-                  <select id="tokenDatabase" class="form-select" onchange="loadTypesForTokenDatabase()">
+                  <select id="tokenDatabase" class="form-select" data-on-change="loadTypesForTokenDatabase">
                     <option value="*">* (All databases)</option>
                   </select>
                 </div>
@@ -269,7 +269,7 @@
               <div class="mb-3">
                 <div class="input-group input-group-sm" style="max-width: 350px">
                   <select id="tokenNewType" class="form-select"><option value="">Add type...</option></select>
-                  <button class="btn btn-outline-secondary" onclick="addTokenTypeRow()">Add</button>
+                  <button class="btn btn-outline-secondary" data-on-click="addTokenTypeRow">Add</button>
                 </div>
               </div>
 
@@ -279,7 +279,7 @@
             </div>
             <div class="modal-footer">
               <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-              <button type="button" class="btn btn-primary" onclick="createApiToken()">Create Token</button>
+              <button type="button" class="btn btn-primary" data-on-click="createApiToken">Create Token</button>
             </div>
           </div>
         </div>
@@ -299,7 +299,7 @@
               </div>
               <div class="input-group">
                 <input type="text" class="form-control font-monospace" id="createdTokenValue" readonly>
-                <button class="btn btn-primary" onclick="copyCreatedToken()"><i class="fa fa-copy"></i> Copy</button>
+                <button class="btn btn-primary" data-on-click="copyCreatedToken"><i class="fa fa-copy"></i> Copy</button>
               </div>
             </div>
             <div class="modal-footer">

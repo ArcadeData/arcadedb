@@ -387,8 +387,8 @@ function renderSupportOverview() {
       '<div class="col-md-5"><label class="form-label mb-1" for="supportClientKey" style="font-size: 0.82rem;">Client key</label>' +
       '<input type="password" class="form-control" id="supportClientKey" autocomplete="new-password" spellcheck="false" maxlength="256" placeholder="wsk_..."></div>';
     html +=
-      '<div class="col-md-3 d-flex gap-2"><button class="btn btn-sm btn-outline-secondary" id="supportVerifyBtn" onclick="supportVerify()">Verify</button>' +
-      '<button class="btn btn-sm btn-primary" id="supportRegisterBtn" onclick="supportRegister()"><i class="fa fa-link"></i> Register</button></div>';
+      '<div class="col-md-3 d-flex gap-2"><button class="btn btn-sm btn-outline-secondary" id="supportVerifyBtn"' + studioAction("supportVerify") + '>Verify</button>' +
+      '<button class="btn btn-sm btn-primary" id="supportRegisterBtn"' + studioAction("supportRegister") + '><i class="fa fa-link"></i> Register</button></div>';
     html += "</div>";
     html += '<div id="supportVerifyResult" class="mt-2"></div>';
     html += "</details>";
@@ -503,7 +503,7 @@ function supportStatusPanelHtml(s) {
   if (s.fromSettings) html += '<span class="support-hint">Registered through the server settings: change or remove them in the server configuration.</span>';
   else html += '<span class="support-hint">The key is stored on this server only.</span>';
   html +=
-    '<button class="btn btn-sm btn-outline-danger ms-auto" id="supportUnregisterBtn" onclick="supportUnregister()"' +
+    '<button class="btn btn-sm btn-outline-danger ms-auto" id="supportUnregisterBtn"' + studioAction("supportUnregister") +
     (s.fromSettings ? ' disabled title="Configured through the settings arcadedb.support.clientId and arcadedb.support.clientKey"' : "") +
     '><i class="fa fa-unlink"></i> Unregister</button>';
   html += "</div></div></div>";
@@ -715,9 +715,9 @@ function supportCollectFormHtml(prefix, withTitle) {
   html +=
     '<button class="btn btn-sm btn-outline-primary" id="' +
     prefix +
-    'PreviewBtn" onclick="supportPreview(\'' +
-    prefix +
-    '\')"><i class="fa fa-paperclip"></i> Prepare the attachments</button>';
+    'PreviewBtn"' +
+    studioAction("supportPreview", [prefix]) +
+    '><i class="fa fa-paperclip"></i> Prepare the attachments</button>';
   html += '<div id="' + prefix + 'Preview" class="mt-3"></div>';
   html += "</div>";
   return html;
@@ -963,7 +963,7 @@ function renderSupportIssueForm() {
   html += supportCollectFormHtml("spIssue");
   html += '<hr style="border-color: var(--border-light);">';
   html +=
-    '<button class="btn btn-primary" id="spIssueSendBtn" onclick="supportSendIssue()"><i class="fa fa-paper-plane"></i> Send to ArcadeData support</button> <span class="support-hint" id="spIssueSendHint"></span>';
+    '<button class="btn btn-primary" id="spIssueSendBtn"' + studioAction("supportSendIssue") + '><i class="fa fa-paper-plane"></i> Send to ArcadeData support</button> <span class="support-hint" id="spIssueSendHint"></span>';
   html += "</div>";
   $("#supportIssueModalBody").html(html);
   supportWireCollect("spIssue");
@@ -1332,9 +1332,9 @@ function renderSupportPublic() {
   html += supportCollectFormHtml("spPublic");
   html += '<hr style="border-color: var(--border-light);">';
   html +=
-    '<button class="btn btn-outline-primary" id="spPublicDownloadBtn" disabled onclick="supportDownloadBundle()"><i class="fa fa-download"></i> Download redacted bundle</button> ';
+    '<button class="btn btn-outline-primary" id="spPublicDownloadBtn" disabled' + studioAction("supportDownloadBundle") + '><i class="fa fa-download"></i> Download redacted bundle</button> ';
   html +=
-    '<button class="btn btn-primary" id="spPublicGithubBtn" onclick="supportOpenGithub()"><i class="fab fa-github"></i> Open GitHub issue</button>';
+    '<button class="btn btn-primary" id="spPublicGithubBtn"' + studioAction("supportOpenGithub") + '><i class="fab fa-github"></i> Open GitHub issue</button>';
   html +=
     '<div class="support-hint mt-2">The GitHub issue opens in a new tab with the title, your description and the environment summary filled in (the text is limited in length). Remember to attach the zip: drag it into the issue description.</div>';
   html += "</div>";

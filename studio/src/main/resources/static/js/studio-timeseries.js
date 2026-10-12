@@ -197,6 +197,14 @@ function tsGetTimeRange() {
   return { from: now - ms, to: now };
 }
 
+// Ctrl+Enter (Cmd+Enter on macOS) in the query box runs the query.
+function tsQueryEditorKeydown(event) {
+  if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+    tsExecuteQuery();
+    event.preventDefault();
+  }
+}
+
 function tsExecuteQuery() {
   if (tsQueryMode === "promql") {
     tsExecutePromQLQuery();
@@ -693,7 +701,7 @@ function tsDropType() {
 function tsAddDownsamplingPolicy(typeName) {
   var html = "<p style='font-size:0.85rem;'>Add downsampling tiers to <b>" + escapeHtml(typeName) + "</b>. Each tier defines when data older than a threshold gets downsampled to a coarser granularity.</p>";
   html += "<div id='tsDownsamplingTiers'></div>";
-  html += "<button type='button' class='btn btn-sm btn-outline-secondary mt-2' onclick='tsAddDownsamplingTierRow()'><i class='fa fa-plus'></i> Add Tier</button>";
+  html += "<button type='button' class='btn btn-sm btn-outline-secondary mt-2'" + studioAction("tsAddDownsamplingTierRow") + "><i class='fa fa-plus'></i> Add Tier</button>";
 
   globalPrompt("Add Downsampling Policy", html, "Apply", function () {
     var tiers = [];
@@ -748,7 +756,7 @@ function tsAddDownsamplingTierRow() {
   html += "<span style='font-size:0.82rem; white-space:nowrap;'>Granularity</span>";
   html += "<input class='form-control form-control-sm ts-ds-gran' type='number' min='1' placeholder='5' style='width:60px;'>";
   html += "<select class='form-select form-select-sm ts-ds-gran-unit' style='width:auto;'>" + unitOptions + "</select>";
-  html += "<button type='button' class='btn btn-sm btn-outline-danger' onclick='$(this).closest(\".ts-ds-tier-row\").remove()'><i class='fa fa-times'></i></button>";
+  html += "<button type='button' class='btn btn-sm btn-outline-danger'" + studioAction("studioRemoveClosest", [STUDIO_ARG_THIS, "ts-ds-tier-row"]) + "><i class='fa fa-times'></i></button>";
   html += "</div>";
   $("#tsDownsamplingTiers").append(html);
 }
@@ -932,11 +940,11 @@ function tsRenderTypeSchema(row) {
       html += "<tr><td>" + formatTsDuration(tier.afterMs) + "</td><td>" + formatTsDuration(tier.granularityMs) + "</td></tr>";
     }
     html += "</tbody></table></div>";
-    html += "<button class='btn btn-sm btn-outline-danger mt-1' onclick='tsDropDownsamplingPolicy(\"" + escapeHtml(row.name) + "\")'><i class='fa fa-trash'></i> Drop Policy</button> ";
+    html += "<button class='btn btn-sm btn-outline-danger mt-1'" + studioAction("tsDropDownsamplingPolicy", [row.name]) + "><i class='fa fa-trash'></i> Drop Policy</button> ";
   } else {
     html += "<p class='text-muted' style='font-size:0.82rem;'>No downsampling policy configured.</p>";
   }
-  html += "<button class='btn btn-sm btn-outline-primary mt-1' onclick='tsAddDownsamplingPolicy(\"" + escapeHtml(row.name) + "\")'><i class='fa fa-plus'></i> Add Downsampling Policy</button>";
+  html += "<button class='btn btn-sm btn-outline-primary mt-1'" + studioAction("tsAddDownsamplingPolicy", [row.name]) + "><i class='fa fa-plus'></i> Add Downsampling Policy</button>";
 
   // Per-shard stats
   if (row.shards && row.shards.length > 0) {
