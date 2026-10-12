@@ -90,7 +90,7 @@ public class AlterTimeSeriesTypeStatement extends DDLStatement {
 
     final String previous = tsType.getPrecision();
     // No save here: the setter saves, and replicates, the schema itself (issue #9747)
-    if (!TimeSeriesType.MILLISECOND_PRECISION.equals(previous))
+    if (!TimeSeriesType.MILLISECOND_PRECISION.equalsIgnoreCase(previous))
       tsType.setPrecision(precision);
 
     final ResultInternal result = new ResultInternal(context.getDatabase());
