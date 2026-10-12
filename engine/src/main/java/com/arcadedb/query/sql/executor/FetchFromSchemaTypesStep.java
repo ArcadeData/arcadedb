@@ -243,6 +243,11 @@ public class FetchFromSchemaTypesStep extends AbstractFetchFromSchemaListStep {
     // through RemoteSchema could not tell NANOSECOND from the default, so a builder round trip lost it silently.
     if (tsType.getPrecision() != null)
       r.setProperty("precision", tsType.getPrecision());
+    // Only on a type declared with another precision before issue #9800, whose retention and downsampling are
+    // suspended until ALTER TIMESERIES TYPE ... PRECISION MILLISECOND: the one place an operator can find it besides
+    // the warning the maintenance scheduler logs once
+    if (!tsType.isPrecisionHonoured())
+      r.setProperty("maintenanceSuspended", true);
     r.setProperty("shardCount", tsType.getShardCount());
     r.setProperty("retentionMs", tsType.getRetentionMs());
     r.setProperty("compactionBucketIntervalMs", tsType.getCompactionBucketIntervalMs());

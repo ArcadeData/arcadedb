@@ -182,16 +182,17 @@ class CypherMapBackticksTest {
 
   @Test
   void propertyAccessWithBackticks() {
-    // Test that property access with backticks works correctly
+    // Test that property access with backticks works correctly. `@kind` and not `@type`: the record metadata names
+    // cannot be stored as properties (issue #9799), any other @-prefixed key can
     database.transaction(() ->
       database.command("opencypher",
-        "CREATE (n:DOCUMENT {`@id`: 'test123', `@type`: 'document', name: 'Test'})"));
+        "CREATE (n:DOCUMENT {`@id`: 'test123', `@kind`: 'document', name: 'Test'})"));
 
     // Access properties using backticks
     final ResultSet result = database.query("opencypher",
       """
       MATCH (n:DOCUMENT) \
-      RETURN n.`@id` AS id, n.`@type` AS type, n.name AS name""");
+      RETURN n.`@id` AS id, n.`@kind` AS type, n.name AS name""");
 
     assertThat(result.hasNext()).isTrue();
     final Result row = result.next();

@@ -340,7 +340,7 @@ public class TimeSeriesTagDictionary extends PaginatedComponent {
     // A read transaction of our own, so this can be called from inside a scan. It must be the only one
     // rolled back at the end: load() is reachable from resolveMiss() mid-query, and discarding the
     // caller's transaction there would abort the very scan that asked for the value.
-    database.begin();
+    final OwnTransaction readTransaction = OwnTransaction.begin(database);
     try {
       final TransactionContext tx = database.getTransaction();
 
@@ -380,8 +380,7 @@ public class TimeSeriesTagDictionary extends PaginatedComponent {
       this.dataPageCount = pages;
       this.loaded = true;
     } finally {
-      if (database.isTransactionActive())
-        database.rollback();
+      readTransaction.rollbackIfMine();
     }
 
     // The file demonstrably holds these pages, whatever this instance's counter was seeded with. This

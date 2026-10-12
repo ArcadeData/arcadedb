@@ -151,11 +151,15 @@ public class FullBackupFormat extends AbstractBackupFormat {
       try (final TimeSeriesCompactionPause pause = pauseCompaction()) {
         writeArchive(backupFile, compressionLevel, compressionThreads, maxMBPerSecond, failure, archive -> {
           if (snapshotAttempt)
-            // #6114: NO DATABASE READ LOCK. The lock this path used to hold for its WHOLE duration existed only to
-            // keep the two configuration files consistent with the page files, by excluding the DDL that rewrites
-            // them - so a backup blocked CREATE TYPE / DROP TYPE / CREATE INDEX for as long as it ran. The window
+            // #6114: NO DATABASE READ LOCK OVER THE TRANSFER. The lock this path used to hold for its WHOLE duration
+            // existed only to keep the two configuration files consistent with the page files, by excluding the DDL that
+            // rewrites them - so a backup blocked CREATE TYPE / DROP TYPE / CREATE INDEX for as long as it ran. The window
             // now carries those files itself, captured at t0 together with the page list (see
-            // PageSnapshot.getConfigurationFiles), so there is nothing left for the lock to protect
+            // PageSnapshot.getConfigurationFiles), so the lock has nothing left to protect while the archive is written.
+            // The CAPTURE is the exception: opening the window and listing the TimeSeries sealed stores happen in one
+            // read-locked frame, because the window cannot carry those stores and a DROP TYPE between the two would
+            // archive a schema.json naming segments that are not in the archive (#7705, after #7671). See
+            // backupFromSnapshot for why, and for how little time the lock is held
             databaseOrigSize.set(backupFromSnapshot(archive, pause));
           else
             // THE FALLBACK STILL TAKES IT. Here the page image is the LIVE on-disk one, held still by the flush

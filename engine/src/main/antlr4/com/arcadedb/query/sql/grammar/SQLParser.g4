@@ -558,10 +558,12 @@ tsCodecClause
  * Example: ALTER TIMESERIES TYPE SensorData ADD DOWNSAMPLING POLICY AFTER 7 DAYS GRANULARITY 1 HOURS AFTER 30 DAYS GRANULARITY 1 DAYS
  * Example: ALTER TIMESERIES TYPE SensorData ADD DOWNSAMPLING POLICY AFTER 30 DAYS GRANULARITY 1 DAYS OFFSET -8 HOURS  (days start at local midnight in UTC+8, issue #8798)
  * Example: ALTER TIMESERIES TYPE SensorData DROP DOWNSAMPLING POLICY
+ * Example: ALTER TIMESERIES TYPE SensorData PRECISION MILLISECOND  (confirms a legacy type's unit, issue #9800)
  */
 alterTimeSeriesTypeBody
     : identifier ADD DOWNSAMPLING POLICY downsamplingTierClause+
     | identifier DROP DOWNSAMPLING POLICY
+    | identifier PRECISION tsPrecision
     ;
 
 downsamplingTierClause

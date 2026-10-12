@@ -135,10 +135,28 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
 
     final DocumentType[] superclasses = getSuperTypes(schema);
 
+    // Refused here, before anything is created, whenever the statement can already tell (#9846)
+    checkSuperTypesBeforeCreate(typeName, superclasses);
+
     final DocumentType type = createType(schema, typeName);
 
-    for (final DocumentType c : superclasses)
-      type.addSuperType(c);
+    try {
+      for (final DocumentType c : superclasses)
+        type.addSuperType(c);
+    } catch (final RuntimeException e) {
+      // The safety net for the refusals only addSuperType can know about (a partition the subtype cannot take, a time series
+      // hierarchy): the type is already registered by then, and a refused CREATE must leave nothing behind. This is a
+      // compensating drop, a second schema session, not an atomic undo: one frame around create plus link is not possible,
+      // because addSuperType waits for async quiescence OUTSIDE its frame (the write lock is what an async worker needs to
+      // commit), so holding the lock across it would stall. The refusals that can be known beforehand are checked before
+      // the create (checkSuperTypesBeforeCreate), which leaves no window at all
+      try {
+        schema.dropType(typeName);
+      } catch (final RuntimeException dropFailure) {
+        e.addSuppressed(dropFailure);
+      }
+      throw e;
+    }
 
     if (!customProperties.isEmpty()) {
       final Map<String, Object> applied = new LinkedHashMap<>();
@@ -152,6 +170,13 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
     }
 
     return new InternalResultSet(result);
+  }
+
+  /**
+   * Validates the super types against what this statement declares, BEFORE the type is created. The default accepts all.
+   */
+  protected void checkSuperTypesBeforeCreate(final String typeName, final DocumentType[] superclasses) {
+    // Nothing to refuse for a statement that declares nothing about its super types. CreateEdgeTypeStatement overrides this
   }
 
   protected DocumentType[] getSuperTypes(final Schema schema) {
