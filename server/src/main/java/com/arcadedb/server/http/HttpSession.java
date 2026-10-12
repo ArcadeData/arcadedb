@@ -57,6 +57,9 @@ public class HttpSession implements QuerySession {
   // The label the client gave the session at /begin (issue #9680): the statements run in it are listed with it, unless a
   // request carries a label of its own, and "terminate transaction" finds the session by it
   private volatile     String              tag;
+  // Raised by a bounded cancel that did not get the lock in time (issue #9774): the request holding it rolls the transaction
+  // back as it lets go, so a session removed from the manager cannot leak its transaction
+  private volatile     boolean             rollbackOnRelease;
 
   public HttpSession(final ServerSecurityUser user, final String id, final TransactionContext dbTx,
       final HttpSessionManager manager) {
@@ -130,6 +133,35 @@ public class HttpSession implements QuerySession {
 
     try {
       return rollbackIfActive();
+    } finally {
+      lock.unlock();
+    }
+  }
+
+  /**
+   * {@link #cancel()} for a caller that must not wait longer than {@code timeoutMs} for an in-flight {@link #execute} - a
+   * request thread ending the session on an administrator's behalf, {@code terminate transaction} (issue #9774). The wait of
+   * {@link #cancel()} is unbounded so a removed session cannot leak its transaction; this one is bounded for the same
+   * guarantee by other means: the rollback is asked of the session first, and whichever of the two lets go of the lock
+   * first performs it - this call if it gets the lock in time, the in-flight request on its way out otherwise.
+   *
+   * @return {@code true} when the transaction was rolled back here (or there was none to roll back), {@code false} when a
+   * request still runs in the session and will roll it back as it ends
+   */
+  public boolean cancel(final long timeoutMs) {
+    rollbackOnRelease = true;
+    try {
+      if (!lock.tryLock(Math.max(0, timeoutMs), TimeUnit.MILLISECONDS))
+        return false;
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+      return false;
+    }
+
+    try {
+      rollbackOnRelease = false;
+      rollbackIfActive();
+      return true;
     } finally {
       lock.unlock();
     }
@@ -284,7 +316,16 @@ public class HttpSession implements QuerySession {
         }
         throw e;
       } finally {
-        lock.unlock();
+        try {
+          if (rollbackOnRelease) {
+            // A bounded cancel gave up waiting for this request and removed the session: ending its transaction is this
+            // request's job now, before anything else can take the lock (issue #9774)
+            rollbackOnRelease = false;
+            rollbackIfActive();
+          }
+        } finally {
+          lock.unlock();
+        }
       }
     } else {
       throw new LockTimeoutException("Timeout on locking http session");

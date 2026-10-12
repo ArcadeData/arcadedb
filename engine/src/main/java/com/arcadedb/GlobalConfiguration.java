@@ -1873,7 +1873,10 @@ public enum GlobalConfiguration {
       up (its own deadline, a killed process, curl --max-time) does not leave the server working on an answer nobody will \
       read (issue #9689). Applies to HTTP/1.x connections without TLS, once the request body has been read. A client that \
       half-closes its side of the connection after sending the request and still waits for the response is taken for one \
-      that left, as Undertow itself takes it: set to false for such clients. Default is true""",
+      that left, as Undertow itself takes it: set to false for such clients. In a transaction session opened with /begin, a \
+      terminated command (POST /command, /batch) also rolls the session's transaction back and ends the session, as its \
+      failure would; a terminated read (GET or POST /query) or /ts, vector, PromQL or Grafana request leaves the session \
+      and its transaction as they were (issue #9798). Default is true""",
       Boolean.class, true),
 
   SERVER_HTTP_BODY_CONTENT_MAX_SIZE("arcadedb.server.httpBodyContentMaxSize", SCOPE.SERVER,

@@ -194,7 +194,7 @@ public class WebSocketInsertSessionManager {
 
       database = server.getDatabase(databaseName, false, false);
       session = new WebSocketInsertSession(id, database, user, channelId, options, externalId, externalSession,
-          () -> ErrorConcealment.isConcealing(server));
+          () -> ErrorConcealment.isConcealing(server), server.getRunningQueries());
       // Before it is registered, not after: a session the sweep can see must already know where to send its
       // expiry, or the sweep would have nothing to dispatch to and would roll it back on its own thread.
       session.setChannel(channel);
