@@ -723,11 +723,7 @@ public class PromQLEvaluator {
         continue;
       // A matcher value is always text and the stored tag is of the column's declared type: compared as text, a LONG or
       // BOOLEAN tag matched nothing. Coerced as every other tag push-down coerces it (issues #5475, #9803)
-      final ColumnDefinition column = nonTsColumn(idx, columns);
-      // Text that is not a boolean selects no series of a BOOLEAN tag: coerced, it would read as false and select those. Kept
-      // as text, it equals no stored value, as a number that does not parse already does for a numeric tag
-      final Object value = column.getDataType() == Type.BOOLEAN && !"true".equalsIgnoreCase(m.value()) && !"false".equalsIgnoreCase(
-          m.value()) ? m.value() : column.coerceValue(m.value());
+      final Object value = coerceTagValue(nonTsColumn(idx, columns), m.value());
       filter = filter == null ? TagFilter.eq(idx, value) : filter.and(idx, value);
     }
     return filter;
@@ -899,6 +895,18 @@ public class PromQLEvaluator {
           Use explicit column selection or split into separate types""",
           null, typeName, fieldCount, firstName);
     }
+  }
+
+  /**
+   * The value an equality matcher compares a tag with: the matcher's text in the column's declared type, so a LONG or BOOLEAN tag
+   * is compared like with like (issues #5475, #9803). Text the type cannot read stays text, which equals no stored value and so
+   * selects no series: {@code coerceValue} already leaves a number that does not parse as it is, but reads any text that is not
+   * {@code true} as {@code false}, which would select the series whose tag is false.
+   */
+  static Object coerceTagValue(final ColumnDefinition column, final String text) {
+    if (column.getDataType() == Type.BOOLEAN && !"true".equalsIgnoreCase(text) && !"false".equalsIgnoreCase(text))
+      return text;
+    return column.coerceValue(text);
   }
 
   private int findNonTsColumnIndex(final String name, final List<ColumnDefinition> columns) {

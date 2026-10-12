@@ -60,7 +60,9 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   // through the index may be missing the sub-indexes already gone (#9651)
   private volatile boolean          dropping         = false;
   // Moved around every change of indexesOnBuckets, odd while one is under way: what getForQuery() checks before and after a
-  // read to know nobody changed the sub-indexes under it, without copying the list on a hot path (#9811)
+  // read to know nobody changed the sub-indexes under it, without copying the list on a hot path (#9811). The changes come from
+  // DDL, which runs under the schema's write lock, so one writer at a time; the before/after comparison alone would still catch
+  // overlapping writers, only the "odd means under way" shortcut relies on there being one
   private final AtomicLong          subIndexChanges  = new AtomicLong();
   private       IndexInternal       associatedIndex;
   private       IndexMetadata       metadata;

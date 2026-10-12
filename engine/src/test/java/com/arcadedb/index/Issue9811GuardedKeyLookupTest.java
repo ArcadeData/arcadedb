@@ -27,6 +27,7 @@ import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -35,6 +36,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.awaitility.Awaitility.await;
 import static org.assertj.core.api.Assertions.catchThrowable;
 
 /**
@@ -159,7 +161,8 @@ class Issue9811GuardedKeyLookupTest extends TestHelper {
 
     ddl.start();
     readers.forEach(Thread::start);
-    Thread.sleep(3_000);
+    // at least 3 s of churn, and until the readers found the key a few times: a loaded runner may leave few windows open
+    await().pollDelay(Duration.ofSeconds(3)).atMost(Duration.ofSeconds(60)).until(() -> found.get() >= 20 || failure.get() != null);
     stop.set(true);
     ddl.join(60_000);
     for (final Thread reader : readers)
@@ -213,7 +216,7 @@ class Issue9811GuardedKeyLookupTest extends TestHelper {
 
     ddl.start();
     merger.start();
-    Thread.sleep(3_000);
+    await().pollDelay(Duration.ofSeconds(3)).atMost(Duration.ofSeconds(60)).until(() -> merges.get() >= 20 || failure.get() != null);
     stop.set(true);
     ddl.join(60_000);
     merger.join(60_000);
