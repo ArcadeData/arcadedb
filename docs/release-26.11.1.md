@@ -61,7 +61,8 @@ it was the 0 weight of an edge without one. A custom subclass that referenced it
   they answered one NULL row per record (`vectorSum(...)` and `` `vector.sum`(...) `` were fine) and in openCypher
   (`RETURN vector.sum(d.v)`) they had no working spelling at all. A dotted call is now a function call exactly when the
   function is registered, in both languages, so the next namespace somebody adds cannot drift again. A property named like
-  a namespace keeps its own methods (`vector.size()` on a `vector` column).
+  a namespace keeps its own methods (`vector.size()` on a `vector` column), while a registered name (`vector.max()`) wins
+  over the method of a property called `vector`, as it already did at run time; back-tick the property to address it.
 - **A map with a non-String key renders as JSON (#9805).** A `MAP` property accepts an Integer key and a Gremlin
   `elementMap()` is keyed by the `T` enum, but `Result.toJSON()`, `convert.toJson()`, `asJSON()` and the Postgres wire threw
   `ClassCastException` for such a row (and a `null` key an `IllegalArgumentException`). The member name is now the text of
