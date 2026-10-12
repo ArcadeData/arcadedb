@@ -19,6 +19,8 @@
 package com.arcadedb.serializer;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.Binary;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
@@ -35,7 +37,9 @@ import java.io.InvalidClassException;
 import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -144,6 +148,54 @@ class Issue9842ExternalizedRecordStreamTest extends TestHelper {
     assertThat(target.getIdentity()).isEqualTo(doc.getIdentity());
     assertThat(target.toMap(false)).isEqualTo(doc.toMap(false));
     assertThat(target.getString("s")).isEqualTo("x");
+  }
+
+  /**
+   * A stream written before the fix carries {@code @cat}, {@code @type} and {@code @rid} among its properties. It must still read:
+   * {@code fromMap} discards every {@code @}-prefixed entry, so the metadata never reaches the record and the identity is the
+   * one of the header. The stream is built by hand here, in the old layout, because the writer no longer produces it.
+   */
+  @Test
+  void aStreamWrittenWithMetadataPropertiesStillReads() throws Exception {
+    database.getSchema().createDocumentType("Doc").createProperty("n", Type.INTEGER);
+    final DatabaseInternal db = (DatabaseInternal) database;
+    final RID identity = db.newRID(1, 0);
+
+    final Map<String, Object> properties = new LinkedHashMap<>();
+    properties.put("n", 1);
+    properties.put("s", "x");
+    properties.put("@cat", "d");
+    properties.put("@type", "Doc");
+    properties.put("@rid", "#1:0");
+
+    final ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+    try (final ObjectOutputStream out = new ObjectOutputStream(bytes)) {
+      out.writeInt(identity.getBucketId());
+      out.writeLong(identity.getPosition());
+      out.writeInt(properties.size());
+      final Binary buffer = new Binary();
+      for (final Map.Entry<String, Object> property : properties.entrySet()) {
+        final byte type = BinaryTypes.getTypeFromValue(property.getValue(), null);
+        buffer.clear();
+        buffer.putByte(type);
+        db.getSerializer().serializeValue(db, buffer, type, property.getValue());
+        buffer.flip();
+        out.writeUTF(property.getKey());
+        out.writeInt(buffer.size());
+        out.write(buffer.getContent(), 0, buffer.size());
+      }
+    }
+
+    final MutableDocument target = database.newDocument("Doc");
+    try (final ObjectInputStream in = new ObjectInputStream(new ByteArrayInputStream(bytes.toByteArray()))) {
+      target.readExternal(in);
+    }
+
+    assertThat(target.getIdentity()).isEqualTo(identity);
+    assertThat(target.toMap(false)).containsOnlyKeys("n", "s");
+    assertThat(target.getInteger("n")).isEqualTo(1);
+    assertThat(target.getString("s")).isEqualTo("x");
+    assertThat(target.getTypeName()).as("the type is the caller's, not the stream's").isEqualTo("Doc");
   }
 
   /**
