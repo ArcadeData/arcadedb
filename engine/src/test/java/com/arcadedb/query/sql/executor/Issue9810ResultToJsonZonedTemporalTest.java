@@ -29,6 +29,7 @@ import org.junit.jupiter.api.Test;
 import java.time.LocalTime;
 import java.time.OffsetTime;
 import java.time.ZonedDateTime;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -153,6 +154,17 @@ class Issue9810ResultToJsonZonedTemporalTest extends TestHelper {
 
     assertThat(json.toString()).isEqualTo(
         "{\"n\":null,\"i\":1,\"b\":true,\"s\":\"text\",\"m\":{\"x\":\"y\",\"t\":\"" + OFFSET + "\"},\"l\":[1,2]}");
+  }
+
+  /** A null key is written as the text "null" rather than refusing the whole map: a deliberate contract, pinned here. */
+  @Test
+  void aMapWithANullKeyIsWrittenWithTheTextNullAsItsKey() {
+    final Map<String, Object> map = new HashMap<>();
+    map.put(null, "orphan");
+
+    final JSONObject json = (JSONObject) new ResultInternal(database).valueToJSON(map);
+
+    assertThat(json.getString("null")).isEqualTo("orphan");
   }
 
   @Test
