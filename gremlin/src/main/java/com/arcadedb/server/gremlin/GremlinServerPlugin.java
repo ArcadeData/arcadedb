@@ -19,6 +19,7 @@
 package com.arcadedb.server.gremlin;
 
 import com.arcadedb.ContextConfiguration;
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.gremlin.ArcadeGraph;
 import com.arcadedb.gremlin.io.ArcadeIoRegistry;
 import com.arcadedb.log.LogManager;
@@ -72,6 +73,9 @@ public class GremlinServerPlugin implements ServerPlugin {
   private              GremlinServer        gremlinServer;
   private              ExecutorService      gremlinExecutorService;
   private volatile     int                  boundPort;
+  // The configured channelizer when it cannot conceal engine error text, from the moment it is chosen until the Gremlin
+  // Server built with it has stopped; null otherwise. A runtime switch to production mode is refused while it is set
+  private volatile     String               nonConcealingChannelizer;
 
   @Override
   public void configure(final ArcadeDBServer arcadeDBServer, final ContextConfiguration configuration) {
@@ -131,6 +135,9 @@ public class GremlinServerPlugin implements ServerPlugin {
 
     // Production mode conceals the text of an engine failure on every surface (issues #9317, #9639)
     settings.channelizer = resolveChannelizer(settings.channelizer, server.isProductionMode());
+    // Set before the server is built, so a switch to production mode is refused for as long as it could be serving with
+    // this channelizer (issue #9749). The plugin starts before the HTTP listener, so no runtime switch races the read above
+    nonConcealingChannelizer = ConcealingWebSocketChannelizer.class.getName().equals(settings.channelizer) ? null : settings.channelizer;
 
     // GremlinServer cannot report an OS-chosen port, so a configured 0 becomes a concrete free port here
     if (settings.port == 0)
@@ -206,7 +213,7 @@ public class GremlinServerPlugin implements ServerPlugin {
           + " or the 'gremlin.channelizer' setting) cannot conceal engine error messages, which 'arcadedb.server.mode=production'"
           + " requires: use the default channelizer (" + WebSocketChannelizer.class.getName() + ") or run the server in another mode");
     LogManager.instance().log(GremlinServerPlugin.class, Level.WARNING,
-        "Gremlin Server channelizer '%s' does not conceal engine error messages: the server will refuse to start with it in production mode",
+        "Gremlin Server channelizer '%s' does not conceal engine error messages: the server will refuse to start with it in production mode, and to switch to production mode while it runs",
         null, channelizer);
     return channelizer;
   }
@@ -265,6 +272,23 @@ public class GremlinServerPlugin implements ServerPlugin {
       LogManager.instance().log(this, Level.WARNING, "Error releasing the Gremlin Server after a failed start: %s", null,
           e.toString());
     }
+  }
+
+  /**
+   * Refuses a runtime switch of {@code arcadedb.server.mode} to {@code production} while the Gremlin Server runs with a
+   * channelizer that cannot conceal engine error text (issue #9749). The channelizer is fixed once the server listens, so
+   * the switch would otherwise leave it answering with {@code Throwable.getMessage()} - stored duplicated-key values
+   * included - under a setting every other surface honours per request. The start refuses the same combination
+   * (issue #9639); the default channelizer conceals per message and accepts the switch.
+   */
+  @Override
+  public void checkServerSettingChange(final GlobalConfiguration setting, final Object value) {
+    final String channelizer = nonConcealingChannelizer;
+    if (channelizer != null && setting == GlobalConfiguration.SERVER_MODE && "production".equals(value))
+      throw new IllegalArgumentException("Cannot switch '" + GlobalConfiguration.SERVER_MODE.getKey()
+          + "' to production while the Gremlin Server runs with channelizer '" + channelizer
+          + "', which cannot conceal engine error messages: restart the server in production mode with the default channelizer ("
+          + WebSocketChannelizer.class.getName() + ")");
   }
 
   /** Active only while the Gremlin Server is listening, so a plugin whose bind failed is not reported as started. */
@@ -480,6 +504,9 @@ public class GremlinServerPlugin implements ServerPlugin {
       if (stopped)
         gremlinServer = null;
     }
+    // Only a server that confirmed its stop no longer serves with the channelizer
+    if (gremlinServer == null)
+      nonConcealingChannelizer = null;
     if (gremlinExecutorService != null) {
       gremlinExecutorService.shutdownNow();
       gremlinExecutorService = null;

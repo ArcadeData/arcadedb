@@ -19,6 +19,7 @@
 package com.arcadedb.server;
 
 import com.arcadedb.ContextConfiguration;
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.http.HttpServer;
 import io.undertow.server.handlers.PathHandler;
 
@@ -106,6 +107,33 @@ public interface ServerPlugin {
    */
   default void onDatabaseUnregistered(final String databaseName) {
     // DEFAULT IMPLEMENTATION
+  }
+
+  /**
+   * Invoked before an operator changes a declared server setting while the server runs ({@code set server setting}
+   * over HTTP and gRPC, the {@code set_server_setting} MCP tool), with the value already parsed to the setting's type.
+   * A plugin whose running state is incompatible with the new value refuses it by throwing
+   * {@link IllegalArgumentException} with a message the operator can act on: nothing is stored, and every transport
+   * answers the refusal as a rejected argument.
+   * <p>
+   * This exists for a decision a plugin can only take at start: the Gremlin Server's channelizer is fixed once it
+   * listens, so a runtime switch of {@code arcadedb.server.mode} to {@code production} would otherwise leave a
+   * channelizer that cannot conceal engine error text serving it under a setting that promises otherwise (issue #9749).
+   * <p>
+   * Only those operator surfaces ask, and only for a DECLARED setting: a key that names no {@link GlobalConfiguration} is
+   * stored without asking, and code embedding the server that writes its {@code ContextConfiguration} (or a
+   * {@code GlobalConfiguration}) directly bypasses the hook. A new runtime writer of server settings has to call
+   * {@link ArcadeDBServer#checkServerSettingChange} before it stores.
+   * <p>
+   * Called on the request thread, so the implementation has to be short and non-blocking.
+   *
+   * @param setting the setting about to change
+   * @param value   its new value, coerced to the setting's type
+   *
+   * @throws IllegalArgumentException to refuse the change
+   */
+  default void checkServerSettingChange(final GlobalConfiguration setting, final Object value) {
+    // DEFAULT IMPLEMENTATION: EVERY CHANGE IS ACCEPTED
   }
 
   /**
