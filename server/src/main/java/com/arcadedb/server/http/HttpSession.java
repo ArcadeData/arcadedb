@@ -157,7 +157,10 @@ public class HttpSession implements QuerySession {
         return false;
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
-      return false;
+      // An interrupted wait may never have tried the lock: with nobody holding it, nobody would roll back. One attempt that
+      // cannot block settles it - taken, the rollback happens here; held, the holder performs it on release
+      if (!lock.tryLock())
+        return false;
     }
 
     try {

@@ -98,6 +98,26 @@ class Issue9774TerminateTransactionBoundedTest extends BaseGraphServerTest {
     assertThat(getServerDatabase(0, getDatabaseName()).countType("Person", false)).isZero();
   }
 
+  /** An interrupted caller may never have tried the lock: with nobody holding it, the bounded cancel rolls back itself. */
+  @Test
+  void anInterruptedBoundedCancelOfAnIdleSessionStillRollsItBack() throws Exception {
+    final ServerSecurityUser root = getServer(0).getSecurity().getUser("root");
+    final String transactionId = httpBegin();
+    assertThat(httpCommand(transactionId, "INSERT INTO Person SET name = 'pending'")).isEqualTo(200);
+    final HttpSession session = getServer(0).getHttpServer().getSessionManager().getSessionById(root, transactionId);
+    assertThat(session.transaction.isActive()).isTrue();
+
+    Thread.currentThread().interrupt();
+    final boolean rolledBack;
+    try {
+      rolledBack = session.cancel(500);
+    } finally {
+      assertThat(Thread.interrupted()).as("the interrupt is kept for the caller").isTrue();
+    }
+    assertThat(rolledBack).isTrue();
+    assertThat(session.transaction.isActive()).isFalse();
+  }
+
   @Test
   void aChunkInTheCallersSessionIsListedUnderItAndStoppedByTerminateTransaction() throws Throwable {
     final ServerSecurityUser root = getServer(0).getSecurity().getUser("root");
