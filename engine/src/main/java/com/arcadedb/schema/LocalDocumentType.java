@@ -32,6 +32,8 @@ import com.arcadedb.database.bucketselectionstrategy.PartitionedBucketSelectionS
 import com.arcadedb.database.bucketselectionstrategy.RoundRobinBucketSelectionStrategy;
 import com.arcadedb.database.bucketselectionstrategy.ThreadBucketSelectionStrategy;
 import com.arcadedb.engine.Bucket;
+import com.arcadedb.engine.ComponentFile;
+import com.arcadedb.engine.FileManager;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.Index;
@@ -345,10 +347,91 @@ public class LocalDocumentType implements DocumentType {
     // capturing a name the first is in the middle of replacing and racing it over the same bucket files (#7937).
     renameLock.lock();
     try {
-      renameInternal(newName);
+      if (renameLock.getHoldCount() > 1)
+        // Nested in this type's own rename: a subclass renaming the document part, or a rollback putting it back. The
+        // outermost call publishes the result once.
+        renameInternal(newName);
+      else
+        renameAndPublish(newName);
     } finally {
       renameLock.unlock();
     }
+  }
+
+  /**
+   * Moves every file of the type under the new name. The document type's own steps; {@link LocalVertexType} adds its edge
+   * buckets and super-node stripe pool, calling {@link #rename} for this part. Runs with {@link #renameLock} held.
+   */
+  protected void renameFiles(final String newName) {
+    renameInternal(newName);
+  }
+
+  /**
+   * The outermost rename of this type (issue #9762). The files are moved first, outside every lock (see {@link #rename}),
+   * and then a schema recording session publishes the result: the schema, and which file now carries which component
+   * name. Under HA that session is what ships the rename to the followers - a bare schema save renamed the type and its
+   * buckets on the leader alone, so a follower kept answering to the old name, and the next schema entry named bucket
+   * files it did not have and made it drop the type's buckets on its next reload. A {@code SCHEMA_ENTRY} carries files to
+   * create and to remove, not renames, so the session records them explicitly and the follower moves the same files
+   * before it loads a schema naming them.
+   * <p>
+   * Refused before a single file moves when the change could not be published (a replica, or a peer that cannot decode
+   * the renames). A refusal from the session itself - leadership lost in between - finds the files already moved and puts
+   * them back; a failure after the session ran its callback is the replication layer's to handle, the schema having been
+   * saved locally with the new names.
+   */
+  private void renameAndPublish(final String newName) {
+    final String oldName = name;
+    final DatabaseInternal database = ((DatabaseInternal) schema.getDatabase()).getWrappedDatabaseInstance();
+    database.checkFileRenamesCanBePublished();
+
+    final Map<Integer, String> componentNamesBefore = componentNamesOfFiles(database.getFileManager());
+
+    renameFiles(newName);
+
+    final boolean[] sessionStarted = new boolean[1];
+    try {
+      schema.recordFileChanges(() -> {
+        sessionStarted[0] = true;
+        final FileManager fileManager = database.getFileManager();
+        for (final Map.Entry<Integer, String> entry : componentNamesBefore.entrySet()) {
+          final ComponentFile file = fileManager.getFileIfExists(entry.getKey());
+          if (file != null && !entry.getValue().equals(file.getComponentName()))
+            fileManager.recordRename(entry.getKey(), file.getComponentName());
+        }
+        return null;
+      });
+    } catch (final RuntimeException e) {
+      if (!sessionStarted[0])
+        try {
+          renameFiles(oldName);
+        } catch (final RuntimeException rollbackFailure) {
+          e.addSuppressed(rollbackFailure);
+        }
+      throw e;
+    }
+  }
+
+  /**
+   * File id to component name of every file a rename of this type can move: its buckets with the ones a subclass involves
+   * (edge buckets, stripe pool) and the components of its indexes. Only this type's files, so a concurrent rename of
+   * another type is never published early by this one.
+   */
+  private Map<Integer, String> componentNamesOfFiles(final FileManager fileManager) {
+    final Map<Integer, String> names = new LinkedHashMap<>();
+    for (final Bucket bucket : getInvolvedBuckets())
+      putComponentName(fileManager, bucket.getFileId(), names);
+    for (final TypeIndex index : getAllIndexes(false))
+      for (final IndexInternal subIndex : index.getIndexesOnBuckets())
+        for (final Integer fileId : subIndex.getFileIds())
+          putComponentName(fileManager, fileId, names);
+    return names;
+  }
+
+  private static void putComponentName(final FileManager fileManager, final int fileId, final Map<Integer, String> names) {
+    final ComponentFile file = fileManager.getFileIfExists(fileId);
+    if (file != null)
+      names.put(fileId, file.getComponentName());
   }
 
   private void renameInternal(final String newName) {

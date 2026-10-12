@@ -353,8 +353,30 @@ public final class RaftLogEntryCodec {
        * predates the section. The leader refuses a transaction whose index is older than the last schema-changing
        * entry it applied, because that transaction was prepared against a schema the cluster has already moved past.
        */
-      long txPreparedAtIndex
+      long txPreparedAtIndex,
+      /**
+       * The component files a {@code SCHEMA_ENTRY} renames, file id to the new COMPONENT name (issue #9762) - the file
+       * name minus the {@code .fileId.pageSize.vVersion.ext} tail, which the receiver recomposes from its own file. Empty
+       * on every other entry type, on a schema change that renamed nothing, and on an entry written by a node that
+       * predates the section. The receiver moves these files before it loads the schema the entry publishes, which names
+       * them by their new names.
+       */
+      Map<Integer, String> filesToRename
   ) {
+
+    /** Every entry but a {@code SCHEMA_ENTRY} carrying renames: no file is renamed. */
+    public DecodedEntry(final RaftLogEntryType type, final String databaseName, final byte[] walData,
+        final Map<Integer, Integer> bucketRecordDelta, final String schemaJson, final Map<Integer, String> filesToAdd,
+        final Map<Integer, String> filesToRemove, final List<byte[]> walEntries,
+        final List<Map<Integer, Integer>> bucketDeltas, final String usersJson, final boolean forceSnapshot,
+        final String bootstrapFingerprint, final long bootstrapLastTxId, final List<TsSealedBlob> sealedFileBlobs,
+        final boolean moreChunksFollow, final List<TsSealedChunk> sealedFileChunks, final SchemaDelta.Payload schemaDelta,
+        final String securityPrecondition, final long txPreparedAtIndex) {
+      this(type, databaseName, walData, bucketRecordDelta, schemaJson, filesToAdd, filesToRemove, walEntries,
+          bucketDeltas, usersJson, forceSnapshot, bootstrapFingerprint, bootstrapLastTxId, sealedFileBlobs,
+          moreChunksFollow, sealedFileChunks, schemaDelta, securityPrecondition, txPreparedAtIndex,
+          Collections.emptyMap());
+    }
 
     /** The same entry with the values the trailing extension sections carried; the decoder reads them after the body. */
     DecodedEntry withTrailingSections(final TrailingSections sections) {
@@ -363,9 +385,16 @@ public final class RaftLogEntryCodec {
           new DecodedEntry(type, databaseName, walData, bucketRecordDelta, schemaJson, filesToAdd, filesToRemove,
               walEntries, bucketDeltas, usersJson, forceSnapshot, bootstrapFingerprint, bootstrapLastTxId,
               sealedFileBlobs, moreChunksFollow, sealedFileChunks, schemaDelta, sections.securityPrecondition(),
-              sections.txPreparedAtIndex());
+              sections.txPreparedAtIndex(), filesToRename);
     }
   }
+
+  /**
+   * The base version written in the schema-delta slot of a {@code SCHEMA_ENTRY} that carries NO delta but has to write
+   * the slot anyway, because a section after it is present (issue #9762). Read back together with two zero lengths, which
+   * no real delta has - a delta is a non-empty JSON document - so the pair cannot be mistaken for one.
+   */
+  static final long NO_SCHEMA_DELTA_BASE_VERSION = Long.MIN_VALUE;
 
   /** What the framed extension sections of one entry carried; a field an entry did not carry stays at its "absent" value. */
   record TrailingSections(String securityPrecondition, long txPreparedAtIndex) {
@@ -585,6 +614,28 @@ public final class RaftLogEntryCodec {
       final List<byte[]> walEntries, final List<Map<Integer, Integer>> bucketDeltas,
       final List<TsSealedBlob> sealedFileBlobs, final boolean moreChunksFollow,
       final List<TsSealedChunk> sealedFileChunks, final SchemaDelta.Payload schemaDelta) {
+    return encodeSchemaEntry(databaseName, schemaJson, filesToAdd, filesToRemove, walEntries, bucketDeltas,
+        sealedFileBlobs, moreChunksFollow, sealedFileChunks, schemaDelta, Collections.emptyMap());
+  }
+
+  /**
+   * @param filesToRename the component files the change renamed, file id to new component name (issue #9762), or empty.
+   *                      Written as the last trailing section, after the schema-delta slot - which is therefore
+   *                      written whenever this section is, holding {@link #NO_SCHEMA_DELTA_BASE_VERSION} and two zero
+   *                      lengths when the entry carries no delta, the same way the sealed-slice count is forced out for
+   *                      a delta. An empty map writes nothing, so an entry without renames is byte-identical to what the
+   *                      previous codec produced. A node predating the section refuses an entry carrying it (#7219's
+   *                      trailing-bytes backstop), which is why the leader writes it only once every peer advertises
+   *                      {@link PeerCapabilities#SCHEMA_FILE_RENAMES}, and refuses the rename otherwise: there is no
+   *                      degraded form of a rename to ship instead.
+   */
+  public static ByteString encodeSchemaEntry(final String databaseName, final String schemaJson,
+      final Map<Integer, String> filesToAdd, final Map<Integer, String> filesToRemove,
+      final List<byte[]> walEntries, final List<Map<Integer, Integer>> bucketDeltas,
+      final List<TsSealedBlob> sealedFileBlobs, final boolean moreChunksFollow,
+      final List<TsSealedChunk> sealedFileChunks, final SchemaDelta.Payload schemaDelta,
+      final Map<Integer, String> filesToRename) {
+    final boolean renames = filesToRename != null && !filesToRename.isEmpty();
     try {
       final ByteArrayOutputStream baos = new ByteArrayOutputStream();
       final DataOutputStream dos = new DataOutputStream(baos);
@@ -653,7 +704,7 @@ public final class RaftLogEntryCodec {
       // before it. Writing a zero here is understood by every decoder that already handles this section - it
       // is the same value an entry with an empty slice list would carry - so the entry stays readable.
       final int chunkCount = sealedFileChunks != null ? sealedFileChunks.size() : 0;
-      if (chunkCount > 0 || schemaDelta != null) {
+      if (chunkCount > 0 || schemaDelta != null || renames) {
         dos.writeInt(chunkCount);
         for (int i = 0; i < chunkCount; i++) {
           final TsSealedChunk chunk = sealedFileChunks.get(i);
@@ -687,7 +738,16 @@ public final class RaftLogEntryCodec {
         dos.writeInt(deltaBytes.length);        // uncompressed length
         dos.writeInt(compressedDelta.length);   // compressed length
         dos.write(compressedDelta);
+      } else if (renames) {
+        // The slot is positional: a rename section after it needs it written, empty
+        dos.writeLong(NO_SCHEMA_DELTA_BASE_VERSION);
+        dos.writeInt(0);
+        dos.writeInt(0);
       }
+
+      // File rename section (issue #9762). Last, written only when there is something to rename.
+      if (renames)
+        writeFileMap(dos, filesToRename);
 
       dos.flush();
       return ByteString.copyFrom(baos.toByteArray());
@@ -1203,6 +1263,10 @@ public final class RaftLogEntryCodec {
       final long baseVersion = dis.readLong();
       final int uncompressedLen = dis.readInt();
       final int compressedLen = dis.readInt();
+      if (baseVersion == NO_SCHEMA_DELTA_BASE_VERSION && uncompressedLen == 0 && compressedLen == 0)
+        // An empty slot, written only because a section after it is present (issue #9762)
+        return decodeSchemaEntryRenames(dis, databaseName, schemaJson, filesToAdd, filesToRemove, walEntries,
+            bucketDeltas, sealedFileBlobs, moreChunksFollow, sealedFileChunks, null);
       checkByteLength(compressedLen, dis.available(), "SCHEMA_ENTRY schema delta compressed");
       checkDecompressedLength(uncompressedLen, compressedLen, "SCHEMA_ENTRY schema delta uncompressed");
       final byte[] compressed = new byte[compressedLen];
@@ -1211,7 +1275,28 @@ public final class RaftLogEntryCodec {
       schemaDelta = new SchemaDelta.Payload(baseVersion, new String(raw, StandardCharsets.UTF_8));
     }
 
-    // Nothing is written after the delta section by any producer in this codec, so bytes left here belong to a
+    return decodeSchemaEntryRenames(dis, databaseName, schemaJson, filesToAdd, filesToRemove, walEntries, bucketDeltas,
+        sealedFileBlobs, moreChunksFollow, sealedFileChunks, schemaDelta);
+  }
+
+  /** The file rename section of a {@code SCHEMA_ENTRY} (issue #9762), the last one, and the trailing-bytes backstop. */
+  private static DecodedEntry decodeSchemaEntryRenames(final DataInputStream dis, final String databaseName,
+      final String schemaJson, final Map<Integer, String> filesToAdd, final Map<Integer, String> filesToRemove,
+      final List<byte[]> walEntries, final List<Map<Integer, Integer>> bucketDeltas,
+      final List<TsSealedBlob> sealedFileBlobs, final boolean moreChunksFollow,
+      final List<TsSealedChunk> sealedFileChunks, final SchemaDelta.Payload schemaDelta) throws IOException {
+    // Same presence rule as every section before it: absent on an entry that renamed nothing and on one produced by an
+    // older codec
+    Map<Integer, String> filesToRename = Collections.emptyMap();
+    if (dis.available() > 0) {
+      filesToRename = readFileMap(dis);
+      for (final Map.Entry<Integer, String> rename : filesToRename.entrySet())
+        if (rename.getValue() == null || rename.getValue().isEmpty())
+          throw new IllegalStateException("SCHEMA_ENTRY for database '" + databaseName + "' renames file id "
+              + rename.getKey() + " to no name (corrupted replication payload)");
+    }
+
+    // Nothing is written after the rename section by any producer in this codec, so bytes left here belong to a
     // section a NEWER node added. Refusing beats accepting (issue #7219): every other section of this entry has
     // already been read, so accepting would apply a change this node can only see part of - and the part it
     // cannot see is, by construction, the part that carries meaning. A refusal is a RaftLogEntryDecodeException
@@ -1230,7 +1315,7 @@ public final class RaftLogEntryCodec {
 
     return new DecodedEntry(RaftLogEntryType.SCHEMA_ENTRY, databaseName, null, null,
         schemaJson, filesToAdd, filesToRemove, walEntries, bucketDeltas, null, false, null, -1L, sealedFileBlobs,
-        moreChunksFollow, sealedFileChunks, schemaDelta, null, -1L);
+        moreChunksFollow, sealedFileChunks, schemaDelta, null, -1L, filesToRename);
   }
 
   private static DecodedEntry decodeInstallDatabaseEntry(final DataInputStream dis, final String databaseName) throws IOException {
