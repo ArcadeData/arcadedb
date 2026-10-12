@@ -124,6 +124,15 @@ public abstract class SQLFunctionFactoryTemplate implements SQLFunctionFactory {
     return functions.containsKey(name);
   }
 
+  /**
+   * Whether {@code name} (lower case) was registered as one INSTANCE, which every query shares and which nobody may reconfigure
+   * on behalf of another, rather than as a class, of which {@link #getFunctionInstance(String)} makes a fresh instance for each
+   * call (the stateful functions, the aggregates above all).
+   */
+  public boolean isSharedInstance(final String name) {
+    return functions.get(name) instanceof SQLFunction;
+  }
+
   @Override
   public Set<String> getFunctionNames() {
     return functions.keySet();

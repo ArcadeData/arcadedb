@@ -1786,10 +1786,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   @Override
   public void deleteRecord(final Record record) {
-    executeInReadLock(() -> {
-      deleteRecordNoLock(record);
-      return null;
-    });
+    // the same path as the caller that counts: deleteRecordReportingVeto(), so the two cannot drift (issue #9837)
+    deleteRecordReportingVeto(record);
   }
 
   @Override
