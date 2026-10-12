@@ -38,6 +38,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * orphaned its edges; on an edge both methods threw a raw {@code IllegalArgumentException}; and the return type
  * depended on whether an argument started with {@code @}. A projection is now always a detached map.
  */
+@SuppressWarnings("unchecked")
 class SQLMethodIncludeExcludeProjectionTest extends TestHelper {
 
   private RID sourceRid;
@@ -196,6 +197,31 @@ class SQLMethodIncludeExcludeProjectionTest extends TestHelper {
       assertThat((Map<String, Object>) copy).containsOnlyKeys("n", "m").containsEntry("n", 1).containsEntry("m", 2);
     });
     assertSourceIntact();
+  }
+
+  @Test
+  void expandOfAPropertyOnlyProjectionYieldsPlainRows() {
+    // WITHOUT A METADATA NAME THE PROJECTION IS JUST THE NAMED PROPERTIES: NO @rid TO TRAVERSE FROM ANY MORE
+    database.transaction(() -> {
+      try (final ResultSet rs = database.query("sql", "select expand( out('R1').include('n') ) from V1 where n = 1")) {
+        assertThat(rs.hasNext()).isTrue();
+        final var row = rs.next();
+        assertThat(row.<Integer>getProperty("n")).isEqualTo(2);
+        assertThat(row.getPropertyNames()).containsExactly("n");
+        assertThat(rs.hasNext()).isFalse();
+      }
+    });
+  }
+
+  @Test
+  void wildcardsCombineWithMetadataNames() {
+    database.transaction(() -> {
+      final Object included = single("select @this.include('s*', '@rid') as c from V1 where n = 1");
+      assertThat((Map<String, Object>) included).containsOnlyKeys("secret", "@rid").containsEntry("@rid", sourceRid.toString());
+
+      final Object excluded = single("select @this.exclude('@*') as c from V1 where n = 1");
+      assertThat((Map<String, Object>) excluded).containsOnlyKeys("n", "m", "secret");
+    });
   }
 
   private Object single(final String sql) {

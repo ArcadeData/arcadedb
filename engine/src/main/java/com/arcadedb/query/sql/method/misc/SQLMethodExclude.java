@@ -87,7 +87,7 @@ public class SQLMethodExclude extends AbstractSQLMethod {
       final boolean includeMetadata = referencesMetadata(params);
       final Map<String, Object> single = projectionSource(current, includeMetadata);
       if (single != null)
-        return copy(single, params);
+        return copy(single, params, current);
 
       if (MultiValue.isMultiValue(current)) {
         // ACT ON MULTIPLE DOCUMENTS
@@ -96,7 +96,7 @@ public class SQLMethodExclude extends AbstractSQLMethod {
         for (final Object o : MultiValue.getMultiValueIterable(current, false)) {
           final Map<String, Object> element = projectionSource(o, includeMetadata);
           if (element != null)
-            result.add(copy(element, params));
+            result.add(copy(element, params, o));
         }
         return result;
       }
@@ -106,8 +106,13 @@ public class SQLMethodExclude extends AbstractSQLMethod {
     return null;
   }
 
-  private Object copy(final Map map, final Object[] iFieldNames) {
-    final Map<String, Object> doc = new LinkedHashMap<>(map);
+  /**
+   * @param source the value the map was read from: a record's {@code toMap()} builds a fresh {@link LinkedHashMap} that is
+   *               pruned in place; anything else (the caller's own map, a result's content, a light edge's immutable
+   *               empty map) is copied first
+   */
+  private Object copy(final Map<String, Object> map, final Object[] iFieldNames, final Object source) {
+    final Map<String, Object> doc = source instanceof Identifiable && map instanceof LinkedHashMap ? map : new LinkedHashMap<>(map);
     for (final Object iFieldName : iFieldNames) {
       if (iFieldName != null) {
         final String fieldName = iFieldName.toString();

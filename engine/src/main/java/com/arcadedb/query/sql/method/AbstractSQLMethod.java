@@ -203,17 +203,10 @@ public abstract class AbstractSQLMethod implements SQLMethod {
   }
 
   /**
-   * Reads one value a projection method ({@code include()}, {@code exclude()}) filters, as the map of property names to
-   * values the projection is built from: a record answers its properties, plus the {@code @rid}/{@code @type}/
-   * {@code @cat} (and on an edge {@code @in}/{@code @out}) metadata when {@code includeMetadata} is set; a
-   * {@link Result} answers its {@link Result#toMap()}; a map answers itself. Anything else answers {@code null}.
-   * <p>
-   * A projection is a VALUE, never a record. Both methods used to build their answer as a brand-new record of the same
-   * type ({@code newVertex()} / {@code newDocument()}) stamped with the RID of the record on disk, so the caller was
-   * handed a dirty {@code MutableVertex} whose {@code save()} overwrote that RID with only the projected properties and
-   * null edge-list heads, orphaning every edge of the vertex; an edge could not be built that way at all and threw; and
-   * the answer was a record or a map depending on whether one of the names started with {@code @} (issue #9840). A map
-   * needs no record to be created, carries no live identity, and is the same type whatever the names are.
+   * Reads one value a projection method ({@code include()}, {@code exclude()}) filters, as a map of names to values: a
+   * record answers its properties (plus its metadata fields when {@code includeMetadata} is set), a {@link Result} its
+   * {@link Result#toMap()}, a map itself, anything else {@code null}. A projection is a value, never a record: a record
+   * stamped with the source RID turned {@code save()} on the projection into a partial overwrite (issue #9840).
    * <p>
    * The returned map may be the caller's own (a map receiver, a {@link Result}'s content): callers copy before they
    * change it.
@@ -238,10 +231,8 @@ public abstract class AbstractSQLMethod implements SQLMethod {
 
   /**
    * Whether any of a projection method's field names is a metadata field ({@code @rid}, {@code @type}, {@code @*},
-   * ...). Metadata is part of a record's projection only when the caller names it, so a plain
-   * {@code exclude('secret')} answers the record's properties - a value that can be stored back as an embedded map -
-   * and not a map carrying {@code @type}, which a store converts into an embedded record of that type. Shared by
-   * {@code include()} and {@code exclude()} so the two cannot drift apart on which fields a projection starts from.
+   * ...). Metadata is part of a record's projection only when the caller names one, so a plain {@code exclude('secret')}
+   * can be stored back as an embedded map rather than as a map carrying {@code @type}.
    *
    * @param fieldNames the method's arguments
    *
