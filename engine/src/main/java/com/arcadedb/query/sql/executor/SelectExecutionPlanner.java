@@ -1836,8 +1836,12 @@ public class SelectExecutionPlanner {
     final RID resolved = rid.toRecordId((Result) null, context);
     if (resolved == null)
       return false;
-    final String bucketName = context.getDatabase().getSchema().getBucketById(resolved.getBucketId()).getName();
-    return filterClusters.contains("*") || filterClusters.contains(bucketName);
+    if (filterClusters.contains("*"))
+      return true;
+    // A RID naming a bucket this schema does not know is in none of the filter's buckets
+    // Fully qualified like the other lookups here: the SQL parser's Bucket node is the imported one
+    final com.arcadedb.engine.Bucket bucket = context.getDatabase().getSchema().getBucketByIdIfExists(resolved.getBucketId());
+    return bucket != null && filterClusters.contains(bucket.getName());
   }
 
   private void handleNoTarget(final SelectExecutionPlan result, final CommandContext context) {

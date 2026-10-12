@@ -76,6 +76,19 @@ class Issue9802RidExpressionPlanTimeTest extends TestHelper {
   }
 
   @Test
+  void aRidTargetOnAnUnknownBucketIsNoMatchUnderABucketFilter() {
+    final String bucketName = database.getSchema().getBucketById(first.getBucketId()).getName();
+    try (final ResultSet rs = database.query("sql",
+        "SELECT FROM bucket:" + bucketName + " WHERE @rid = #" + first.getBucketId() + ":" + first.getPosition())) {
+      assertThat(rs.hasNext()).isTrue();
+    }
+    // A RID target in a bucket the schema does not know: no row, instead of a NullPointerException
+    try (final ResultSet rs = database.query("sql", "SELECT FROM [#9999:0] WHERE @rid IS NOT NULL")) {
+      assertThat(rs.hasNext()).isFalse();
+    }
+  }
+
+  @Test
   void deleteAndUpdateResolveTheExpressionForm() {
     database.transaction(() -> {
       try (final ResultSet rs = database.command("sql", "UPDATE D1 SET touched = true WHERE @rid = {\"@rid\": ?}",
