@@ -461,7 +461,7 @@ message ExecuteCommandRequest {
   string language = 6; // "sql" if empty
 
   bool  return_rows = 7; // include rows in response
-  int32 max_rows    = 8; // cap returned rows (server may still count all)
+  int32 max_rows    = 8; // cap returned rows; <= 0 = server default; never above arcadedb.server.grpcQueryMaxResultRows. A larger result fails with RESOURCE_EXHAUSTED
 
   ProjectionSettings projectionSettings = 9;
 }

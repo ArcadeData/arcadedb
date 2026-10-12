@@ -271,8 +271,6 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   // Database directory path
   private final String databasePath;
 
-  private static final int DEFAULT_MAX_COMMAND_ROWS = 1000;
-
   // Idle reaper defaults (milliseconds). A registered transaction idle longer than maxIdle, or older than maxAge
   // (when > 0), is rolled back and released so an abandoned client cannot leak its executor thread, open
   // transaction and database reference forever.
@@ -878,7 +876,13 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       long affected = 0L;
 
       final boolean returnRows = req.getReturnRows();
-      final int maxRows = req.getMaxRows() > 0 ? req.getMaxRows() : DEFAULT_MAX_COMMAND_ROWS;
+      // The configured ceiling that bounds ExecuteQuery (0 or -1 = unlimited) also bounds ExecuteCommand: a request
+      // without max_rows gets it as its default, and a larger max_rows cannot bypass it, exactly as for ExecuteQuery.
+      // It replaces a private hard-coded 1000 that made the client's schema and metadata commands, which send no
+      // max_rows, fail on any database with more than 1000 types (issue #9861).
+      final int configuredMaxRows = serverConfiguration().getValueAsInteger(GlobalConfiguration.SERVER_GRPC_QUERY_MAX_RESULT_ROWS);
+      final int ceilingRows = configuredMaxRows > 0 ? configuredMaxRows : Integer.MAX_VALUE;
+      final int maxRows = req.getMaxRows() > 0 ? Math.min(req.getMaxRows(), ceilingRows) : ceilingRows;
 
       ExecuteCommandResponse.Builder out = ExecuteCommandResponse.newBuilder()
           .setSuccess(true)
