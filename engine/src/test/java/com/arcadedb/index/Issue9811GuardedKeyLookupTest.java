@@ -187,7 +187,7 @@ class Issue9811GuardedKeyLookupTest extends TestHelper {
 
     assertThat(failure.get()).isNull();
     assertThat(merges.get()).isPositive();
-    assertThat(database.query("sql", "SELECT count(*) AS c FROM Node WHERE k = 777").next().<Long>getProperty("c"))
+    assertThat(database.query("sql", "SELECT count(@rid) AS c FROM Node WHERE k = 777").next().<Long>getProperty("c"))
         .as("MERGE matched the node that exists every time").isEqualTo(1L);
   }
 

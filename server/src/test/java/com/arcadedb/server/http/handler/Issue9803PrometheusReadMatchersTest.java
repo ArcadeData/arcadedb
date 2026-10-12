@@ -106,6 +106,18 @@ class Issue9803PrometheusReadMatchersTest extends BaseGraphServerTest {
   }
 
   @Test
+  void anEqualityOnABooleanTagMatchesOnlyABooleanText() throws Exception {
+    command("CREATE TIMESERIES TYPE probe TIMESTAMP ts TAGS (up BOOLEAN) FIELDS (value DOUBLE)");
+    command("INSERT INTO probe SET ts = " + TS + ", up = true, value = 1.0");
+    command("INSERT INTO probe SET ts = " + TS + ", up = false, value = 0.0");
+
+    assertThat(read(eq("__name__", "probe"), eq("up", "true"))).containsOnlyKeys("probe{up=true}");
+    assertThat(read(eq("__name__", "probe"), eq("up", "FALSE"))).containsOnlyKeys("probe{up=false}");
+    // text that is not a boolean is no value of the tag: it used to be coerced to false and select those series
+    assertThat(read(eq("__name__", "probe"), eq("up", "yes"))).isEmpty();
+  }
+
+  @Test
   void aRegexMetricNameSelectsEveryMetricItMatches() throws Exception {
     assertThat(read(new LabelMatcher(MatchType.RE, "__name__", "cp.*"))).containsOnlyKeys("cpu{host=good}", "cpu{host=bad}");
     assertThat(read(new LabelMatcher(MatchType.RE, "__name__", "cpu|mem"), eq("host", "good")))
