@@ -78,6 +78,20 @@ class RegexOverAlphabetTest {
   }
 
   @Test
+  void lookaroundsBoundariesAndAnchorsAreNeverAFalseRefusal() {
+    // the constructs Matcher.hitEnd() is subtle about: a refusal here would reject a pattern a LONG satisfies
+    final String longShape = "-?[0-9]{1,19}";
+    for (final String regexp : new String[] { "(?=.*5)[0-9]+", "[0-9]+(?<=5)", "\\b[0-9]+\\b", "[0-9]+$", "^-?[0-9]+\\z",
+        "(?>[0-9]+)", "[0-9]++", "(?!0)[0-9]+", "[0-9]+(?<!0)" }) {
+      assertThat(check(regexp, longShape, NUMBER)).as(regexp).isEqualTo(Verdict.SATISFIABLE);
+      assertThat(check(regexp, NUMBER)).as(regexp).isEqualTo(Verdict.SATISFIABLE);
+    }
+    // a lookahead for a character no number has is never satisfiable, whatever the search manages to show
+    assertThat(check("(?=.*x)[0-9]+", longShape, NUMBER)).isNotEqualTo(Verdict.SATISFIABLE);
+    assertThat(check("[0-9]+(?<=x)", longShape, NUMBER)).isNotEqualTo(Verdict.SATISFIABLE);
+  }
+
+  @Test
   void aSearchThatRunsOutOfRoomIsUndecidedNotAVerdict() {
     // every string of digits may still grow into a match
     assertThat(check("[0-9]*[A-Z]", NUMBER)).isEqualTo(Verdict.UNDECIDED);
@@ -95,7 +109,11 @@ class RegexOverAlphabetTest {
   @Timeout(value = 30, unit = TimeUnit.SECONDS)
   void aCatastrophicPatternIsUndecidedWithinTheDeadline() {
     // exponential backtracking on a long run of zeros: the in-match deadline aborts the probe
+    final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
     assertThat(RegexOverAlphabet.check(Pattern.compile("(0|00)*1x"), null, "0", 64, 4_096, TimeBoundRegex.newDeadline(100)))
         .isEqualTo(Verdict.UNDECIDED);
+    assertThat(RegexOverAlphabet.check(Pattern.compile("([0-9]+)+-"), Pattern.compile("-?[0-9]{1,19}"), "0123456789-", 64,
+        65_536, TimeBoundRegex.newDeadline(100))).isNotEqualTo(Verdict.SATISFIABLE);
+    stopwatch.assertGaveUpWithin(10_000, "a 100 ms search budget against a backtracking that would otherwise run for ages");
   }
 }

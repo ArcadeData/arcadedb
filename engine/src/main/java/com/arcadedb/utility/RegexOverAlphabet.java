@@ -105,6 +105,8 @@ public final class RegexOverAlphabet {
     } catch (final TimeoutException e) {
       return Verdict.UNDECIDED;
     } catch (final StackOverflowError e) {
+      // java.util.regex recurses per repetition and per nesting level: a deep enough pattern overflows the stack on a probe
+      // before any deadline is reached, and that says nothing about the pattern either way
       return Verdict.UNDECIDED;
     }
   }

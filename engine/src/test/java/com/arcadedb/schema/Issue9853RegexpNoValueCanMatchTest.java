@@ -19,9 +19,11 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.ValidationException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.log.Logger;
+import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
 
@@ -38,6 +40,7 @@ import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.List;
 import java.util.logging.Level;
 
@@ -137,6 +140,28 @@ class Issue9853RegexpNoValueCanMatchTest extends TestHelper {
     database.transaction(() -> database.command("sql", "INSERT INTO R1 SET k = 12345").close());
     assertThatThrownBy(() -> database.transaction(() -> database.command("sql", "INSERT INTO R1 SET k = 1").close()))
         .isInstanceOf(ValidationException.class);
+  }
+
+  @Test
+  void aDateIsJudgedByTheClassTheDatabaseHoldsItAs() {
+    final BinarySerializer serializer = ((DatabaseInternal) database).getSerializer();
+    final Class<?> previous = serializer.getDateImplementation();
+    database.command("sql", "CREATE DOCUMENT TYPE D");
+    // held as LocalDate: written 2024-01-15, never with a weekday
+    assertThatThrownBy(() -> database.command("sql", "CREATE PROPERTY D.a DATE (regexp '[A-Z][a-z]{2} .*')"))
+        .hasMessageContaining("DATE (held as LocalDate)");
+
+    serializer.setDateImplementation(Date.class);
+    try {
+      // held as java.util.Date: written 'Mon Jan 15 00:00:00 CET 2024', so the weekday pattern is the legal one...
+      database.command("sql", "CREATE PROPERTY D.a DATE (regexp '[A-Z][a-z]{2} .*')");
+      database.transaction(() -> database.newDocument("D").set("a", LocalDate.of(2024, 1, 15)).save());
+      // ... and the ISO one is refused, naming the class
+      assertThatThrownBy(() -> database.command("sql", "CREATE PROPERTY D.b DATE (regexp '[0-9]{4}-[0-9]{2}-[0-9]{2}')"))
+          .hasMessageContaining("DATE (held as Date)").hasMessageContaining("would refuse every value");
+    } finally {
+      serializer.setDateImplementation(previous);
+    }
   }
 
   @Test

@@ -62,13 +62,14 @@ record TextForm(String characters, Pattern shape) {
   private static final TextForm LOCAL_DT_FORM    = new TextForm(DIGITS + "-+:T.", LOCAL_DATE_SHAPE + "T" + LOCAL_TIME_SHAPE);
   private static final TextForm OFFSET_DT_FORM   = new TextForm(DIGITS + "-+:T.Z",
       LOCAL_DATE_SHAPE + "T" + LOCAL_TIME_SHAPE + OFFSET_SHAPE);
-  // the zone id: Europe/Rome, America/Port-au-Prince, Etc/GMT+5
+  // the zone id: Europe/Rome, America/Port-au-Prince, Etc/GMT+5. The characters are the binding limit, the bracket of the
+  // shape only says where the id goes
   private static final TextForm ZONED_DT_FORM    = new TextForm(DIGITS + "-+:T.Z[]/_" + LETTERS,
       LOCAL_DATE_SHAPE + "T" + LOCAL_TIME_SHAPE + OFFSET_SHAPE + "(\\[[^\\]]+\\])?");
   private static final TextForm LOCAL_TIME_FORM  = new TextForm(DIGITS + ":.", LOCAL_TIME_SHAPE);
   private static final TextForm OFFSET_TIME_FORM = new TextForm(DIGITS + "-+:.Z", LOCAL_TIME_SHAPE + OFFSET_SHAPE);
-  // Mon Jan 15 10:30:00 GMT+01:00 2024
-  private static final TextForm DATE_FORM        = new TextForm(DIGITS + " -+:" + LETTERS,
+  // Mon Jan 15 10:30:00 GMT+01:00 2024; the zone is the default zone's short name, '_' and '/' in case it is a raw id
+  private static final TextForm DATE_FORM        = new TextForm(DIGITS + " -+:_/" + LETTERS,
       "[A-Z][a-z]{2} [A-Z][a-z]{2} [0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2} .+");
   // P1Y2M3DT4H5M6.5S, PT-0.5S
   private static final TextForm DURATION_FORM    = new TextForm(DIGITS + "-.PYMWDTHS", "P[0-9YMWDTHS.-]*");
@@ -110,6 +111,8 @@ record TextForm(String characters, Pattern shape) {
       return DATE_FORM;
     if (held == CypherDuration.class)
       return DURATION_FORM;
+    // a class this method does not know - a Calendar, a String, a type added later - is never searched, so a pattern on it
+    // is never refused: the safe default
     return null;
   }
 }
