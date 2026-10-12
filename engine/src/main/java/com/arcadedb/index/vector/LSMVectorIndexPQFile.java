@@ -60,6 +60,8 @@ import java.util.logging.Level;
 public class LSMVectorIndexPQFile {
   public static final String FILE_EXT = "vecpq";
 
+  private static final String TEMPORARY_SUFFIX = ".tmp";
+
   private final Path pqFilePath;
 
   // Cached PQ structures loaded into memory for zero-disk-I/O search
@@ -150,7 +152,7 @@ public class LSMVectorIndexPQFile {
       deleteLeftoverTemporaries();
 
       // Per-write suffix rather than a fixed name, like the graph manifest's and the ordinal map's temporaries
-      temporary = pqFilePath.resolveSibling(pqFilePath.getFileName() + "." + Long.toHexString(System.nanoTime()) + ".tmp");
+      temporary = pqFilePath.resolveSibling(pqFilePath.getFileName() + "." + Long.toHexString(System.nanoTime()) + TEMPORARY_SUFFIX);
 
       // Write using JVector's native serialization with IndexWriter
       try (SimpleFileIndexWriter writer = new SimpleFileIndexWriter(temporary)) {
@@ -206,11 +208,18 @@ public class LSMVectorIndexPQFile {
     if (directory == null)
       return;
 
+    // The writer re-asserts an interrupt it absorbed when it closes, and a force on an interrupted thread fails with
+    // ClosedByInterruptException: in exactly the cancel scenario the write is built for, the directory would never be
+    // forced. Cleared for the force and restored after, so the caller is still told.
+    final boolean interrupted = Thread.interrupted();
     try (final FileChannel channel = FileChannel.open(directory, StandardOpenOption.READ)) {
       channel.force(true);
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.FINE, "Could not force directory '%s' after replacing the PQ file: %s", directory,
           e.getMessage());
+    } finally {
+      if (interrupted || Thread.interrupted())
+        Thread.currentThread().interrupt();
     }
   }
 
@@ -294,7 +303,15 @@ public class LSMVectorIndexPQFile {
     if (parent == null || !Files.isDirectory(parent))
       return;
 
-    try (final DirectoryStream<Path> leftovers = Files.newDirectoryStream(parent, pqFilePath.getFileName() + ".*.tmp")) {
+    // A filter, not a glob built from the file name: the name is the index's and may carry glob metacharacters, which
+    // would throw or match another file's temporary, with the failure swallowed below
+    final String prefix = pqFilePath.getFileName() + ".";
+    final DirectoryStream.Filter<Path> temporaries = entry -> {
+      final String name = entry.getFileName().toString();
+      return name.length() > prefix.length() + TEMPORARY_SUFFIX.length() && name.startsWith(prefix) && name.endsWith(
+          TEMPORARY_SUFFIX);
+    };
+    try (final DirectoryStream<Path> leftovers = Files.newDirectoryStream(parent, temporaries)) {
       for (final Path leftover : leftovers)
         Files.deleteIfExists(leftover);
     } catch (final Exception e) {

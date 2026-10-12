@@ -241,6 +241,8 @@ public class SimpleFileIndexWriter implements IndexWriter {
       return;
 
     buffer.flip();
+    // Writes are strictly sequential and the file starts empty, so what the file holds past this offset is exactly the
+    // part of this buffer a closed channel got through, which is what lets a retry resume from the file's size
     final long base = flushed;
     for (int reopens = 0; ; ) {
       try {
