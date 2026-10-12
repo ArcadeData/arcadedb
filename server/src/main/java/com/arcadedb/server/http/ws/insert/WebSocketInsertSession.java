@@ -297,6 +297,7 @@ public class WebSocketInsertSession {
       // thread, so the rows applied below, and the commit of a chunk's own transaction, obey a terminate
       final RunningQuery entry = openChunkEntry(chunkSeq);
       boolean terminationObserved = false;
+      boolean retracted = true;
       try {
         if (externalSession != null)
           // Under the caller's own session lock, which is what an HTTP request on that transaction takes too: the
@@ -313,11 +314,11 @@ public class WebSocketInsertSession {
         terminationObserved = true;
       } finally {
         if (entry != null)
-          endRunningChunk(entry, terminationObserved);
+          retracted = endRunningChunk(entry, terminationObserved);
       }
 
       if (entry != null && entry.isTerminated())
-        throw new IllegalStateException(terminatedChunkMessage(entry, chunkSeq, terminationObserved));
+        throw new IllegalStateException(terminatedChunkMessage(entry, chunkSeq, terminationObserved, retracted));
 
       // Either way round, this attempt SUPERSEDES any earlier attempt at the same sequence: a whole-chunk failure
       // does not advance the watermark, so the chunk being applied here is the one that failed (issue #7471).
@@ -483,8 +484,10 @@ public class WebSocketInsertSession {
    * closed.</li>
    * </ul>
    * Must be called holding {@link #lock}.
+   *
+   * @return {@code false} when the retraction of a terminated chunk failed, so the client is not told it happened
    */
-  private void endRunningChunk(final RunningQuery entry, final boolean terminationObserved) {
+  private boolean endRunningChunk(final RunningQuery entry, final boolean terminationObserved) {
     try {
       if (entry.isTerminated()) {
         if (externalSession != null) {
@@ -500,21 +503,27 @@ public class WebSocketInsertSession {
     } catch (final RuntimeException e) {
       // Runs in a finally: a retraction that fails must not mask what the chunk itself threw, nor keep the entry listed
       LogManager.instance().log(this, Level.WARNING, "Cannot retract terminated chunk of /ws insert session %s", e, id);
+      return false;
     } finally {
       // LAST: THE ENTRY LEAVING THE LIST IS THE PROOF THE WORK IS OVER
       entry.close();
     }
+    return true;
   }
 
   /** What the client of a terminated chunk is told happened to what it sent, mode by mode (see {@link #endRunningChunk}). */
-  private String terminatedChunkMessage(final RunningQuery entry, final long chunkSeq, final boolean terminationObserved) {
+  private String terminatedChunkMessage(final RunningQuery entry, final long chunkSeq, final boolean terminationObserved,
+      final boolean retracted) {
     final String prefix = "Chunk " + chunkSeq + " terminated by '" + entry.getTerminatedBy() + "': ";
+    if (!retracted)
+      return prefix + "the server could not retract what it wrote (see the server log); insert session '" + id + "' ("
+          + options.transactionModeName() + ") is closed";
     return switch (options.transactionMode) {
       case NONE -> prefix + "transaction '" + externalTransactionId + "' was rolled back and ended";
       case PER_STREAM -> prefix + "the transaction of insert session '" + id + "' (per_stream) was rolled back and the session closed";
       case PER_BATCH -> prefix + (terminationObserved ?
           "its transaction was rolled back" :
-          "it had committed before the termination was seen") + "; chunks acknowledged before it stay committed and insert session '"
+          "it had committed before the termination was seen, so its rows are durable and must not be sent again") + "; chunks acknowledged before it stay committed and insert session '"
           + id + "' (per_batch) is closed";
       case PER_ROW -> prefix + "the rows it committed before the termination stand, the rest were not applied, and insert session '"
           + id + "' (per_row) is closed";

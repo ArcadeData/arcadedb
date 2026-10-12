@@ -108,8 +108,7 @@ class Issue9838WsInsertSessionListedInEveryModeTest extends BaseGraphServerTest 
 
   /**
    * Starts a session in {@code mode}, applies a one-row chunk 1, sends chunk 2, finds it in the registry while its row
-   * {@link #HELD_ROW} is held,
-   * terminates it with {@code terminate query} and checks what the client and the next frame are told.
+   * {@link #HELD_ROW} is held, terminates it with {@code terminate query} and checks what the client and the next frame are told.
    */
   private Run terminateSecondChunk(final String mode, final String expectedModeName) throws Throwable {
     final ServerSecurityUser root = getServer(0).getSecurity().getUser("root");
