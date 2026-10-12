@@ -27,6 +27,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -40,7 +41,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * truncated, and the documented {@code arcadedb.server.grpcQueryMaxResultRows} knob (default 100000) only bounded
  * {@code ExecuteQuery}, so raising it did nothing for the call that failed.
  *
- * <p>The fix makes {@code ExecuteCommand} default to the same configured ceiling as {@code ExecuteQuery}.
+ * <p>The fix makes {@code ExecuteCommand} bound its result by the same configured ceiling as {@code ExecuteQuery}: the
+ * default when the request carries no {@code max_rows}, and a limit a larger {@code max_rows} cannot bypass.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -140,6 +142,31 @@ public class Issue9861GrpcCommandRowCeilingIT extends BaseGrpcClientServerTest {
     try (RemoteGrpcDatabase remote = connect()) {
       assertThatThrownBy(() -> remote.command("sql", "SELECT FROM " + ROWS_TYPE)).isInstanceOf(RemoteException.class)
           .hasMessageContaining("maximum of " + (ROWS - 100) + " rows");
+    }
+  }
+
+  @Test
+  void explicitMaxRowsCannotBypassTheConfiguredCeiling() {
+    createRows();
+    setCeiling(ROWS - 100);
+
+    try (RemoteGrpcDatabase remote = connect()) {
+      assertThatThrownBy(() -> remote.executeCommand("sql", "SELECT FROM " + ROWS_TYPE, Map.of(), true, Integer.MAX_VALUE, null, 30_000L))
+          .isInstanceOf(RemoteException.class).hasMessageContaining("maximum of " + (ROWS - 100) + " rows");
+    }
+  }
+
+  @Test
+  void explicitMaxRowsBelowTheCeilingIsHonored() {
+    createRows();
+    setCeiling(ROWS + 100);
+
+    try (RemoteGrpcDatabase remote = connect()) {
+      assertThatThrownBy(() -> remote.executeCommand("sql", "SELECT FROM " + ROWS_TYPE, Map.of(), true, 50, null, 30_000L))
+          .isInstanceOf(RemoteException.class).hasMessageContaining("maximum of 50 rows");
+
+      assertThat(remote.executeCommand("sql", "SELECT FROM " + ROWS_TYPE, Map.of(), true, ROWS + 50, null, 30_000L).getRecordsCount())
+          .isEqualTo(ROWS);
     }
   }
 

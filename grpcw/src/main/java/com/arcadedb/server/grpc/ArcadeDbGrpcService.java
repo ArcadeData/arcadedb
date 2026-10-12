@@ -876,11 +876,13 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       long affected = 0L;
 
       final boolean returnRows = req.getReturnRows();
-      // A request without max_rows falls back to the same configured ceiling that bounds ExecuteQuery (0 or -1 =
-      // unlimited), not to a private hard-coded value: the client issues schema and metadata commands without a
-      // max_rows, and a fixed 1000 made them fail on any database with more than 1000 types (issue #9861).
+      // The configured ceiling that bounds ExecuteQuery (0 or -1 = unlimited) also bounds ExecuteCommand: a request
+      // without max_rows gets it as its default, and a larger max_rows cannot bypass it, exactly as for ExecuteQuery.
+      // It replaces a private hard-coded 1000 that made the client's schema and metadata commands, which send no
+      // max_rows, fail on any database with more than 1000 types (issue #9861).
       final int configuredMaxRows = serverConfiguration().getValueAsInteger(GlobalConfiguration.SERVER_GRPC_QUERY_MAX_RESULT_ROWS);
-      final int maxRows = req.getMaxRows() > 0 ? req.getMaxRows() : configuredMaxRows > 0 ? configuredMaxRows : Integer.MAX_VALUE;
+      final int ceilingRows = configuredMaxRows > 0 ? configuredMaxRows : Integer.MAX_VALUE;
+      final int maxRows = req.getMaxRows() > 0 ? Math.min(req.getMaxRows(), ceilingRows) : ceilingRows;
 
       ExecuteCommandResponse.Builder out = ExecuteCommandResponse.newBuilder()
           .setSuccess(true)
