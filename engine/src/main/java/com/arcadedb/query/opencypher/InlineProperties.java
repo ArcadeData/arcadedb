@@ -195,33 +195,40 @@ public final class InlineProperties {
     // comparing every record against the same text would otherwise pay once per record
     if (operand instanceof String text && !mayBeReadAs(property.getType(), text))
       return null;
-    try {
-      final Object stored = Type.convert(database, TemporalUtil.toCoreJavaType(operand),
-          property.getType().getJavaImplementation(database), property);
-      return stored instanceof Double d && d.isNaN() || stored instanceof Float f && f.isNaN() ? null : stored;
-    } catch (final RuntimeException e) {
-      // a value the declaration cannot store is refused by the write: no record holds what it would have stored
-      return null;
-    }
+    // null for a value the declaration cannot store: the write refuses it, so no record holds what it would have stored. With a
+    // property every refusal of Type.convert is an IllegalArgumentException, the one convertOrNull answers null for
+    final Object stored = Type.convertOrNull(database, TemporalUtil.toCoreJavaType(operand),
+        property.getType().getJavaImplementation(database), property);
+    return stored instanceof Double d && d.isNaN() || stored instanceof Float f && f.isNaN() ? null : stored;
   }
 
   /**
    * Whether {@code text} has a shape {@code Type.convert} can read as {@code type}: an integral type reads an optional sign
-   * and digits ({@code Integer.parseInt} and siblings, so {@code '5.7'} or {@code ' 5'} is refused, as by the write), a
-   * BOOLEAN reads {@code true} or {@code false} in any case, and a FLOAT, DOUBLE or DECIMAL a text starting the way a number
-   * does. A temporal is left to the conversion: the database's date and datetime formats decide its text.
+   * and digits ({@code Integer.parseInt} and siblings, so {@code '5.7'} or {@code ' 5'} is refused, as by the write) with no
+   * more significant digits than its range holds, a BOOLEAN reads {@code true} or {@code false} in any case, a FLOAT, DOUBLE
+   * or DECIMAL a text starting the way a number does, and a temporal a text holding a digit, which every date, time and
+   * duration has whatever format the database declares. A shape this lets through can still be refused by the conversion.
    */
   private static boolean mayBeReadAs(final Type type, final String text) {
     final int length = text.length();
     switch (type) {
     case BYTE, SHORT, INTEGER, LONG -> {
-      final int start = length > 0 && (text.charAt(0) == '-' || text.charAt(0) == '+') ? 1 : 0;
+      int start = length > 0 && (text.charAt(0) == '-' || text.charAt(0) == '+') ? 1 : 0;
       if (start == length)
         return false;
       for (int i = start; i < length; i++)
         if (text.charAt(i) < '0' || text.charAt(i) > '9')
           return false;
-      return true;
+      // leading zeros are no digits of the value: '007' is an INTEGER, '99999999999' never is
+      while (start < length - 1 && text.charAt(start) == '0')
+        start++;
+      final int maxDigits = switch (type) {
+        case BYTE -> 3;
+        case SHORT -> 5;
+        case INTEGER -> 10;
+        default -> 19;
+      };
+      return length - start <= maxDigits;
     }
     case BOOLEAN -> {
       return "true".equalsIgnoreCase(text) || "false".equalsIgnoreCase(text);
@@ -232,6 +239,12 @@ public final class InlineProperties {
         return false;
       final char first = trimmed.charAt(0);
       return first >= '0' && first <= '9' || first == '-' || first == '+' || first == '.' || first == 'I' || first == 'N';
+    }
+    case DATE, DATETIME, DATETIME_SECOND, DATETIME_MICROS, DATETIME_NANOS, OFFSET_TIME, LOCAL_TIME, ZONED_DATETIME, DURATION -> {
+      for (int i = 0; i < length; i++)
+        if (text.charAt(i) >= '0' && text.charAt(i) <= '9')
+          return true;
+      return false;
     }
     default -> {
       return true;

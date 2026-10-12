@@ -100,6 +100,9 @@ class ScanPropertyHashIndexTest extends TestHelper {
     assertThat(count(index.candidates("x"))).isEqualTo(1);
     // the integer 5, and the double a FLOAT or DOUBLE declaration could have read '5' as
     assertThat(count(index.candidates("5"))).isEqualTo(2);
+    // the spellings Integer.parseInt reads as 5 too
+    assertThat(count(index.candidates("+5"))).isEqualTo(2);
+    assertThat(count(index.candidates("005"))).isEqualTo(2);
     assertThat(count(index.candidates("TRUE"))).isEqualTo(1);
     assertThat(count(index.candidates("2024-01-02"))).isEqualTo(1);
     assertThat(count(index.candidates("y"))).isZero();
