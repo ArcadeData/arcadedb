@@ -20,6 +20,7 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.engine.NodeLocalFiles;
 import com.arcadedb.engine.PageSnapshot;
 import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.engine.timeseries.ListedSealedStore;
@@ -661,7 +662,7 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
             try {
               // #7955: AN INDEX COMPACTION IN FLIGHT HAS A REGISTERED temp_* COMPONENT FILE, SO THE WINDOW CARRIES
               // IT - AND ONLY THE NODE THAT HAPPENS TO BE COMPACTING HAS ONE. SEE isTemporaryFileName
-              if (PaginatedComponent.isTemporaryFileName(file.fileName()))
+              if (isNotCompared(file.fileName()))
                 continue;
               collectFileInfo(snapshotChecksums, snapshotFiles, file.fileName(), snapshot.calculateChecksum(file.fileId()),
                   file.size());
@@ -700,7 +701,7 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
       db.getPageManager().suspendFlushAndExecute(db, () -> {
         runChecksummingHook(null);
         for (final var file : db.getFileManager().getFiles())
-          if (file != null && !PaginatedComponent.isTemporaryFileName(file.getFileName())) {
+          if (file != null && !isNotCompared(file.getFileName())) {
             try {
               collectFileInfo(localChecksums, localFiles, file.getFileName(), file.calculateChecksum(), file.getSize());
             } catch (final Exception e) {
@@ -718,6 +719,17 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
       return null;
     });
     return sealedStoresCovered[0];
+  }
+
+  /**
+   * Whether a registered page file is left out of the comparison because only this node has it, or only this node's
+   * copy of it: an index-compaction temporary (#7955), or a component the engine declares node-local - in practice an
+   * LSM vector index's {@code .vecgraph}, which every node builds for itself without the WAL, so its pages differ on a
+   * healthy cluster (#9751). The vectors it is built from live in the index's own pages, which ARE compared. The same
+   * declaration {@code SnapshotManager.computeFileChecksums} applies, so the two collectors cannot disagree on it.
+   */
+  static boolean isNotCompared(final String fileName) {
+    return PaginatedComponent.isTemporaryFileName(fileName) || NodeLocalFiles.isNodeLocalFileName(fileName);
   }
 
   /**

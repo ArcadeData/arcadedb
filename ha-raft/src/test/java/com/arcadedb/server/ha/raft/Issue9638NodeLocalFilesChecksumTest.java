@@ -27,6 +27,7 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.olap.ContractionHierarchy;
 import com.arcadedb.graph.olap.GraphAnalyticalView;
 import com.arcadedb.schema.LocalSchema;
+import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -157,6 +158,20 @@ class Issue9638NodeLocalFilesChecksumTest {
         assertThat(cch).isNotNull();
         assertThat(cch.awaitReady(false, 60, TimeUnit.SECONDS)).isTrue();
 
+        // #9751: LSM VECTOR INDEXES, THEIR GRAPHS BUILT, WRITE THE GRAPH COMPONENT AND THREE PLAIN SIDE FILES BESIDE IT -
+        // ONE WITHOUT AND ONE WITH PRODUCT QUANTIZATION, SINCE ONLY THE FORMER WRITES AN ORDINAL MAP AND ONLY THE LATTER A PQ
+        Issue9751VectorSideFilesChecksumTest.createVectorIndex(database, "Doc", "NONE");
+        Issue9751VectorSideFilesChecksumTest.createVectorIndex(database, "PqDoc", "PRODUCT");
+
+        // #9751: AND A TIMESERIES TYPE WITH A SEALED STORE, THE OTHER WRITER OF RAW FILES INTO THE DIRECTORY
+        database.command("sql", "CREATE TIMESERIES TYPE Reading TIMESTAMP ts TAGS (id STRING) FIELDS (value DOUBLE) SHARDS 1");
+        database.transaction(() -> {
+          for (int i = 0; i < 100; i++)
+            database.command("sql", "INSERT INTO Reading SET ts = ?, id = 's1', value = ?", 1_700_000_000_000L + i * 1000L,
+                (double) i);
+        });
+        ((LocalTimeSeriesType) database.getSchema().getType("Reading")).getEngine().compactAll();
+
         for (final File file : listFiles(path))
           seenWhileOpen.add(file.getName());
         assertThat(seenWhileOpen).as("the open database holds its lock file, so the guard reaches it").contains("database.lck");
@@ -173,6 +188,12 @@ class Issue9638NodeLocalFilesChecksumTest {
     assertThat(afterClose).as("the clean close writes the statistics file").contains(LocalSchema.STATISTICS_FILE_NAME);
     assertThat(afterClose).as("the clean close persists the view's CSR").contains("gav-Routes.csr");
     assertThat(afterClose).as("and the contraction hierarchy's order").anyMatch(n -> n.startsWith("gav-Routes.csr.") && n.endsWith(".cchorder"));
+    assertThat(afterClose).as("the vector index persisted its graph").anyMatch(n -> n.endsWith(".vecgraph"));
+    assertThat(afterClose).as("and its manifest").anyMatch(n -> n.endsWith(".vecgraphfp"));
+    assertThat(afterClose).as("and its ordinal map").anyMatch(n -> n.endsWith(".vecordmap"));
+    assertThat(afterClose).as("and its product quantization").anyMatch(n -> n.endsWith(".vecpq"));
+    assertThat(afterClose).as("the TimeSeries compaction sealed a store").anyMatch(n -> n.endsWith(TimeSeriesSealedStore.FILE_EXTENSION));
+    assertThat(afterClose).as("the clean close wrote the recency marker").contains(TransactionManager.LAST_TX_ID_FILE_NAME);
 
     assertUnshippedFilesAreLeftOut(path);
   }
@@ -201,7 +222,8 @@ class Issue9638NodeLocalFilesChecksumTest {
         || name.endsWith(TimeSeriesSealedStore.FILE_EXTENSION)
         || name.equals(LocalDatabase.CONFIGURATION_FILE_NAME)
         || name.equals(LocalSchema.SCHEMA_FILE_NAME)
-        // TODO #9751: shipped, but rewritten per node on WAL rotation and close, so it may still differ between peers
+        // SYNTHESIZED INTO THE ARCHIVE, BUT LEFT OUT OF THE CHECKSUMS ALL THE SAME: A LIVE NODE REWRITES IT ON ITS OWN WAL
+        // ROTATIONS AND CLOSES, SO TWO HEALTHY PEERS HOLD DIFFERENT VALUES (#9751)
         || name.equals(TransactionManager.LAST_TX_ID_FILE_NAME);
   }
 
