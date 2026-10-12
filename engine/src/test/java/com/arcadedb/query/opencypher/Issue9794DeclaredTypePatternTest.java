@@ -273,8 +273,9 @@ class Issue9794DeclaredTypePatternTest extends TestHelper {
         final String label = (indexed ? "X" : "T") + type++;
         database.command("sql", "CREATE VERTEX TYPE " + label);
         database.command("sql", "CREATE PROPERTY " + label + ".p " + declared);
+        // UNIQUE: a second MERGE that did not find the first node fails on the index instead of duplicating it silently
         if (indexed)
-          database.command("sql", "CREATE INDEX ON " + label + " (p) NOTUNIQUE");
+          database.command("sql", "CREATE INDEX ON " + label + " (p) UNIQUE");
 
         try {
           database.transaction(() -> database.command("opencypher", "MERGE (:" + label + " {p: " + literal + "})").close());
@@ -284,9 +285,16 @@ class Issue9794DeclaredTypePatternTest extends TestHelper {
         }
         cells++;
 
-        database.transaction(() -> database.command("opencypher", "MERGE (:" + label + " {p: " + literal + "})").close());
+        try {
+          database.transaction(() -> database.command("opencypher", "MERGE (:" + label + " {p: " + literal + "})").close());
+        } catch (final RuntimeException e) {
+          failures.add(declared + " <- " + literal + ": the second MERGE failed: " + e.getMessage());
+        }
         if (count("MATCH (n:" + label + ") RETURN count(n) AS c") != 1)
           failures.add(declared + " <- " + literal + ": the second MERGE created a duplicate");
+        // a text no declaration reads matches nothing, under the same plan
+        if (count("MATCH (n:" + label + " {p: 'abc'}) RETURN count(n) AS c") != 0)
+          failures.add(declared + " <- " + literal + ": 'abc' matched");
 
         for (final String spelling : SPELLINGS) {
           final String query = spelling.formatted(label, literal);
