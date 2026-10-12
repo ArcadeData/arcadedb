@@ -624,8 +624,9 @@ public class TransactionManager {
             // order. The id is allocated at the end of commit1stPhase and the record appended in phase 2, and two
             // transactions sharing no file have no lock between those points, so the second id can be appended first
             // into the same file (always with a single-file pool, on a thread-id hash collision otherwise). This
-            // merge then emits [6, 5] as 6, 5. It cannot reverse a CONFLICTING pair: their shared file lock is held
-            // from phase 1 to the end of the commit, so the lower id is appended before the higher one is allocated.
+            // merge then emits [6, 5] as 6, 5. It cannot reverse a CONFLICTING pair: the lock on their shared file
+            // (TransactionContext.lockFilesInOrder in commit1stPhase, released by unlockFilesInOrder when the commit
+            // ends) is held across the WAL append, so the lower id is appended before the higher one is allocated.
             if (lowerTxId > lastTxId)
               lastTxId = lowerTxId;
           } catch (WALVersionGapException e) {
