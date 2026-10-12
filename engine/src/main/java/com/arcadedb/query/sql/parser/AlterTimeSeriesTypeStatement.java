@@ -89,10 +89,9 @@ public class AlterTimeSeriesTypeStatement extends DDLStatement {
           + "MILLISECOND can be declared");
 
     final String previous = tsType.getPrecision();
-    if (!TimeSeriesType.MILLISECOND_PRECISION.equals(previous)) {
+    // No save here: the setter saves, and replicates, the schema itself (issue #9747)
+    if (!TimeSeriesType.MILLISECOND_PRECISION.equals(previous))
       tsType.setPrecision(precision);
-      ((LocalSchema) context.getDatabase().getSchema()).saveConfiguration();
-    }
 
     final ResultInternal result = new ResultInternal(context.getDatabase());
     result.setProperty("operation", "set precision");

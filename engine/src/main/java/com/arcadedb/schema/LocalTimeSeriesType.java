@@ -242,9 +242,13 @@ public class LocalTimeSeriesType extends LocalDocumentType implements TimeSeries
     return precision;
   }
 
+  /**
+   * Inside a schema recording session, like {@link #setDownsamplingTiers}: {@code ALTER TIMESERIES TYPE ... PRECISION}
+   * changes it on a live type, and under HA only the session ships the schema to the followers (issues #9747, #9800).
+   */
   public void setPrecision(final String precision) {
     checkForSchemaMutation();
-    this.precision = precision;
+    getSchema().getEmbedded().recordChange(() -> this.precision = precision);
   }
 
   @Override
