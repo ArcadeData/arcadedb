@@ -232,6 +232,9 @@ class Issue9768DottedVectorAggregateTest extends TestHelper {
         .isCloseTo(0.8, Offset.offset(1e-6));
     assertThat(((Number) run("SELECT vector.normalize([3.0, 4.0])[0] AS e").getFirst().getProperty("e")).doubleValue()).isCloseTo(
         0.6, Offset.offset(1e-6));
+    // the grammar is methodCall* arraySelector* modifier*: a method after a selector is a modifier, and chains after it
+    assertThat(run("SELECT vector.normalize([3.0, 4.0])[0].asString() AS s").getFirst().<String>getProperty("s")).startsWith("0.6");
+    assertThat(run("SELECT vector.normalize([3.0, 4.0]).asList().size() AS n").getFirst().<Integer>getProperty("n")).isEqualTo(2);
   }
 
   @Test
