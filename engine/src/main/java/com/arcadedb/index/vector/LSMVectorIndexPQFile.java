@@ -26,8 +26,11 @@ import io.github.jbellis.jvector.quantization.PQVectors;
 import io.github.jbellis.jvector.quantization.ProductQuantization;
 
 import java.io.IOException;
+import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.logging.Level;
 
 /**
@@ -44,6 +47,11 @@ import java.util.logging.Level;
  * 1. PQ data is loaded entirely into RAM for zero-disk-I/O search
  * 2. JVector's native serialization is optimized for PQ data
  * 3. There's no need for random access patterns during search
+ * <p>
+ * The file is read on a later open, so it is never rewritten in place (issue #9796): {@link #writePQ} streams the new
+ * data into a temporary sibling, forces it to the device and renames it over the live file. Whatever interrupts the
+ * stream, the previous complete file is still there afterwards - there is no window in which the file is neither the
+ * old data nor the new.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -55,6 +63,9 @@ public class LSMVectorIndexPQFile {
   // Cached PQ structures loaded into memory for zero-disk-I/O search
   private volatile ProductQuantization productQuantization;
   private volatile PQVectors           pqVectors;
+
+  // Set when loadPQ() found the file on disk and could not read it, cleared by anything that replaces or removes it
+  private volatile boolean loadFailed;
 
   /**
    * Create a PQ file handler for the given index file path.
@@ -89,19 +100,35 @@ public class LSMVectorIndexPQFile {
   }
 
   /**
-   * Checks if a PQ file exists on disk.
+   * Checks if a PQ file exists on disk. This says nothing about whether it can be read: a decision that depends on
+   * there being PQ data to use asks {@link #hasUsableData()}.
    */
   public boolean exists() {
     return Files.exists(pqFilePath);
   }
 
   /**
+   * Answers "is there PQ data to use?" the way {@link #isPQReady()} does, for the open-time decisions that cannot wait
+   * for the data to be loaded: true when the PQ is loaded, or when a file is on disk that no load has found
+   * unreadable. A file that exists and failed to load counts as no data - {@link #exists()} alone reports it as
+   * present, which is the answer that sent an open down the wrong route (issue #9796).
+   */
+  public boolean hasUsableData() {
+    return isPQReady() || (!loadFailed && exists());
+  }
+
+  /**
    * Write PQ data to the file using JVector's serialization.
+   * <p>
+   * The data goes to a temporary sibling that replaces the live file only once it is complete and forced to the
+   * device, so a failure at any point (an interrupt, a full disk, an I/O error, a crash) leaves the previous file
+   * exactly as it was and never a fragment. The cached references are published only after the rename.
    *
    * @param pq      The ProductQuantization codebook to persist
    * @param vectors The PQVectors containing encoded vectors
    */
   public void writePQ(final ProductQuantization pq, final PQVectors vectors) {
+    Path temporary = null;
     try {
       LogManager.instance().log(this, Level.INFO,
           "Writing PQ data: %d vectors, %d subspaces, %d clusters",
@@ -113,15 +140,31 @@ public class LSMVectorIndexPQFile {
         Files.createDirectories(parent);
       }
 
+      // A process killed between the write and the rename leaves a temporary nothing else would ever remove
+      deleteLeftoverTemporaries();
+
+      // Per-write suffix rather than a fixed name, like the graph manifest's and the ordinal map's temporaries
+      temporary = pqFilePath.resolveSibling(pqFilePath.getFileName() + "." + Long.toHexString(System.nanoTime()) + ".tmp");
+
       // Write using JVector's native serialization with IndexWriter
-      try (SimpleFileIndexWriter writer = new SimpleFileIndexWriter(pqFilePath)) {
+      try (SimpleFileIndexWriter writer = new SimpleFileIndexWriter(temporary)) {
         // Write ProductQuantization codebook first
         pq.write(writer, OnDiskGraphIndex.CURRENT_VERSION);
         // Write encoded vectors
         vectors.write(writer, OnDiskGraphIndex.CURRENT_VERSION);
+        // The rename is atomic, the content behind the new name is not durable until it is forced
+        writer.force();
       }
 
+      try {
+        Files.move(temporary, pqFilePath, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+      } catch (final AtomicMoveNotSupportedException e) {
+        Files.move(temporary, pqFilePath, StandardCopyOption.REPLACE_EXISTING);
+      }
+      temporary = null;
+
       // Update cached references
+      this.loadFailed = false;
       this.productQuantization = pq;
       this.pqVectors = vectors;
 
@@ -130,6 +173,13 @@ public class LSMVectorIndexPQFile {
           Files.size(pqFilePath) / (1024.0 * 1024.0));
 
     } catch (final Exception e) {
+      if (temporary != null) {
+        try {
+          Files.deleteIfExists(temporary);
+        } catch (final IOException ignored) {
+          // NOTHING ELSE TO DO
+        }
+      }
       LogManager.instance().log(this, Level.SEVERE, "Error writing PQ data to %s: %s", pqFilePath, e.getMessage());
       throw new IndexException("Failed to write PQ data", e);
     }
@@ -164,6 +214,8 @@ public class LSMVectorIndexPQFile {
         this.pqVectors = PQVectors.load(reader, reader.getPosition());
       }
 
+      this.loadFailed = false;
+
       final long elapsed = System.currentTimeMillis() - startTime;
       LogManager.instance().log(this, Level.INFO,
           "PQ data loaded: %d vectors, %d subspaces in %d ms",
@@ -176,6 +228,7 @@ public class LSMVectorIndexPQFile {
       // Clear cached data on failure
       this.productQuantization = null;
       this.pqVectors = null;
+      this.loadFailed = true;
       return false;
     }
   }
@@ -199,9 +252,25 @@ public class LSMVectorIndexPQFile {
         Files.delete(pqFilePath);
         LogManager.instance().log(this, Level.INFO, "Deleted PQ file: %s", pqFilePath);
       }
+      deleteLeftoverTemporaries();
+      this.loadFailed = false;
       clearPQCache();
     } catch (final IOException e) {
       LogManager.instance().log(this, Level.WARNING, "Error deleting PQ file: %s", e.getMessage());
+    }
+  }
+
+  private void deleteLeftoverTemporaries() {
+    final Path parent = pqFilePath.getParent();
+    if (parent == null || !Files.isDirectory(parent))
+      return;
+
+    try (final DirectoryStream<Path> leftovers = Files.newDirectoryStream(parent, pqFilePath.getFileName() + ".*.tmp")) {
+      for (final Path leftover : leftovers)
+        Files.deleteIfExists(leftover);
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.FINE, "Could not remove leftover PQ temporaries next to '%s': %s", pqFilePath,
+          e.getMessage());
     }
   }
 
