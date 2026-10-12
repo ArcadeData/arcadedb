@@ -566,6 +566,11 @@ public class LocalDocumentType implements DocumentType {
     return new ArrayList<>(subTypes);
   }
 
+  /** Allocation-free variant of {@code !getSubTypes().isEmpty()}, for the record write path. */
+  public boolean hasSubTypes() {
+    return !subTypes.isEmpty();
+  }
+
   /**
    * Returns the list of aliases defined for the type.
    */
