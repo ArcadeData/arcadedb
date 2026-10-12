@@ -2004,8 +2004,8 @@ public enum GlobalConfiguration {
       Hard ceiling on the number of rows the gRPC unary ExecuteQuery materializes. A request limit at or below \
       this cap is honored; a result that would exceed it fails the call with RESOURCE_EXHAUSTED (consistent with \
       the StreamQuery MATERIALIZE_ALL path) rather than silently truncating, and a client cannot bypass it with a \
-      larger limit. It is also the default row limit of the unary ExecuteCommand, which applies it when the request \
-      carries no max_rows (an explicit max_rows is honored as the caller's own bound). \
+      larger limit. It bounds the unary ExecuteCommand the same way: it is the default when the request \
+      carries no max_rows, and a larger max_rows cannot bypass it. \
       Bounds heap usage and protects against limitless-query DoS. The default is lower than \
       grpcStreamMaxMaterializedRows because the unary response is built and returned as a single gRPC message \
       (also bounded by the max inbound/outbound message size), whereas StreamQuery emits incrementally. \
