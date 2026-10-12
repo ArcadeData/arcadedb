@@ -185,6 +185,12 @@ public class GraphBatch implements AutoCloseable {
    */
   private static final int DEFAULT_MAX_DEFERRED_INCOMING_EDGES = 5_000_000;
 
+  /** {@link #declaredPropertyFlags}: the edge type declares at least one property, own or inherited. */
+  private static final int TYPE_DECLARES_PROPERTIES = 1;
+
+  /** {@link #declaredPropertyFlags}: the edge type declares an EXTERNAL property, own or inherited (issue #9814). */
+  private static final int TYPE_DECLARES_EXTERNAL = 2;
+
   /**
    * Test-only fault-injection hook. Invoked just before each {@link #createVertices} commit with
    * the 1-based attempt number; a test can throw a {@link NeedRetryException} to simulate a
@@ -1416,35 +1422,13 @@ public class GraphBatch implements AutoCloseable {
     // An edge type with declared properties gets what every other write path gives it: the value converted to the declared
     // type, the defaults, and the constraints (issue #9019). The bulk writer casts raw values to the declared binary type,
     // which wraps a SHORT, throws on a BYTE and never runs a validation.
-    final Map<Integer, Boolean> declaresProperties = new HashMap<>();
+    // The same pass notes, once per bucket, whether the type has an EXTERNAL property (issue #9814)
+    final Map<Integer, Integer> bucketTypeFlags = new HashMap<>();
     for (int k = 0; k < nonLightCount; k++) {
       final int i = nonLightIndices[k];
-      final Boolean declared = declaresProperties.computeIfAbsent(edgeTypeBucketIds[i],
-          bucketId -> !database.getSchema().getTypeByBucketId(bucketId).getPolymorphicProperties().isEmpty());
-      if (declared)
+      final int flags = bucketTypeFlags.computeIfAbsent(edgeTypeBucketIds[i], this::declaredPropertyFlags);
+      if ((flags & TYPE_DECLARES_PROPERTIES) != 0)
         applySchema(i);
-    }
-
-    // Serialize all edge records using templates
-    final Binary[] serializedBuffers = new Binary[nonLightCount];
-
-    for (int k = 0; k < nonLightCount; k++) {
-      final int i = nonLightIndices[k];
-      final Object[] props = edgeProperties[i];
-
-      if (props != null && props.length > 0) {
-        final EdgeSerializationTemplate template = getOrCreateTemplate(props, edgeTypeBucketIds[i]);
-        serializedBuffers[k] = serializeEdgeDirect(
-            edgeSrcBucketIds[i], edgeSrcPositions[i],
-            edgeDstBucketIds[i], edgeDstPositions[i],
-            props, template);
-      } else {
-        // No properties — serialize minimal edge
-        serializedBuffers[k] = serializeEdgeDirect(
-            edgeSrcBucketIds[i], edgeSrcPositions[i],
-            edgeDstBucketIds[i], edgeDstPositions[i],
-            null, new EdgeSerializationTemplate(new String[0], new int[0], new byte[0], true));
-      }
     }
 
     // Group by bucket and bulk-write
@@ -1457,7 +1441,33 @@ public class GraphBatch implements AutoCloseable {
       }
     }
 
-    if (singleBucket) {
+    // The template serializer writes straight to the bucket and never reaches BinarySerializer.serializeProperties(), the only
+    // place that honors Property.isExternal(): an EXTERNAL value written that way is stored INLINE and the paired bucket stays
+    // empty, silently breaking the contract of small primary records (issue #9814). Such a type takes the ordinary save() path,
+    // the one a multi-type flush already takes.
+    if (singleBucket && (bucketTypeFlags.get(firstBucket) & TYPE_DECLARES_EXTERNAL) == 0) {
+      // Serialize all edge records using templates
+      final Binary[] serializedBuffers = new Binary[nonLightCount];
+
+      for (int k = 0; k < nonLightCount; k++) {
+        final int i = nonLightIndices[k];
+        final Object[] props = edgeProperties[i];
+
+        if (props != null && props.length > 0) {
+          final EdgeSerializationTemplate template = getOrCreateTemplate(props, edgeTypeBucketIds[i]);
+          serializedBuffers[k] = serializeEdgeDirect(
+              edgeSrcBucketIds[i], edgeSrcPositions[i],
+              edgeDstBucketIds[i], edgeDstPositions[i],
+              props, template);
+        } else {
+          // No properties — serialize minimal edge
+          serializedBuffers[k] = serializeEdgeDirect(
+              edgeSrcBucketIds[i], edgeSrcPositions[i],
+              edgeDstBucketIds[i], edgeDstPositions[i],
+              null, new EdgeSerializationTemplate(new String[0], new int[0], new byte[0], true));
+        }
+      }
+
       final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(firstBucket);
       final RID[] bulkRIDs = new RID[nonLightCount];
       bucket.createRecordsBulk(serializedBuffers, 0, nonLightCount, bulkRIDs);
@@ -1481,7 +1491,7 @@ public class GraphBatch implements AutoCloseable {
               edgeProperties[i]);
       }
     } else {
-      // Multiple buckets — fall back to per-edge standard creation
+      // Multiple buckets, or a type with EXTERNAL properties: fall back to per-edge standard creation
       for (int k = 0; k < nonLightCount; k++) {
         final int i = nonLightIndices[k];
         final EdgeType edgeType = (EdgeType) database.getSchema().getTypeByBucketId(edgeTypeBucketIds[i]);
@@ -1495,6 +1505,20 @@ public class GraphBatch implements AutoCloseable {
         edgeRIDs[i] = edge.getIdentity();
       }
     }
+  }
+
+  /**
+   * What the type owning {@code bucketId} declares, as {@code TYPE_DECLARES_*} flags: any property at all (polymorphically,
+   * so inherited ones count) and, among them, an EXTERNAL one (issue #9814). Evaluated once per bucket per flush.
+   */
+  private int declaredPropertyFlags(final int bucketId) {
+    int flags = 0;
+    for (final Property property : database.getSchema().getTypeByBucketId(bucketId).getPolymorphicProperties()) {
+      flags |= TYPE_DECLARES_PROPERTIES;
+      if (property.isExternal())
+        return flags | TYPE_DECLARES_EXTERNAL;
+    }
+    return flags;
   }
 
   /**

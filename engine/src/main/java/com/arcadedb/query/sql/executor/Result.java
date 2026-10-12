@@ -29,6 +29,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
+import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.DateUtils;
@@ -182,8 +183,18 @@ public interface Result {
         while (iterator.hasNext())
           array.put(valueToJSON(iterator.next()));
         return array;
-      } else if (val instanceof Map) {
-        return new JSONObject((Map<String, Object>) val);
+      } else if (val instanceof Map<?, ?> map) {
+        // Recursing, as the Iterable arm does: JSONObject(Map) writes a nested ZonedDateTime as epoch millis (the zone is
+        // gone) and a nested OffsetTime as null (issue #9810)
+        final JSONObject object = new JSONObject();
+        for (final Map.Entry<?, ?> entry : map.entrySet())
+          object.put(String.valueOf(entry.getKey()), valueToJSON(entry.getValue()));
+        return object;
+      } else if (JsonSerializer.isNativeCypherTemporal(val, null)) {
+        // A time of day, a zoned datetime and a duration have no epoch form that round trips: epoch millis drops the zone and
+        // the generic conversion drops an OffsetTime altogether. The ISO text is what the server's own serializer sends
+        // (issue #9810)
+        return val.toString();
       } else if (val instanceof byte[] bytes) {
         return Base64.getEncoder().encodeToString(bytes);
       } else if (val.getClass().isArray()) {
