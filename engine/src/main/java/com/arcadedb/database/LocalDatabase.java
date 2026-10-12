@@ -1159,8 +1159,10 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
                 + idx.getName() + "' is " + indexType + " and cannot look up a record by exact key");
 
       // the entries and their records are read against one committed state: a commit that deletes and re-creates the key
-      // cannot make it vanish, appear twice or name a record that is gone by the time the caller loads it (#9397)
-      return ConsistentKeyLookup.get(this, idx, keyValues);
+      // cannot make it vanish, appear twice or name a record that is gone by the time the caller loads it (#9397). And the
+      // index is read whole or not at all: a lookup a concurrent DROP INDEX left short raises instead of answering "no such
+      // key" (#9811)
+      return ConsistentKeyLookup.getForQuery(this, idx, keyValues);
     });
   }
 

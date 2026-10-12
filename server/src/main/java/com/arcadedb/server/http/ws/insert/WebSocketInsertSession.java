@@ -27,9 +27,12 @@ import com.arcadedb.database.TransactionContext;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.ErrorCategory;
 import com.arcadedb.exception.LockTimeoutException;
+import com.arcadedb.exception.QueryTerminatedException;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.RunningQuery;
+import com.arcadedb.query.RunningQueryRegistry;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.parser.Identifier;
@@ -112,6 +115,8 @@ public class WebSocketInsertSession {
   /** Whether the server runs in production mode, read per chunk: the per-row errors then conceal the engine text (issue #8749). */
   private final BooleanSupplier               concealErrors;
   private final String                        externalTransactionId;
+  /** Where a chunk applied in {@link #externalSession} is listed while it runs (issue #9774), or {@code null}. */
+  private final RunningQueryRegistry          runningQueries;
   private final ReentrantLock                 lock       = new ReentrantLock();
   private final long                          startedAt  = System.currentTimeMillis();
   /** Null in every mode but {@code PER_STREAM}, where it is the transaction the client's frames decide. */
@@ -147,8 +152,9 @@ public class WebSocketInsertSession {
 
   WebSocketInsertSession(final String id, final DatabaseInternal database, final ServerSecurityUser user,
       final UUID channelId, final InsertSessionOptions options, final String externalTransactionId,
-      final HttpSession externalSession, final BooleanSupplier concealErrors) {
+      final HttpSession externalSession, final BooleanSupplier concealErrors, final RunningQueryRegistry runningQueries) {
     this.id = id;
+    this.runningQueries = runningQueries;
     this.concealErrors = concealErrors;
     this.database = database;
     this.databaseName = database.getName();
@@ -390,11 +396,22 @@ public class WebSocketInsertSession {
    * {@link WebSocketInsertProtocol} already answers with an {@code error} frame.
    */
   private void runInExternalSession(final Runnable work) {
+    // Listed under the caller's session by "list queries" and SHOW TRANSACTIONS while the chunk holds that session's lock, and
+    // stopped and waited for by "terminate transaction" and "terminate query" (issue #9774): a chunk can hold the lock for as
+    // long as a large load takes, and work the registry did not list was invisible to both. Published on this thread, so the
+    // rows applied below obey a terminate
+    final RunningQuery entry = runningQueries != null ?
+        runningQueries.register(databaseName, user.getName(), "ws", externalTransactionId, externalSession.getTag()) :
+        null;
+    if (entry != null)
+      entry.setStatement("ws", () -> "insert chunk of session " + id);
     try {
       externalSession.execute(user, () -> {
         work.run();
         return null;
       }, /* rollbackOnFailure */ false, /* endsSession */ false, /* joinsTransaction */ true);
+    } catch (final QueryTerminatedException e) {
+      // reported below, once the session is ended
     } catch (final LockTimeoutException e) {
       // An HTTP command is running on the caller's own transaction right now. Translated rather than allowed to
       // propagate: LockTimeoutException is a NeedRetryException, which WebSocketInsertProtocol does not name, so
@@ -409,6 +426,31 @@ public class WebSocketInsertSession {
       // because HttpSession.execute declares Exception. It is not an internal error either.
       throw new IllegalStateException(
           "Transaction '" + externalTransactionId + "' could not be used: " + e.getMessage(), e);
+    } finally {
+      if (entry != null)
+        endRunningChunk(entry);
+    }
+
+    if (entry != null && entry.isTerminated())
+      throw new IllegalStateException("Chunk terminated by '" + entry.getTerminatedBy() + "': transaction '"
+          + externalTransactionId + "' was rolled back and ended");
+  }
+
+  /**
+   * Closes the registry entry of a chunk applied in the caller's session. A terminated chunk ends that session first, rolling
+   * its transaction back, as a terminated HTTP command does (issue #9680): part of the chunk's rows may already be in the
+   * transaction, and the chunk's sequence does not advance, so a replay would apply them twice. Ending it makes the answer
+   * the same wherever the termination landed, and the client's {@code /commit} is told the session is gone.
+   */
+  private void endRunningChunk(final RunningQuery entry) {
+    try {
+      if (entry.isTerminated()) {
+        externalSession.close();
+        entry.setRolledBack();
+      }
+    } finally {
+      // LAST: THE ENTRY LEAVING THE LIST IS THE PROOF THE WORK IS OVER
+      entry.close();
     }
   }
 
@@ -580,8 +622,13 @@ public class WebSocketInsertSession {
   }
 
   private void applyRows(final JSONArray records, final int rows, final ChunkCounts counts) {
-    for (int i = 0; i < rows; i++)
+    // The entry of a chunk applied in the caller's session (issue #9774); none otherwise
+    final RunningQuery entry = RunningQuery.current();
+    for (int i = 0; i < rows; i++) {
+      if (entry != null)
+        entry.checkNotTerminated("insert chunk");
       applyRowCounting(records, i, counts);
+    }
   }
 
   /**
@@ -606,6 +653,9 @@ public class WebSocketInsertSession {
     } catch (final DuplicatedKeyException e) {
       // Reaches here only from the modes that report a duplicate rather than absorb it.
       counts.conflict(rowIndex, e);
+    } catch (final QueryTerminatedException e) {
+      // The chunk was asked to stop: not a failure of this row, and not one to tally and go on past (issue #9774)
+      throw e;
     } catch (final Exception e) {
       counts.fail(rowIndex, e);
     }

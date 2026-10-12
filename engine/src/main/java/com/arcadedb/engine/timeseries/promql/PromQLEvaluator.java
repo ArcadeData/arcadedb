@@ -48,6 +48,7 @@ import com.arcadedb.engine.timeseries.promql.ast.PromQLExpr.UnaryExpr;
 import com.arcadedb.engine.timeseries.promql.ast.PromQLExpr.VectorSelector;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalTimeSeriesType;
+import com.arcadedb.schema.Type;
 import com.arcadedb.security.SecurityDatabaseUser;
 
 import java.io.IOException;
@@ -671,6 +672,45 @@ public class PromQLEvaluator {
     return true;
   }
 
+  /**
+   * The part of a selector's label matchers a scan can apply itself: its non-empty equalities on declared columns, as a tag
+   * filter, or {@code null} when it has none. Every other matcher is decided per row by {@link #matchesRow}, which skips what
+   * this filter already applied, and {@link #selectsNoSeries} settles a matcher on an undeclared label for the whole type:
+   * the three are one unit, public for the remote-read endpoint so it selects exactly what {@code /query} does (issue #9803).
+   */
+  public TagFilter tagFilter(final List<LabelMatcher> matchers, final List<ColumnDefinition> columns) {
+    return buildTagFilter(matchers, columns);
+  }
+
+  /**
+   * Whether a row of the scan {@link #tagFilter} narrowed passes the selector's other label matchers ({@code !=}, {@code =~},
+   * {@code !~}, {@code label=""}), under this evaluator's shared regex deadline. A malformed or ReDoS-shaped pattern raises
+   * an {@link IllegalArgumentException} rather than reading as "no match" (issue #9803).
+   */
+  public boolean matchesRow(final Object[] row, final List<LabelMatcher> matchers, final List<ColumnDefinition> columns) {
+    return matchesPostFilters(row, matchers, columns, regexDeadline());
+  }
+
+  /**
+   * Whether every {@code __name__} matcher of a selector holds on {@code metricName}: how a selector without a metric name,
+   * {@code {__name__=~"cp.*"}}, picks the metrics it reads (issue #9803). True when there is no such matcher.
+   */
+  public boolean matchesMetricName(final List<LabelMatcher> matchers, final String metricName) {
+    for (final LabelMatcher m : matchers) {
+      if (!METRIC_NAME_LABEL.equals(m.name()))
+        continue;
+      final boolean matches = switch (m.op()) {
+        case EQ -> metricName.equals(m.value());
+        case NEQ -> !metricName.equals(m.value());
+        case RE -> TimeBoundRegex.matchesUntil(compilePattern(m.value()), metricName, regexDeadline());
+        case NRE -> !TimeBoundRegex.matchesUntil(compilePattern(m.value()), metricName, regexDeadline());
+      };
+      if (!matches)
+        return false;
+    }
+    return true;
+  }
+
   private TagFilter buildTagFilter(final List<LabelMatcher> matchers, final List<ColumnDefinition> columns) {
     TagFilter filter = null;
     for (final LabelMatcher m : matchers) {
@@ -681,7 +721,10 @@ public class PromQLEvaluator {
       final int idx = findNonTsColumnIndex(m.name(), columns);
       if (idx < 0)
         continue;
-      filter = filter == null ? TagFilter.eq(idx, m.value()) : filter.and(idx, m.value());
+      // A matcher value is always text and the stored tag is of the column's declared type: compared as text, a LONG or
+      // BOOLEAN tag matched nothing. Coerced as every other tag push-down coerces it (issues #5475, #9803)
+      final Object value = coerceTagValue(nonTsColumn(idx, columns), m.value());
+      filter = filter == null ? TagFilter.eq(idx, value) : filter.and(idx, value);
     }
     return filter;
   }
@@ -854,6 +897,18 @@ public class PromQLEvaluator {
     }
   }
 
+  /**
+   * The value an equality matcher compares a tag with: the matcher's text in the column's declared type, so a LONG or BOOLEAN tag
+   * is compared like with like (issues #5475, #9803). Text the type cannot read stays text, which equals no stored value and so
+   * selects no series: {@code coerceValue} already leaves a number that does not parse as it is, but reads any text that is not
+   * {@code true} as {@code false}, which would select the series whose tag is false.
+   */
+  static Object coerceTagValue(final ColumnDefinition column, final String text) {
+    if (column.getDataType() == Type.BOOLEAN && !"true".equalsIgnoreCase(text) && !"false".equalsIgnoreCase(text))
+      return text;
+    return column.coerceValue(text);
+  }
+
   private int findNonTsColumnIndex(final String name, final List<ColumnDefinition> columns) {
     int nonTsIdx = -1;
     for (final ColumnDefinition col : columns) {
@@ -864,6 +919,18 @@ public class PromQLEvaluator {
         return nonTsIdx;
     }
     return -1;
+  }
+
+  /** The column at {@code nonTsIndex} among the non-timestamp columns, as {@link #findNonTsColumnIndex} counts them. */
+  private static ColumnDefinition nonTsColumn(final int nonTsIndex, final List<ColumnDefinition> columns) {
+    int nonTsIdx = -1;
+    for (final ColumnDefinition col : columns) {
+      if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
+        continue;
+      if (++nonTsIdx == nonTsIndex)
+        return col;
+    }
+    throw new IllegalArgumentException("No non-timestamp column at index " + nonTsIndex);
   }
 
   /**

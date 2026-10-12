@@ -41,6 +41,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import java.io.IOException;
 import java.util.*;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 
 /**
@@ -58,6 +59,11 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   // Raised by drop() before it takes the first sub-index away, while valid is still true: a reader can tell that what it read
   // through the index may be missing the sub-indexes already gone (#9651)
   private volatile boolean          dropping         = false;
+  // Moved around every change of indexesOnBuckets, odd while one is under way: what getForQuery() checks before and after a
+  // read to know nobody changed the sub-indexes under it, without copying the list on a hot path (#9811). The changes come from
+  // DDL, which runs under the schema's write lock, so one writer at a time; the before/after comparison alone would still catch
+  // overlapping writers, only the "odd means under way" shortcut relies on there being one
+  private final AtomicLong          subIndexChanges  = new AtomicLong();
   private       IndexInternal       associatedIndex;
   private       IndexMetadata       metadata;
 
@@ -134,6 +140,47 @@ public class TypeIndex implements RangeIndex, IndexInternal {
           cursor.close();
       throw e;
     }
+  }
+
+  /**
+   * {@link #get(Object[])} for a reader that answers a client with what it finds - a protocol's key lookup, a query - rather
+   * than for index maintenance (issue #9811). It answers only a lookup that read the whole index, and raises the
+   * {@link IndexException} every guarded reader already treats as "read again" ({@link #isStaleRead}) otherwise:
+   * <ul>
+   * <li>before the read, an index not {@link #isReadyForQueries() ready}: one being created or rebuilt holds the entries of
+   * the buckets built so far only, one being dropped is losing its sub-indexes;</li>
+   * <li>after the read, an index that is no longer the one it read (dropped, or its sub-indexes changed): a drop takes the sub-indexes
+   * away one at a time while the index still answers as valid, so a lookup in that window comes back short - empty, for a
+   * key that exists - without any error;</li>
+   * <li>during the read, the page manager's "File with id n was not found" of a sub-index a drop deleted under it.</li>
+   * </ul>
+   * {@link #get(Object[])} itself stays raw: the uniqueness check at commit reads through it, and a commit must not fail
+   * because an index it does not even need any more is being dropped. The check after the read is sound because every arm of
+   * {@code get} collects its entries before it returns. It costs two reads of a counter, and no copy of the sub-index list.
+   */
+  public IndexCursor getForQuery(final Object[] keys) {
+    if (!isReadyForQueries())
+      throw new IndexException("Index '" + getName() + "' is not ready for queries: it is being built, rebuilt or dropped");
+
+    final long changesBefore = subIndexChanges.get();
+    if ((changesBefore & 1) != 0)
+      throw new IndexException("Index '" + getName() + "' is being changed by a concurrent DDL");
+    final IndexCursor cursor;
+    try {
+      cursor = get(keys);
+    } catch (final IndexException e) {
+      throw e;
+    } catch (final RuntimeException e) {
+      if (isStaleRead(this, e))
+        throw new IndexException("Index '" + getName() + "' was dropped or rebuilt while it was read", e);
+      throw e;
+    }
+
+    if (!valid || dropping || subIndexChanges.get() != changesBefore) {
+      cursor.close();
+      throw new IndexException("Index '" + getName() + "' was dropped or rebuilt while it was read");
+    }
+    return cursor;
   }
 
   @Override
@@ -449,7 +496,12 @@ public class TypeIndex implements RangeIndex, IndexInternal {
     }
 
     valid = false;
-    indexesOnBuckets.clear();
+    subIndexChanges.incrementAndGet();
+    try {
+      indexesOnBuckets.clear();
+    } finally {
+      subIndexChanges.incrementAndGet();
+    }
   }
 
   @Override
@@ -687,7 +739,12 @@ public class TypeIndex implements RangeIndex, IndexInternal {
     if (index instanceof TypeIndex)
       throw new IllegalArgumentException("Invalid subIndex " + index);
 
-    indexesOnBuckets.add(index);
+    subIndexChanges.incrementAndGet();
+    try {
+      indexesOnBuckets.add(index);
+    } finally {
+      subIndexChanges.incrementAndGet();
+    }
     index.setTypeIndex(this);
   }
 
@@ -696,7 +753,12 @@ public class TypeIndex implements RangeIndex, IndexInternal {
     if (index instanceof TypeIndex)
       throw new IllegalArgumentException("Invalid subIndex " + index);
 
-    indexesOnBuckets.remove(index);
+    subIndexChanges.incrementAndGet();
+    try {
+      indexesOnBuckets.remove(index);
+    } finally {
+      subIndexChanges.incrementAndGet();
+    }
     index.setTypeIndex(null);
   }
 

@@ -958,7 +958,8 @@ public class ServerControlPlane {
    * Ends an HTTP transaction session: terminates the statements running in it, rolls its transaction back and removes
    * it, so a later request naming it is told it does not exist. Answers {@code terminated}, {@code terminating} when a
    * statement running in it has not stopped within {@code waitMs} (the session is rolled back and removed as soon as it
-   * does), or {@code not found}.
+   * does) or the session is still held past that by work in it, which then rolls it back as it ends, or {@code not found}.
+   * The whole call is bounded by {@code waitMs}, capped at {@link #MAX_TERMINATE_WAIT_MS} (issue #9774).
    */
   public JSONObject terminateTransaction(final ServerSecurityUser user, final String sessionId, final long waitMs) {
     final HttpServer httpServer = server.getHttpServer();
@@ -980,9 +981,13 @@ public class ServerControlPlane {
       if (!awaitEnd(query, deadline))
         return new JSONObject().put("id", sessionId).put("status", "terminating");
 
-    // Idle, or what ran in it is over: end it here. Removed first, so no new request can resolve it meanwhile
-    if (httpServer.getSessionManager().removeSession(sessionId) != null)
-      session.cancel();
+    // Idle, or what ran in it is over: end it here. Removed first, so no new request can resolve it meanwhile. The wait for
+    // the session lock shares the deadline (issue #9774): work the registry does not list can still hold it, and this runs on
+    // a request thread the cap exists to protect. Past the deadline the rollback is left to that work, which performs it as
+    // it lets go of the session, and the answer says the session is still terminating
+    if (httpServer.getSessionManager().removeSession(sessionId) != null
+        && !session.cancel(Math.max(0, deadline - System.currentTimeMillis())))
+      return new JSONObject().put("id", sessionId).put("status", "terminating");
     return new JSONObject().put("id", sessionId).put("status", "terminated");
   }
 
