@@ -257,12 +257,18 @@ public class CypherFunctionFactory {
     if (!factory.hasFunction(sqlFunctionName))
       return false;
 
-    // configured as the bridge does it: whether some SQL functions aggregate depends on their arguments (sum(a) does, sum(a, b)
-    // does not), and the values are irrelevant to that decision
-    final Object[] placeholders = new Object[argumentCount];
-    Arrays.fill(placeholders, "dummy");
     try {
-      return factory.getFunctionInstance(sqlFunctionName).config(placeholders).aggregateResults();
+      final SQLFunction function = factory.getFunctionInstance(sqlFunctionName);
+      // A function registered as an instance is the one every query shares: it is asked as it is and never reconfigured from
+      // here. A class-registered one (the stateful aggregates) is a fresh instance of ours, configured as the bridge does it:
+      // whether some SQL functions aggregate depends on their arguments (sum(a) does, sum(a, b) does not), and the values are
+      // irrelevant to that decision
+      if (function == factory.getFunctionInstance(sqlFunctionName))
+        return function.aggregateResults();
+
+      final Object[] placeholders = new Object[argumentCount];
+      Arrays.fill(placeholders, "dummy");
+      return function.config(placeholders).aggregateResults();
     } catch (final RuntimeException e) {
       // a function that validates its arguments in config() refuses the placeholders. It is not an aggregation as far as the
       // planner can tell, and the call reports the real error when it is configured with its real arguments.
