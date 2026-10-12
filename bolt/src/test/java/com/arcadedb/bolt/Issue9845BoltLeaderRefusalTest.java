@@ -95,7 +95,7 @@ class Issue9845BoltLeaderRefusalTest {
   @Test
   void theMessageNamesTheLeaderTheRefusalCarries() {
     assertThat(BoltNetworkExecutor.withLeaderRedirect("Commit error", refusal(LEADER), null))
-        .isEqualTo("Commit error. The leader is server '" + LEADER + "'");
+        .isEqualTo("Commit error. The leader is server '" + LEADER + "' (HTTP address; use its Bolt port) and retry");
   }
 
   @Test
@@ -109,7 +109,7 @@ class Issue9845BoltLeaderRefusalTest {
   @Test
   void theMessageFallsBackToTheRefusalsAddressWhenTheRoutingTableHasNone() {
     assertThat(BoltNetworkExecutor.withLeaderRedirect("Commit error", refusal(LEADER), new RoutingHA(null)))
-        .isEqualTo("Commit error. The leader is server '" + LEADER + "'");
+        .isEqualTo("Commit error. The leader is server '" + LEADER + "' (HTTP address; use its Bolt port) and retry");
   }
 
   @Test
@@ -117,7 +117,7 @@ class Issue9845BoltLeaderRefusalTest {
     // In production mode the engine text is replaced by the placeholder: the address is appended to whatever is sent
     assertThat(BoltNetworkExecutor.withLeaderRedirect(ArcadeDBServer.CONCEALED_ERROR_MESSAGE, refusal(LEADER), null))
         .startsWith(ArcadeDBServer.CONCEALED_ERROR_MESSAGE)
-        .endsWith("The leader is server '" + LEADER + "'");
+        .endsWith("The leader is server '" + LEADER + "' (HTTP address; use its Bolt port) and retry");
   }
 
   @Test

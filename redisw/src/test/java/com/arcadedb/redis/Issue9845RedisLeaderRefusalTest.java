@@ -54,6 +54,12 @@ class Issue9845RedisLeaderRefusalTest {
   }
 
   @Test
+  void theAddressCannotBreakTheOneLineReply() {
+    assertThat(RedisNetworkExecutor.withLeaderRedirect("refused", refusal("host\r\n-ERR forged")))
+        .doesNotContain("\r").doesNotContain("\n");
+  }
+
+  @Test
   void aRefusalNamingNoLeaderStaysTryAgain() {
     assertThat(RedisNetworkExecutor.respErrorPrefix(refusal(null))).isEqualTo("TRYAGAIN");
     assertThat(RedisNetworkExecutor.withLeaderRedirect("refused", refusal(""))).isEqualTo("refused");

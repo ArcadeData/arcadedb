@@ -238,8 +238,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
    * the translation into MongoDB's error codes is here. The categories MongoDB has no code for keep the uncoded
    * exception they already had.
    * <p>
-   * WriteConflict, NotWritablePrimary, NamespaceNotFound, Unauthorized and MaxTimeMSExpired are given as literals because the bundled
-   * {@code de.bwaldvogel} {@link ErrorCode} enum does not define them; the rest come from the enum.
+   * WriteConflict, NotWritablePrimary, NamespaceNotFound, Unauthorized and MaxTimeMSExpired are given as literals
+   * because the bundled {@code de.bwaldvogel} {@link ErrorCode} enum does not define them; the rest come from the enum.
    */
   static MongoServerException wireException(final String message, final Exception e) {
     // The bundled backend assigns its own codes - an aggregation stage rejecting a pipeline, for instance. Those

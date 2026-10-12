@@ -1924,7 +1924,8 @@ public class BoltNetworkExecutor extends Thread {
     final String boltLeader = routing != null ? routing.writer() : null;
     if (boltLeader != null && !boltLeader.isBlank())
       return text + ". Reconnect to the leader at '" + boltLeader + "' (Bolt address) and retry";
-    return text + ". The leader is server '" + refusal.getLeaderAddress() + "'";
+    // What the refusal carries is the leader's HTTP address (or its server name), not a Bolt endpoint: say so
+    return text + ". The leader is server '" + refusal.getLeaderAddress() + "' (HTTP address; use its Bolt port) and retry";
   }
 
   /** {@link #clientMessage} for a failure the handler has already logged with its stack trace: nothing is logged twice. */
