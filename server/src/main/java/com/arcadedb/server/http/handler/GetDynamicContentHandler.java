@@ -115,7 +115,7 @@ public class GetDynamicContentHandler extends AbstractServerHttpHandler {
       uri += ".html";
 
     boolean processTemplate = true;
-    String contentType = "plain/text";
+    String contentType = "text/plain";
     if (uri.endsWith(".html") || uri.endsWith(".htm"))
       contentType = "text/html";
     else if (uri.endsWith(".js")) {
@@ -138,13 +138,17 @@ public class GetDynamicContentHandler extends AbstractServerHttpHandler {
     } else if (uri.endsWith(".woff2")) {
       contentType = "font/woff2";
       processTemplate = false;
-    } else if (uri.endsWith(".tff")) {
-      contentType = "font/tff";
+    } else if (uri.endsWith(".ttf")) {
+      contentType = "font/ttf";
       processTemplate = false;
     } else
       processTemplate = false;
 
     exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, contentType);
+    if ("text/html".equals(contentType))
+      // A policy governs documents only: Studio's pages refuse inline script, so an HTML-injection bug cannot run any
+      // (issue #9681). Scripts, styles and fonts do not need it.
+      setContentSecurityPolicy(exchange, null);
 
     Metrics.counter("http.static-content").increment();
 

@@ -93,6 +93,15 @@ public class SetServerSettingTool {
     // just opened the metrics endpoint. A value an administrator typed is refused instead.
     final Object coerced = cfg.coerceFromAdminCommand(value);
 
+    // The plugins may refuse a value their running state cannot honour - a Gremlin Server channelizer that cannot
+    // conceal engine error text refuses a switch to production mode (issue #9749) - before anything is stored. The
+    // refusal is the server's own wording about the request, so it is answered in every mode like the checks above.
+    try {
+      server.checkServerSettingChange(cfg, coerced);
+    } catch (final IllegalArgumentException e) {
+      throw new MCPToolArgumentException(e.getMessage());
+    }
+
     // Externalized: a Class-typed setting is worth the Class itself once coerced, and Class.toString() is
     // "class java.util.Date" - neither what was written nor anything a caller can write back (issue #7163).
     final Object oldValue = GlobalConfiguration.externalizeValue(server.getConfiguration().getValue(cfg));

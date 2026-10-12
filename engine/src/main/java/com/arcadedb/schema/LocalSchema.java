@@ -1382,8 +1382,13 @@ public class LocalSchema implements Schema {
     return zoneId;
   }
 
+  /**
+   * Saved with the schema and, under HA, replicated with it (issue #9747): see {@link #recordChange(Runnable)}.
+   */
   public void setZoneId(final ZoneId zoneId) {
-    this.zoneId = zoneId;
+    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_DATABASE_SETTINGS);
+    if (!Objects.equals(this.zoneId, zoneId))
+      recordChange(() -> this.zoneId = zoneId);
   }
 
   /**
@@ -1425,7 +1430,8 @@ public class LocalSchema implements Schema {
   @Override
   public void setDateFormat(final String dateFormat) {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_DATABASE_SETTINGS);
-    this.dateFormat = dateFormat;
+    if (!Objects.equals(this.dateFormat, dateFormat))
+      recordChange(() -> this.dateFormat = dateFormat);
   }
 
   @Override
@@ -1436,7 +1442,23 @@ public class LocalSchema implements Schema {
   @Override
   public void setDateTimeFormat(final String dateTimeFormat) {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_DATABASE_SETTINGS);
-    this.dateTimeFormat = dateTimeFormat;
+    if (!Objects.equals(this.dateTimeFormat, dateTimeFormat))
+      recordChange(() -> this.dateTimeFormat = dateTimeFormat);
+  }
+
+  /**
+   * Applies a schema change that creates or drops no file inside a schema recording session (issue #9747). The session
+   * saves {@code schema.json} on its way out and, under HA, is what ships the schema to the followers. A bare
+   * {@link #saveConfiguration()} did the former and not the latter: the change existed on the leader alone, so a
+   * constraint was not enforced by a follower - nor by the node that became leader after a failover - and the date
+   * settings answered differently per node. Validate before calling, so a refused value touches nothing. During the
+   * schema load the session is a plain call. Nested in another frame on this thread, the outermost one saves.
+   */
+  void recordChange(final Runnable change) {
+    recordFileChanges(() -> {
+      change.run();
+      return null;
+    });
   }
 
   @Override
@@ -1448,11 +1470,14 @@ public class LocalSchema implements Schema {
   @Override
   public void setExtension(final String name, final JSONObject value) {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
-    if (value == null)
-      extensions.remove(name);
-    else
-      extensions.put(name, value);
-    saveConfiguration();
+    // Inside a schema recording session, not followed by a bare saveConfiguration(): under HA only the session ships the
+    // schema, so the extension existed on the leader alone (issue #9747)
+    recordChange(() -> {
+      if (value == null)
+        extensions.remove(name);
+      else
+        extensions.put(name, value);
+    });
   }
 
   @Override
@@ -5113,8 +5138,13 @@ public class LocalSchema implements Schema {
     // COMPUTE INVOLVED BUCKETS FOR SECURITY
     final Map<Integer, LocalDocumentType> newBucketId2InvolvedTypeMap = new HashMap<>();
     for (final LocalDocumentType t : typeMap().values()) {
-      for (final Bucket b : t.getInvolvedBuckets())
-        newBucketId2InvolvedTypeMap.put(b.getFileId(), t);
+      for (final Bucket b : t.getInvolvedBuckets()) {
+        // A type's own bucket answers to that type, whatever another type's naming convention claims (a vertex type's
+        // stripe pool is found by name, issue #9780): the grants that cover a user bucket stay the grants of its type
+        final LocalDocumentType owner = newBucketId2TypeMap.get(b.getFileId());
+        if (owner == null || owner == t)
+          newBucketId2InvolvedTypeMap.put(b.getFileId(), t);
+      }
     }
 
     if (isStagingPublication()) {

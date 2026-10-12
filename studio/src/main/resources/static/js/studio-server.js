@@ -120,7 +120,7 @@ function displayServerSettings() {
         title: "Value",
         width: "20%",
         render: function (data, type, row) {
-          return "<a href='#' onclick='updateServerSetting(\"" + row[0] + '", "' + row[1] + "\")' style='color: green;'><b>" + data + "</b></a>";
+          return "<a href='#'" + studioAction("updateServerSetting", [String(row[0]), String(row[1])]) + " style='color: green;'><b>" + data + "</b></a>";
         },
       },
       { title: "Description", width: "33%" },
@@ -426,7 +426,7 @@ function displayMetrics() {
 
 function updateServerSetting(key, value) {
   let html = "<b>" + escapeHtml(key) + "</b> = <input class='form-control mt-2' id='updateSettingInput' value='" + escapeHtml(value) + "' " +
-    "onkeydown='if (event.which === 13) document.getElementById(\"globalModalConfirmBtn\").click()'>";
+    "data-enter-click='globalModalConfirmBtn'>";
   html += "<br><p><i>The update will not be persistent and will be reset at the next restart of the server.</i></p>";
 
   globalPrompt("Update Server Setting", html, "Update", function() {
@@ -926,7 +926,7 @@ function loadBackupConfig() {
 
       if (data.config == null || data.config === "null") {
         $("#backupStatusMessage").html(
-          'Auto-backup is not configured. <a href="#" onclick="enableBackupConfig()">Click here</a> to create a default configuration.'
+          'Auto-backup is not configured. <a href="#"' + studioAction("enableBackupConfig") + ' data-prevent-default>Click here</a> to create a default configuration.'
         );
         $("#backupConfigForm").hide();
         $("#backupConfigStatus").show();

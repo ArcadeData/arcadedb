@@ -430,8 +430,8 @@ function profilerStepMeasuredCell(step) {
 // SO THE DETAIL OPENS ONCE
 function profilerRenderQueryRow(q, i) {
   var truncated = q.queryText.length > 80 ? q.queryText.substring(0, 80) + "..." : q.queryText;
-  return '<tr style="cursor: pointer;" onclick="if (event.target.closest(\'button\') === null) profilerShowDetail(' + i + ')">' +
-    '<td><button type="button" class="profiler-query-button" title="' + escapeHtml(q.queryText) + '" onclick="profilerShowDetail(' + i + ')">' +
+  return '<tr style="cursor: pointer;"' + studioAction("profilerShowDetail", [i]) + '>' +
+    '<td><button type="button" class="profiler-query-button" title="' + escapeHtml(q.queryText) + '"' + studioAction("profilerShowDetail", [i]) + ' data-stop-propagation>' +
     escapeHtml(truncated) + '</button></td>' +
     '<td>' + escapeHtml(q.language) + '</td>' +
     '<td>' + escapeHtml(q.database) + '</td>' +
@@ -619,7 +619,7 @@ function profilerRenderAiResponse(data) {
   // Render command blocks
   if (data.commands && data.commands.length > 0) {
     if (data.commands.length > 1)
-      html += '<div class="mt-2 mb-2"><button class="btn btn-sm" style="background: var(--color-brand); color: white; border: none;" onclick="profilerAiExecuteAll(this)">' +
+      html += '<div class="mt-2 mb-2"><button class="btn btn-sm" style="background: var(--color-brand); color: white; border: none;"' + studioAction("profilerAiExecuteAll", [STUDIO_ARG_THIS]) + '>' +
         '<i class="fa fa-forward me-1"></i>Execute All</button></div>';
 
     for (var j = 0; j < data.commands.length; j++)
@@ -638,7 +638,7 @@ function profilerRenderAiCommandBlock(cmd) {
     '<div style="padding: 8px 12px; background: var(--bg-sidebar); border-bottom: 1px solid var(--border-main); display: flex; align-items: center; justify-content: space-between;">' +
     '<div>' + purpose +
     '<span class="badge" style="background: var(--color-brand); color: white; font-size: 0.7rem;">' + lang + '</span></div>' +
-    '<button class="btn btn-sm" style="background: var(--color-brand); color: white; border: none; font-size: 0.8rem;" onclick="profilerAiExecuteCommand(this, \'' + blockId + '\')">' +
+    '<button class="btn btn-sm" style="background: var(--color-brand); color: white; border: none; font-size: 0.8rem;"' + studioAction("profilerAiExecuteCommand", [STUDIO_ARG_THIS, blockId]) + '>' +
     '<i class="fa fa-play me-1"></i>Execute</button></div>' +
     '<pre id="' + blockId + '" style="margin: 0; padding: 12px; background: var(--bg-code); color: var(--text-code); font-size: 0.85rem; overflow-x: auto; white-space: pre-wrap; word-break: break-word;" ' +
     'data-language="' + escapeHtml(cmd.language || "sql") + '" data-command="' + escapeHtml(cmd.command) + '">' +
@@ -700,7 +700,7 @@ function profilerAiExecuteAll(button) {
   var commands = [];
   blocks.each(function() {
     var pre = jQuery(this).find("pre");
-    var execBtn = jQuery(this).find("button[onclick*='profilerAiExecuteCommand']");
+    var execBtn = jQuery(this).find("button[data-on-click='profilerAiExecuteCommand']");
     commands.push({ pre: pre, btn: execBtn, blockId: pre.attr("id") });
   });
 

@@ -1918,16 +1918,27 @@ public class LSMVectorIndex implements Index, IndexInternal {
    */
   private PersistedGraphCheck loadPersistedGraphOrDecidePrefix() {
     // Try to load persisted graph from disk
-    // IMPORTANT: If PRODUCT quantization is enabled but PQ file doesn't exist, we need to rebuild
+    // IMPORTANT: If PRODUCT quantization is enabled but there is no PQ data to use, we need to rebuild
     // the graph from scratch so that ordinalToVectorId is consistent between graph and PQ.
     // Loading graph from disk and then building PQ separately causes ordinal mismatch.
-    final boolean needsGraphRebuildForPQ = metadata.quantizationType == VectorQuantizationType.PRODUCT &&
-        pqFile != null && !pqFile.exists();
+    //
+    // "No PQ data to use" is asked of hasUsableData(), not exists() (issue #9796): a file that is on disk but cannot be
+    // read is no PQ data, and exists() answers it the opposite way from isPQReady(), which sent the open down the route
+    // this comment warns against.
+    //
+    // hasUsableData() only learns that a file is unreadable once a load has been tried, and the PQ is loaded together
+    // with the locations (see materializeLocations). ensureGraphAvailable() has done that by the time it gets here, but
+    // the async rebuild path has not: so the locations are materialised first, here, rather than assuming the caller did.
+    // Only for a PRODUCT-quantized index, and the walk below needs them anyway.
+    final boolean productQuantized = metadata.quantizationType == VectorQuantizationType.PRODUCT && pqFile != null;
+    if (productQuantized)
+      vectorIndex();
+    final boolean needsGraphRebuildForPQ = productQuantized && !pqFile.hasUsableData();
     if (needsGraphRebuildForPQ) {
       LogManager.instance().log(this, Level.INFO,
           """
-              PRODUCT quantization enabled but PQ file missing - rebuilding graph from scratch for ordinal \
-              consistency: %s""",
+              PRODUCT quantization enabled but there is no usable PQ file (missing, or present and unreadable) - \
+              rebuilding graph from scratch for ordinal consistency: %s""",
           indexName);
     }
 
@@ -4234,9 +4245,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
               // PQ was already computed for accelerated graph build — just persist it
               LogManager.instance().log(this, Level.INFO,
                   "Persisting PQ computed during accelerated graph build for index: %s", indexName);
-              pqFile.writePQ(earlyPq, earlyPqVectors);
-              this.productQuantization = earlyPq;
-              this.pqVectors = earlyPqVectors;
+              persistProductQuantization(earlyPq, earlyPqVectors);
             } else {
               buildAndPersistPQ(vectors);
             }
@@ -4563,6 +4572,45 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
+   * Writes the codebook and the codes next to the graph they were built for, and publishes them to searches.
+   * <p>
+   * {@link LSMVectorIndexPQFile#writePQ} never damages the file it replaces, so a failed write leaves the PREVIOUS file
+   * on disk (issue #9796). That file describes the previous graph's ordinals, and this runs after the new graph was
+   * certified: pairing the two on the next open would score the wrong vectors, or, when the old codes are smaller,
+   * leave every query on the exact path with nothing ever rebuilding them (issue #5417). So a failed write drops the
+   * old file, which the next open reads as "no PQ data" and answers by rebuilding graph and PQ together. The codes in
+   * hand are right for the graph in memory, so they are published either way: a disk failure does not cost this
+   * session its approximate search.
+   * <p>
+   * Both callers run under {@link #graphBuildLock} (the post-load PQ build inside
+   * {@link #loadPersistedGraphOrDecidePrefix()}, and the persist at the end of a build), which is what keeps two
+   * writers of the same PQ file from racing on its temporary and its rename.
+   */
+  private void persistProductQuantization(final ProductQuantization pq, final PQVectors codes) {
+    try {
+      pqFile.writePQ(pq, codes);
+    } catch (final Throwable e) {
+      // Throwable, not IndexException: writePQ wraps every Exception in it, but an Error (an OutOfMemoryError while
+      // streaming) passes straight through, and the stale file must be gone whichever way the write failed. An Error
+      // is not absorbed: it goes on to the build's own handler, which already takes Throwable.
+      LogManager.instance().log(this, Level.WARNING,
+          "PQ data of index %s could not be persisted (%s): the previous PQ file belongs to the previous graph and is "
+              + "dropped, the next open rebuilds the graph and the PQ together. Approximate search stays available "
+              + "until then",
+          indexName, e.getMessage());
+      if (!pqFile.deletePQFile())
+        LogManager.instance().log(this, Level.SEVERE,
+            "The stale PQ file %s of index %s could not be deleted: it describes the previous graph and the next open will "
+                + "pair it with the current one. Delete it by hand to force the PQ to be rebuilt",
+            pqFile.getFilePath(), indexName);
+      if (e instanceof Error error)
+        throw error;
+    }
+    this.productQuantization = pq;
+    this.pqVectors = codes;
+  }
+
+  /**
    * Resolve the number of PQ subspaces (M), auto-calculating it when not configured and always making sure it divides the
    * vector dimensions evenly, as required by {@link ProductQuantization}.
    *
@@ -4674,12 +4722,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
           "PQ encoding completed in %d ms (%d vectors encoded)",
           System.currentTimeMillis() - encodeStart, encodedVectors.count());
 
-      // Persist PQ data to file
-      pqFile.writePQ(pq, encodedVectors);
-
-      // Cache in memory for immediate zero-disk-I/O search
-      this.productQuantization = pq;
-      this.pqVectors = encodedVectors;
+      // Persist PQ data to file and cache it in memory for immediate zero-disk-I/O search
+      persistProductQuantization(pq, encodedVectors);
 
       final long totalTime = System.currentTimeMillis() - startTime;
       LogManager.instance().log(this, Level.INFO,

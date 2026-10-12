@@ -252,12 +252,17 @@ function supportReqMergeTables(parts, cap) {
   return { columns: columns, rows: rows, truncated: truncated };
 }
 
-/** A new mask state for a table: the columns whose names look sensitive, or that the user masked before, start masked. */
+/** Whether a column starts masked when nothing is remembered about it. The automatic protection: a memory can add to it, never lower it. */
+function supportReqMaskedByDefault(name) {
+  return SUPPORT_REQ_SENSITIVE_COLUMN.test(name);
+}
+
+/** A new mask state for a table: the columns whose names look sensitive, plus the ones the user masked before. The memory only ever adds. */
 function supportReqInitialMask(table, remembered) {
   var columns = {};
   table.columns.forEach(function (c) {
-    var before = remembered && Object.prototype.hasOwnProperty.call(remembered, c.name) ? remembered[c.name] : null;
-    if (before === true || (before === null && SUPPORT_REQ_SENSITIVE_COLUMN.test(c.name))) columns[c.name] = true;
+    if (supportReqMaskedByDefault(c.name) || (remembered && Object.prototype.hasOwnProperty.call(remembered, c.name) && remembered[c.name] === true))
+      columns[c.name] = true;
   });
   return { columns: columns, cells: {}, mode: "redact" };
 }
@@ -370,18 +375,27 @@ var supportReqDatabases = null;
 var supportReqNode = "";
 var supportReqPeers = { loaded: false, ha: false, peers: [] };
 
+/** The column names the user masked on top of the defaults. Anything else in the store, such as the "not masked" entries older versions wrote, is dropped. */
 function supportReqRemembered() {
+  var memory = {};
   try {
-    return JSON.parse(globalStorageLoad(SUPPORT_REQ_REMEMBER) || "{}") || {};
+    var stored = JSON.parse(globalStorageLoad(SUPPORT_REQ_REMEMBER) || "{}");
+    if (stored && typeof stored === "object")
+      Object.keys(stored).forEach(function (name) {
+        if (stored[name] === true) memory[name] = true;
+      });
   } catch (e) {
-    return {};
+    // an unreadable memory is an empty one
   }
+  return memory;
 }
 
+/** Records what the user masked beyond the defaults and forgets what they took back. A column nobody touched leaves no trace (#9797). */
 function supportReqRemember(table, mask) {
   var memory = supportReqRemembered();
   table.columns.forEach(function (c) {
-    memory[c.name] = !!mask.columns[c.name];
+    if (mask.columns[c.name] && !supportReqMaskedByDefault(c.name)) memory[c.name] = true;
+    else delete memory[c.name];
   });
   try {
     globalStorageSave(SUPPORT_REQ_REMEMBER, JSON.stringify(memory));
@@ -708,6 +722,16 @@ function supportReqAnswerOf(request) {
   return Promise.resolve(null);
 }
 
+/** The table and the columns masked in an answer, taken when it is built: what gets remembered is what was sent, whatever the page shows when the portal replies. */
+function supportReqSentMask(s) {
+  if (s.status !== "done") return null;
+  var columns = {};
+  s.table.columns.forEach(function (c) {
+    if (s.mask.columns[c.name]) columns[c.name] = true;
+  });
+  return { table: s.table, mask: { columns: columns } };
+}
+
 function supportReqSent() {
   supportReqState = {};
   loadSupportIssue(supportCurrentIssue.number);
@@ -716,14 +740,15 @@ function supportReqSent() {
 function supportReqSendOne(request) {
   var s = supportReqStateFor(request);
   var alertId = "#spRqAlert_" + request.id;
+  var sent = supportReqSentMask(s);
   supportReqAnswerOf(request).then(function (answer) {
     if (!answer) return;
-    if (s.status === "done") supportReqRemember(s.table, s.mask);
     var previous = s.status;
     s.status = "sending";
     supportReqRefresh(request);
     supportApi("POST", "/issues/" + encodeURIComponent(supportCurrentIssue.number) + "/requests/" + encodeURIComponent(request.id) + "/response", answer)
       .done(function () {
+        if (sent) supportReqRemember(sent.table, sent.mask);
         globalNotify("Support", "Your answer was sent to ArcadeData support", "success");
         supportReqSent();
       })
@@ -745,18 +770,20 @@ function supportReqSendAll() {
     });
   });
   if (!requests.length) return;
+  var sent = requests.map(function (r) {
+    return supportReqSentMask(supportReqStateFor(r));
+  });
   Promise.all(requests.map(supportReqAnswerOf)).then(function (answers) {
     var responses = answers.map(function (a, i) {
       a.requestId = requests[i].id;
       return a;
     });
-    requests.forEach(function (r) {
-      var s = supportReqStateFor(r);
-      if (s.status === "done") supportReqRemember(s.table, s.mask);
-    });
     $("#spRqSendAll").prop("disabled", true).html(supportSpinner("Sending..."));
     supportApi("POST", "/issues/" + encodeURIComponent(supportCurrentIssue.number) + "/responses", { responses: responses })
       .done(function () {
+        sent.forEach(function (m) {
+          if (m) supportReqRemember(m.table, m.mask);
+        });
         globalNotify("Support", "Your answers were sent to ArcadeData support", "success");
         supportReqSent();
       })

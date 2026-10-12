@@ -139,8 +139,13 @@ public class ArcadeGraph implements Graph, Closeable {
   }
 
   protected ArcadeGraph(final BasicDatabase database, final boolean sharedDatabase) {
+    this(database, sharedDatabase, new ArcadeGraphFeatures());
+  }
+
+  protected ArcadeGraph(final BasicDatabase database, final boolean sharedDatabase, final Features features) {
     this.database = database;
     this.sharedDatabase = sharedDatabase;
+    this.features = features;
     this.transaction = new ArcadeGraphTransaction(this);
     init();
   }
@@ -166,6 +171,18 @@ public class ArcadeGraph implements Graph, Closeable {
 
   public static ArcadeGraph open(final BasicDatabase database) {
     return new ArcadeGraph(database);
+  }
+
+  /**
+   * Opens a graph that writes into the transaction the database's caller already holds and leaves it for the caller to
+   * resolve (issue #9783). Its {@code features().graph().supportsTransactions()} answers {@code false}, which is what
+   * TinkerPop's bulk readers ({@code GraphMLReader}, {@code GraphSONReader}) read before every {@code graph.tx().commit()}
+   * they issue - per batch and at the end. A plain graph JOINS an active transaction (see
+   * {@link ArcadeGraphTransaction#isOpen()}), so those commits would publish the caller's own pending work and leave them no
+   * transaction to commit or roll back. The database's lifecycle is the caller's too: closing the graph does not close it.
+   */
+  public static ArcadeGraph openInCallerTransaction(final BasicDatabase database) {
+    return new ArcadeGraph(database, true, new ArcadeGraphFeatures(false));
   }
 
   /**

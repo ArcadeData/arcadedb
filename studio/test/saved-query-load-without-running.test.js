@@ -119,6 +119,7 @@ function $(selector) {
 }
 
 eval(extractFn(utilsSrc, "escapeHtml"));
+eval(fs.readFileSync(path.join(STATIC_DIR, "studio-actions.js"), "utf8"));
 eval(extractFn(src, "setEditorLanguage"));
 eval(extractFn(src, "getSavedQueries"));
 eval(extractFn(src, "populateSavedQueriesPanel"));
@@ -184,15 +185,18 @@ test("loading a stale index leaves the editor untouched", () => {
 
 test("a click on a saved entry loads it, and only the explicit run button executes it", () => {
   populateSavedQueriesPanel();
-  // THESE REGEXES ARE TIED TO THE SINGLE-QUOTED ATTRIBUTE MARKUP THAT populateSavedQueriesPanel GENERATES
-  const entryClick = /class='saved-query-entry'[^>]*onclick='([^']*)'/.exec(panelHtml);
+  // THE HANDLERS ARE data-on-click ATTRIBUTES DISPATCHED BY js/studio-actions.js (ISSUE #9681: NO INLINE onclick)
+  const entryClick = /class='saved-query-entry'[^>]* data-on-click="([^"]*)" data-args="([^"]*)"/.exec(panelHtml);
   assert.ok(entryClick, "the saved entry must still be clickable");
-  assert.equal(entryClick[1], "loadSavedQuery(0)");
+  assert.equal(entryClick[1], "loadSavedQuery");
+  assert.equal(entryClick[2], "[0]");
   assert.ok(!/class='saved-query-entry'[^>]*executeSavedQuery/.test(panelHtml), "the entry's own click must not run the query");
 
-  const runClick = /class='saved-query-run'[^>]*onclick='([^']*)'/.exec(panelHtml);
+  const runClick = /class='saved-query-run'[^>]* data-on-click="([^"]*)" data-args="([^"]*)"( data-stop-propagation)?/.exec(panelHtml);
   assert.ok(runClick, "each saved entry offers an explicit run button");
-  assert.match(runClick[1], /event\.stopPropagation\(\);\s*executeSavedQuery\(0\)/, "the run button must not also bubble into the load click");
+  assert.equal(runClick[1], "executeSavedQuery");
+  assert.equal(runClick[2], "[0]");
+  assert.ok(runClick[3], "the run button must not also bubble into the load click");
 });
 
 test("the explicit run button still executes the saved query with its own language", () => {

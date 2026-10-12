@@ -35,7 +35,11 @@ const STATIC_DIR = path.join(__dirname, "..", "src", "main", "resources", "stati
 const read = (...p) => fs.readFileSync(path.join(STATIC_DIR, ...p), "utf8");
 const apiHtml = read("api.html");
 const apiMarkup = apiHtml.substring(0, apiHtml.indexOf("<script"));
+// the pages' scripts live in js/ since issue #9681 (the Content-Security-Policy refuses inline <script>)
+const apiJs = read("js", "studio-api.js");
 const resourcesHtml = read("resources.html");
+const resourcesJs = read("js", "studio-resources.js");
+eval(read("js", "studio-actions.js"));
 const profilerJs = read("js", "studio-profiler.js");
 const css = read("css", "studio.css").replace(/\/\*[\s\S]*?\*\//g, "");
 
@@ -93,7 +97,7 @@ test("every API endpoint row is a real button", () => {
     assert.equal(tag[1], "button", "an endpoint row must be a <button>: " + tag[0]);
     assert.match(tag[0], /type=["']button["']/);
   }
-  assert.ok(!/<(div|span|tr)[^>]*onclick/.test(apiMarkup), "click-only element left in the static markup");
+  assert.ok(!/<(div|span|tr)[^>]*(onclick|data-on-click)/.test(apiMarkup), "click-only element left in the static markup");
 });
 
 test("API endpoint buttons only hold phrasing content", () => {
@@ -101,18 +105,18 @@ test("API endpoint buttons only hold phrasing content", () => {
 });
 
 test("the Try It tag is a button", () => {
-  assert.match(apiHtml, /<button type=['"]button['"] class=['"]api-detail-tag api-detail-tag-tryit['"] onclick=/);
-  assert.ok(!/<span[^>]*api-detail-tag-tryit/.test(apiHtml));
+  assert.match(apiJs, /<button type=['"]button['"] class=['"]api-detail-tag api-detail-tag-tryit['"]" \+ studioAction\("toggleApiPlayground", \[key\]\)/);
+  assert.ok(!/<span[^>]*api-detail-tag-tryit/.test(apiJs));
 });
 
 test("the response headers toggle is a button reporting its state", () => {
-  const tag = /<button[^>]*api-playground-resp-headers-toggle[^>]*>/.exec(apiHtml);
+  const tag = /<button[^>]*api-playground-resp-headers-toggle[^>]*>/.exec(apiJs);
   assert.ok(tag, "the toggle must be a <button>");
   assert.match(tag[0], /aria-expanded=["']false["']/);
   const el = fakeElement();
   const parent = fakeElement();
   el.parentNode = parent;
-  eval(extractFn(apiHtml, "toggleApiRespHeaders"));
+  eval(extractFn(apiJs, "toggleApiRespHeaders"));
   toggleApiRespHeaders(el);
   assert.ok(parent.classes.has("open"));
   assert.equal(el.getAttribute("aria-expanded"), "true");
@@ -140,7 +144,7 @@ test("toggling a TOC section flips aria-expanded", () => {
   const body = fakeElement();
   header.querySelector = () => chevron;
   header.nextElementSibling = body;
-  eval(extractFn(resourcesHtml, "toggleTocSection"));
+  eval(extractFn(resourcesJs, "toggleTocSection"));
   toggleTocSection(header);
   assert.equal(header.getAttribute("aria-expanded"), "true");
   assert.ok(body.classes.has("open"));
@@ -153,7 +157,9 @@ test("profiler query rows hold a keyboard-reachable button", () => {
   eval(extractFn(profilerJs, "profilerRenderQueryRow"));
   const row = profilerRenderQueryRow({ queryText: "SELECT 1", language: "sql", database: "d", executionCount: 1, totalTimeMs: 1, avgTimeMs: 1 }, 3);
   assert.match(row, /<td><button type="button" class="profiler-query-button" title="SELECT 1"/);
-  assert.match(row, /onclick="profilerShowDetail\(3\)"/);
+  // the row and its button both open the detail; the button's click stops there, so the detail opens once
+  assert.match(row, /<tr style="cursor: pointer;" data-on-click="profilerShowDetail" data-args="\[3\]">/);
+  assert.match(row, /class="profiler-query-button" title="SELECT 1" data-on-click="profilerShowDetail" data-args="\[3\]" data-stop-propagation>/);
 });
 
 test("the new buttons lose the native chrome and show a focus ring", () => {

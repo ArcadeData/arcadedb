@@ -34,7 +34,7 @@ test.describe('ArcadeDB Studio Graph Export Tests', () => {
       '[title*="export" i]',
       '.fa-download',
       '.fa-file-export',
-      'button[onclick*="export"]',
+      '[data-on-click="exportGraph"]',
       '#exportGraph'
     ];
 

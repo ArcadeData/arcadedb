@@ -11,8 +11,8 @@
       </span>
     </div>
     <div class="d-flex align-items-center gap-2">
-      <button class="btn btn-sm db-action-btn" onclick="updateCluster()"><i class="fa fa-sync"></i> Refresh</button>
-      <select id="clusterRefreshTimeout" class="form-select form-select-sm" style="width: auto; font-size: 0.8rem;" onchange="startClusterRefreshTimer(true)">
+      <button class="btn btn-sm db-action-btn" data-on-click="updateCluster"><i class="fa fa-sync"></i> Refresh</button>
+      <select id="clusterRefreshTimeout" class="form-select form-select-sm" style="width: auto; font-size: 0.8rem;" data-on-change="startClusterRefreshTimer" data-args='[true]'>
         <option value="0">Auto Off</option>
         <option value="5">5 sec</option>
         <option value="10">10 sec</option>
@@ -89,7 +89,7 @@
         <div class="col-12">
           <div class="d-flex align-items-center justify-content-between mb-2">
             <h6 style="color: var(--text-secondary); font-weight: 600; margin: 0;">Database Presence</h6>
-            <button id="btnLoadPresence" class="btn btn-sm db-action-btn" onclick="loadPresenceMatrix()"
+            <button id="btnLoadPresence" class="btn btn-sm db-action-btn" data-on-click="loadPresenceMatrix"
                     title="Query every node for the databases it holds (leader only). Each node briefly opens any closed database to read it, so use on demand rather than continuously.">
               <i class="fa fa-table"></i> Load presence matrix
             </button>
@@ -152,7 +152,7 @@
                 <i class="fas fa-network-wired" style="color: var(--color-brand);"></i>
                 <span style="font-weight: 600; font-size: 0.88rem; margin-left: 6px;">Cluster Membership</span>
               </span>
-              <button id="btnAddPeer" class="btn btn-sm db-action-btn" onclick="addPeerPrompt()" style="display:none;" title="Add a new peer to the cluster (leader only)">
+              <button id="btnAddPeer" class="btn btn-sm db-action-btn" data-on-click="addPeerPrompt" style="display:none;" title="Add a new peer to the cluster (leader only)">
                 <i class="fa fa-plus"></i> Add Peer
               </button>
             </div>
@@ -222,11 +222,11 @@
                   Move leadership to a node that holds a database the current leader is missing, then resync the
                   others (the #4522 recovery flow).
                 </p>
-                <button class="btn btn-sm db-action-btn me-2" onclick="transferLeadershipPrompt()"
+                <button class="btn btn-sm db-action-btn me-2" data-on-click="transferLeadershipPrompt"
                         title="Transfer leadership to a specific peer">
                   <i class="fa fa-exchange-alt"></i> Transfer leadership
                 </button>
-                <button class="btn btn-sm btn-outline-secondary" onclick="stepDownLeader()"
+                <button class="btn btn-sm btn-outline-secondary" data-on-click="stepDownLeader"
                         title="Relinquish leadership; the cluster elects a new leader">
                   <i class="fa fa-sign-out-alt"></i> Step down
                 </button>
@@ -266,7 +266,7 @@
               <p style="font-size: 0.78rem; color: var(--text-secondary); margin-bottom: 10px;">
                 These actions can disrupt the cluster. Use with caution.
               </p>
-              <button class="btn btn-sm btn-outline-danger" onclick="shutdownServer()">
+              <button class="btn btn-sm btn-outline-danger" data-on-click="shutdownServer">
                 <i class="fas fa-power-off"></i> Shutdown This Server
               </button>
             </div>

@@ -24,6 +24,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.TransactionContext;
+import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DatabaseOperationException;
@@ -100,6 +101,8 @@ public class StripedEdgeList extends EdgeLinkedList {
    * EdgeLinkedList.loadChunkForWrite), a read skips the momentarily unresolvable chain, so counts/iterations
    * during a concurrent commit can transiently under-report instead of failing. */
   private static final AtomicLong                      LAST_SKIPPED_CHAIN_WARN = new AtomicLong();
+  // Zero-length, so sharing it is safe: there is no element to write
+  private static final Bucket[]                        EMPTY_POOL              = new Bucket[0];
 
   private final DatabaseInternal database;
   private       StripeDirectory  directory;
@@ -119,6 +122,60 @@ public class StripedEdgeList extends EdgeLinkedList {
    */
   public static String stripeBucketName(final String typeName, final int slot) {
     return InternalBucketNaming.superNodeStripeBucketName(typeName, slot);
+  }
+
+  /**
+   * The slot of {@code bucketName} in the stripe pool of {@code typeName}, or -1 when it is not one of that pool's names. A
+   * stripe name is the pool prefix followed by the bare slot number: an edge-list bucket whose name happens to start the same
+   * way ends in '_out_edges'/'_in_edges' instead, so it is never misread as one.
+   */
+  public static int stripeSlotOf(final String typeName, final String bucketName) {
+    final String prefix = InternalBucketNaming.Convention.SUPER_NODE_STRIPE.compose(typeName);
+    final int digits = bucketName.length() - prefix.length();
+    // At most 9 digits: a slot is an int, and a longer suffix is not a name this pool ever composed
+    if (digits < 1 || digits > 9 || !bucketName.startsWith(prefix))
+      return -1;
+    // A slot is composed without leading zeros: '_sn_stripe_01' is not a name this pool ever had
+    if (digits > 1 && bucketName.charAt(prefix.length()) == '0')
+      return -1;
+    int slot = 0;
+    for (int i = prefix.length(); i < bucketName.length(); i++) {
+      final char c = bucketName.charAt(i);
+      if (c < '0' || c > '9')
+        return -1;
+      slot = slot * 10 + (c - '0');
+    }
+    return slot;
+  }
+
+  /**
+   * The existing buckets of the stripe pool of {@code typeName}, indexed by slot ({@code null} for a slot with no bucket),
+   * or an empty array when the type never promoted a vertex. Pools are created contiguously from slot 0
+   * ({@link #createStripePool}), so the walk stops at the first gap AT OR PAST {@code configuredStripes} and covers a pool
+   * of any size, past or present; gaps below it (a partially created pool) are stepped over.
+   * <p>
+   * The one answer to "which files hold this type's stripe chains?": the type's involved buckets (per-file permission map
+   * and explicit type lock, issue #9780), its rename and its drop all read it.
+   */
+  public static Bucket[] getStripePool(final Schema schema, final String typeName, final int configuredStripes) {
+    // POOLS ARE CREATED FROM SLOT 0: no slot 0 = this type never promoted. The common case, one lookup.
+    final Bucket first = schema.getBucketByNameIfExists(stripeBucketName(typeName, 0));
+    if (first == null)
+      return EMPTY_POOL;
+
+    final List<Bucket> pool = new ArrayList<>(Math.max(configuredStripes, 1));
+    pool.add(first);
+    for (int i = 1; ; i++) {
+      final Bucket bucket = schema.getBucketByNameIfExists(stripeBucketName(typeName, i));
+      if (bucket == null && i >= configuredStripes)
+        break;
+      pool.add(bucket);
+    }
+    // Trailing gaps below the configured count carry no bucket. Bounded: slot 0 is non-null (checked above)
+    int size = pool.size();
+    while (pool.get(size - 1) == null)
+      --size;
+    return pool.subList(0, size).toArray(new Bucket[size]);
   }
 
   /**

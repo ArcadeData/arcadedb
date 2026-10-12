@@ -109,13 +109,14 @@ test("records become a table: no @ properties, union of columns, types, nested v
   assert.equal(JSON.parse(run(`JSON.stringify(supportReqTable(null, "", 10))`)).rows.length, 0);
 });
 
-test("sensitive-looking columns start masked, the user's earlier choices win, and cells, rows and columns toggle", () => {
+test("sensitive-looking columns start masked, the user's earlier choices can only add to that, and cells, rows and columns toggle", () => {
   const { run, context } = load();
   context.table = { columns: [{ name: "id", type: "LONG" }, { name: "email", type: "STRING" }, { name: "api_key", type: "STRING" }, { name: "note", type: "STRING" }], rows: [[1, "a@x", "k1", "n1"], [2, "b@x", "k2", "n2"]], truncated: false };
   const initial = JSON.parse(run(`JSON.stringify(supportReqInitialMask(table, {}))`));
   assert.deepEqual(Object.keys(initial.columns).sort(), ["api_key", "email"]);
+  // a remembered "masked" adds a column; a remembered "not masked" (what older Studio versions wrote) never takes one away (#9797)
   const remembered = JSON.parse(run(`JSON.stringify(supportReqInitialMask(table, { email: false, note: true }))`));
-  assert.deepEqual(Object.keys(remembered.columns).sort(), ["api_key", "note"]);
+  assert.deepEqual(Object.keys(remembered.columns).sort(), ["api_key", "email", "note"]);
 
   run(`mask = supportReqInitialMask(table, {})`);
   run(`supportReqToggleCell(mask, 0, 0)`);
@@ -303,4 +304,159 @@ test("a request for every node on a server that is not in a cluster says it runs
   })()`);
   assert.match(html, /not part of a cluster/);
   assert.match(html, /this server only/);
+});
+
+// ---------------------------------------------------------------------------------------------- the mask memory (#9797)
+
+const MEMORY = "support.requests.masked";
+
+function memoryOf(store) {
+  return JSON.parse(store[MEMORY] || "{}");
+}
+
+// One answered request in the page state, the way supportReqRun leaves it, with the mask the page would start with.
+function answered(run, columns) {
+  run(`request = { id: "rq_1", kind: "query", label: "l", language: "sql", statement: "SELECT 1", database: "", nodes: "current", status: "open" };
+    s = supportReqStateFor(request);
+    s.table = { columns: ${JSON.stringify(columns.map((name) => ({ name, type: "STRING" })))}, rows: [${JSON.stringify(columns.map((name) => "v-" + name))}], truncated: false };
+    s.mask = supportReqInitialMask(s.table, supportReqRemembered());
+    s.status = "done";`);
+}
+
+function maskedColumns(run) {
+  return Array.from(run(`Object.keys(s.mask.columns)`)).sort();
+}
+
+// supportApi answers at once, as a success or as a failure; everything else the send path touches is a no-op.
+function portal(run, succeeds) {
+  run(`supportCurrentIssue = { number: 7, timeline: [{ requests: [request] }] };
+    globalNotify = function () {}; loadSupportIssue = function () {}; supportShowError = function () {}; supportError = function () { return {}; }; supportReqRefresh = function () {};
+    supportApi = function () {
+      var chain = { done: function (f) { if (${succeeds}) f(); return chain; }, fail: function (f) { if (!${succeeds}) f({}); return chain; } };
+      return chain;
+    };`);
+}
+
+const settle = () => new Promise((resolve) => setImmediate(resolve));
+
+test("unmasking a sensitive-looking column for one answer does not unmask that name in the next one, on another type (#9797)", () => {
+  const { run, store } = load();
+  answered(run, ["key", "count"]);
+  assert.deepEqual(maskedColumns(run), ["key"]);
+  run(`supportReqToggleColumn(s.mask, s.table, 0)`); // "dots are useless to support": the user unmasks key
+  assert.deepEqual(maskedColumns(run), []);
+  run(`supportReqRemember(s.table, s.mask)`);
+
+  answered(run, ["name", "key"]); // SELECT name, key FROM ApiToken
+  assert.deepEqual(maskedColumns(run), ["key"], "the API tokens start masked again: " + store[MEMORY]);
+});
+
+test("a browser that already holds the old memory, a false for every column ever sent, masks sensitive names again", () => {
+  const { run, store } = load();
+  store[MEMORY] = JSON.stringify({ key: false, count: false, email: false, note: true, name: false });
+  answered(run, ["name", "key", "email", "note", "count"]);
+  assert.deepEqual(maskedColumns(run), ["email", "key", "note"]);
+  assert.equal(run(`supportReqMaskedCount(s.mask, s.table)`), 3);
+});
+
+test("the memory keeps only what the user added: untouched columns leave no trace, a column masked and unmasked again is forgotten", () => {
+  const { run, store } = load();
+  answered(run, ["id", "key", "note"]);
+  run(`supportReqRemember(s.table, s.mask)`);
+  assert.deepEqual(memoryOf(store), {}, "nothing was touched, nothing is written");
+
+  run(`supportReqToggleColumn(s.mask, s.table, 2)`); // note
+  run(`supportReqToggleColumn(s.mask, s.table, 1)`); // key, a sensitive name: unmasked for this answer only
+  run(`supportReqRemember(s.table, s.mask)`);
+  assert.deepEqual(memoryOf(store), { note: true });
+
+  answered(run, ["id", "note", "other"]);
+  assert.deepEqual(maskedColumns(run), ["note"], "a column the user masked starts masked from then on");
+  run(`supportReqToggleColumn(s.mask, s.table, 1)`); // note is unmasked again
+  run(`supportReqRemember(s.table, s.mask)`);
+  assert.deepEqual(memoryOf(store), {}, "an entry returns to the default by disappearing");
+});
+
+test("remembering one table keeps the choices made about the columns of other tables, and drops the stale false entries", () => {
+  const { run, store } = load();
+  store[MEMORY] = JSON.stringify({ ssn: true, key: false, legacy: false });
+  answered(run, ["id", "note"]);
+  run(`supportReqToggleColumn(s.mask, s.table, 1)`);
+  run(`supportReqRemember(s.table, s.mask)`);
+  assert.deepEqual(memoryOf(store), { ssn: true, note: true });
+});
+
+test("a broken or foreign memory is ignored: sensitive names still start masked", () => {
+  const { run, store } = load();
+  for (const bad of ["not json", "null", "[1,2]", '"key"', "7", '{"key":"no","note":1}']) {
+    store[MEMORY] = bad;
+    answered(run, ["key", "note"]);
+    assert.deepEqual(maskedColumns(run), ["key"], bad);
+  }
+});
+
+test("the memory is written only once the portal took the answer, so a refused send changes no default", async () => {
+  const { run, store } = load();
+  answered(run, ["name", "key", "note"]);
+  run(`supportReqToggleColumn(s.mask, s.table, 2)`); // note masked
+  portal(run, false);
+  run(`supportReqSendOne(request)`);
+  await settle();
+  assert.equal(store[MEMORY], undefined, "refused: nothing remembered");
+
+  portal(run, true);
+  run(`supportReqSendOne(request)`);
+  await settle();
+  assert.deepEqual(memoryOf(store), { note: true }, "accepted: remembered");
+});
+
+// supportApi that does not answer until the test says so: the page stays usable while the portal call is pending.
+function slowPortal(run) {
+  run(`supportCurrentIssue = { number: 7, timeline: [{ requests: [request] }] };
+    globalNotify = function () {}; loadSupportIssue = function () {}; supportShowError = function () {}; supportError = function () { return {}; }; supportReqRefresh = function () {};
+    supportApi = function () {
+      var chain = { done: function (f) { accepted = f; return chain; }, fail: function () { return chain; } };
+      return chain;
+    };`);
+}
+
+test("what is remembered is the mask that was sent, not the one on the page when the portal replies", async () => {
+  const { run, store } = load();
+  answered(run, ["name", "note", "other"]);
+  run(`supportReqToggleColumn(s.mask, s.table, 1)`); // note is masked, and sent that way
+  slowPortal(run);
+  run(`supportReqSendOne(request)`);
+  await settle();
+  run(`supportReqToggleColumn(s.mask, s.table, 2)`); // while the portal thinks: other is masked ...
+  run(`supportReqToggleColumn(s.mask, s.table, 1)`); // ... and note is unmasked
+  run(`accepted()`);
+  assert.deepEqual(memoryOf(store), { note: true });
+});
+
+test("Send all remembers the masks that were sent, not the ones on the page when the portal replies", async () => {
+  const { run, store } = load();
+  answered(run, ["name", "note", "other"]);
+  run(`supportReqToggleColumn(s.mask, s.table, 1)`);
+  slowPortal(run);
+  run(`supportReqSendAll()`);
+  await settle();
+  run(`supportReqToggleColumn(s.mask, s.table, 2)`);
+  run(`supportReqToggleColumn(s.mask, s.table, 1)`);
+  run(`accepted()`);
+  assert.deepEqual(memoryOf(store), { note: true });
+});
+
+test("Send all remembers every answered table only after the portal took the batch", async () => {
+  const { run, store } = load();
+  answered(run, ["name", "note"]);
+  run(`supportReqToggleColumn(s.mask, s.table, 1)`);
+  portal(run, false);
+  run(`supportReqSendAll()`);
+  await settle();
+  assert.equal(store[MEMORY], undefined, "refused: nothing remembered");
+
+  portal(run, true);
+  run(`supportReqSendAll()`);
+  await settle();
+  assert.deepEqual(memoryOf(store), { note: true }, "accepted: remembered");
 });

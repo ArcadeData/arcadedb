@@ -292,8 +292,8 @@ public class AlterTypeStatement extends DDLStatement {
         LocalEdgeType.applyUniqueConstraint(schema, edgeType);
       else
         LocalEdgeType.removeUniqueConstraint(schema, edgeType);
-
-      schema.saveConfiguration();
+      // No bare save here: the setters and the index creation or drop above each run in a schema recording session,
+      // which saves and, under HA, replicates the schema. A bare save rewrote the leader's file only (issue #9747)
     }
 
     if (repartitionRequested) {
