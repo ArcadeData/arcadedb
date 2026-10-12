@@ -158,6 +158,25 @@ class Issue9843KeysValuesOnResultReceiverTest extends TestHelper {
     }
   }
 
+  /** A property that holds null is still a property of the record: keys() and values() both count it, or neither does. */
+  @Test
+  void aNullValuedPropertyKeepsTheTwoSidesTheSameSize() {
+    database.getSchema().createDocumentType("D4");
+    database.transaction(() -> database.command("sql", "insert into D4 set n = 1, nothing = null"));
+
+    for (final String receiver : new String[] { "@this", "$a[0]" }) {
+      try (final ResultSet rs = database.query("sql",
+          "select " + receiver + ".keys() as k, " + receiver + ".values() as v from D4 let $a = (select from D4)")) {
+        final Result row = rs.next();
+        final List<String> keys = new ArrayList<>(row.<Collection<String>>getProperty("k"));
+        final List<Object> values = new ArrayList<>(row.<Collection<Object>>getProperty("v"));
+
+        assertThat(values).as(receiver).hasSameSizeAs(keys);
+        assertThat(values.get(keys.indexOf("n"))).as(receiver + " n").isEqualTo(1);
+      }
+    }
+  }
+
   /** A collection of rows flattens each receiver through the same branch, so the aligned pair holds for it too. */
   @Test
   void collectionOfRowsFlattensAlignedPairs() {

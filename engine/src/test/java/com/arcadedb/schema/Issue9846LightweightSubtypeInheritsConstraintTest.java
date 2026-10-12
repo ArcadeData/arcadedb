@@ -164,9 +164,18 @@ class Issue9846LightweightSubtypeInheritsConstraintTest extends TestHelper {
         () -> database.command("sql", "CREATE PROPERTY " + PARENT + ".stamp DATETIME (MANDATORY TRUE)").close())
         .hasMessageContaining(CHILD);
 
+    // a default given as an EXPRESSION is a default too, and so is the same change made with ALTER PROPERTY
+    assertThatThrownBy(() -> database.command("sql", "CREATE PROPERTY " + PARENT + ".created DATETIME (DEFAULT sysdate())").close())
+        .hasMessageContaining(CHILD);
+    assertThatThrownBy(() -> database.command("sql", "ALTER PROPERTY " + PARENT + ".since MANDATORY true").close())
+        .hasMessageContaining(CHILD);
+    assertThatThrownBy(() -> database.command("sql", "ALTER PROPERTY " + PARENT + ".weight DEFAULT 5").close())
+        .hasMessageContaining(CHILD);
+
     assertThat(since.isMandatory()).isFalse();
     assertThat(weight.getDefaultValueDefinition()).isNull();
     assertThat(parent.existsProperty("stamp")).as("CREATE PROPERTY takes the property back when its attributes are refused").isFalse();
+    assertThat(parent.existsProperty("created")).isFalse();
   }
 
   /** A null default fills in nothing, so it is not refused: only a default that would apply to a lightweight edge is. */
