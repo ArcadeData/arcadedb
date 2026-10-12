@@ -158,7 +158,9 @@ class Issue9848EdgeUniqueDeclarationAtomicityTest extends TestHelper {
     assertThatThrownBy(() -> database.command("sql", "ALTER TYPE " + EDGE + " WITH unique = true").close()).isNotNull();
 
     assertThat(edgeType().isUnique()).as("the declaration was not applied, so the type must not advertise it").isFalse();
+    assertThat(edgeType().isLightweight()).isFalse();
     assertThat(database.getSchema().existsIndex(INDEX_NAME)).isFalse();
+    assertThat(edgeType().getAllIndexes(true)).as("the refused build left no index, not even a partial one").isEmpty();
   }
 
   @Test

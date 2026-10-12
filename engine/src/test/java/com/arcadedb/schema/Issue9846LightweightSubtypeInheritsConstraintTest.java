@@ -19,6 +19,7 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.ValidationException;
 import com.arcadedb.graph.MutableVertex;
@@ -30,6 +31,8 @@ import org.junit.jupiter.api.Test;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.concurrent.Callable;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -64,11 +67,23 @@ class Issue9846LightweightSubtypeInheritsConstraintTest extends TestHelper {
     database.command("sql", "CREATE EDGE TYPE " + PARENT).close();
     database.command("sql", "CREATE PROPERTY " + PARENT + ".since DATETIME (MANDATORY TRUE)").close();
 
-    assertThatThrownBy(() -> database.command("sql", "CREATE EDGE TYPE " + CHILD + " EXTENDS " + PARENT + " LIGHTWEIGHT").close())
-        .hasMessageContaining("since")
-        .hasMessageContaining("LIGHTWEIGHT");
+    final AtomicInteger sessions = new AtomicInteger();
+    final Callable<Void> counter = () -> {
+      sessions.incrementAndGet();
+      return null;
+    };
+    final DatabaseInternal internal = (DatabaseInternal) database;
+    internal.registerCallback(DatabaseInternal.CALLBACK_EVENT.SCHEMA_AFTER_FILE_CHANGES, counter);
+    try {
+      assertThatThrownBy(() -> database.command("sql", "CREATE EDGE TYPE " + CHILD + " EXTENDS " + PARENT + " LIGHTWEIGHT").close())
+          .hasMessageContaining("since")
+          .hasMessageContaining("LIGHTWEIGHT");
+    } finally {
+      internal.unregisterCallback(DatabaseInternal.CALLBACK_EVENT.SCHEMA_AFTER_FILE_CHANGES, counter);
+    }
 
     assertThat(database.getSchema().existsType(CHILD)).as("a refused CREATE leaves no half-built type behind").isFalse();
+    assertThat(sessions.get()).as("refused before anything was created: no type registered, then dropped again").isZero();
   }
 
   @Test

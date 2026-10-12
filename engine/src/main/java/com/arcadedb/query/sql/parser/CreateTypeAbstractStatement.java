@@ -135,15 +135,17 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
 
     final DocumentType[] superclasses = getSuperTypes(schema);
 
+    // Refused here, before anything is created, whenever the statement can already tell (#9846)
+    checkSuperTypesBeforeCreate(typeName, superclasses);
+
     final DocumentType type = createType(schema, typeName);
 
     try {
       for (final DocumentType c : superclasses)
         type.addSuperType(c);
     } catch (final RuntimeException e) {
-      // A type that could not take the super types it was declared with is not the one the statement asked for, and a
-      // refused CREATE must leave nothing behind: addSuperType refuses (a LIGHTWEIGHT edge type under a super type with a
-      // MANDATORY property, issue #9846; a partition the subtype cannot take), and the type was already registered by then
+      // The safety net for the refusals only addSuperType can know about (a partition the subtype cannot take, a time series
+      // hierarchy): the type is already registered by then, and a refused CREATE must leave nothing behind
       try {
         schema.dropType(typeName);
       } catch (final RuntimeException dropFailure) {
@@ -164,6 +166,12 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
     }
 
     return new InternalResultSet(result);
+  }
+
+  /**
+   * Validates the super types against what this statement declares, BEFORE the type is created. The default accepts all.
+   */
+  protected void checkSuperTypesBeforeCreate(final String typeName, final DocumentType[] superclasses) {
   }
 
   protected DocumentType[] getSuperTypes(final Schema schema) {
