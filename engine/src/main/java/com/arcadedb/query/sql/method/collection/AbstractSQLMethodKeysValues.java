@@ -45,10 +45,21 @@ abstract class AbstractSQLMethodKeysValues extends AbstractSQLMethod {
     super(name);
   }
 
+  /**
+   * What this method projects out of a map receiver.
+   */
   protected abstract Object fromMap(Map<?, ?> map);
 
+  /**
+   * What this method projects out of a document receiver. Implementations must ask the document for its
+   * {@code getPropertyNames()}, which is what keeps the n-th key naming the n-th value.
+   */
   protected abstract Object fromDocument(Document document);
 
+  /**
+   * What this method projects out of a result receiver (a sub-query row, a {@code LET} variable). Implementations must ask the
+   * row for its {@code getPropertyNames()}, not for {@code toMap()}, which is element-first and carries the record metadata.
+   */
   protected abstract Object fromResult(Result result);
 
   @Override

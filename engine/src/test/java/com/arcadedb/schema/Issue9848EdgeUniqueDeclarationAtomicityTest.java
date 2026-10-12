@@ -163,6 +163,47 @@ class Issue9848EdgeUniqueDeclarationAtomicityTest extends TestHelper {
     assertThat(edgeType().getAllIndexes(true)).as("the refused build left no index, not even a partial one").isEmpty();
   }
 
+  /**
+   * What a refused ALTER leaves behind has to hold on disk too, not only in memory: the schema file is rewritten by the
+   * session that failed, after the flags went back, so a reopen reads the type as it was.
+   */
+  @Test
+  void aRefusedAlterLeavesTheSchemaFileAsItWas() {
+    database.transaction(() -> {
+      final MutableVertex a = database.newVertex(VERTEX).save();
+      final MutableVertex b = database.newVertex(VERTEX).save();
+      a.newEdge(EDGE, b);
+      a.newEdge(EDGE, b);
+    });
+
+    assertThatThrownBy(() -> database.command("sql", "ALTER TYPE " + EDGE + " WITH unique = true").close()).isNotNull();
+    reopenDatabase();
+
+    assertThat(edgeType().isUnique()).isFalse();
+    assertThat(database.getSchema().existsIndex(INDEX_NAME)).isFalse();
+  }
+
+  /**
+   * Both settings of one statement are one change: the storage shape is refused first (the type already holds edge records),
+   * and the UNIQUE request that came with it is not applied on its own, in memory or on disk.
+   */
+  @Test
+  void aRefusedStorageShapeTakesTheUniqueRequestOfTheSameStatementWithIt() {
+    database.transaction(() -> {
+      final MutableVertex a = database.newVertex(VERTEX).save();
+      final MutableVertex b = database.newVertex(VERTEX).save();
+      a.newEdge(EDGE, b);
+    });
+
+    assertThatThrownBy(() -> database.command("sql", "ALTER TYPE " + EDGE + " WITH lightweight = true, unique = true").close())
+        .hasMessageContaining("LIGHTWEIGHT");
+    reopenDatabase();
+
+    assertThat(edgeType().isLightweight()).isFalse();
+    assertThat(edgeType().isUnique()).isFalse();
+    assertThat(database.getSchema().existsIndex(INDEX_NAME)).isFalse();
+  }
+
   @Test
   void declaringAndWithdrawingStillMaterialisesAndDropsTheIndex() {
     database.command("sql", "ALTER TYPE " + EDGE + " WITH unique = true").close();
