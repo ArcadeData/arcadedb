@@ -169,6 +169,37 @@ class Issue9794DeclaredTypePatternTest extends TestHelper {
     assertThat(count("MATCH (n:N) WHERE n.p IN ['five', '5'] RETURN count(n) AS c")).isEqualTo(1);
   }
 
+  /**
+   * A text matches exactly what a write of it stores: the declaration's own reading of the text, no more lenient. An integral
+   * declaration reads a sign and digits ({@code '05'} and {@code '+5'} are 5, {@code '5.7'}, {@code ' 5'} and {@code '1e2'}
+   * are refused by the write and match nothing); a DOUBLE reads every spelling {@code Double.parseDouble} does.
+   */
+  @Test
+  void aNonCanonicalNumericTextMatchesWhatItsWriteStores() {
+    database.command("sql", "CREATE VERTEX TYPE I");
+    database.command("sql", "CREATE PROPERTY I.p INTEGER");
+    database.command("sql", "CREATE VERTEX TYPE D");
+    database.command("sql", "CREATE PROPERTY D.p DOUBLE");
+    database.transaction(() -> database.command("opencypher", "CREATE (:I {p: 5}), (:D {p: 2.5})").close());
+
+    for (final String text : List.of("'05'", "'+5'")) {
+      assertThat(count("MATCH (n:I {p: " + text + "}) RETURN count(n) AS c")).as(text).isEqualTo(1);
+      assertThat(count("MATCH (n:I) WHERE n.p = " + text + " RETURN count(n) AS c")).as(text).isEqualTo(1);
+      database.transaction(() -> database.command("opencypher", "MERGE (:I {p: " + text + "})").close());
+    }
+    assertThat(count("MATCH (n:I) RETURN count(n) AS c")).isEqualTo(1);
+
+    for (final String text : List.of("'5.7'", "' 5'", "'1e2'", "''", "'five'")) {
+      assertThat(count("MATCH (n:I {p: " + text + "}) RETURN count(n) AS c")).as(text).isZero();
+      assertThat(count("MATCH (n:I) WHERE n.p = " + text + " RETURN count(n) AS c")).as(text).isZero();
+      assertThat(count("MATCH (n:I) WHERE n.p <> " + text + " RETURN count(n) AS c")).as(text).isEqualTo(1);
+    }
+
+    for (final String text : List.of("'2.5'", "'2.50'", "' 2.5'", "'25e-1'"))
+      assertThat(count("MATCH (n:D {p: " + text + "}) RETURN count(n) AS c")).as(text).isEqualTo(1);
+    assertThat(count("MATCH (n:D {p: 'x2.5'}) RETURN count(n) AS c")).isZero();
+  }
+
   @Test
   void aRelationshipPropertyFollowsItsDeclarationToo() {
     database.command("sql", "CREATE VERTEX TYPE V");
