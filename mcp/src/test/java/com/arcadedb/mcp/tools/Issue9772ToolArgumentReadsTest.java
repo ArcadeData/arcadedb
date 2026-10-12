@@ -34,13 +34,13 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Issue #9772: a tool argument is read through {@link MCPToolUtils}, whose accessors refuse a missing or wrongly shaped
  * member with a {@link com.arcadedb.mcp.MCPToolArgumentException}. A bare {@code args.getString("query")} raises a
  * {@code JSONException} instead, which production mode conceals and logs as a SEVERE server fault. This guard is what
- * stops a tool added later from reintroducing the shape: the accessors of the tool's own {@code args} are reached only
- * from {@link MCPToolUtils}.
+ * stops a tool added later from reintroducing the shape: the accessors of the tool's own arguments object (named {@code args}, {@code arguments} or
+ * {@code params}, with a literal key or not) are reached only from {@link MCPToolUtils}.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class Issue9772ToolArgumentReadsTest {
-  private static final Pattern ARGUMENT_READ = Pattern.compile("\\bargs\\.(get[A-Za-z]*|opt[A-Za-z]*)\\(\\s*\"");
+  private static final Pattern ARGUMENT_READ = Pattern.compile("\\b(args|arguments|params)\\.(get[A-Za-z]*|opt[A-Za-z]*)\\(");
 
   @Test
   void noToolReadsAnArgumentWithTheRawAccessor() throws IOException {

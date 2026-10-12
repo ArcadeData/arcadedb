@@ -252,7 +252,7 @@ public class MCPToolUtils {
     try {
       validator.run();
     } catch (final IllegalArgumentException | JSONException e) {
-      throw new MCPToolArgumentException(e.getMessage());
+      throw new MCPToolArgumentException(e.getMessage() != null ? e.getMessage() : "Invalid arguments");
     }
   }
 
