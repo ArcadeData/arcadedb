@@ -105,6 +105,25 @@ class Issue9775BeginQueryTagTest extends BaseGraphServerTest {
         .isEqualTo(200);
   }
 
+  /**
+   * The check runs before authentication: a request with no credentials and an unusable label is answered 400, and the answer
+   * never echoes the label back.
+   */
+  @Test
+  void anUnusableTagWithoutCredentialsIsRefusedWithoutEchoingIt() throws Exception {
+    final String tag = "echo9775-" + "y".repeat(AbstractServerHttpHandler.MAX_QUERY_TAG_LENGTH);
+    final HttpURLConnection connection = (HttpURLConnection) new URI(getServerHttpUrl(0, "/api/v1/begin/graph")).toURL().openConnection();
+    try {
+      connection.setRequestMethod("POST");
+      connection.setRequestProperty(TAG_HEADER, tag);
+      final int status = connection.getResponseCode();
+      assertThat(status).isEqualTo(400);
+      assertThat(body(connection, status)).doesNotContain("echo9775");
+    } finally {
+      connection.disconnect();
+    }
+  }
+
   private record Response(int status, String body, String sessionId) {
   }
 

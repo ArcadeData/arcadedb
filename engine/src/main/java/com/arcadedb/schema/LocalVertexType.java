@@ -135,13 +135,19 @@ public class LocalVertexType extends LocalDocumentType implements VertexType {
   @Override
   public List<Bucket> getInvolvedBuckets() {
     final List<Bucket> own = super.getInvolvedBuckets();
-    final ArrayList<Bucket> result = new ArrayList<>(own.size() + additionalBuckets.size() + 16);
+    final Bucket[] stripePool = getSuperNodeStripePool(name);
+    final String previousName = renamingFrom;
+    final Bucket[] previousStripePool = previousName != null && !previousName.equals(name) ?
+        getSuperNodeStripePool(previousName) :
+        null;
+
+    final ArrayList<Bucket> result = new ArrayList<>(
+        own.size() + additionalBuckets.size() + stripePool.length + (previousStripePool != null ? previousStripePool.length : 0));
     result.addAll(own);
     result.addAll(additionalBuckets);
-    addStripes(result, getSuperNodeStripePool(name));
-    final String previousName = renamingFrom;
-    if (previousName != null && !previousName.equals(name))
-      addStripes(result, getSuperNodeStripePool(previousName));
+    addStripes(result, stripePool);
+    if (previousStripePool != null)
+      addStripes(result, previousStripePool);
     return result;
   }
 
@@ -190,15 +196,19 @@ public class LocalVertexType extends LocalDocumentType implements VertexType {
   /** The name a bucket this rename moved goes back to when the rename is rolled back, or {@code null} if none can be told. */
   private String restoredBucketName(final String renamedBucketName, final String oldName, final String newName) {
     final String stripePrefix = InternalBucketNaming.Convention.SUPER_NODE_STRIPE.compose(newName);
-    if (renamedBucketName.startsWith(stripePrefix)) {
-      try {
-        return StripedEdgeList.stripeBucketName(oldName, Integer.parseInt(renamedBucketName.substring(stripePrefix.length())));
-      } catch (final NumberFormatException e) {
-        // NOT A STRIPE BUCKET: AN EDGE BUCKET WHOSE NAME HAPPENS TO START THE SAME WAY. It cannot be misread as one: an
-        // edge bucket's name ends in '_out_edges'/'_in_edges', never in the bare slot number a stripe name ends with
-      }
-    }
+    // A stripe name is the prefix followed by the bare slot number. An edge bucket whose name happens to start the same way
+    // ends in '_out_edges'/'_in_edges' instead, so it cannot be misread as one
+    if (renamedBucketName.length() > stripePrefix.length() && renamedBucketName.startsWith(stripePrefix) && isDigits(
+        renamedBucketName, stripePrefix.length()))
+      return StripedEdgeList.stripeBucketName(oldName, Integer.parseInt(renamedBucketName.substring(stripePrefix.length())));
     return LocalSchema.rebaseComponentName(renamedBucketName, newName, oldName, schema.getEncoding());
+  }
+
+  private static boolean isDigits(final String text, final int from) {
+    for (int i = from; i < text.length(); i++)
+      if (!Character.isDigit(text.charAt(i)))
+        return false;
+    return true;
   }
 
   @Override
