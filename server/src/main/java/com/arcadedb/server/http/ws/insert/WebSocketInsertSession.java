@@ -497,6 +497,9 @@ public class WebSocketInsertSession {
             entry.setRolledBack();
         }
       }
+    } catch (final RuntimeException e) {
+      // Runs in a finally: a retraction that fails must not mask what the chunk itself threw, nor keep the entry listed
+      LogManager.instance().log(this, Level.WARNING, "Cannot retract terminated chunk of /ws insert session %s", e, id);
     } finally {
       // LAST: THE ENTRY LEAVING THE LIST IS THE PROOF THE WORK IS OVER
       entry.close();

@@ -18,8 +18,8 @@
  */
 package com.arcadedb.server.ws;
 
-import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
+import com.arcadedb.event.BeforeRecordCreateListener;
 import com.arcadedb.query.RunningQuery;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
@@ -32,6 +32,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 import java.time.Duration;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -50,18 +51,35 @@ import static org.awaitility.Awaitility.await;
 // A hang detector, not a latency bound
 @Timeout(value = 5, unit = TimeUnit.MINUTES)
 class Issue9838WsInsertSessionListedInEveryModeTest extends BaseGraphServerTest {
-  /** Large enough for the chunk to still be running when it is found and stopped. */
-  private static final int LARGE_CHUNK = 400_000;
+  /** Rows of chunk 2. The one at {@link #HELD_ROW} is held until the chunk is terminated, so the timing is deterministic. */
+  private static final int CHUNK_ROWS = 10;
+  private static final int HELD_ROW   = 3;
 
+  private CountDownLatch             heldRowReached;
+  private BeforeRecordCreateListener holdRow;
+
+  /**
+   * Holds the row named {@code n<HELD_ROW>} on the thread applying the chunk until the chunk's entry is terminated: the chunk
+   * is found running and stopped mid-way however fast or slow the machine is.
+   */
   @BeforeEach
-  void allowLargeChunks() {
-    getServer(0).getConfiguration().setValue(GlobalConfiguration.SERVER_WS_MAX_INSERT_CHUNK_ROWS, 0);
+  void holdOneRowUntilTerminated() {
+    heldRowReached = new CountDownLatch(1);
+    holdRow = record -> {
+      if (("n" + HELD_ROW).equals(record.asDocument().getString("name"))) {
+        heldRowReached.countDown();
+        final RunningQuery entry = RunningQuery.current();
+        if (entry != null)
+          await().atMost(Duration.ofSeconds(60)).pollInterval(Duration.ofMillis(5)).until(entry::isTerminated);
+      }
+      return true;
+    };
+    getServerDatabase(0, getDatabaseName()).getSchema().getType("Person").getEvents().registerListener(holdRow);
   }
 
   @AfterEach
-  void restoreChunkCap() {
-    getServer(0).getConfiguration().setValue(GlobalConfiguration.SERVER_WS_MAX_INSERT_CHUNK_ROWS,
-        GlobalConfiguration.SERVER_WS_MAX_INSERT_CHUNK_ROWS.getDefValue());
+  void releaseRowHold() {
+    getServerDatabase(0, getDatabaseName()).getSchema().getType("Person").getEvents().unregisterListener(holdRow);
   }
 
   @Test
@@ -83,18 +101,20 @@ class Issue9838WsInsertSessionListedInEveryModeTest extends BaseGraphServerTest 
   void perRowIsListedAndATerminateStopsBeforeTheNextRow() throws Throwable {
     final Run run = terminateSecondChunk("per_row", "per_row");
     assertThat(run.entry.getOutcome()).isEqualTo(RunningQuery.Outcome.TERMINATED);
-    // Rows commit one by one in this mode, so those before the terminate stand; the rest were never applied
-    assertThat(personCount()).isGreaterThanOrEqualTo(1).isLessThan(1 + LARGE_CHUNK);
+    // Rows commit one by one in this mode: chunk 1 and the rows of chunk 2 before the held one stand. The held row's own
+    // commit saw the terminate and was rolled back, and the rows after it were never applied
+    assertThat(personCount()).isEqualTo(1 + HELD_ROW);
   }
 
   /**
-   * Starts a session in {@code mode}, applies a one-row chunk 1, sends a large chunk 2, finds chunk 2 in the registry,
+   * Starts a session in {@code mode}, applies a one-row chunk 1, sends chunk 2, finds it in the registry while its row
+   * {@link #HELD_ROW} is held,
    * terminates it with {@code terminate query} and checks what the client and the next frame are told.
    */
   private Run terminateSecondChunk(final String mode, final String expectedModeName) throws Throwable {
     final ServerSecurityUser root = getServer(0).getSecurity().getUser("root");
 
-    try (final var client = new WebSocketClientHelper("ws://localhost:" + getServer(0).getHttpServer().getPort() + "/ws", "root",
+    try (final var client = new WebSocketClientHelper("ws://localhost:" + getServerHttpPort(0) + "/ws", "root",
         DEFAULT_PASSWORD_FOR_TESTS)) {
       final JSONObject options = new JSONObject().put("targetType", "Person");
       if (mode != null)
@@ -111,25 +131,18 @@ class Issue9838WsInsertSessionListedInEveryModeTest extends BaseGraphServerTest 
           .noneMatch(q -> "ws".equals(q.getProtocol()));
 
       final JSONArray records = new JSONArray();
-      for (int i = 0; i < LARGE_CHUNK; i++)
+      for (int i = 0; i < CHUNK_ROWS; i++)
         records.put(new JSONObject().put("name", "n" + i));
       client.sendWithoutWaiting(new JSONObject().put("action", "chunk").put("sessionId", sessionId).put("chunkSeq", 2)
           .put("records", records).toString());
 
-      final RunningQuery[] found = new RunningQuery[1];
-      final String[] answeredFirst = new String[1];
-      await().atMost(Duration.ofSeconds(60)).pollInterval(Duration.ofMillis(5)).until(() -> {
-        for (final RunningQuery q : getServer(0).getRunningQueries().getRunning())
-          if ("ws".equals(q.getProtocol()) && q.getText() != null && q.getText().contains(sessionId)) {
-            found[0] = q;
-            return true;
-          }
-        answeredFirst[0] = client.popMessage(0);
-        return answeredFirst[0] != null;
-      });
-      assertThat(answeredFirst[0]).as("the chunk was answered before it was seen running").isNull();
+      assertThat(heldRowReached.await(60, TimeUnit.SECONDS)).as("chunk 2 reached its held row").isTrue();
+      RunningQuery entry = null;
+      for (final RunningQuery q : getServer(0).getRunningQueries().getRunning())
+        if ("ws".equals(q.getProtocol()) && q.getText() != null && q.getText().contains(sessionId))
+          entry = q;
+      assertThat(entry).as("the running chunk is listed in the registry").isNotNull();
 
-      final RunningQuery entry = found[0];
       assertThat(entry.getUser()).isEqualTo("root");
       assertThat(entry.getDatabase()).isEqualTo(getDatabaseName());
       assertThat(entry.getSessionId()).as("a server-managed session has no HTTP transaction to be listed under").isNull();
