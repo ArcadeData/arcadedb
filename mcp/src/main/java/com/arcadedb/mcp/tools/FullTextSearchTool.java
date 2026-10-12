@@ -86,10 +86,11 @@ public class FullTextSearchTool {
 
   public static JSONObject execute(final ArcadeDBServer server, final ServerSecurityUser user, final JSONObject args,
       final MCPConfiguration config) {
-    final String databaseName = args.getString("database");
+    final String databaseName = MCPToolUtils.requireString(args, "database");
     // Argument faults are reported before the database is resolved, so a malformed request reads the same
-    // whether or not the database also resolves, and a rejected request does no I/O.
-    FullTextQuery.validateArguments(args);
+    // whether or not the database also resolves, and a rejected request does no I/O. The validator touches no schema,
+    // so what it refuses is the MCP layer's to answer in every mode (issue #9772).
+    MCPToolUtils.validateArguments(() -> FullTextQuery.validateArguments(args));
 
     final MCPToolUtils.DatabaseAccess access = MCPToolUtils.resolveDatabase(
         server, user, databaseName, config, MCPToolUtils.RequiredAccess.READ);
