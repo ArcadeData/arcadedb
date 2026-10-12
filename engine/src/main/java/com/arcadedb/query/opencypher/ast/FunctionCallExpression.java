@@ -47,7 +47,11 @@ public class FunctionCallExpression implements Expression {
    */
   private transient volatile StatelessFunction cachedFunction;
 
-  /** Whether this call aggregates, resolved on the first {@link #isAggregation()}: the registry lookup behind it is not free. */
+  /**
+   * Whether this call aggregates, resolved on the first {@link #isAggregation()}: the registry lookup behind it is not free. Like
+   * {@link #cachedFunction}, it is a property of the call site for the life of the AST: a function registered after a plan was
+   * built is not asked again, which the plan's own function lookup would not do either.
+   */
   private transient volatile Boolean aggregation;
 
   /** Set once {@link #finishCoalesce} has checked the argument count, which is a property of the call site. */
