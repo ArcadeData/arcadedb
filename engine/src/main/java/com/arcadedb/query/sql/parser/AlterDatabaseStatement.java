@@ -30,7 +30,6 @@ import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.utility.FileUtils;
@@ -90,13 +89,13 @@ public class AlterDatabaseStatement extends DDLStatement {
     boolean saveInDatabaseConfiguration = false;
 
     switch (cfg) {
+    // The schema setters save schema.json themselves, inside a schema recording session that under HA also ships it to
+    // the followers. The bare save that used to follow here rewrote the leader's file only (issue #9747)
     case DATE_FORMAT:
       db.getSchema().setDateFormat(finalValue.toString());
-      ((LocalSchema) db.getSchema()).saveConfiguration();
       break;
     case DATE_TIME_FORMAT:
       db.getSchema().setDateTimeFormat(finalValue.toString());
-      ((LocalSchema) db.getSchema()).saveConfiguration();
       break;
     case DATE_IMPLEMENTATION, DATE_TIME_IMPLEMENTATION:
       // Issue #7163: the class-name -> Class conversion and its "not found" refusal used to live here, hand

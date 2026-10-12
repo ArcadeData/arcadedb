@@ -26,7 +26,6 @@ import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.schema.TimeSeriesType;
 
@@ -70,8 +69,7 @@ public class AlterTimeSeriesTypeStatement extends DDLStatement {
       tsType.setDownsamplingTiers(tiers);
     else
       tsType.setDownsamplingTiers(new ArrayList<>());
-
-    ((LocalSchema) context.getDatabase().getSchema()).saveConfiguration();
+    // No save here: the setter saves, and replicates, the schema itself (issue #9747)
 
     final ResultInternal result = new ResultInternal(context.getDatabase());
     result.setProperty("operation", addPolicy ? "add downsampling policy" : "drop downsampling policy");
