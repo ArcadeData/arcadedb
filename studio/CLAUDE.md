@@ -124,4 +124,10 @@ Backend integration with the Studio is tested through the server module's Java t
 - **jQuery 4.0**: Some jQuery 3.x patterns may not work. `.on()` preferred over deprecated shortcuts.
 - **Bootstrap 5**: Use `data-bs-*` attributes, not `data-*` (Bootstrap 4 style).
 - **Security**: Always escape user input with `escapeHtml()` before rendering to DOM.
+- **No inline script**: the server sends Studio with a Content-Security-Policy whose `script-src` refuses inline code
+  (issue #9681), so an `onclick="..."` (any `on*=` attribute), a `javascript:` URL or an inline `<script>` block silently
+  does nothing. Page scripts live in `js/`. Bind a handler with `data-on-click="fn"` (also `data-on-change`,
+  `data-on-input`, `data-on-keydown`, `data-on-enter`) plus `data-args='[...]'` in static HTML, or with
+  `studioAction("fn", [args])` in HTML built in JavaScript, and add `fn` to `STUDIO_ACTIONS` in `js/studio-actions.js`.
+  `test/content-security-policy.test.js` fails on anything left inline.
 - **No System.out equivalent**: Don't leave `console.log()` debug statements in production code.

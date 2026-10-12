@@ -1876,6 +1876,25 @@ public enum GlobalConfiguration {
       that left, as Undertow itself takes it: set to false for such clients. Default is true""",
       Boolean.class, true),
 
+  SERVER_HTTP_CONTENT_SECURITY_POLICY("arcadedb.server.httpContentSecurityPolicy", SCOPE.SERVER,
+      """
+      Content-Security-Policy sent with Studio's HTML pages and the Swagger UI page at /api/v1/docs (issue #9681). The \
+      default refuses inline script (no 'unsafe-inline' in script-src), so an HTML-injection bug in Studio cannot run \
+      script with the logged-in user's token. Inline styles stay allowed. The Swagger UI page adds the hash of its own \
+      bootstrap script to script-src. Set to an empty string to send no policy""",
+      String.class,
+      "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+          + "font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: blob:; "
+          + "connect-src 'self' https://raw.githubusercontent.com; object-src 'none'; base-uri 'self'; "
+          + "frame-ancestors 'self'; form-action 'self'"),
+
+  SERVER_HTTP_CONTENT_SECURITY_POLICY_REPORT_ONLY("arcadedb.server.httpContentSecurityPolicyReportOnly", SCOPE.SERVER,
+      """
+      Sends 'arcadedb.server.httpContentSecurityPolicy' as Content-Security-Policy-Report-Only instead of \
+      Content-Security-Policy: the browser reports violations in its console but blocks nothing. Use it to try a \
+      custom policy before enforcing it. Default is false""",
+      Boolean.class, false),
+
   SERVER_HTTP_BODY_CONTENT_MAX_SIZE("arcadedb.server.httpBodyContentMaxSize", SCOPE.SERVER,
       """
       Maximum size in bytes for HTTP request body content, measured ON THE WIRE. Set to -1 for unlimited size \

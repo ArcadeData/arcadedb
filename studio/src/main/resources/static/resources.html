@@ -12,7 +12,7 @@
       <div class="docs-sidebar-body">
         <!-- Getting Started -->
         <div class="docs-toc-section">
-          <button type="button" class="docs-toc-header" aria-expanded="true" onclick="toggleTocSection(this)">
+          <button type="button" class="docs-toc-header" aria-expanded="true" data-on-click="toggleTocSection" data-args='[{"$":"this"}]'>
             <span><i class="fa fa-rocket"></i> Getting Started</span>
             <i class="fa fa-chevron-right open"></i>
           </button>
@@ -26,7 +26,7 @@
 
         <!-- Query Languages -->
         <div class="docs-toc-section">
-          <button type="button" class="docs-toc-header" aria-expanded="true" onclick="toggleTocSection(this)">
+          <button type="button" class="docs-toc-header" aria-expanded="true" data-on-click="toggleTocSection" data-args='[{"$":"this"}]'>
             <span><i class="fa fa-terminal"></i> Query Languages</span>
             <i class="fa fa-chevron-right open"></i>
           </button>
@@ -42,7 +42,7 @@
 
         <!-- Connectivity & Drivers -->
         <div class="docs-toc-section">
-          <button type="button" class="docs-toc-header" aria-expanded="false" onclick="toggleTocSection(this)">
+          <button type="button" class="docs-toc-header" aria-expanded="false" data-on-click="toggleTocSection" data-args='[{"$":"this"}]'>
             <span><i class="fa fa-plug"></i> Connectivity &amp; Drivers</span>
             <i class="fa fa-chevron-right"></i>
           </button>
@@ -59,7 +59,7 @@
 
         <!-- Administration -->
         <div class="docs-toc-section">
-          <button type="button" class="docs-toc-header" aria-expanded="false" onclick="toggleTocSection(this)">
+          <button type="button" class="docs-toc-header" aria-expanded="false" data-on-click="toggleTocSection" data-args='[{"$":"this"}]'>
             <span><i class="fa fa-cogs"></i> Administration</span>
             <i class="fa fa-chevron-right"></i>
           </button>
@@ -76,7 +76,7 @@
 
         <!-- Core Concepts -->
         <div class="docs-toc-section">
-          <button type="button" class="docs-toc-header" aria-expanded="false" onclick="toggleTocSection(this)">
+          <button type="button" class="docs-toc-header" aria-expanded="false" data-on-click="toggleTocSection" data-args='[{"$":"this"}]'>
             <span><i class="fa fa-lightbulb"></i> Core Concepts</span>
             <i class="fa fa-chevron-right"></i>
           </button>
@@ -91,7 +91,7 @@
 
         <!-- Tools -->
         <div class="docs-toc-section">
-          <button type="button" class="docs-toc-header" aria-expanded="false" onclick="toggleTocSection(this)">
+          <button type="button" class="docs-toc-header" aria-expanded="false" data-on-click="toggleTocSection" data-args='[{"$":"this"}]'>
             <span><i class="fa fa-wrench"></i> Tools</span>
             <i class="fa fa-chevron-right"></i>
           </button>
@@ -103,7 +103,7 @@
 
         <!-- Community -->
         <div class="docs-toc-section">
-          <button type="button" class="docs-toc-header" aria-expanded="false" onclick="toggleTocSection(this)">
+          <button type="button" class="docs-toc-header" aria-expanded="false" data-on-click="toggleTocSection" data-args='[{"$":"this"}]'>
             <span><i class="fa fa-users"></i> Community</span>
             <i class="fa fa-chevron-right"></i>
           </button>
@@ -179,12 +179,4 @@
   </div>
 </div>
 
-<script>
-function toggleTocSection(header) {
-  var chevron = header.querySelector(".fa-chevron-right");
-  var body = header.nextElementSibling;
-  chevron.classList.toggle("open");
-  var open = body.classList.toggle("open");
-  header.setAttribute("aria-expanded", open ? "true" : "false");
-}
-</script>
+<script src="js/studio-resources.js"></script>

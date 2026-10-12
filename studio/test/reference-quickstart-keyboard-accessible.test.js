@@ -108,6 +108,7 @@ function $(selector) {
 }
 
 eval(extractFn(utilsSrc, "escapeHtml"));
+eval(fs.readFileSync(path.join(STATIC_DIR, "js", "studio-actions.js"), "utf8"));
 eval(extractFn(src, "formatNumber"));
 eval(extractFn(src, "buildDatasetCardHtml"));
 eval(extractFn(src, "populateReferencePanel"));
@@ -166,7 +167,7 @@ test("every reference section header is a real button reporting its collapsed st
     assert.equal(tag[1], "button", "a section header must be a <button>: " + tag[0]);
     assert.match(tag[0], /type='button'/);
     assert.match(tag[0], /aria-expanded='false'/, "a collapsed section must say so: " + tag[0]);
-    assert.match(tag[0], /onclick='toggleReferenceSection\(this\)'/);
+    assert.ok(tag[0].includes(' data-on-click="toggleReferenceSection" data-args="[{&quot;$&quot;:&quot;this&quot;}]"'), tag[0]);
   }
   assert.match(panelHtml, /<i class='fa fa-chevron-right' aria-hidden='true'><\/i>/, "the chevron is decorative");
 });
@@ -178,9 +179,12 @@ test("every example snippet is a real button that pastes it", () => {
   for (const tag of tags) {
     assert.equal(tag[1], "button", "an example must be a <button>: " + tag[0]);
     assert.match(tag[0], /type='button'/);
-    assert.match(tag[0], /onclick='pasteReferenceExample\(/);
+    assert.match(tag[0], / data-on-click="pasteReferenceExample" data-args="/);
   }
-  assert.match(panelHtml, /<button type='button' class='reference-example' title='SELECT' onclick='pasteReferenceExample\("SELECT \* FROM MyType", "sql"\)'>/);
+  assert.ok(
+    panelHtml.includes("<button type='button' class='reference-example' title='SELECT' data-on-click=\"pasteReferenceExample\" data-args=\"[&quot;SELECT * FROM MyType&quot;,&quot;sql&quot;]\">"),
+    "the SELECT example pastes its raw code"
+  );
 });
 
 test("every Function Reference entry is a real button that inserts its syntax", () => {
@@ -190,7 +194,7 @@ test("every Function Reference entry is a real button that inserts its syntax", 
   for (const tag of tags) {
     assert.equal(tag[1], "button", "a function entry must be a <button>: " + tag[0]);
     assert.match(tag[0], /type='button'/);
-    assert.match(tag[0], /onclick='insertFunctionSyntax\(/);
+    assert.match(tag[0], / data-on-click="insertFunctionSyntax" data-args="/);
   }
   // THE FILTER MATCHES ON data-name, WHICH MUST SURVIVE THE CHANGE
   assert.match(tags[0][0], /data-name='abs'/);
@@ -198,7 +202,7 @@ test("every Function Reference entry is a real button that inserts its syntax", 
 
 test("no click-only div or span remains in the reference panel", () => {
   populateReferencePanel();
-  assert.ok(!/<(div|span|small|code)[^>]*onclick/.test(panelHtml), "click-only element left: " + /<(div|span|small|code)[^>]*onclick[^>]*>/.exec(panelHtml));
+  assert.ok(!/<(div|span|small|code)[^>]*(onclick|data-on-click)/.test(panelHtml), "click-only element left: " + /<(div|span|small|code)[^>]*(onclick|data-on-click)[^>]*>/.exec(panelHtml));
 });
 
 test("the reference buttons only hold phrasing content, so the browser does not re-parent them", () => {
@@ -257,10 +261,10 @@ for (const fromModal of [false, true]) {
     const tag = openingTags(html, "quick-start-card-button")[0];
     assert.equal(tag[1], "button");
     assert.match(tag[0], /type="button"/);
-    const expected = "importSampleDatabase('Movies', 'movies/movies.tgz', 'arcadedb'" + (fromModal ? ", true" : "") + ")";
-    assert.ok(tag[0].includes('onclick="' + expected + '"'), "wrong handler: " + tag[0]);
+    const args = JSON.stringify(["Movies", "movies/movies.tgz", "arcadedb"].concat(fromModal ? [true] : [])).replace(/"/g, "&quot;");
+    assert.ok(tag[0].includes(' data-on-click="importSampleDatabase" data-args="' + args + '"'), "wrong handler: " + tag[0]);
     assert.match(tag[0], /aria-label="Import sample database Movies"/);
-    assert.ok(!/<div[^>]*onclick/.test(html), "the card itself must not stay a click-only div");
+    assert.ok(!/<div[^>]*(onclick|data-on-click)/.test(html), "the card itself must not stay a click-only div");
   });
 
   test("the " + where + " card button holds no interactive content, so the info link stays outside it", () => {
@@ -269,7 +273,7 @@ for (const fromModal of [false, true]) {
     assert.equal(bodies.length, 1);
     assert.ok(!/<(a|button|input|div)[\s>]/.test(bodies[0]), "invalid content in the card button: " + bodies[0]);
     // THE INFO LINK IS STILL THERE, AND STILL DOES NOT TRIGGER THE IMPORT
-    assert.match(html, /<a class="quick-start-card-info" href="https:\/\/example.com\/movies" target="_blank"[^>]*onclick="event.stopPropagation\(\);"/);
+    assert.match(html, /<a class="quick-start-card-info" href="https:\/\/example.com\/movies" target="_blank"[^>]* data-stop-propagation[ >]/);
     // THE DESCRIPTION AND STATS ARE STILL RENDERED
     assert.ok(html.includes("A small movie graph"));
     assert.ok(html.includes("171 vertices &middot; 253 edges &middot; 500 KB"));

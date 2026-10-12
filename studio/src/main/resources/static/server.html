@@ -1,7 +1,7 @@
 <div class="tab-pane fade" id="tab-server" role="tabpanel">
   <div class="d-flex align-items-center px-3 py-2" style="border-bottom: 1px solid var(--border-light);">
     <div class="flex-grow-1 d-flex align-items-center gap-3">
-      <span id="serverConnectionCompact" style="font-size: 0.88rem; color: var(--text-secondary); cursor: pointer; position: relative;" onclick="toggleServerInfoPopover()">
+      <span id="serverConnectionCompact" style="font-size: 0.88rem; color: var(--text-secondary); cursor: pointer; position: relative;" data-on-click="toggleServerInfoPopover">
         <i class="fa fa-server" style="color: var(--color-brand); margin-right: 6px;"></i>
         <span id="serverConnectionLabel"></span>
         <i class="fa fa-chevron-down" style="font-size: 0.6rem; margin-left: 4px; color: var(--text-lightest);"></i>
@@ -12,13 +12,13 @@
       </span>
     </div>
     <div class="d-flex align-items-center gap-2">
-      <button class="btn btn-sm" style="color:red;" onclick="shutdownServer()" title="Shutdown Server"><i class="fas fa-power-off"></i></button>
+      <button class="btn btn-sm" style="color:red;" data-on-click="shutdownServer" title="Shutdown Server"><i class="fas fa-power-off"></i></button>
     </div>
   </div>
 
   <div class="d-flex align-items-center px-2 py-1">
     <div class="d-flex align-items-center gap-2">
-      <button class="btn btn-sm db-action-btn" onclick="refreshCurrentServerTab()"><i class="fa fa-sync"></i> Refresh</button>
+      <button class="btn btn-sm db-action-btn" data-on-click="refreshCurrentServerTab"><i class="fa fa-sync"></i> Refresh</button>
     </div>
     <div class="flex-grow-1">
       <ul class="nav nav-tabs text-center" id="tabs-database" style="float: right">
@@ -45,12 +45,12 @@
       <div id="summInstanceIdRow" class="mb-2" style="display: none; font-size: 0.85rem;">
         <span class="text-muted">Instance ID</span>
         <span id="summInstanceId" style="font-family: monospace; margin-left: 6px; user-select: all;"></span>
-        <button type="button" class="btn btn-link btn-sm p-0" style="color: var(--text-muted); margin-left: 4px;" onclick="copyInstanceId(this)" title="Copy the instance ID"><i class="fa fa-copy"></i></button>
+        <button type="button" class="btn btn-link btn-sm p-0" style="color: var(--text-muted); margin-left: 4px;" data-on-click="copyInstanceId" data-args='[{"$":"this"}]' title="Copy the instance ID"><i class="fa fa-copy"></i></button>
       </div>
       <div class="d-flex align-items-center justify-content-between mb-2">
         <div class="d-flex align-items-center">
           <label style="font-size: 0.82rem; color: var(--text-muted); margin-right: 6px;">Auto Refresh</label>
-          <select id="serverRefreshTimeout" class="form-select form-select-sm" style="width: auto;" onchange="startServerRefreshTimer(true)">
+          <select id="serverRefreshTimeout" class="form-select form-select-sm" style="width: auto;" data-on-change="startServerRefreshTimer" data-args='[true]'>
             <option value="0">Off</option>
             <option value="10">Every 10 sec</option>
             <option value="30">Every 30 sec</option>
@@ -58,7 +58,7 @@
             <option value="300">Every 5 min</option>
           </select>
         </div>
-        <div class="d-flex align-items-center gap-3" style="font-size: 0.85rem; cursor: pointer;" onclick="globalActivateTab('tab-server-events')">
+        <div class="d-flex align-items-center gap-3" style="font-size: 0.85rem; cursor: pointer;" data-on-click="globalActivateTab" data-args='["tab-server-events"]'>
           <span><span style="color: red; font-weight: 600;" id="summErrors">0</span> <span class="text-muted">Errors</span></span>
           <span><span style="color: orange; font-weight: 600;" id="summWarnings">0</span> <span class="text-muted">Warnings</span></span>
           <span><span style="color: #0d6efd; font-weight: 600;" id="summInfo">0</span> <span class="text-muted">Info</span></span>
@@ -171,7 +171,7 @@
         <span style="font-size: 0.85rem; color: var(--text-muted);">Statements running on this server, from every protocol. The root user sees every statement, any other user only their own.</span>
         <div class="d-flex align-items-center">
           <label for="runningQueriesRefresh" style="font-size: 0.82rem; color: var(--text-muted); margin-right: 6px;">Auto Refresh</label>
-          <select id="runningQueriesRefresh" class="form-select form-select-sm" style="width: auto;" onchange="startRunningQueriesRefreshTimer()">
+          <select id="runningQueriesRefresh" class="form-select form-select-sm" style="width: auto;" data-on-change="startRunningQueriesRefreshTimer">
             <option value="0">Off</option>
             <option value="2">Every 2 sec</option>
             <option value="5">Every 5 sec</option>
@@ -229,7 +229,7 @@
       <div style="padding: 16px; overflow-y: auto; height: 100%;">
         <div class="d-flex justify-content-between align-items-center mb-3">
           <h5><i class="fa fa-chart-bar"></i> Server Metrics</h5>
-          <button class="btn btn-sm db-action-btn" onclick="updateServer()"><i class="fa fa-sync"></i> Refresh</button>
+          <button class="btn btn-sm db-action-btn" data-on-click="updateServer"><i class="fa fa-sync"></i> Refresh</button>
         </div>
 
         <!-- HTTP Meters -->
@@ -361,7 +361,7 @@
           <div class="d-flex justify-content-between align-items-center">
             <h5><i class="fa fa-archive"></i> Auto-Backup Configuration</h5>
             <div>
-              <button class="btn btn-sm btn-success" onclick="saveBackupConfig()">
+              <button class="btn btn-sm btn-success" data-on-click="saveBackupConfig">
                 <i class="fa fa-save"></i> Save Configuration
               </button>
             </div>
@@ -410,7 +410,7 @@
             <div class="row">
               <div class="col-md-3 mb-3">
                 <label for="backupScheduleType" class="form-label">Schedule Type</label>
-                <select id="backupScheduleType" class="form-select" onchange="toggleBackupScheduleFields()">
+                <select id="backupScheduleType" class="form-select" data-on-change="toggleBackupScheduleFields">
                   <option value="frequency">Frequency-based</option>
                   <option value="cron">CRON Expression</option>
                 </select>
@@ -447,7 +447,7 @@
               </div>
               <div class="col-md-2 mb-3">
                 <div class="form-check">
-                  <input class="form-check-input" type="checkbox" id="backupUseTiered" onchange="toggleTieredRetention()">
+                  <input class="form-check-input" type="checkbox" id="backupUseTiered" data-on-change="toggleTieredRetention">
                   <label class="form-check-label" for="backupUseTiered">Use Tiered Retention</label>
                 </div>
               </div>
@@ -485,7 +485,7 @@
       <div class="d-flex justify-content-between align-items-center mb-3">
         <span style="font-size: 0.85rem; color: var(--text-muted);">MCP allows LLM clients (Claude Desktop, Cursor) to interact with ArcadeDB using natural language.</span>
         <div class="d-flex gap-2">
-          <button class="btn btn-sm btn-primary" onclick="saveMCPConfig()"><i class="fa fa-save"></i> Save</button>
+          <button class="btn btn-sm btn-primary" data-on-click="saveMCPConfig"><i class="fa fa-save"></i> Save</button>
         </div>
       </div>
 
@@ -515,7 +515,7 @@
               <h6><i class="fa fa-users"></i> Allowed Users</h6>
               <div class="input-group input-group-sm mb-2" style="max-width: 300px;">
                 <input type="text" class="form-control" id="mcpNewUser" placeholder="Username" style="background-color: var(--bg-input); color: var(--text-primary); border-color: var(--border-ddd);">
-                <button class="btn btn-outline-secondary" onclick="addMCPUser()" style="color: var(--text-secondary); border-color: var(--border-ddd);">Add</button>
+                <button class="btn btn-outline-secondary" data-on-click="addMCPUser" style="color: var(--text-secondary); border-color: var(--border-ddd);">Add</button>
               </div>
               <div id="mcpUserList"></div>
             </div>
@@ -527,11 +527,11 @@
               <h6><i class="fa fa-plug"></i> Connection Info</h6>
               <div class="d-flex align-items-center mb-3">
                 <label for="mcpAuthMethod" class="form-label mb-0 me-2" style="font-size: 0.84rem;">Auth Method</label>
-                <select id="mcpAuthMethod" class="form-select form-select-sm" style="width: auto;" onchange="onMcpAuthMethodChange()">
+                <select id="mcpAuthMethod" class="form-select form-select-sm" style="width: auto;" data-on-change="onMcpAuthMethodChange">
                   <option value="basic">Basic Auth (current user)</option>
                   <option value="apitoken">API Token</option>
                 </select>
-                <select id="mcpTokenSelect" class="form-select form-select-sm ms-2" style="width: auto; display: none;" onchange="updateMCPConnectionInfo()">
+                <select id="mcpTokenSelect" class="form-select form-select-sm ms-2" style="width: auto; display: none;" data-on-change="updateMCPConnectionInfo">
                   <option value="">Select token...</option>
                 </select>
               </div>
@@ -543,12 +543,12 @@
                 <div class="tab-pane fade show active" id="mcp-config-claude-desktop" role="tabpanel">
                   <p style="font-size: 0.82rem; color: var(--text-muted); margin-bottom: 6px;">Copy into <code style="background-color: var(--bg-reference); padding: 1px 5px; border-radius: 3px; font-size: 0.78rem;">claude_desktop_config.json</code> (requires <code style="background-color: var(--bg-reference); padding: 1px 5px; border-radius: 3px; font-size: 0.78rem;">npx</code> / Node.js):</p>
                   <pre class="mcp-config-code" id="mcpConfigDesktop"></pre>
-                  <button class="btn btn-sm btn-primary mt-1" onclick="copyMCPConfig('mcpConfigDesktop')"><i class="fa fa-copy"></i> Copy</button>
+                  <button class="btn btn-sm btn-primary mt-1" data-on-click="copyMCPConfig" data-args='["mcpConfigDesktop"]'><i class="fa fa-copy"></i> Copy</button>
                 </div>
                 <div class="tab-pane fade" id="mcp-config-claude-code" role="tabpanel">
                   <p style="font-size: 0.82rem; color: var(--text-muted); margin-bottom: 6px;">Add with <code style="background-color: var(--bg-reference); padding: 1px 5px; border-radius: 3px; font-size: 0.78rem;">claude mcp add arcadedb</code> or copy into MCP settings:</p>
                   <pre class="mcp-config-code" id="mcpConfigCode"></pre>
-                  <button class="btn btn-sm btn-primary mt-1" onclick="copyMCPConfig('mcpConfigCode')"><i class="fa fa-copy"></i> Copy</button>
+                  <button class="btn btn-sm btn-primary mt-1" data-on-click="copyMCPConfig" data-args='["mcpConfigCode"]'><i class="fa fa-copy"></i> Copy</button>
                 </div>
               </div>
             </div>

@@ -91,6 +91,7 @@ function $(selector) {
 }
 
 eval(extractFn(utilsSrc, "escapeHtml"));
+eval(fs.readFileSync(path.join(STATIC_DIR, "js", "studio-actions.js"), "utf8"));
 eval(extractFn(src, "getSavedQueries"));
 eval(extractFn(src, "storeSavedQueries"));
 eval(extractFn(src, "populateSavedQueriesPanel"));
@@ -123,7 +124,7 @@ test("the saved entry's load, run and delete controls are real buttons", () => {
     assert.equal(tag[1], "button", cls + " must be a <button> so Tab reaches it and Enter/Space triggers it");
     assert.match(tag[0], /type='button'/, cls + " must not default to a submit button");
   }
-  assert.ok(!/<span[^>]*onclick/.test(panelHtml), "no click-only span may remain in the saved panel");
+  assert.ok(!/<span[^>]*(onclick|data-on-click)/.test(panelHtml), "no click-only span may remain in the saved panel");
 });
 
 test("every saved entry gets its own focusable controls", () => {
@@ -152,15 +153,15 @@ test("a name with quotes and markup cannot break out of the aria-label attribute
 test("the load button has no handler of its own: its activation bubbles into the entry's load click", () => {
   populateSavedQueriesPanel();
   const load = openingTag(panelHtml, "saved-query-load")[0];
-  assert.ok(!/onclick/.test(load), "a second handler on the button would load the query twice");
+  assert.ok(!/onclick|data-on-click/.test(load), "a second handler on the button would load the query twice");
   // THE BUTTON MUST SIT INSIDE THE ENTRY WHOSE ONCLICK LOADS THE QUERY, NOT INSIDE THE ACTIONS THAT STOP PROPAGATION
-  assert.match(panelHtml, /<div class='saved-query-entry'[^>]*onclick='loadSavedQuery\(0\)'><div class='saved-query-name'><button type='button' class='saved-query-load'/);
+  assert.match(panelHtml, /<div class='saved-query-entry'[^>]* data-on-click="loadSavedQuery" data-args="\[0\]"><div class='saved-query-name'><button type='button' class='saved-query-load'/);
 });
 
 test("run and delete still stop the click from also loading the entry", () => {
   populateSavedQueriesPanel();
-  assert.match(openingTag(panelHtml, "saved-query-run")[0], /onclick='event\.stopPropagation\(\); executeSavedQuery\(0\)'/);
-  assert.match(openingTag(panelHtml, "saved-query-delete")[0], /onclick='event\.stopPropagation\(\); deleteSavedQuery\(0\)'/);
+  assert.match(openingTag(panelHtml, "saved-query-run")[0], / data-on-click="executeSavedQuery" data-args="\[0\]" data-stop-propagation /);
+  assert.match(openingTag(panelHtml, "saved-query-delete")[0], / data-on-click="deleteSavedQuery" data-args="\[0\]" data-stop-propagation /);
 });
 
 test("deleting a saved query hands the focus to the entry that took its place", () => {
@@ -191,9 +192,9 @@ test("a history entry is a real button that loads it", () => {
   const tag = openingTag(html, "history-entry-content");
   assert.equal(tag[1], "button");
   assert.match(tag[0], /type='button'/);
-  assert.match(tag[0], /onclick='loadHistoryEntry\(4\)'/);
-  assert.match(html, /<button type='button' class='history-entry-content'[^>]*onclick='loadHistoryEntry\(7\)'/);
-  assert.ok(!/<div[^>]*onclick/.test(html), "no click-only div may remain in the history entries");
+  assert.match(tag[0], / data-on-click="loadHistoryEntry" data-args="\[4\]"/);
+  assert.match(html, /<button type='button' class='history-entry-content'[^>]* data-on-click="loadHistoryEntry" data-args="\[7\]"/);
+  assert.ok(!/<div[^>]*(onclick|data-on-click)/.test(html), "no click-only div may remain in the history entries");
 });
 
 test("a history button only holds phrasing content, so the browser does not re-parent it", () => {

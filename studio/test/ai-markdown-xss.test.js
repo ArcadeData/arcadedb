@@ -53,7 +53,7 @@ function load() {
   const context = { String, Array, Object, Math, RegExp, Number, JSON, Date, console, escapeHtml, marked: rawMarked(), jQuery, $: jQuery, rendered,
     globalStorageLoad: (key, def) => def };
   vm.createContext(context);
-  for (const file of ["studio-support-markdown.js", "studio-ai.js", "studio-profiler.js"])
+  for (const file of ["studio-actions.js", "studio-support-markdown.js", "studio-ai.js", "studio-profiler.js"])
     vm.runInContext(fs.readFileSync(path.join(JS, file), "utf8"), context, { filename: file });
   return context;
 }
@@ -137,7 +137,7 @@ test("a fenced block keeps its language badge and copy button, with the code esc
   const html = assistant("```sql\nSELECT * FROM T WHERE a < 3\n```");
   assert.match(html, /<span class="badge"[^>]*>SQL<\/span>/);
   assert.match(html, /<pre id="aiMdCode_\d+"[^>]*>SELECT \* FROM T WHERE a &lt; 3<\/pre>/);
-  assert.match(html, /onclick="aiCopyCode\(this, 'aiMdCode_\d+'\)"/);
+  assert.match(html, / data-on-click="aiCopyCode" data-args="\[\{&quot;\$&quot;:&quot;this&quot;\},&quot;aiMdCode_\d+&quot;\]"/);
 });
 
 test("a long answer is not cut at the size of a support comment", () => {

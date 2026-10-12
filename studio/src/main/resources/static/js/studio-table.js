@@ -94,10 +94,10 @@ function renderTable() {
 
         if (colName == "@rid" && value != null) {
           //RID
-          value = "<a class='link' onclick=\"openRecordEditorFromTable('" + value + "')\">" + value + "</a>";
+          value = "<a class='link'" + studioAction("openRecordEditorFromTable", [value]) + ">" + escapeHtml(value) + "</a>";
         } else if ((colName == "@in" || colName == "@out") && typeof value === "string" && value.charAt(0) === "#") {
           //RID reference (edges only; on vertices these are numeric counts)
-          value = "<a class='link' onclick=\"openRecordEditorFromTable('" + value + "')\">" + value + "</a>";
+          value = "<a class='link'" + studioAction("openRecordEditorFromTable", [value]) + ">" + escapeHtml(value) + "</a>";
         } else if (value != null && (typeof value === "string" || value instanceof String) && value.toString().length > 30) {
           if (tableTruncateColumns) value = value.toString().substr(0, 30) + "...";
         }
@@ -142,7 +142,7 @@ function renderTable() {
         // Build custom export dropdown (defer to ensure buttons are in DOM)
         setTimeout(function () {
           let exportHtml = "<div class='dt-export-dropdown'>";
-          exportHtml += "<button class='dt-export-btn' onclick='toggleExportMenu(this)' title='Export'><i class='fa fa-arrow-up-from-bracket'></i></button>";
+          exportHtml += "<button class='dt-export-btn'" + studioAction("toggleExportMenu", [STUDIO_ARG_THIS]) + " title='Export'><i class='fa fa-arrow-up-from-bracket'></i></button>";
           exportHtml += "<div class='dt-export-menu'></div>";
           exportHtml += "</div>";
 
@@ -165,7 +165,7 @@ function renderTable() {
 
           // Fullscreen toggle: insert before search so that with float:right it lands on the rightmost edge
           let fullscreenHtml = "<div class='dt-fullscreen-wrapper'>";
-          fullscreenHtml += "<button id='toggleTableFullscreenBtn' type='button' class='dt-fullscreen-btn fullscreen-toggle-btn' onclick='toggleWorkareaFullscreen()' title='Maximize'>";
+          fullscreenHtml += "<button id='toggleTableFullscreenBtn' type='button' class='dt-fullscreen-btn fullscreen-toggle-btn'" + studioAction("toggleWorkareaFullscreen") + " title='Maximize'>";
           fullscreenHtml += "<i class='fa fa-expand'></i><i class='fa fa-compress'></i>";
           fullscreenHtml += "</button></div>";
           let fullscreenEl = $(fullscreenHtml);
