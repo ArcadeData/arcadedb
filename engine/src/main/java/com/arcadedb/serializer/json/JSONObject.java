@@ -96,7 +96,8 @@ public class JSONObject implements Map<String, Object> {
    * from a {@code MAP} property, the {@code T} enum of a Gremlin {@code elementMap()}, a {@code null}), and a JSON object can
    * only name a member by text. A {@code null} key is named {@code "null"}, as {@code JsonSerializer.serializeMap} and the Gremlin
    * result mapping do (#9805). Two keys with the same text (the {@code null} key and the String {@code "null"}, {@code 1} and
-   * {@code "1"}) name the same member and the last entry of the map wins.
+   * {@code "1"}) name the same member and the last entry of the map wins, which for an unordered map ({@code HashMap}) is
+   * unspecified.
    */
   public JSONObject(final Map<?, ?> map) {
     object = new JsonObject();
