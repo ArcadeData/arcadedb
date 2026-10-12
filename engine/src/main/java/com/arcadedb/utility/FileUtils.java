@@ -595,7 +595,7 @@ public class FileUtils {
    * @param syncDirectory whether to fsync the parent directory after the rename; {@code false} only for a caller that
    *                      fsyncs that same directory itself right after (#8635)
    */
-  private static void publishAtomically(final Path tmp, final Path target, final boolean syncDirectory) throws IOException {
+  public static void publishAtomically(final Path tmp, final Path target, final boolean syncDirectory) throws IOException {
     try {
       // REPLACE_EXISTING is required for ATOMIC_MOVE to overwrite an existing target on some
       // platforms (notably Windows), where the move otherwise throws FileAlreadyExistsException.

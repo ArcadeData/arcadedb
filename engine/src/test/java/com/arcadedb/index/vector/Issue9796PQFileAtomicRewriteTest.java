@@ -225,6 +225,25 @@ class Issue9796PQFileAtomicRewriteTest {
   }
 
   @Test
+  void deletePQFileReportsWhetherTheFileIsReallyGone() throws IOException {
+    final String base = tempDir.resolve("index").toString();
+    final LSMVectorIndexPQFile pqFile = new LSMVectorIndexPQFile(base);
+    assertThat(pqFile.deletePQFile()).as("nothing to delete is a file that is gone").isTrue();
+
+    final Fixture fixture = new Fixture(1, 300);
+    pqFile.writePQ(fixture.pq, fixture.codes);
+    assertThat(pqFile.deletePQFile()).isTrue();
+    assertThat(pqFile.getFilePath()).doesNotExist();
+
+    // Something that cannot be deleted: a non-empty directory under the file's name. The caller that drops a stale file
+    // has to be told, because a stale file left on disk is paired with the next graph on the following open.
+    Files.createDirectory(pqFile.getFilePath());
+    Files.write(pqFile.getFilePath().resolve("child"), new byte[] { 1 });
+    assertThat(pqFile.deletePQFile()).as("the delete failed: the file is still there").isFalse();
+    assertThat(pqFile.exists()).isTrue();
+  }
+
+  @Test
   void anUnloadableFileIsNotUsableDataEvenThoughItExists() throws IOException {
     final String base = tempDir.resolve("index").toString();
     final LSMVectorIndexPQFile pqFile = new LSMVectorIndexPQFile(base);

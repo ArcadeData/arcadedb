@@ -4587,7 +4587,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
               + "dropped, the next open rebuilds the graph and the PQ together. Approximate search stays available "
               + "until then",
           indexName, e.getMessage());
-      pqFile.deletePQFile();
+      if (!pqFile.deletePQFile())
+        LogManager.instance().log(this, Level.SEVERE,
+            "The stale PQ file %s of index %s could not be deleted: it describes the previous graph and the next open will "
+                + "pair it with the current one. Delete it by hand to force the PQ to be rebuilt",
+            pqFile.getFilePath(), indexName);
       if (e instanceof Error error)
         throw error;
     }
