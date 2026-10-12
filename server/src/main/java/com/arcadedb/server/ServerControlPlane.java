@@ -1199,12 +1199,7 @@ public class ServerControlPlane {
       return;
     }
 
-    final Object coerced = coerceSetting(setting, value);
-    // Not atomic with the store below, and need not be: what a plugin refuses on is state fixed while it runs (the Gremlin
-    // channelizer), and plugins start before any admin surface listens
-    server.checkServerSettingChange(setting, coerced);
-    server.getConfiguration().setValue(setting.getKey(), coerced);
-    server.markOperatorSetting(setting.getKey());
+    server.storeOperatorSetting(setting, coerceSetting(setting, value));
   }
 
   /**
