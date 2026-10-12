@@ -80,6 +80,8 @@ class ScanPropertyHashIndexTest extends TestHelper {
     final ScanPropertyHashIndex index = build("k");
     assertThat(index.candidates(3L)).isNull();
     assertThat(count(index.candidates("a"))).isEqualTo(1);
+    // a text a FLOAT or DOUBLE declaration could read as a number would need every one of them too: the caller scans (#9794)
+    assertThat(index.candidates("1.5")).isNull();
   }
 
   /**
