@@ -189,7 +189,8 @@ class Issue9794DeclaredTypePatternTest extends TestHelper {
     }
     assertThat(count("MATCH (n:I) RETURN count(n) AS c")).isEqualTo(1);
 
-    for (final String text : List.of("'5.7'", "' 5'", "'1e2'", "''", "'five'")) {
+    assertThat(count("MATCH (n:I {p: '0000000000005'}) RETURN count(n) AS c")).isEqualTo(1);
+    for (final String text : List.of("'5.7'", "' 5'", "'1e2'", "''", "'five'", "'99999999999'")) {
       assertThat(count("MATCH (n:I {p: " + text + "}) RETURN count(n) AS c")).as(text).isZero();
       assertThat(count("MATCH (n:I) WHERE n.p = " + text + " RETURN count(n) AS c")).as(text).isZero();
       assertThat(count("MATCH (n:I) WHERE n.p <> " + text + " RETURN count(n) AS c")).as(text).isEqualTo(1);
@@ -198,6 +199,19 @@ class Issue9794DeclaredTypePatternTest extends TestHelper {
     for (final String text : List.of("'2.5'", "'2.50'", "' 2.5'", "'25e-1'"))
       assertThat(count("MATCH (n:D {p: " + text + "}) RETURN count(n) AS c")).as(text).isEqualTo(1);
     assertThat(count("MATCH (n:D {p: 'x2.5'}) RETURN count(n) AS c")).isZero();
+  }
+
+  @Test
+  void aTextNoTemporalDeclarationReadsMatchesNothing() {
+    database.command("sql", "CREATE VERTEX TYPE E");
+    database.command("sql", "CREATE PROPERTY E.at DATETIME");
+    database.transaction(() -> database.command("opencypher", "CREATE (:E {at: '2024-01-02T10:00:00'})").close());
+
+    assertThat(count("MATCH (n:E) WHERE n.at = '2024-01-02T10:00:00' RETURN count(n) AS c")).isEqualTo(1);
+    for (final String text : List.of("'foo'", "'2024-13-45T99:00:00'", "''")) {
+      assertThat(count("MATCH (n:E {at: " + text + "}) RETURN count(n) AS c")).as(text).isZero();
+      assertThat(count("MATCH (n:E) WHERE n.at = " + text + " RETURN count(n) AS c")).as(text).isZero();
+    }
   }
 
   @Test
