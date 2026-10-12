@@ -565,6 +565,12 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     }
   }
 
+  /**
+   * Clears the reservation maps, which after a schema reload are SHARED with the instance that replaced this one (see
+   * {@link #carryOverFrom}, issue #9835). Closing a bucket instance a reload has retired would therefore wipe the
+   * reservations of the live one: only the instance the schema currently publishes may be closed, which is what every
+   * caller does today (a reload retires the previous instance without closing it, since both hold the same file).
+   */
   @Override
   public void close() {
     super.close();

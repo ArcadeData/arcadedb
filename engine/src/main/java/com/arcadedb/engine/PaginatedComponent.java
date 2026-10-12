@@ -216,9 +216,7 @@ public abstract class PaginatedComponent extends Component {
       return;
 
     final AtomicInteger shared = previous.reservedPageCounter;
-    final int own = reservedPageCounter.get();
-    if (own > shared.get())
-      shared.updateAndGet(current -> Math.max(own, current));
+    shared.accumulateAndGet(reservedPageCounter.get(), Math::max);
     reservedPageCounter = shared;
 
     updatePageCount(previous.getCommittedPageCount());
