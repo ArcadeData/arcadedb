@@ -106,6 +106,10 @@ class Issue9833PromQLTypedTagMatchersTest extends TestHelper {
     assertThat(count(type + "{code!~\"7|8\"}")).isZero();
     assertThat(count(type + "{code=~\"8|9\"}")).isZero();
     assertThat(count(type + "{code!~\"8|9\"}")).isEqualTo(1);
+    // a real pattern is not read as a value: "0.7" matches neither the text "7" nor names the LONG 7
+    assertThat(count(type + "{code=~\"0.7\"}")).isZero();
+    assertThat(count(type + "{code!~\"0.7\"}")).isEqualTo(1);
+    assertThat(count(type + "{code=~\"0+7\"}")).isZero();
 
     // an unescaped pattern that reads as a value of the declared type names that value too, as = does
     final String doubleType = createType("DOUBLE", "5");

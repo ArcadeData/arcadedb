@@ -693,8 +693,8 @@ public class PromQLEvaluator {
     final long regexDeadline = rowMatchers.matchers.length == 0 ? 0L : regexDeadline();
     for (int i = 0; i < rowMatchers.matchers.length; i++) {
       final int rowIdx = rowMatchers.rowIndexes[i];
-      if (!matchesTag(rowMatchers.matchers[i], rowMatchers.valueForms[i], rowIdx < row.length ? row[rowIdx] : null,
-          regexDeadline))
+      if (!matchesTag(rowMatchers.matchers[i], rowMatchers.valueForms[i], rowMatchers.patterns[i],
+          rowIdx < row.length ? row[rowIdx] : null, regexDeadline))
         return false;
     }
     return true;
@@ -708,11 +708,14 @@ public class PromQLEvaluator {
     private final LabelMatcher[] matchers;
     private final int[]          rowIndexes;
     private final Set<Object>[]  valueForms;
+    private final Pattern[]      patterns;
 
-    private RowMatchers(final LabelMatcher[] matchers, final int[] rowIndexes, final Set<Object>[] valueForms) {
+    private RowMatchers(final LabelMatcher[] matchers, final int[] rowIndexes, final Set<Object>[] valueForms,
+        final Pattern[] patterns) {
       this.matchers = matchers;
       this.rowIndexes = rowIndexes;
       this.valueForms = valueForms;
+      this.patterns = patterns;
     }
   }
 
@@ -819,6 +822,7 @@ public class PromQLEvaluator {
     final LabelMatcher[] bound = new LabelMatcher[matchers.size()];
     final int[] rowIndexes = new int[matchers.size()];
     final Set<Object>[] forms = new Set[matchers.size()];
+    final Pattern[] patterns = new Pattern[matchers.size()];
     int count = 0;
     for (final LabelMatcher m : matchers) {
       // a non-empty EQ was already applied by the tag filter; an empty one is decided here
@@ -837,9 +841,14 @@ public class PromQLEvaluator {
         continue;
       bound[count] = m;
       rowIndexes[count] = col + 1;
-      forms[count++] = valueFormsOf(rowColumns.get(col), m);
+      forms[count] = valueFormsOf(rowColumns.get(col), m);
+      // compiled once per scan, before it starts: a malformed or ReDoS-shaped pattern is refused even when no row reaches it
+      if (m.op() == MatchOp.RE || m.op() == MatchOp.NRE)
+        patterns[count] = compilePattern(m.value());
+      count++;
     }
-    return new RowMatchers(Arrays.copyOf(bound, count), Arrays.copyOf(rowIndexes, count), Arrays.copyOf(forms, count));
+    return new RowMatchers(Arrays.copyOf(bound, count), Arrays.copyOf(rowIndexes, count), Arrays.copyOf(forms, count),
+        Arrays.copyOf(patterns, count));
   }
 
   /**
@@ -894,22 +903,21 @@ public class PromQLEvaluator {
    * {@code !=} are complements whichever of the two decides a row. A pattern selects a tag it names as a literal, which is how
    * {@code =~"007"} agrees with {@code ="007"} on a LONG tag, and otherwise a tag whose label text - what the series is
    * reported under - it matches. An absent tag (null, or {@code ""} in a row an older build stored) is the empty string.
+   * <p>
+   * The literal reading is broader than Prometheus, whose label values are text only: there {@code =~"007"} never matches a
+   * label {@code 7}. Here it does, deliberately, because {@code ="007"} selects that tag by its declared type and a literal
+   * pattern has to agree with the equality it spells. A real pattern is still matched against the label text only, so
+   * {@code =~"0.7"} does not select a LONG tag holding 7.
    */
-  private boolean matchesTag(final LabelMatcher m, final Set<Object> valueForms, final Object stored, final long regexDeadline) {
+  private static boolean matchesTag(final LabelMatcher m, final Set<Object> valueForms, final Pattern pattern, final Object stored,
+      final long regexDeadline) {
     final String text = stored != null ? stored.toString() : "";
     return switch (m.op()) {
       case EQ -> m.value().isEmpty() ? text.isEmpty() : isNamedValue(valueForms, stored, text);
       case NEQ -> m.value().isEmpty() ? !text.isEmpty() : !isNamedValue(valueForms, stored, text);
-      case RE -> matchesTagPattern(m, valueForms, stored, text, regexDeadline);
-      case NRE -> !matchesTagPattern(m, valueForms, stored, text, regexDeadline);
+      case RE -> isNamedValue(valueForms, stored, text) || TimeBoundRegex.matchesUntil(pattern, text, regexDeadline);
+      case NRE -> !isNamedValue(valueForms, stored, text) && !TimeBoundRegex.matchesUntil(pattern, text, regexDeadline);
     };
-  }
-
-  private boolean matchesTagPattern(final LabelMatcher m, final Set<Object> valueForms, final Object stored, final String text,
-      final long regexDeadline) {
-    // compiled first, so a malformed or ReDoS-shaped pattern is refused on every row, not only on one it fails to name
-    final Pattern pattern = compilePattern(m.value());
-    return isNamedValue(valueForms, stored, text) || TimeBoundRegex.matchesUntil(pattern, text, regexDeadline);
   }
 
   private static boolean isNamedValue(final Set<Object> valueForms, final Object stored, final String text) {
