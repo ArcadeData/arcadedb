@@ -128,10 +128,6 @@ public class LocalTransactionExplicitLock implements TransactionExplicitLock {
       typeName, filesToLock.size(), Thread.currentThread().threadId());
   }
 
-  /**
-   * A write into a primary bucket also writes the values of its EXTERNAL properties into the paired {@code _ext} bucket,
-   * so locking the primary bucket without it fails the commit-time lock coverage check (issue #9637).
-   */
   private void collectInvolvedBucketsPolymorphic(final DocumentType type) {
     for (final Bucket b : type.getInvolvedBuckets())
       addNonNegative(b.getFileId());
@@ -140,6 +136,10 @@ public class LocalTransactionExplicitLock implements TransactionExplicitLock {
       collectInvolvedBucketsPolymorphic(subType);
   }
 
+  /**
+   * A write into a primary bucket also writes the values of its EXTERNAL properties into the paired {@code _ext} bucket,
+   * so locking the primary bucket without it fails the commit-time lock coverage check (issue #9637).
+   */
   private void addExternalBucketOf(final DocumentType owner, final int primaryBucketId) {
     if (owner instanceof LocalDocumentType localType) {
       final Integer externalBucketId = localType.getExternalBucketIdFor(primaryBucketId);

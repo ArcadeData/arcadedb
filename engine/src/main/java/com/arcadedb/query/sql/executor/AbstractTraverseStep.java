@@ -20,6 +20,8 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.Record;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.EdgeIdentitySet;
 import com.arcadedb.query.sql.parser.PInteger;
 import com.arcadedb.query.sql.parser.TraverseProjectionItem;
@@ -142,7 +144,7 @@ public abstract class AbstractTraverseStep extends AbstractExecutionStep {
       res.depth = 0;
     } else if (item.getPropertyNames().size() == 1) {
       final Object val = item.getProperty(item.getPropertyNames().iterator().next());
-      if (val instanceof Identifiable identifiable && identifiable.getRecord() instanceof Document document) {
+      if (val instanceof Identifiable identifiable && loadEntryPoint(identifiable) instanceof Document document) {
         res = new TraverseResult(document);
         res.depth = 0;
         res.setMetadata("$depth", 0);
@@ -157,6 +159,18 @@ public abstract class AbstractTraverseStep extends AbstractExecutionStep {
     }
 
     return res;
+  }
+
+  /**
+   * The record a one-column entry-point row points at, or {@code null} when there is none to start from: a LINK whose record
+   * was deleted has nothing to walk, the same as a LINK left null, so it is skipped rather than failing the whole query.
+   */
+  private static Record loadEntryPoint(final Identifiable identifiable) {
+    try {
+      return identifiable.getRecord();
+    } catch (final RecordNotFoundException e) {
+      return null;
+    }
   }
 
   protected abstract void fetchNextEntryPoints(CommandContext context, int nRecords);

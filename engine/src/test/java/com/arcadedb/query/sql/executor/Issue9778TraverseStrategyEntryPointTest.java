@@ -93,6 +93,19 @@ class Issue9778TraverseStrategyEntryPointTest extends TestHelper {
       assertThat(traverse("(SELECT link FROM L)", strategy)).as(strategy).containsExactlyInAnyOrder("a", "b", "c");
   }
 
+  /** A LINK whose record was deleted has nothing to start from either: skipped like a null one, not a failed query. */
+  @Test
+  void aLinkToADeletedRecordIsSkippedByBothStrategies() {
+    database.transaction(() -> {
+      final MutableVertex gone = database.newVertex("V").set("name", "gone").save();
+      database.newDocument("L").set("link", gone.getIdentity()).save();
+      gone.delete();
+    });
+
+    for (final String strategy : new String[] { "DEPTH_FIRST", "BREADTH_FIRST" })
+      assertThat(traverse("(SELECT link FROM L)", strategy)).as(strategy).containsExactlyInAnyOrder("a", "b", "c");
+  }
+
   private Set<String> traverse(final String from, final String strategy) {
     final Set<String> names = new HashSet<>();
     try (final ResultSet rs = database.query("sql", "TRAVERSE out() FROM " + from + " STRATEGY " + strategy)) {
