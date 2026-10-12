@@ -133,6 +133,31 @@ class Issue9843KeysValuesOnResultReceiverTest extends TestHelper {
     }
   }
 
+  /**
+   * A document whose values are not scalars: the values are read by name off the converted view, so a list and an embedded
+   * document must come back in the slot of their own name, as they do for the same document without the row in between.
+   */
+  @Test
+  void documentWithListAndEmbeddedValuesKeepsEveryValueInTheSlotOfItsName() {
+    database.getSchema().createDocumentType("D3");
+    database.transaction(() -> database.command("sql", "insert into D3 set n = 1, tags = ['a', 'b'], emb = {'k': 'v'}"));
+
+    for (final String receiver : new String[] { "@this", "$a[0]" }) {
+      try (final ResultSet rs = database.query("sql",
+          "select " + receiver + ".keys() as k, " + receiver + ".values() as v from D3 let $a = (select from D3)")) {
+        final Result row = rs.next();
+        final List<String> keys = new ArrayList<>(row.<Collection<String>>getProperty("k"));
+        final List<Object> values = new ArrayList<>(row.<Collection<Object>>getProperty("v"));
+
+        assertThat(keys).as(receiver).containsExactlyInAnyOrder("n", "tags", "emb");
+        assertThat(values).as(receiver).hasSameSizeAs(keys);
+        assertThat(values.get(keys.indexOf("n"))).as(receiver + " n").isEqualTo(1);
+        assertThat(values.get(keys.indexOf("tags"))).as(receiver + " tags").isEqualTo(List.of("a", "b"));
+        assertThat(values.get(keys.indexOf("emb"))).as(receiver + " emb").isNotNull();
+      }
+    }
+  }
+
   /** A collection of rows flattens each receiver through the same branch, so the aligned pair holds for it too. */
   @Test
   void collectionOfRowsFlattensAlignedPairs() {

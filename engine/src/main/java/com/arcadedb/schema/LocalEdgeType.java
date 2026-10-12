@@ -94,13 +94,15 @@ public class LocalEdgeType extends LocalDocumentType implements EdgeType {
    * @param edgeTypeName the type that is, or is about to be, LIGHTWEIGHT
    * @param type         the type whose polymorphic properties it would carry: itself, or the super type it is about to extend
    */
-  static void checkCanBeLightweight(final String edgeTypeName, final DocumentType type) {
+  public static void checkCanBeLightweight(final String edgeTypeName, final DocumentType type) {
     final Property constraint = type.findPropertyAppliedToEmptyRecord();
-    if (constraint != null)
-      throw new SchemaException("Edge type '" + edgeTypeName + "' cannot be LIGHTWEIGHT because it " + (type.getName().equals(edgeTypeName) ?
-          "declares or inherits" : "would inherit from '" + type.getName() + "'") + " the " + constraintKind(constraint) + " property '"
-          + constraint.getName() + "': a lightweight edge has no record, so the constraint would never be applied to it. Make the "
-          + "property optional, or declare the type without LIGHTWEIGHT");
+    if (constraint == null)
+      return;
+
+    final String how = type.getName().equals(edgeTypeName) ? "declares or inherits" : "would inherit from '" + type.getName() + "'";
+    throw new SchemaException("Edge type '" + edgeTypeName + "' cannot be LIGHTWEIGHT because it " + how + " the "
+        + constraintKind(constraint) + " property '" + constraint.getName() + "': a lightweight edge has no record, so the "
+        + "constraint would never be applied to it. Make the property optional, or declare the type without LIGHTWEIGHT");
   }
 
   /** What makes a property apply to a record that does not carry it, for the messages. */
@@ -124,8 +126,10 @@ public class LocalEdgeType extends LocalDocumentType implements EdgeType {
    * inside one schema recording session, so the database write lock is held across all of it and the session saves
    * {@code schema.json} (and, under HA, ships it) once.
    * <p>
-   * All or nothing: when the index cannot be built (an already populated type that holds a duplicate pair) the flags go back
-   * to what they were, so the type never advertises a constraint nothing enforces.
+   * When the change is refused (an already populated type that holds a duplicate pair makes the index build fail) the flags
+   * go back to what they were, so the type never advertises a constraint nothing enforces. The index build removes what it
+   * had started to create, and the {@code out}/{@code in} endpoint properties {@link #applyUniqueConstraint} may have declared
+   * before it are left in place: they are additive and harmless, as {@link #removeUniqueConstraint} documents.
    *
    * @param lightweight the requested storage shape, or {@code null} to leave it alone
    * @param unique      the requested {@code UNIQUE} declaration, or {@code null} to leave it alone

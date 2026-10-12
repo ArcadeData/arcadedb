@@ -2644,12 +2644,10 @@ public class LocalDocumentType implements DocumentType {
       // modify a list this walk is iterating, straight into a ConcurrentModificationException.
       checkTimeSeriesHierarchy(superType);
 
-      // A LIGHTWEIGHT EDGE TYPE, OR ONE BELOW THIS TYPE, WOULD INHERIT EVERYTHING THE SUPER TYPE CARRIES, INCLUDING A
-      // MANDATORY OR DEFAULT-VALUED PROPERTY THAT NO LIGHTWEIGHT EDGE CAN HONOUR (ISSUE #9846). Under the same lock, and
-      // for the same reason, as the check above: it walks the subTypes lists linkSuperType mutates. Skipped on the two
-      // paths that pass createIndexes=false, because both re-establish a linkage that already holds: the schema load reads
-      // back what was accepted when it was declared, and dropType re-attaches the sub types of the dropped type to its
-      // parents, whose properties they already inherit through it
+      // A lightweight edge type, this one or one below it, would inherit everything the super type carries, including a
+      // MANDATORY or default-valued property that no lightweight edge can honour (#9846). Under the same lock, and for the
+      // same reason, as the check above: it walks the subTypes lists linkSuperType mutates. Skipped for createIndexes=false,
+      // which marks a linkage that already holds (see addSuperType(DocumentType, boolean)).
       if (createIndexes) {
         final Property constraint = embeddedSuperType.findPropertyAppliedToEmptyRecord();
         if (constraint != null) {

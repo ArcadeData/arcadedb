@@ -22,6 +22,7 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
+import com.arcadedb.schema.LocalEdgeType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.TypeBuilder;
 
@@ -67,6 +68,14 @@ public class CreateEdgeTypeStatement extends CreateTypeAbstractStatement {
       }
     }
     return type;
+  }
+
+  @Override
+  protected void checkSuperTypesBeforeCreate(final String typeName, final DocumentType[] superclasses) {
+    // A lightweight edge has no record, so it cannot honour a MANDATORY or default-valued property of a super type (#9846)
+    if (lightweight)
+      for (final DocumentType superclass : superclasses)
+        LocalEdgeType.checkCanBeLightweight(typeName, superclass);
   }
 
   private TypeBuilder<EdgeType> applyFlags(final TypeBuilder<EdgeType> builder) {
