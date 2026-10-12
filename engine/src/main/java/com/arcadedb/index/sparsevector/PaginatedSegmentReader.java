@@ -432,8 +432,8 @@ public final class PaginatedSegmentReader implements AutoCloseable {
       }
     }
 
-    return new PaginatedDimMetadata(dimId, postingCount, df, Math.max(globalMaxWeight, suffixMax), blockPageNums, blockOffsets,
-        blockHeaders, skipList);
+    return new PaginatedDimMetadata(dimId, postingCount, df, Math.max(globalMaxWeight, suffixMax), blockPageNums,
+        blockOffsets, blockHeaders, skipList);
   }
 
   /**
