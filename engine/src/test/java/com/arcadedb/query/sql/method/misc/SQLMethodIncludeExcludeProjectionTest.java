@@ -178,7 +178,8 @@ class SQLMethodIncludeExcludeProjectionTest extends TestHelper {
     final ResultInternal result = new ResultInternal();
     result.setProperty("a", 3);
     result.setProperty("b", 4);
-    final List<Object> input = List.of(Map.of("a", 1, "b", 2), result);
+    // A SCALAR ELEMENT HAS NO PROPERTIES TO PROJECT AND IS LEFT OUT, AS IT ALWAYS WAS
+    final List<Object> input = List.of(Map.of("a", 1, "b", 2), "scalar", result);
 
     final Object excluded = new SQLMethodExclude().execute(input, null, null, new Object[] { "b" });
     assertThat((List<Object>) excluded).containsExactly(Map.of("a", 1), Map.of("a", 3));
@@ -242,6 +243,16 @@ class SQLMethodIncludeExcludeProjectionTest extends TestHelper {
     input.put("x", 1);
     assertThat((Map<String, Object>) new SQLMethodInclude().execute(input, null, null, new Object[] { "1*" })).containsOnlyKeys("10");
     assertThat((Map<Object, Object>) new SQLMethodExclude().execute(input, null, null, new Object[] { "1*" })).containsOnlyKeys("x");
+  }
+
+  @Test
+  void aChainedCallOnAProjectionReadsTheMap() {
+    // THE PROJECTION IS A MAP, SO A CHAINED ACCESS READS ITS ENTRIES - NOT THE RECORD IT CAME FROM
+    database.transaction(() -> {
+      assertThat(single("select @this.include('n', 'm').m as c from V1 where n = 1")).isEqualTo(2);
+      assertThat(single("select @this.exclude('m').m as c from V1 where n = 1")).isNull();
+      assertThat(single("select @this.include('n', '@rid').keys() as c from V1 where n = 1")).asString().contains("@rid").contains("n");
+    });
   }
 
   private Object single(final String sql) {
