@@ -276,14 +276,16 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   // ConcurrentModificationException, even though two inserts of DIFFERENT records always commute. An entry exists
   // only while at least one transaction is inserting into that page, so the map is as small as the write
   // concurrency; see reserveInsertSlot().
-  private final          Map<Integer, PageInsertReservation> insertReservations     = new ConcurrentHashMap<>();
+  // Not final, like the two maps below: a replacement built by a schema reload adopts them (issue #9835, see
+  // carryOverFrom()).
+  private                Map<Integer, PageInsertReservation> insertReservations     = new ConcurrentHashMap<>();
   // #9694: pageNumber → the transaction that created that page and has not ended yet. The creator lists its page in
   // freeSpaceInPages, and page numbers are committed out of order, so other transactions could otherwise read it as an
   // empty page below their horizon and claim the slots its creator already wrote. Released when the creator ends.
-  private final          Map<Integer, TransactionContext> inFlightNewPages          = new ConcurrentHashMap<>();
+  private                Map<Integer, TransactionContext> inFlightNewPages          = new ConcurrentHashMap<>();
   // #9694: pages whose reservations are gone and that wait to be measured and listed in freeSpaceInPages again by the
   // next allocation; filled from transaction teardown, which must not read pages (see relistPage()).
-  private final          Set<Integer>              pagesToRelist                    = ConcurrentHashMap.newKeySet();
+  private                Set<Integer>              pagesToRelist                    = ConcurrentHashMap.newKeySet();
   private final          REUSE_SPACE_MODE          reuseSpaceMode;
   // #4958: both fields are read/written outside the freeSpaceInPages monitor on some paths (delete,
   // updatePageStatistics), so they must be safe on their own: volatile timestamp + atomic counter.
@@ -540,6 +542,27 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
   private static Purpose purposeForVersion(final int version) {
     return version >= EXTERNAL_BUCKET_VERSION ? Purpose.EXTERNAL_PROPERTY : Purpose.PRIMARY;
+  }
+
+  /**
+   * Besides the reservation counter (see {@link PaginatedComponent#carryOverFrom}), a bucket keeps who owns what
+   * until their transaction ends: the pages running transactions created ({@link #inFlightNewPages}, #9694), the
+   * slots they reserved on existing pages ({@link #insertReservations}, #5279) and the pages waiting to be listed
+   * again ({@link #pagesToRelist}). All three are ADOPTED, not copied, for the reason the counter is: a transaction
+   * that resolved the retired instance keeps reserving into it, and releases into it when it ends - its teardown
+   * holds the instance it reserved on, not the one the schema publishes by then. With the maps shared, that release
+   * reaches the live instance too, so nothing is left owned forever.
+   * <p>
+   * The free-space statistics are a hint the next gather rebuilds, and are not carried.
+   */
+  @Override
+  public void carryOverFrom(final PaginatedComponent previous) {
+    super.carryOverFrom(previous);
+    if (previous instanceof LocalBucket previousBucket && previousBucket != this) {
+      insertReservations = previousBucket.insertReservations;
+      inFlightNewPages = previousBucket.inFlightNewPages;
+      pagesToRelist = previousBucket.pagesToRelist;
+    }
   }
 
   @Override
