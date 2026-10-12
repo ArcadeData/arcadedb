@@ -197,6 +197,40 @@ class Issue9799ReservedPropertyNamesTest extends TestHelper {
   }
 
   @Test
+  void oneMapMovingBothEndpointsLeavesOneEdge() {
+    final RID[] rids = new RID[5];
+    database.transaction(() -> {
+      final MutableVertex v1 = database.newVertex("V1").save();
+      final MutableVertex v2 = database.newVertex("V1").save();
+      final MutableVertex v3 = database.newVertex("V1").save();
+      final MutableVertex v4 = database.newVertex("V1").save();
+      final MutableEdge e = v1.newEdge("E1", v2).set("k", "x").save();
+      final Map<String, Object> both = new LinkedHashMap<>();
+      both.put("@in", v3.getIdentity());
+      both.put("@out", v4.getIdentity());
+      e.set(both);
+      e.save();
+      rids[0] = v1.getIdentity();
+      rids[1] = v2.getIdentity();
+      rids[2] = v3.getIdentity();
+      rids[3] = v4.getIdentity();
+      rids[4] = e.getIdentity();
+    });
+
+    database.transaction(() -> {
+      final Edge reloaded = rids[4].asEdge();
+      assertThat(reloaded.getOut()).isEqualTo(rids[3]);
+      assertThat(reloaded.getIn()).isEqualTo(rids[2]);
+      assertThat(reloaded.get("k")).isEqualTo("x");
+      assertThat(database.countType("E1", false)).isEqualTo(1L);
+      assertThat(rids[0].asVertex().countEdges(Vertex.DIRECTION.OUT, "E1")).isZero();
+      assertThat(rids[1].asVertex().countEdges(Vertex.DIRECTION.IN, "E1")).isZero();
+      assertThat(rids[3].asVertex().countEdges(Vertex.DIRECTION.OUT, "E1")).isEqualTo(1);
+      assertThat(rids[2].asVertex().countEdges(Vertex.DIRECTION.IN, "E1")).isEqualTo(1);
+    });
+  }
+
+  @Test
   void edgeRefusesOtherMetadataNamesAndSkipsThemInMaps() {
     database.transaction(() -> {
       final MutableVertex v1 = database.newVertex("V1").save();
