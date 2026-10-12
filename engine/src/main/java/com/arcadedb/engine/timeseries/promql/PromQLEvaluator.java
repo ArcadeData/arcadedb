@@ -911,17 +911,24 @@ public class PromQLEvaluator {
    */
   private static boolean matchesTag(final LabelMatcher m, final Set<Object> valueForms, final Pattern pattern, final Object stored,
       final long regexDeadline) {
-    final String text = stored != null ? stored.toString() : "";
+    final boolean absent = isAbsent(stored);
     return switch (m.op()) {
-      case EQ -> m.value().isEmpty() ? text.isEmpty() : isNamedValue(valueForms, stored, text);
-      case NEQ -> m.value().isEmpty() ? !text.isEmpty() : !isNamedValue(valueForms, stored, text);
-      case RE -> isNamedValue(valueForms, stored, text) || TimeBoundRegex.matchesUntil(pattern, text, regexDeadline);
-      case NRE -> !isNamedValue(valueForms, stored, text) && !TimeBoundRegex.matchesUntil(pattern, text, regexDeadline);
+      case EQ -> m.value().isEmpty() ? absent : !absent && valueForms.contains(stored);
+      case NEQ -> m.value().isEmpty() ? !absent : absent || !valueForms.contains(stored);
+      case RE -> !absent && valueForms.contains(stored) || TimeBoundRegex.matchesUntil(pattern, labelText(stored), regexDeadline);
+      case NRE -> (absent || !valueForms.contains(stored)) && !TimeBoundRegex.matchesUntil(pattern, labelText(stored),
+          regexDeadline);
     };
   }
 
-  private static boolean isNamedValue(final Set<Object> valueForms, final Object stored, final String text) {
-    return !text.isEmpty() && valueForms.contains(stored);
+  /** Whether a row carries no value for a tag: null, or {@code ""} in a row an older build stored (issue #9363). */
+  private static boolean isAbsent(final Object stored) {
+    return stored == null || stored instanceof String text && text.isEmpty();
+  }
+
+  /** The text a tag is reported under, which a pattern is matched against; {@code ""} for an absent tag. */
+  private static String labelText(final Object stored) {
+    return stored != null ? stored.toString() : "";
   }
 
   /**
