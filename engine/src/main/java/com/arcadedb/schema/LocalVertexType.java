@@ -70,6 +70,10 @@ public class LocalVertexType extends LocalDocumentType implements VertexType {
   }
 
   private void renameInternal(final String oldName, final String newName) {
+    // Refused before anything moves: a stripe name already taken would otherwise be found only after the type and its edge
+    // buckets were renamed, and all of it rolled back
+    checkStripePoolRenameTargets(oldName, newName);
+
     super.rename(newName);
 
     final List<Bucket> removedBuckets = new ArrayList<>();
@@ -174,13 +178,6 @@ public class LocalVertexType extends LocalDocumentType implements VertexType {
       throws IOException {
     final Bucket[] pool = getSuperNodeStripePool(oldName);
     for (int slot = 0; slot < pool.length; slot++) {
-      final String target = StripedEdgeList.stripeBucketName(newName, slot);
-      if (pool[slot] != null && schema.existsBucket(target))
-        throw new SchemaException(
-            "Cannot rename the super-node stripe bucket '" + pool[slot].getName() + "': a bucket named '" + target + "' already exists");
-    }
-
-    for (int slot = 0; slot < pool.length; slot++) {
       final Bucket bucket = pool[slot];
       if (bucket == null)
         continue;
@@ -193,6 +190,16 @@ public class LocalVertexType extends LocalDocumentType implements VertexType {
     if (pool.length > 0)
       // The per-file maps were rebuilt by the type rename, when the pool still answered to the old name only
       schema.saveConfiguration();
+  }
+
+  private void checkStripePoolRenameTargets(final String oldName, final String newName) {
+    final Bucket[] pool = getSuperNodeStripePool(oldName);
+    for (int slot = 0; slot < pool.length; slot++) {
+      final String target = StripedEdgeList.stripeBucketName(newName, slot);
+      if (pool[slot] != null && schema.existsBucket(target))
+        throw new SchemaException(
+            "Cannot rename the super-node stripe bucket '" + pool[slot].getName() + "': a bucket named '" + target + "' already exists");
+    }
   }
 
   /** The name a bucket this rename moved goes back to when the rename is rolled back, or {@code null} if none can be told. */

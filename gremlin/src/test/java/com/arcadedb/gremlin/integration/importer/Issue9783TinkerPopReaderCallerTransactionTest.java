@@ -156,6 +156,40 @@ class Issue9783TinkerPopReaderCallerTransactionTest {
     }
   }
 
+  /**
+   * Inside a caller-owned transaction a failing reader leaves that transaction alone: still active, still holding the caller's
+   * own work, and theirs to roll back.
+   */
+  @Test
+  void aFailedGraphMLImportInsideACallerTransactionLeavesItToTheCaller() throws Exception {
+    final String databasePath = "target/databases/test-import-9783-graphml-caller-failed";
+    final String broken = GRAPHML.replace("<node id=\"2\"><data key=\"labelV\">Person</data>",
+        "<node id=\"2\"><data key=\"labelV\">NotAVertex</data>");
+    final File source = sourceFile("9783-graphml-caller-failed", "graphml", broken);
+
+    final Database db = freshDatabase(databasePath);
+    try {
+      db.command("sql", "CREATE DOCUMENT TYPE NotAVertex");
+      db.command("sql", "CREATE DOCUMENT TYPE CallerDoc");
+
+      db.begin();
+      db.newDocument("CallerDoc").set("who", "caller").save();
+
+      assertThatThrownBy(() -> new Importer(db, "file://" + source.getAbsolutePath()).load()).isInstanceOf(RuntimeException.class);
+
+      assertThat(db.isTransactionActive()).as("the caller's transaction survives the failed import").isTrue();
+      assertThat(((DatabaseInternal) db).getNestedTransactions()).isEqualTo(1);
+      assertThat(db.countType("CallerDoc", true)).as("with the caller's own pending work in it").isEqualTo(1);
+
+      db.rollback();
+
+      assertThat(db.countType("CallerDoc", true)).isZero();
+      assertThat(db.getSchema().existsType("Person") ? db.countType("Person", true) : 0).isZero();
+    } finally {
+      cleanUp(db, databasePath, source);
+    }
+  }
+
   private void assertRolledBackWithTheCaller(final String name, final String extension, final String content) throws Exception {
     final String databasePath = "target/databases/test-import-" + name;
     final File source = sourceFile(name, extension, content);

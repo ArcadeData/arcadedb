@@ -101,6 +101,7 @@ public class StripedEdgeList extends EdgeLinkedList {
    * EdgeLinkedList.loadChunkForWrite), a read skips the momentarily unresolvable chain, so counts/iterations
    * during a concurrent commit can transiently under-report instead of failing. */
   private static final AtomicLong                      LAST_SKIPPED_CHAIN_WARN = new AtomicLong();
+  // Zero-length, so sharing it is safe: there is no element to write
   private static final Bucket[]                        EMPTY_POOL              = new Bucket[0];
 
   private final DatabaseInternal database;
@@ -133,6 +134,9 @@ public class StripedEdgeList extends EdgeLinkedList {
     final int digits = bucketName.length() - prefix.length();
     // At most 9 digits: a slot is an int, and a longer suffix is not a name this pool ever composed
     if (digits < 1 || digits > 9 || !bucketName.startsWith(prefix))
+      return -1;
+    // A slot is composed without leading zeros: '_sn_stripe_01' is not a name this pool ever had
+    if (digits > 1 && bucketName.charAt(prefix.length()) == '0')
       return -1;
     int slot = 0;
     for (int i = prefix.length(); i < bucketName.length(); i++) {

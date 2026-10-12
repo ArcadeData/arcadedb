@@ -226,6 +226,7 @@ class Issue9780SuperNodeStripeInvolvedTest extends TestHelper {
     assertThat(StripedEdgeList.stripeSlotOf("V", StripedEdgeList.stripeBucketName("V", 13))).isEqualTo(13);
     assertThat(StripedEdgeList.stripeSlotOf("V", StripedEdgeList.stripeBucketName("W", 1))).isEqualTo(-1);
     assertThat(StripedEdgeList.stripeSlotOf("V", "V_sn_stripe_")).isEqualTo(-1);
+    assertThat(StripedEdgeList.stripeSlotOf("V", "V_sn_stripe_01")).isEqualTo(-1);
     assertThat(StripedEdgeList.stripeSlotOf("V", "V_sn_stripe_1_out_edges")).isEqualTo(-1);
     assertThat(StripedEdgeList.stripeSlotOf("V", "V_sn_stripe_99999999999")).isEqualTo(-1);
     assertThat(StripedEdgeList.stripeSlotOf("V", "V_0_out_edges")).isEqualTo(-1);
