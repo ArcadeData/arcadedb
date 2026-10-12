@@ -132,6 +132,8 @@ public class HttpSession implements QuerySession {
     }
 
     try {
+      // ends the session: what a bounded cancel that gave up asked for is done here (issue #9774)
+      rollbackOnRelease = false;
       return rollbackIfActive();
     } finally {
       lock.unlock();
@@ -145,7 +147,9 @@ public class HttpSession implements QuerySession {
    * guarantee by other means: the rollback is asked of the session first, and whichever of the two lets go of the lock
    * first performs it - this call if it gets the lock in time, the in-flight request on its way out otherwise. The
    * request's way out is the {@code finally} of {@link #execute}, which a request cannot skip; only a thread that never
-   * returns from its command would leave the transaction open, and such a thread holds the session in any case.
+   * returns from its command would leave the transaction open, and such a thread holds the session in any case. Every other
+   * holder of the lock - {@link #cancel()}, the idle sweep - rolls back itself and clears the request. The flag is cleared
+   * nowhere else: a failed command rolls back and then begins a fresh transaction, which the release must still end.
    *
    * @return {@code true} when the transaction was rolled back here (or there was none to roll back), {@code false} when a
    * request still runs in the session and will roll it back as it ends
@@ -190,6 +194,8 @@ public class HttpSession implements QuerySession {
       return IdleCancelOutcome.BUSY;
 
     try {
+      // ends the session's transaction: what a bounded cancel that gave up asked for is done here (issue #9774)
+      rollbackOnRelease = false;
       return rollbackIfActive() ? IdleCancelOutcome.ROLLED_BACK : IdleCancelOutcome.ALREADY_IDLE;
     } finally {
       lock.unlock();

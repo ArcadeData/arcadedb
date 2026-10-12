@@ -86,6 +86,9 @@ public class RedisIndexKeys {
         continue;
       }
       try {
+        // A name can also resolve to a single index rather than a type index - a manual index, or one bucket's. That one has no
+        // sub-indexes a drop could take away one at a time, so its read is whole or fails, and a failure under a concurrent drop
+        // ("File with id n was not found") is a stale read the catch below retries like any other
         try (final IndexCursor cursor = index instanceof TypeIndex typeIndex ?
             ConsistentKeyLookup.getForQuery(database, typeIndex, keys) :
             index.get(keys)) {
