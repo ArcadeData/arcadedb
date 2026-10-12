@@ -25,12 +25,15 @@ import com.arcadedb.database.DatabaseInternal;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
+import java.io.File;
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -137,14 +140,68 @@ class Issue9832ResumeReEnqueueInterruptTest extends TestHelper {
   @Test
   void aShutdownDuringTheReEnqueueReleasesTheBatchesItGivesUp() throws Exception {
     final DatabaseInternal db = (DatabaseInternal) database;
+    final WALFile walFile = new WALFile(new File(db.getDatabasePath(), "issue9832-open.wal").getAbsolutePath());
+    try {
+      final PageManagerFlushThread flush = shutDownWhileReEnqueueWaits(db, walFile, false);
+
+      // The run loop drains what was queued before it exits; do the same here. The queued pages' file does not
+      // exist, so the drain acks them as abandoned.
+      while (!flush.queue.isEmpty())
+        flush.flushPagesFromQueueToDisk(null, 20L);
+      assertThat(flush.pageIndex.pendingOf(db)).isZero();
+      assertThat(walFile.getPendingPagesToFlush()).as(
+              "the page given up on while its database is open was never written: its WAL entry must stay un-acked so the next open replays it")
+          .isEqualTo(DEFERRED_BATCHES - BUDGET);
+    } finally {
+      walFile.close();
+    }
+  }
+
+  /**
+   * Same shutdown, but the database closed while the re-enqueue was waiting: nothing will ever replay the page given
+   * up on, so - like every other site that drops a batch of a closed database (issue #6440) - its WAL ack is released.
+   */
+  @Test
+  void aShutdownDuringTheReEnqueueOfAClosedDatabaseAlsoReleasesTheWalAcks() throws Exception {
+    final String path = "target/databases/" + getClass().getSimpleName() + "-closed";
+    final DatabaseInternal db = (DatabaseInternal) TestHelper.createDatabase(path);
+    final WALFile walFile = new WALFile(new File(path, "issue9832-closed.wal").getAbsolutePath());
+    try {
+      final PageManagerFlushThread flush = shutDownWhileReEnqueueWaits(db, walFile, true);
+
+      assertThat(walFile.getPendingPagesToFlush()).as(
+          "the page given up on belongs to a closed database: its WAL ack must be released").isEqualTo(BUDGET);
+
+      while (!flush.queue.isEmpty())
+        flush.flushPagesFromQueueToDisk(null, 20L);
+      assertThat(flush.pageIndex.pendingOf(db)).isZero();
+      assertThat(walFile.getPendingPagesToFlush()).isZero();
+    } finally {
+      walFile.close();
+      if (db.isOpen())
+        db.close();
+      TestHelper.dropDatabase(path);
+    }
+  }
+
+  /**
+   * Parks a resume in Phase 3b's slot wait with {@value #BUDGET} of its {@value #DEFERRED_BATCHES} batches queued, then
+   * shuts the flush thread down - after closing the database first when asked.
+   */
+  private PageManagerFlushThread shutDownWhileReEnqueueWaits(final DatabaseInternal db, final WALFile walFile,
+      final boolean closeDatabaseFirst) throws Exception {
     final PageManagerFlushThread flush = smallBudgetFlushThread();
 
     flush.setSuspended(db, true);
-    flush.testHookAfterDeferredBacklogSnapshot = () -> deferBatchesDuringPhase1(flush, db);
+    flush.testHookAfterDeferredBacklogSnapshot = () -> deferBatchesDuringPhase1(flush, db, walFile);
 
     final Thread resumer = resume(flush, db, new AtomicBoolean());
     awaitParkedOrDone(resumer);
     assertThat(resumer.isAlive()).isTrue();
+    assertThat(walFile.getPendingPagesToFlush()).isEqualTo(DEFERRED_BATCHES);
+
+    if (closeDatabaseFirst)
+      db.close();
 
     // Never started, so the join inside returns at once; what matters is `running` going false and the waiters waking.
     flush.closeAndJoin();
@@ -155,11 +212,7 @@ class Issue9832ResumeReEnqueueInterruptTest extends TestHelper {
     assertThat(flush.pageIndex.pendingOf(db)).as(
         "only the pages that made it into the queue may still be pending: the batch the loop gave up on must leave the index")
         .isEqualTo(BUDGET);
-
-    // The run loop drains what was queued before it exits; do the same here.
-    while (!flush.queue.isEmpty())
-      flush.flushPagesFromQueueToDisk(null, 20L);
-    assertThat(flush.pageIndex.pendingOf(db)).isZero();
+    return flush;
   }
 
   /**
@@ -167,9 +220,19 @@ class Issue9832ResumeReEnqueueInterruptTest extends TestHelper {
    * deferred, so it is exactly what Phase 3a detaches and Phase 3b must re-enqueue.
    */
   private static void deferBatchesDuringPhase1(final PageManagerFlushThread flush, final DatabaseInternal db) {
+    deferBatchesDuringPhase1(flush, db, null);
+  }
+
+  /** @param walFile when not null, every page is charged to it, as {@code WALFile.writeTransactionToFile} does. */
+  private static void deferBatchesDuringPhase1(final PageManagerFlushThread flush, final DatabaseInternal db, final WALFile walFile) {
     try {
       for (int i = 0; i < DEFERRED_BATCHES; i++) {
-        flush.scheduleFlushOfPages(new ArrayList<>(List.of(page(db, i))));
+        final MutablePage page = page(db, i);
+        if (walFile != null) {
+          page.setWALFile(walFile);
+          bumpPendingPagesToFlush(walFile);
+        }
+        flush.scheduleFlushOfPages(new ArrayList<>(List.of(page)));
         flush.flushPagesFromQueueToDisk(null, 50L);
       }
     } catch (final Exception e) {
@@ -232,6 +295,13 @@ class Issue9832ResumeReEnqueueInterruptTest extends TestHelper {
     final ContextConfiguration cfg = new ContextConfiguration();
     cfg.setValue(GlobalConfiguration.PAGE_FLUSH_QUEUE, BUDGET);
     return new PageManagerFlushThread(PageManager.INSTANCE, cfg);
+  }
+
+  /** Mirrors what {@code WALFile.writeTransactionToFile} does for each page it writes, without touching disk I/O. */
+  private static void bumpPendingPagesToFlush(final WALFile walFile) throws ReflectiveOperationException {
+    final Field f = WALFile.class.getDeclaredField("pagesToFlush");
+    f.setAccessible(true);
+    ((AtomicInteger) f.get(walFile)).incrementAndGet();
   }
 
   private static MutablePage page(final DatabaseInternal database, final int pageNumber) {
