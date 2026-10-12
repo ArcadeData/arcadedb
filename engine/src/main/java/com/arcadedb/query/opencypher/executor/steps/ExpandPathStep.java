@@ -42,11 +42,13 @@ import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.graph.Edge;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Set;
+import java.util.function.Predicate;
 
 /**
  * Execution step for variable-length path patterns.
@@ -251,7 +253,14 @@ public class ExpandPathStep extends AbstractExecutionStep {
 
             if (sourceObj instanceof Vertex) {
               final Vertex sourceVertex = (Vertex) sourceObj;
-              currentPaths = createTraverser(lastResult).traversePaths(sourceVertex);
+              // A relationship variable already on the row is the whole path. A value that is present but is
+              // not a connecting list of edges yields nothing: falling through to a traversal would ignore the
+              // binding and return every path in the graph (issue #9828). A missing property still traverses,
+              // which is what keeps an unrelated collected list from constraining an anonymous expansion.
+              if (hasRelVar && lastResult.hasProperty(relationshipVariable))
+                currentPaths = walkBoundRelationshipList(sourceVertex, lastResult);
+              else
+                currentPaths = createTraverser(lastResult).traversePaths(sourceVertex);
             } else {
               currentPaths = null;
             }
@@ -296,6 +305,80 @@ public class ExpandPathStep extends AbstractExecutionStep {
     traverser.withEdgePredicate(pattern.buildInlineWherePredicate(currentResult, context));
     traverser.withContext(context);
     return traverser;
+  }
+
+  /**
+   * Walks a relationship variable already bound on {@code row} as this pattern's entire path.
+   * <p>
+   * The list is accepted only when its length sits inside {@link RelationshipPattern#getEffectiveMinHops()} and
+   * {@link RelationshipPattern#getEffectiveMaxHops()} (a bare {@code *} is 1..unbounded), the edges connect head to
+   * tail from {@code source} under the direction this step traverses, and each edge passes the same type, inline
+   * property and inline {@code WHERE} checks a fixed-length hop uses. Null, a non-list, a list that is not all
+   * edges, a length outside the range, a gap or the wrong direction yields no path.
+   * <p>
+   * When the plan walks the hop backwards, the list is still in pattern order, so it is consumed from its last edge.
+   * The path returned here is in that traversal order, and the caller reverses it back to pattern order.
+   */
+  private Iterator<TraversalPath> walkBoundRelationshipList(final Vertex source, final Result row) {
+    final Object value = row.getProperty(relationshipVariable);
+    if (!(value instanceof List<?> candidates))
+      return Collections.emptyIterator();
+
+    final int hops = candidates.size();
+    if (hops < pattern.getEffectiveMinHops() || hops > pattern.getEffectiveMaxHops())
+      return Collections.emptyIterator();
+
+    final Direction direction = directionOverride != null ? directionOverride : pattern.getDirection();
+    final Predicate<Edge> where = pattern.buildInlineWherePredicate(row, context);
+    final TraversalPath path = new TraversalPath(source);
+    Vertex current = source;
+    for (int step = 0; step < hops; step++) {
+      final Object candidate = candidates.get(reverseResultPath ? hops - 1 - step : step);
+      if (!(candidate instanceof Edge edge))
+        return Collections.emptyIterator();
+
+      if (pattern.hasTypes()) {
+        final var edgeType = edge.getType();
+        boolean typeMatches = false;
+        for (final String type : pattern.getTypes())
+          if (edgeType.instanceOf(type)) {
+            typeMatches = true;
+            break;
+          }
+        if (!typeMatches)
+          return Collections.emptyIterator();
+      }
+      if (pattern.hasProperties() && !InlineProperties.matches(edge, pattern.getProperties(), row, context))
+        return Collections.emptyIterator();
+      if (where != null && !where.test(edge))
+        return Collections.emptyIterator();
+
+      final Vertex outVertex = edge.getOutVertex();
+      final Vertex inVertex = edge.getInVertex();
+      if (outVertex == null || inVertex == null)
+        return Collections.emptyIterator();
+      final boolean leavesCurrent = outVertex.getIdentity().equals(current.getIdentity());
+      final boolean entersCurrent = inVertex.getIdentity().equals(current.getIdentity());
+      final Vertex next;
+      if (direction == Direction.OUT) {
+        if (!leavesCurrent)
+          return Collections.emptyIterator();
+        next = inVertex;
+      } else if (direction == Direction.IN) {
+        if (!entersCurrent)
+          return Collections.emptyIterator();
+        next = outVertex;
+      } else if (leavesCurrent)
+        next = inVertex;
+      else if (entersCurrent)
+        next = outVertex;
+      else
+        return Collections.emptyIterator();
+
+      path.addStep(edge, next);
+      current = next;
+    }
+    return List.of(path).iterator();
   }
 
   /**
