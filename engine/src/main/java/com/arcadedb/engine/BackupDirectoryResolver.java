@@ -97,7 +97,7 @@ public interface BackupDirectoryResolver {
       resolver.applyRetention(backupDirectory, database.getName());
     } catch (final RuntimeException e) {
       LogManager.instance().log(BackupDirectoryResolver.class, Level.WARNING,
-          "Cannot apply the backup retention policy for database '%s' after a backup: %s", database.getName(), e.getMessage());
+          "Cannot apply the backup retention policy for database '%s' after a backup", e, database.getName());
     }
   }
 
