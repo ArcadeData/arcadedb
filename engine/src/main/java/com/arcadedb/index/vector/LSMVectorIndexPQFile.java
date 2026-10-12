@@ -247,7 +247,9 @@ public class LSMVectorIndexPQFile {
       return true;
 
     } catch (final Exception e) {
-      LogManager.instance().log(this, Level.WARNING, "Error loading PQ data from %s: %s", pqFilePath, e.getMessage());
+      LogManager.instance().log(this, Level.WARNING,
+          "Error loading PQ data from %s: %s. The file is treated as missing: the next graph load rebuilds the graph and the PQ together",
+          pqFilePath, e.getMessage());
       // Clear cached data on failure
       this.productQuantization = null;
       this.pqVectors = null;
