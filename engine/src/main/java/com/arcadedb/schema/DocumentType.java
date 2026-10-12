@@ -98,6 +98,23 @@ public interface DocumentType {
     }
   }
 
+  /**
+   * The first property, declared here or inherited, that applies to a record created WITHOUT that property: a
+   * {@code MANDATORY} one, which a record must carry, or one with a default value, which a record is given. The rule
+   * {@code DocumentValidator} and {@link #applyDefaultValues} apply on every record create, and therefore the one an edge
+   * stored without a record (a LIGHTWEIGHT one) can never honour (issues #9019 and #9846). An optional property, or one
+   * that only constrains a value that is present ({@code NOT NULL}, {@code MIN}, {@code MAX}, {@code REGEXP}), is not
+   * such a property.
+   *
+   * @return the property, or {@code null} when the type has none
+   */
+  default Property findPropertyAppliedToEmptyRecord() {
+    for (final Property property : getPolymorphicProperties())
+      if (property.isMandatory() || property.getDefaultValueDefinition() != null)
+        return property;
+    return null;
+  }
+
   DocumentType addSuperType(String superName);
 
   DocumentType addSuperType(DocumentType superType);

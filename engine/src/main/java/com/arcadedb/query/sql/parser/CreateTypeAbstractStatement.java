@@ -137,8 +137,20 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
 
     final DocumentType type = createType(schema, typeName);
 
-    for (final DocumentType c : superclasses)
-      type.addSuperType(c);
+    try {
+      for (final DocumentType c : superclasses)
+        type.addSuperType(c);
+    } catch (final RuntimeException e) {
+      // A type that could not take the super types it was declared with is not the one the statement asked for, and a
+      // refused CREATE must leave nothing behind: addSuperType refuses (a LIGHTWEIGHT edge type under a super type with a
+      // MANDATORY property, issue #9846; a partition the subtype cannot take), and the type was already registered by then
+      try {
+        schema.dropType(typeName);
+      } catch (final RuntimeException dropFailure) {
+        e.addSuppressed(dropFailure);
+      }
+      throw e;
+    }
 
     if (!customProperties.isEmpty()) {
       final Map<String, Object> applied = new LinkedHashMap<>();

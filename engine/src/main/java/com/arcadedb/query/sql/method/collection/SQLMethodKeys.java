@@ -19,22 +19,19 @@
 package com.arcadedb.query.sql.method.collection;
 
 import com.arcadedb.database.Document;
-import com.arcadedb.database.Identifiable;
-import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.method.AbstractSQLMethod;
 
 import java.util.ArrayList;
-import java.util.Collection;
-import java.util.List;
 import java.util.Map;
 
 /**
+ * Returns the property names of a map, a document or a result. The pair of {@link SQLMethodValues}: both ask the receiver
+ * for its {@code getPropertyNames()}, which is what keeps the n-th key naming the n-th value.
+ *
  * @author Johann Sorel (Geomatys)
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
-public class SQLMethodKeys extends AbstractSQLMethod {
+public class SQLMethodKeys extends AbstractSQLMethodKeysValues {
   public static final String NAME = "keys";
 
   public SQLMethodKeys() {
@@ -42,33 +39,17 @@ public class SQLMethodKeys extends AbstractSQLMethod {
   }
 
   @Override
-  public Object execute(final Object value, final Identifiable currentRecord, final CommandContext context,
-      final Object[] params) {
-    if (value instanceof Map map)
-      return map.keySet();
+  protected Object fromMap(final Map<?, ?> map) {
+    return map.keySet();
+  }
 
-    if (value instanceof Document document)
-      return new ArrayList<>(document.getPropertyNames());
+  @Override
+  protected Object fromDocument(final Document document) {
+    return new ArrayList<>(document.getPropertyNames());
+  }
 
-    if (value instanceof Result result) {
-      return result.getPropertyNames();
-    }
-
-    // AN ARRAY-VALUED PARAMETER OR PROPERTY IS A COLLECTION RECEIVER TOO (ISSUE #7114)
-    final List<Object> list = listReceiverOrNull(value);
-    if (list != null) {
-      final List<Object> result = new ArrayList<>();
-      for (final Object o : list) {
-        if (o instanceof Map || o instanceof Document || o instanceof Result || MultiValue.isMultiValue(o)) {
-          final Object keys = execute(o, currentRecord, context, params);
-          if (keys instanceof Collection<?> keysCollection)
-            result.addAll(keysCollection);
-        }
-        // scalar/null elements have no keys: skip them rather than recursing into execute(), which
-        // returns null for them
-      }
-      return result;
-    }
-    return null;
+  @Override
+  protected Object fromResult(final Result result) {
+    return result.getPropertyNames();
   }
 }

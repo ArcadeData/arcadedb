@@ -32,7 +32,6 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalEdgeType;
-import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.security.SecurityDatabaseUser;
 
 import java.util.*;
@@ -275,25 +274,18 @@ public class AlterTypeStatement extends DDLStatement {
             "Settings 'lightweight' and 'unique' apply to edge types only, and '" + type.getName()
                 + "' is not one");
 
-      // Order matters when both arrive in one statement: the storage shape decides how UNIQUE is enforced, so it
-      // has to be settled before the constraint is materialised.
-      if (lightweightRequested != null) {
-        edgeType.setLightweight(lightweightRequested);
+      // One schema change for the storage shape, the UNIQUE flag and the index that enforces it (issue #9848): they used to
+      // change in separate critical sections, with a window between them for a concurrent DROP INDEX of the very index
+      // the alter was about to create. Order inside it matters when both arrive in one statement - the storage shape
+      // decides how UNIQUE is enforced, so it is settled first.
+      LocalEdgeType.alterShape(((DatabaseInternal) context.getDatabase()).getSchema().getEmbedded(), edgeType,
+          lightweightRequested, uniqueRequested);
+      if (lightweightRequested != null)
         result.setProperty("lightweight", lightweightRequested);
-      }
-      if (uniqueRequested != null) {
-        // Withdraw first so the drop passes the guard that protects a live constraint's index.
-        edgeType.setUnique(uniqueRequested);
+      if (uniqueRequested != null)
         result.setProperty("unique", uniqueRequested);
-      }
-
-      final LocalSchema schema = ((DatabaseInternal) context.getDatabase()).getSchema().getEmbedded();
-      if (edgeType.isUnique())
-        LocalEdgeType.applyUniqueConstraint(schema, edgeType);
-      else
-        LocalEdgeType.removeUniqueConstraint(schema, edgeType);
-      // No bare save here: the setters and the index creation or drop above each run in a schema recording session,
-      // which saves and, under HA, replicates the schema. A bare save rewrote the leader's file only (issue #9747)
+      // No bare save here: the session above saves and, under HA, replicates the schema. A bare save rewrote the
+      // leader's file only (issue #9747)
     }
 
     if (repartitionRequested) {
