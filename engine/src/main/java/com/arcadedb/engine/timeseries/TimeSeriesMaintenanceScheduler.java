@@ -25,11 +25,8 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.LocalTimeSeriesType;
 
 import java.lang.ref.WeakReference;
-import java.util.Collections;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
-import java.util.WeakHashMap;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.Executors;
@@ -55,10 +52,6 @@ public class TimeSeriesMaintenanceScheduler {
    * once per that many maintenance passes of a slow feed.
    */
   static final int MERGE_MIN_BLOCKS_SAVED = 8;
-
-  /** The legacy-precision types already warned about, so the suspension is logged once per type, not once per pass. */
-  private static final Set<LocalTimeSeriesType> LEGACY_PRECISION_WARNED = Collections.synchronizedSet(
-      Collections.newSetFromMap(new WeakHashMap<>()));
 
   private final ScheduledExecutorService executor;
   private final Map<String, ScheduledFuture<?>> tasks = new ConcurrentHashMap<>();
@@ -170,7 +163,7 @@ public class TimeSeriesMaintenanceScheduler {
       // line protocol, Prometheus or gRPC - and comparing a millisecond cutoff with SECOND data deleted every sample
       // at the first pass. Nothing destructive runs on such a type until its owner confirms the unit
       if (!type.isPrecisionHonoured()) {
-        if (LEGACY_PRECISION_WARNED.add(type))
+        if (type.firstLegacyPrecisionWarning())
           LogManager.instance().log(TimeSeriesMaintenanceScheduler.class, Level.WARNING,
               "Retention and downsampling of TimeSeries type '%s' are suspended: it declares PRECISION %s, which was "
                   + "never honoured (every time computation counts in milliseconds). If its timestamps are milliseconds, "
