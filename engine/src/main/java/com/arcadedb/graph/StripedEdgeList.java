@@ -124,6 +124,27 @@ public class StripedEdgeList extends EdgeLinkedList {
   }
 
   /**
+   * The slot of {@code bucketName} in the stripe pool of {@code typeName}, or -1 when it is not one of that pool's names. A
+   * stripe name is the pool prefix followed by the bare slot number: an edge-list bucket whose name happens to start the same
+   * way ends in '_out_edges'/'_in_edges' instead, so it is never misread as one.
+   */
+  public static int stripeSlotOf(final String typeName, final String bucketName) {
+    final String prefix = InternalBucketNaming.Convention.SUPER_NODE_STRIPE.compose(typeName);
+    final int digits = bucketName.length() - prefix.length();
+    // At most 9 digits: a slot is an int, and a longer suffix is not a name this pool ever composed
+    if (digits < 1 || digits > 9 || !bucketName.startsWith(prefix))
+      return -1;
+    int slot = 0;
+    for (int i = prefix.length(); i < bucketName.length(); i++) {
+      final char c = bucketName.charAt(i);
+      if (c < '0' || c > '9')
+        return -1;
+      slot = slot * 10 + (c - '0');
+    }
+    return slot;
+  }
+
+  /**
    * The existing buckets of the stripe pool of {@code typeName}, indexed by slot ({@code null} for a slot with no bucket),
    * or an empty array when the type never promoted a vertex. Pools are created contiguously from slot 0
    * ({@link #createStripePool}), so the walk stops at the first gap AT OR PAST {@code configuredStripes} and covers a pool

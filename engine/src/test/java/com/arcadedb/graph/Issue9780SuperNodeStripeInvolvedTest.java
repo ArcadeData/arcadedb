@@ -195,6 +195,18 @@ class Issue9780SuperNodeStripeInvolvedTest extends TestHelper {
     assertThat(countOut(hub)).isEqualTo(400 + 2 * STRIPES);
   }
 
+  /** The one parser of the pool's naming convention: a rename's rollback reads the slot back from a moved bucket's name. */
+  @Test
+  void stripeSlotIsReadOnlyFromAPoolName() {
+    assertThat(StripedEdgeList.stripeSlotOf("V", StripedEdgeList.stripeBucketName("V", 0))).isZero();
+    assertThat(StripedEdgeList.stripeSlotOf("V", StripedEdgeList.stripeBucketName("V", 13))).isEqualTo(13);
+    assertThat(StripedEdgeList.stripeSlotOf("V", StripedEdgeList.stripeBucketName("W", 1))).isEqualTo(-1);
+    assertThat(StripedEdgeList.stripeSlotOf("V", "V_sn_stripe_")).isEqualTo(-1);
+    assertThat(StripedEdgeList.stripeSlotOf("V", "V_sn_stripe_1_out_edges")).isEqualTo(-1);
+    assertThat(StripedEdgeList.stripeSlotOf("V", "V_sn_stripe_99999999999")).isEqualTo(-1);
+    assertThat(StripedEdgeList.stripeSlotOf("V", "V_0_out_edges")).isEqualTo(-1);
+  }
+
   private RID createPromotedHub(final String typeName) {
     final RID[] hub = new RID[1];
     database.transaction(() -> {

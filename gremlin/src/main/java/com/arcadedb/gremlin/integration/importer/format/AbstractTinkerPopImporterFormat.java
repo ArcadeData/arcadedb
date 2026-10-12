@@ -67,18 +67,16 @@ public abstract class AbstractTinkerPopImporterFormat extends CSVImporterFormat 
     final long verticesBefore = countRecordsOfKind(database, VertexType.class);
     final long edgesBefore = countRecordsOfKind(database, EdgeType.class);
 
-    boolean completed = false;
     try {
       readerFactory.apply(graph).readGraph(source, graph);
-      completed = true;
     } catch (final IOException e) {
-      throw new ImportException("Error on importing " + formatName, e);
+      final ImportException failure = new ImportException("Error on importing " + formatName, e);
+      rollbackOwnBatch(database, ownsTransaction, transactionActiveBefore, failure);
+      throw failure;
+    } catch (final RuntimeException | Error e) {
+      rollbackOwnBatch(database, ownsTransaction, transactionActiveBefore, e);
+      throw e;
     } finally {
-      // Owned and failed: the reader's last batch is still open on this thread. Rolled back only when the import began
-      // it - a transaction already active before the read is not the import's to end
-      if (!completed && ownsTransaction && !transactionActiveBefore && database.isTransactionActive())
-        database.rollback();
-
       // In a finally, not only after a successful read: the reader can fail part way with a RuntimeException (a
       // malformed record, a schema conflict) rather than the IOException above, and inside a caller-owned transaction
       // what it already wrote stays there until the caller resolves it either way - so the count must still reach the
@@ -89,6 +87,22 @@ public abstract class AbstractTinkerPopImporterFormat extends CSVImporterFormat 
       context.createdVertices.addAndGet(createdVertices);
       context.createdEdges.addAndGet(createdEdges);
       context.parsed.addAndGet(createdVertices + createdEdges);
+    }
+  }
+
+  /**
+   * Owned and failed: the reader's last batch is still open on this thread. Rolled back only when the import began it - a
+   * transaction already active before the read is not the import's to end. A rollback that fails too is attached to the
+   * import's own failure instead of replacing it.
+   */
+  private static void rollbackOwnBatch(final DatabaseInternal database, final boolean ownsTransaction,
+      final boolean transactionActiveBefore, final Throwable failure) {
+    if (!ownsTransaction || transactionActiveBefore || !database.isTransactionActive())
+      return;
+    try {
+      database.rollback();
+    } catch (final RuntimeException rollbackFailure) {
+      failure.addSuppressed(rollbackFailure);
     }
   }
 }
