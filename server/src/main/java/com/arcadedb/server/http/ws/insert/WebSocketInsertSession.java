@@ -436,7 +436,8 @@ public class WebSocketInsertSession {
         return null;
       }, /* rollbackOnFailure */ false, /* endsSession */ false, /* joinsTransaction */ true);
     } catch (final QueryTerminatedException e) {
-      // The caller, applyChunk, ends the session and reports it
+      // Ahead of the catch-alls below, which would turn it into an IllegalStateException: applyChunk ends the session and
+      // reports it
       throw e;
     } catch (final LockTimeoutException e) {
       // An HTTP command is running on the caller's own transaction right now. Translated rather than allowed to
@@ -520,13 +521,16 @@ public class WebSocketInsertSession {
           + options.transactionModeName() + ") is closed";
     return switch (options.transactionMode) {
       case NONE -> prefix + "transaction '" + externalTransactionId + "' was rolled back and ended";
-      case PER_STREAM -> prefix + "the transaction of insert session '" + id + "' (per_stream) was rolled back and the session closed";
+      case PER_STREAM -> prefix + "the transaction of insert session '" + id + "' (per_stream) was rolled back and the session"
+          + " closed";
+      // Not observed: the terminate landed between the chunk's own commit and the end of its entry. The commit stands,
+      // and the session is closed all the same, because the terminate is a request to stop the load, not only the chunk
       case PER_BATCH -> prefix + (terminationObserved ?
           "its transaction was rolled back" :
-          "it had committed before the termination was seen, so its rows are durable and must not be sent again") + "; chunks acknowledged before it stay committed and insert session '"
-          + id + "' (per_batch) is closed";
-      case PER_ROW -> prefix + "the rows it committed before the termination stand, the rest were not applied, and insert session '"
-          + id + "' (per_row) is closed";
+          "it had committed before the termination was seen, so its rows are durable and must not be sent again")
+          + "; chunks acknowledged before it stay committed and insert session '" + id + "' (per_batch) is closed";
+      case PER_ROW -> prefix + "the rows it committed before the termination stand, the rest were not applied, and insert"
+          + " session '" + id + "' (per_row) is closed";
     };
   }
 
