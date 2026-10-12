@@ -20,7 +20,7 @@
  */
 
 // Regression test for issue #8231: the "Session Expired" toast is a Bootstrap "warning" toast, which
-// index.html deliberately never auto-hides (so the user has time to read it). Nothing ever dismissed it
+// the toast code (js/studio-notify.js) deliberately never auto-hides (so the user has time to read it). Nothing ever dismissed it
 // again, so once shown it stayed on screen even after the user logged back in and it was no longer true.
 //
 // The fix tags the toast ("session-expired") and adds dismissNotification(tag), which login() now calls
@@ -34,7 +34,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const STATIC_DIR = path.join(__dirname, "..", "src", "main", "resources", "static");
-const htmlSrc = fs.readFileSync(path.join(STATIC_DIR, "index.html"), "utf8");
+const notifySrc = fs.readFileSync(path.join(STATIC_DIR, "js", "studio-notify.js"), "utf8");
 const dbSrc = fs.readFileSync(path.join(STATIC_DIR, "js", "studio-database.js"), "utf8");
 
 // Pulls one top-level `function name(...) {...}` out of a Studio source file. See
@@ -65,7 +65,7 @@ function extractFn(src, name) {
   return source;
 }
 
-// --- minimal DOM/Bootstrap stand-ins for the toast machinery in index.html -------------------------
+// --- minimal DOM/Bootstrap stand-ins for the toast machinery in js/studio-notify.js -------------------------
 
 function makeToastEl() {
   const attrs = {};
@@ -130,10 +130,10 @@ function setupToastEnv() {
   var isToastReady = true;
   var notificationQueue = [];
 
-  eval(extractFn(htmlSrc, "processNotificationQueue"));
-  eval(extractFn(htmlSrc, "showNotification"));
-  eval(extractFn(htmlSrc, "globalNotify"));
-  eval(extractFn(htmlSrc, "dismissNotification"));
+  eval(extractFn(notifySrc, "processNotificationQueue"));
+  eval(extractFn(notifySrc, "showNotification"));
+  eval(extractFn(notifySrc, "globalNotify"));
+  eval(extractFn(notifySrc, "dismissNotification"));
 
   return { container, globalNotify, dismissNotification, get queue() { return notificationQueue; } };
 }

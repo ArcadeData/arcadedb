@@ -54,6 +54,14 @@ public class LocalProperty extends AbstractProperty {
   }
 
   /**
+   * See {@link LocalSchema#recordChange(Runnable)}: a property setter used to end in a bare save, which under HA left the
+   * constraint on the leader alone (issue #9747).
+   */
+  private void publish(final Runnable change) {
+    owner.getSchema().getEmbedded().recordChange(change);
+  }
+
+  /**
    * A {@link Property} object outlives the DROP PROPERTY that removed it, so a caller can hold one that the type no
    * longer declares. Writing a default through such a handle would put the dropped name back into the type's
    * default-property cache and break the next record create - issue #6799 reached from the other side. Identity and
@@ -124,14 +132,15 @@ public class LocalProperty extends AbstractProperty {
   }
 
   @Override
-  public Property setOfType(String ofType) {
+  public Property setOfType(final String ofType) {
     checkForSchemaMutation();
     final boolean changed = !Objects.equals(this.ofType, ofType);
     if (changed) {
       final LocalSchema schema = (LocalSchema) owner.getSchema();
+      String resolved = ofType;
       if (type == Type.LIST || type == Type.MAP) {
         if (Type.getTypeByName(ofType) != null) {
-          ofType = ofType.toUpperCase(Locale.ENGLISH);
+          resolved = ofType.toUpperCase(Locale.ENGLISH);
         } else {
           if (!schema.existsType(ofType))
             throw new SchemaException("Error on set property " + owner.getName() + "." + name + " " + type + " type to '" + ofType
@@ -143,8 +152,8 @@ public class LocalProperty extends AbstractProperty {
               + "' because the type is not defined");
       }
 
-      this.ofType = ofType;
-      owner.getSchema().getEmbedded().saveConfiguration();
+      final String newOfType = resolved;
+      publish(() -> this.ofType = newOfType);
     }
     return this;
   }
@@ -153,10 +162,8 @@ public class LocalProperty extends AbstractProperty {
   public Property setReadonly(final boolean readonly) {
     checkForSchemaMutation();
     final boolean changed = !Objects.equals(this.readonly, readonly);
-    if (changed) {
-      this.readonly = readonly;
-      owner.getSchema().getEmbedded().saveConfiguration();
-    }
+    if (changed)
+      publish(() -> this.readonly = readonly);
     return this;
   }
 
@@ -164,10 +171,8 @@ public class LocalProperty extends AbstractProperty {
   public Property setMandatory(final boolean mandatory) {
     checkForSchemaMutation();
     final boolean changed = !Objects.equals(this.mandatory, mandatory);
-    if (changed) {
-      this.mandatory = mandatory;
-      owner.getSchema().getEmbedded().saveConfiguration();
-    }
+    if (changed)
+      publish(() -> this.mandatory = mandatory);
     return this;
   }
 
@@ -178,10 +183,8 @@ public class LocalProperty extends AbstractProperty {
   public Property setNotNull(final boolean notNull) {
     checkForSchemaMutation();
     final boolean changed = !Objects.equals(this.notNull, notNull);
-    if (changed) {
-      this.notNull = notNull;
-      owner.getSchema().getEmbedded().saveConfiguration();
-    }
+    if (changed)
+      publish(() -> this.notNull = notNull);
     return this;
   }
 
@@ -189,10 +192,8 @@ public class LocalProperty extends AbstractProperty {
   public Property setHidden(final boolean hidden) {
     checkForSchemaMutation();
     final boolean changed = !Objects.equals(this.hidden, hidden);
-    if (changed) {
-      this.hidden = hidden;
-      owner.getSchema().getEmbedded().saveConfiguration();
-    }
+    if (changed)
+      publish(() -> this.hidden = hidden);
     return this;
   }
 
@@ -202,24 +203,25 @@ public class LocalProperty extends AbstractProperty {
     final boolean changed = !Objects.equals(this.external, external);
     if (changed) {
       final LocalDocumentType localOwner = (LocalDocumentType) owner;
-      if (external) {
-        // ORDERING IS LOAD-BEARING: paired buckets must exist BEFORE any reader can observe
-        // ownExternalPropertyCount > 0. hasExternalProperties() short-circuits on the counter, and the
-        // serializer's write path uses that to decide whether to route a value through the external bucket.
-        // If we incremented first and another thread saw count > 0 before ensureExternalBucketsRecursive()
-        // ran, it could try to write into a bucket that doesn't exist yet. Schema mutations are typically
-        // serialised by the schema lock, but this ordering keeps the property setter safe even without it.
-        localOwner.ensureExternalBucketsRecursive();
-        this.external = external;
-        localOwner.ownExternalPropertyCount.incrementAndGet();
-      } else {
-        // Flip the flag first so concurrent serialisations stop writing externally; the counter is the gate
-        // hasExternalProperties() consults, so decrement last to keep the "count > 0 implies bucket exists"
-        // invariant directional.
-        this.external = external;
-        localOwner.ownExternalPropertyCount.decrementAndGet();
-      }
-      owner.getSchema().getEmbedded().saveConfiguration();
+      publish(() -> {
+        if (external) {
+          // ORDERING IS LOAD-BEARING: paired buckets must exist BEFORE any reader can observe
+          // ownExternalPropertyCount > 0. hasExternalProperties() short-circuits on the counter, and the
+          // serializer's write path uses that to decide whether to route a value through the external bucket.
+          // If we incremented first and another thread saw count > 0 before ensureExternalBucketsRecursive()
+          // ran, it could try to write into a bucket that doesn't exist yet. Schema mutations are typically
+          // serialised by the schema lock, but this ordering keeps the property setter safe even without it.
+          localOwner.ensureExternalBucketsRecursive();
+          this.external = external;
+          localOwner.ownExternalPropertyCount.incrementAndGet();
+        } else {
+          // Flip the flag first so concurrent serialisations stop writing externally; the counter is the gate
+          // hasExternalProperties() consults, so decrement last to keep the "count > 0 implies bucket exists"
+          // invariant directional.
+          this.external = external;
+          localOwner.ownExternalPropertyCount.decrementAndGet();
+        }
+      });
     }
     return this;
   }
@@ -241,8 +243,7 @@ public class LocalProperty extends AbstractProperty {
       throw new IllegalArgumentException(
           "Unsupported compression '" + compression + "' (supported: none, fast, max, auto)");
     if (!Objects.equals(this.compression, normalized)) {
-      this.compression = normalized;
-      owner.getSchema().getEmbedded().saveConfiguration();
+      publish(() -> this.compression = normalized);
     }
     return this;
   }
@@ -253,8 +254,7 @@ public class LocalProperty extends AbstractProperty {
     final boolean changed = !Objects.equals(this.max, max);
     if (changed) {
       checkBound(max, "Maximum");
-      this.max = max;
-      owner.getSchema().getEmbedded().saveConfiguration();
+      publish(() -> this.max = max);
     }
     return this;
   }
@@ -265,8 +265,7 @@ public class LocalProperty extends AbstractProperty {
     final boolean changed = !Objects.equals(this.min, min);
     if (changed) {
       checkBound(min, "Minimum");
-      this.min = min;
-      owner.getSchema().getEmbedded().saveConfiguration();
+      publish(() -> this.min = min);
     }
     return this;
   }
@@ -312,8 +311,7 @@ public class LocalProperty extends AbstractProperty {
     final boolean changed = !Objects.equals(this.regexp, regexp);
     if (changed) {
       checkRegexp(regexp);
-      this.regexp = regexp;
-      owner.getSchema().getEmbedded().saveConfiguration();
+      publish(() -> this.regexp = regexp);
     }
     return this;
   }
@@ -382,16 +380,14 @@ public class LocalProperty extends AbstractProperty {
   public Object setCustomValue(final String key, final Object value) {
     checkForSchemaMutation();
     checkTimeSeriesRoleNotCustomised(key, value);
-    final Object prev;
-    if (value == null)
-      prev = custom.remove(key);
-    else
-      prev = custom.put(key, value);
 
-    if (!Objects.equals(prev, value))
-      owner.getSchema().getEmbedded().saveConfiguration();
+    // An unchanged value is not a schema change: answered here, without a recording session (under HA, a Raft round
+    // trip) for nothing
+    final Object current = custom.get(key);
+    if (Objects.equals(current, value))
+      return current;
 
-    return prev;
+    return owner.getSchema().getEmbedded().recordFileChanges(() -> value == null ? custom.remove(key) : custom.put(key, value));
   }
 
   @Override

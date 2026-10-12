@@ -208,5 +208,8 @@ test("index.html loads the router, and the login paths call it", () => {
   const dbSrc = fs.readFileSync(path.join(STATIC_DIR, "js", "studio-database.js"), "utf8");
   assert.match(dbSrc, /studioRouteReady\(\)/);
   assert.match(dbSrc, /studioRouteLoggedOut\(\)/);
-  assert.match(indexSrc, /studioRouteReady\(\)/);
+  // the startup script moved out of index.html into js/studio-main.js (issue #9681: no inline <script>)
+  assert.match(indexSrc, /<script src="js\/studio-main\.js"><\/script>/);
+  const mainSrc = fs.readFileSync(path.join(STATIC_DIR, "js", "studio-main.js"), "utf8");
+  assert.match(mainSrc, /studioRouteReady\(\)/);
 });

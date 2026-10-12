@@ -6,11 +6,11 @@
       <div id="schemaDbSelectContainer" class="searchable-db-select"></div>
     </div>
     <div class="d-flex gap-2">
-      <button class="btn btn-sm db-action-btn" onclick="createDatabase()"><i class="fa fa-plus"></i> Create</button>
-      <button class="btn btn-sm db-action-btn" onclick="showImportDatasetModal()"><i class="fa fa-download"></i> Import Dataset</button>
-      <button class="btn btn-sm db-action-btn db-action-btn-danger" onclick="dropDatabase()"><i class="fa fa-trash"></i> Drop</button>
-      <button class="btn btn-sm db-action-btn" onclick="resetDatabase()"><i class="fa fa-rotate"></i> Reset</button>
-      <button class="btn btn-sm db-action-btn" onclick="backupDatabase()"><i class="fa fa-box-archive"></i> Backup</button>
+      <button class="btn btn-sm db-action-btn" data-on-click="createDatabase"><i class="fa fa-plus"></i> Create</button>
+      <button class="btn btn-sm db-action-btn" data-on-click="showImportDatasetModal"><i class="fa fa-download"></i> Import Dataset</button>
+      <button class="btn btn-sm db-action-btn db-action-btn-danger" data-on-click="dropDatabase"><i class="fa fa-trash"></i> Drop</button>
+      <button class="btn btn-sm db-action-btn" data-on-click="resetDatabase"><i class="fa fa-rotate"></i> Reset</button>
+      <button class="btn btn-sm db-action-btn" data-on-click="backupDatabase"><i class="fa fa-box-archive"></i> Backup</button>
     </div>
   </div>
 
@@ -32,7 +32,7 @@
         <div id="dbTypeSidebar">
           <div class="sidebar-header">
             <span class="sidebar-title">Types</span>
-            <button class="btn btn-sm btn-light sidebar-refresh-btn" onclick="displaySchema()" title="Refresh">
+            <button class="btn btn-sm btn-light sidebar-refresh-btn" data-on-click="displaySchema" title="Refresh">
               <i class="fa fa-sync"></i>
             </button>
           </div>
@@ -55,14 +55,14 @@
         <div style="flex: 1; min-width: 0; overflow-y: auto; padding: 12px 16px;">
           <div class="d-flex justify-content-between align-items-center mb-2">
             <span style="font-weight: 600; font-size: 0.95rem;"><i class="fa fa-archive"></i> Buckets</span>
-            <button class="btn btn-sm db-action-btn" onclick="loadStorageBuckets()"><i class="fa fa-sync"></i> Refresh</button>
+            <button class="btn btn-sm db-action-btn" data-on-click="loadStorageBuckets"><i class="fa fa-sync"></i> Refresh</button>
           </div>
           <table id="dbStorageBuckets" class="table table-striped table-sm" style="width: 100%"></table>
         </div>
         <div id="dbBucketDetailPanel" style="width: 380px; min-width: 380px; border-left: 1px solid var(--border-ddd, #dee2e6); overflow-y: auto; padding: 12px; display: none;">
           <div class="d-flex justify-content-between align-items-center mb-2">
             <strong id="dbBucketDetailTitle" style="font-size: 0.9rem;">Detail</strong>
-            <button class="btn btn-sm btn-light" onclick="$('#dbBucketDetailPanel').hide()"><i class="fa fa-times"></i></button>
+            <button class="btn btn-sm btn-light" data-on-click="studioHideById" data-args='["dbBucketDetailPanel"]'><i class="fa fa-times"></i></button>
           </div>
           <pre id="dbBucketDetailContent" style="margin: 0; font-size: 0.78rem; white-space: pre-wrap; word-break: break-all;"></pre>
         </div>
@@ -75,7 +75,7 @@
         <div style="flex: 1; min-width: 0; overflow-y: auto; padding: 12px 16px;">
           <div class="d-flex justify-content-between align-items-center mb-2">
             <span style="font-weight: 600; font-size: 0.95rem;"><i class="fa fa-list-ol"></i> Indexes</span>
-            <button class="btn btn-sm db-action-btn" onclick="loadStorageIndexes()"><i class="fa fa-sync"></i> Refresh</button>
+            <button class="btn btn-sm db-action-btn" data-on-click="loadStorageIndexes"><i class="fa fa-sync"></i> Refresh</button>
           </div>
           <div id="dbIndexUpgradeWarning" class="alert alert-warning py-2 px-3" style="display: none; font-size: 0.82rem;"></div>
           <table id="dbStorageIndexes" class="table table-striped table-sm" style="width: 100%"></table>
@@ -83,7 +83,7 @@
         <div id="dbIndexDetailPanel" style="width: 380px; min-width: 380px; border-left: 1px solid var(--border-ddd, #dee2e6); overflow-y: auto; padding: 12px; display: none;">
           <div class="d-flex justify-content-between align-items-center mb-2">
             <strong id="dbIndexDetailTitle" style="font-size: 0.9rem;">Detail</strong>
-            <button class="btn btn-sm btn-light" onclick="$('#dbIndexDetailPanel').hide()"><i class="fa fa-times"></i></button>
+            <button class="btn btn-sm btn-light" data-on-click="studioHideById" data-args='["dbIndexDetailPanel"]'><i class="fa fa-times"></i></button>
           </div>
           <pre id="dbIndexDetailContent" style="margin: 0; font-size: 0.78rem; white-space: pre-wrap; word-break: break-all;"></pre>
         </div>
@@ -95,7 +95,7 @@
       <div style="height: 100%; overflow-y: auto; padding: 12px 16px;">
         <div class="d-flex justify-content-between align-items-center mb-2">
           <span style="font-weight: 600; font-size: 0.95rem;"><i class="fa fa-book"></i> Dictionary</span>
-          <button class="btn btn-sm db-action-btn" onclick="loadStorageDictionary()"><i class="fa fa-sync"></i> Refresh</button>
+          <button class="btn btn-sm db-action-btn" data-on-click="loadStorageDictionary"><i class="fa fa-sync"></i> Refresh</button>
         </div>
         <div class="row mb-3">
           <div class="col-md-3">
@@ -125,20 +125,20 @@
     <div class="d-flex align-items-center justify-content-between flex-shrink-0" style="padding: 8px 12px 4px;">
       <div class="d-flex align-items-center gap-2">
         <label for="tsType" class="mb-0">Type</label>
-        <select id="tsType" class="form-select form-select-sm" style="width: auto; display: inline-block; min-width: 150px;" onchange="tsTypeChanged()">
+        <select id="tsType" class="form-select form-select-sm" style="width: auto; display: inline-block; min-width: 150px;" data-on-change="tsTypeChanged">
           <option value="">-- select type --</option>
         </select>
         <span id="tsTypeCount" style="font-size: 0.8rem; color: var(--text-muted); white-space: nowrap;"></span>
       </div>
       <div class="d-flex gap-2">
-        <button class="btn btn-sm db-action-btn" onclick="createTimeSeriesType()"><i class="fa fa-plus"></i> Create</button>
-        <button class="btn btn-sm db-action-btn db-action-btn-danger" onclick="tsDropType()"><i class="fa fa-trash"></i> Drop</button>
+        <button class="btn btn-sm db-action-btn" data-on-click="createTimeSeriesType"><i class="fa fa-plus"></i> Create</button>
+        <button class="btn btn-sm db-action-btn db-action-btn-danger" data-on-click="tsDropType"><i class="fa fa-trash"></i> Drop</button>
       </div>
     </div>
 
     <ul class="nav nav-tabs flex-shrink-0" id="tabs-timeseries" style="padding: 0 12px;">
       <li class="nav-item"><a data-toggle="tab" href="#tab-ts-query" class="active show nav-link" id="tab-ts-query-sel">Query</a></li>
-      <li class="nav-item"><a data-toggle="tab" href="#tab-ts-schema" class="nav-link" id="tab-ts-schema-sel" onclick="tsLoadSchema()">Schema</a></li>
+      <li class="nav-item"><a data-toggle="tab" href="#tab-ts-schema" class="nav-link" id="tab-ts-schema-sel" data-on-click="tsLoadSchema">Schema</a></li>
       <li class="nav-item"><a data-toggle="tab" href="#tab-ts-ingestion" class="nav-link" id="tab-ts-ingestion-sel">Quick Tour</a></li>
     </ul>
 
@@ -149,18 +149,18 @@
         <div class="px-3 py-2" style="border-bottom: 1px solid var(--border-light);">
           <div class="d-flex flex-wrap gap-2 align-items-center">
             <div style="display:flex; align-items:center; background:#e9ecef; border-radius:20px; padding:2px; gap:2px;">
-              <button id="tsModeBuilderBtn" onclick="tsToggleQueryMode('builder')"
+              <button id="tsModeBuilderBtn" data-on-click="tsToggleQueryMode" data-args='["builder"]'
                 style="border:none; border-radius:18px; padding:3px 11px; font-size:0.78rem; cursor:pointer; background:var(--bs-primary,#0d6efd); color:#fff; transition:all 0.15s;">
                 <i class="fa fa-sliders" style="font-size:0.72rem;"></i> Builder
               </button>
-              <button id="tsModePromQLBtn" onclick="tsToggleQueryMode('promql')"
+              <button id="tsModePromQLBtn" data-on-click="tsToggleQueryMode" data-args='["promql"]'
                 style="border:none; border-radius:18px; padding:3px 11px; font-size:0.78rem; cursor:pointer; background:transparent; color:#6c757d; transition:all 0.15s;">
                 <i class="fa fa-code" style="font-size:0.72rem;"></i> PromQL
               </button>
             </div>
             <div>
               <label class="form-label form-label-sm mb-1">Time Range</label>
-              <select id="tsTimeRange" class="form-select form-select-sm" style="width: 110px;" onchange="tsTimeRangeChanged()">
+              <select id="tsTimeRange" class="form-select form-select-sm" style="width: 110px;" data-on-change="tsTimeRangeChanged">
                 <option value="5m">Last 5 min</option>
                 <option value="1h">Last 1 hour</option>
                 <option value="24h">Last 24 hours</option>
@@ -210,17 +210,17 @@
               </div>
             </div>
             <div class="d-flex gap-2 align-items-center ms-auto">
-              <button class="btn btn-sm btn-primary" style="height: 31px; line-height: 1;" onclick="tsExecuteQuery()"><i class="fa fa-play"></i> Query</button>
-              <button id="tsLatestBtn" class="btn btn-sm btn-outline-secondary" style="height: 31px; line-height: 1;" onclick="tsGetLatest()"><i class="fa fa-arrow-down"></i> Latest</button>
+              <button class="btn btn-sm btn-primary" style="height: 31px; line-height: 1;" data-on-click="tsExecuteQuery"><i class="fa fa-play"></i> Query</button>
+              <button id="tsLatestBtn" class="btn btn-sm btn-outline-secondary" style="height: 31px; line-height: 1;" data-on-click="tsGetLatest"><i class="fa fa-arrow-down"></i> Latest</button>
               <div class="dropdown">
                 <button class="btn btn-sm btn-outline-secondary dropdown-toggle" style="height: 31px; line-height: 1;" data-bs-toggle="dropdown">
                   <i class="fa fa-sync"></i>
                 </button>
                 <ul class="dropdown-menu">
-                  <li><a class="dropdown-item" href="#" onclick="tsStartAutoRefresh(0)">Off</a></li>
-                  <li><a class="dropdown-item" href="#" onclick="tsStartAutoRefresh(10000)">10s</a></li>
-                  <li><a class="dropdown-item" href="#" onclick="tsStartAutoRefresh(30000)">30s</a></li>
-                  <li><a class="dropdown-item" href="#" onclick="tsStartAutoRefresh(60000)">1 min</a></li>
+                  <li><a class="dropdown-item" href="#" data-on-click="tsStartAutoRefresh" data-args='[0]'>Off</a></li>
+                  <li><a class="dropdown-item" href="#" data-on-click="tsStartAutoRefresh" data-args='[10000]'>10s</a></li>
+                  <li><a class="dropdown-item" href="#" data-on-click="tsStartAutoRefresh" data-args='[30000]'>30s</a></li>
+                  <li><a class="dropdown-item" href="#" data-on-click="tsStartAutoRefresh" data-args='[60000]'>1 min</a></li>
                 </ul>
               </div>
               <span id="tsQueryStats" style="font-size: 0.78rem; color: var(--text-muted); white-space: nowrap;"></span>
@@ -233,7 +233,7 @@
               <textarea id="tsPromQLExpr" class="form-control form-control-sm" rows="1"
                 placeholder="e.g. rate(http_requests[5m])  ·  sum by (host) (cpu_usage)  ·  avg_over_time(temp[1h])"
                 style="font-family: monospace; font-size: 0.82rem; resize: vertical;"
-                onkeydown="if(event.key==='Enter'&&(event.ctrlKey||event.metaKey)){tsExecuteQuery();event.preventDefault();}"></textarea>
+                data-on-keydown="tsQueryEditorKeydown" data-args='[{"$":"event"}]'></textarea>
             </div>
           </div>
         </div>
@@ -246,12 +246,12 @@
                 <div class="d-flex align-items-center gap-2">
                   <span style="font-size: 0.85rem; font-weight: 500;">Chart</span>
                   <div class="form-check form-switch mb-0" style="padding-left: 2.5em;">
-                    <input class="form-check-input" type="checkbox" id="tsChartEnabled" checked onchange="tsTogglePanel('chart')">
+                    <input class="form-check-input" type="checkbox" id="tsChartEnabled" checked data-on-change="tsTogglePanel" data-args='["chart"]'>
                   </div>
                 </div>
                 <div class="btn-group btn-group-sm">
-                  <button class="btn btn-outline-secondary active" id="tsChartLineBtn" onclick="tsToggleChartType('line')">Line</button>
-                  <button class="btn btn-outline-secondary" id="tsChartAreaBtn" onclick="tsToggleChartType('area')">Area</button>
+                  <button class="btn btn-outline-secondary active" id="tsChartLineBtn" data-on-click="tsToggleChartType" data-args='["line"]'>Line</button>
+                  <button class="btn btn-outline-secondary" id="tsChartAreaBtn" data-on-click="tsToggleChartType" data-args='["area"]'>Area</button>
                 </div>
               </div>
               <div id="tsChart" style="min-height: 350px;"></div>
@@ -266,7 +266,7 @@
               <div class="d-flex align-items-center gap-2 mb-2">
                 <span style="font-size: 0.85rem; font-weight: 500;">Data</span>
                 <div class="form-check form-switch mb-0" style="padding-left: 2.5em;">
-                  <input class="form-check-input" type="checkbox" id="tsTableEnabled" checked onchange="tsTogglePanel('table')">
+                  <input class="form-check-input" type="checkbox" id="tsTableEnabled" checked data-on-change="tsTogglePanel" data-args='["table"]'>
                 </div>
               </div>
               <div class="table-responsive">
@@ -706,7 +706,7 @@
               <input class="form-check-input" type="checkbox" id="dbMetricsAutoRefresh">
               <label class="form-check-label small" for="dbMetricsAutoRefresh">Auto-refresh</label>
             </div>
-            <button class="btn btn-sm db-action-btn" onclick="loadDatabaseMetrics()">
+            <button class="btn btn-sm db-action-btn" data-on-click="loadDatabaseMetrics">
               <i class="fa fa-sync"></i> Refresh
             </button>
           </div>
@@ -811,10 +811,10 @@
             <div class="d-flex justify-content-between align-items-center">
               <h5><i class="fa fa-box-archive"></i> Database Backups</h5>
               <div class="d-flex gap-2">
-                <button class="btn btn-sm db-action-btn" onclick="loadDatabaseBackups()">
+                <button class="btn btn-sm db-action-btn" data-on-click="loadDatabaseBackups">
                   <i class="fa fa-sync"></i> Refresh
                 </button>
-                <button class="btn btn-sm db-action-btn" style="background-color: #00aeee; color: #fff;" onclick="triggerDatabaseBackup()">
+                <button class="btn btn-sm db-action-btn" style="background-color: #00aeee; color: #fff;" data-on-click="triggerDatabaseBackup">
                   <i class="fa fa-play"></i> Backup Now
                 </button>
               </div>

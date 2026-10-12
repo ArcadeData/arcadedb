@@ -463,14 +463,13 @@ function renderResyncRecovery(data) {
 
   for (var i = 0; i < dbs.length; i++) {
     var name = dbs[i].name;
-    var nameAttr = JSON.stringify(name).replace(/"/g, "&quot;");
     container.append(
       '<div class="d-flex align-items-center justify-content-between py-1 px-2 mb-1" '
       + 'style="font-size:0.82rem; background:var(--bg-main); border-radius:6px; border:1px solid var(--border-light);">'
       + '<div><i class="fa fa-database" style="color:var(--color-brand); margin-right:6px;"></i>'
       + escapeHtml(name) + '</div>'
       + '<div><button class="btn btn-sm btn-outline-danger" style="font-size:0.7rem; padding:1px 8px;" '
-      + 'onclick="resyncDatabase(' + nameAttr + ')" title="Drop this node\'s copy and re-acquire it from the leader">'
+      + studioAction("resyncDatabase", [name]) + ' title="Drop this node\'s copy and re-acquire it from the leader">'
       + '<i class="fa fa-sync-alt"></i> Resync from Leader</button></div>'
       + '</div>'
     );
@@ -596,14 +595,13 @@ function renderVerifyConsistency(data) {
 
   for (var i = 0; i < dbs.length; i++) {
     var name = dbs[i].name;
-    var nameAttr = JSON.stringify(name).replace(/"/g, "&quot;");
     container.append(
       '<div class="d-flex align-items-center justify-content-between py-1 px-2 mb-1" '
       + 'style="font-size:0.82rem; background:var(--bg-main); border-radius:6px; border:1px solid var(--border-light);">'
       + '<div><i class="fa fa-database" style="color:var(--color-brand); margin-right:6px;"></i>'
       + escapeHtml(name) + '</div>'
       + '<div><button class="btn btn-sm btn-outline-secondary" style="font-size:0.7rem; padding:1px 8px;" '
-      + 'onclick="verifyDatabase(' + nameAttr + ')" title="Compare this database\'s checksums across all nodes">'
+      + studioAction("verifyDatabase", [name]) + ' title="Compare this database\'s checksums across all nodes">'
       + '<i class="fa fa-check-double"></i> Verify</button></div>'
       + '</div>'
     );
@@ -843,13 +841,12 @@ function renderPeerManagement(data) {
 
     // Remove button only when local is leader and target is a follower. The leader cannot remove
     // itself: it must step down (or use Leave Cluster) so the resulting Raft config is valid.
-    // JSON.stringify + &quot; escaping keeps any characters in peer.id safe inside the attribute.
+    // studioAction escapes peer.id for the attribute, whatever characters it holds.
     // A peer already outside the configuration has nothing left to remove (issue #7040).
     var removeBtn = "";
     if (canManage && !isLeader && inConfiguration) {
-      var idAttr = JSON.stringify(peer.id).replace(/"/g, "&quot;");
       removeBtn = '<button class="btn btn-sm btn-outline-danger" style="font-size:0.7rem; padding:1px 8px;" '
-        + 'onclick="removePeer(' + idAttr + ')" title="Remove peer from the cluster">'
+        + studioAction("removePeer", [peer.id]) + ' title="Remove peer from the cluster">'
         + '<i class="fa fa-trash"></i></button>';
     }
 
@@ -870,17 +867,17 @@ function addPeerPrompt() {
     '<div class="mb-2">'
     + '<label for="addPeerId" class="form-label" style="font-size:0.85rem;">Peer ID</label>'
     + '<input type="text" class="form-control" id="addPeerId" placeholder="e.g. ArcadeDB_2" '
-    + 'onkeydown="if (event.which === 13) document.getElementById(\'addPeerAddress\').focus()">'
+    + 'data-enter-focus="addPeerAddress">'
     + '</div>'
     + '<div class="mb-2">'
     + '<label for="addPeerAddress" class="form-label" style="font-size:0.85rem;">Raft Address</label>'
     + '<input type="text" class="form-control" id="addPeerAddress" placeholder="host:port (e.g. 192.168.1.2:2434)" '
-    + 'onkeydown="if (event.which === 13) document.getElementById(\'globalModalConfirmBtn\').click()">'
+    + 'data-enter-click="globalModalConfirmBtn">'
     + '</div>'
     + '<div class="mb-2">'
     + '<label for="addPeerName" class="form-label" style="font-size:0.85rem;">Friendly Name <span class="text-muted">(optional)</span></label>'
     + '<input type="text" class="form-control" id="addPeerName" placeholder="Optional display name" '
-    + 'onkeydown="if (event.which === 13) document.getElementById(\'globalModalConfirmBtn\').click()">'
+    + 'data-enter-click="globalModalConfirmBtn">'
     + '</div>'
     + '<p class="text-muted" style="font-size:0.75rem; margin-bottom:0;">'
     + 'The new peer must already be running and reachable on the Raft port.'
