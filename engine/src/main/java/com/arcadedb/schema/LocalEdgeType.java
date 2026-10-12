@@ -91,6 +91,8 @@ public class LocalEdgeType extends LocalDocumentType implements EdgeType {
    * super type, and only for the ones that apply to an edge without properties. An optional property cannot be violated by
    * an edge that holds none, so it stays legal.
    *
+   * Public because the SQL {@code CREATE EDGE TYPE} statement, in the parser package, asks it before it creates anything.
+   *
    * @param edgeTypeName the type that is, or is about to be, LIGHTWEIGHT
    * @param type         the type whose polymorphic properties it would carry: itself, or the super type it is about to extend
    */

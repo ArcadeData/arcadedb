@@ -99,6 +99,11 @@ class Issue9846LightweightSubtypeInheritsConstraintTest extends TestHelper {
 
     assertThat(database.getSchema().existsType(CHILD)).isFalse();
     assertThat(database.getSchema().getType("Issue9846Plain").getSubTypes()).isEmpty();
+
+    // and nothing reached the schema file either
+    reopenDatabase();
+    assertThat(database.getSchema().existsType(CHILD)).isFalse();
+    assertThat(database.getSchema().getType("Issue9846Plain").getSubTypes()).isEmpty();
   }
 
   @Test
