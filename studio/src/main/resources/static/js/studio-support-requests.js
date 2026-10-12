@@ -722,6 +722,16 @@ function supportReqAnswerOf(request) {
   return Promise.resolve(null);
 }
 
+/** The table and the columns masked in an answer, taken when it is built: what gets remembered is what was sent, whatever the page shows when the portal replies. */
+function supportReqSentMask(s) {
+  if (s.status !== "done") return null;
+  var columns = {};
+  s.table.columns.forEach(function (c) {
+    if (s.mask.columns[c.name]) columns[c.name] = true;
+  });
+  return { table: s.table, mask: { columns: columns } };
+}
+
 function supportReqSent() {
   supportReqState = {};
   loadSupportIssue(supportCurrentIssue.number);
@@ -730,6 +740,7 @@ function supportReqSent() {
 function supportReqSendOne(request) {
   var s = supportReqStateFor(request);
   var alertId = "#spRqAlert_" + request.id;
+  var sent = supportReqSentMask(s);
   supportReqAnswerOf(request).then(function (answer) {
     if (!answer) return;
     var previous = s.status;
@@ -737,7 +748,7 @@ function supportReqSendOne(request) {
     supportReqRefresh(request);
     supportApi("POST", "/issues/" + encodeURIComponent(supportCurrentIssue.number) + "/requests/" + encodeURIComponent(request.id) + "/response", answer)
       .done(function () {
-        if (previous === "done") supportReqRemember(s.table, s.mask);
+        if (sent) supportReqRemember(sent.table, sent.mask);
         globalNotify("Support", "Your answer was sent to ArcadeData support", "success");
         supportReqSent();
       })
@@ -759,6 +770,9 @@ function supportReqSendAll() {
     });
   });
   if (!requests.length) return;
+  var sent = requests.map(function (r) {
+    return supportReqSentMask(supportReqStateFor(r));
+  });
   Promise.all(requests.map(supportReqAnswerOf)).then(function (answers) {
     var responses = answers.map(function (a, i) {
       a.requestId = requests[i].id;
@@ -767,9 +781,8 @@ function supportReqSendAll() {
     $("#spRqSendAll").prop("disabled", true).html(supportSpinner("Sending..."));
     supportApi("POST", "/issues/" + encodeURIComponent(supportCurrentIssue.number) + "/responses", { responses: responses })
       .done(function () {
-        requests.forEach(function (r) {
-          var s = supportReqStateFor(r);
-          if (s.status === "done") supportReqRemember(s.table, s.mask);
+        sent.forEach(function (m) {
+          if (m) supportReqRemember(m.table, m.mask);
         });
         globalNotify("Support", "Your answers were sent to ArcadeData support", "success");
         supportReqSent();
