@@ -20,6 +20,7 @@ package com.arcadedb.engine.timeseries;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
@@ -27,6 +28,7 @@ import com.arcadedb.schema.LocalTimeSeriesType;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Tests for CREATE TIMESERIES TYPE SQL statement.
@@ -101,10 +103,11 @@ class CreateTimeSeriesTypeStatementTest extends TestHelper {
   @Test
   void createWithPrecisionAndCompactionInterval() {
     // Reproduces the documented syntax from GitHub Discussion #3819:
-    // PRECISION NANOSECOND and COMPACTION INTERVAL (with space) should be accepted
+    // PRECISION and COMPACTION INTERVAL (with space) should be accepted. MILLISECOND since issue #9800: the
+    // discussion's NANOSECOND is refused, the unit was never honoured
     database.command("sql", """
         CREATE TIMESERIES TYPE SensorReading
-          TIMESTAMP ts PRECISION NANOSECOND
+          TIMESTAMP ts PRECISION MILLISECOND
           TAGS (
             sensor_id STRING,
             location  STRING,
@@ -122,7 +125,7 @@ class CreateTimeSeriesTypeStatementTest extends TestHelper {
 
     final LocalTimeSeriesType tsType = (LocalTimeSeriesType) database.getSchema().getType("SensorReading");
     assertThat(tsType.getTimestampColumn()).isEqualTo("ts");
-    assertThat(tsType.getPrecision()).isEqualTo("NANOSECOND");
+    assertThat(tsType.getPrecision()).isEqualTo("MILLISECOND");
     assertThat(tsType.getShardCount()).isEqualTo(16);
     assertThat(tsType.getRetentionMs()).isEqualTo(90L * 86400000L);
     // 30 SECONDS = 30 * 1000ms = 30000ms
@@ -151,12 +154,12 @@ class CreateTimeSeriesTypeStatementTest extends TestHelper {
   }
 
   @Test
-  void createWithPrecisionMicrosecond() {
-    database.command("sql",
-        "CREATE TIMESERIES TYPE MicroData TIMESTAMP ts PRECISION MICROSECOND FIELDS (value DOUBLE)");
-
-    final LocalTimeSeriesType tsType = (LocalTimeSeriesType) database.getSchema().getType("MicroData");
-    assertThat(tsType.getPrecision()).isEqualTo("MICROSECOND");
+  void createWithPrecisionMicrosecondIsRefused() {
+    // Issue #9800: only MILLISECOND is honoured, so it is the only precision that can be declared
+    assertThatThrownBy(() -> database.command("sql",
+        "CREATE TIMESERIES TYPE MicroData TIMESTAMP ts PRECISION MICROSECOND FIELDS (value DOUBLE)"))
+        .isInstanceOf(SchemaException.class).hasMessageContaining("MICROSECOND");
+    assertThat(database.getSchema().existsType("MicroData")).isFalse();
   }
 
   @Test
@@ -169,12 +172,12 @@ class CreateTimeSeriesTypeStatementTest extends TestHelper {
   }
 
   @Test
-  void createWithPrecisionSecond() {
-    database.command("sql",
-        "CREATE TIMESERIES TYPE SecPrecData TIMESTAMP ts PRECISION SECOND FIELDS (value DOUBLE)");
-
-    final LocalTimeSeriesType tsType = (LocalTimeSeriesType) database.getSchema().getType("SecPrecData");
-    assertThat(tsType.getPrecision()).isEqualTo("SECOND");
+  void createWithPrecisionSecondIsRefused() {
+    // Issue #9800: a SECOND type lost every sample at the first retention pass
+    assertThatThrownBy(() -> database.command("sql",
+        "CREATE TIMESERIES TYPE SecPrecData TIMESTAMP ts PRECISION SECOND FIELDS (value DOUBLE)"))
+        .isInstanceOf(SchemaException.class).hasMessageContaining("SECOND");
+    assertThat(database.getSchema().existsType("SecPrecData")).isFalse();
   }
 
   @Test

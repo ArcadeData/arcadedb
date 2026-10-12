@@ -1049,7 +1049,12 @@ public class GraphEngine {
 
     final MutableEdge newEdge = new MutableEdge(database, edgeType, newOut, newIn);
     if (!properties.isEmpty())
-      newEdge.set(properties);
+      // Every property, an `@special` one included, which set(Map) would skip as metadata. Only a reserved name is
+      // left behind: an edge persisted before #9799 can carry a phantom "@in"/"@out" key, which would otherwise be
+      // taken for an endpoint assignment and point the replacement somewhere else
+      for (final Map.Entry<String, Object> entry : properties.entrySet())
+        if (!MutableDocument.isReservedName(entry.getKey()))
+          newEdge.set(entry.getKey(), entry.getValue());
     newEdge.save();
 
     connectOutgoingEdge(fromVertex, toVertex, newEdge);

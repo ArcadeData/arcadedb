@@ -1639,7 +1639,7 @@ public class SelectExecutionPlanner {
       final Set<String> filterClusters = info.buckets;
       final List<Rid> rids = new ArrayList<>();
       for (final Rid rid : target.getRids()) {
-        if (filterClusters == null || isFromClusters(rid, filterClusters, context.getDatabase()))
+        if (filterClusters == null || isFromClusters(rid, filterClusters, context))
           rids.add(rid);
       }
 
@@ -1783,7 +1783,7 @@ public class SelectExecutionPlanner {
       rid.setBucket(bucket);
       rid.setPosition(position);
 
-      if (filterClusters == null || isFromClusters(rid, filterClusters, context.getDatabase())) {
+      if (filterClusters == null || isFromClusters(rid, filterClusters, context)) {
         handleRidsAsTarget(result, List.of(rid), context);
       } else {
         result.chain(new EmptyStep(context));//nothing to return
@@ -1805,7 +1805,7 @@ public class SelectExecutionPlanner {
         rid.setLegacy(true);
         rid.setBucket(bucket);
         rid.setPosition(position);
-        if (filterClusters == null || isFromClusters(rid, filterClusters, context.getDatabase())) {
+        if (filterClusters == null || isFromClusters(rid, filterClusters, context)) {
           rids.add(rid);
         }
       }
@@ -1828,11 +1828,15 @@ public class SelectExecutionPlanner {
    *
    * @return
    */
-  private boolean isFromClusters(final Rid rid, final Set<String> filterClusters, final Database database) {
+  private boolean isFromClusters(final Rid rid, final Set<String> filterClusters, final CommandContext context) {
     if (filterClusters == null) {
       throw new IllegalArgumentException();
     }
-    final String bucketName = database.getSchema().getBucketById(rid.getBucket().getValue().intValue()).getName();
+    // Resolved with the statement's context, which the expression form {"@rid": <expr>} needs (issue #9802)
+    final RID resolved = rid.toRecordId((Result) null, context);
+    if (resolved == null)
+      return false;
+    final String bucketName = context.getDatabase().getSchema().getBucketById(resolved.getBucketId()).getName();
     return filterClusters.contains("*") || filterClusters.contains(bucketName);
   }
 
@@ -2994,13 +2998,14 @@ public class SelectExecutionPlanner {
   private static RID extractRidValue(final Expression expr, final CommandContext context) {
     if (expr == null)
       return null;
-    // Direct RID literal: #X:Y
-    if (expr.getRid() != null) {
-      final Rid rid = expr.getRid();
-      return context.getDatabase().newRID(rid.getBucket().getValue().intValue(), rid.getPosition().getValue().longValue());
-    }
-    // Evaluate the expression (handles string parameters like "#215:45086720")
     try {
+      // RID node: the literal #X:Y, or the expression form {"@rid": <expr>}, which needs THIS context for its
+      // database and its parameters (issue #9802). Like the branch below, a RID that cannot be resolved at plan time
+      // costs the optimization and nothing else
+      if (expr.getRid() != null)
+        return expr.getRid().toRecordId((Result) null, context);
+
+      // Evaluate the expression (handles string parameters like "#215:45086720")
       final Object value = expr.execute((Result) null, context);
       if (value instanceof RID rid)
         return rid;

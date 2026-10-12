@@ -49,10 +49,28 @@ public interface TimeSeriesType extends DocumentType {
   String getTimestampColumn();
 
   /**
-   * Timestamp precision as declared ({@code NANOSECOND}, {@code MICROSECOND}, {@code MILLISECOND} or
-   * {@code SECOND}), or {@code null} when the type did not declare one.
+   * The only timestamp precision a TIMESERIES type can be created with. Every path that turns a wall-clock instant
+   * or duration into a stored timestamp (ingestion, SQL, retention, downsampling, PromQL) counts in milliseconds.
+   */
+  String MILLISECOND_PRECISION = "MILLISECOND";
+
+  /**
+   * Timestamp precision as declared, or {@code null} when the type did not declare one (which means milliseconds).
+   * Only {@link #MILLISECOND_PRECISION} can be declared today; a type created before issue #9800 can still carry
+   * {@code NANOSECOND}, {@code MICROSECOND} or {@code SECOND}, a declaration nothing ever honoured.
    */
   String getPrecision();
+
+  /**
+   * Whether the stored timestamps are known to be in milliseconds, the unit every time computation uses. False only
+   * for a type declared with another precision before issue #9800: its data may be in the declared unit or, when it
+   * was ingested through line protocol, Prometheus or gRPC, in milliseconds, so retention and downsampling are
+   * suspended on it until {@code ALTER TIMESERIES TYPE <name> PRECISION MILLISECOND} confirms the unit.
+   */
+  default boolean isPrecisionHonoured() {
+    final String precision = getPrecision();
+    return precision == null || MILLISECOND_PRECISION.equalsIgnoreCase(precision);
+  }
 
   int getShardCount();
 

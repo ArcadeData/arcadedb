@@ -83,9 +83,12 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
     this.map = withoutProperties ? Collections.emptyMap() : new LinkedHashMap<>(16);
   }
 
+  /**
+   * Assigns every entry of {@code other}, with the same rules as {@link #set(Map)}: a name starting with {@code @} is
+   * skipped as metadata, except the names the record type gives a meaning to (an edge's {@code @in}/{@code @out}).
+   */
   public void merge(final Map<String, Object> other) {
-    for (final Map.Entry<String, Object> entry : other.entrySet())
-      set(entry.getKey(), entry.getValue());
+    set(other);
   }
 
   public boolean isDirty() {
@@ -147,14 +150,8 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
 
   public MutableDocument fromMap(final Map<String, Object> map) {
     this.map = new LinkedHashMap<>(map.size());
-    for (final Map.Entry<String, Object> entry : map.entrySet()) {
-      final String key = entry.getKey();
-      if (key.startsWith("@"))
-        // SKIP METADATA
-        continue;
-      final Object value = setTransformValue(entry.getValue(), key);
-      this.map.put(key, convertValueToSchemaType(key, value, type));
-    }
+    for (final Map.Entry<String, Object> entry : map.entrySet())
+      putFromMap(entry.getKey(), entry.getValue());
 
     dirty = true;
     propertiesAssigned = true;
@@ -236,12 +233,12 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
    * Sets the property value in the document. If the property has been defined in the schema, the value is converted
    * according to the property type.
    */
-  public MutableDocument set(final String name, Object value) {
+  public MutableDocument set(final String name, final Object value) {
+    checkPropertyName(name);
     checkForLazyLoadingProperties();
     dirty = true;
     propertiesAssigned = true;
-    value = setTransformValue(value, name);
-    map.put(name, convertValueToSchemaType(name, value, type));
+    putProperty(name, value);
     return this;
   }
 
@@ -249,16 +246,13 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
    * Optimized overload for setting 2 properties - avoids varargs array allocation.
    */
   public MutableDocument set(final String name1, final Object value1, final String name2, final Object value2) {
+    checkPropertyName(name1);
+    checkPropertyName(name2);
     checkForLazyLoadingProperties();
     dirty = true;
     propertiesAssigned = true;
-
-    Object v1 = setTransformValue(value1, name1);
-    map.put(name1, convertValueToSchemaType(name1, v1, type));
-
-    Object v2 = setTransformValue(value2, name2);
-    map.put(name2, convertValueToSchemaType(name2, v2, type));
-
+    putProperty(name1, value1);
+    putProperty(name2, value2);
     return this;
   }
 
@@ -267,19 +261,15 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
    */
   public MutableDocument set(final String name1, final Object value1, final String name2, final Object value2,
                              final String name3, final Object value3) {
+    checkPropertyName(name1);
+    checkPropertyName(name2);
+    checkPropertyName(name3);
     checkForLazyLoadingProperties();
     dirty = true;
     propertiesAssigned = true;
-
-    Object v1 = setTransformValue(value1, name1);
-    map.put(name1, convertValueToSchemaType(name1, v1, type));
-
-    Object v2 = setTransformValue(value2, name2);
-    map.put(name2, convertValueToSchemaType(name2, v2, type));
-
-    Object v3 = setTransformValue(value3, name3);
-    map.put(name3, convertValueToSchemaType(name3, v3, type));
-
+    putProperty(name1, value1);
+    putProperty(name2, value2);
+    putProperty(name3, value3);
     return this;
   }
 
@@ -296,15 +286,15 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
     if (properties.length % 2 != 0)
       throw new IllegalArgumentException("Properties must be an even pair of key/values");
 
+    for (int p = 0; p < properties.length; p += 2)
+      checkPropertyName((String) properties[p]);
+
     checkForLazyLoadingProperties();
     dirty = true;
     propertiesAssigned = true;
 
-    for (int p = 0; p < properties.length; p += 2) {
-      final String propertyName = (String) properties[p];
-      final Object value = setTransformValue(properties[p + 1], propertyName);
-      map.put(propertyName, convertValueToSchemaType(propertyName, value, type));
-    }
+    for (int p = 0; p < properties.length; p += 2)
+      putProperty((String) properties[p], properties[p + 1]);
 
     return this;
   }
@@ -447,17 +437,73 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
     dirty = true;
     propertiesAssigned = true;
 
-    for (final Map.Entry<String, Object> entry : properties.entrySet()) {
-      final String propertyName = entry.getKey();
-      if (propertyName.startsWith("@"))
-        // SKIP METADATA
-        continue;
-
-      final Object value = setTransformValue(entry.getValue(), propertyName);
-      map.put(propertyName, convertValueToSchemaType(propertyName, value, type));
-    }
+    for (final Map.Entry<String, Object> entry : properties.entrySet())
+      putFromMap(entry.getKey(), entry.getValue());
 
     return this;
+  }
+
+  /**
+   * Whether {@code name} is one of the record's metadata names ({@code @rid}, {@code @type}, {@code @cat}, {@code @in},
+   * {@code @out}, {@code @props}, {@code @this}) rather than a property name. No reader can return a property stored
+   * under such a name - {@code toMap(true)}, {@code toJSON(true)} and every query projection answer the real metadata
+   * instead - so no setter stores one (issue #9799). Any other name, {@code @}-prefixed or not, is an ordinary property:
+   * {@code `@special`} is a legal key in Cypher as in Neo4j, and reads back like any other.
+   */
+  public static boolean isReservedName(final String name) {
+    return name != null && !name.isEmpty() && name.charAt(0) == '@'
+        && (Property.METADATA_PROPERTIES.contains(name) || Property.THIS_PROPERTY.equals(name));
+  }
+
+  /**
+   * Whether this record type gives a meaning to assigning the reserved {@code name}: an edge re-points itself on
+   * {@code @in}/{@code @out}. Every setter consults this, so overriding it together with {@link #setMetadata} is
+   * enough to make the behaviour uniform across the positional setters, {@link #set(Map)}, {@link #fromMap} and
+   * {@link #merge}.
+   */
+  protected boolean isAssignableMetadata(final String name) {
+    return false;
+  }
+
+  /**
+   * Applies the assignment of a reserved name {@link #isAssignableMetadata} accepted. The caller has already marked
+   * the record dirty.
+   */
+  protected void setMetadata(final String name, final Object value) {
+    throw new IllegalArgumentException("Cannot assign '" + name + "': it is record metadata, not a property");
+  }
+
+  /**
+   * The positional setters refuse a reserved name the record type does not assign, BEFORE touching the record, so a
+   * refused call leaves no partial write behind. Refusing (rather than skipping, as the map-based setters do) is what
+   * turns {@code UPDATE ... SET `@type` = ...} into an error instead of a write the statement counts and discards.
+   */
+  private void checkPropertyName(final String name) {
+    if (isReservedName(name) && !isAssignableMetadata(name))
+      throw new IllegalArgumentException(
+          "Cannot set property '" + name + "' on a record of type '" + getTypeName()
+              + "': it is record metadata, not a property");
+  }
+
+  /**
+   * The one place a property assigned by name is stored. Positional names were already validated by
+   * {@link #checkPropertyName}, map keys by {@link #putFromMap}.
+   */
+  private void putProperty(final String name, final Object value) {
+    if (isReservedName(name))
+      setMetadata(name, value);
+    else
+      map.put(name, convertValueToSchemaType(name, setTransformValue(value, name), type));
+  }
+
+  /**
+   * The map-based setters are fed metadata-bearing maps by design ({@code toMap(true)}, a JSON payload that may carry
+   * another system's {@code @class} or {@code @version}), so EVERY {@code @}-prefixed key is skipped as metadata, as it
+   * always was, except the ones the record type assigns.
+   */
+  private void putFromMap(final String name, final Object value) {
+    if (name == null || name.isEmpty() || name.charAt(0) != '@' || isAssignableMetadata(name))
+      putProperty(name, value);
   }
 
   public Object remove(final String name) {

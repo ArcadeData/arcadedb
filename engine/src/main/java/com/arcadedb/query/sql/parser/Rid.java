@@ -23,7 +23,6 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
-import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.utility.CodeUtils;
@@ -49,7 +48,8 @@ public class Rid extends SimpleNode {
 
   @Override
   public String toString(final String prefix) {
-    return "#" + bucket.getValue() + ":" + position.getValue();
+    // The expression form has no literal bucket/position to print
+    return legacy ? "#" + bucket.getValue() + ":" + position.getValue() : toString();
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
@@ -62,51 +62,54 @@ public class Rid extends SimpleNode {
     }
   }
 
+  /**
+   * Resolves this node to a {@link RID}. The expression form ({@code {"@rid": <expr>}}) needs the caller's context: it
+   * carries the database the RID is created against and the statement's parameters an expression like
+   * {@code {"@rid": ?}} binds (issue #9802).
+   */
   public RID toRecordId(final Result target, final CommandContext context) {
-    if (legacy) {
+    if (legacy)
       return context.getDatabase().newRID(bucket.value.intValue(), position.value.longValue());
-    } else {
-      final Object result = expression.execute(target, context);
-      if (result == null)
-        return null;
-
-      if (result instanceof Identifiable identifiable)
-        return identifiable.getIdentity();
-
-      if (result instanceof String string) {
-        if (!(string.startsWith("#") && (string.contains(":"))))
-          throw new CommandExecutionException("Cannot convert to RID: " + result);
-
-        final List<String> parts = CodeUtils.split(string.substring(1), ':', 3);
-        if (parts.size() != 2)
-          throw new CommandExecutionException("Cannot convert to RID: " + result);
-
-        try {
-          return context.getDatabase().newRID(Integer.parseInt(parts.getFirst()), Integer.parseInt(parts.get(1)));
-        } catch (final Exception e) {
-          throw new CommandExecutionException("Cannot convert to RID: " + result);
-        }
-      }
-      return null;
-    }
+    return toRecordId(expression.execute(target, context), context);
   }
 
   public RID toRecordId(final Identifiable target, final CommandContext context) {
-    if (legacy) {
+    if (legacy)
       return context.getDatabase().newRID(bucket.value.intValue(), position.value.longValue());
-    } else {
-      final Object result = expression.execute(target, context);
-      if (result == null)
-        return null;
+    return toRecordId(expression.execute(target, context), context);
+  }
 
-      if (result instanceof Identifiable identifiable)
-        return identifiable.getIdentity();
-
-      if (result instanceof String)
-        throw new UnsupportedOperationException();
-
+  /**
+   * The one conversion of an evaluated {@code @rid} expression, shared by both {@code toRecordId} overloads: a record
+   * answers its identity, a string is parsed as {@code #bucket:position} (the position is a {@code long}, like
+   * {@link RID#getPosition()}), anything else is not a RID.
+   */
+  private static RID toRecordId(final Object result, final CommandContext context) {
+    if (result == null)
       return null;
+
+    if (result instanceof Identifiable identifiable)
+      return identifiable.getIdentity();
+
+    if (result instanceof String string) {
+      if (!(string.startsWith("#") && (string.contains(":"))))
+        throw new CommandExecutionException("Cannot convert to RID: " + result);
+
+      final List<String> parts = CodeUtils.split(string.substring(1), ':', 3);
+      if (parts.size() != 2)
+        throw new CommandExecutionException("Cannot convert to RID: " + result);
+
+      final int bucketId;
+      final long position;
+      try {
+        bucketId = Integer.parseInt(parts.getFirst());
+        position = Long.parseLong(parts.get(1));
+      } catch (final NumberFormatException e) {
+        throw new CommandExecutionException("Cannot convert to RID: " + result, e);
+      }
+      return RID.create(context.getDatabase(), bucketId, position);
     }
+    return null;
   }
 
   public Rid copy() {
@@ -156,27 +159,20 @@ public class Rid extends SimpleNode {
     this.legacy = b;
   }
 
+  /**
+   * The literal bucket of a {@code #bucket:position} RID, or {@code null} for the expression form
+   * ({@code {"@rid": <expr>}}), which only {@link #toRecordId(Result, CommandContext)} can resolve: it needs the
+   * statement's context (issue #9802).
+   */
   public PInteger getBucket() {
-    if (expression != null) {
-      final RID rid = toRecordId((Result) null, new BasicCommandContext());
-      if (rid != null) {
-        final PInteger result = new PInteger();
-        result.setValue(rid.getBucketId());
-        return result;
-      }
-    }
     return bucket;
   }
 
+  /**
+   * The literal position of a {@code #bucket:position} RID, or {@code null} for the expression form. See
+   * {@link #getBucket()}.
+   */
   public PInteger getPosition() {
-    if (expression != null) {
-      final RID rid = toRecordId((Result) null, new BasicCommandContext());
-      if (rid != null) {
-        final PInteger result = new PInteger();
-        result.setValue(rid.getPosition());
-        return result;
-      }
-    }
     return position;
   }
   @Override
