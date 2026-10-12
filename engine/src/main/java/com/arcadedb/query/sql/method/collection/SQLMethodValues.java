@@ -19,23 +19,25 @@
 package com.arcadedb.query.sql.method.collection;
 
 import com.arcadedb.database.Document;
-import com.arcadedb.database.Identifiable;
-import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.method.AbstractSQLMethod;
 
 import java.util.ArrayList;
-import java.util.Collection;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.function.Function;
 
 /**
- * Returns the values of a map.
+ * Returns the values of a map, a document or a result, in the order {@link SQLMethodKeys} lists their names.
+ * <p>
+ * For a document or a result the names come from {@code getPropertyNames()} - the same question {@code keys()} asks - and
+ * each value is read for its name. Collecting the values off {@code toMap()} instead let metadata ({@code @cat},
+ * {@code @type}, {@code @rid}, an edge's {@code @in} and {@code @out}) in as unlabelled values and, on a row that
+ * overrides a property of its element, answered the element's value where the row has another (issues #6472 and #9843).
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
-public class SQLMethodValues extends AbstractSQLMethod {
+public class SQLMethodValues extends AbstractSQLMethodKeysValues {
 
   public static final String NAME = "values";
 
@@ -44,34 +46,28 @@ public class SQLMethodValues extends AbstractSQLMethod {
   }
 
   @Override
-  public Object execute(final Object value, final Identifiable currentRecord, final CommandContext context,
-      final Object[] params) {
+  protected Object fromMap(final Map<?, ?> map) {
+    return map.values();
+  }
 
-    if (value instanceof Map map)
-      return map.values();
-    else if (value instanceof Document document)
-      // Use toMap(false) to exclude metadata fields (@rid, @type, @cat) — matches keys()'s
-      // getPropertyNames() which returns only declared property names (issue #6472).
-      return new ArrayList<>(document.toMap(false).values());
-    else if (value instanceof Result result)
-      return result.toMap().values();
+  @Override
+  protected Object fromDocument(final Document document) {
+    // toMap(false) excludes the metadata fields (@rid, @type, @cat) and is the one place a document's values are converted
+    // (embedded documents and lists become maps and lists), exactly as values() has always answered them (#6472). It is one
+    // map per call, as before; the lookup by name is what keeps each value in the slot of its key
+    final Map<String, Object> properties = document.toMap(false);
+    return valuesOf(document.getPropertyNames(), properties::get);
+  }
 
-    // AN ARRAY-VALUED PARAMETER OR PROPERTY IS A COLLECTION RECEIVER TOO (ISSUE #7114)
-    final List<Object> list = listReceiverOrNull(value);
-    if (list != null) {
-      final List<Object> result = new ArrayList<>();
-      for (final Object o : list) {
-        if (o instanceof Map || o instanceof Document || o instanceof Result || MultiValue.isMultiValue(o)) {
-          final Object values = execute(o, currentRecord, context, params);
-          if (values instanceof Collection<?> valuesCollection)
-            result.addAll(valuesCollection);
-        }
-        // scalar/null elements have no values: skip them rather than recursing into execute(), which
-        // returns null for them
-      }
-      return result;
-    }
+  @Override
+  protected Object fromResult(final Result result) {
+    return valuesOf(result.getPropertyNames(), result::getProperty);
+  }
 
-    return null;
+  private static List<Object> valuesOf(final Set<String> names, final Function<String, Object> valueOf) {
+    final List<Object> values = new ArrayList<>(names.size());
+    for (final String name : names)
+      values.add(valueOf.apply(name));
+    return values;
   }
 }

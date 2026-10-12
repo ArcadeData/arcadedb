@@ -168,6 +168,15 @@ public class BackupDatabaseStatement extends SimpleExecStatement {
 
         try {
           final String backupFile = (String) clazz.getMethod("backupDatabase").invoke(backup);
+
+          // PRUNE THE DIRECTORY JUST WRITTEN INTO (issue #9844). The statement is the other on-demand entry point next to the
+          // control plane's 'trigger backup', which prunes since #7472, and it wrote into the same directory without ever
+          // pruning it: a database absent from the auto-backup configuration grew its archive directory forever. Inside the
+          // BACKUP slot held above, so it is serialised against the scheduler's own prune exactly as 'trigger backup' is.
+          // After the archive exists, and retention always keeps the most recent one, so the backup just taken is never the
+          // one deleted. Never fails the statement: the archive is written. With no server bound this does nothing.
+          BackupDirectoryResolver.applyRetentionAfterBackup(context.getDatabase(), backupDirectory);
+
           result.setProperty("result", "OK");
           result.setProperty("backupFile", backupFile);
 

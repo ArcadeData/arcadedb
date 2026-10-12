@@ -882,12 +882,7 @@ public class GraphBatch implements AutoCloseable {
   }
 
   private boolean typeAppliesSchemaToEmptyEdge(final String edgeTypeName) {
-    return emptyEdgeSchemaCache.computeIfAbsent(edgeTypeName, name -> {
-      for (final Property property : edgeType(name).getPolymorphicProperties())
-        if (property.isMandatory() || property.getDefaultValueDefinition() != null)
-          return true;
-      return false;
-    });
+    return emptyEdgeSchemaCache.computeIfAbsent(edgeTypeName, name -> edgeType(name).findPropertyAppliedToEmptyRecord() != null);
   }
 
   /** The edge type {@code name}, or a clear refusal for a name that is missing or not an edge type. */

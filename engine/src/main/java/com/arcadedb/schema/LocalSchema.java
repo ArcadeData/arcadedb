@@ -1971,9 +1971,15 @@ public class LocalSchema implements Schema {
   public void dropIndex(final String indexName) {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
-    checkIndexIsNotBackingAConstraint(indexName);
-
-    dropIndexInternal(indexName);
+    // The guard and the drop run in one schema session, under the write lock that orders every other schema change (#9848,
+    // the same shape as #7672 on dropProperty). A guard evaluated before the lock could pass against a state that a
+    // concurrent ALTER TYPE ... WITH unique = true changes before the drop gets the lock, and the drop would then remove the
+    // index that ALTER had just built.
+    recordFileChanges(() -> {
+      checkIndexIsNotBackingAConstraint(indexName);
+      dropIndexInternal(indexName);
+      return null;
+    });
   }
 
   /**
