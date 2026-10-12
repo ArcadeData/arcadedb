@@ -77,6 +77,8 @@ class Issue9835SchemaReloadKeepsPageReservationsTest extends TestHelper {
     assertThat(after).as("the full load must have replaced the bucket instance").isNotSameAs(before);
     assertThat(after.reservedPageCounter.get()).as("reservation counter after the reload").isGreaterThanOrEqualTo(reservedBefore);
     assertThat(after.getInFlightNewPagesForTesting()).as("pages in flight after the reload").isEqualTo(1);
+    // SHARED, not copied: a transaction still allocating through the retired instance draws from the same sequence
+    assertThat(after.reservedPageCounter).as("the reservation counter").isSameAs(before.reservedPageCounter);
 
     final List<RID> laterRids = insertAndCommit(3);
 
