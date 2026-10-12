@@ -411,6 +411,10 @@ public final class DefaultSQLFunctionFactory extends SQLFunctionFactoryTemplate 
    * the unified {@link FunctionRegistry}. It needs no database, so the SQL parser can ask it while it builds the AST: a dotted
    * call written without back-ticks is a function call, and not a method call on a property, exactly when this answers true
    * (issue #9768).
+   * <p>
+   * The two registries are process-wide: every {@code SQLQueryEngine} uses this singleton, and a user-defined function library
+   * is not a namespace for this lookup (it never was: call it back-ticked, {@code `lib.fn`(...)}). So nothing a database or an
+   * engine registers on its own is missed here.
    */
   public boolean hasNamespacedFunction(final String qualifiedName) {
     return hasFunction(qualifiedName.toLowerCase(Locale.ENGLISH)) || FunctionRegistry.hasStatelessFunction(qualifiedName);
