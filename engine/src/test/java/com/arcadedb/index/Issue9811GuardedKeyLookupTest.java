@@ -19,6 +19,7 @@
 package com.arcadedb.index;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.IndexCursorCollection;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
@@ -65,6 +66,38 @@ class Issue9811GuardedKeyLookupTest extends TestHelper {
         index.addIndexOnBucket(subIndex);
     }
     assertThat(index.getForQuery(new Object[] { 7L }).hasNext()).isTrue();
+  }
+
+  /**
+   * The invariant {@link TypeIndex#getForQuery} rests on: every arm of {@code get} has collected its entries by the time it
+   * returns, so the change check after it covers the whole read. A lazy arm added later would make the check pass while the
+   * cursor still reads, and must fail here instead.
+   */
+  @Test
+  void everyArmOfGetReturnsACollectedCursor() {
+    final DocumentType type = createType();
+    type.createProperty("text", Type.STRING);
+    database.transaction(() -> database.newDocument("Doc").set("k", 1L).set("text", "alpha beta").save());
+
+    final TypeIndex notUnique = type.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "k");
+    assertCollected(notUnique.get(new Object[] { 1L }));
+    assertCollected(notUnique.get(new Object[] { 1L }, 1));
+    database.getSchema().dropIndex(notUnique.getName());
+
+    final TypeIndex unique = type.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "text");
+    assertCollected(unique.get(new Object[] { "alpha beta" }));
+    database.getSchema().dropIndex(unique.getName());
+
+    final TypeIndex fullText = type.createTypeIndex(Schema.INDEX_TYPE.FULL_TEXT, false, "text");
+    assertCollected(fullText.get(new Object[] { "alpha" }));
+    database.getSchema().dropIndex(fullText.getName());
+
+    database.command("sql", "CREATE INDEX ON Doc (text) FULL_TEXT METADATA {\"similarity\": \"BM25\"}");
+    assertCollected(((TypeIndex) database.getSchema().getIndexByName("Doc[text]")).get(new Object[] { "alpha" }));
+  }
+
+  private static void assertCollected(final IndexCursor cursor) {
+    assertThat((Object) cursor).isInstanceOfAny(TempIndexCursor.class, IndexCursorCollection.class);
   }
 
   @Test
