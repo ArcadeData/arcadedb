@@ -487,7 +487,8 @@ public final class SparseSegmentBuilder implements AutoCloseable {
     // makes Block-Max WAND / MaxScore prune a document that belongs in the top-K. The decode is monotone, so the
     // block's decoded maximum is the decode of its raw maximum; taking the larger of the two leaves FP32 and INT8
     // bounds bit-identical to before. currentDimMaxWeight and the skip list's max_weight_to_end are derived from this
-    // value and inherit the fix.
+    // value and inherit the fix. liveInBlock == 0 is the all-tombstone block, whose band was reset to [0, 0] above, so
+    // it keeps the 0.0 bound the former weightMax == NEGATIVE_INFINITY check produced.
     final float blockMaxForBmw = liveInBlock == 0 ?
         0.0f :
         Math.max(weightMax, WeightCodec.decodedValueOf(weightMax, params.weightQuantization(), weightMin, weightMax));

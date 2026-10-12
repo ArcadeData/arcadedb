@@ -173,6 +173,8 @@ public final class WeightCodec {
    * band and dequantizes its top level to {@code min + 1.0f * (max - min)}, the band maximum the bound was taken from
    * (the issue measured 40M samples without one INT8 decode above it), so both are returned unchanged. Lifting an
    * fp16-representable bound - every bound a fixed builder writes for FP16 - is the identity.
+   * {@code Issue9834Fp16BlockMaxBoundTest.everyStoredBoundCoversTheDecodedWeight} drives all three quantizations through
+   * the reader and pins that no INT8 or FP32 decode exceeds its stored bound without a lift.
    */
   public static float liftStoredBound(final float stored, final WeightQuantization q) {
     if (q != WeightQuantization.FP16 || Float.isNaN(stored))

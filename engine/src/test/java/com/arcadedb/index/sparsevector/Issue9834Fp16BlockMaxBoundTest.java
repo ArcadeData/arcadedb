@@ -168,8 +168,10 @@ class Issue9834Fp16BlockMaxBoundTest extends TestHelper {
         }
       }
     });
-    // One block header (the target's block), the dim's global max and at least one skip entry.
-    assertThat(patched[0]).as("raw-bound slots rewritten to simulate a pre-fix segment").isGreaterThanOrEqualTo(3);
+    // Exactly the three bound slots: the target's block header, the dim's global max and the dim's single skip entry
+    // (4 blocks at the default stride of 8). An exact count also proves no posting payload matched the pattern and got
+    // over-patched.
+    assertThat(patched[0]).as("raw-bound slots rewritten to simulate a pre-fix segment").isEqualTo(3);
 
     inTx(() -> {
       final PaginatedSegmentReader reader = new PaginatedSegmentReader(component.get());
