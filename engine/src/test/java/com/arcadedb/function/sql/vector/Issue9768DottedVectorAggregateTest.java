@@ -150,6 +150,10 @@ class Issue9768DottedVectorAggregateTest extends TestHelper {
     final List<Result> rows = run("SELECT vector.size() AS n FROM E");
     assertThat(rows).hasSize(1);
     assertThat(rows.getFirst().<Integer>getProperty("n")).isEqualTo(3);
+
+    // a chain whose FIRST method is not a registered function stays a chain on the property, however long it is
+    assertThat(run("SELECT vector.size().asString() AS s FROM E").getFirst().<String>getProperty("s")).isEqualTo("3");
+    assertThat(run("SELECT `vector`.size() AS n FROM E").getFirst().<Integer>getProperty("n")).isEqualTo(3);
   }
 
   /**
