@@ -20,6 +20,9 @@ package com.arcadedb.query.opencypher;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.Property;
+import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -199,6 +202,30 @@ class Issue9794DeclaredTypePatternTest extends TestHelper {
     for (final String text : List.of("'2.5'", "'2.50'", "' 2.5'", "'25e-1'"))
       assertThat(count("MATCH (n:D {p: " + text + "}) RETURN count(n) AS c")).as(text).isEqualTo(1);
     assertThat(count("MATCH (n:D {p: 'x2.5'}) RETURN count(n) AS c")).isZero();
+  }
+
+  /**
+   * The shape check in front of the conversion only saves the conversion's exception: for every declared type and text it
+   * answers exactly what {@code Type.convert} answers, so it can never refuse a text a write stores (and then miss the record).
+   */
+  @Test
+  void theShapeCheckNeverDisagreesWithTheConversion() {
+    final DocumentType type = database.getSchema().createVertexType("S");
+    final List<String> texts = List.of("5", "+5", "-5", "005", "0000000000005", "5.7", " 5", "5 ", "1e2", "", "-", "+", "five",
+        "127", "128", "-129", "32768", "2147483647", "2147483648", "9223372036854775807", "9223372036854775808",
+        "99999999999999999999", "2.5", "2.50", " 2.5", "25e-1", ".5", "-.5", "NaN", "Infinity", "-Infinity", "0x1p3", "1.5d", "x2.5",
+        "true", "TRUE", "False", "yes", "1", "0", "2024-01-02", "2024-01-02T10:00:00", "2024-13-45", "foo", "P1D", "10:15:30",
+        "1704153600000");
+    for (final Type declared : List.of(Type.BYTE, Type.SHORT, Type.INTEGER, Type.LONG, Type.FLOAT, Type.DOUBLE, Type.DECIMAL,
+        Type.BOOLEAN, Type.DATE, Type.DATETIME, Type.DATETIME_MICROS, Type.LOCAL_TIME, Type.DURATION)) {
+      final Property property = type.createProperty("p" + declared.name().toLowerCase(), declared);
+      for (final String text : texts) {
+        Object written = Type.convertOrNull(database, text, declared.getJavaImplementation(database), property);
+        if (written instanceof Double d && d.isNaN() || written instanceof Float f && f.isNaN())
+          written = null; // NaN equals nothing, not even itself
+        assertThat(InlineProperties.declaredValue(property, database, text)).as(declared + " <- '" + text + "'").isEqualTo(written);
+      }
+    }
   }
 
   @Test
