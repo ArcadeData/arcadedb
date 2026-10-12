@@ -2633,6 +2633,21 @@ public class LocalDocumentType implements DocumentType {
       // modify a list this walk is iterating, straight into a ConcurrentModificationException.
       checkTimeSeriesHierarchy(superType);
 
+      // A LIGHTWEIGHT EDGE TYPE, OR ONE BELOW THIS TYPE, WOULD INHERIT EVERYTHING THE SUPER TYPE CARRIES, INCLUDING A
+      // MANDATORY OR DEFAULT-VALUED PROPERTY THAT NO LIGHTWEIGHT EDGE CAN HONOUR (ISSUE #9846). Under the same lock, and
+      // for the same reason, as the check above: it walks the subTypes lists linkSuperType mutates. Skipped on the two
+      // paths that pass createIndexes=false, because both re-establish a linkage that already holds: the schema load reads
+      // back what was accepted when it was declared, and dropType re-attaches the sub types of the dropped type to its
+      // parents, whose properties they already inherit through it
+      if (createIndexes) {
+        final Property constraint = embeddedSuperType.findPropertyAppliedToEmptyRecord();
+        if (constraint != null) {
+          final LocalEdgeType lightweight = findLightweightEdgeTypeInSubtree();
+          if (lightweight != null)
+            LocalEdgeType.checkCanBeLightweight(lightweight.getName(), embeddedSuperType);
+        }
+      }
+
       // CHECK FOR CONFLICT WITH PROPERTIES NAMES. Here for the same reason checkTimeSeriesHierarchy is, and the
       // reason it used to be outside the callback is that it only logs: getPolymorphicPropertyNames() recurses over
       // the super type's (mutable) superTypes lists, which linkSuperType/unlinkSuperType structurally modify, so a
@@ -2680,6 +2695,46 @@ public class LocalDocumentType implements DocumentType {
 
       return null;
     });
+  }
+
+  /**
+   * This type if it is a LIGHTWEIGHT edge type, otherwise the first type below it that is, or {@code null}. A lightweight
+   * edge type inherits every property its super types carry, so a property that cannot live on one cannot live on any
+   * type above it either (issue #9846). Walks the {@link #subTypes} lists that {@code linkSuperType}/{@code unlinkSuperType}
+   * mutate under the database write lock, so it has to run under it too.
+   */
+  LocalEdgeType findLightweightEdgeTypeInSubtree() {
+    if (this instanceof LocalEdgeType edgeType && edgeType.isLightweight())
+      return edgeType;
+
+    for (final LocalDocumentType subType : subTypes) {
+      final LocalEdgeType found = subType.findLightweightEdgeTypeInSubtree();
+      if (found != null)
+        return found;
+    }
+    return null;
+  }
+
+  /**
+   * Refuses to make {@code property}, declared here, apply to a record that does not carry it - {@code MANDATORY} or
+   * default-valued - while a LIGHTWEIGHT edge type below this one would inherit it: that edge has no record, so the
+   * constraint would be declared and never applied (issue #9846). Called from the property setters inside the schema
+   * session that publishes the change, so it is ordered against {@code addSuperType} and {@code CREATE EDGE TYPE ...
+   * LIGHTWEIGHT} by the same lock.
+   *
+   * @param constraint {@code "MANDATORY"} or {@code "default-valued"}, for the message
+   */
+  void checkNoLightweightEdgeTypeBelow(final Property property, final String constraint) {
+    // The schema load replays what was accepted when it was declared, and a database written before this check may hold the
+    // combination: it must still open
+    if (schema.getEmbedded().isReadingFromFile())
+      return;
+
+    final LocalEdgeType lightweight = findLightweightEdgeTypeInSubtree();
+    if (lightweight != null)
+      throw new SchemaException("Cannot make the property '" + name + "." + property.getName() + "' " + constraint
+          + " because edge type '" + lightweight.getName() + "' is declared LIGHTWEIGHT and inherits it: a lightweight edge has no "
+          + "record, so the constraint would never be applied to it. Declare the type without LIGHTWEIGHT, or keep the property optional");
   }
 
   /**

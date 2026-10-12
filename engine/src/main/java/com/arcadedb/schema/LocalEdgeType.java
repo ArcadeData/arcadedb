@@ -71,14 +71,89 @@ public class LocalEdgeType extends LocalDocumentType implements EdgeType {
         if (bucket.count() > 0)
           throw new SchemaException("Cannot declare edge type '" + getName()
               + "' LIGHTWEIGHT because it already contains edge records. Create a new lightweight type instead");
-    // Inside a schema recording session, which saves schema.json and, under HA, ships it to the followers (issue #9747)
-    getSchema().getEmbedded().recordChange(() -> this.lightweight = lightweight);
+    // Inside a schema recording session, which saves schema.json and, under HA, ships it to the followers (issue #9747).
+    // The inherited-constraint check is part of it, under the lock that orders it against a CREATE PROPERTY or an
+    // addSuperType elsewhere in the hierarchy (issue #9846)
+    getSchema().getEmbedded().recordChange(() -> {
+      if (lightweight && !this.lightweight)
+        checkCanBeLightweight(getName(), this);
+      this.lightweight = lightweight;
+    });
+  }
+
+  /**
+   * Refuses a LIGHTWEIGHT edge type that would declare or inherit a property a record must carry or is given (issue #9846).
+   * <p>
+   * A lightweight edge is a pair of pointers inside the two vertices: there is no record, so {@code DocumentValidator}
+   * never runs for it and a MANDATORY or default-valued property would never be applied or enforced - the same constraint
+   * that refuses the property-less edge of a regular type. The type's own {@code createProperty} already refuses ANY
+   * property on a lightweight type; this is the same rule for the properties that arrive from the other side, through a
+   * super type, and only for the ones that apply to an edge without properties. An optional property cannot be violated by
+   * an edge that holds none, so it stays legal.
+   *
+   * @param edgeTypeName the type that is, or is about to be, LIGHTWEIGHT
+   * @param type         the type whose polymorphic properties it would carry: itself, or the super type it is about to extend
+   */
+  static void checkCanBeLightweight(final String edgeTypeName, final DocumentType type) {
+    final Property constraint = type.findPropertyAppliedToEmptyRecord();
+    if (constraint != null)
+      throw new SchemaException("Edge type '" + edgeTypeName + "' cannot be LIGHTWEIGHT because it " + (type.getName().equals(edgeTypeName) ?
+          "declares or inherits" : "would inherit from '" + type.getName() + "'") + " the " + constraintKind(constraint) + " property '"
+          + constraint.getName() + "': a lightweight edge has no record, so the constraint would never be applied to it. Make the "
+          + "property optional, or declare the type without LIGHTWEIGHT");
+  }
+
+  /** What makes a property apply to a record that does not carry it, for the messages. */
+  static String constraintKind(final Property property) {
+    return property.isMandatory() ? "MANDATORY" : "default-valued";
   }
 
   public void setUnique(final boolean unique) {
     checkForSchemaMutation();
     // See setLightweight: a lightweight type builds no index, so nothing else would have shipped this flag (issue #9747)
     getSchema().getEmbedded().recordChange(() -> this.unique = unique);
+  }
+
+  /**
+   * Applies the storage shape and the {@code UNIQUE} declaration of an {@code ALTER TYPE} as ONE schema change (issue #9848).
+   * <p>
+   * The flag and the index that enforces it used to change in separate critical sections: the flag was flipped in one, the
+   * index created or dropped in the next. In the gap another session saw a type declaring UNIQUE with no index behind it, or
+   * the reverse, and a concurrent {@code DROP INDEX} of that index judged the constraint against the flag as it stood before
+   * the alter - so it was allowed, and it then dropped the index the alter had built. Here the flags and the index change
+   * inside one schema recording session, so the database write lock is held across all of it and the session saves
+   * {@code schema.json} (and, under HA, ships it) once.
+   * <p>
+   * All or nothing: when the index cannot be built (an already populated type that holds a duplicate pair) the flags go back
+   * to what they were, so the type never advertises a constraint nothing enforces.
+   *
+   * @param lightweight the requested storage shape, or {@code null} to leave it alone
+   * @param unique      the requested {@code UNIQUE} declaration, or {@code null} to leave it alone
+   */
+  public static void alterShape(final LocalSchema schema, final LocalEdgeType type, final Boolean lightweight,
+      final Boolean unique) {
+    schema.recordChange(() -> {
+      final boolean previousLightweight = type.lightweight;
+      final boolean previousUnique = type.unique;
+      try {
+        // Order matters when both arrive together: the storage shape decides how UNIQUE is enforced, so it is settled before
+        // the constraint is materialised.
+        if (lightweight != null)
+          type.setLightweight(lightweight);
+        if (unique != null)
+          // Withdrawn first so that the index drop below passes the guard that protects a live constraint's index
+          type.setUnique(unique);
+
+        if (type.isUnique())
+          applyUniqueConstraint(schema, type);
+        else
+          removeUniqueConstraint(schema, type);
+      } catch (final RuntimeException e) {
+        type.lightweight = previousLightweight;
+        type.unique = previousUnique;
+        throw e;
+      }
+    });
   }
 
   /**

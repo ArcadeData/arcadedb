@@ -54,3 +54,40 @@ one the adjacency listed.
 **Embedded API.** The `protected static final float MIN` constant of `SQLFunctionHeuristicPathFinderAbstract` is gone:
 it was the 0 weight of an edge without one. A custom subclass that referenced it reads the shared rule from
 `com.arcadedb.graph.EdgeWeight` instead (`MISSING`, `of(Object)`, `isWalkable(double)`).
+
+### `BACKUP DATABASE` applies the retention policy (#9844)
+
+The SQL `BACKUP DATABASE` statement now prunes the database's archive directory after a successful backup, the way the
+control plane's `trigger backup` has since #7472 and the scheduler always has. It writes into the same
+`<backup directory>/<database>` they prune, and retention works off what is in the directory rather than what is
+registered with the scheduler, so a database that is absent from the auto-backup configuration is pruned by the server
+level defaults. Before, repeated statements against such a database grew the directory without bound.
+
+**Who sees a different result.** An installation with auto-backup enabled that runs `BACKUP DATABASE` for a database
+beyond the `maxFiles` (or tiered) retention of its effective policy now keeps only that many archives, and the older ones
+are deleted after the statement. The archive just written is always kept. Archives that do not follow the
+`<db>-backup-<timestamp>.zip` convention, such as one named on purpose with `BACKUP DATABASE 'before-the-upgrade.zip'`,
+are invisible to retention and are never deleted. With auto-backup disabled nothing is pruned, as before.
+
+### A MANDATORY or default-valued property cannot reach a LIGHTWEIGHT edge type (#9846)
+
+A lightweight edge allocates no record, so nothing validates it: a `MANDATORY` property was never required and a default
+never applied, on a subtype that inherited them from its super type. The type's own `CREATE PROPERTY` already refused any
+property on a lightweight type; the same rule now covers the properties that arrive from a super type. These are refused
+with a `SchemaException` naming the property and the type:
+
+- `CREATE EDGE TYPE Child EXTENDS Parent LIGHTWEIGHT`, and `ALTER TYPE Child SUPERTYPE +Parent`, when `Parent` declares or
+  inherits a `MANDATORY` or default-valued property (a refused `CREATE` leaves no type behind);
+- declaring a property `MANDATORY` or giving it a default on a type that has a lightweight edge type below it;
+- `ALTER TYPE Child WITH lightweight = true` on a type that declares or inherits such a property.
+
+Optional properties, and properties that only constrain a value that is present (`NOT NULL`, `MIN`, `MAX`, `REGEXP`),
+stay legal under a lightweight subtype. A schema written before this check that already holds the combination still
+opens; it is only the DDL that is refused now.
+
+### `values()` on a sub-query row lists exactly the values of `keys()` (#9843)
+
+On a `Result` receiver (a sub-query row, a `LET` variable) `values()` used to answer the record's `@cat`, `@type` and
+`@rid` (and an edge's `@in` and `@out`) as unlabelled values, so a two-property document had 2 keys and 5 values, and on a
+row that overrode a property of its record it answered the record's value instead of the row's. It now answers one value
+per key, in the order of `keys()`, and the row's own value where the row has one.

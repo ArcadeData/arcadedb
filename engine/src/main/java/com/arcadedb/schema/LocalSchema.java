@@ -1971,9 +1971,16 @@ public class LocalSchema implements Schema {
   public void dropIndex(final String indexName) {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
-    checkIndexIsNotBackingAConstraint(indexName);
-
-    dropIndexInternal(indexName);
+    // THE GUARD AND THE DROP IN ONE SCHEMA SESSION, UNDER THE WRITE LOCK THAT ORDERS EVERY OTHER SCHEMA CHANGE (ISSUE #9848,
+    // THE SAME SHAPE AS #7672 ON dropProperty). THE GUARD READS THE EDGE TYPE'S UNIQUE FLAG AND THE INDEX MAP, AND A CHECK THAT
+    // RAN BEFORE THE LOCK WAS TAKEN COULD PASS AGAINST A STATE THAT 'ALTER TYPE ... WITH unique = true' CHANGED BEFORE THE DROP
+    // GOT THE LOCK, AFTER WHICH THE DROP REMOVED THE INDEX THAT ALTER HAD JUST BUILT AND LEFT THE TYPE ADVERTISING A CONSTRAINT
+    // NOTHING ENFORCED
+    recordFileChanges(() -> {
+      checkIndexIsNotBackingAConstraint(indexName);
+      dropIndexInternal(indexName);
+      return null;
+    });
   }
 
   /**

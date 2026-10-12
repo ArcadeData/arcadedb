@@ -170,6 +170,12 @@ public class TypeBuilder<T> {
       throw new IllegalArgumentException("Type name '" + typeName + "' contains non valid characters");
 
     return schema.recordFileChanges(() -> {
+      // BEFORE ANYTHING IS CREATED: the type is registered in the schema and given its buckets before its super types are
+      // linked, so the check addSuperType makes would refuse it with a half-built type left behind (issue #9846)
+      if (edgeLightweight && superTypes != null)
+        for (final LocalDocumentType sup : superTypes)
+          LocalEdgeType.checkCanBeLightweight(typeName, sup);
+
       final LocalDocumentType c;
       if (type.equals(VertexType.class))
         c = new LocalVertexType(schema, typeName);

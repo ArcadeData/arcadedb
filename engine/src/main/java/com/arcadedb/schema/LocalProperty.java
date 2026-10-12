@@ -122,6 +122,11 @@ public class LocalProperty extends AbstractProperty {
         // order of the two, so whoever arrives second sees the other's result rather than a snapshot taken before it.
         checkStillDeclaredIn(ownerType);
 
+        // A default applies to a record that does not carry the property, which no LIGHTWEIGHT edge type below this one can
+        // honour (issue #9846). A null default fills in nothing, so it is not one
+        if (convertedValue != null && convertedValue != DEFAULT_NOT_SET)
+          ownerType.checkNoLightweightEdgeTypeBelow(this, "default-valued");
+
         // One publication, so no reader can see the new value with the old (or no) compiled expression.
         this.defaultValue = new DefaultValue(convertedValue, compiled);
         ownerType.setPropertyHasDefault(name, convertedValue != DEFAULT_NOT_SET);
@@ -172,7 +177,12 @@ public class LocalProperty extends AbstractProperty {
     checkForSchemaMutation();
     final boolean changed = !Objects.equals(this.mandatory, mandatory);
     if (changed)
-      publish(() -> this.mandatory = mandatory);
+      publish(() -> {
+        // Checked in the session that publishes it, against the subtypes as they are under the write lock (issue #9846)
+        if (mandatory)
+          ((LocalDocumentType) owner).checkNoLightweightEdgeTypeBelow(this, "MANDATORY");
+        this.mandatory = mandatory;
+      });
     return this;
   }
 

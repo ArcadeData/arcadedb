@@ -1805,19 +1805,24 @@ public class ServerControlPlane {
    * Not a race with the scheduler's own prune, even though both now walk the same directory for the same database:
    * this runs inside the {@code BackupCoordinator} BACKUP slot {@link #triggerBackup} holds, and {@code BackupTask}
    * takes the same slot for the scheduled run, so a scheduled backup and an on-demand trigger of one database are
-   * serialised end to end - prune included - rather than overlapping (issue #7472).
+   * serialised end to end - prune included - rather than overlapping (issue #7472). The SQL {@code BACKUP DATABASE}
+   * statement reaches this through {@code BackupDirectoryResolver.applyRetention()} from inside the
+   * BACKUP slot it holds, for the same reason (issue #9844).
+   *
+   * @return the number of archives deleted
    */
-  private void pruneBackups(final Path backupDirectory, final String databaseName) {
+  int pruneBackups(final Path backupDirectory, final String databaseName) {
     final AutoBackupSchedulerPlugin plugin = getBackupPlugin();
     if (plugin == null)
-      return;
+      return 0;
 
     try {
-      plugin.applyRetention(backupDirectory.toString(), databaseName);
+      return plugin.applyRetention(backupDirectory.toString(), databaseName);
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.WARNING,
           "Cannot apply the backup retention policy for database '%s' after an on-demand backup: %s", databaseName,
           e.getMessage());
+      return 0;
     }
   }
 
