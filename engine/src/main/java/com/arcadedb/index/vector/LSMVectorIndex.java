@@ -11433,6 +11433,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
       // Parse variable-sized entries sequentially (no pointer table)
       int currentOffset = headerSize;
+      // Mirror put()/remove() for replicated pages (#9857).
+      List<DeltaVectorEntry> replicatedInserts = null;
+      int replicatedRemovals = 0;
       for (int i = 0; i < numberOfEntries; i++) {
         // Record absolute file offset for this entry
         final long entryFileOffset = pageStartOffset + BasePage.PAGE_HEADER_SIZE + currentOffset;
@@ -11486,9 +11489,34 @@ public class LSMVectorIndex implements Index, IndexInternal {
         if (id >= nextId.get())
           nextId.accumulateAndGet(id + 1, Math::max);
 
+        final boolean known = isCompacted || vectorIndex().isLive(id) || vectorIndex().isDeleted(id);
+        final boolean wasDeleted = known && vectorIndex().isDeleted(id);
+
         // Update VectorLocationIndex with this entry's absolute file offset
         // LSM semantics: later entries override earlier ones
         vectorIndex().addOrUpdate(id, isCompacted, entryFileOffset, rid, deleted);
+
+        if (!deleted && !known) {
+          if (replicatedInserts == null)
+            replicatedInserts = new ArrayList<>();
+          // Vector is read from the page.
+          replicatedInserts.add(new DeltaVectorEntry(id, rid, null));
+        } else if (deleted && !wasDeleted && !isCompacted)
+          replicatedRemovals++;
+      }
+
+      if (replicatedInserts != null || replicatedRemovals > 0) {
+        lock.writeLock().lock();
+        try {
+          if (replicatedInserts != null)
+            for (final DeltaVectorEntry entry : replicatedInserts)
+              queueDeltaEntry(entry);
+          mutationsSinceSerialize.addAndGet((replicatedInserts != null ? replicatedInserts.size() : 0) + replicatedRemovals);
+          if (graphState == GraphState.IMMUTABLE || graphState == GraphState.LOADING)
+            this.graphState = GraphState.MUTABLE;
+        } finally {
+          lock.writeLock().unlock();
+        }
       }
 
       LogManager.instance()
