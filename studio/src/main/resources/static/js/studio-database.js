@@ -3596,7 +3596,7 @@ function displaySchema(onReady) {
       if (sec.key == "timeseries")
         html += "<span class='sidebar-section-header-actions'><button" + studioAction("createTimeSeriesType") + " data-prevent-default title='Create timeseries type'><i class='fa fa-plus'></i></button></span>";
       else
-        html += "<span class='sidebar-section-header-actions'><button onclick='createType(\"" + sec.key + "\"); return false;' title='Create " + sec.key + " type'><i class='fa fa-plus'></i></button></span>";
+        html += "<span class='sidebar-section-header-actions'><button" + studioAction("createType", [sec.key]) + " data-prevent-default title='Create " + sec.key + " type'><i class='fa fa-plus'></i></button></span>";
       html += "</div>";
       html += "<div class='sidebar-badges'>";
 
