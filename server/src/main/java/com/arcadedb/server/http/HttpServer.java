@@ -490,8 +490,8 @@ public class HttpServer implements ServerPlugin {
   /**
    * The handler serving each route {@link #getRegisteredRoutes()} lists, in registration order. Public because the sweeps that
    * ask a question of the handlers themselves live next to them, in the {@code handler} package: {@code
-   * HttpServerRoutesDispatchTest} holds every route to a verdict on whether it may block the Undertow IO thread, the same
-   * assertion the {@code ha-raft} routes have carried since issue #7621 (issue #9849).
+   * Issue9849ServerRoutesIoThreadDispatchTest} holds every route to a verdict on whether it may block the Undertow IO thread, the
+   * same assertion the {@code ha-raft} routes have carried since issue #7621 (issue #9849).
    */
   public Map<RouteRecordingRoutingHandler.RouteDescriptor, HttpHandler> getRegisteredRouteHandlers() {
     return registeredRouteHandlers;
