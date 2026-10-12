@@ -2580,6 +2580,17 @@ public class LocalDocumentType implements DocumentType {
       superType.rebuildPolymorphicBucketsCache();
   }
 
+  /**
+   * Links {@code superType} above this type.
+   *
+   * @param createIndexes {@code true} for a NEW linkage, which is validated (time series hierarchy, a LIGHTWEIGHT edge type
+   *                      below this one against the super type's MANDATORY or default-valued properties, issue #9846) and
+   *                      propagates the super type's indexes. {@code false} marks the two callers that RE-ESTABLISH a linkage
+   *                      that already holds - the schema load, which replays what was accepted when it was declared, and the
+   *                      re-attachment of a dropped type's sub types to its parents, whose properties they already inherit
+   *                      through it - so there is nothing new to validate or to build, and a database written before a check
+   *                      existed must still open
+   */
   DocumentType addSuperType(final DocumentType superType, final boolean createIndexes) {
     checkForSchemaMutation();
     if (this.equals(superType))
@@ -2704,11 +2715,19 @@ public class LocalDocumentType implements DocumentType {
    * mutate under the database write lock, so it has to run under it too.
    */
   LocalEdgeType findLightweightEdgeTypeInSubtree() {
+    return findLightweightEdgeTypeInSubtree(new HashSet<>());
+  }
+
+  /** A type reachable through more than one path (a diamond) is walked once, so a wide lattice costs its size, not its path count. */
+  private LocalEdgeType findLightweightEdgeTypeInSubtree(final Set<LocalDocumentType> visited) {
+    if (!visited.add(this))
+      return null;
+
     if (this instanceof LocalEdgeType edgeType && edgeType.isLightweight())
       return edgeType;
 
     for (final LocalDocumentType subType : subTypes) {
-      final LocalEdgeType found = subType.findLightweightEdgeTypeInSubtree();
+      final LocalEdgeType found = subType.findLightweightEdgeTypeInSubtree(visited);
       if (found != null)
         return found;
     }
