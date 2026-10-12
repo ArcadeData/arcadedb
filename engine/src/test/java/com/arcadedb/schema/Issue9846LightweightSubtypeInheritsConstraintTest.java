@@ -200,6 +200,28 @@ class Issue9846LightweightSubtypeInheritsConstraintTest extends TestHelper {
     assertThatThrownBy(() -> since.setMandatory(true)).isInstanceOf(SchemaException.class).hasMessageContaining(CHILD);
   }
 
+  /**
+   * A diamond reaches its bottom type through two paths: the walk visits it once, and finds the lightweight type below it
+   * whichever path it takes. Without a lightweight type below, the same diamond accepts the constraint.
+   */
+  @Test
+  void aLightweightTypeBelowADiamondIsFound() {
+    final EdgeType top = database.getSchema().createEdgeType(PARENT);
+    database.getSchema().createEdgeType("Issue9846Left").addSuperType(PARENT);
+    database.getSchema().createEdgeType("Issue9846Right").addSuperType(PARENT);
+    final Property since = top.createProperty("since", Type.DATETIME);
+
+    // no lightweight type under the diamond yet: the constraint is accepted, and taken back so the next step starts clean
+    since.setMandatory(true);
+    since.setMandatory(false);
+
+    database.getSchema().buildEdgeType().withName(CHILD).withSuperType("Issue9846Left").withSuperType("Issue9846Right")
+        .withLightweight(true).create();
+
+    assertThatThrownBy(() -> since.setMandatory(true)).isInstanceOf(SchemaException.class).hasMessageContaining(CHILD);
+    assertThat(since.isMandatory()).isFalse();
+  }
+
   @Test
   void aTypeThatInheritsOrDeclaresAConstrainedPropertyCannotBecomeLightweight() {
     final EdgeType parent = database.getSchema().createEdgeType(PARENT);

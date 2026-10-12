@@ -145,7 +145,11 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
         type.addSuperType(c);
     } catch (final RuntimeException e) {
       // The safety net for the refusals only addSuperType can know about (a partition the subtype cannot take, a time series
-      // hierarchy): the type is already registered by then, and a refused CREATE must leave nothing behind
+      // hierarchy): the type is already registered by then, and a refused CREATE must leave nothing behind. This is a
+      // compensating drop, a second schema session, not an atomic undo: one frame around create plus link is not possible,
+      // because addSuperType waits for async quiescence OUTSIDE its frame (the write lock is what an async worker needs to
+      // commit), so holding the lock across it would stall. The refusals that can be known beforehand are checked before
+      // the create (checkSuperTypesBeforeCreate), which leaves no window at all
       try {
         schema.dropType(typeName);
       } catch (final RuntimeException dropFailure) {

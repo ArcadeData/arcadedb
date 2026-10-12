@@ -52,7 +52,9 @@ public class SQLMethodValues extends AbstractSQLMethodKeysValues {
 
   @Override
   protected Object fromDocument(final Document document) {
-    // toMap(false) EXCLUDES THE METADATA FIELDS (@rid, @type, @cat) AND CONVERTS THE VALUES THE WAY IT ALWAYS HAS (ISSUE #6472)
+    // toMap(false) excludes the metadata fields (@rid, @type, @cat) and is the one place a document's values are converted
+    // (embedded documents and lists become maps and lists), exactly as values() has always answered them (#6472). It is one
+    // map per call, as before; the lookup by name is what keeps each value in the slot of its key
     final Map<String, Object> properties = document.toMap(false);
     return valuesOf(document.getPropertyNames(), properties::get);
   }
