@@ -55,6 +55,55 @@ one the adjacency listed.
 it was the 0 weight of an edge without one. A custom subclass that referenced it reads the shared rule from
 `com.arcadedb.graph.EdgeWeight` instead (`MISSING`, `of(Object)`, `isWalkable(double)`).
 
+### `BACKUP DATABASE` applies the retention policy (#9844)
+
+The SQL `BACKUP DATABASE` statement now prunes the database's archive directory after a successful backup, the way the
+control plane's `trigger backup` has since #7472 and the scheduler always has. It writes into the same
+`<backup directory>/<database>` they prune, and retention works off what is in the directory rather than what is
+registered with the scheduler, so a database that is absent from the auto-backup configuration is pruned by the server
+level defaults. Before, repeated statements against such a database grew the directory without bound.
+
+**Who sees a different result.** An installation with auto-backup enabled that runs `BACKUP DATABASE` for a database
+beyond the `maxFiles` (or tiered) retention of its effective policy now keeps only that many archives, and the older ones
+are deleted after the statement. The archive just written is always kept. Archives that do not follow the
+`<db>-backup-<timestamp>.zip` convention, such as one named on purpose with `BACKUP DATABASE 'before-the-upgrade.zip'`,
+are invisible to retention and are never deleted. With auto-backup disabled nothing is pruned, as before.
+
+### A MANDATORY or default-valued property cannot reach a LIGHTWEIGHT edge type (#9846)
+
+A lightweight edge allocates no record, so nothing validates it: a `MANDATORY` property was never required and a default
+never applied, on a subtype that inherited them from its super type. The type's own `CREATE PROPERTY` already refused any
+property on a lightweight type; the same rule now covers the properties that arrive from a super type. These are refused
+with a `SchemaException` naming the property and the type:
+
+- `CREATE EDGE TYPE Child EXTENDS Parent LIGHTWEIGHT`, and `ALTER TYPE Child SUPERTYPE +Parent`, when `Parent` declares or
+  inherits a `MANDATORY` or default-valued property (a refused `CREATE` leaves no type behind);
+- declaring a property `MANDATORY` or giving it a default on a type that has a lightweight edge type below it;
+- `ALTER TYPE Child WITH lightweight = true` on a type that declares or inherits such a property.
+
+Optional properties, and properties that only constrain a value that is present (`NOT NULL`, `MIN`, `MAX`, `REGEXP`),
+stay legal under a lightweight subtype. A schema written before this check that already holds the combination still
+opens; it is only the DDL that is refused now.
+
+### `values()` on a sub-query row lists exactly the values of `keys()` (#9843)
+
+On a `Result` receiver (a sub-query row, a `LET` variable) `values()` used to answer the record's `@cat`, `@type` and
+`@rid` (and an edge's `@in` and `@out`) as unlabelled values, so a two-property document had 2 keys and 5 values, and on a
+row that overrode a property of its record it answered the record's value instead of the row's. It now answers one value
+per key, in the order of `keys()`, and the row's own value where the row has one.
+
+### A bare `ORDER BY @rid` on a MATCH that returns columns is refused (#9911)
+
+When a SQL `MATCH` returns columns (`RETURN a.x AS x, ...`), `$paths` or `$patterns`, each row is a new object built from
+the matched aliases and has no `@rid` of its own, so `ORDER BY @rid` sorted on null and silently kept the pattern order.
+It now fails at planning time with a message naming the forms that work: `ORDER BY <alias>.@rid` or `ORDER BY` a
+returned column (`RETURN n.@rid AS noteRid ... ORDER BY noteRid`). The same applies to the other bare record attributes,
+such as `@type`. `RETURN $elements`, `$pathElements` and `RETURN expand(...)` return records, so `ORDER BY @rid` keeps
+working there.
+
+**Who sees a different answer.** A query that used a bare `ORDER BY @rid` on such a MATCH, for example as the cursor of a
+keyset pagination, now fails instead of returning rows in an order the engine never applied.
+
 ## Fixes
 
 - **`vector.sum`, `vector.avg`, `vector.min` and `vector.max` aggregate when written with the dotted name (#9768).** In SQL
@@ -102,3 +151,13 @@ it was the 0 weight of an edge without one. A custom subclass that referenced it
   were merged. The names of the row (`@rid`, `@type`, `1:Integer` / `1:Long`) now apply to every map a result holds, in a list,
   a set or a `Path` (which stays a `Path`), so the embedded `Result`, its JSON and the HTTP answer agree. A nested map that
   used to render `id` / `label` for the tokens now renders `@rid` / `@type`.
+- **A MATCH node with `rid:` honours its `type:` and `bucket:` (#9912).** `{type: Person, rid: #12:0}` returned `#12:0`
+  whatever its type, and as the first node of a longer pattern on a large type it could ignore the `rid:` and start from every
+  record of the type. The record is now fetched by RID and must match the type (subtypes included) and the bucket, or the
+  node matches nothing. A node bound by `rid:` is the preferred starting point of the pattern; `type:` with `bucket:` applies
+  both on the starting node too; a `rid:` computed from another alias (`{"@rid": $matched.a.ref}`) is resolved after that alias.
+- **A MATCH node filtered by `SEARCH_INDEX()` is streamed (#9908).** It was loaded entirely before the pattern started,
+  whatever the `LIMIT`, because the planner read the function's "cannot estimate" as "very few rows" (geospatial predicates
+  too). It is now streamed, still preferred as a starting point over a scan of a large type. An equality on an indexed
+  property now also helps MATCH choose its starting point (the index count used to be computed and discarded), so
+  `SEARCH_INDEX(...) AND code = 'X'` is bounded by the index on `code`.
