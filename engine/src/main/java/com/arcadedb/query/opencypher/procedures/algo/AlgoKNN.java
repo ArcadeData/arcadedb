@@ -92,7 +92,7 @@ public class AlgoKNN extends AbstractAlgoProcedure {
     validateArgs(args);
 
     final int rawK             = args.length > 0 && args[0] instanceof Number num ? extractCount(num, "k") : 10;
-    final String[] relTypes    = args.length > 1 ? extractRelTypes(args[1]) : null;
+    final String[] relTypes    = args.length > 1 ? extractRelTypes(args[1], context) : null;
     final Vertex.DIRECTION dir = args.length > 2 ? parseDirection(extractString(args[2], "direction")) : Vertex.DIRECTION.BOTH;
 
     final Database db = context.getDatabase();

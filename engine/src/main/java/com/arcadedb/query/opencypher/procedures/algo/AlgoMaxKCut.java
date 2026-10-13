@@ -114,7 +114,7 @@ public class AlgoMaxKCut extends AbstractAlgoProcedure {
     final int restarts = config != null && config.get("restarts") instanceof Number n ? extractInt(n, "restarts", 1) : 3;
     final String weightProperty = config != null ? (String) config.get("weightProperty") : null;
     final long seed = config != null && config.get("seed") instanceof Number n ? n.longValue() : -1L;
-    final String[] relTypes = config != null ? extractRelTypes(config.get("relTypes")) : null;
+    final String[] relTypes = config != null ? extractRelTypes(config.get("relTypes"), context) : null;
     final Vertex.DIRECTION dir = parseDirection(config != null ? (String) config.get("direction") : null);
 
     final Database db = context.getDatabase();

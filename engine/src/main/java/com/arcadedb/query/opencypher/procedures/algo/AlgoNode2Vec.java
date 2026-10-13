@@ -118,7 +118,7 @@ public class AlgoNode2Vec extends AbstractAlgoProcedure {
     final double p = config != null && config.get("p") instanceof Number n ? n.doubleValue() : 1.0;
     final double q = config != null && config.get("q") instanceof Number n ? n.doubleValue() : 1.0;
     final long seed = config != null && config.get("seed") instanceof Number n ? n.longValue() : -1L;
-    final String[] relTypes = config != null ? extractRelTypes(config.get("relTypes")) : null;
+    final String[] relTypes = config != null ? extractRelTypes(config.get("relTypes"), context) : null;
     final Vertex.DIRECTION dir = parseDirection(config != null ? (String) config.get("direction") : null);
 
     final Database db = context.getDatabase();

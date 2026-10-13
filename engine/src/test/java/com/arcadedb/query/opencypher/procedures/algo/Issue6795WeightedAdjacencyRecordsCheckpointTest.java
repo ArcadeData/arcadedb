@@ -99,7 +99,7 @@ class Issue6795WeightedAdjacencyRecordsCheckpointTest {
     final long budget = GRAPH_BYTES + ROW_HEADER_BYTES + 200L;
     database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, budget);
 
-    final Throwable failure = catchFailure(() -> drain("CALL algo.mst('w') YIELD source RETURN source"));
+    final Throwable failure = catchFailure(() -> drain("CALL algo.mst(null, 'w') YIELD source RETURN source"));
 
     assertThat(failure).as("a graph this far over budget must still be refused").isNotNull();
     assertThat(failure).hasStackTraceContaining("the weighted adjacency list would need");
@@ -142,7 +142,7 @@ class Issue6795WeightedAdjacencyRecordsCheckpointTest {
   @Test
   void aBudgetThatFitsLetsTheCallThrough() {
     database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, -1L);
-    assertThat(drain("CALL algo.mst('w') YIELD source RETURN source")).hasSize(NODE_COUNT - 1);
+    assertThat(drain("CALL algo.mst(null, 'w') YIELD source RETURN source")).hasSize(NODE_COUNT - 1);
   }
 
   private List<Object> drain(final String query) {

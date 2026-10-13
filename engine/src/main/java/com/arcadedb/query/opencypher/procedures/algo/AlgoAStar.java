@@ -82,6 +82,7 @@ public class AlgoAStar extends AbstractAlgoProcedure {
     final Vertex startNode = extractVertex(args[0], "startNode");
     final Vertex endNode = extractVertex(args[1], "endNode");
     final String relType = extractString(args[2], "relTypes");
+    requireEdgeTypes(context.getDatabase(), relType);
     final String weightProperty = extractString(args[3], "weightProperty");
 
     // Build options map for A*

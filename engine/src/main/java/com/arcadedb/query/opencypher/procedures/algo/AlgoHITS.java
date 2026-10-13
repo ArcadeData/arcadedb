@@ -80,7 +80,7 @@ public class AlgoHITS extends AbstractAlgoProcedure {
   public Stream<Result> execute(final Object[] args, final Result inputRow, final CommandContext context) {
     validateArgs(args);
 
-    final String[] relTypes    = args.length > 0 ? extractRelTypes(args[0]) : null;
+    final String[] relTypes    = args.length > 0 ? extractRelTypes(args[0], context) : null;
     final int maxIterations    = args.length > 1 ? extractInt((Number) args[1], "maxIterations", 1) : 20;
     final double tolerance     = args.length > 2 ? ((Number) args[2]).doubleValue() : 1e-6;
 

@@ -25,7 +25,6 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
 import java.util.stream.Stream;
 
@@ -79,7 +78,7 @@ public class AlgoArticulationPoints extends AbstractAlgoProcedure {
   public Stream<Result> execute(final Object[] args, final Result inputRow, final CommandContext context) {
     validateArgs(args);
 
-    final String[] relTypes = args.length > 0 ? extractRelTypes(args[0]) : null;
+    final String[] relTypes = args.length > 0 ? extractRelTypes(args[0], context) : null;
 
     final Database db = context.getDatabase();
     final GraphData graph = loadGraph(db, null, relTypes, context);
@@ -88,60 +87,23 @@ public class AlgoArticulationPoints extends AbstractAlgoProcedure {
       return Stream.empty();
 
     final int[][] adj = graph.adjacency(Vertex.DIRECTION.BOTH, relTypes);
-
-    final int[] disc       = new int[n];
-    final int[] low        = new int[n];
-    final int[] parent     = new int[n];
+    final UndirectedLowPointDfs dfs = new UndirectedLowPointDfs(adj);
     final int[] childCount = new int[n];
-    final boolean[] isAP   = new boolean[n];
+    final boolean[] isAP = new boolean[n];
 
-    Arrays.fill(disc, -1);
-    Arrays.fill(parent, -1);
-
-    // Iterative DFS stack
-    final int[] stack   = new int[n];
-    final int[] edgeIdx = new int[n];
-    int timer = 0;
-
-    for (int root = 0; root < n; root++) {
-      if (disc[root] != -1)
-        continue;
-
-      int top = 0;
-      stack[top]   = root;
-      edgeIdx[top] = 0;
-      disc[root]   = low[root] = timer++;
-
-      while (top >= 0) {
-        final int v = stack[top];
-        if (edgeIdx[top] < adj[v].length) {
-          final int u = adj[v][edgeIdx[top]++];
-          if (disc[u] == -1) {
-            // Tree edge: visit u
-            parent[u] = v;
-            childCount[v]++;
-            disc[u] = low[u] = timer++;
-            top++;
-            stack[top]   = u;
-            edgeIdx[top] = 0;
-          } else if (u != parent[v])
-            // Back edge: update low
-            low[v] = Math.min(low[v], disc[u]);
-        } else {
-          // Done with v, backtrack
-          top--;
-          if (top >= 0) {
-            final int p = stack[top];
-            low[p] = Math.min(low[p], low[v]);
-            // Check AP condition for p
-            if (parent[p] == -1 && childCount[p] >= 2)
-              isAP[p] = true;
-            if (parent[p] != -1 && low[v] >= disc[p])
-              isAP[p] = true;
-          }
-        }
+    dfs.walk(new UndirectedLowPointDfs.Visitor() {
+      @Override
+      public void treeEdge(final int parent, final int child) {
+        childCount[parent]++;
       }
-    }
+
+      @Override
+      public void childFinished(final int parent, final int child) {
+        // A ROOT CUTS THE GRAPH WHEN IT HAS TWO DFS CHILDREN; ANY OTHER VERTEX WHEN A CHILD'S SUBTREE CANNOT CLIMB ABOVE IT
+        if (dfs.parent[parent] == -1 ? childCount[parent] >= 2 : dfs.low[child] >= dfs.disc[parent])
+          isAP[parent] = true;
+      }
+    });
 
     final List<Result> results = new ArrayList<>();
     for (int i = 0; i < n; i++) {
