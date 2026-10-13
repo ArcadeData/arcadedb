@@ -999,7 +999,8 @@ public class MatchExecutionPlanner {
     final boolean checkBucket = bucketName != null && (rid != null || typeName != null);
     if (checkType || checkBucket) {
       // SelectExecutionPlanner ALWAYS ANSWERS A SelectExecutionPlan. THE CHECKS MUST NEVER BE SKIPPED SILENTLY: A PLAN THEY CANNOT
-      // BE CHAINED TO WOULD ANSWER RECORDS OF ANY TYPE OR BUCKET
+      // BE CHAINED TO WOULD ANSWER RECORDS OF ANY TYPE OR BUCKET. THEY ARE CHAINED LAST, WHICH IS RIGHT ONLY BECAUSE THE SELECT ABOVE
+      // IS A BARE FETCH + WHERE: GIVE IT A PROJECTION, AN ORDER BY OR A LIMIT AND THESE CHECKS MUST MOVE INTO ITS WHERE INSTEAD
       if (!(plan instanceof SelectExecutionPlan selectPlan))
         throw new CommandExecutionException(
             "Cannot apply the type/bucket constraints of MATCH alias '" + alias + "' to a " + plan.getClass().getSimpleName());
@@ -1170,11 +1171,8 @@ public class MatchExecutionPlanner {
       // existsType(), NOT getType(): getType() RAISES ON AN UNKNOWN NAME, SO A null CHECK ON IT NEVER REACHED THIS MESSAGE
       if (typeName != null && !schema.existsType(typeName))
         throw new CommandExecutionException("Type '" + typeName + "' not defined");
-      // #5636: one null-tolerant lookup instead of two throwing ones. getBucketByName(String) raises on an unknown
-      // name, so the guard was dead and the MATCH-specific message never reached the user.
-      // FQN: the parser's Bucket is already imported in this file under the same simple name.
-      final com.arcadedb.engine.Bucket namedBucket = bucketName != null ? schema.getBucketByNameIfExists(bucketName) : null;
-      if (bucketName != null && namedBucket == null)
+      // #5636: getBucketByName(String) raises on an unknown name, so a null check on it never reached the MATCH-specific message
+      if (bucketName != null && !schema.existsBucket(bucketName))
         throw new CommandExecutionException("Bucket '" + bucketName + "' not defined");
 
       // A rid: BINDS THE NODE TO AT MOST ONE RECORD, WHATEVER ITS type: OR bucket: SAY: THE BEST ROOT THERE IS. IT USED TO BE
@@ -1202,7 +1200,7 @@ public class MatchExecutionPlanner {
         result.put(alias, upperBound);
       } else if (bucketName != null) {
         final Database db = context.getDatabase();
-        final int bucketId = namedBucket.getFileId();
+        final int bucketId = schema.getBucketByName(bucketName).getFileId();
         final DocumentType oClass = db.getSchema().getTypeByBucketId(bucketId);
         if (oClass != null) {
           final long upperBound;
