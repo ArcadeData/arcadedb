@@ -45,9 +45,11 @@ import com.arcadedb.schema.LocalSchema;
  * quantization. Every node builds its own graph, on the inner database instance and without the WAL (issues #8292,
  * #8905), from the vectors the index pages DO replicate, so the graph pages carry different bytes on every node - the
  * JVector build is parallel and not deterministic - and the PQ codebooks are trained from the same node-local pass.
- * The three plain side files are not shipped by a snapshot at all; the {@code .vecgraph} component is (it is a
- * registered page file), without the manifest beside it (issue #9758). A divergence in any of them is a cache that
- * differs, never data that does: the vectors themselves live in the index's own pages, which ARE compared.</li>
+ * The three plain side files are not shipped by a snapshot at all; the {@code .vecgraph} component is shipped EMPTY
+ * (issue #9758), so the follower keeps it registered under the same file id and builds its own graph, with its own
+ * manifest, on first use - rather than reusing the leader's pages with nothing beside them to vouch for them. A
+ * divergence in any of them is a cache that differs, never data that does: the vectors themselves live in the index's
+ * own pages, which ARE compared.</li>
  * <li>{@link TransactionManager#LAST_TX_ID_FILE_NAME}: the recency marker, holding the highest transaction id this
  * node had assigned the last time it rotated its WAL or closed (issue #5277). A snapshot ships a synthesized copy, but
  * on a live node the file is rewritten at moments that are this node's own, so two healthy peers at the same commit
@@ -76,8 +78,8 @@ public final class NodeLocalFiles {
    * is left out too, which is harmless because nothing in the database reads or ships it.
    * <p>
    * <b>"Node-local" answers "may two healthy copies differ here?", not "is it shipped?".</b> The {@code .vecgraph}
-   * component and {@code last-tx-id.bin} are both node-local and both carried by an HA snapshot, so a caller deciding
-   * what to SHIP or BACK UP must not use this method to skip files.
+   * component (as an empty file, issue #9758) and {@code last-tx-id.bin} are both node-local and both carried by an HA
+   * snapshot, so a caller deciding what to SHIP or BACK UP must not use this method to skip files.
    */
   public static boolean isNodeLocalFileName(final String fileName) {
     return fileName.equals(LocalSchema.STATISTICS_FILE_NAME)
@@ -100,6 +102,15 @@ public final class NodeLocalFiles {
         || endsWithExtension(fileName, LSMVectorIndexGraphManifest.FILE_EXT)
         || endsWithExtension(fileName, LSMVectorIndexOrdinalMapFile.FILE_EXT)
         || endsWithExtension(fileName, LSMVectorIndexPQFile.FILE_EXT);
+  }
+
+  /**
+   * True when {@code fileName} is an LSM vector index's {@code .vecgraph} page component alone - the one file of
+   * {@link #isVectorGraphFileName} that is registered, and so the one an HA snapshot reaches (it ships it empty, issue
+   * #9758). Matched by the final extension, like the rest of this class.
+   */
+  public static boolean isVectorGraphComponentFileName(final String fileName) {
+    return endsWithExtension(fileName, LSMVectorIndexGraphFile.FILE_EXT);
   }
 
   private static boolean endsWithExtension(final String fileName, final String extension) {

@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
+import com.arcadedb.engine.NodeLocalFiles;
 import com.arcadedb.engine.TransactionManager;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.PageSnapshot;
@@ -141,6 +142,9 @@ public class SnapshotHttpHandler implements HttpHandler {
 
   /** How far {@link #rootCauseMessage} walks a cause chain before giving up. Real ones are two or three links. */
   private static final int MAX_CAUSE_DEPTH = 20;
+
+  /** The content of a page file {@link #isShippedEmpty} ships without its pages (issue #9758). */
+  private static final byte[] EMPTY_ENTRY = new byte[0];
 
   /**
    * Budget for pausing TimeSeries compaction before the page window opens (issue #7337). The same 60s
@@ -982,7 +986,7 @@ public class SnapshotHttpHandler implements HttpHandler {
       for (final PageSnapshot.SnapshotConfigFile config : snapshot.getConfigurationFiles())
         total += config.size();
       for (final PageSnapshot.SnapshotFile file : snapshot.getFiles())
-        if (isShippedPageFile(file.fileName()))
+        if (isShippedPageFile(file.fileName()) && !isShippedEmpty(file.fileName()))
           total += file.size();
     } else {
       final File configFile = ((LocalDatabase) db.getEmbedded()).getConfigurationFile();
@@ -994,7 +998,7 @@ public class SnapshotHttpHandler implements HttpHandler {
         total += schemaFile.length();
 
       for (final ComponentFile file : new ArrayList<>(db.getFileManager().getFiles()))
-        if (file != null && isShippedPageFile(file.getFileName()))
+        if (file != null && isShippedPageFile(file.getFileName()) && !isShippedEmpty(file.getFileName()))
           total += file.getOSFile().length();
     }
 
@@ -1125,12 +1129,44 @@ public class SnapshotHttpHandler implements HttpHandler {
       final List<SnapshotManager.ManifestEntry> manifest) throws Exception {
     if (snapshot != null) {
       for (final PageSnapshot.SnapshotFile file : snapshot.getFiles())
-        if (isShippedPageFile(file.fileName()))
-          addStreamToZip(zipOut, file.fileName(), snapshot.newInputStream(file.fileId()), manifest);
+        if (isShippedPageFile(file.fileName())) {
+          if (isShippedEmpty(file.fileName()))
+            addBytesToZip(zipOut, file.fileName(), EMPTY_ENTRY, manifest);
+          else
+            addStreamToZip(zipOut, file.fileName(), snapshot.newInputStream(file.fileId()), manifest);
+        }
     } else
       for (final ComponentFile file : new ArrayList<>(db.getFileManager().getFiles()))
-        if (file != null && isShippedPageFile(file.getFileName()))
-          addFileToZip(zipOut, file.getOSFile(), manifest);
+        if (file != null && isShippedPageFile(file.getFileName())) {
+          if (isShippedEmpty(file.getFileName())) {
+            final File osFile = file.getOSFile();
+            // THE SAME EXISTENCE AND SYMLINK RULES addFileToZip APPLIES, SO THE TWO KINDS OF ENTRY CANNOT DISAGREE
+            // ABOUT WHICH REGISTERED FILES THE ARCHIVE NAMES
+            if (osFile.exists() && !Files.isSymbolicLink(osFile.toPath()))
+              addBytesToZip(zipOut, osFile.getName(), EMPTY_ENTRY, manifest);
+          } else
+            addFileToZip(zipOut, file.getOSFile(), manifest);
+        }
+  }
+
+  /**
+   * Whether a shipped page file goes out as an EMPTY entry rather than with its pages: an LSM vector index's
+   * {@code .vecgraph} component (issue #9758). Every node builds that graph itself, on the inner instance and without
+   * the WAL (issues #8292, #8905), and vouches for it with plain side files - the {@code .vecgraphfp} manifest, the
+   * {@code .vecordmap} ordinal map and the {@code .vecpq} product quantization - that no snapshot carries. Shipped
+   * with its pages, the graph landed on the follower with no manifest beside it, which the index reads as "persisted
+   * by a version older than #6106" and reuses on the node count alone: an unverified reuse in a healthy cluster, or
+   * wasted bytes when the index is PRODUCT-quantized and the missing {@code .vecpq} forces a rebuild anyway.
+   * <p>
+   * Shipped EMPTY rather than skipped, which is the state of a freshly created index on every node: the follower
+   * keeps the component registered under the leader's file id, so the id space it allocates from stays the leader's,
+   * and its first search builds a graph of its own - with a manifest - from the vectors the index pages DO carry.
+   * <p>
+   * Matched by the final extension ({@link NodeLocalFiles#isVectorGraphComponentFileName}), so a bucket of a type merely
+   * named {@code vecgraph} is still shipped in full.
+   */
+  static boolean isShippedEmpty(final String fileName) {
+    return NodeLocalFiles.isVectorGraphComponentFileName(fileName);
   }
 
   /**
