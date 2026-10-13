@@ -4128,13 +4128,28 @@ public class SelectExecutionPlanner {
           block = block.copy();
           block.getSubBlocks().remove(blockCandidateFunction);
         }
+        // The @rid conjuncts are decided by the function on its candidates' RIDs, before a record is loaded, instead of by
+        // the filter after the fetch (issue #9909)
+        final List<BooleanExpression> ridConditions = pushableRidConditions(block, info);
+        if (!ridConditions.isEmpty()) {
+          final AndBlock residual = new AndBlock();
+          for (final BooleanExpression condition : block.getSubBlocks())
+            if (!containsInstance(ridConditions, condition))
+              residual.getSubBlocks().add(condition);
+          block = residual;
+        }
+        final IndexedFunctionPushdown.Order order = indexedFunctionRidOrder(blockCandidateFunction, info, context);
         // An OR splits the WHERE into branches whose rows are merged and deduplicated, so no branch alone knows how many of
         // its rows the LIMIT will take: only a single block can hand the function its row limit (issue #9895)
-        final int functionLimit = info.flattenedWhereClause.size() == 1 && coversWholeHierarchy(filterClusters, typez, context) ?
-            indexedFunctionRowLimit(blockCandidateFunction, block, info, context) : -1;
+        final int functionLimit =
+            info.flattenedWhereClause.size() == 1 && coversWholeHierarchy(filterClusters, typez, info, ridConditions, context) ?
+            indexedFunctionRowLimit(blockCandidateFunction, block, info, order, context) : -1;
         final FetchFromIndexedFunctionStep step = new FetchFromIndexedFunctionStep(blockCandidateFunction, info.target,
-            functionLimit, context);
-        if (functionLimit > -1 && info.orderBy != null)
+            functionLimit, ridConditions, order, context);
+        if (order != IndexedFunctionPushdown.Order.FUNCTION)
+          // The function answers in the RID order the ORDER BY asks for, and nothing after the fetch reorders the rows
+          info.orderApplied = true;
+        else if (functionLimit > -1 && info.orderBy != null)
           // A limit is handed over with an ORDER BY only when it is exactly $score DESC (isOrderByScoreDescending), the order
           // the fetch produces its rows in: a sort would only drain the fetch past the rows the LIMIT takes, into the matches
           // the limit spared
@@ -4195,7 +4210,8 @@ public class SelectExecutionPlanner {
    *   <li>a residual filter other than the function's own condition, which the plan evaluates again on each row and which
    *       holds for every row the function returns - a filter could reject a row the limit counted;</li>
    *   <li>UNWIND and expand, which turn one row into any number; DISTINCT, GROUP BY and aggregates, which fold rows;</li>
-   *   <li>an ORDER BY other than {@code $score DESC}, the order the function produces its rows in;</li>
+   *   <li>an ORDER BY other than {@code $score DESC}, the order the function produces its rows in, or than the
+   *       {@code @rid} order it was asked to produce them in (issue #9909);</li>
    *   <li>a SKIP or LIMIT that cannot be evaluated at planning time. The plan is not cached (the fetch step is not
    *       cacheable), so a parameter is resolved for this execution only.</li>
    * </ul>
@@ -4204,7 +4220,7 @@ public class SelectExecutionPlanner {
    * only when every record it can return passes.
    */
   private static int indexedFunctionRowLimit(final BinaryCondition function, final AndBlock residual, final QueryPlanningInfo info,
-      final CommandContext context) {
+      final IndexedFunctionPushdown.Order order, final CommandContext context) {
     if (info.limit == null || info.deferredLetWhereClause != null)
       return -1;
     if (info.expand || info.unwind != null || info.distinct || info.groupBy != null || info.aggregateProjection != null)
@@ -4214,7 +4230,7 @@ public class SelectExecutionPlanner {
     for (final BooleanExpression condition : residual.getSubBlocks())
       if (condition != function)
         return -1;
-    if (info.orderBy != null && !isOrderByScoreDescending(info))
+    if (info.orderBy != null && order == IndexedFunctionPushdown.Order.FUNCTION && !isOrderByScoreDescending(info))
       return -1;
 
     try {
@@ -4233,11 +4249,13 @@ public class SelectExecutionPlanner {
   }
 
   /**
-   * Whether the bucket filter chained after an indexed fetch keeps every record of {@code type} and its subtypes: a
-   * {@code FROM BUCKET} target or a partition-pruned type narrows it, and then it can drop rows a limit counted.
+   * Whether the bucket filter chained after an indexed fetch keeps every record of {@code type} and its subtypes that the
+   * fetch can return: a {@code FROM BUCKET} target or a partition-pruned type narrows it, and then it can drop rows a limit
+   * counted. A bucket that only the {@code @rid} range of the WHERE excluded does not count when that range is decided by
+   * the fetch itself: no record of it comes out (issue #9909).
    */
-  private static boolean coversWholeHierarchy(final Set<String> filterClusters, final DocumentType type,
-      final CommandContext context) {
+  private boolean coversWholeHierarchy(final Set<String> filterClusters, final DocumentType type, final QueryPlanningInfo info,
+      final List<BooleanExpression> ridConditions, final CommandContext context) {
     if (filterClusters == null)
       return true;
     final Schema schema = context.getDatabase().getSchema();
@@ -4245,7 +4263,100 @@ public class SelectExecutionPlanner {
     for (final String bucketName : filterClusters)
       if (bucketName != null && schema.existsBucket(bucketName))
         filtered.add(schema.getBucketByName(bucketName).getFileId());
-    return filtered.containsAll(type.getBucketIds(true));
+    final boolean ridRangeDecidedByFetch = ridRangesArePushed(info.ridRangeConditions, ridConditions);
+    for (final Integer bucketId : type.getBucketIds(true)) {
+      if (filtered.contains(bucketId))
+        continue;
+      if (ridRangeDecidedByFetch && !clusterMatchesRidRange(schema.getBucketById(bucketId).getName(), info.ridRangeConditions,
+          context.getDatabase(), context))
+        continue;
+      return false;
+    }
+    return true;
+  }
+
+  /** Whether every {@code @rid} range the bucket pruning used is among the conditions the indexed fetch decides. */
+  private static boolean ridRangesArePushed(final AndBlock ridRanges, final List<BooleanExpression> ridConditions) {
+    if (ridRanges == null || ridRanges.getSubBlocks().isEmpty() || ridConditions.isEmpty())
+      return false;
+    // The pruning keeps copies of the WHERE's conditions: compared by their text
+    for (final BooleanExpression range : ridRanges.getSubBlocks()) {
+      boolean pushed = false;
+      for (final BooleanExpression condition : ridConditions)
+        if (condition.toString().equals(range.toString())) {
+          pushed = true;
+          break;
+        }
+      if (!pushed)
+        return false;
+    }
+    return true;
+  }
+
+  /**
+   * The conjuncts of {@code block} an indexed function can decide on its candidates' RIDs before it loads their records
+   * (issue #9909): an {@code @rid} comparison or {@code [NOT] IN} (see {@link RIDFilter#isPushable}) whose right-hand side
+   * is known before the fetch - a literal, a bound parameter, or a variable that no per-record LET and no per-row
+   * evaluation assigns. They are resolved at each execution, so the plan does not depend on this one's values.
+   */
+  private static List<BooleanExpression> pushableRidConditions(final AndBlock block, final QueryPlanningInfo info) {
+    List<BooleanExpression> pushable = null;
+    for (final BooleanExpression condition : block.getSubBlocks())
+      if (RIDFilter.isPushable(condition) && isKnownBeforeFetch(condition, info)) {
+        if (pushable == null)
+          pushable = new ArrayList<>(2);
+        pushable.add(condition);
+      }
+    return pushable == null ? List.of() : pushable;
+  }
+
+  private static boolean isKnownBeforeFetch(final BooleanExpression condition, final QueryPlanningInfo info) {
+    if (condition instanceof final BinaryCondition binary)
+      return binary.getRight().isLiteral(true) || isVariableKnownBeforeFetch(binary.getRight().getMathExpression(), info);
+    final InCondition in = (InCondition) condition;
+    if (in.getRightParam() != null)
+      return true;
+    return in.getRightMathExpression().isLiteral(true) || isVariableKnownBeforeFetch(in.getRightMathExpression(), info);
+  }
+
+  /**
+   * Whether {@code expression} is a bare variable that holds the same value for every row of the fetch: not one a
+   * per-record LET recomputes after it, and not one the execution sets per row.
+   */
+  private static boolean isVariableKnownBeforeFetch(final MathExpression expression, final QueryPlanningInfo info) {
+    final String variable = variableName(expression);
+    return variable != null && !isPerRecordLetVariable(variable, info) && !PER_ROW_VARIABLES.contains(variable);
+  }
+
+  /** Context variables the execution assigns per row (or per traversal step): never constant across a fetch. */
+  private static final Set<String> PER_ROW_VARIABLES = Set.of("$current", "$score", "$matched", "$currentMatch", "$depth", "$path",
+      "$stack", "$history");
+
+  private static boolean containsInstance(final List<BooleanExpression> conditions, final BooleanExpression condition) {
+    for (final BooleanExpression c : conditions)
+      if (c == condition)
+        return true;
+    return false;
+  }
+
+  /**
+   * The order the indexed function is asked to produce its rows in (issue #9909): RID order when the statement orders by
+   * {@code @rid} alone, the WHERE has a single block (the branches of an OR are merged after the fetch) and nothing between
+   * the fetch and the ORDER BY changes the rows, and the function supports it. Then no sort runs, and a LIMIT stops the
+   * loading after the rows it takes - what keyset pagination ({@code @rid > :cursor ... ORDER BY @rid LIMIT n}) needs.
+   */
+  private IndexedFunctionPushdown.Order indexedFunctionRidOrder(final BinaryCondition function, final QueryPlanningInfo info,
+      final CommandContext context) {
+    if (info.orderBy == null || info.flattenedWhereClause.size() != 1 || info.deferredLetWhereClause != null)
+      return IndexedFunctionPushdown.Order.FUNCTION;
+    if (info.expand || info.unwind != null || info.groupBy != null || info.aggregateProjection != null)
+      return IndexedFunctionPushdown.Order.FUNCTION;
+    final boolean ascending = isOrderByRidAsc(info);
+    if (!ascending && !isOrderByRidDesc(info))
+      return IndexedFunctionPushdown.Order.FUNCTION;
+    if (!function.indexedFunctionSupportsRIDOrder(context))
+      return IndexedFunctionPushdown.Order.FUNCTION;
+    return ascending ? IndexedFunctionPushdown.Order.RID_ASC : IndexedFunctionPushdown.Order.RID_DESC;
   }
 
   /**

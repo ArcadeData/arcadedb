@@ -20,6 +20,7 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Record;
 import com.arcadedb.query.sql.parser.BinaryCompareOperator;
+import com.arcadedb.query.sql.parser.EqualsCompareOperator;
 import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.FromClause;
 import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
@@ -59,6 +60,42 @@ public interface IndexableSQLFunction {
   default Iterable<Record> searchFromTarget(final FromClause target, final BinaryCompareOperator operator, final Object rightValue,
       final CommandContext context, final Expression[] oExpressions, final int limit) {
     return searchFromTarget(target, operator, rightValue, context, oExpressions);
+  }
+
+  /**
+   * {@link #searchFromTarget(FromClause, BinaryCompareOperator, Object, CommandContext, Expression[], int)} for a plan that
+   * also hands the function the {@code @rid} conditions of the WHERE block and the order it needs the rows in (issue
+   * #9909). The plan no longer checks those conditions after the fetch: the answer has to satisfy them. A function that can
+   * decide them on a candidate's RID skips the record before it loads it; this default, for one that cannot, filters the
+   * records it answers, and does not hand on the limit, which would count rows the filter then drops.
+   * <p>
+   * A RID order is only ever asked of a function that {@link #supportsRIDOrder() supports it}.
+   */
+  default Iterable<Record> searchFromTarget(final FromClause target, final BinaryCompareOperator operator, final Object rightValue,
+      final CommandContext context, final Expression[] oExpressions, final IndexedFunctionPushdown pushdown) {
+    final RIDFilter ridFilter = pushdown.ridFilter();
+    if (ridFilter == null)
+      return searchFromTarget(target, operator, rightValue, context, oExpressions, pushdown.limit());
+    return ridFilter.filter(searchFromTarget(target, operator, rightValue, context, oExpressions));
+  }
+
+  /**
+   * Whether {@link #searchFromTarget(FromClause, BinaryCompareOperator, Object, CommandContext, Expression[],
+   * IndexedFunctionPushdown)} answers in RID order when asked to, so that a statement ordered by {@code @rid} needs no sort
+   * and its LIMIT can stop the loading (issue #9909).
+   */
+  default boolean supportsRIDOrder() {
+    return false;
+  }
+
+  /**
+   * Whether a condition {@code function(...) <operator> <right>} selects the records a boolean predicate function MATCHES,
+   * which is all an index of matches can answer: {@code = true}. Any other comparison ({@code = false}, {@code <> true})
+   * selects the records it does not match, and answering it with the matches returns the wrong rows, so a predicate
+   * function refuses indexed execution for it and the plan scans instead.
+   */
+  static boolean selectsMatches(final BinaryCompareOperator operator, final Object right) {
+    return operator instanceof EqualsCompareOperator && Boolean.TRUE.equals(right);
   }
 
   /**

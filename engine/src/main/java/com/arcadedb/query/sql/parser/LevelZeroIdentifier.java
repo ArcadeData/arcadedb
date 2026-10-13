@@ -24,6 +24,7 @@ import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.AggregationContext;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.IndexedFunctionPushdown;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.schema.Property;
 
@@ -88,9 +89,9 @@ public class LevelZeroIdentifier extends SimpleNode {
   }
 
   public Iterable<Record> executeIndexedFunction(final FromClause target, final CommandContext context, final BinaryCompareOperator operator,
-      final Object right, final int limit) {
+      final Object right, final IndexedFunctionPushdown pushdown) {
     if (functionCall != null) {
-      return functionCall.executeIndexedFunction(target, context, operator, right, limit);
+      return functionCall.executeIndexedFunction(target, context, operator, right, pushdown);
     }
     return null;
   }

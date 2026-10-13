@@ -1171,11 +1171,11 @@ public class MathExpression extends SimpleNode {
 
   public Iterable<Record> executeIndexedFunction(final FromClause target, final CommandContext context,
       final BinaryCompareOperator operator,
-      final Object right, final int limit) {
+      final Object right, final IndexedFunctionPushdown pushdown) {
     if (this.childExpressions.size() != 1) {
       return null;
     }
-    return this.childExpressions.getFirst().executeIndexedFunction(target, context, operator, right, limit);
+    return this.childExpressions.getFirst().executeIndexedFunction(target, context, operator, right, pushdown);
   }
 
   public Object getIndexedFunctionScoringExplain(final FromClause target, final CommandContext context,
