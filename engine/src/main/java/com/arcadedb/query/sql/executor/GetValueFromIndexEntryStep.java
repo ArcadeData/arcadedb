@@ -419,7 +419,8 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
           final long begin = context.isProfiling() ? System.nanoTime() : 0;
           try {
             if (rereadCandidates != null) {
-              // The entries the key holds now, after its own ran out with some lost to a commit (#9902)
+              // The entries the key holds now, after its own ran out with some lost to a commit (#9902). Only a point lookup loses
+              // entries, so the previous step is a FetchFromIndexStep here and in the re-reads below
               nextItem = nextRereadRow(context, (FetchFromIndexStep) prevStep, guard);
               if (nextItem != null)
                 return;
