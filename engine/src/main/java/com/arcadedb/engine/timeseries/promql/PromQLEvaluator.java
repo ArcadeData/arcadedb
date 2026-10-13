@@ -540,17 +540,14 @@ public class PromQLEvaluator {
     if (argResult instanceof ScalarResult sr)
       return new ScalarResult(applyScalarFn(name, sr.value(), param), evalTimeMs);
 
-    if (argResult instanceof InstantVector iv) {
-      final List<VectorSample> samples = new ArrayList<>();
-      final boolean keepName = functionKeepsMetricName(name);
-      for (final VectorSample sample : iv.samples())
-        samples.add(new VectorSample(keepName ? sample.labels() : withoutMetricName(sample.labels()),
-            applyScalarFn(name, sample.value(), param), sample.timestampMs()));
-      return new InstantVector(samples);
-    }
-
-    // unreachable: the argument was checked to be a scalar or an instant vector above
-    throw new IllegalStateException("Unexpected argument type for function '" + name + "'");
+    // the only other type the check above lets through
+    final InstantVector iv = (InstantVector) argResult;
+    final List<VectorSample> samples = new ArrayList<>();
+    final boolean keepName = functionKeepsMetricName(name);
+    for (final VectorSample sample : iv.samples())
+      samples.add(new VectorSample(keepName ? sample.labels() : withoutMetricName(sample.labels()),
+          applyScalarFn(name, sample.value(), param), sample.timestampMs()));
+    return new InstantVector(samples);
   }
 
   private double extractSecondParam(final FunctionCallExpr fn, final String name, final long evalTimeMs, final long queryStartMs,

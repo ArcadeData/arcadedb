@@ -134,10 +134,10 @@ class Issue9883PromQLFunctionArgumentTypeTest extends TestHelper {
 
   @Test
   void aRangeQueryIsRefusedToo() {
-    assertThatThrownBy(() -> new PromQLEvaluator(db()).evaluateRange(new PromQLParser("sum(m9883[5m])").parse(), 1000L, 5000L, 2000L))
+    assertThatThrownBy(() -> range("sum(m9883[5m])"))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("expected type instant vector in aggregation expression, got range vector");
-    assertThatThrownBy(() -> new PromQLEvaluator(db()).evaluateRange(new PromQLParser("abs(m9883[5m])").parse(), 1000L, 5000L, 2000L))
+    assertThatThrownBy(() -> range("abs(m9883[5m])"))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("expected type instant vector in call to function \"abs\", got range vector");
   }
@@ -187,5 +187,9 @@ class Issue9883PromQLFunctionArgumentTypeTest extends TestHelper {
 
   private PromQLResult instant(final String promql) {
     return new PromQLEvaluator(db()).evaluateInstant(new PromQLParser(promql).parse(), EVAL_TIME_MS);
+  }
+
+  private PromQLResult range(final String promql) {
+    return new PromQLEvaluator(db()).evaluateRange(new PromQLParser(promql).parse(), 1000L, 5000L, 2000L);
   }
 }
