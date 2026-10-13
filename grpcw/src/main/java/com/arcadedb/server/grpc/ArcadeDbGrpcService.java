@@ -3726,7 +3726,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     // Unset means unbounded, which is not the same as 0: 0 is a real epoch timestamp.
     final long fromTs = req.hasFromTimestamp() ? req.getFromTimestamp() : Long.MIN_VALUE;
     final long toTs = req.hasToTimestamp() ? req.getToTimestamp() : Long.MAX_VALUE;
-    final TagFilter tagFilter = TimeSeriesGateway.buildTagFilter(GrpcTimeSeriesSupport.toTagMap(req.getTags()),
+    final TagFilter tagFilter = TimeSeriesGateway.buildTagFilter(db, GrpcTimeSeriesSupport.toTagMap(req.getTags()),
         columns);
 
     final int batchSize = req.getBatchSize() > 0 ? Math.min(req.getBatchSize(), TS_MAX_BATCH_SIZE)
@@ -4042,7 +4042,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       throw GrpcTimeSeriesSupport.resolutionFailure(req.getType(), resolved);
 
     final List<ColumnDefinition> columns = resolved.columns();
-    final TagFilter tagFilter = TimeSeriesGateway.buildTagFilter(GrpcTimeSeriesSupport.toTagMap(req.getTags()),
+    final TagFilter tagFilter = TimeSeriesGateway.buildTagFilter(db, GrpcTimeSeriesSupport.toTagMap(req.getTags()),
         columns);
     // What the read actually did, published to whatever the server's metrics subsystem feeds (issue #7717),
     // under the same surface tag its HTTP sibling uses. Without this the new counters would answer for

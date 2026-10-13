@@ -422,17 +422,20 @@ public final class TimeSeriesGateway {
    * selects nothing. Values are coerced to the column's declared type so they match what both storage layers
    * hand back (issue #5475).
    *
+   * @param database the database the type lives in, which reads a DATE/DATETIME tag value given as text. See {@link #andTag}
+   *
    * @throws IllegalArgumentException if a name is not a TAG column of this type, or a value cannot be stored as
    *                                  a tag. See {@link #andTag}
    */
-  public static TagFilter buildTagFilter(final Map<String, Object> tags, final List<ColumnDefinition> columns) {
+  public static TagFilter buildTagFilter(final Database database, final Map<String, Object> tags,
+      final List<ColumnDefinition> columns) {
     if (tags == null || tags.isEmpty())
       return null;
 
     TagFilter filter = null;
 
     for (final Map.Entry<String, Object> tag : tags.entrySet())
-      filter = andTag(filter, tag.getKey(), tag.getValue(), columns);
+      filter = andTag(database, filter, tag.getKey(), tag.getValue(), columns);
 
     return filter;
   }
@@ -440,7 +443,7 @@ public final class TimeSeriesGateway {
   /**
    * ANDs one tag condition onto {@code filter}, resolving {@code tagName} to its position among the
    * non-timestamp columns. Three tag selections converge here - the gRPC {@code TimeSeries*} RPCs through
-   * {@link #buildTagFilter(Map, List)}, the {@code tags} object of {@code POST /ts/{database}/query} (and of
+   * {@link #buildTagFilter(Database, Map, List)}, the {@code tags} object of {@code POST /ts/{database}/query} (and of
    * the Grafana query endpoint), and the repeated {@code tag=name:value} parameter of
    * {@code GET /ts/{database}/latest} - so they cannot drift apart on how a tag is resolved, which is how two
    * of them came to disagree in the first place (issue #7321). The PromQL evaluator is the one reader that
@@ -448,7 +451,10 @@ public final class TimeSeriesGateway {
    * strings.
    * <p>
    * The value is coerced to the column's declared type so it matches what both storage layers hand back
-   * (issue #5475).
+   * (issue #5475). A DATE/DATETIME value given as text is read through {@code database}, in its time zone and with
+   * its formats, exactly as the {@code INSERT} that wrote the tag read it (issue #9879). Read without it, the text
+   * was parsed in the JVM's default time zone and, on any JVM whose zone is not the database's, named another epoch
+   * than the stored one, so the filter selected nothing.
    * <p>
    * It is first held to {@link #requireStorableTagValue}, the same rule the write path applies. A value that
    * could never have been written is not a selection that matches nothing - it is a malformed request, and
@@ -468,6 +474,10 @@ public final class TimeSeriesGateway {
    * selection ({@code PromQLEvaluator.excludesEverySeries}) rather than a malformed request, so it decides the
    * whole type in one go instead of being refused.
    *
+   * @param database the database the type lives in. {@code null} reads a DATE/DATETIME text value with the JVM
+   *                 defaults, which is only right when the JVM's zone is the database's: every protocol entry point
+   *                 passes its database
+   *
    * @return a new filter - {@link TagFilter} is immutable, so the return value must be used
    *
    * @throws IllegalArgumentException if no TAG column carries {@code tagName}, or if {@code tagValue} cannot be
@@ -475,8 +485,8 @@ public final class TimeSeriesGateway {
    *                                  {@code INVALID_ARGUMENT} through {@code GrpcErrorMapper}, and the HTTP
    *                                  handlers as a 400
    */
-  public static TagFilter andTag(final TagFilter filter, final String tagName, final Object tagValue,
-      final List<ColumnDefinition> columns) {
+  public static TagFilter andTag(final Database database, final TagFilter filter, final String tagName,
+      final Object tagValue, final List<ColumnDefinition> columns) {
     requireStorableTagValue(tagName, tagValue);
 
     int nonTsIdx = 0;
@@ -484,7 +494,7 @@ public final class TimeSeriesGateway {
       if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
         continue;
       if (col.getRole() == ColumnDefinition.ColumnRole.TAG && col.getName().equals(tagName)) {
-        final Object coerced = col.coerceValue(tagValue);
+        final Object coerced = col.coerceValue(database, tagValue);
         return filter == null ? TagFilter.eq(nonTsIdx, coerced) : filter.and(nonTsIdx, coerced);
       }
       nonTsIdx++;
