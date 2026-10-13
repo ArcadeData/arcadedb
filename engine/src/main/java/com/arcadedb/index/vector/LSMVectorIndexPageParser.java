@@ -22,9 +22,12 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.BasePage;
 import com.arcadedb.engine.PageId;
+import com.arcadedb.exception.DatabaseIsClosedException;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.log.LogManager;
 
+import java.io.InterruptedIOException;
+import java.nio.channels.ClosedChannelException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Consumer;
@@ -102,6 +105,20 @@ class LSMVectorIndexPageParser {
    */
   static int parsePages(final DatabaseInternal database, final int fileId, final int totalPages,
       final int pageSize, final boolean isCompacted, final boolean strict, final Consumer<VectorEntry> consumer) {
+    return parsePages(database, fileId, totalPages, pageSize, isCompacted, strict, consumer, null);
+  }
+
+  /**
+   * Same as {@link #parsePages(DatabaseInternal, int, int, int, boolean, boolean, Consumer)}, also counting the pages
+   * the lenient mode cut short.
+   *
+   * @param pagesCutShort when not null, its first element is incremented once per page whose entries were not all
+   *                      read: a caller that must know whether it saw every id on disk (the vector id allocator) can
+   *                      tell a complete parse from a truncated one
+   */
+  static int parsePages(final DatabaseInternal database, final int fileId, final int totalPages,
+      final int pageSize, final boolean isCompacted, final boolean strict, final Consumer<VectorEntry> consumer,
+      final int[] pagesCutShort) {
 
     int entriesRead = 0;
 
@@ -119,6 +136,10 @@ class LSMVectorIndexPageParser {
         numberOfEntries = page.readInt(LSMVectorIndex.OFFSET_NUM_ENTRIES);
         if (numberOfEntries == 0)
           continue;
+        // A damaged count must not read as "nothing here": a negative one would skip the entry loop without a failure and
+        // the page would pass as complete, although its entries were never read (issue #9892)
+        if (numberOfEntries < 0)
+          throw new IndexException("Invalid number of entries " + numberOfEntries);
 
         // Calculate header size (page 0 of compacted index has extra metadata)
         final int headerSize = calculateHeaderSize(isCompacted, pageNum);
@@ -170,13 +191,34 @@ class LSMVectorIndexPageParser {
         final String message = String.format(
             "Error parsing page %d in file %d at entry %d of %d (entries %d to %d of the page not read): %s", pageNum,
             fileId, entryIndex, numberOfEntries, entryIndex, numberOfEntries - 1, e.getMessage());
-        if (strict)
+        // A page that could not be read because the read was interrupted or the database closed under it says nothing
+        // about the page: the next read finds it intact. Thrown rather than skipped in either mode, so no caller mistakes
+        // it for the bad page the lenient mode carries on past, and latches for good a load that only an interrupt cut
+        // short (issue #9892)
+        if (strict || isInterruption(e))
           throw new IndexException(message, e);
+        if (pagesCutShort != null)
+          ++pagesCutShort[0];
         LogManager.instance().log(LSMVectorIndexPageParser.class, Level.WARNING, message);
       }
     }
 
     return entriesRead;
+  }
+
+  /**
+   * Whether {@code e} says the read was stopped from outside - the thread interrupted, the file channel closed by that
+   * interrupt, the database closed - rather than that the page holds something unreadable. A transient condition: the
+   * same page reads fine once nothing stops the read.
+   */
+  static boolean isInterruption(final Throwable e) {
+    if (Thread.currentThread().isInterrupted())
+      return true;
+    for (Throwable t = e; t != null; t = t.getCause())
+      if (t instanceof InterruptedException || t instanceof InterruptedIOException || t instanceof ClosedChannelException
+          || t instanceof DatabaseIsClosedException)
+        return true;
+    return false;
   }
 
   /**

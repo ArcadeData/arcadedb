@@ -30,6 +30,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression test for GitHub issue #5489.
@@ -155,10 +156,21 @@ class Issue5489NodeInlineWhereRelVariableTest {
 
   @Test
   void comprehensionNodeInlineWhereOnAVariableLengthHopSeesTheRelationshipVariable() {
-    // Single-hop bound so the relationship variable is unambiguous for this shape.
+    // The relationship variable of a variable-length hop is the list walked, as in MATCH (issue #9828), so the
+    // predicate reads its element: r.w is the TypeError the MATCH spelling raises too.
     assertThat(comprehension(
-        "MATCH (a:A {v:1}) RETURN [(a)-[r:E*1..1]->(x:A WHERE x.v > r.w) | x.v] AS vs"))
+        "MATCH (a:A {v:1}) RETURN [(a)-[r:E*1..1]->(x:A WHERE x.v > r[0].w) | x.v] AS vs"))
         .containsExactly(10);
+    assertThatThrownBy(() -> comprehension(
+        "MATCH (a:A {v:1}) RETURN [(a)-[r:E*1..1]->(x:A WHERE x.v > r.w) | x.v] AS vs"))
+        .hasMessageContaining("TypeError");
+    assertThatThrownBy(() -> {
+      try (final ResultSet rs = database.query("opencypher",
+          "MATCH (a:A {v:1})-[r:E*1..1]->(x:A WHERE x.v > r.w) RETURN x.v AS v")) {
+        while (rs.hasNext())
+          rs.next();
+      }
+    }).hasMessageContaining("TypeError");
   }
 
   /**

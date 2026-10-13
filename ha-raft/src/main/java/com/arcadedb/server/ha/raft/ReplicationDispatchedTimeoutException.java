@@ -20,6 +20,7 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.TransactionException;
+import com.arcadedb.exception.TransactionOutcomeUnknownException;
 import com.arcadedb.network.binary.QuorumNotReachedException;
 
 /**
@@ -38,14 +39,15 @@ import com.arcadedb.network.binary.QuorumNotReachedException;
  * if the entry does commit, {@link ArcadeStateMachine#applyTxEntry} applies it locally instead of
  * origin-skipping it.
  * <p>
- * An indeterminate outcome is not safe to retry either, so this is a {@link TransactionException} and NOT a
+ * An indeterminate outcome is not safe to retry either, so this is a {@link TransactionException} (through
+ * {@link TransactionOutcomeUnknownException}, the name engine code knows it by, issue #9763) and NOT a
  * {@link NeedRetryException} (issue #8481): a blind retry - by {@code Database.transaction(block, joinTx, retries)}, by
  * an HTTP client reacting to a 503, by the Java remote client's automatic resend - runs the write a second time whenever
  * the dispatched entry does commit. The caller has to check whether its write landed before re-issuing it.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class ReplicationDispatchedTimeoutException extends TransactionException {
+public class ReplicationDispatchedTimeoutException extends TransactionOutcomeUnknownException {
   public ReplicationDispatchedTimeoutException(final String s) {
     super(s);
   }

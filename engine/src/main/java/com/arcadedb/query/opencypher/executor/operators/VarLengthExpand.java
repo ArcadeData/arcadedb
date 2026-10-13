@@ -25,6 +25,7 @@ import com.arcadedb.query.opencypher.InlineProperties;
 import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.ast.PathMode;
 import com.arcadedb.query.opencypher.ast.RelationshipPattern;
+import com.arcadedb.query.opencypher.traversal.GraphTraverser;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.opencypher.traversal.VariableLengthPathTraverser;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -177,7 +178,15 @@ public class VarLengthExpand extends AbstractPhysicalOperator {
           final Object target = currentInput.getProperty(targetVariable);
           boundTarget = target instanceof Vertex vertex ? vertex : null;
           usedEdges = RelationshipBindings.collectEdgeIdentities(currentInput, sameClausePrecedingRelVars);
-          currentPaths = source instanceof Vertex vertex ? createTraverser(currentInput, context).traversePaths(vertex) : null;
+          if (!(source instanceof Vertex vertex))
+            currentPaths = null;
+          else if (GraphTraverser.isBoundRelationshipList(currentInput, relationshipVariable)) {
+            // A relationship list an earlier clause bound to this variable is the whole path (issue #9828)
+            final TraversalPath bound = createTraverser(currentInput, context).matchBoundPath(vertex,
+                currentInput.getProperty(relationshipVariable), reverseResultPath, relationshipVariable);
+            currentPaths = bound != null ? List.of(bound).iterator() : null;
+          } else
+            currentPaths = createTraverser(currentInput, context).traversePaths(vertex);
         }
       }
 
