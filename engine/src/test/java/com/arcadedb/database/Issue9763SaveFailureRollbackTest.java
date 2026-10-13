@@ -102,18 +102,21 @@ class Issue9763SaveFailureRollbackTest {
     assertThat(database.getConfiguration().getValueAsInteger(GlobalConfiguration.TYPE_DEFAULT_BUCKETS)).isEqualTo(13);
   }
 
-  /** Possibly committed: undoing it would leave this node alone on the previous value if it does (issue #9904). */
+  /**
+   * Possibly committed: the setting settles on what configuration.json holds, which the apply writes if the change
+   * commits (issue #9904). Nothing was applied here, so the previous value is back and nothing stays pending for the
+   * next change made on this node to carry along. Issue9904UnknownSaveOutcomeTest covers the other orders of events.
+   */
   @Test
-  void aSettingWhoseOutcomeIsUnknownStaysInForce() throws Exception {
+  void aSettingWhoseOutcomeIsUnknownSettlesOnTheSavedConfiguration() throws Exception {
+    database.command("sql", "ALTER DATABASE `arcadedb.typeDefaultBuckets` 3");
     database.saveFailure = new TransactionOutcomeUnknownException("dispatched to Raft, then the wait gave up");
 
     assertThatThrownBy(() -> database.command("sql", "ALTER DATABASE `arcadedb.typeDefaultBuckets` 13"))
         .isInstanceOf(TransactionOutcomeUnknownException.class);
 
-    assertThat(database.getConfiguration().getValueAsInteger(GlobalConfiguration.TYPE_DEFAULT_BUCKETS)).isEqualTo(13);
-    assertThat(database.pendingConfigurationChanges())
-        .as("still pending, so the next change made on this node replicates it if this one never commits")
-        .contains("typeDefaultBuckets");
+    assertThat(database.getConfiguration().getValueAsInteger(GlobalConfiguration.TYPE_DEFAULT_BUCKETS)).isEqualTo(3);
+    assertThat(database.pendingConfigurationChanges()).isNull();
   }
 
   @Test
