@@ -83,7 +83,8 @@ it was the 0 weight of an edge without one. A custom subclass that referenced it
   an additional member written only when it is not empty, so a client parsing the body today is not affected),
   the gRPC `TimeSeriesWriteSummary` has the new `unreadable_values` field and `TimeSeriesWriteSummary.unreadableValues()` on
   the Java clients. The engine API names the column too, instead of a `ClassCastException`. A `BOOLEAN` column keeps a
-  boolean and reads `true` / `false` in any case; any other text or a number is refused instead of being stored as `false`.
+  boolean and reads `true` / `false` in any case; any other text or a number is refused instead of being stored as `false`, so
+  a client that sends `1` or `0` for a boolean field now has those samples reported in `unreadableValues` and not stored.
 - **The remote driver keeps `@rid`, `@type`, `@in` and `@out` columns of a projection (#9804).** `SELECT @rid FROM Person`
   over `RemoteDatabase` answered a row with no columns, and a Gremlin `elementMap()` lost the `@rid` and `@type` it names its
   tokens with: the driver removed every metadata name from any row carrying the `@props` type hint, which a `@rid` column
