@@ -106,8 +106,8 @@ public final class NodeLocalFiles {
 
   /**
    * True when {@code fileName} is an LSM vector index's {@code .vecgraph} page component alone - the one file of
-   * {@link #isVectorGraphFileName} that is registered, and so the one an HA snapshot reaches (it ships it empty, issue
-   * #9758). Matched by the final extension, like the rest of this class.
+   * {@link #isVectorGraphFileName} that is registered, and so the one an HA snapshot and a full backup reach (both carry
+   * it empty, issues #9758 and #9888). Matched by the final extension, like the rest of this class.
    */
   public static boolean isVectorGraphComponentFileName(final String fileName) {
     return endsWithExtension(fileName, LSMVectorIndexGraphFile.FILE_EXT);
