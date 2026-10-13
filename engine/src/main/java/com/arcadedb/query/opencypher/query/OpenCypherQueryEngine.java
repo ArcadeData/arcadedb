@@ -433,11 +433,15 @@ public class OpenCypherQueryEngine implements QueryEngine {
    * Evaluates the condition of a conditional query branch. Only {@code true} takes the branch: null and false both pass to
    * the next one, as a WHERE does. Anything that is not a boolean is a type error rather than a silent "not taken".
    */
-  private boolean isConditionTrue(final Expression condition, final Map<String, Object> parameters) {
+  private BasicCommandContext conditionContext(final Map<String, Object> parameters) {
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database);
     context.setInputParameters(parameters);
     CypherExecutionPlan.installFunctionResolver(context, CYPHER_FUNCTION_FACTORY);
+    return context;
+  }
+
+  private static boolean isConditionTrue(final Expression condition, final BasicCommandContext context) {
     final Object value = EXPRESSION_EVALUATOR.evaluate(condition, new ResultInternal(), context);
     if (value == null || value instanceof Boolean)
       return Boolean.TRUE.equals(value);
@@ -468,8 +472,10 @@ public class OpenCypherQueryEngine implements QueryEngine {
       final List<CypherStatement> branches = conditional.getBranches();
       // Each branch is planned and cached under its own key, the query text plus a NUL-separated suffix that query text
       // written by a user does not contain
+      // One context for every condition: they read the same parameters
+      final BasicCommandContext conditionContext = conditionContext(parameters);
       for (int i = 0; i < branches.size(); i++)
-        if (isConditionTrue(conditional.getConditions().get(i), parameters))
+        if (isConditionTrue(conditional.getConditions().get(i), conditionContext))
           return execute(queryString + "\u0000WHEN#" + i, branches.get(i), configuration, parameters, explain, profile,
               timeExecution);
       if (conditional.getElseBranch() != null)
