@@ -64,7 +64,7 @@ public class ProfilerStartTool {
     MCPToolUtils.checkServerAdmin(user, "profiler_start");
 
     final ServerQueryProfiler profiler = server.getQueryProfiler();
-    final int timeout = args.getInt("timeoutSeconds", DEFAULT_TIMEOUT_SECONDS);
+    final int timeout = MCPToolUtils.intArgument(args, "timeoutSeconds", DEFAULT_TIMEOUT_SECONDS);
     // The declared schema range is advisory - the MCP client is the one that would enforce it - so re-check it
     // here, as every sibling tool does with its own window (issue #6762).
     if (timeout < 1 || timeout > MAX_TIMEOUT_SECONDS)

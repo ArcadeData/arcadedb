@@ -64,7 +64,7 @@ public class UpsertEntityTool {
     final String databaseName = MCPToolUtils.requireString(args, "database");
     final String typeName = MCPToolUtils.requireString(args, "typeName");
     final JSONObject matchKeys = MCPToolUtils.requireNonEmptyObject(args, "matchKeys");
-    final JSONObject setProperties = args.getJSONObject("setProperties", null);
+    final JSONObject setProperties = MCPToolUtils.optionalObject(args, "setProperties");
 
     final MCPToolUtils.DatabaseAccess access = MCPToolUtils.resolveDatabase(
         server, user, databaseName, config, MCPToolUtils.RequiredAccess.ACCESS);

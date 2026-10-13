@@ -149,4 +149,34 @@ class SupportDiagnosticsConfigurationTest {
     server.markOperatorSetting(GlobalConfiguration.HA_CLUSTER_NAME.getKey());
     assertThat(server.getOperatorSettingSource(GlobalConfiguration.HA_CLUSTER_NAME.getKey())).isEqualTo("runtime");
   }
+  /**
+   * Issue #9836: storing a declared server setting at runtime and recording that an operator stored it are ONE operation
+   * ({@link ArcadeDBServer#storeOperatorSetting}), so a surface that stores through it cannot leave a customised server
+   * looking vanilla. A setting whose default is a template is dropped from the bundle altogether without the mark.
+   */
+  @Test
+  void aSettingStoredAtRuntimeThroughTheServerIsNonDefaultEvenWhenItsDefaultIsATemplate() {
+    final ArcadeDBServer server = new ArcadeDBServer(new ContextConfiguration());
+    final String backup = GlobalConfiguration.SERVER_BACKUP_DIRECTORY.getKey();
+    final String name = GlobalConfiguration.SERVER_NAME.getKey();
+    // a system property would make the source "jvm": cleared for the test, given back after it
+    final String previousBackup = System.getProperty(backup);
+    System.clearProperty(backup);
+    try {
+      server.storeOperatorSetting(GlobalConfiguration.SERVER_BACKUP_DIRECTORY, "/data/backups-9836");
+      server.storeOperatorSetting(GlobalConfiguration.SERVER_NAME, "node-9836");
+
+      final Map<String, String> noEnvironment = Map.of();
+      final JSONObject json = SupportDiagnostics.buildConfiguration(server.getConfiguration(), server::getOperatorSettingSource,
+          noEnvironment::get, new SupportRedactor.Session());
+
+      assertThat(entry(json.getJSONArray("nonDefault"), backup).getString("source")).isEqualTo("runtime");
+      assertThat(entry(json.getJSONArray("nonDefault"), name).getString("source")).isEqualTo("runtime");
+      assertThat(has(json.getJSONArray("computed"), backup)).isFalse();
+      assertThat(has(json.getJSONArray("computed"), name)).isFalse();
+    } finally {
+      if (previousBackup != null)
+        System.setProperty(backup, previousBackup);
+    }
+  }
 }

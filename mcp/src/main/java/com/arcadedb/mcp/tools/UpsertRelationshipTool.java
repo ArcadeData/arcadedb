@@ -80,7 +80,7 @@ public class UpsertRelationshipTool {
 
     final JSONObject fromMatchKeys = MCPToolUtils.requireNonEmptyObject(args, "fromMatchKeys");
     final JSONObject toMatchKeys = MCPToolUtils.requireNonEmptyObject(args, "toMatchKeys");
-    final JSONObject relProperties = args.getJSONObject("relProperties", null);
+    final JSONObject relProperties = MCPToolUtils.optionalObject(args, "relProperties");
 
     final MCPToolUtils.DatabaseAccess access = MCPToolUtils.resolveDatabase(
         server, user, databaseName, config, MCPToolUtils.RequiredAccess.ACCESS);
