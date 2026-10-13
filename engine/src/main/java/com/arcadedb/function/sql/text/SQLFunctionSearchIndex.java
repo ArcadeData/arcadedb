@@ -380,8 +380,10 @@ public class SQLFunctionSearchIndex extends SQLFunctionAbstract implements Index
       complete = null;
       trustedPrefix = -1;
       buildHeap(search.get());
-      for (int i = 0; i < served && size > 0; i++)
+      for (int i = 0; i < served && size > 0; i++) {
+        guard.checkPeriodically(++ticks);
         pop();
+      }
     }
 
     private void buildHeap(final Map<RID, Float> matches) {
