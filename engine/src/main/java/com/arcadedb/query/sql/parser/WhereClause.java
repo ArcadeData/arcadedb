@@ -213,13 +213,15 @@ public class WhereClause extends SimpleNode {
     else
       return Long.MAX_VALUE;
 
-    long entries = 0;
-    while (cursor.hasNext()) {
-      cursor.next();
-      if (++entries >= limit)
-        return Long.MAX_VALUE;
+    try (cursor) {
+      long entries = 0;
+      while (cursor.hasNext()) {
+        cursor.next();
+        if (++entries >= limit)
+          return Long.MAX_VALUE;
+      }
+      return entries;
     }
-    return entries;
   }
 
   /**
