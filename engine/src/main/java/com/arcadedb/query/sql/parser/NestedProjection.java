@@ -87,17 +87,8 @@ public class NestedProjection extends SimpleNode {
       for (final String property : elem.getPropertyNames())
         addPropertyToResult(expression, context, recursion, property, elem.getProperty(property), result);
     }
-    if (!includeItems.isEmpty()) {
-      //TODO manage wildcards!
-      for (final NestedProjectionItem item : includeItems) {
-        final String alias = item.alias != null ? item.alias.getStringValue() : item.expression.getDefaultAlias().getStringValue();
-        Object value = item.expression.execute(elem, context);
-        if (item.expansion != null) {
-          value = item.expand(expression, alias, value, context, recursion - 1);
-        }
-        result.setProperty(alias, value);
-      }
-    }
+    if (!includeItems.isEmpty())
+      applyIncludeItems(expression, elem, context, recursion, result);
     return result;
   }
 
@@ -129,17 +120,8 @@ public class NestedProjection extends SimpleNode {
       for (final String property : elem.getPropertyNames())
         addPropertyToResult(expression, context, recursion, property, elem.get(property), result);
     }
-    if (!includeItems.isEmpty()) {
-      //TODO manage wildcards!
-      for (final NestedProjectionItem item : includeItems) {
-        final String alias = item.alias != null ? item.alias.getStringValue() : item.expression.getDefaultAlias().getStringValue();
-        Object value = item.expression.execute(elem, context);
-        if (item.expansion != null) {
-          value = item.expand(expression, alias, value, context, recursion - 1);
-        }
-        result.setProperty(alias, value);
-      }
-    }
+    if (!includeItems.isEmpty())
+      applyIncludeItems(expression, elem, context, recursion, result);
     return result;
   }
 
@@ -164,19 +146,51 @@ public class NestedProjection extends SimpleNode {
       }
     }
     if (!includeItems.isEmpty()) {
-      //TODO manage wildcards!
-      for (final NestedProjectionItem item : includeItems) {
-        final String alias = item.alias != null ? item.alias.getStringValue() : item.expression.getDefaultAlias().getStringValue();
-        final ResultInternal elem = new ResultInternal(context.getDatabase());
-        input.forEach(elem::setProperty);
-        Object value = item.expression.execute(elem, context);
-        if (item.expansion != null)
-          value = item.expand(expression, alias, value, context, recursion - 1);
-
-        result.setProperty(alias, value);
-      }
+      // The include expressions are evaluated against a Result, so the map is wrapped once for all the items.
+      final ResultInternal elem = new ResultInternal(context.getDatabase());
+      input.forEach(elem::setProperty);
+      applyIncludeItems(expression, elem, context, recursion, result);
     }
     return result;
+  }
+
+  /**
+   * Produces the columns of the include items, shared by the three shapes a nested projection is applied to. An item with a
+   * right wildcard ({@code s*}) names every property of the source whose name it {@link NestedProjectionItem#matches(String)},
+   * the same rule the exclude items use, and emits each one under its own name, minus those an exclude item of the same
+   * braces removes. Any other item is evaluated as an expression, which is what makes {@code a.b.c} and function calls work as
+   * projection items. When several items name the same property, the last one in the braces wins.
+   *
+   * @param source a {@link Result} or a {@link Document}
+   */
+  private void applyIncludeItems(final Expression expression, final Object source, final CommandContext context,
+      final int recursion, final ResultInternal result) {
+    final Result sourceResult = source instanceof Result r ? r : null;
+    final Document sourceDocument = sourceResult == null ? (Document) source : null;
+    Collection<String> propertyNames = null;
+
+    for (final NestedProjectionItem item : includeItems) {
+      if (item.rightWildcard) {
+        if (propertyNames == null)
+          propertyNames = sourceResult != null ? sourceResult.getPropertyNames() : sourceDocument.getPropertyNames();
+        for (final String propertyName : propertyNames) {
+          if (!item.matches(propertyName) || isExclude(propertyName))
+            continue;
+
+          Object value = sourceResult != null ? sourceResult.getProperty(propertyName) : sourceDocument.get(propertyName);
+          if (item.expansion != null)
+            value = item.expand(expression, propertyName, value, context, recursion - 1);
+          result.setProperty(propertyName, value);
+        }
+        continue;
+      }
+
+      final String alias = item.alias != null ? item.alias.getStringValue() : item.expression.getDefaultAlias().getStringValue();
+      Object value = sourceResult != null ? item.expression.execute(sourceResult, context) : item.expression.execute(sourceDocument, context);
+      if (item.expansion != null)
+        value = item.expand(expression, alias, value, context, recursion - 1);
+      result.setProperty(alias, value);
+    }
   }
 
   @Override
