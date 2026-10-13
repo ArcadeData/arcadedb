@@ -169,6 +169,6 @@ public final class LabelPredicateHoister {
     if (newNodes == null)
       return path;
 
-    return new PathPattern(newNodes, path.getRelationships(), path.getPathVariable(), path.getPathMode());
+    return path.withNodes(newNodes);
   }
 }

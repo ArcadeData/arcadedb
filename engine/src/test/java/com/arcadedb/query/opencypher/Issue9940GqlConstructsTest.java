@@ -306,4 +306,69 @@ class Issue9940GqlConstructsTest extends TestHelper {
     assertThatThrownBy(() -> rows("MATCH (x)((a)-[:KNOWS]->(b))() RETURN x, a"))
         .hasMessageContaining("parenthesized path");
   }
+
+  // Subquery bodies: EXISTS { }, COUNT { }, COLLECT { } (bare-pattern and full-query forms) and CALL { }
+
+  @Test
+  void unsupportedConstructsInsideSubqueryBodiesAreRefused() {
+    final String other = "otherGraph9940";
+    final String[][] cases = {
+        // path search prefix
+        { "MATCH (a:Person {name:'A'}) WHERE EXISTS { ANY SHORTEST (a)-[:KNOWS]->+(:Person {name:'D'}) } RETURN a.name AS n", "path search prefix" },
+        { "MATCH (a:Person {name:'A'}) WHERE EXISTS { MATCH ANY SHORTEST (a)-[:KNOWS]->+(:Person {name:'D'}) } RETURN a.name AS n", "path search prefix" },
+        { "MATCH (a:Person {name:'A'}) RETURN COUNT { ANY SHORTEST (a)-[:KNOWS]->+(:Person {name:'D'}) } AS n", "path search prefix" },
+        { "MATCH (a:Person {name:'A'}) RETURN COUNT { MATCH ANY SHORTEST (a)-[:KNOWS]->+(:Person {name:'D'}) } AS n", "path search prefix" },
+        { "MATCH (a:Person {name:'A'}) RETURN COLLECT { MATCH p = ANY SHORTEST (a)-[:KNOWS]->+(:Person {name:'D'}) RETURN length(p) } AS n", "path search prefix" },
+        { "MATCH (a:Person {name:'A'}) CALL (a) { MATCH p = ANY SHORTEST (a)-[:KNOWS]->+(:Person {name:'D'}) RETURN length(p) AS l } RETURN l", "path search prefix" },
+        // match mode
+        { "MATCH (a:Person) WHERE EXISTS { MATCH REPEATABLE ELEMENTS (a)-[:KNOWS]->() } RETURN a.name AS n", "match mode" },
+        { "MATCH (a:Person) RETURN COUNT { REPEATABLE ELEMENTS (a)-[:KNOWS]->() } AS n", "match mode" },
+        { "MATCH (a:Person) RETURN COUNT { MATCH REPEATABLE ELEMENTS (a)-[:KNOWS]->() } AS n", "match mode" },
+        { "MATCH (a:Person) RETURN COLLECT { MATCH REPEATABLE ELEMENTS (a)-[:KNOWS]->(b) RETURN b.name } AS n", "match mode" },
+        { "MATCH (a:Person) CALL (a) { MATCH REPEATABLE ELEMENTS (a)-[:KNOWS]->(b) RETURN b } RETURN b.name AS n", "match mode" },
+        // USE of another graph
+        { "MATCH (a:Person) WHERE EXISTS { USE " + other + " MATCH (a)-[:KNOWS]->() } RETURN a.name AS n", "USE " + other + " is not supported" },
+        { "MATCH (a:Person) RETURN COUNT { USE " + other + " MATCH (a)-[:KNOWS]->() } AS n", "USE " + other + " is not supported" },
+        { "MATCH (a:Person) RETURN COLLECT { USE " + other + " MATCH (a)-[:KNOWS]->(b) RETURN b.name } AS n", "USE " + other + " is not supported" },
+        { "MATCH (a:Person) CALL (a) { USE " + other + " MATCH (a)-[:KNOWS]->(b) RETURN b } RETURN b.name AS n", "USE " + other + " is not supported" },
+        // conditional query
+        { "MATCH (a:Person) WHERE EXISTS { WHEN true THEN MATCH (a)-[:KNOWS]->() RETURN 1 AS x } RETURN a.name AS n", "conditional query" },
+        { "MATCH (a:Person) RETURN COUNT { WHEN true THEN MATCH (a)-[:KNOWS]->() RETURN 1 AS x } AS n", "conditional query" },
+        { "MATCH (a:Person) RETURN COLLECT { WHEN true THEN RETURN 1 AS x ELSE RETURN 2 AS x } AS n", "conditional query" },
+        { "MATCH (a:Person) CALL (a) { WHEN true THEN RETURN 1 AS x ELSE RETURN 2 AS x } RETURN x AS n", "conditional query" },
+        // IS DIRECTED
+        { "MATCH (a:Person) WHERE EXISTS { (a)-[r:KNOWS]->() WHERE r IS DIRECTED } RETURN a.name AS n", "directed predicate" },
+        { "MATCH (a:Person) WHERE EXISTS { MATCH (a)-[r:KNOWS]->() WHERE r IS DIRECTED } RETURN a.name AS n", "directed predicate" },
+        { "MATCH (a:Person) RETURN COUNT { (a)-[r:KNOWS]->() WHERE r IS DIRECTED } AS n", "directed predicate" },
+        { "MATCH (a:Person) RETURN COUNT { MATCH (a)-[r:KNOWS]->() WHERE r IS DIRECTED } AS n", "directed predicate" },
+        { "MATCH (a:Person) RETURN COLLECT { MATCH (a)-[r:KNOWS]->() RETURN r IS DIRECTED } AS n", "directed predicate" },
+        { "MATCH (a:Person) CALL (a) { MATCH (a)-[r:KNOWS]->() RETURN r IS DIRECTED AS d } RETURN d AS n", "directed predicate" } };
+
+    for (final String[] c : cases)
+      // the refusal itself, not a syntax error that merely echoes the query text
+      assertThatThrownBy(() -> rows(c[0])).as(c[0]).hasMessageContaining("FeatureNotImplemented").hasMessageContaining(c[1]);
+  }
+
+  @Test
+  void letInsideSubqueryBodiesBindsVariables() {
+    assertThat(column("MATCH (a:Person) WHERE EXISTS { MATCH (a)-[:KNOWS]->(b) LET n = b.name FILTER n = 'D' } "
+        + "RETURN a.name AS n ORDER BY n", "n")).containsExactly("A", "C");
+    assertThat(column("MATCH (a:Person) RETURN a.name AS a, COUNT { MATCH (a)-[:KNOWS]->(b) LET n = b.name FILTER n <> 'D' } "
+        + "AS n ORDER BY a", "n")).containsExactly(1L, 1L, 0L, 0L);
+    assertThat(column("MATCH (a:Person {name:'A'}) RETURN COLLECT { MATCH (a)-[:KNOWS]->(b) LET n = b.name + '!' "
+        + "RETURN n ORDER BY n } AS n", "n")).containsExactly(List.of("B!", "D!"));
+    assertThat(column("MATCH (a:Person {name:'A'}) CALL (a) { MATCH (a)-[:KNOWS]->(b) LET n = b.name + '!' RETURN n } "
+        + "RETURN n ORDER BY n", "n")).containsExactly("B!", "D!");
+  }
+
+  // shortestPath with an inline node WHERE: the predicate is hoisted into the MATCH WHERE, and the pattern must stay a
+  // shortest-path pattern while it is
+
+  @Test
+  void shortestPathWithInlineNodeWhereReturnsOnlyTheShortest() {
+    assertThat(column("MATCH p = shortestPath((a {name:'A'})-[:KNOWS*]-(b WHERE b.name = 'D')) RETURN length(p) AS l", "l"))
+        .containsExactly(1L);
+    assertThat(column("MATCH p = allShortestPaths((a WHERE a.name = 'A')-[:KNOWS*]->(b {name:'D'})) RETURN length(p) AS l", "l"))
+        .containsExactly(1L);
+  }
 }
