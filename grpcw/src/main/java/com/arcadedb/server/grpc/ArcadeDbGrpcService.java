@@ -2830,7 +2830,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       cancelled.set(true);
       out.markTerminated();
     });
-    // A load terminated between two chunks was closed by the termination listener: this is where it is cleaned up
+    // A load terminated between two chunks was closed by the termination listener: this is where it is cleaned up. The
+    // close callback is serialized with onNext/onCompleted like every listener callback of the call, and the rollback
+    // re-binds the stream's parked transaction on whichever thread runs it (InsertContext.close())
     setOnCloseHandler(call, () -> {
       if (entry.isTerminated())
         endTerminated.run();
