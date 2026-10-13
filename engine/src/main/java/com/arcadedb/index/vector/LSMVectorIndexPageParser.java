@@ -136,6 +136,10 @@ class LSMVectorIndexPageParser {
         numberOfEntries = page.readInt(LSMVectorIndex.OFFSET_NUM_ENTRIES);
         if (numberOfEntries == 0)
           continue;
+        // A damaged count must not read as "nothing here": a negative one would skip the entry loop without a failure and
+        // the page would pass as complete, although its entries were never read (issue #9892)
+        if (numberOfEntries < 0)
+          throw new IndexException("Invalid number of entries " + numberOfEntries);
 
         // Calculate header size (page 0 of compacted index has extra metadata)
         final int headerSize = calculateHeaderSize(isCompacted, pageNum);
