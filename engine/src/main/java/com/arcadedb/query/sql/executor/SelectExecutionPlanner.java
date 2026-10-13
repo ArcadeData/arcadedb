@@ -139,6 +139,14 @@ import static com.arcadedb.schema.Schema.INDEX_TYPE.FULL_TEXT;
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */
 public class SelectExecutionPlanner {
+  /**
+   * Context variables the execution assigns per row or per traversal step (the projection's $current, a scoring function's
+   * $score, MATCH's $matched and $currentMatch, TRAVERSE's $depth, $path, $stack and $history): never constant across a
+   * fetch, so an {@code @rid} condition on one is not pushed into an indexed function (issue #9909). A per-record LET is
+   * excluded by name, from the statement's own LET clause.
+   */
+  private static final Set<String> PER_ROW_VARIABLES = Set.of("$current", "$score", "$matched", "$currentMatch", "$depth", "$path",
+      "$stack", "$history");
 
   private static final String            LOCAL_NODE_NAME = "local";
   /** The variable a scoring indexed function such as {@code SEARCH_INDEX} sets on every row it matches. */
@@ -4251,8 +4259,10 @@ public class SelectExecutionPlanner {
   /**
    * Whether the bucket filter chained after an indexed fetch keeps every record of {@code type} and its subtypes that the
    * fetch can return: a {@code FROM BUCKET} target or a partition-pruned type narrows it, and then it can drop rows a limit
-   * counted. A bucket that only the {@code @rid} range of the WHERE excluded does not count when that range is decided by
-   * the fetch itself: no record of it comes out (issue #9909).
+   * counted. A bucket the {@code @rid} conditions decided by the fetch itself reject as a whole does not count: no record of
+   * it comes out (issue #9909). The existing pruning by {@code @rid} range is what leaves those buckets out of the filter.
+   * They are asked of the very conditions the fetch decides, resolved against this execution, which is the only one the
+   * plan serves (the fetch step is not cacheable).
    */
   private boolean coversWholeHierarchy(final Set<String> filterClusters, final DocumentType type, final QueryPlanningInfo info,
       final List<BooleanExpression> ridConditions, final CommandContext context) {
@@ -4263,34 +4273,29 @@ public class SelectExecutionPlanner {
     for (final String bucketName : filterClusters)
       if (bucketName != null && schema.existsBucket(bucketName))
         filtered.add(schema.getBucketByName(bucketName).getFileId());
-    final boolean ridRangeDecidedByFetch = ridRangesArePushed(info.ridRangeConditions, ridConditions);
+    RIDFilter ridFilter = null;
     for (final Integer bucketId : type.getBucketIds(true)) {
       if (filtered.contains(bucketId))
         continue;
-      if (ridRangeDecidedByFetch && !clusterMatchesRidRange(schema.getBucketById(bucketId).getName(), info.ridRangeConditions,
-          context.getDatabase(), context))
+      if (ridFilter == null)
+        ridFilter = planTimeRidFilter(ridConditions, context);
+      if (ridFilter != null && !ridFilter.acceptsBucket(bucketId))
         continue;
       return false;
     }
     return true;
   }
 
-  /** Whether every {@code @rid} range the bucket pruning used is among the conditions the indexed fetch decides. */
-  private static boolean ridRangesArePushed(final AndBlock ridRanges, final List<BooleanExpression> ridConditions) {
-    if (ridRanges == null || ridRanges.getSubBlocks().isEmpty() || ridConditions.isEmpty())
-      return false;
-    // The pruning keeps copies of the WHERE's conditions: compared by their text
-    for (final BooleanExpression range : ridRanges.getSubBlocks()) {
-      boolean pushed = false;
-      for (final BooleanExpression condition : ridConditions)
-        if (condition.toString().equals(range.toString())) {
-          pushed = true;
-          break;
-        }
-      if (!pushed)
-        return false;
+  /** The pushed {@code @rid} conditions resolved for this execution, or null when there are none or they cannot be yet. */
+  private static RIDFilter planTimeRidFilter(final List<BooleanExpression> ridConditions, final CommandContext context) {
+    if (ridConditions.isEmpty())
+      return null;
+    try {
+      return RIDFilter.resolve(ridConditions, context);
+    } catch (final RuntimeException e) {
+      // a variable a global LET computes after planning: the bucket filter keeps its say over the limit
+      return null;
     }
-    return true;
   }
 
   /**
@@ -4327,10 +4332,6 @@ public class SelectExecutionPlanner {
     final String variable = variableName(expression);
     return variable != null && !isPerRecordLetVariable(variable, info) && !PER_ROW_VARIABLES.contains(variable);
   }
-
-  /** Context variables the execution assigns per row (or per traversal step): never constant across a fetch. */
-  private static final Set<String> PER_ROW_VARIABLES = Set.of("$current", "$score", "$matched", "$currentMatch", "$depth", "$path",
-      "$stack", "$history");
 
   /**
    * By identity: the pushed conditions were taken from this very block, and two conjuncts can be equal without being the
