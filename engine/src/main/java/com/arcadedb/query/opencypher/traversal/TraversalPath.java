@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.traversal;
 
+import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 
@@ -128,6 +129,20 @@ public class TraversalPath {
    */
   public boolean containsVertex(final Vertex vertex) {
     return vertices.stream().anyMatch(v -> v.getIdentity().equals(vertex.getIdentity()));
+  }
+
+  /**
+   * Returns true if this path already traverses the specified edge.
+   *
+   * @param edge edge to check
+   * @return true if path contains edge
+   */
+  public boolean containsEdge(final Edge edge) {
+    final RID edgeRid = edge.getIdentity();
+    for (int i = 0; i < edges.size(); i++)
+      if (edges.get(i).getIdentity().equals(edgeRid))
+        return true;
+    return false;
   }
 
   /**
