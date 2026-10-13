@@ -481,7 +481,14 @@ public final class SparseSegmentBuilder implements AutoCloseable {
       weightMin = 0.0f;
       weightMax = 0.0f;
     }
-    final float blockMaxForBmw = weightMax == Float.NEGATIVE_INFINITY ? 0.0f : weightMax;
+    // weightMin / weightMax stay the RAW band the INT8 encode below quantizes against. The BMW bound must instead
+    // cover what the reader DECODES (issue #9834): FP16 rounds to nearest and INT8's top level can round one ulp above
+    // max, and a ceiling below a decoded weight prunes a top-K document. The decode is monotone, so the decoded block
+    // max is the decode of the raw max (see WeightCodec.decodedValueOf). The dim max and the skip list derive from this
+    // value. An all-tombstone block (liveInBlock == 0, band reset to [0, 0] above) keeps a 0.0 bound.
+    final float blockMaxForBmw = liveInBlock == 0 ?
+        0.0f :
+        Math.max(weightMax, WeightCodec.decodedValueOf(weightMax, params.weightQuantization(), weightMin, weightMax));
 
     // Reuse the per-builder scratch buffer (sized at construction to the worst-case block
     // payload size). Saves an allocation per block - on a default-shaped 1M-posting flush that
