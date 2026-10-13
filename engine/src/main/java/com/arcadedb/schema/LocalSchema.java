@@ -873,8 +873,9 @@ public class LocalSchema implements Schema {
 
       for (final LocalDocumentType type : superseded.values())
         if (type instanceof final LocalTimeSeriesType tsType && !survivors.contains(tsType)) {
+          // Retired, not closed (issue #9886): the replacement engine is built on the same registered files
           try {
-            tsType.close();
+            tsType.closeSuperseded();
           } catch (final Exception e) {
             LogManager.instance().log(this, Level.WARNING,
                 "Error closing TimeSeries type '%s' superseded by a schema reload: %s", null, tsType.getName(),
@@ -1000,12 +1001,17 @@ public class LocalSchema implements Schema {
     return isStagingPublication() ? stagedTypes : published.types();
   }
 
-  /** Closes the TimeSeries engines of a graph that is about to be discarded. */
+  /**
+   * Retires the TimeSeries engines of a graph that is about to be discarded by a reload. Retired, not closed (issue
+   * #9886): every caller discards the graph in favour of another built on the same registered files - the published
+   * one a failed load keeps, or the one a rebuild is about to produce - so closing those files would close them under
+   * the engines still serving the type. The database close releases them.
+   */
   private void closeTimeSeriesTypesOf(final Map<String, LocalDocumentType> graph) {
     for (final DocumentType type : graph.values())
       if (type instanceof final LocalTimeSeriesType tsType)
         try {
-          tsType.close();
+          tsType.closeSuperseded();
         } catch (final Exception e) {
           LogManager.instance().log(this, Level.WARNING,
               "Error closing TimeSeries type '%s' during schema reload: %s", null, tsType.getName(), e.getMessage());

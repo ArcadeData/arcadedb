@@ -215,6 +215,19 @@ public class LocalTimeSeriesType extends LocalDocumentType implements TimeSeries
   }
 
   /**
+   * Retires the engine of a type instance that a schema reload has replaced (issue #9886): unlike {@link #close()}, it
+   * leaves open the files registered with the schema, which the replacement engine is built on. See
+   * {@link TimeSeriesEngine#closeSuperseded()}.
+   */
+  void closeSuperseded() {
+    final TimeSeriesEngine current = engine;
+    if (current != null) {
+      current.closeSuperseded();
+      engine = null;
+    }
+  }
+
+  /**
    * Drops this timeseries type: deletes all shard data files (mutable bucket and sealed store)
    * from disk and shuts down the engine.
    */

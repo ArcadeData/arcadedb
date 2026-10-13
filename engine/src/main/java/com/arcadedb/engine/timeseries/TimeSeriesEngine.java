@@ -21,6 +21,7 @@ package com.arcadedb.engine.timeseries;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.timeseries.simd.TimeSeriesVectorOpsProvider;
 import com.arcadedb.exception.DatabaseOperationException;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.LocalSchema;
 
 import java.io.IOException;
@@ -38,6 +39,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.logging.Level;
 
 /**
  * Coordinates N shards for a TimeSeries type. Routes sync writes to shards
@@ -122,7 +124,7 @@ public class TimeSeriesEngine implements AutoCloseable {
       for (final TimeSeriesShard shard : shards) {
         if (shard != null) {
           try {
-            shard.closeAfterFailedInit();
+            shard.closeOwnedResources();
           } catch (final IOException ignored) {
           }
         }
@@ -1513,6 +1515,37 @@ public class TimeSeriesEngine implements AutoCloseable {
 
   @Override
   public void close() throws IOException {
+    shutdownShardExecutor();
+    for (final TimeSeriesShard shard : shards)
+      shard.close();
+    if (tagDictionary != null)
+      tagDictionary.close();
+  }
+
+  /**
+   * Retires an engine that a schema reload has replaced (issue #9886): stops its shard executor and closes each shard's
+   * sealed store, which this instance opened on its own file handle, and leaves every file registered with the schema
+   * OPEN - the shards' mutable buckets and the tag dictionary.
+   * <p>
+   * A reload builds the replacement engine on those very registered files ({@code TimeSeriesShard} and
+   * {@link TimeSeriesTagDictionary#openOrCreate} pick up the component the schema already holds), and
+   * {@code PaginatedComponentFile.close()} is permanent. {@link #close()} here closed them under the live engine, so the
+   * next write to the type failed with "Cannot write page N because the file '..._tags...tstd' is closed"; on an HA
+   * follower, which reloads its schema on every applied schema entry, that quarantined the database and forced a
+   * snapshot resync. The registered files are closed by the file manager when the database closes.
+   */
+  public void closeSuperseded() {
+    shutdownShardExecutor();
+    for (final TimeSeriesShard shard : shards)
+      try {
+        shard.closeOwnedResources();
+      } catch (final IOException e) {
+        LogManager.instance().log(this, Level.WARNING, "Error closing a sealed store of superseded TimeSeries engine '%s': %s", e,
+            typeName, e.getMessage());
+      }
+  }
+
+  private void shutdownShardExecutor() {
     shardExecutor.shutdown();
     try {
       if (!shardExecutor.awaitTermination(30, TimeUnit.SECONDS))
@@ -1521,10 +1554,6 @@ public class TimeSeriesEngine implements AutoCloseable {
       shardExecutor.shutdownNow();
       Thread.currentThread().interrupt();
     }
-    for (final TimeSeriesShard shard : shards)
-      shard.close();
-    if (tagDictionary != null)
-      tagDictionary.close();
   }
 
   /**
@@ -1540,14 +1569,7 @@ public class TimeSeriesEngine implements AutoCloseable {
    * Called when the timeseries type is dropped from the schema.
    */
   public void drop() throws IOException {
-    shardExecutor.shutdown();
-    try {
-      if (!shardExecutor.awaitTermination(30, TimeUnit.SECONDS))
-        shardExecutor.shutdownNow();
-    } catch (final InterruptedException e) {
-      shardExecutor.shutdownNow();
-      Thread.currentThread().interrupt();
-    }
+    shutdownShardExecutor();
     for (final TimeSeriesShard shard : shards)
       shard.drop();
 
