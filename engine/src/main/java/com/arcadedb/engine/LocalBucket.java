@@ -7329,6 +7329,16 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     return gatherScans.get();
   }
 
+  /**
+   * Makes the throttle between two gather scans count as over, so a test can ask whether a scan would run now without
+   * sleeping {@value #MAX_TIMEOUT_GATHER_STATS} ms. A bucket that never scanned keeps its first-run state. Package-private:
+   * for tests only.
+   */
+  void expireGatherThrottleForTesting() {
+    if (timeOfLastStats != 0L)
+      timeOfLastStats = 1L;
+  }
+
   /** The pages the free-space map currently lists. Package-private: for tests only. */
   int[] getListedFreeSpacePagesForTesting() {
     synchronized (freeSpaceInPages) {
@@ -7352,6 +7362,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     // end of the file without filling the map goes back to being throttled.
     final boolean resuming = gatherTruncated;
     if (!firstRun && !resuming && System.currentTimeMillis() - timeOfLastStats <= MAX_TIMEOUT_GATHER_STATS)
+      return;
+
+    // #9575: nothing to consume is the common answer during an append-only load, asked on every allocation made while
+    // the map is empty. A plain read settles it without the atomic write below.
+    if (!firstRun && !resuming && changesFromLastStats.get() == 0L)
       return;
 
     // #5063: consume the change counter atomically at the decision point. The previous
@@ -7443,7 +7458,13 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    *                       change to it (see {@link #accountCompressedPage}).
    */
   private void updatePageStatistics(final MutablePage page, final int availableSpace, final int delta) {
-    changesFromLastStats.incrementAndGet();
+    // #9575: only a write that gives space back, or measures a page, arms the next gather. One that takes space (an insert,
+    // an enlargement) cannot leave a page with room a scan would list, and the pages it fills are tracked by the code below.
+    // Counting them armed a scan of EVERY page of the bucket each time the throttle ran out and an appended page had just
+    // filled up (the map is empty then), so a bulk load got slower the more it had written: 6 minutes of reads per scan at
+    // 1.3M pages.
+    if (delta >= 0)
+      changesFromLastStats.incrementAndGet();
 
     if (reuseSpaceMode.ordinal() < REUSE_SPACE_MODE.HIGH.ordinal())
       return;
