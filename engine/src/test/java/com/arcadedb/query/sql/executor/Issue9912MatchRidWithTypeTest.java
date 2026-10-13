@@ -138,6 +138,19 @@ class Issue9912MatchRidWithTypeTest extends TestHelper {
   }
 
   @Test
+  void ridTypeAndWhereAreAllApplied() {
+    // THE TYPE CHECK IS CHAINED AFTER THE where: OF THE SELECT BY RID: BOTH MUST STILL SEE (AND PASS ON) THE RECORD ITSELF
+    for (final String root : new String[] { "{type:Big, as:b, rid:%s, where:(n = %d)}", "{type:Small, as:b, rid:%s, where:(n = %d)}" }) {
+      final boolean big = root.contains("Big");
+      assertThat(column("MATCH " + root.formatted(big7, 7) + " RETURN b.n AS n", "n")).isEqualTo(big ? List.of(7) : List.of());
+      assertThat(column("MATCH " + root.formatted(big7, 8) + " RETURN b.n AS n", "n")).isEmpty();
+      assertThat(column("MATCH " + root.formatted(big7, 7) + ".in('R'){as:o} RETURN o.n AS n ORDER BY n", "n"))
+          .isEqualTo(big ? List.of(0, 1, 2) : List.of());
+      assertThat(column("MATCH " + root.formatted(big7, 8) + ".in('R'){as:o} RETURN o.n AS n", "n")).isEmpty();
+    }
+  }
+
+  @Test
   void unknownTypeOrBucketNextToARidIsStillReported() {
     assertThatThrownBy(() -> column("MATCH {type:NoSuchType, as:x, rid:" + small2 + "} RETURN x.n AS n", "n"))//
         .isInstanceOf(CommandExecutionException.class).hasMessageContaining("Type 'NoSuchType' not defined");
