@@ -155,6 +155,21 @@ class Issue9910SearchFieldsRestrictionTest extends TestHelper {
   }
 
   @Test
+  void amongCoveringIndexesOfTheSameSizeTheFirstByNameIsSearched() {
+    createCorpus("BM25_1");
+    database.transaction(() -> {
+      database.command("sql", "CREATE PROPERTY Note.c STRING");
+      database.command("sql", "UPDATE Note SET c = 'filler words for a longer document' WHERE n % 2 = 0");
+      database.command("sql", "CREATE INDEX ON Note (a, c) FULL_TEXT");
+    });
+    // Note[a,b] and Note[a,c] both cover a with two properties: Note[a,b] comes first. Their corpus statistics differ (c
+    // makes documents longer), so the scores tell which one was searched
+    assertThat(scores("SEARCH_INDEX('Note[a,b]', 'a:fever')")).isNotEqualTo(scores("SEARCH_INDEX('Note[a,c]', 'a:fever')"));
+    assertSameScores("SEARCH_FIELDS(['a'], 'fever')", "SEARCH_INDEX('Note[a,b]', 'a:fever')");
+    assertSameScores("SEARCH_FIELDS(['c'], 'filler')", "SEARCH_INDEX('Note[a,c]', 'c:filler')");
+  }
+
+  @Test
   void aSubtypeIsSearchedThroughTheIndexOfItsSupertype() {
     createCorpus("BM25_1");
     database.transaction(() -> {

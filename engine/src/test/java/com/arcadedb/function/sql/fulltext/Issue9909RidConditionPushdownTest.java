@@ -244,6 +244,15 @@ class Issue9909RidConditionPushdownTest extends TestHelper {
       scores.put(row.getProperty("rid"), row.<Float>getProperty("score"));
     for (final Result row : rows("SELECT @rid AS rid, $score AS score FROM Doc WHERE " + ridCondition + " AND " + SEARCH, params))
       assertThat(row.<Float>getProperty("score")).as(pushed).isEqualTo(scores.get(row.<Object>getProperty("rid")));
+    // Also on the limit path, where each bucket keeps only its best accepted matches and the plan answers from them
+    final List<Result> limitedRows = rows("SELECT @rid AS rid, $score AS score FROM Doc WHERE " + ridCondition + " AND " + SEARCH
+        + " LIMIT 7", params);
+    assertThat(limitedRows).hasSize(Math.min(7, expected.size()));
+    for (int i = 0; i < limitedRows.size(); i++) {
+      assertThat(limitedRows.get(i).<Object>getProperty("rid")).as(pushed + " LIMIT 7").isEqualTo(expected.get(i));
+      assertThat(limitedRows.get(i).<Float>getProperty("score")).as(pushed + " LIMIT 7")
+          .isEqualTo(scores.get(limitedRows.get(i).<Object>getProperty("rid")));
+    }
 
     // And what a scan with the same condition answers
     assertThat(rids("SELECT FROM Doc WHERE " + ridCondition + " AND content LIKE '%common%' ORDER BY @rid", params)).as(ridCondition)

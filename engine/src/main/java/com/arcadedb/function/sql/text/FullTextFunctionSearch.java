@@ -152,6 +152,8 @@ final class FullTextFunctionSearch {
       return allResults != null ? allResults : completeSearch(context);
     };
 
+    // The Iterable builds a fresh heap on every iterator() call: a plan pulls it once, and re-iterating it re-orders the same
+    // matches rather than searching again
     @SuppressWarnings("unchecked")
     final Map<RID, Float> cached = (Map<RID, Float>) context.getCachedValue(cacheKey);
     if (cached != null)
