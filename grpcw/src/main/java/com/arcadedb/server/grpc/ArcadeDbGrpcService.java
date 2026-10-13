@@ -2868,6 +2868,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         // transaction's - obey a termination, and the termination listener leaves a running chunk alone
         final StreamingLoadEntry.Bound bound = entry.enter();
         try {
+          // Terminated between the check above and the lock: the finally below ends the load
+          if (entry.isTerminated())
+            return;
 
           InsertContext ctx = ctxRef.get();
 
@@ -3333,7 +3336,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     // Issue #9875: listed by "list queries" from the first chunk to the end of the stream, and stopped by "terminate query"
     final StreamingLoadEntry entry = new StreamingLoadEntry(runningQueries(), "GraphBatchLoad");
     // Ends a terminated load: the batch is dropped like after any other failure - what it flushed stays committed, and
-    // the trailers say how much - and the entry goes. Once: whatever runs it next finds no batch left. Never under a
+    // the trailers say how much - and the entry goes. Idempotent: whatever runs it next finds no batch left, and the
+    // synchronized observer drops a second terminal call. Never under a
     // running chunk (the termination listener runs it only between two), so it reads the stream's state safely
     final Runnable endTerminated = () -> {
       errorSent[0] = true;
@@ -3375,6 +3379,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         // leaves a running chunk alone
         final StreamingLoadEntry.Bound bound = entry.enter();
         try {
+          // Terminated between the check above and the lock: the finally below ends the load
+          if (entry.isTerminated())
+            return;
           GraphBatch batch = batchRef.get();
           if (batch == null) {
             // First chunk: initialize
@@ -3486,7 +3493,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           return;
         } finally {
           bound.close();
-          // Requested while the chunk ran: the load ends here
+          // Requested while the chunk ran: the load ends here. endTerminated sets errorSent, so no chunk is asked for below
           if (entry.isTerminated())
             endTerminated.run();
           else if (errorSent[0])
@@ -3730,6 +3737,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         // running chunk alone
         final StreamingLoadEntry.Bound bound = entry.enter();
         try {
+          // Terminated between the check above and the lock: the finally below ends the load
+          if (entry.isTerminated())
+            return;
           Database db = dbRef.get();
           if (db == null) {
             if (chunk.getDatabase().isEmpty())
@@ -4698,6 +4708,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
                 // termination is carried out on this executor, after the message running now, which sees it by itself
                 entry.open(ctx.db.getName(), resolvedUsername(startMsg.getCredentials()), txCtx != null ? txCtx.txId : null,
                     () -> insertLoadText("InsertBidirectional", opts, ctx.sessionId), () -> {
+                      // Messages queued behind the running one now return at once, so endTerminated, queued last, is
+                      // what closes the entry - unless the running message sees the termination and runs it first
                       cancelled.set(true);
                       try {
                         streamExecutor.submit(grpcContext.wrap(endTerminated));
