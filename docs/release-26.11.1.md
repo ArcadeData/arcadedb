@@ -79,7 +79,8 @@ it was the 0 weight of an edge without one. A custom subclass that referenced it
   uses (a number stays a count in the column's unit, text of digits is that count, any other date or instant is read as SQL
   reads it), parses text sent to a numeric column or to a typed `BOOLEAN` tag (a tag sent as `"true"` used to be stored as
   `false`), and drops a sample whose value its column cannot store instead of failing the request. The dropped sample is
-  reported like an undeclared key: the HTTP `400` carries `unreadableValues` (`<measurement>.<column> (tag|field): <reason>`),
+  reported like an undeclared key: the HTTP `400` carries `unreadableValues` (`<measurement>.<column> (tag|field): <reason>`,
+  an additional member written only when it is not empty, so a client parsing the body today is not affected),
   the gRPC `TimeSeriesWriteSummary` has the new `unreadable_values` field and `TimeSeriesWriteSummary.unreadableValues()` on
   the Java clients. The engine API names the column too, instead of a `ClassCastException`. A `BOOLEAN` column keeps a
   boolean and reads `true` / `false` in any case; any other text or a number is refused instead of being stored as `false`.

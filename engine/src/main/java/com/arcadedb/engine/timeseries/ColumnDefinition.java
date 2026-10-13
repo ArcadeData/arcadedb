@@ -334,7 +334,7 @@ public final class ColumnDefinition {
     if (kind <= TimeSeriesBatch.KIND_BYTE && value instanceof Number number) {
       if (fits(number))
         return value;
-      throw new IllegalArgumentException("Cannot convert a value of type " + value.getClass().getName() + " to the " + dataType
+      throw new IllegalArgumentException("Cannot convert a value of type " + value.getClass().getSimpleName() + " to the " + dataType
           + " column '" + name + "': the number is out of range");
     }
     return switch (kind) {
@@ -480,7 +480,8 @@ public final class ColumnDefinition {
    * replaces never did.
    */
   IllegalArgumentException unstorable(final Object value, final Throwable cause) {
-    return new IllegalArgumentException("Cannot convert a value of type " + value.getClass().getName() + " to the " + dataType
+    // THE SIMPLE NAME: THIS TEXT GOES BACK TO THE CLIENT, WHICH HAS NO USE FOR A PACKAGE
+    return new IllegalArgumentException("Cannot convert a value of type " + value.getClass().getSimpleName() + " to the " + dataType
         + " column '" + name + "'", cause);
   }
 
