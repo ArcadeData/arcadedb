@@ -22,9 +22,12 @@ import com.arcadedb.database.Record;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.parser.BinaryCondition;
+import com.arcadedb.query.sql.parser.BooleanExpression;
 import com.arcadedb.query.sql.parser.FromClause;
 
+import java.util.Collections;
 import java.util.Iterator;
+import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.logging.Level;
 
@@ -38,26 +41,38 @@ public class FetchFromIndexedFunctionStep extends AbstractExecutionStep {
    * How many rows of the function's answer the plan can consume, or -1 for all of them: set by the planner only when those
    * are the first rows of the function's own best-first order (issue #9895).
    */
-  private final int             limit;
+  private final int                           limit;
+  /**
+   * The {@code @rid} conjuncts of the block, decided by the function on its candidates' RIDs before any record is loaded,
+   * or null for none (issue #9909). Resolved at every execution, since they can read parameters and variables.
+   */
+  private final List<BooleanExpression>       ridConditions;
+  /** The order the plan needs the rows in (issue #9909). */
+  private final IndexedFunctionPushdown.Order order;
 
   //runtime0
   Iterator<Record> fullResult = null;
 
   public FetchFromIndexedFunctionStep(final BinaryCondition functionCondition, final FromClause queryTarget,
       final CommandContext context) {
-    this(functionCondition, queryTarget, -1, context);
+    this(functionCondition, queryTarget, -1, null, IndexedFunctionPushdown.Order.FUNCTION, context);
   }
 
   /**
-   * @param limit how many rows of the function's answer the plan can consume, or -1 for all of them (see the limit variant
-   *              of {@link IndexableSQLFunction}{@code .searchFromTarget()})
+   * @param limit         how many rows of the function's answer the plan can consume, or -1 for all of them (see the
+   *                      pushdown variant of {@link IndexableSQLFunction}{@code .searchFromTarget()})
+   * @param ridConditions the {@code @rid} conjuncts the answer must satisfy, which the plan does not check after the fetch,
+   *                      or null for none
+   * @param order         the order the plan needs the rows in
    */
   public FetchFromIndexedFunctionStep(final BinaryCondition functionCondition, final FromClause queryTarget, final int limit,
-      final CommandContext context) {
+      final List<BooleanExpression> ridConditions, final IndexedFunctionPushdown.Order order, final CommandContext context) {
     super(context);
     this.functionCondition = functionCondition;
     this.queryTarget = queryTarget;
     this.limit = limit;
+    this.ridConditions = ridConditions == null || ridConditions.isEmpty() ? null : List.copyOf(ridConditions);
+    this.order = order;
   }
 
   public int getLimit() {
@@ -106,7 +121,13 @@ public class FetchFromIndexedFunctionStep extends AbstractExecutionStep {
     if (fullResult == null) {
       final long begin = context.isProfiling() ? System.nanoTime() : 0;
       try {
-        fullResult = functionCondition.executeIndexedFunction(queryTarget, context, limit).iterator();
+        final RIDFilter ridFilter = ridConditions != null ? RIDFilter.resolve(ridConditions, context) : null;
+        if (ridFilter != null && ridFilter.acceptsNothing())
+          // the @rid conditions contradict each other or name no RID: there is nothing to search for
+          fullResult = Collections.emptyIterator();
+        else
+          fullResult = functionCondition.executeIndexedFunction(queryTarget, context,
+              new IndexedFunctionPushdown(limit, ridFilter, order)).iterator();
       } finally {
         if (context.isProfiling()) {
           cost += System.nanoTime() - begin;
@@ -119,8 +140,12 @@ public class FetchFromIndexedFunctionStep extends AbstractExecutionStep {
   public String prettyPrint(final int depth, final int indent) {
     String result =
         ExecutionStepInternal.getIndent(depth, indent) + "+ FETCH FROM INDEXED FUNCTION " + functionCondition.toString();
+    if (order != IndexedFunctionPushdown.Order.FUNCTION)
+      result += " ORDER BY @rid " + (order == IndexedFunctionPushdown.Order.RID_ASC ? "ASC" : "DESC");
     if (limit > -1)
-      result += " (best " + limit + " needed)";
+      result += order == IndexedFunctionPushdown.Order.FUNCTION ? " (best " + limit + " needed)" : " (first " + limit + " needed)";
+    if (ridConditions != null)
+      result += "\n" + ExecutionStepInternal.getIndent(depth, indent) + "  RID FILTER (" + conditionsToString() + ")";
     if (context.isProfiling()) {
       result += " (" + getCostFormatted() + ")";
     }
@@ -139,6 +164,16 @@ public class FetchFromIndexedFunctionStep extends AbstractExecutionStep {
       LogManager.instance().log(this, Level.FINE, "Failed to collect full-text scoring metadata for EXPLAIN/PROFILE", ex);
     }
     return result;
+  }
+
+  private String conditionsToString() {
+    final StringBuilder builder = new StringBuilder();
+    for (final BooleanExpression condition : ridConditions) {
+      if (!builder.isEmpty())
+        builder.append(" AND ");
+      builder.append(condition);
+    }
+    return builder.toString();
   }
 
   @Override

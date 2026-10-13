@@ -26,12 +26,14 @@ import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexCursorEntry;
 import com.arcadedb.index.TempIndexCursor;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.sql.executor.RIDFilter;
 import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.FullTextIndexMetadata;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.TimeBoundRegex;
 import org.apache.lucene.analysis.Analyzer;
 import org.apache.lucene.index.Term;
+import org.apache.lucene.queryparser.classic.MultiFieldQueryParser;
 import org.apache.lucene.queryparser.classic.ParseException;
 import org.apache.lucene.queryparser.classic.QueryParser;
 import org.apache.lucene.search.BooleanClause;
@@ -112,6 +114,12 @@ public class FullTextQueryExecutor {
   private       int                    guardTicks;
   // Cached once: the indexed property names don't change during a query, but isUnqualified() is consulted per matched term.
   private final List<String>           propertyNames;
+  /**
+   * The fields an unqualified clause is restricted to, or null to search it across every indexed property (issue #9910).
+   */
+  private final String[]               restrictedFields;
+  /** Decides the matches on their RIDs before they are scored, or null to keep every match (issue #9909). */
+  private final RIDFilter              ridFilter;
 
   // BM25 scoring (issue #4687): the positive scoring tokens collected during matching, mapped to their field boost. Populated
   // only when the index uses BM25 similarity and only for positive clauses (never for MUST_NOT exclusion). A new executor is
@@ -161,11 +169,24 @@ public class FullTextQueryExecutor {
    * @param guard checked periodically while the postings are walked and the matches combined
    */
   public FullTextQueryExecutor(final LSMTreeFullTextIndex index, final WorkGuard guard) {
+    this(index, guard, null, null);
+  }
+
+  /**
+   * @param restrictedFields the indexed properties an unqualified clause is searched in, each clause becoming an OR of the
+   *                         same clause qualified with each of them, or null to search it across every indexed property.
+   *                         An explicitly qualified clause keeps its own field (issue #9910)
+   * @param ridFilter        decides the matches on their RIDs before they are scored or limited, or null (issue #9909)
+   */
+  public FullTextQueryExecutor(final LSMTreeFullTextIndex index, final WorkGuard guard, final List<String> restrictedFields,
+      final RIDFilter ridFilter) {
     this.index = index;
     this.guard = guard;
     this.analyzer = index.getAnalyzer();
     this.metadata = index.getFullTextMetadata();
     this.propertyNames = index.getPropertyNames();
+    this.restrictedFields = restrictedFields != null ? restrictedFields.toArray(new String[0]) : null;
+    this.ridFilter = ridFilter;
   }
 
   /**
@@ -175,7 +196,12 @@ public class FullTextQueryExecutor {
    * @return a configured QueryParser
    */
   private QueryParser createQueryParser() {
-    final QueryParser parser = new QueryParser(DEFAULT_FIELD, analyzer);
+    // Restricted to some fields, an unqualified clause is expanded by Lucene's own parser into the OR of that clause over
+    // each of them - a term, a phrase, a prefix, a wildcard and a fuzzy term alike - which the collectors below then look up
+    // under the field-qualified keys the index stores for a multi-property index (issue #9910)
+    final QueryParser parser = restrictedFields != null ?
+        new MultiFieldQueryParser(restrictedFields, analyzer) :
+        new QueryParser(DEFAULT_FIELD, analyzer);
     if (metadata != null) {
       parser.setAllowLeadingWildcard(metadata.isAllowLeadingWildcard());
       if ("AND".equalsIgnoreCase(metadata.getDefaultOperator())) {
@@ -262,6 +288,10 @@ public class FullTextQueryExecutor {
 
   private IndexCursor executeQuery(final Query query, final int limit) {
     final Map<RID, AtomicInteger> scoreMap = collectQueryMatches(query);
+    if (ridFilter != null)
+      // Before the scoring and the limit: the best matches are the best of those the filter keeps. The scores do not change,
+      // the document frequencies were counted on the postings
+      scoreMap.keySet().removeIf(rid -> !ridFilter.accepts(rid));
 
     // BM25 path: collectMatches above determined WHICH documents match (boolean/phrase/wildcard semantics). Re-rank that
     // candidate set with BM25 using the scoring tokens captured during matching.

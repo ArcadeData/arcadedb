@@ -27,6 +27,8 @@ import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.geospatial.LSMTreeGeoIndex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.IndexableSQLFunction;
+import com.arcadedb.query.sql.executor.IndexedFunctionPushdown;
+import com.arcadedb.query.sql.executor.RIDFilter;
 import com.arcadedb.query.sql.parser.BinaryCompareOperator;
 import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.FromClause;
@@ -98,7 +100,8 @@ public abstract class SQLFunctionGeoPredicate extends SQLFunctionAbstract implem
   @Override
   public boolean allowsIndexedExecution(final FromClause target, final BinaryCompareOperator operator, final Object right,
       final CommandContext context, final Expression[] oExpressions) {
-    if (oExpressions == null || oExpressions.length < 1 || target == null)
+    // Only `= true` asks for the candidates of the index (see IndexableSQLFunction.selectsMatches)
+    if (oExpressions == null || oExpressions.length < 1 || target == null || !IndexableSQLFunction.selectsMatches(operator, right))
       return false;
 
     // First argument must be a simple field reference (identifier), not a nested function call
@@ -143,6 +146,18 @@ public abstract class SQLFunctionGeoPredicate extends SQLFunctionAbstract implem
   @Override
   public Iterable<Record> searchFromTarget(final FromClause target, final BinaryCompareOperator operator,
       final Object rightValue, final CommandContext context, final Expression[] oExpressions) {
+    return searchFromTarget(target, operator, rightValue, context, oExpressions, IndexedFunctionPushdown.NONE);
+  }
+
+  /**
+   * The candidates of the geospatial index, deciding the {@code @rid} conditions of the block on each candidate's RID before
+   * its record is loaded, and skipping the bucket indexes no accepted RID can be in (issue #9909). The limit is not used:
+   * the candidates are the covering cells' and the exact predicate after the fetch drops some of them.
+   */
+  @Override
+  public Iterable<Record> searchFromTarget(final FromClause target, final BinaryCompareOperator operator,
+      final Object rightValue, final CommandContext context, final Expression[] oExpressions,
+      final IndexedFunctionPushdown pushdown) {
     if (oExpressions == null || oExpressions.length < 1)
       return List.of();
 
@@ -188,7 +203,7 @@ public abstract class SQLFunctionGeoPredicate extends SQLFunctionAbstract implem
     // null element (it is not an LSMTreeGeoIndex), so tolerate one here too rather than turning a schema anomaly into
     // an NPE on the query path. It also wraps instead of copying an array that is already freshly allocated.
     final List<Index> bucketIndexes = Arrays.<Index>asList(geoTypeIndex.getIndexesOnBuckets());
-    return () -> new GeoCandidateIterator(bucketIndexes, searchShape);
+    return () -> new GeoCandidateIterator(bucketIndexes, searchShape, pushdown.ridFilter());
   }
 
   /**
@@ -202,6 +217,8 @@ public abstract class SQLFunctionGeoPredicate extends SQLFunctionAbstract implem
   static class GeoCandidateIterator implements Iterator<Record>, AutoCloseable {
     private final List<Index>   bucketIndexes;
     private final Shape         searchShape;
+    /** Decides the candidates on their RIDs before they are loaded, or null to keep them all (issue #9909). */
+    private final RIDFilter     ridFilter;
     private       int           nextBucket;
     private       IndexCursor   cursor;
     /** Lookahead, named for what it holds rather than for next(): fetchNext() fills it, next() drains it. */
@@ -209,8 +226,13 @@ public abstract class SQLFunctionGeoPredicate extends SQLFunctionAbstract implem
     private       boolean       closed;
 
     GeoCandidateIterator(final List<Index> bucketIndexes, final Shape searchShape) {
+      this(bucketIndexes, searchShape, null);
+    }
+
+    GeoCandidateIterator(final List<Index> bucketIndexes, final Shape searchShape, final RIDFilter ridFilter) {
       this.bucketIndexes = bucketIndexes;
       this.searchShape = searchShape;
+      this.ridFilter = ridFilter;
     }
 
     @Override
@@ -239,9 +261,12 @@ public abstract class SQLFunctionGeoPredicate extends SQLFunctionAbstract implem
 
       while (true) {
         if (cursor != null) {
-          if (cursor.hasNext()) {
-            pending = cursor.next();
-            return;
+          while (cursor.hasNext()) {
+            final Identifiable candidate = cursor.next();
+            if (ridFilter == null || ridFilter.accepts(candidate.getIdentity())) {
+              pending = candidate;
+              return;
+            }
           }
           cursor.close();
           cursor = null;
@@ -251,8 +276,11 @@ public abstract class SQLFunctionGeoPredicate extends SQLFunctionAbstract implem
           return;
 
         final Index bucketIndex = bucketIndexes.get(nextBucket++);
-        if (bucketIndex instanceof final LSMTreeGeoIndex geoIndex)
-          cursor = geoIndex.get(new Object[] { searchShape }, -1);
+        if (bucketIndex instanceof final LSMTreeGeoIndex geoIndex) {
+          final boolean bucketCanMatch = ridFilter == null || ridFilter.acceptsBucket(geoIndex.getAssociatedBucketId());
+          if (bucketCanMatch)
+            cursor = geoIndex.get(new Object[] { searchShape }, -1);
+        }
       }
     }
 
