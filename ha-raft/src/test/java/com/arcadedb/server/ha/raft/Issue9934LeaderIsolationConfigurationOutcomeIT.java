@@ -48,7 +48,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * a hook that gives up on an entry the cluster then commits normally.
  * <p>
  * The leader is cut off from both followers ({@link RaftNetworkPartition}) and runs {@code ALTER DATABASE} or
- * "set database setting" ({@link ServerControlPlane#setDatabaseSetting}). Its Raft log takes the {@code DATABASE_CONFIGURATION_ENTRY}, which can never reach a quorum; the wait gives up with
+ * "set database setting" ({@link ServerControlPlane#setDatabaseSetting}). Its Raft log takes the
+ * {@code DATABASE_CONFIGURATION_ENTRY}, which can never reach a quorum; the wait gives up with
  * {@link TransactionOutcomeUnknownException}, and the node settles the setting on its {@code configuration.json},
  * i.e. on the previous value. The followers elect a leader of their own, and when the partition heals the old
  * leader's uncommitted entry is truncated by the new leader's log. Then two outcomes:
@@ -91,6 +92,8 @@ class Issue9934LeaderIsolationConfigurationOutcomeIT extends BaseRaftHATest {
   void healPartition() {
     if (partition != null)
       partition.close();
+    // Also when the test failed before a partition object existed: both injections are JVM-wide
+    RaftNetworkPartition.resetAll();
   }
 
   @Test
@@ -115,6 +118,7 @@ class Issue9934LeaderIsolationConfigurationOutcomeIT extends BaseRaftHATest {
     assertThat(oldLeader).isGreaterThanOrEqualTo(0);
     final Database database = getServerDatabase(oldLeader, getDatabaseName());
     final int previous = configuredValue(oldLeader, GlobalConfiguration.TYPE_DEFAULT_BUCKETS);
+    // Any other valid value: the setting accepts any positive integer
     final int changed = previous + 13;
     final long baseline = lastRaftLogIndex(raftOf(oldLeader));
 
@@ -168,6 +172,7 @@ class Issue9934LeaderIsolationConfigurationOutcomeIT extends BaseRaftHATest {
     final int oldLeader = findLeaderIndex();
     assertThat(oldLeader).isGreaterThanOrEqualTo(0);
     final int previous = configuredValue(oldLeader, setting);
+    // Any other valid value: both settings accept any positive integer
     final int changed = previous + 11;
     final int followUpValue = configuredValue(oldLeader, followUp) + 7;
     final long baseline = lastRaftLogIndex(raftOf(oldLeader));

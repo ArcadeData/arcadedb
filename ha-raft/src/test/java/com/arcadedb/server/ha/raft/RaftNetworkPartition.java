@@ -48,12 +48,13 @@ import java.util.logging.Level;
  *       long after ArcadeDB's own wait for it gave up, so without this the cluster on the other side of the cut
  *       commits the entry the isolated leader could not: a client request is matched at
  *       {@code RaftServerImpl.appendTransaction}, on any peer but the isolated one, and is either parked until
- *       {@link #releaseClientRequests()} lets it through - a request delayed in flight - or refused for good with
- *       {@link #dropClientRequests()}.</li>
+ *       {@link #releaseClientRequests()} lets it through - a request delayed in flight - or refused for good
+ *       ({@link #isolateDroppingClientRequests}, and every request still parked at {@link #close()}).</li>
  * </ul>
  * Both injection points are JVM-wide singletons, so {@link #close()} must run after the test whatever its outcome, and
  * the tests that use this class must not run concurrently in one JVM (ha-raft ITs run serially in one fork).
- * {@link #isolate} resets any block a test that did not close its partition left behind.
+ * {@link #isolate} resets any block a test that did not close its partition left behind, and {@link #resetAll()}
+ * clears both injections when no partition object is at hand.
  */
 final class RaftNetworkPartition implements AutoCloseable {
 
@@ -86,7 +87,7 @@ final class RaftNetworkPartition implements AutoCloseable {
 
   /**
    * Isolates {@code isolatedPeerId} now and parks every {@code intercepted} client request that reaches another peer
-   * until {@link #releaseClientRequests()} or {@link #dropClientRequests()}.
+   * until {@link #releaseClientRequests()}, or refuses them at {@link #close()}.
    */
   static RaftNetworkPartition isolateHoldingClientRequests(final String isolatedPeerId,
       final Predicate<ByteString> intercepted) {
@@ -136,11 +137,6 @@ final class RaftNetworkPartition implements AutoCloseable {
     clientTraffic = ClientTraffic.PASS;
   }
 
-  /** Refuses every parked and every later intercepted client request: it never reaches the log of the peer it hit. */
-  void dropClientRequests() {
-    clientTraffic = ClientTraffic.DROP;
-  }
-
   /** How many intercepted client requests were parked so far. */
   int heldClientRequests() {
     return held.get();
@@ -151,6 +147,12 @@ final class RaftNetworkPartition implements AutoCloseable {
     return dropped.get();
   }
 
+  /** Clears every block and the client-request interception, whatever partition installed them. */
+  static void resetAll() {
+    BlockRequestHandlingInjection.getInstance().unblockAll();
+    CodeInjectionForTesting.remove(APPEND_TRANSACTION);
+  }
+
   @Override
   public void close() {
     // Parked requests are refused, not let through: nothing the test held may commit behind its back
@@ -159,7 +161,11 @@ final class RaftNetworkPartition implements AutoCloseable {
     CodeInjectionForTesting.remove(APPEND_TRANSACTION);
   }
 
-  /** {@code execute(localId, clientId, request, context, cacheEntry)}, run by the peer before it appends a client request. */
+  /**
+   * {@code execute(localId, clientId, request, context, cacheEntry)}, run by the peer before it appends a client request.
+   * Ratis ignores the return value at this point (it only reports whether injected code ran), so returning lets the
+   * request take its normal path; throwing is the only way to refuse it.
+   */
   private boolean onAppendTransaction(final Object localId, final Object clientId, final Object... args) {
     if (isolatedPeerId.equals(String.valueOf(localId)) || args.length == 0
         || !(args[0] instanceof RaftClientRequest request) || !request.is(TypeCase.WRITE)
