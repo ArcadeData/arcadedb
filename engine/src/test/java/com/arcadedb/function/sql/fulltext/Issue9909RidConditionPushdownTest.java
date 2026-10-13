@@ -78,6 +78,13 @@ class Issue9909RidConditionPushdownTest extends TestHelper {
     assertSame("@rid > '" + cursor + "'", r -> r.compareTo(cursor) > 0, ordered, params);
     // Contradictory conditions: nothing to search for
     assertSame("@rid > :upper AND @rid < :cursor", r -> false, ordered, params);
+    assertSame("@rid >= :cursor AND @rid < :cursor", r -> false, ordered, params);
+    // Shapes decided by evaluating the condition per RID: an empty list, a list mixing RIDs and other values, a null bound
+    assertSame("@rid NOT IN []", r -> true, ordered, params);
+    assertSame("@rid NOT IN [" + some.get(0) + ", 'not a rid', 7]", r -> !r.equals(some.get(0)), ordered, params);
+    params.put("nothing", null);
+    assertSame("@rid > :nothing", r -> false, ordered, params);
+    assertSame("@rid <> :nothing", r -> false, ordered, params);
     // IN, alone or with a range, takes the direct fetch by RID, as before, which answers in the list's order
     final List<RID> inAndRange = new ArrayList<>();
     for (final RID rid : some)
@@ -145,10 +152,37 @@ class Issue9909RidConditionPushdownTest extends TestHelper {
     }
     assertThat(paged).isEqualTo(byRid);
 
-    // Descending, from the end
+    // Descending, from the end, and a limit past the last match
     final List<RID> descending = rids("SELECT FROM Doc WHERE @rid < :cursor AND " + SEARCH + " ORDER BY @rid DESC LIMIT 5",
         Map.of("cursor", byRid.getLast()));
     assertThat(descending).isEqualTo(byRid.reversed().subList(1, 6));
+    assertThat(rids("SELECT FROM Doc WHERE @rid < :cursor AND " + SEARCH + " ORDER BY @rid DESC LIMIT 50", Map.of("cursor",
+        byRid.get(9)))).isEqualTo(byRid.subList(0, 9).reversed());
+
+    // An order on more than @rid is sorted after the fetch as before
+    final String twoKeys = "SELECT FROM Doc WHERE @rid > :cursor AND " + SEARCH + " ORDER BY @rid, n LIMIT 5";
+    assertThat(plan(twoKeys, new RID(-1, -1))).doesNotContain("ORDER BY @rid ASC (").contains("ORDER BY");
+    assertThat(rids(twoKeys, Map.of("cursor", new RID(-1, -1)))).isEqualTo(byRid.subList(0, 5));
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = { "BM25_1", "CLASSIC_4" })
+  void aMatchWhoseRecordIsGoneIsSkippedInRidOrder(final String variant) {
+    createCorpus(variant);
+    final List<RID> byRid = rids("SELECT FROM Doc WHERE " + SEARCH + " ORDER BY @rid");
+    // Removed from its bucket behind the index's back: the index still answers it, the load does not
+    final RID gone = byRid.get(3);
+    database.transaction(() -> ((DatabaseInternal) database).getSchema().getBucketById(gone.getBucketId()).deleteRecord(gone));
+
+    final List<RID> alive = new ArrayList<>(byRid);
+    alive.remove(gone);
+    final String page = "SELECT FROM Doc WHERE @rid > :cursor AND " + SEARCH + " ORDER BY @rid LIMIT 10";
+    assertThat(rids(page, Map.of("cursor", new RID(-1, -1)))).isEqualTo(alive.subList(0, 10));
+    assertThat(rids(page.replace("ORDER BY @rid", "ORDER BY @rid DESC"), Map.of("cursor", byRid.get(0))))
+        .isEqualTo(alive.reversed().subList(0, 10));
+
+    // The dangling index entry and the bucket counter were left wrong on purpose: drop them before the integrity check
+    database.getSchema().dropType("Doc");
   }
 
   @Test

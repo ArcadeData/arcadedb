@@ -4332,6 +4332,10 @@ public class SelectExecutionPlanner {
   private static final Set<String> PER_ROW_VARIABLES = Set.of("$current", "$score", "$matched", "$currentMatch", "$depth", "$path",
       "$stack", "$history");
 
+  /**
+   * By identity: the pushed conditions were taken from this very block, and two conjuncts can be equal without being the
+   * same one (a condition written twice is pushed twice and removed twice, which is still the same filter).
+   */
   private static boolean containsInstance(final List<BooleanExpression> conditions, final BooleanExpression condition) {
     for (final BooleanExpression c : conditions)
       if (c == condition)

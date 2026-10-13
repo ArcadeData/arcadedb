@@ -66,6 +66,8 @@ public final class RIDFilter {
   private       RID                     upper;
   private       boolean                 upperInclusive;
   private       Set<RID>                allowed;
+  /** The buckets of {@link #allowed}, sorted, so that a bucket is decided without walking the RID set. */
+  private       int[]                   allowedBuckets;
   private       Set<RID>                excluded;
   private       BooleanExpression[]     evaluated;
   private       boolean                 acceptsNothing;
@@ -87,6 +89,8 @@ public final class RIDFilter {
         evaluated.add(condition);
     filter.evaluated = evaluated.toArray(new BooleanExpression[0]);
     filter.acceptsNothing = filter.computeAcceptsNothing();
+    if (filter.allowed != null)
+      filter.allowedBuckets = filter.allowed.stream().mapToInt(RID::getBucketId).distinct().sorted().toArray();
     return filter;
   }
 
@@ -118,13 +122,7 @@ public final class RIDFilter {
       return false;
     if (upper != null && bucketId > upper.getBucketId())
       return false;
-    if (allowed != null) {
-      for (final RID rid : allowed)
-        if (rid.getBucketId() == bucketId)
-          return true;
-      return false;
-    }
-    return true;
+    return allowedBuckets == null || Arrays.binarySearch(allowedBuckets, bucketId) >= 0;
   }
 
   public boolean accepts(final RID rid) {
@@ -175,9 +173,10 @@ public final class RIDFilter {
   /** Folds {@code condition} into the range or the RID sets when its bound is a RID; false to evaluate it per RID. */
   private boolean resolveNatively(final BooleanExpression condition) {
     if (condition instanceof final BinaryCondition binary) {
-      if (!(binary.getRight().execute((Result) null, context) instanceof final RID bound))
-        return false;
       final BinaryCompareOperator operator = binary.getOperator();
+      final RID bound = boundOf(binary.getRight().execute((Result) null, context), operator);
+      if (bound == null)
+        return false;
       if (operator instanceof GtOperator || operator instanceof GeOperator)
         restrictLower(bound, operator instanceof GeOperator);
       else if (operator instanceof LtOperator || operator instanceof LeOperator)
@@ -198,6 +197,20 @@ public final class RIDFilter {
     else
       restrictAllowed(rids);
     return true;
+  }
+
+  /**
+   * The RID a comparison is decided against, or null to evaluate the condition per RID. A RID's string spelling is one for
+   * an ordering: the operators compare it as {@link RID#compareTo} does, parsing it into a RID, so it is parsed once here
+   * instead, which also lets it prune buckets. For equality the string stays to the condition's own semantics.
+   */
+  private static RID boundOf(final Object value, final BinaryCompareOperator operator) {
+    if (value instanceof final RID rid)
+      return rid;
+    if (value instanceof final String string && RID.is(string) && (operator instanceof GtOperator || operator instanceof GeOperator
+        || operator instanceof LtOperator || operator instanceof LeOperator))
+      return new RID(string);
+    return null;
   }
 
   /** The RIDs of an IN right-hand side made of RIDs only, or null when any element is something else. */
