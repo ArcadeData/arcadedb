@@ -18,7 +18,6 @@
  */
 package com.arcadedb.query.opencypher.traversal;
 
-import com.arcadedb.database.RID;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GhostEdgeReporter;
@@ -183,7 +182,7 @@ public class BreadthFirstTraverser extends GraphTraverser {
                 continue;
 
               // Path mode: TRAIL/ACYCLIC = edge uniqueness, WALK = no restriction
-              if (pathMode != PathMode.WALK && pathContainsEdge(path, edge))
+              if (pathMode != PathMode.WALK && path.containsEdge(edge))
                 continue;
 
               final Vertex nextVertex = getOtherVertex(edge, vertex);
@@ -206,17 +205,6 @@ public class BreadthFirstTraverser extends GraphTraverser {
           return;
         }
       }
-    }
-
-    /**
-     * Checks if a path already contains the given edge (relationship uniqueness).
-     */
-    private boolean pathContainsEdge(final TraversalPath path, final Edge edge) {
-      final RID edgeRid = edge.getIdentity();
-      for (final Edge pathEdge : path.getEdges())
-        if (pathEdge.getIdentity().equals(edgeRid))
-          return true;
-      return false;
     }
 
     @Override
