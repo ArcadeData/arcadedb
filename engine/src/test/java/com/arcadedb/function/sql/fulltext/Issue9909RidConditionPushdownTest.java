@@ -159,6 +159,11 @@ class Issue9909RidConditionPushdownTest extends TestHelper {
     assertThat(rids("SELECT FROM Doc WHERE @rid < :cursor AND " + SEARCH + " ORDER BY @rid DESC LIMIT 50", Map.of("cursor",
         byRid.get(9)))).isEqualTo(byRid.subList(0, 9).reversed());
 
+    // SKIP is served out of the same RID order
+    final String skipped = "SELECT FROM Doc WHERE @rid > :cursor AND " + SEARCH + " ORDER BY @rid SKIP 3 LIMIT 5";
+    assertThat(plan(skipped, new RID(-1, -1))).contains("ORDER BY @rid ASC (first 8 needed)");
+    assertThat(rids(skipped, Map.of("cursor", new RID(-1, -1)))).isEqualTo(byRid.subList(3, 8));
+
     // An order on more than @rid is sorted after the fetch as before
     final String twoKeys = "SELECT FROM Doc WHERE @rid > :cursor AND " + SEARCH + " ORDER BY @rid, n LIMIT 5";
     assertThat(plan(twoKeys, new RID(-1, -1))).doesNotContain("ORDER BY @rid ASC (").contains("ORDER BY");
