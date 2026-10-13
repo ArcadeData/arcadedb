@@ -29,6 +29,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.io.File;
 import java.nio.file.Path;
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -52,6 +53,7 @@ class Issue9762FollowerRenameFilesTest {
     factory = new DatabaseFactory(dir.resolve("db").toString());
     database = (DatabaseInternal) factory.create();
     database.command("sql", "CREATE DOCUMENT TYPE R");
+    database.command("sql", "CREATE BUCKET R_extra");
     database.transaction(() -> database.newDocument("R").set("id", 1).save());
   }
 
@@ -83,6 +85,24 @@ class Issue9762FollowerRenameFilesTest {
     ArcadeStateMachine.renameFiles(database, Map.of(bucket.getFileId(), newName));
 
     assertThat(database.getFileManager().getFile(bucket.getFileId()).getComponentName()).isEqualTo(newName);
+  }
+
+  /** A crash part way through an apply: the replay finds the first file already moved and moves the rest. */
+  @Test
+  void aReplayAfterAPartialApplyMovesWhatIsLeft() throws Exception {
+    database.command("sql", "ALTER TYPE R BUCKET +R_extra");
+    final Bucket first = database.getSchema().getType("R").getBuckets(false).getFirst();
+    final Bucket second = database.getSchema().getBucketByName("R_extra");
+    final String firstNewName = "R2" + first.getName().substring(1);
+    final Map<Integer, String> renames = new LinkedHashMap<>();
+    renames.put(first.getFileId(), firstNewName);
+    renames.put(second.getFileId(), "R2_extra");
+    ArcadeStateMachine.renameFiles(database, Map.of(first.getFileId(), firstNewName));
+
+    ArcadeStateMachine.renameFiles(database, renames);
+
+    assertThat(database.getFileManager().getFile(first.getFileId()).getComponentName()).isEqualTo(firstNewName);
+    assertThat(database.getFileManager().getFile(second.getFileId()).getComponentName()).isEqualTo("R2_extra");
   }
 
   @Test

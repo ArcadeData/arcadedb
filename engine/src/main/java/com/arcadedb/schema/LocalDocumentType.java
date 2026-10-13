@@ -427,7 +427,7 @@ public class LocalDocumentType implements DocumentType {
   /**
    * File id to component name of every file a rename of this type can move: its buckets with the ones a subclass involves
    * (edge buckets, stripe pool) and the components of its indexes. Only this type's files, so a concurrent rename of
-   * another type is never published early by this one.
+   * another type is never published early by this one. A file dropped concurrently is simply absent from the map.
    */
   private Map<Integer, String> componentNamesOfFiles(final FileManager fileManager) {
     final Map<Integer, String> names = new LinkedHashMap<>();
