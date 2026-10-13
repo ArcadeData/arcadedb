@@ -538,6 +538,10 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
     return null;
   }
 
+  /**
+   * Notes a served record of a non-unique key. A unique key needs none: its one entry is either served or lost, and a read of it
+   * again (the record that replaced a deleted one) cannot find a record of it already served.
+   */
   private Result served(final Result row, final RID rid, final boolean unique) {
     if (!unique && !servedOverflow) {
       if (servedOfKey.size() >= trackedRidsPerKey)
