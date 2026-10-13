@@ -70,6 +70,16 @@ class SelectVectorSubtypeScopeTest extends TestHelper {
   }
 
   @Test
+  void aTypeWithNoBucketOfItsOwnAnswersNothingWhenNotPolymorphic() {
+    database.getSchema().buildVertexType().withName("Hollow").withSuperType("Parent").withTotalBuckets(0).create();
+    database.command("sql", "CREATE VERTEX TYPE Filled EXTENDS Hollow");
+    database.transaction(() -> database.newVertex("Filled").set("pid", 400, "vector", new float[] { 0f, 0f }).save());
+
+    assertThat(database.select().fromType("Hollow").polymorphic(false).nearestTo("vector", ORIGIN, 3).vertices()).isEmpty();
+    assertThat(pids(database.select().fromType("Hollow").nearestTo("vector", ORIGIN, 3).vertices())).containsExactly(400);
+  }
+
+  @Test
   void theParentTypeStillSearchesEverySubType() {
     assertThat(pids(database.select().fromType("Parent").nearestTo("vector", ORIGIN, 4).vertices())).containsExactly(0, 300, 100,
         200);
