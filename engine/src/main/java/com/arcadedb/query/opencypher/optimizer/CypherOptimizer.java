@@ -298,11 +298,11 @@ public class CypherOptimizer {
 
     // 7. Push down filters: a disconnected pattern had its own in 5a
     if (!logicalPlan.getWhereFilters().isEmpty() && units.size() <= 1 && isolatedNodes.isEmpty())
-      rootOperator = applyFilterPushdown(logicalPlan, rootOperator, anchor.getVariable(), anchorOperator);
+      rootOperator = applyFilterPushdown(logicalPlan, rootOperator, anchor.getVariable(), anchorOperator, relVarsPerClause);
 
     // 8. Fuse consecutive GAVExpandAll operators into a single GAVFusedChainOperator
     // This eliminates ALL intermediate ResultInternal/HashMap/Vertex allocations
-    rootOperator = fuseGAVExpandChain(rootOperator, relVarsPerClause);
+    rootOperator = fuseGAVExpandChain(rootOperator, relVarsPerClause, logicalPlan);
 
     // 9. Defer vertex loading for remaining (non-fused) intermediate GAVExpandAll hops
     applyDeferredVertexLoading(rootOperator);
@@ -1382,16 +1382,13 @@ public class CypherOptimizer {
    * A predicate that reads only the anchor variable answers "is this row worth expanding at all", so
    * evaluating it at the scan drops the row before the expansion multiplies it. Left at the top, the
    * plan expanded every vertex of the label and threw most of the rows away afterwards.
+   * <p>
+   * The WHERE clauses left (the statement's, each MATCH's, the inline property maps') form ONE Filter: the fusion of a GAV
+   * chain takes the Filter right above it only, so a second one used to leave the chain unfused.
    */
-  private PhysicalOperator applyFilterPushdown(final LogicalPlan logicalPlan,
-      final PhysicalOperator rootOperator, final String anchorVariable, final PhysicalOperator anchorOperator) {
-    // Wrap the root operator with a FilterOperator for each WHERE clause
-    // In a full implementation, we would analyze which filters can be pushed down
-    // to lower operators (closer to data sources) for better performance.
-    // For now, we apply all filters at the top level.
-
-    PhysicalOperator currentOp = rootOperator;
-
+  private PhysicalOperator applyFilterPushdown(final LogicalPlan logicalPlan, final PhysicalOperator rootOperator,
+      final String anchorVariable, final PhysicalOperator anchorOperator, final Map<Integer, Set<String>> relVarsPerClause) {
+    BooleanExpression rest = null;
     for (final WhereClause whereClause : logicalPlan.getWhereFilters()) {
       BooleanExpression filterExpression = whereClause.getConditionExpression();
 
@@ -1404,29 +1401,36 @@ public class CypherOptimizer {
           filterExpression = pushAnchorOnlyConjuncts(filterExpression, anchorVariable, logicalPlan, seek::pushDownFilter);
       }
 
-      // The rest goes on the lowest hop that binds all it reads (issue #9203)
-      if (filterExpression != null && anchorVariable != null)
-        filterExpression = placeConjunctsOnBindingHop(filterExpression, currentOp, anchorVariable, anchorOperator, logicalPlan);
-
-      if (filterExpression != null) {
-        // Estimate cost and cardinality for this filter
-        final long inputCardinality = currentOp.getEstimatedCardinality();
-        final double selectivity = DEFAULT_FILTER_SELECTIVITY;
-        final long outputCardinality = (long) (inputCardinality * selectivity);
-        final double filterCost = inputCardinality * costModel.FILTER_COST_PER_ROW;
-        final double totalCost = currentOp.getEstimatedCost() + filterCost;
-
-        // Wrap with FilterOperator
-        currentOp = new FilterOperator(
-            currentOp,
-            filterExpression,
-            totalCost,
-            outputCardinality
-        );
-      }
+      if (filterExpression != null)
+        rest = rest == null ? filterExpression : new LogicalExpression(LogicalExpression.Operator.AND, rest, filterExpression);
     }
 
-    return currentOp;
+    // The rest goes on the lowest hop that binds all it reads (issue #9203), unless a fused GAV chain takes it whole: the
+    // fused chain evaluates each conjunct on the hop that binds its variables by itself (issue #9938)
+    if (rest != null && anchorVariable != null && !fusesGAVChainWithFilter(rootOperator, rest, relVarsPerClause))
+      rest = placeConjunctsOnBindingHop(rest, rootOperator, anchorVariable, anchorOperator, logicalPlan);
+
+    if (rest == null)
+      return rootOperator;
+
+    final long inputCardinality = rootOperator.getEstimatedCardinality();
+    final long outputCardinality = (long) (inputCardinality * DEFAULT_FILTER_SELECTIVITY);
+    final double totalCost = rootOperator.getEstimatedCost() + inputCardinality * costModel.FILTER_COST_PER_ROW;
+    return new FilterOperator(rootOperator, rest, totalCost, outputCardinality);
+  }
+
+  /**
+   * Whether {@link #fuseGAVExpandChain} will take {@code chainTop} once a Filter with {@code predicate} is put on it: the same
+   * test, so a chain the fusion refuses (a branching one, say) has its conjuncts placed hop by hop instead of keeping them
+   * all above its last hop.
+   */
+  private boolean fusesGAVChainWithFilter(final PhysicalOperator chainTop, final BooleanExpression predicate,
+      final Map<Integer, Set<String>> relVarsPerClause) {
+    if (!(chainTop instanceof GAVExpandAll && chainTop.getChild() instanceof GAVExpandAll))
+      return false;
+    final Set<String> usedVariables = collectDownstreamVariables();
+    usedVariables.addAll(WhereClause.collectVariables(predicate));
+    return fusableGAVChain(chainTop, usedVariables, relVarsPerClause) != null;
   }
 
   /**
@@ -1437,21 +1441,13 @@ public class CypherOptimizer {
    * {@code p3} is bound: left above the last hop it ran once per row the last hop multiplies in, 24 times as often when
    * every person has 24 interests, instead of once per path.
    * <p>
-   * Only a chain of ExpandAll / ExpandInto / GAVExpandAll / GAVExpandInto hops above the anchor scan is rewritten, and a chain
-   * that starts with two GAVExpandAll hops is left alone because the fusion below needs it unbroken and takes the whole
-   * Filter. Anything else (a join, a variable-length hop) keeps the whole predicate at the top, and so does a conjunct
-   * that reads no pattern variable, or one that reads a variable the chain does not bind.
+   * Only a chain of ExpandAll / ExpandInto / GAVExpandAll / GAVExpandInto hops above the anchor scan is rewritten; the caller
+   * leaves out a GAV chain the fusion takes, which places the conjuncts itself (issue #9938). Anything else (a join, a
+   * variable-length hop) keeps the whole predicate at the top, and so does a conjunct that reads no pattern variable, or one
+   * that reads a variable the chain does not bind.
    */
   private BooleanExpression placeConjunctsOnBindingHop(final BooleanExpression expression, final PhysicalOperator root,
       final String anchorVariable, final PhysicalOperator anchorOperator, final LogicalPlan logicalPlan) {
-    // Two consecutive GAVExpandAll hops at the top are fused into one GAVFusedChainOperator below, which takes the
-    // whole Filter above them; a GAV chain that fusion does not take (a closing GAVExpandInto, as in a triangle)
-    // runs hop by hop, and its conjuncts are placed like those of a plain chain.
-    PhysicalOperator top = root;
-    while (top instanceof FilterOperator)
-      top = top.getChild();
-    if (top instanceof GAVExpandAll && top.getChild() instanceof GAVExpandAll)
-      return expression;
     // root, then each operator below it, down to the anchor
     final List<PhysicalOperator> chain = new ArrayList<>();
     for (PhysicalOperator op = root; op != null; op = op.getChild()) {
@@ -1619,64 +1615,39 @@ public class CypherOptimizer {
    * The fused chain binds no relationship labels in its rows, so a chain with hops that enforce relationship
    * uniqueness (#8394) is fused only when it holds every colliding relationship of their MATCH clauses; the chain then
    * enforces it internally.
+   * <p>
+   * A Filter right above the chain is taken into it, each of its conjuncts evaluated on the hop that binds the variables it
+   * reads, so a path that fails one stops there instead of being walked to its end (issue #9938).
    *
    * @param relVarsPerClause the relationship variables, synthetic tracking ones included, of every MATCH clause
    */
-  private PhysicalOperator fuseGAVExpandChain(PhysicalOperator rootOperator, final Map<Integer, Set<String>> relVarsPerClause) {
-    // Walk from root down to collect the GAVExpandAll chain
-    final List<GAVExpandAll> chain = new ArrayList<>();
-    PhysicalOperator current = rootOperator;
-
+  private PhysicalOperator fuseGAVExpandChain(final PhysicalOperator rootOperator, final Map<Integer, Set<String>> relVarsPerClause,
+      final LogicalPlan logicalPlan) {
     // Skip filters at the top (they sit above the expand chain)
-    PhysicalOperator topFilter = null;
-    if (current instanceof FilterOperator) {
-      topFilter = current;
-      current = ((FilterOperator) current).getChild();
-    }
+    final FilterOperator topFilter = rootOperator instanceof FilterOperator filter ? filter : null;
+    final PhysicalOperator chainTop = topFilter != null ? topFilter.getChild() : rootOperator;
 
-    while (current instanceof GAVExpandAll) {
-      chain.add((GAVExpandAll) current);
-      current = current.getChild();
-    }
+    // Determine which variables need materialization (referenced in WHERE/WITH/RETURN)
+    final Set<String> usedVariables = collectDownstreamVariables();
 
-    // Need at least 2 GAVExpandAll for fusion to be worthwhile
-    if (chain.size() < 2)
+    // A filter that is about to be pushed INTO the chain still has to be evaluated there, so every
+    // variable it reads must be materialized. Inline property maps (MATCH (p:Person {id: 0})) become
+    // such a filter and mention no variable that WHERE/WITH/RETURN necessarily names (#5746).
+    if (topFilter != null)
+      usedVariables.addAll(WhereClause.collectVariables(topFilter.getPredicate()));
+
+    final List<GAVExpandAll> chain = fusableGAVChain(chainTop, usedVariables, relVarsPerClause);
+    if (chain == null)
       return rootOperator;
-
-    // Verify all use the same provider
-    final GraphTraversalProvider provider = chain.get(0).getProvider();
-    for (int i = 1; i < chain.size(); i++)
-      if (chain.get(i).getProvider() != provider)
-        return rootOperator;
 
     // chain[0] is the outermost (root), chain[last] is the innermost (closest to scan)
     // Reverse to get traversal order: innermost first
     final int chainLen = chain.size();
-
-    // Verify the chain is LINEAR: each hop's source must be the previous hop's target.
-    // The fused chain operator uses a stack where stackNodeId[depth] is the source for hop[depth],
-    // which is the target of hop[depth-1]. If the JoinOrderRule reorders hops such that multiple
-    // hops expand from the same node (branching), the fused chain would incorrectly use the
-    // previous hop's target as the source instead of the actual source variable.
-    {
-      String expectedSource = chain.get(chainLen - 1).getSourceVariable(); // innermost source
-      for (int i = chainLen - 1; i >= 0; i--) {
-        final GAVExpandAll gav = chain.get(i);
-        if (!expectedSource.equals(gav.getSourceVariable()))
-          return rootOperator; // Non-linear chain — bail out
-        expectedSource = gav.getTargetVariable();
-      }
-    }
-
-    // Relationship uniqueness: every variable of a clause a tracked hop belongs to must be bound inside the chain
+    final GraphTraversalProvider provider = chain.getFirst().getProvider();
     final Set<String> chainTrackingVars = new HashSet<>();
     for (final GAVExpandAll gav : chain)
       if (gav.getEdgeTrackingVar() != null)
         chainTrackingVars.add(gav.getEdgeTrackingVar());
-    if (!chainTrackingVars.isEmpty())
-      for (final Set<String> clauseVars : relVarsPerClause.values())
-        if (!Collections.disjoint(clauseVars, chainTrackingVars) && !chainTrackingVars.containsAll(clauseVars))
-          return rootOperator;
 
     // Build hop arrays (in traversal order: innermost → outermost)
     final Vertex.DIRECTION[] hopDirs = new Vertex.DIRECTION[chainLen];
@@ -1709,34 +1680,13 @@ public class CypherOptimizer {
     // Source variable = innermost GAVExpandAll's source variable
     final String sourceVar = chain.get(chainLen - 1).getSourceVariable();
 
-    // Determine which variables need materialization (referenced in WHERE/WITH/RETURN)
-    final Set<String> usedVariables = collectDownstreamVariables();
-
-    // A filter that is about to be pushed INTO the chain still has to be evaluated there, so every
-    // variable it reads must be materialized. Inline property maps (MATCH (p:Person {id: 0})) become
-    // such a filter and mention no variable that WHERE/WITH/RETURN necessarily names (#5746).
-    if (topFilter instanceof FilterOperator filter)
-      usedVariables.addAll(WhereClause.collectVariables(filter.getPredicate()));
-
-    // The fused chain emits only its own variables: the source and the hop targets. A variable a hop below it bound (the
-    // chain's source rows come from there) and something downstream reads would be absent from every row it emits, so a
-    // predicate over it - a pattern predicate such as NOT (c)<-[:HAS_TAG]-(t1) - saw an unbound variable (#9390). The
-    // chain is left unfused then, and the hops run one by one with every variable in the row.
-    final Set<String> chainVariables = new HashSet<>();
-    chainVariables.add(sourceVar);
-    for (final String targetVar : hopTargetVars)
-      if (targetVar != null)
-        chainVariables.add(targetVar);
-    if (readsPatternVariableOutside(usedVariables, chainVariables))
-      return rootOperator;
-
     final boolean[] materialize = new boolean[chainLen + 1];
     materialize[0] = usedVariables.contains(sourceVar); // source
     for (int i = 0; i < chainLen; i++)
       materialize[i + 1] = hopTargetVars[i] != null && usedVariables.contains(hopTargetVars[i]);
 
     // The child of the innermost GAVExpandAll is the data source (e.g., NodeByLabelScan)
-    final PhysicalOperator dataSource = current;
+    final PhysicalOperator dataSource = chain.get(chainLen - 1).getChild();
 
     final GAVFusedChainOperator fused = new GAVFusedChainOperator(
         dataSource, provider, sourceVar,
@@ -1770,12 +1720,117 @@ public class CypherOptimizer {
       fused.setEdgeTracking(hopTracked, hopConflictsWith);
     }
 
-    // Push filter INTO the fused chain (evaluated via column store, before creating output objects)
-    if (topFilter instanceof FilterOperator) {
-      fused.setPushedFilter(((FilterOperator) topFilter).getPredicate());
-      // No need for a separate FilterOperator on top — the fused chain handles it
-    }
+    // Push filter INTO the fused chain (evaluated via column store, before creating output objects). No need for a
+    // separate FilterOperator on top: the fused chain handles it
+    if (topFilter != null)
+      fused.setPushedFilter(topFilter.getPredicate(),
+          conjunctsByBindingDepth(topFilter.getPredicate(), sourceVar, hopTargetVars, logicalPlan));
     return fused;
+  }
+
+  /**
+   * The GAVExpandAll hops from {@code chainTop} down that {@link #fuseGAVExpandChain} can fuse, outermost first, or null when
+   * it cannot: fewer than two, more than one provider, a branching chain, a relationship uniqueness the chain cannot enforce
+   * alone, or a variable bound below the chain that something downstream reads.
+   *
+   * @param usedVariables the variables read downstream of the chain, the ones of the Filter to push into it included
+   */
+  private List<GAVExpandAll> fusableGAVChain(final PhysicalOperator chainTop, final Set<String> usedVariables,
+      final Map<Integer, Set<String>> relVarsPerClause) {
+    final List<GAVExpandAll> chain = new ArrayList<>();
+    for (PhysicalOperator current = chainTop; current instanceof GAVExpandAll gav; current = gav.getChild())
+      chain.add(gav);
+
+    // Need at least 2 GAVExpandAll for fusion to be worthwhile
+    if (chain.size() < 2)
+      return null;
+
+    // Verify all use the same provider
+    final GraphTraversalProvider provider = chain.getFirst().getProvider();
+    for (int i = 1; i < chain.size(); i++)
+      if (chain.get(i).getProvider() != provider)
+        return null;
+
+    final int chainLen = chain.size();
+
+    // Verify the chain is LINEAR: each hop's source must be the previous hop's target.
+    // The fused chain operator uses a stack where stackNodeId[depth] is the source for hop[depth],
+    // which is the target of hop[depth-1]. If the JoinOrderRule reorders hops such that multiple
+    // hops expand from the same node (branching), the fused chain would incorrectly use the
+    // previous hop's target as the source instead of the actual source variable.
+    String expectedSource = chain.get(chainLen - 1).getSourceVariable(); // innermost source
+    for (int i = chainLen - 1; i >= 0; i--) {
+      final GAVExpandAll gav = chain.get(i);
+      if (!expectedSource.equals(gav.getSourceVariable()))
+        return null; // Non-linear chain — bail out
+      expectedSource = gav.getTargetVariable();
+    }
+
+    // Relationship uniqueness: every variable of a clause a tracked hop belongs to must be bound inside the chain
+    final Set<String> chainTrackingVars = new HashSet<>();
+    for (final GAVExpandAll gav : chain)
+      if (gav.getEdgeTrackingVar() != null)
+        chainTrackingVars.add(gav.getEdgeTrackingVar());
+    if (!chainTrackingVars.isEmpty())
+      for (final Set<String> clauseVars : relVarsPerClause.values())
+        if (!Collections.disjoint(clauseVars, chainTrackingVars) && !chainTrackingVars.containsAll(clauseVars))
+          return null;
+
+    // The fused chain emits only its own variables: the source and the hop targets. A variable a hop below it bound (the
+    // chain's source rows come from there) and something downstream reads would be absent from every row it emits, so a
+    // predicate over it - a pattern predicate such as NOT (c)<-[:HAS_TAG]-(t1) - saw an unbound variable (#9390). The
+    // chain is left unfused then, and the hops run one by one with every variable in the row.
+    final Set<String> chainVariables = new HashSet<>();
+    chainVariables.add(chain.get(chainLen - 1).getSourceVariable());
+    for (final GAVExpandAll gav : chain)
+      if (gav.getTargetVariable() != null)
+        chainVariables.add(gav.getTargetVariable());
+    if (readsPatternVariableOutside(usedVariables, chainVariables))
+      return null;
+
+    return chain;
+  }
+
+  /**
+   * Splits {@code predicate} by the hop of a fused chain that binds the variables each top-level conjunct reads: entry
+   * {@code d} holds the conjuncts decidable once the source and the targets of the first {@code d} hops are bound, the last
+   * entry the ones decidable on the complete path only, a conjunct that reads no pattern variable among them. Null when
+   * every conjunct is of the last kind.
+   */
+  private static BooleanExpression[] conjunctsByBindingDepth(final BooleanExpression predicate, final String sourceVariable,
+      final String[] hopTargetVariables, final LogicalPlan logicalPlan) {
+    final int chainLength = hopTargetVariables.length;
+    final Map<String, Integer> depthOf = new HashMap<>();
+    depthOf.put(sourceVariable, 0);
+    for (int i = 0; i < chainLength; i++)
+      if (hopTargetVariables[i] != null)
+        depthOf.put(hopTargetVariables[i], i + 1);
+
+    final List<BooleanExpression> conjuncts = new ArrayList<>();
+    collectConjuncts(predicate, conjuncts);
+
+    final BooleanExpression[] byDepth = new BooleanExpression[chainLength + 1];
+    boolean early = false;
+    for (final BooleanExpression conjunct : conjuncts) {
+      final Set<String> reads = patternVariablesRead(conjunct, logicalPlan);
+      int depth = -1;
+      if (reads != null && !reads.isEmpty())
+        for (final String variable : reads) {
+          final Integer variableDepth = depthOf.get(variable);
+          if (variableDepth == null) {
+            depth = chainLength;
+            break;
+          }
+          depth = Math.max(depth, variableDepth);
+        }
+      if (depth < 0)
+        depth = chainLength;
+      if (depth < chainLength)
+        early = true;
+      byDepth[depth] = byDepth[depth] == null ? conjunct :
+          new LogicalExpression(LogicalExpression.Operator.AND, byDepth[depth], conjunct);
+    }
+    return early ? byDepth : null;
   }
 
   /** Whether {@code used} names a node variable of the MATCH patterns that is not one of {@code chainVariables}. */
