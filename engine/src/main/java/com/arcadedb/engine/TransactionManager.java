@@ -1072,7 +1072,7 @@ public class TransactionManager {
 
   private boolean applyChangesInternal(final WALFile.WALTransaction tx, final Map<Integer, Integer> bucketRecordDelta,
       final boolean ignoreErrors) {
-    final boolean recovery = ownWALReplayThread == Thread.currentThread();
+    final boolean recovery = Thread.currentThread().equals(ownWALReplayThread);
     boolean changed = false;
     // Whether at least one page was written at a version STRICTLY GREATER than the one on disk, i.e. this
     // transaction carried content the database did not have yet. `changed` cannot answer that question: since
