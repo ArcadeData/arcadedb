@@ -117,11 +117,14 @@ import com.arcadedb.function.vector.VectorDistanceManhattanFunction;
 import com.arcadedb.function.vector.VectorNormFunction;
 import com.arcadedb.function.vector.VectorSimilarityCosineFunction;
 import com.arcadedb.function.vector.VectorSimilarityEuclideanFunction;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.SQLFunction;
 
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
+import java.util.logging.Level;
 
 /**
  * Factory for Cypher functions.
@@ -223,6 +226,56 @@ public class CypherFunctionFactory {
 
     // Try direct lookup in SQL functions
     return sqlFunctionFactory.hasFunction(functionName);
+  }
+
+  /**
+   * Whether a call of the NAMESPACED function {@code lowercaseName} ({@code vector.sum}, {@code sql.vector.sum}) with
+   * {@code argumentCount} arguments aggregates, because the function it resolves to says so. The resolution is
+   * {@link #getFunctionExecutor}'s, minus the Cypher-specific functions, whose aggregates the caller lists by name.
+   * <p>
+   * It is asked while the query is still an AST, because the planner decides what aggregates by walking it: an aggregate it
+   * does not know is called once per row and answers a NULL for each (issue #9768). An undotted name is never asked, since a
+   * Cypher function can mean something else than the SQL function of the same name ({@code last(list)} is scalar here and an
+   * aggregate there).
+   */
+  public static boolean isNamespacedAggregation(final String lowercaseName, final int argumentCount) {
+    if (lowercaseName.indexOf('.') < 1 || CypherBuiltinFunctions.isBuiltin(lowercaseName))
+      return false;
+
+    final String sqlFunctionName;
+    if (lowercaseName.startsWith(SQL_PREFIX))
+      sqlFunctionName = lowercaseName.substring(SQL_PREFIX.length());
+    else {
+      final StatelessFunction registryFunction = CypherFunctionRegistry.get(lowercaseName);
+      if (registryFunction != null)
+        return registryFunction.aggregateResults();
+      sqlFunctionName = lowercaseName;
+    }
+
+    final DefaultSQLFunctionFactory factory = DefaultSQLFunctionFactory.getInstance();
+    if (!factory.hasFunction(sqlFunctionName))
+      return false;
+
+    try {
+      final SQLFunction function = factory.getFunctionInstance(sqlFunctionName);
+      // A function registered as an instance is the one every query shares: it is asked as it is and never reconfigured from
+      // here. A class-registered one (the stateful aggregates) is a fresh instance of ours, configured as the bridge does it:
+      // whether some SQL functions aggregate depends on their arguments (sum(a) does, sum(a, b) does not), and the values are
+      // irrelevant to that decision
+      if (factory.isSharedInstance(sqlFunctionName))
+        return function.aggregateResults();
+
+      final Object[] placeholders = new Object[argumentCount];
+      Arrays.fill(placeholders, "dummy");
+      return function.config(placeholders).aggregateResults();
+    } catch (final RuntimeException e) {
+      // a function that validates its arguments in config() refuses the placeholders. It is not an aggregation as far as the
+      // planner can tell, and the call reports the real error when it is configured with its real arguments.
+      // Issue9768CypherDottedAggregateTest sweeps the registry so that a registered function that does this fails a test
+      LogManager.instance().log(CypherFunctionFactory.class, Level.FINE,
+          "Function '%s' refused the probe configuration, so it is not planned as an aggregation: %s", sqlFunctionName, e.getMessage());
+      return false;
+    }
   }
 
   /**

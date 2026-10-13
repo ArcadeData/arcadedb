@@ -91,3 +91,21 @@ On a `Result` receiver (a sub-query row, a `LET` variable) `values()` used to an
 `@rid` (and an edge's `@in` and `@out`) as unlabelled values, so a two-property document had 2 keys and 5 values, and on a
 row that overrode a property of its record it answered the record's value instead of the row's. It now answers one value
 per key, in the order of `keys()`, and the row's own value where the row has one.
+
+## Fixes
+
+- **`vector.sum`, `vector.avg`, `vector.min` and `vector.max` aggregate when written with the dotted name (#9768).** In SQL
+  they answered one NULL row per record (`vectorSum(...)` and `` `vector.sum`(...) `` were fine) and in openCypher
+  (`RETURN vector.sum(d.v)`) they had no working spelling at all. A dotted call is now a function call exactly when the
+  function is registered, in both languages, so the next namespace somebody adds cannot drift again. A property named like
+  a namespace keeps its own methods (`vector.size()` on a `vector` column), while a registered name (`vector.max()`) wins
+  over the method of a property called `vector`, as it already did at run time; back-tick the property to address it.
+- **A map with a non-String key renders as JSON (#9805).** A `MAP` property accepts an Integer key and a Gremlin
+  `elementMap()` is keyed by the `T` enum, but `Result.toJSON()`, `convert.toJson()`, `asJSON()` and the Postgres wire threw
+  `ClassCastException` for such a row (and a `null` key an `IllegalArgumentException`). The member name is now the text of
+  the key, a `null` key being named `"null"`, as the HTTP serializer already did. `JSONObject(Map)` takes any `Map<?, ?>`.
+- **Redis `HDEL` replies the number of records it removed, and a multi-key `HDEL` / `HSET` is one unit of work (#9837).** A
+  delete a `BeforeRecordDeleteListener` vetoed was counted as a deletion on every branch. On the Redis protocol, `HDEL` by
+  index key left the first keys deleted behind an error reply and was not retried on a conflict, and the transient `HSET`
+  left the first JSON objects stored behind an error reply. A new `DatabaseInternal.deleteRecordReportingVeto(Record)` keeps
+  the answer `Record.delete()` throws away, for any caller that counts deletions.

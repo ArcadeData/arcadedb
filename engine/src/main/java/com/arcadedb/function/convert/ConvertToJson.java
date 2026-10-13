@@ -60,13 +60,12 @@ public class ConvertToJson extends AbstractConvertFunction {
     return toJson(args[0]).toString();
   }
 
-  @SuppressWarnings("unchecked")
   private Object toJson(final Object value) {
     if (value == null)
       return JSONObject.NULL;
 
-    if (value instanceof Map) {
-      return new JSONObject((Map<String, ?>) value);
+    if (value instanceof Map<?, ?> map) {
+      return new JSONObject(map);
     }
 
     if (value instanceof List) {

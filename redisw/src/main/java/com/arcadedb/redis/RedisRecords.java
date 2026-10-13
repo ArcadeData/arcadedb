@@ -18,14 +18,19 @@
  */
 package com.arcadedb.redis;
 
-import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.RecordNotFoundException;
 
 /**
- * How the Redis surfaces (RESP wire path and {@code redis} query language) name and delete a record by RID, so HDEL answers
- * the same on both (#9056, #9161).
+ * How the Redis surfaces (RESP wire path and {@code redis} query language) name and delete a record by RID or by index key, so
+ * HDEL answers the same on both (#9056, #9161, #9837).
+ * <p>
+ * Every delete here answers whether the engine REMOVED the record, which is what an HDEL replies a count of: a record that is not
+ * there and one a {@code BeforeRecordDeleteListener} vetoed are both {@code false}, and any other refusal (a permission, a
+ * conflict) is thrown. {@code Record.delete()} cannot be used to count, it discards that answer.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -52,15 +57,24 @@ public final class RedisRecords {
     }
   }
 
-  /** Deletes the record at {@code rid}; false when there is none, so the reply counts only what was really deleted. */
-  public static boolean deleteByRid(final Database database, final RID rid) {
+  /** Deletes the record at {@code rid}; false when there is none or the engine refused it, so the reply counts only what was really deleted. */
+  public static boolean deleteByRid(final DatabaseInternal database, final RID rid) {
     final Record record;
     try {
       record = database.lookupByRID(rid, true);
     } catch (final RecordNotFoundException e) {
       return false;
     }
-    record.delete();
-    return true;
+    return database.deleteRecordReportingVeto(record);
+  }
+
+  /**
+   * Deletes the record the index {@code indexName} maps {@code key} to; false when the key is not there or the engine refused the
+   * delete. The lookup is {@link RedisIndexKeys#lookup}'s, so a key a concurrent index DDL hid is retried or refused and never
+   * counted as "nothing to delete" (#9811).
+   */
+  public static boolean deleteByKey(final DatabaseInternal database, final String indexName, final String key) {
+    final Identifiable found = RedisIndexKeys.lookup(database, indexName, key);
+    return found != null && database.deleteRecordReportingVeto(found.getRecord());
   }
 }
