@@ -136,7 +136,7 @@ class Issue9925PerRowIdentifierWorkTest extends TestHelper {
   }
 
   @Test
-  void dollarNamesStillResolveAfterTheFirstCharacterTest() {
+  void dollarNamesStillResolveAfterTheFirstCharacterGate() {
     // $parent, reached through the Result overload of a sub-query's WHERE
     try (final ResultSet rs = database.query("sql",
         "SELECT a, (SELECT count(*) AS c FROM V WHERE a = $parent.$current.a)[0].c AS same FROM V WHERE a = 2")) {

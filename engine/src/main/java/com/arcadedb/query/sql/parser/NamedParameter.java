@@ -31,6 +31,8 @@ public class NamedParameter extends InputParameter {
    * A parameter name and the same name with the colon some callers write in front of it, built once (issue #9818). Null for a
    * literal the statement cache extracted into a generated parameter: its value is the one the query text carries, bound
    * under the plain name, so no spelling a caller binds may stand in for it, and the probe for one costs every read (#9925).
+   * The {@link LiteralParameterizer#PARAMETER_PREFIX} namespace is reserved: a text that uses it is never parameterized, and
+   * {@code SQLASTBuilder} recognizes a generated parameter by the same prefix.
    */
   private record PrefixedName(String name, String prefixed) {
   }
