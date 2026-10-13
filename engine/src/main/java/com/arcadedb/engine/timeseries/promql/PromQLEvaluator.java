@@ -192,6 +192,10 @@ public class PromQLEvaluator {
 
     final long maxSteps = stepsAfterFirst + 1;
 
+    // A string literal evaluates to a NaN scalar, so the result-type test inside the loop cannot see it (issue #9922)
+    if (expr instanceof StringLiteral)
+      throw new IllegalArgumentException(invalidRangeQueryType("string"));
+
     // For range queries, evaluate at each step point and collect into MatrixResult
     final Map<String, List<double[]>> seriesMap = new LinkedHashMap<>();
     final Map<String, Map<String, String>> labelsMap = new LinkedHashMap<>();
@@ -218,7 +222,10 @@ public class PromQLEvaluator {
         final String key = "{}";
         seriesMap.computeIfAbsent(key, k -> new ArrayList<>()).add(new double[] { t, sr.value() });
         labelsMap.putIfAbsent(key, Map.of());
-      }
+      } else
+        // a range vector (`m[5m]`) used to fall through both branches and answer an empty matrix (issue #9922). The type
+        // of an expression does not depend on the step, so this fires on the first one, before any series is collected
+        throw new IllegalArgumentException(invalidRangeQueryType(valueTypeName(expr, result)));
     }
 
     final List<MatrixSeries> series = new ArrayList<>();
@@ -593,6 +600,13 @@ public class PromQLEvaluator {
       // only evaluateRange() builds one, from the results of evaluate(), so no argument evaluates to it
       case MatrixResult ignored -> "matrix";
     };
+  }
+
+  /**
+   * Prometheus' refusal of a range query whose expression is neither a scalar nor an instant vector (issue #9922).
+   */
+  private static String invalidRangeQueryType(final String typeName) {
+    return "invalid expression type \"" + typeName + "\" for range query, must be Scalar or instant Vector";
   }
 
   private double applyScalarFn(final String name, final double value, final double param) {
