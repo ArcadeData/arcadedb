@@ -103,11 +103,12 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
    * How many records the streaming path of a point lookup remembers it served of one key (#9902), about 6 MB at most: enough
    * for any key a consumer pulls whole in practice, and a bound on what a statement holds for a key of millions of entries.
    * What it served is what a read of the key again must not serve twice, so past the bound the key is not read again: entries
-   * a commit takes from it are counted as unsettled instead (PROFILE shows them). Nothing is served twice, no record is served
-   * for a key it does not hold, and a record that holds the key the whole time is still served; only the record that replaced a
-   * deleted one may be missed.
+   * a commit takes from it are counted as unsettled instead (PROFILE shows them, a WARNING says so once per execution). No record
+   * is served for a key it does not hold, and a record that holds the key the whole time is still served; the record that
+   * replaced a deleted one may be missed, and an {@code IN} that lists the key twice serves the records past the bound twice, as
+   * an {@code IN} with a repeated value did before #9902.
    */
-  private static final int    MAX_TRACKED_RIDS_PER_KEY = 1 << 18;
+  static final int            MAX_TRACKED_RIDS_PER_KEY = 1 << 18;
 
   private final List<Integer> filterBucketIds;
   private final ScanFallback  scanFallback;
@@ -129,6 +130,8 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
   private RidHashSet                  servedOfKey;
   // Past MAX_TRACKED_RIDS_PER_KEY: servedOfKey no longer holds every record served of the key
   private boolean                     servedOverflow;
+  // MAX_TRACKED_RIDS_PER_KEY, lowered by tests to reach the bound without a key of 256K entries
+  int                                 trackedRidsPerKey = MAX_TRACKED_RIDS_PER_KEY;
   // Entries the key lost since it was last read again
   private int                         pendingLosses;
   // An entry of the key lost its record to a commit: the key is read again once its entries run out
@@ -537,7 +540,7 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
 
   private Result served(final Result row, final RID rid, final boolean unique) {
     if (!unique && !servedOverflow) {
-      if (servedOfKey.size() >= MAX_TRACKED_RIDS_PER_KEY)
+      if (servedOfKey.size() >= trackedRidsPerKey)
         servedOverflow = true;
       else
         servedOfKey.add(rid);
@@ -574,6 +577,10 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
       LogManager.instance().log(this, Level.FINE, "Key %s of index '%s' lost %d entries to commits while it was read and is not read "
               + "again (read again %d times, %d records served): the records that replaced them are not looked for", null, streamKey,
           indexStep.indexName, pendingLosses, rereadsOfKey, servedOfKey.size());
+      if (unsettledEntries == 0 && pendingLosses > 0)
+        LogManager.instance().log(this, Level.WARNING, "Point lookup on index '%s' lost entries of key %s to concurrent commits and "
+                + "did not look for the records that replaced them (key read again %d times, %d records served): the answer may "
+                + "miss records written during the query", null, indexStep.indexName, streamKey, rereadsOfKey, servedOfKey.size());
       unsettledEntries += pendingLosses;
       pendingLosses = 0;
       return false;
@@ -586,7 +593,9 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
     final PageManager pageManager = database.getPageManager();
     guard.check();
     if ((pageManager.getPublicationSequence() & 1) != 0)
-      // a commit is publishing: wait for it to let go of the lock, doing nothing under it
+      // A commit is publishing: wait for it to let go of the lock, doing nothing under it. The wait cannot deadlock a reader that
+      // holds file locks in its transaction, for the reason given at loadPointLookup(): a committer takes this lock last and
+      // acquires nothing under it
       pageManager.executeInLock(() -> null);
     unpinRepeatableReadPages(database, indexStep);
     rereadSequence = pageManager.getPublicationSequence();
