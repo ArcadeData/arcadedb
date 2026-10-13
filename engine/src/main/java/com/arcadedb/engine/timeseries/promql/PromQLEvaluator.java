@@ -568,6 +568,12 @@ public class PromQLEvaluator {
     final PromQLResult leftResult = evaluate(bin.left(), evalTimeMs, queryStartMs, queryEndMs, stepMs, depth);
     final PromQLResult rightResult = evaluate(bin.right(), evalTimeMs, queryStartMs, queryEndMs, stepMs, depth);
 
+    // Prometheus refuses any other operand type: a range vector (`m[5m] + 1`, `m[5m] and m`) fell through every branch
+    // below to a scalar NaN, and a string literal evaluates to a NaN scalar (issue #9788). Checked before the set-operator
+    // rule, in the same order as Prometheus' type checker.
+    if (!isScalarOrInstantVector(bin.left(), leftResult) || !isScalarOrInstantVector(bin.right(), rightResult))
+      throw new IllegalArgumentException(BINARY_OPERAND_TYPE);
+
     // Prometheus refuses a set operator with a scalar operand: `and`, `or` and `unless` match series by labels, and a
     // scalar has none. Without this check the scalar branches below ran them through applyBinaryOp(), which maps them to
     // NaN (issue #9743). Checked on the evaluated operands for the same reason as the comparison check below.
@@ -602,6 +608,9 @@ public class PromQLEvaluator {
   private PromQLResult evaluateUnary(final UnaryExpr un, final long evalTimeMs, final long queryStartMs, final long queryEndMs,
       final long stepMs, final int depth) {
     final PromQLResult result = evaluate(un.expr(), evalTimeMs, queryStartMs, queryEndMs, stepMs, depth);
+    // a range vector used to come back unchanged, silently dropping the sign, and a string became a NaN scalar (#9788)
+    if (!isScalarOrInstantVector(un.expr(), result))
+      throw new IllegalArgumentException(UNARY_OPERAND_TYPE);
     if (un.op() == '-') {
       if (result instanceof ScalarResult sr)
         return new ScalarResult(-sr.value(), sr.timestampMs());
@@ -616,6 +625,14 @@ public class PromQLEvaluator {
   }
 
   // --- Helper methods ---
+
+  /**
+   * The only operand types an operator accepts. A string literal is tested on the expression because it evaluates to a
+   * {@link ScalarResult} (NaN); the parser returns the inner expression of a parenthesized one, so {@code ("a")} is seen too.
+   */
+  private static boolean isScalarOrInstantVector(final PromQLExpr expr, final PromQLResult result) {
+    return !(expr instanceof StringLiteral) && (result instanceof ScalarResult || result instanceof InstantVector);
+  }
 
   private Pattern compilePattern(final String regex) {
     if (regex.length() > MAX_REGEX_LENGTH)
@@ -1236,6 +1253,8 @@ public class PromQLEvaluator {
 
   /** Prometheus' own wording, so a client matching on it sees the same error from either server. */
   private static final String SCALAR_COMPARISON_WITHOUT_BOOL = "comparisons between scalars must use BOOL modifier";
+  private static final String BINARY_OPERAND_TYPE            = "binary expression must contain only scalar and instant vector types";
+  private static final String UNARY_OPERAND_TYPE             = "unary expression only allowed on expressions of type scalar or instant vector";
 
   public static String sanitizeTypeName(final String name) {
     final String sanitized = name.replace('.', '_').replace('-', '_').replace(':', '_');
