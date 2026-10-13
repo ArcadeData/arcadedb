@@ -94,6 +94,7 @@ class Issue9868WsInsertLeaderRefusalTest extends BaseGraphServerTest {
     refuseRows.set(false);
     if (local != null && local.isOpen()) {
       local.getSchema().getType("Person").getEvents().unregisterListener(refuseRow);
+      // A database with no HA wrapper is its own wrapped instance: this restores the state before the test
       local.setWrappedDatabaseInstance(local);
     }
   }
