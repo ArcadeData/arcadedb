@@ -143,7 +143,8 @@ public class SelectExecutionPlanner {
    * Context variables the execution assigns per row or per traversal step (the projection's $current, a scoring function's
    * $score, MATCH's $matched and $currentMatch, TRAVERSE's $depth, $path, $stack and $history): never constant across a
    * fetch, so an {@code @rid} condition on one is not pushed into an indexed function (issue #9909). A per-record LET is
-   * excluded by name, from the statement's own LET clause.
+   * excluded by name, from the statement's own LET clause. A new variable the execution assigns per row has to be added
+   * here, or an {@code @rid} condition on it would be resolved once for the whole fetch.
    */
   private static final Set<String> PER_ROW_VARIABLES = Set.of("$current", "$score", "$matched", "$currentMatch", "$depth", "$path",
       "$stack", "$history");
@@ -4294,6 +4295,7 @@ public class SelectExecutionPlanner {
       return RIDFilter.resolve(ridConditions, context);
     } catch (final RuntimeException e) {
       // a variable a global LET computes after planning: the bucket filter keeps its say over the limit
+      LogManager.instance().log(SelectExecutionPlanner.class, Level.FINE, "@rid conditions not resolvable at planning time", e);
       return null;
     }
   }
