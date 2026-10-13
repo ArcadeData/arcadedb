@@ -129,7 +129,8 @@ public class MatchExecutionPlanner {
     // AN UNKNOWN ESTIMATE (AN INDEXED FUNCTION LIKE SEARCH_INDEX THAT CANNOT COUNT ITS RESULT) IS NOT A SMALL ONE: PREFETCHING IT
     // DRAINED THE WHOLE RESULT INTO A LIST BEFORE THE PATTERN STARTED, WHATEVER THE LIMIT (ISSUE #9908). IT IS STREAMED INSTEAD
     final Set<String> aliasesToPrefetch = estimatedRootEntries.entrySet().stream()
-        .filter(x -> x.getValue() >= 0 && x.getValue() < threshold && matchedDependencies(aliasFilters.get(x.getKey())).isEmpty())
+        .filter(x -> x.getValue() >= 0 && x.getValue() < threshold && matchedDependencies(aliasFilters.get(x.getKey())).isEmpty()
+            && !ridReadsMatched(x.getKey()))
         .map(x -> x.getKey()).collect(Collectors.toSet());
     if (estimatedRootEntries.containsValue(0L)) {
       result.chain(new EmptyStep(context));
@@ -767,7 +768,7 @@ public class MatchExecutionPlanner {
     for (final PatternNode node : pattern.aliasToNode.values()) {
       final Set<String> currentDependencies = new HashSet<>();
 
-      for (final String dependency : matchedDependencies(aliasFilters.get(node.alias))) {
+      for (final String dependency : aliasesRead(node.alias)) {
         // AN ALIAS BOUND BY ANOTHER DISJOINT SUB-PATTERN IS SATISFIED BY THE ORDER THE CARTESIAN PRODUCT RUNS THE SUB-PLANS IN
         // (SEE orderSubPatternsByDependencies()), NOT BY THIS SCHEDULE. AN ALIAS NO PATTERN BINDS STAYS, SO THAT THE SCHEDULE
         // STILL REPORTS IT AS UNDEFINED
@@ -781,6 +782,26 @@ public class MatchExecutionPlanner {
     }
 
     return result;
+  }
+
+  /**
+   * The aliases a node reads through {@code $matched}, in its {@code where:} or in its {@code rid:}: a RID can be an expression
+   * over another alias, and is then known only once that alias is bound, so the node cannot be a root before it (issue #9912).
+   */
+  private List<String> aliasesRead(final String alias) {
+    final Rid rid = aliasRids.get(alias);
+    final List<String> fromFilter = matchedDependencies(aliasFilters.get(alias));
+    if (rid == null)
+      return fromFilter;
+    final Set<String> aliases = new LinkedHashSet<>(fromFilter);
+    collectMatchedAliases(rid, aliases);
+    return aliases.isEmpty() ? Collections.emptyList() : new ArrayList<>(aliases);
+  }
+
+  /** Whether the node's {@code rid:} is an expression that reads {@code $matched}, so it is known only once other aliases are bound. */
+  private boolean ridReadsMatched(final String alias) {
+    final Rid rid = aliasRids.get(alias);
+    return rid != null && collectMatchedAliases(rid, new HashSet<>()) > 0;
   }
 
   /**
@@ -880,7 +901,7 @@ public class MatchExecutionPlanner {
     for (int i = 0; i < subPatterns.size(); i++) {
       final Set<Integer> current = new HashSet<>();
       for (final PatternNode node : subPatterns.get(i).aliasToNode.values())
-        for (final String dependency : matchedDependencies(aliasFilters.get(node.alias))) {
+        for (final String dependency : aliasesRead(node.alias)) {
           final Integer dependencyOwner = owner.get(dependency);
           if (dependencyOwner != null && dependencyOwner != i)
             current.add(dependencyOwner);
@@ -949,7 +970,8 @@ public class MatchExecutionPlanner {
    * <p>
    * A {@code rid:} is the cheapest access there is, so it is the fetch; the {@code type:} (polymorphic, like a plain
    * {@code type:}) and the {@code bucket:} stay as filters on the record it answers, so a RID of another type or bucket
-   * answers no rows. The checks run on the record rather than at planning time because the RID can be a parameter or an
+   * answers no rows. Without a RID the type is the fetch, so its indexes serve the {@code where:}, and the bucket is a filter
+   * on it. The checks run on the record rather than at planning time because the RID can be a parameter or an
    * expression, resolved per execution of a cached plan.
    */
   private InternalExecutionPlan createRootPlan(final String alias, final CommandContext context) {
@@ -973,14 +995,17 @@ public class MatchExecutionPlanner {
     select.setWhereClause(filter == null ? null : filter.copy());
 
     final InternalExecutionPlan plan = select.createExecutionPlan(context);
-    if (rid != null && (typeName != null || bucketName != null)) {
-      // THE CHECKS MUST NOT BE SKIPPED SILENTLY: A PLAN THEY CANNOT BE CHAINED TO WOULD ANSWER RECORDS OF ANY TYPE
+    final boolean checkType = rid != null && typeName != null;
+    final boolean checkBucket = bucketName != null && (rid != null || typeName != null);
+    if (checkType || checkBucket) {
+      // SelectExecutionPlanner ALWAYS ANSWERS A SelectExecutionPlan. THE CHECKS MUST NEVER BE SKIPPED SILENTLY: A PLAN THEY CANNOT
+      // BE CHAINED TO WOULD ANSWER RECORDS OF ANY TYPE OR BUCKET
       if (!(plan instanceof SelectExecutionPlan selectPlan))
         throw new CommandExecutionException(
             "Cannot apply the type/bucket constraints of MATCH alias '" + alias + "' to a " + plan.getClass().getSimpleName());
-      if (typeName != null)
+      if (checkType)
         selectPlan.chain(new FilterByTypeStep(new Identifier(typeName), context));
-      if (bucketName != null)
+      if (checkBucket)
         selectPlan.chain(new FilterByClustersStep(Set.of(bucketName), context));
     }
     return plan;
@@ -1155,7 +1180,7 @@ public class MatchExecutionPlanner {
       // A rid: BINDS THE NODE TO AT MOST ONE RECORD, WHATEVER ITS type: OR bucket: SAY: THE BEST ROOT THERE IS. IT USED TO BE
       // ESTIMATED AS THE WHOLE TYPE WHEN A type: WAS GIVEN TOO, AND NOT AT ALL WITHOUT ONE (ISSUE #9912). A RID THAT READS
       // ANOTHER ALIAS THROUGH $matched CANNOT BE RESOLVED BEFORE THAT ALIAS IS BOUND, SO IT IS NOT A ROOT CANDIDATE
-      if (rid != null && collectMatchedAliases(rid, new HashSet<>()) == 0) {
+      if (rid != null && !ridReadsMatched(alias)) {
         result.put(alias, 1L);
         continue;
       }

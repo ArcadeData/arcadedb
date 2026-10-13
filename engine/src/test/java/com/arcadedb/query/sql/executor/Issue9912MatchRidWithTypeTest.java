@@ -151,6 +151,30 @@ class Issue9912MatchRidWithTypeTest extends TestHelper {
   }
 
   @Test
+  void typeAndBucketWithoutRidAreBothApplied() {
+    // THE SAME RULE WITHOUT A rid: THE ROOT SCANNED THE TYPE AND DROPPED THE bucket:, WHILE A TRAVERSAL CHECKED BOTH
+    final String smallBucket = database.getSchema().getType("Small").getBuckets(false).getFirst().getName();
+    final String subBucket = database.getSchema().getType("SmallSub").getBuckets(false).getFirst().getName();
+    assertThat(column("MATCH {type:Small, bucket:" + subBucket + ", as:x} RETURN x.n AS n", "n")).containsExactly(100);
+    assertThat(column("MATCH {type:Small, bucket:" + smallBucket + ", as:x} RETURN x.n AS n ORDER BY n", "n"))
+        .containsExactly(0, 1, 2, 3, 4);
+    assertThat(column("MATCH {type:Small, bucket:" + subBucket + ", as:x}.in('R'){as:o} RETURN o.n AS n ORDER BY n", "n"))
+        .containsExactly(0, 1, 2);
+    final String bigBucket = database.getSchema().getType("Big").getBuckets(false).getFirst().getName();
+    assertThat(column("MATCH {type:Big, bucket:" + bigBucket + ", as:x}.in('R'){as:o} RETURN count(*) AS c", "c"))
+        .containsExactly(3L * BIG_COUNT);
+  }
+
+  @Test
+  void aRidReadingAnotherAliasIsNeverTheRoot() {
+    // THE RID IS ONLY KNOWN ONCE o IS BOUND: AS A ROOT OR A PREFETCH IT WOULD BE RESOLVED AGAINST NOTHING
+    database.transaction(() -> database.command("sql", "UPDATE Other SET target = " + small2));
+    for (final String type : new String[] { "", "type:Small, " })
+      assertThat(column("MATCH {type:Other, as:o}.out('R'){" + type + "as:s, rid:{\"@rid\": $matched.o.target}} "
+          + "RETURN o.n AS n ORDER BY n", "n")).containsExactly(0, 1, 2);
+  }
+
+  @Test
   void unknownTypeOrBucketNextToARidIsStillReported() {
     assertThatThrownBy(() -> column("MATCH {type:NoSuchType, as:x, rid:" + small2 + "} RETURN x.n AS n", "n"))//
         .isInstanceOf(CommandExecutionException.class).hasMessageContaining("Type 'NoSuchType' not defined");
