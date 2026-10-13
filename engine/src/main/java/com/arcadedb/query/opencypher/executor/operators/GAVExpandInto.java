@@ -317,6 +317,10 @@ public class GAVExpandInto extends AbstractPhysicalOperator {
     return sb.toString();
   }
 
+  public String getTargetVariable() {
+    return targetVariable;
+  }
+
   public GraphTraversalProvider getProvider() {
     return provider;
   }

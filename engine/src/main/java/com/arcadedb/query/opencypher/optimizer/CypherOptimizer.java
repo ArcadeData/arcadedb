@@ -1437,19 +1437,29 @@ public class CypherOptimizer {
    * {@code p3} is bound: left above the last hop it ran once per row the last hop multiplies in, 24 times as often when
    * every person has 24 interests, instead of once per path.
    * <p>
-   * Only a plain chain of ExpandAll / ExpandInto hops above the anchor scan is rewritten. Anything else (a GAV chain, which the
-   * fusion below needs unbroken, a join, a variable-length hop) keeps the whole predicate at the top, and so does a conjunct
+   * Only a chain of ExpandAll / ExpandInto / GAVExpandAll / GAVExpandInto hops above the anchor scan is rewritten, and a chain
+   * that starts with two GAVExpandAll hops is left alone because the fusion below needs it unbroken and takes the whole
+   * Filter. Anything else (a join, a variable-length hop) keeps the whole predicate at the top, and so does a conjunct
    * that reads no pattern variable, or one that reads a variable the chain does not bind.
    */
   private BooleanExpression placeConjunctsOnBindingHop(final BooleanExpression expression, final PhysicalOperator root,
       final String anchorVariable, final PhysicalOperator anchorOperator, final LogicalPlan logicalPlan) {
+    // Two consecutive GAVExpandAll hops at the top are fused into one GAVFusedChainOperator below, which takes the
+    // whole Filter above them; a GAV chain that fusion does not take (a closing GAVExpandInto, as in a triangle)
+    // runs hop by hop, and its conjuncts are placed like those of a plain chain.
+    PhysicalOperator top = root;
+    while (top instanceof FilterOperator)
+      top = top.getChild();
+    if (top instanceof GAVExpandAll && top.getChild() instanceof GAVExpandAll)
+      return expression;
     // root, then each operator below it, down to the anchor
     final List<PhysicalOperator> chain = new ArrayList<>();
     for (PhysicalOperator op = root; op != null; op = op.getChild()) {
       chain.add(op);
       if (op == anchorOperator)
         break;
-      if (!(op instanceof ExpandAll || op instanceof ExpandInto || op instanceof FilterOperator))
+      if (!(op instanceof ExpandAll || op instanceof ExpandInto || op instanceof GAVExpandAll || op instanceof GAVExpandInto
+          || op instanceof FilterOperator))
         return expression;
     }
     if (chain.size() < 2 || chain.getLast() != anchorOperator)
@@ -1466,6 +1476,10 @@ public class CypherOptimizer {
       } else if (op instanceof ExpandInto into) {
         addVariable(bound, into.getTargetVariable());
         addVariable(bound, into.getEdgeVariable());
+      } else if (op instanceof GAVExpandAll gavExpand) {
+        addVariable(bound, gavExpand.getTargetVariable());
+      } else if (op instanceof GAVExpandInto gavInto) {
+        addVariable(bound, gavInto.getTargetVariable());
       } else if (op == anchorOperator)
         addVariable(bound, anchorVariable);
       boundAt.set(i, new HashSet<>(bound));
@@ -1827,6 +1841,8 @@ public class CypherOptimizer {
       collectFilterVariables(filter.getChild(), vars);
     } else if (op instanceof GAVExpandAll gav)
       collectFilterVariables(gav.getChild(), vars);
+    else if (op instanceof GAVExpandInto gavInto)
+      collectFilterVariables(gavInto.getChild(), vars);
   }
 
   private void markDeferredRecursive(final PhysicalOperator op, final Set<String> usedVariables, final boolean isRoot) {
