@@ -27,6 +27,7 @@ import io.grpc.Channel;
 import io.grpc.ClientCall;
 import io.grpc.ClientInterceptor;
 import io.grpc.ClientInterceptors;
+import io.grpc.DecompressorRegistry;
 import io.grpc.ForwardingClientCall;
 import io.grpc.ForwardingClientCallListener;
 import io.grpc.ManagedChannel;
@@ -150,6 +151,21 @@ class Issue9782GrpcCompressionEnabledTest {
     assertThatThrownBy(() -> check("gzip")).isInstanceOf(StatusRuntimeException.class)
         .satisfies(e -> assertThat(((StatusRuntimeException) e).getStatus().getCode()).isEqualTo(Status.Code.UNIMPLEMENTED));
     assertThat(check(null)).as("an uncompressed call still works, and is answered uncompressed").isNotEqualTo("gzip");
+  }
+
+  @Test
+  void disabledRegistriesStillUnderstandIdentityWithoutAdvertisingAnything() {
+    // grpc-java never sends "grpc-encoding: identity" itself, but other clients do, and the spec has every server accept it
+    final DecompressorRegistry disabled = GrpcServerPlugin.decompressorRegistry(false);
+    assertThat(disabled.lookupDecompressor("identity")).isNotNull();
+    assertThat(disabled.lookupDecompressor("gzip")).isNull();
+    assertThat(disabled.getAdvertisedMessageEncodings()).isEmpty();
+    assertThat(GrpcServerPlugin.compressorRegistry(false).lookupCompressor("gzip")).isNull();
+
+    final DecompressorRegistry enabled = GrpcServerPlugin.decompressorRegistry(true);
+    assertThat(enabled.lookupDecompressor("gzip")).isNotNull();
+    assertThat(enabled.getAdvertisedMessageEncodings()).contains("gzip");
+    assertThat(GrpcServerPlugin.compressorRegistry(true).lookupCompressor("gzip")).isNotNull();
   }
 
   @Test

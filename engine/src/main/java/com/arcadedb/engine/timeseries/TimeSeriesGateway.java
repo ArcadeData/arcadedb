@@ -59,6 +59,20 @@ import java.util.TreeSet;
  */
 public final class TimeSeriesGateway {
 
+  /**
+   * At most this many entries are kept in {@link WriteReport#undeclaredKeys()}. The keys come from the client, so
+   * a producer sending a fresh key per sample would otherwise grow the report - and the response rendering it -
+   * without bound. The entries locate the problem; {@code dropped} still counts every sample.
+   */
+  public static final int MAX_REPORTED_UNDECLARED_KEYS = 100;
+
+  /**
+   * Cap on the entries {@link WriteReport#unreadableValues()} names, for the same reason as
+   * {@link #MAX_REPORTED_UNDECLARED_KEYS}: a client sending one unreadable value in every line must not grow the report without
+   * bound. {@code dropped} still counts every sample.
+   */
+  public static final int MAX_REPORTED_UNREADABLE_VALUES = 100;
+
   private TimeSeriesGateway() {
   }
 
@@ -97,20 +111,6 @@ public final class TimeSeriesGateway {
       return type.getTsColumns();
     }
   }
-
-  /**
-   * At most this many entries are kept in {@link WriteReport#undeclaredKeys()}. The keys come from the client, so
-   * a producer sending a fresh key per sample would otherwise grow the report - and the response rendering it -
-   * without bound. The entries locate the problem; {@code dropped} still counts every sample.
-   */
-  public static final int MAX_REPORTED_UNDECLARED_KEYS = 100;
-
-  /**
-   * Cap on the entries {@link WriteReport#unreadableValues()} names, for the same reason as
-   * {@link #MAX_REPORTED_UNDECLARED_KEYS}: a client sending one unreadable value in every line must not grow the report without
-   * bound. {@code dropped} still counts every sample.
-   */
-  public static final int MAX_REPORTED_UNREADABLE_VALUES = 100;
 
   /**
    * What a {@link #write(DatabaseInternal, List)} call did. {@code dropped} counts individual samples, and every
@@ -294,7 +294,8 @@ public final class TimeSeriesGateway {
 
         // A sample whose value a column cannot store is left out HERE, before anything of it reaches the engine, and named: the
         // storage layer would otherwise cast it in the middle of the append and fail the whole request (issue #9809). `valid`
-        // is the next free row, so a refused sample leaves a partial row that the next sample overwrites in full
+        // is the next free row, so a refused sample leaves a partial row that the next sample overwrites in full: that holds only
+        // because every column is assigned on every pass, a null included, so keep it so
         int valid = 0;
         for (int s = 0; s < count; s++) {
           final Sample sample = group.get(s);

@@ -30,6 +30,7 @@ import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.network.MultiAddressServerSocket;
 import com.arcadedb.server.security.ServerSecurity;
 import com.arcadedb.server.security.credential.DefaultCredentialsValidator;
+import io.grpc.Codec;
 import io.grpc.CompressorRegistry;
 import io.grpc.DecompressorRegistry;
 import io.grpc.InsecureServerCredentials;
@@ -284,12 +285,8 @@ public class GrpcServerPlugin implements ServerPlugin {
     // empty: a compressed request is refused (UNIMPLEMENTED, "Can't find decompressor") and no response can be compressed,
     // whatever the client advertises or compression.force says
     final boolean compressionEnabled = getConfigBoolean(config, GlobalConfiguration.GRPC_COMPRESSION_ENABLED);
-    if (compressionEnabled)
-      serverBuilder.compressorRegistry(CompressorRegistry.getDefaultInstance())
-          .decompressorRegistry(DecompressorRegistry.getDefaultInstance());
-    else
-      serverBuilder.compressorRegistry(CompressorRegistry.newEmptyInstance())
-          .decompressorRegistry(DecompressorRegistry.emptyInstance());
+    serverBuilder.compressorRegistry(compressorRegistry(compressionEnabled))
+        .decompressorRegistry(decompressorRegistry(compressionEnabled));
 
     // Configure max message size. Clamp the lower bound to 1 MB (a non-positive value would be rejected by gRPC at
     // startup) and compute in long so a large MB value (>= 2048) does not overflow int and wrap negative.
@@ -329,7 +326,7 @@ public class GrpcServerPlugin implements ServerPlugin {
     // off would be silently ignored by the empty registry above at best, so the combination is refused loudly instead (#9782)
     if (getConfigBoolean(config, GlobalConfiguration.GRPC_COMPRESSION_FORCE)) {
       if (compressionEnabled) {
-        String compressionType = getConfigString(config, GlobalConfiguration.GRPC_COMPRESSION_TYPE);
+        final String compressionType = getConfigString(config, GlobalConfiguration.GRPC_COMPRESSION_TYPE);
         serverBuilder.intercept(new GrpcCompressionInterceptor(true, compressionType));
       } else
         LogManager.instance().log(this, Level.WARNING,
@@ -350,6 +347,21 @@ public class GrpcServerPlugin implements ServerPlugin {
       }
       serverBuilder.intercept(new GrpcAuthInterceptor(serverSecurity, authSessionManager));
     }
+  }
+
+  /** What the endpoint can compress its responses with: everything gRPC ships with, or nothing when compression is disabled (#9782). */
+  static CompressorRegistry compressorRegistry(final boolean compressionEnabled) {
+    return compressionEnabled ? CompressorRegistry.getDefaultInstance() : CompressorRegistry.newEmptyInstance();
+  }
+
+  /**
+   * What the endpoint can decompress requests with. Disabled, nothing is advertised and gzip is refused, but {@code identity} is
+   * still understood without being advertised: gRPC requires every server to accept it, and a client that names it explicitly in
+   * {@code grpc-encoding} would otherwise be answered UNIMPLEMENTED for sending no compression at all (#9782).
+   */
+  static DecompressorRegistry decompressorRegistry(final boolean compressionEnabled) {
+    return compressionEnabled ? DecompressorRegistry.getDefaultInstance()
+        : DecompressorRegistry.emptyInstance().with(Codec.Identity.NONE, false);
   }
 
   private NettyServerBuilder configureStandardTls(final String host, final int port, final ContextConfiguration config) {
