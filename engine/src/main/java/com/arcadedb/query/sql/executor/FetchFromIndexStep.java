@@ -64,6 +64,7 @@ import com.arcadedb.utility.MultiIterator;
 import com.arcadedb.utility.Pair;
 
 import java.util.*;
+import java.util.function.Consumer;
 import java.util.logging.Level;
 
 /**
@@ -73,6 +74,8 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
   private static final byte FLOATING_KEYS_UNKNOWN        = 0;
   private static final byte FLOATING_KEYS_VERIFIABLE     = 1;
   private static final byte FLOATING_KEYS_NOT_APPLICABLE = 2;
+  /** {@link #checkedKey} before any key was checked: no key, not even null. */
+  private static final Object NOT_CHECKED                  = new Object();
 
   protected final String                                         indexName;
   /** Package-private so a test can observe that a restart released them instead of only dropping the references. */
@@ -109,9 +112,9 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
   private         ResultInternal                                 keyRow;
   private         List<String>                                   keyPropertyNames;
   /** The last key {@link #isKeyOf} checked a record against, and that key in the index's own form (null: no key of the index). */
-  private static final Object                                    NOT_CHECKED = new Object();
   private         Object                                         checkedKey = NOT_CHECKED;
   private         Object[]                                       checkedLookupKey;
+  private         KeyMatcher                                     keyMatcher;
   /** Package-private for the same reason as {@link #nextCursors}. */
   IndexCursor                                                    cursor;
   private         MultiIterator<Map.Entry<Object, Identifiable>> customIterator;
@@ -278,26 +281,46 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       }
       checkedKey = key;
     }
-    final Object[] lookup = checkedLookupKey;
-    if (lookup == null)
+    if (checkedLookupKey == null)
       return false;
 
-    final boolean[] found = new boolean[1];
-    ((DatabaseInternal) context.getDatabase()).getIndexer().forEachIndexKey(index, record, recordKeys -> {
-      if (found[0] || recordKeys.length < lookup.length)
+    if (keyMatcher == null)
+      keyMatcher = new KeyMatcher();
+    keyMatcher.start(internal, checkedLookupKey);
+    ((DatabaseInternal) context.getDatabase()).getIndexer().forEachIndexKey(index, record, keyMatcher);
+    return keyMatcher.found;
+  }
+
+  /**
+   * Tells whether one of the keys a record is indexed under matches a lookup key, see {@link #isKeyOf}. One per step, reused for
+   * every row checked: the check runs for every row a large key serves after a commit overlapped it.
+   */
+  private static final class KeyMatcher implements Consumer<Object[]> {
+    private IndexInternal index;
+    private Object[]      lookup;
+    private boolean       found;
+
+    private void start(final IndexInternal index, final Object[] lookup) {
+      this.index = index;
+      this.lookup = lookup;
+      this.found = false;
+    }
+
+    @Override
+    public void accept(final Object[] recordKeys) {
+      if (found || recordKeys.length < lookup.length)
         return;
       final Object[] converted;
       try {
-        converted = internal.convertLookupKeys(recordKeys);
+        converted = index.convertLookupKeys(recordKeys);
       } catch (final IllegalArgumentException e) {
         return;
       }
       for (int i = 0; i < lookup.length; i++)
         if (!BinaryComparator.equals(lookup[i], converted[i]))
           return;
-      found[0] = true;
-    });
-    return found[0];
+      found = true;
+    }
   }
 
   /**
