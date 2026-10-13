@@ -54,7 +54,8 @@ import java.util.Set;
  * queries a rollback would release; and the client-streaming loads ({@code InsertStream}, {@code InsertBidirectional},
  * {@code GraphBatchLoad}, {@code TimeSeriesWriteStream}), whose handler holds per-stream state from the first chunk on:
  * a refusal between two chunks would have to go through each stream's own error path rather than close the call
- * under it.
+ * under it. Not gated is not unlisted: those four open their registry entry themselves, for the whole stream, once the
+ * first chunk names the database ({@link StreamingLoadEntry}, issue #9875).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
