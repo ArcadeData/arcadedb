@@ -369,8 +369,25 @@ public final class ColumnDefinition {
       case TimeSeriesBatch.KIND_SHORT -> within(number, Short.MIN_VALUE, Short.MAX_VALUE);
       case TimeSeriesBatch.KIND_BYTE -> within(number, Byte.MIN_VALUE, Byte.MAX_VALUE);
       case TimeSeriesBatch.KIND_LONG -> fitsLong(number);
-      default -> true; // DOUBLE, FLOAT
+      case TimeSeriesBatch.KIND_FLOAT -> floatingFits(number, Float.MAX_VALUE);
+      default -> floatingFits(number, Double.MAX_VALUE); // DOUBLE
     };
+  }
+
+  /**
+   * Whether a floating point column holds the number. NaN and the infinities are values of such a column (a sensor reading can be
+   * NaN, and the engine keeps it), so a Java floating point number is refused only when it is finite and larger than the column's
+   * type, which would otherwise be stored as an infinity nobody sent. An arbitrary-precision number must convert to a finite one.
+   */
+  private static boolean floatingFits(final Number number, final double max) {
+    if (number instanceof BigDecimal || number instanceof BigInteger) {
+      final double value = number.doubleValue();
+      return Double.isFinite(value) && Math.abs(value) <= max;
+    }
+    if (max == Double.MAX_VALUE)
+      return true; // A Double, a Float or a Java integer always fits a DOUBLE
+    final double value = number.doubleValue();
+    return !Double.isFinite(value) || Math.abs(value) <= max;
   }
 
   /**
@@ -405,9 +422,12 @@ public final class ColumnDefinition {
 
   private String withinStringLimit(final String text) {
     // AT MOST 3 BYTES PER CHAR, SO A SHORT TEXT NEEDS NO COUNT
-    if (text.length() * 3 > TimeSeriesBucket.MAX_STRING_BYTES && utf8Length(text) > TimeSeriesBucket.MAX_STRING_BYTES)
-      throw new IllegalArgumentException("Cannot convert a value of type " + text.getClass().getName() + " to the " + dataType
-          + " column '" + name + "': the text is longer than " + TimeSeriesBucket.MAX_STRING_BYTES + " bytes");
+    if (text.length() * 3 > TimeSeriesBucket.MAX_STRING_BYTES) {
+      final int bytes = utf8Length(text);
+      if (bytes > TimeSeriesBucket.MAX_STRING_BYTES)
+        throw new IllegalArgumentException("Cannot store a text of " + bytes + " UTF-8 bytes in the " + dataType + " column '" + name
+            + "': the limit is " + TimeSeriesBucket.MAX_STRING_BYTES + " bytes, so the text is longer than a row can hold");
+    }
     return text;
   }
 

@@ -166,6 +166,38 @@ class Issue9809LineProtocolTemporalValueTest extends TestHelper {
   }
 
   @Test
+  void aFiniteNumberTooLargeForAFloatColumnIsRefusedWhileNaNAndInfinityAreValues() throws Exception {
+    database.command("sql", "CREATE TIMESERIES TYPE Floats TIMESTAMP ts FIELDS (f FLOAT, d DOUBLE) SHARDS 1");
+
+    final WriteReport report = write(field("Floats", T0, "f", 1.0e300), field("Floats", T0 + 1, "f", 1.5e30),
+        field("Floats", T0 + 2, "f", Double.NaN), field("Floats", T0 + 3, "f", Double.POSITIVE_INFINITY),
+        field("Floats", T0 + 4, "d", 1.0e300), field("Floats", T0 + 5, "d", new BigDecimal("1e500")),
+        field("Floats", T0 + 6, "d", new BigDecimal("1e300")));
+
+    assertThat(report.written()).isEqualTo(5);
+    assertThat(report.dropped()).isEqualTo(2);
+    assertThat(report.unreadableValues()).hasSize(2);
+    assertThat(report.unreadableValues()).anyMatch(entry -> entry.startsWith("Floats.f (field)") && entry.contains("out of range"));
+    assertThat(report.unreadableValues()).anyMatch(entry -> entry.startsWith("Floats.d (field)") && entry.contains("out of range"));
+    assertThat(((Number) valueAt("Floats", "f", T0 + 1)).floatValue()).isEqualTo(1.5e30f);
+    // NaN IS THE ENGINE'S ABSENT MARKER FOR A FLOATING POINT COLUMN, SO IT IS WRITTEN (COUNTED ABOVE) AND READS BACK AS NO VALUE
+    assertThat(valueAt("Floats", "f", T0 + 2)).isNull();
+    assertThat(((Number) valueAt("Floats", "f", T0 + 3)).doubleValue()).isInfinite();
+  }
+
+  @Test
+  void digitsPastTheLongRangeAreDroppedNotFailed() throws Exception {
+    database.command("sql", "CREATE TIMESERIES TYPE Stamps TIMESTAMP ts FIELDS (at DATETIME, n LONG) SHARDS 1");
+
+    final WriteReport report = write(field("Stamps", T0, "at", "99999999999999999999"), field("Stamps", T0 + 1, "n", "99999999999999999999"),
+        field("Stamps", T0 + 2, "at", "1700000002000"));
+
+    assertThat(report.written()).isEqualTo(1);
+    assertThat(report.dropped()).isEqualTo(2);
+    assertThat(report.unreadableValues()).hasSize(2);
+  }
+
+  @Test
   void aRefusedSampleLeavesNoPartialRowWhateverItsPlaceInTheBatch() throws Exception {
     database.command("sql", "CREATE TIMESERIES TYPE Pair TIMESTAMP ts FIELDS (a LONG, b LONG) SHARDS 1");
 
@@ -253,8 +285,11 @@ class Issue9809LineProtocolTemporalValueTest extends TestHelper {
 
     assertThat(report.written()).isEqualTo(2);
     assertThat(report.dropped()).isEqualTo(2);
-    assertThat(report.unreadableValues()).hasSize(1);
-    assertThat(report.unreadableValues().iterator().next()).contains("'note'").contains("longer than");
+    // THE MESSAGE STATES THE LENGTH (NEVER THE TEXT), SO THE 257 AND THE 258 BYTE TEXTS ARE TWO REASONS
+    assertThat(report.unreadableValues()).hasSize(2);
+    assertThat(report.unreadableValues()).allMatch(entry -> entry.contains("'note'") && entry.contains("the limit is 256"));
+    assertThat(report.unreadableValues()).anyMatch(entry -> entry.contains("257 UTF-8 bytes"));
+    assertThat(report.unreadableValues()).anyMatch(entry -> entry.contains("258 UTF-8 bytes"));
     assertThat(valueAt("Texts", "note", T0)).isEqualTo(fits);
     assertThat(valueAt("Texts", "note", T0 + 3)).isEqualTo("short");
   }

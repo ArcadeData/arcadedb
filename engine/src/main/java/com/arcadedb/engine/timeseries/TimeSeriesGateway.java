@@ -300,30 +300,33 @@ public final class TimeSeriesGateway {
         int valid = 0;
         for (int s = 0; s < count; s++) {
           final Sample sample = group.get(s);
-          ColumnDefinition current = null;
-          try {
-            int colIdx = 0;
-            for (int i = 0; i < columns.size(); i++) {
-              final ColumnDefinition col = columns.get(i);
-              if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
-                continue;
-              current = col;
+          boolean refused = false;
+          int colIdx = 0;
+          for (int i = 0; i < columns.size(); i++) {
+            final ColumnDefinition col = columns.get(i);
+            if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
+              continue;
 
-              final Object value;
-              if (col.getRole() == ColumnDefinition.ColumnRole.TAG)
-                value = sample.getTags().get(col.getName());
-              else
-                value = sample.getFields().get(col.getName());
+            final Object value;
+            if (col.getRole() == ColumnDefinition.ColumnRole.TAG)
+              value = sample.getTags().get(col.getName());
+            else
+              value = sample.getFields().get(col.getName());
 
+            // ONLY THE CONVERSION IS GUARDED: AN IllegalArgumentException FROM ANYWHERE ELSE IS NOT A COLUMN PROBLEM
+            try {
               columnValues[colIdx][valid] = col.storableValue(database, value);
-              colIdx++;
+            } catch (final IllegalArgumentException e) {
+              if (unreadableValues.size() < MAX_REPORTED_UNREADABLE_VALUES)
+                unreadableValues.add(sample.getMeasurement() + "." + col.getName() + " ("
+                    + (col.getRole() == ColumnDefinition.ColumnRole.TAG ? "tag" : "field") + "): " + e.getMessage());
+              refused = true;
+              break;
             }
-            timestamps[valid++] = sample.getTimestampMs();
-          } catch (final IllegalArgumentException e) {
-            if (unreadableValues.size() < MAX_REPORTED_UNREADABLE_VALUES)
-              unreadableValues.add(sample.getMeasurement() + "." + current.getName() + " (" + (current.getRole()
-                  == ColumnDefinition.ColumnRole.TAG ? "tag" : "field") + "): " + e.getMessage());
+            colIdx++;
           }
+          if (!refused)
+            timestamps[valid++] = sample.getTimestampMs();
         }
 
         if (valid == 0)
