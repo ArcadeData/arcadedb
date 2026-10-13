@@ -112,6 +112,13 @@ public class TransactionManager {
    */
   private volatile boolean                   recencySignalReliable;
   /**
+   * True while the open replays this database's own WAL, around each {@link #applyChanges} call of that loop, false for a
+   * transaction written on another node. Only the latter reaches a live search state: a vector index has no graph resident
+   * during recovery, and the first search after the open reconciles what it loads against the pages (#9857). A field rather
+   * than a parameter so the replay keeps going through the one overridable {@link #applyChanges}.
+   */
+  private volatile boolean                   replayingOwnWAL;
+  /**
    * Held SHARED for the whole of {@link #applyChanges}, and EXCLUSIVELY by the snapshot t0 barrier
    * ({@code PageManager.openSnapshot}, issue #6075). Replicated and crash-recovery replay is the one writer that
    * reaches the data files outside the asynchronous flush pipeline, so parking the flush thread does not park it;
@@ -617,7 +624,12 @@ public class TransactionManager {
             break;
 
           try {
-            applyChanges(walPositions[lowerTx], Collections.emptyMap(), false, true);
+            replayingOwnWAL = true;
+            try {
+              applyChanges(walPositions[lowerTx], Collections.emptyMap(), false);
+            } finally {
+              replayingOwnWAL = false;
+            }
             // Only advance lastTxId after a successful apply, otherwise a failed transaction
             // would wrongly increment the next-tx counter past data that was never written.
             // The HIGHEST applied id, not the last one (#9795): a WAL file does NOT hold its transactions in txId
@@ -843,16 +855,6 @@ public class TransactionManager {
    */
   public boolean applyChanges(final WALFile.WALTransaction tx, final Map<Integer, Integer> bucketRecordDelta,
       final boolean ignoreErrors) {
-    return applyChanges(tx, bucketRecordDelta, ignoreErrors, false);
-  }
-
-  /**
-   * @param recovery true when replaying this database's own WAL while it opens, false for a transaction written on another
-   *                 node. Only the latter reaches a live search state: a vector index has no graph resident yet during
-   *                 recovery, and the first search after the open reconciles what it loads against the pages (#9857)
-   */
-  private boolean applyChanges(final WALFile.WALTransaction tx, final Map<Integer, Integer> bucketRecordDelta,
-      final boolean ignoreErrors, final boolean recovery) {
     applyLock.readLock().lock();
     final Object requester = Thread.currentThread();
     BucketLocks bucketLocks = null;
@@ -860,7 +862,7 @@ public class TransactionManager {
       // Null on the steady-state path (every counter known), which then allocates nothing. Inside the try: a throw
       // from the lock phase must still release the shared apply lock, or the snapshot t0 barrier waits forever
       bucketLocks = lockBucketsWithUnknownCount(bucketRecordDelta, requester);
-      return applyChangesInternal(tx, bucketRecordDelta, ignoreErrors, recovery);
+      return applyChangesInternal(tx, bucketRecordDelta, ignoreErrors);
     } finally {
       if (bucketLocks != null) {
         // After the fold: a recompute that published while the pages were being written is discarded (#8640)
@@ -1067,7 +1069,8 @@ public class TransactionManager {
   }
 
   private boolean applyChangesInternal(final WALFile.WALTransaction tx, final Map<Integer, Integer> bucketRecordDelta,
-      final boolean ignoreErrors, final boolean recovery) {
+      final boolean ignoreErrors) {
+    final boolean recovery = replayingOwnWAL;
     boolean changed = false;
     // Whether at least one page was written at a version STRICTLY GREATER than the one on disk, i.e. this
     // transaction carried content the database did not have yet. `changed` cannot answer that question: since
