@@ -21,6 +21,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.Bucket;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
@@ -31,12 +32,15 @@ import com.arcadedb.index.MultiIndexCursor;
 import com.arcadedb.index.TempIndexCursor;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.vector.LSMVectorIndex;
+import com.arcadedb.index.vector.VectorUtils;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.SelectExecutionPlanner;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinaryComparator;
+import com.arcadedb.utility.IntHashSet;
 import com.arcadedb.utility.MultiIterator;
 import com.arcadedb.utility.Pair;
+import com.arcadedb.utility.RidHashSet;
 
 import java.math.BigDecimal;
 import java.util.*;
@@ -272,7 +276,6 @@ public class SelectExecutor {
    * That is the same rule {@link #executeCount()} and {@link SelectIterator} follow: hand back what was produced, do
    * not produce more.
    */
-  @SuppressWarnings("unchecked")
   <T extends Document> List<SelectVectorResult<T>> executeVector() {
     startTimeout();
 
@@ -289,14 +292,49 @@ public class SelectExecutor {
     if (bucketIndexes == null || bucketIndexes.length == 0)
       throw new IllegalArgumentException("Index '" + typeIndex.getName() + "' has no bucket indexes");
 
-    final List<LSMVectorIndex> vectorIndexes = new ArrayList<>();
-    for (final IndexInternal bucketIndex : bucketIndexes)
-      if (bucketIndex instanceof LSMVectorIndex lsmIndex)
-        vectorIndexes.add(lsmIndex);
+    // ONLY THE BUCKETS OF THE TYPE THE QUERY IS ON: AN INDEX A SUB-TYPE INHERITS FROM ITS PARENT SPANS THE BUCKETS OF EVERY
+    // SIBLING TOO, AND SEARCHING THEM ALL ANSWERED A QUERY ON ONE SUB-TYPE WITH RECORDS OF THE OTHERS. THE SAME SCOPE
+    // vectorNeighbors('T[p]') AND db.index.vector.queryNodes('T[p]') SEARCH (#8958). EACH SUB-INDEX SEARCHED ONCE, EVEN WHEN
+    // THE TYPE INDEX LISTS IT TWICE (#7057)
+    final IntHashSet allowedBucketIds = new IntHashSet();
+    for (final Bucket bucket : select.fromType.getBuckets(select.polymorphic))
+      allowedBucketIds.add(bucket.getFileId());
+    final List<LSMVectorIndex> vectorIndexes = VectorUtils.collectSubIndexesOnce(bucketIndexes, LSMVectorIndex.class,
+        allowedBucketIds::contains);
 
-    if (vectorIndexes.isEmpty())
-      throw new IllegalArgumentException("Index '" + typeIndex.getName() + "' is not a vector index");
+    if (vectorIndexes.isEmpty()) {
+      if (VectorUtils.collectSubIndexesOnce(bucketIndexes, LSMVectorIndex.class, null).isEmpty())
+        throw new IllegalArgumentException("Index '" + typeIndex.getName() + "' is not a vector index");
+      // A VECTOR INDEX, BUT NONE OF ITS BUCKETS BELONGS TO THE TYPE (A polymorphic(false) QUERY ON A TYPE WITH NO BUCKET OF
+      // ITS OWN): NO RECORD CAN MATCH
+      return new ArrayList<>();
+    }
 
+    // #9858: A RECORD DELETED BY A COMMIT THAT OVERLAPS THE SEARCH CAN STILL BE IN AN INDEX'S ANSWER. IT IS SKIPPED, AND THE
+    // SEARCH WIDENED UNTIL IT HAS THE k NEAREST *LIVE* RECORDS. THE POST-FILTER WHERE APPLIES TO THOSE k AFTERWARDS, SO A STALE
+    // CANDIDATE NEVER CHANGES WHICH RECORDS THE FILTER IS ASKED ABOUT: EXACTLY THE ONES IT WOULD SEE IF NOTHING WERE STALE
+    final List<SelectVectorResult<T>> nearest = VectorUtils.searchWithStaleTopUp(select.vectorK,
+        (fetchK, staleSkipped, saturated) -> loadNearestLive(vectorIndexes, fetchK, staleSkipped, saturated));
+
+    if (select.rootTreeElement == null)
+      return nearest;
+
+    final List<SelectVectorResult<T>> results = new ArrayList<>(nearest.size());
+    for (final SelectVectorResult<T> candidate : nearest)
+      if (evaluateWhere(candidate.getDocument()))
+        results.add(candidate);
+    return results;
+  }
+
+  /**
+   * #9858: ONE PASS OF THE VECTOR SEARCH - ASKS EVERY INDEX FOR {@code fetchK} CANDIDATES AND LOADS THE NEAREST
+   * {@code vectorK} DISTINCT LIVE RECORDS, COUNTING THE CANDIDATES WHOSE RECORD IS GONE. AN EXPIRED DEADLINE ENDS THE PASS
+   * WITH WHAT IT HAS LOADED AND CLEARS {@code saturated}, WHICH ALSO ENDS THE TOP-UP: A WIDER PASS WOULD ONLY BE MORE WORK
+   * PAST A DEADLINE THAT HAS ALREADY GONE.
+   */
+  @SuppressWarnings("unchecked")
+  private <T extends Document> List<SelectVectorResult<T>> loadNearestLive(final List<LSMVectorIndex> vectorIndexes,
+      final int fetchK, final int[] staleSkipped, final boolean[] saturated) {
     final List<Pair<RID, Float>> allNeighbors = new ArrayList<>();
     for (final LSMVectorIndex lsmIndex : vectorIndexes) {
       // #6873: THE COARSEST OF THE THREE CHECKPOINTS - ONE PER BUCKET INDEX, SINCE THE SEARCH INSIDE ONE INDEX IS NOT
@@ -305,15 +343,19 @@ public class SelectExecutor {
       // WHERE - MORE WORK, PAST A DEADLINE THAT HAS ALREADY GONE. SO A NON-THROWING EXPIRY ANYWHERE BEFORE THE
       // ASSEMBLY LOOP ANSWERS WITH AN EMPTY LIST, WHICH IS THE SAME RULE THE OTHER PATHS FOLLOW: KEEP WHAT WAS
       // ALREADY *PRODUCED* (RECORDS YIELDED BY SelectIterator, THE TALLY IN executeCount()), NEVER PRODUCE MORE
-      if (checkForTimeout())
-        break;
+      if (checkForTimeout()) {
+        saturated[0] = false;
+        return new ArrayList<>();
+      }
 
       final List<Pair<RID, Float>> neighbors;
       if (select.vectorApproximate)
-        neighbors = lsmIndex.findNeighborsFromVectorApproximate(select.vectorQuery, select.vectorK);
+        neighbors = lsmIndex.findNeighborsFromVectorApproximate(select.vectorQuery, fetchK);
       else
-        neighbors = lsmIndex.findNeighborsFromVector(select.vectorQuery, select.vectorK);
+        neighbors = lsmIndex.findNeighborsFromVector(select.vectorQuery, fetchK);
       allNeighbors.addAll(neighbors);
+      if (neighbors.size() >= fetchK)
+        saturated[0] = true;
     }
 
     // #6873: THE DEADLINE CAN ONLY EXPIRE INSIDE AN INDEX'S OWN (UNINTERRUPTIBLE) SEARCH, AND WHEN THAT IS THE *LAST*
@@ -322,25 +364,39 @@ public class SelectExecutor {
     // exceptionOnTimeout RAISE THE EXPIRY EVEN WHEN THE SEARCH FOUND NO NEIGHBOUR AT ALL, WHICH LEAVES THE ASSEMBLY
     // LOOP BELOW WITH NO ITERATION TO CHECK ON. THE EMPTY LIST IS DELIBERATE AND NOT A LOST PARTIAL RESULT - SEE THE
     // PER-INDEX CHECKPOINT ABOVE FOR WHY allNeighbors IS NOT AN ANSWER YET
-    if (checkForTimeout())
+    if (checkForTimeout()) {
+      saturated[0] = false;
       return new ArrayList<>();
+    }
 
     allNeighbors.sort(Comparator.comparing(Pair::getSecond));
 
     final int resultCount = Math.min(select.vectorK, allNeighbors.size());
     final List<SelectVectorResult<T>> results = new ArrayList<>(resultCount);
+    // ONE RECORD, ONE ROW: THE LIST CONCATENATES ONE SEARCH PER INDEX, AND THE SORT KEEPS EACH RECORD AT ITS NEAREST (#7057)
+    final RidHashSet emitted = new RidHashSet(resultCount);
 
-    for (int i = 0; i < resultCount; i++) {
-      // #6873: ASSEMBLY IS NOT FREE - EVERY ITERATION LOADS A RECORD FROM DISK AND MAY RUN THE POST-FILTER WHERE, SO
-      // THE BUDGET HAS TO BE HONOURED HERE TOO AND NOT ONLY AROUND THE NEIGHBOUR SEARCH
-      if (checkForTimeout())
+    for (final Pair<RID, Float> neighbor : allNeighbors) {
+      if (results.size() >= resultCount)
         break;
 
-      final Pair<RID, Float> neighbor = allNeighbors.get(i);
-      final T record = (T) neighbor.getFirst().asDocument();
+      // #6873: ASSEMBLY IS NOT FREE - EVERY ITERATION LOADS A RECORD FROM DISK, SO THE BUDGET HAS TO BE HONOURED HERE TOO
+      // AND NOT ONLY AROUND THE NEIGHBOUR SEARCH
+      if (checkForTimeout()) {
+        saturated[0] = false;
+        break;
+      }
 
-      if (select.rootTreeElement != null && !evaluateWhere(record))
+      if (!emitted.add(neighbor.getFirst()))
         continue;
+
+      final T record;
+      try {
+        record = (T) neighbor.getFirst().asDocument();
+      } catch (final RecordNotFoundException e) {
+        staleSkipped[0]++;
+        continue;
+      }
 
       results.add(new SelectVectorResult<>(record, neighbor.getSecond()));
     }

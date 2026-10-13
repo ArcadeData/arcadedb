@@ -617,7 +617,7 @@ public class TransactionManager {
             break;
 
           try {
-            applyChanges(walPositions[lowerTx], Collections.emptyMap(), false);
+            applyChanges(walPositions[lowerTx], Collections.emptyMap(), false, true);
             // Only advance lastTxId after a successful apply, otherwise a failed transaction
             // would wrongly increment the next-tx counter past data that was never written.
             // The HIGHEST applied id, not the last one (#9795): a WAL file does NOT hold its transactions in txId
@@ -843,6 +843,16 @@ public class TransactionManager {
    */
   public boolean applyChanges(final WALFile.WALTransaction tx, final Map<Integer, Integer> bucketRecordDelta,
       final boolean ignoreErrors) {
+    return applyChanges(tx, bucketRecordDelta, ignoreErrors, false);
+  }
+
+  /**
+   * @param recovery true when replaying this database's own WAL while it opens, false for a transaction written on another
+   *                 node. Only the latter reaches a live search state: a vector index has no graph resident yet during
+   *                 recovery, and the first search after the open reconciles what it loads against the pages (#9857)
+   */
+  private boolean applyChanges(final WALFile.WALTransaction tx, final Map<Integer, Integer> bucketRecordDelta,
+      final boolean ignoreErrors, final boolean recovery) {
     applyLock.readLock().lock();
     final Object requester = Thread.currentThread();
     BucketLocks bucketLocks = null;
@@ -850,7 +860,7 @@ public class TransactionManager {
       // Null on the steady-state path (every counter known), which then allocates nothing. Inside the try: a throw
       // from the lock phase must still release the shared apply lock, or the snapshot t0 barrier waits forever
       bucketLocks = lockBucketsWithUnknownCount(bucketRecordDelta, requester);
-      return applyChangesInternal(tx, bucketRecordDelta, ignoreErrors);
+      return applyChangesInternal(tx, bucketRecordDelta, ignoreErrors, recovery);
     } finally {
       if (bucketLocks != null) {
         // After the fold: a recompute that published while the pages were being written is discarded (#8640)
@@ -1057,7 +1067,7 @@ public class TransactionManager {
   }
 
   private boolean applyChangesInternal(final WALFile.WALTransaction tx, final Map<Integer, Integer> bucketRecordDelta,
-      final boolean ignoreErrors) {
+      final boolean ignoreErrors, final boolean recovery) {
     boolean changed = false;
     // Whether at least one page was written at a version STRICTLY GREATER than the one on disk, i.e. this
     // transaction carried content the database did not have yet. `changed` cannot answer that question: since
@@ -1246,7 +1256,7 @@ public class TransactionManager {
                 (LSMVectorIndexMutable) component;
             final LSMVectorIndex mainIndex = vectorMutable.getMainIndex();
             if (mainIndex != null) {
-              mainIndex.applyReplicatedPageUpdate(modifiedPage);
+              mainIndex.applyReplicatedPageUpdate(modifiedPage, !recovery);
             } else {
               LogManager.instance().log(this, Level.WARNING,
                   "LSMVectorIndexMutable has null mainIndex for fileId=%d", null, txPage.fileId);
@@ -1255,7 +1265,7 @@ public class TransactionManager {
             final LSMVectorIndex mainIndex =
                 (LSMVectorIndex) ((LSMVectorIndexCompacted) component).getMainComponent();
             if (mainIndex != null) {
-              mainIndex.applyReplicatedPageUpdate(modifiedPage);
+              mainIndex.applyReplicatedPageUpdate(modifiedPage, !recovery);
             }
           }
         }
