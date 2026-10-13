@@ -144,7 +144,9 @@ public class AlterDatabaseStatement extends DDLStatement {
 
       // The stored value is what the setting is now worth, which is not always what was asked for: a callback
       // reached through the overlay may normalise it (arcadedb.maxPageRAM clamps a page cache larger than 80%
-      // of the heap), and the result row has to report the value that took effect (issue #7163).
+      // of the heap), and the result row has to report the value that took effect (issue #7163). valueSet() is the
+      // object db.getConfiguration().getValue(cfg) returns, read inside the change before an apply could replace it; when
+      // nothing is stored, that call falls back to the setting's own value, and so does this.
       finalValue = GlobalConfiguration.externalizeValue(change.valueSet() != null ? change.valueSet() : cfg.getValue());
 
       try {

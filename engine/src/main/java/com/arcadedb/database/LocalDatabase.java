@@ -3076,12 +3076,16 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    * the previous value and storing the new one are then one step for the apply: under Raft HA a change to the same
    * setting committed by another node cannot land between them, where the previous value captured would be one the
    * apply had already replaced, and an undo of a refused save would put it back (issue #9919).
+   * <p>
+   * {@code change} runs under that lock, so it must only store the value and re-derive in-memory state from it: the
+   * setting's {@link GlobalConfiguration} callback and the per-database side effects, which the apply itself runs under
+   * the same lock when it merges a change. Nothing that takes another lock or replicates.
    */
   public SettingChange changeSetting(final String key, final Runnable change) {
     synchronized (configurationApplyLock) {
-      final Object previousValue = configuration.hasValue(key) ? configuration.getValue(key, null) : null;
+      final Object previousValue = settingValue(key);
       change.run();
-      return new SettingChange(key, previousValue, configuration.hasValue(key) ? configuration.getValue(key, null) : null);
+      return new SettingChange(key, previousValue, settingValue(key));
     }
   }
 
@@ -3096,8 +3100,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    */
   public void undoSettingChange(final SettingChange change) {
     synchronized (configurationApplyLock) {
-      final Object current = configuration.hasValue(change.key()) ? configuration.getValue(change.key(), null) : null;
-      if (!Objects.equals(current, change.valueSet()))
+      // Equal values cannot tell "untouched" from "another writer stored the same value": both undo, and the second
+      // case is then caught by restoreSetting() once that value is saved, or reverts a value that is not saved anywhere
+      if (!Objects.equals(settingValue(change.key()), change.valueSet()))
         // Changed since by another writer: its value stands
         return;
       restoreSetting(change.key(), change.previousValue());
@@ -3166,6 +3171,11 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       configuration.setValue(key, savedValue);
       configurationChanged();
     }
+  }
+
+  /** The value this database's configuration stores for {@code key}, {@code null} when it stores none. */
+  private Object settingValue(final String key) {
+    return configuration.hasValue(key) ? configuration.getValue(key, null) : null;
   }
 
   /** Whether {@code configuration.json} holds the value {@code key} has in memory. Unreadable file: no. */
