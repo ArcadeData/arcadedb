@@ -38,11 +38,9 @@ import com.arcadedb.utility.RidHashSet;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
 import java.util.NoSuchElementException;
-import java.util.Objects;
 import java.util.Set;
 import java.util.logging.Level;
 import java.util.stream.Collectors;
@@ -445,7 +443,7 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
             if (prevStep instanceof FetchFromIndexStep indexStep && finalVal instanceof RID rid) {
               final Object key = val.getProperty("key");
               if (indexStep.isPointLookup()) {
-                if (!sameKey(key, streamKey)) {
+                if (!FetchFromIndexStep.sameKey(key, streamKey)) {
                   if (keyLostEntries) {
                     // The entries of the key ran out with some lost to a commit: settle them before moving to the next key
                     pendingEntries.addFirst(val);
@@ -815,12 +813,6 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
 
   private static final int MAX_RECONCILE_ATTEMPTS   = 8;
   private static final int MAX_POINT_LOOKUP_ENTRIES = 256;
-
-  private static boolean sameKey(final Object a, final Object b) {
-    if (a instanceof Object[] left && b instanceof Object[] right)
-      return Arrays.equals(left, right);
-    return Objects.equals(a, b);
-  }
 
   /**
    * Loads the rows of a point lookup - an equality or an {@code IN} - against ONE committed state (#9369). A commit puts its
