@@ -85,8 +85,12 @@ final class ObjectColumnsRowSource implements TimeSeriesRowSource {
     final Object value = columnValues[columnIndex][row];
     final byte kind = kinds[columnIndex];
 
-    if (kind == TimeSeriesBatch.KIND_BOOLEAN)
+    if (kind == TimeSeriesBatch.KIND_BOOLEAN) {
+      // NULL IS ABSENT (FALSE), BUT A VALUE THAT IS NOT A BOOLEAN IS REFUSED, NOT STORED AS FALSE
+      if (value != null && !(value instanceof Boolean))
+        throw unstorable(columnIndex, value);
       return Boolean.TRUE.equals(value) ? 1L : 0L;
+    }
     if (value == null)
       // The absent marker on a floating-point column, zero elsewhere - where isNull() says the value is absent (issue #9721)
       // to a bucket whose rows can say so: see TimeSeriesBatch.rawNull (issue #7743).

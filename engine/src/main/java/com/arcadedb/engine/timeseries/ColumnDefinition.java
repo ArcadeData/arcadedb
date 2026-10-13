@@ -42,6 +42,8 @@ public final class ColumnDefinition {
   private final ColumnRole      role;
   private final TimeSeriesCodec compressionHint;
   private final boolean         explicitCodec;
+  // The kind of the storage row this column's type is encoded as, resolved once: storableValue runs for every value of every sample
+  private final byte            kind;
 
   /**
    * A column whose codec is DERIVED from its data type and role, through {@link #defaultCodecFor}.
@@ -56,6 +58,7 @@ public final class ColumnDefinition {
     this.role = role;
     this.compressionHint = defaultCodecFor(dataType, role);
     this.explicitCodec = false;
+    this.kind = TimeSeriesBatch.kindOf(dataType);
   }
 
   /**
@@ -73,6 +76,7 @@ public final class ColumnDefinition {
     this.role = role;
     this.compressionHint = compressionHint != null ? compressionHint : defaultCodecFor(dataType, role);
     this.explicitCodec = compressionHint != null;
+    this.kind = TimeSeriesBatch.kindOf(dataType);
   }
 
   public String getName() {
@@ -309,9 +313,12 @@ public final class ColumnDefinition {
    * <li>a DATE/DATETIME column keeps a number as it is, a count in the column's unit, the contract of every writer that is not SQL; text
    * of digits is that same count, the rule {@link #coerceValue} applies to a tag filter, and any other date or instant is read by
    * {@link #epochOf}, the conversion {@code INSERT} uses, so the same text names the same instant on every surface</li>
-   * <li>any other numeric column keeps a number and parses text, as {@code INSERT} does</li>
-   * <li>a BOOLEAN column parses text, so a typed tag sent as {@code "true"} is not stored as {@code false}</li>
-   * <li>a STRING column keeps a string</li>
+   * <li>any other numeric column keeps a number that its type can hold (a {@code 300} is refused by a BYTE column, where the append
+   * would store {@code 44}) and parses text, as {@code INSERT} does</li>
+   * <li>a BOOLEAN column keeps a boolean and parses {@code true} / {@code false} (any case), so a typed tag sent as {@code "true"} is
+   * not stored as {@code false}; any other text, and a number, is refused rather than stored as {@code false}</li>
+   * <li>a STRING column keeps a string of at most {@link TimeSeriesBucket#MAX_STRING_BYTES} UTF-8 bytes, the limit the row refuses
+   * a longer one at, after the rest of the batch is assembled</li>
    * </ul>
    *
    * @param database may be {@code null}, which reads text with the default formats (see {@link #epochOf})
@@ -321,14 +328,21 @@ public final class ColumnDefinition {
   public Object storableValue(final Database database, final Object value) {
     if (value == null)
       return null;
-    return switch (TimeSeriesBatch.kindOf(dataType)) {
-      case TimeSeriesBatch.KIND_BOOLEAN -> value instanceof String text ? Boolean.parseBoolean(text) : value;
+    // THE COMMON CASE, A NUMBER INTO A NUMERIC COLUMN (EVERY KIND UP TO BYTE), ANSWERS BEFORE ANY DISPATCH
+    if (kind <= TimeSeriesBatch.KIND_BYTE && value instanceof Number number) {
+      if (fits(number))
+        return value;
+      throw new IllegalArgumentException("Cannot convert a value of type " + value.getClass().getName() + " to the " + dataType
+          + " column '" + name + "': the number is out of range");
+    }
+    return switch (kind) {
+      case TimeSeriesBatch.KIND_BOOLEAN -> booleanOf(value);
       case TimeSeriesBatch.KIND_STRING -> {
-        if (value instanceof String)
-          yield value;
+        if (value instanceof String text)
+          yield withinStringLimit(text);
         throw unstorable(value, null);
       }
-      case TimeSeriesBatch.KIND_TEXT -> value;
+      case TimeSeriesBatch.KIND_TEXT -> withinStringLimit(value instanceof String text ? text : value.toString());
       default -> {
         if (value instanceof Number)
           yield value;
@@ -341,6 +355,70 @@ public final class ColumnDefinition {
         }
       }
     };
+  }
+
+  /**
+   * Whether the number is one the column's type can hold, for the kinds up to BYTE (the numeric ones). A floating point value for an
+   * integral column is range-checked as a double, so NaN and the infinities are refused too.
+   */
+  private boolean fits(final Number number) {
+    return switch (kind) {
+      case TimeSeriesBatch.KIND_INTEGER -> within(number, Integer.MIN_VALUE, Integer.MAX_VALUE);
+      case TimeSeriesBatch.KIND_SHORT -> within(number, Short.MIN_VALUE, Short.MAX_VALUE);
+      case TimeSeriesBatch.KIND_BYTE -> within(number, Byte.MIN_VALUE, Byte.MAX_VALUE);
+      case TimeSeriesBatch.KIND_LONG -> isWholeJavaInteger(number) || (number.doubleValue() >= -0x1p63 && number.doubleValue() < 0x1p63);
+      default -> true; // DOUBLE, FLOAT
+    };
+  }
+
+  private static boolean isWholeJavaInteger(final Number number) {
+    return number instanceof Long || number instanceof Integer || number instanceof Short || number instanceof Byte;
+  }
+
+  private static boolean within(final Number number, final long min, final long max) {
+    if (isWholeJavaInteger(number)) {
+      final long value = number.longValue();
+      return value >= min && value <= max;
+    }
+    final double value = number.doubleValue();
+    return value >= min && value <= max;
+  }
+
+  private String withinStringLimit(final String text) {
+    // AT MOST 3 BYTES PER CHAR, SO A SHORT TEXT NEEDS NO COUNT
+    if (text.length() * 3 > TimeSeriesBucket.MAX_STRING_BYTES && utf8Length(text) > TimeSeriesBucket.MAX_STRING_BYTES)
+      throw new IllegalArgumentException("Cannot convert a value of type " + text.getClass().getName() + " to the " + dataType
+          + " column '" + name + "': the text is longer than " + TimeSeriesBucket.MAX_STRING_BYTES + " bytes");
+    return text;
+  }
+
+  private static int utf8Length(final String text) {
+    int bytes = 0;
+    for (int i = 0; i < text.length(); i++) {
+      final char c = text.charAt(i);
+      if (c < 0x80)
+        bytes += 1;
+      else if (c < 0x800)
+        bytes += 2;
+      else if (Character.isHighSurrogate(c) && i + 1 < text.length() && Character.isLowSurrogate(text.charAt(i + 1))) {
+        bytes += 4;
+        ++i;
+      } else
+        bytes += 3;
+    }
+    return bytes;
+  }
+
+  private Boolean booleanOf(final Object value) {
+    if (value instanceof Boolean flag)
+      return flag;
+    if (value instanceof String text) {
+      if ("true".equalsIgnoreCase(text))
+        return Boolean.TRUE;
+      if ("false".equalsIgnoreCase(text))
+        return Boolean.FALSE;
+    }
+    throw unstorable(value, null);
   }
 
   private Long temporalCount(final Database database, final Object value) {

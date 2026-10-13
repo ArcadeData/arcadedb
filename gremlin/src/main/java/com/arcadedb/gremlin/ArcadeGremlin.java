@@ -49,6 +49,7 @@ import org.apache.tinkerpop.gremlin.process.traversal.step.map.AddVertexStepCont
 import org.apache.tinkerpop.gremlin.process.traversal.step.map.MergeStepContract;
 import org.apache.tinkerpop.gremlin.process.traversal.step.sideEffect.AddPropertyStepContract;
 import org.apache.tinkerpop.gremlin.process.traversal.step.sideEffect.IoStep;
+import org.apache.tinkerpop.gremlin.process.traversal.step.util.BulkSet;
 import org.apache.tinkerpop.gremlin.process.traversal.step.util.MutablePath;
 import org.apache.tinkerpop.gremlin.process.traversal.util.TraversalHelper;
 import org.apache.tinkerpop.gremlin.structure.T;
@@ -244,7 +245,7 @@ public class ArcadeGremlin extends ArcadeQuery {
   /**
    * What {@code value}, a value of a result row, becomes once every map in it is named by {@link #flatten}: the value itself when
    * it holds no map, so a row of scalars costs nothing, and otherwise a copy that keeps its kind (a {@link Path} stays a path with
-   * its labels, a list stays a list; any other collection becomes a list). Package-private for the unit tests.
+   * its labels, a set stays a set, a {@link BulkSet} keeps its counts; any other collection becomes a list). Package-private for the unit tests.
    */
   static Object normalizeNested(final Object value) {
     if (value instanceof Map<?, ?> map)
@@ -256,46 +257,55 @@ public class ArcadeGremlin extends ArcadeQuery {
     return value;
   }
 
-  private static Object normalizeCollection(final Collection<?> collection) {
-    List<Object> copy = null;
-    int index = 0;
-    for (final Object item : collection) {
-      final Object normalized = normalizeNested(item);
-      if (copy == null && normalized != item) {
-        // THE FIRST ITEM THAT CHANGES: EVERYTHING BEFORE IT IS UNCHANGED, SO IT IS COPIED AS IT IS
-        copy = new ArrayList<>(collection.size());
-        final Iterator<?> unchanged = collection.iterator();
-        for (int i = 0; i < index; i++)
-          copy.add(unchanged.next());
-      }
-      if (copy != null)
-        copy.add(normalized);
-      ++index;
+  /**
+   * Whether {@link #normalizeNested} would change {@code value}: it is a map, or a path or collection that holds one at any depth.
+   * Asked instead of comparing the result with the input, so a value that needs nothing is handed back as it is. A {@link BulkSet}
+   * is asked about its distinct entries, never its occurrences: it holds a count where a list would hold that many copies.
+   */
+  private static boolean holdsMap(final Object value) {
+    if (value instanceof Map)
+      return true;
+    if (value instanceof Path path) {
+      for (final Object object : path.objects())
+        if (holdsMap(object))
+          return true;
+    } else if (value instanceof Collection<?> collection) {
+      for (final Object item : collection instanceof BulkSet<?> bulk ? bulk.asBulk().keySet() : collection)
+        if (holdsMap(item))
+          return true;
     }
-    return copy != null ? copy : collection;
+    return false;
+  }
+
+  private static Object normalizeCollection(final Collection<?> collection) {
+    if (!holdsMap(collection))
+      return collection;
+
+    if (collection instanceof BulkSet<?> bulk) {
+      // EVERY DISTINCT ENTRY ONCE, WITH THE COUNT IT HAD: AN aggregate().cap() OF A MILLION EQUAL MAPS IS ONE MAP AND A NUMBER
+      final BulkSet<Object> rebuilt = new BulkSet<>();
+      for (final Map.Entry<?, Long> entry : bulk.asBulk().entrySet())
+        rebuilt.add(normalizeNested(entry.getKey()), entry.getValue());
+      return rebuilt;
+    }
+
+    // A SET STAYS A SET (TWO MAPS THAT ARE EQUAL ONCE NAMED ARE ONE ENTRY OF IT), EVERYTHING ELSE IS AN ORDERED LIST
+    final Collection<Object> copy = collection instanceof Set ? new LinkedHashSet<>(collection.size() * 4 / 3 + 1)
+        : new ArrayList<>(collection.size());
+    for (final Object item : collection)
+      copy.add(normalizeNested(item));
+    return copy;
   }
 
   private static Object normalizePath(final Path path) {
-    final List<Object> objects = path.objects();
-    List<Object> normalized = null;
-    for (int i = 0; i < objects.size(); i++) {
-      final Object object = objects.get(i);
-      final Object named = normalizeNested(object);
-      if (normalized == null && named != object) {
-        normalized = new ArrayList<>(objects.size());
-        for (int j = 0; j < i; j++)
-          normalized.add(objects.get(j));
-      }
-      if (normalized != null)
-        normalized.add(named);
-    }
-    if (normalized == null)
+    if (!holdsMap(path))
       return path;
 
+    final List<Object> objects = path.objects();
     final List<Set<String>> labels = path.labels();
     Path rebuilt = MutablePath.make();
-    for (int i = 0; i < normalized.size(); i++)
-      rebuilt = rebuilt.extend(normalized.get(i), labels.get(i));
+    for (int i = 0; i < objects.size(); i++)
+      rebuilt = rebuilt.extend(normalizeNested(objects.get(i)), labels.get(i));
     return rebuilt;
   }
 

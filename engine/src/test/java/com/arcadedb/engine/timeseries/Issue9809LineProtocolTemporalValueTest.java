@@ -64,7 +64,7 @@ class Issue9809LineProtocolTemporalValueTest extends TestHelper {
   }
 
   private long rows(final String type) {
-    try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM " + type)) {
+    try (final ResultSet rs = database.query("sql", "SELECT count() AS c FROM " + type)) {
       return rs.next().<Number>getProperty("c").longValue();
     }
   }
@@ -161,6 +161,79 @@ class Issue9809LineProtocolTemporalValueTest extends TestHelper {
     database.command("sql", "INSERT INTO Tagged SET ts = " + (T0 + 1000) + ", ok = true, day = '2023-11-14', v = 1.5");
     assertThat(valueAt("Tagged", "ok", T0)).isEqualTo(true);
     assertThat(valueAt("Tagged", "day", T0)).isNotNull().isEqualTo(valueAt("Tagged", "day", T0 + 1000));
+  }
+
+  @Test
+  void aBooleanColumnRefusesTextThatIsNotABooleanInsteadOfStoringFalse() throws Exception {
+    database.command("sql", "CREATE TIMESERIES TYPE Flags TIMESTAMP ts FIELDS (flag BOOLEAN) SHARDS 1");
+
+    final WriteReport report = write(field("Flags", T0, "flag", "TRUE"), field("Flags", T0 + 1, "flag", "false"),
+        field("Flags", T0 + 2, "flag", "yes"), field("Flags", T0 + 3, "flag", "tru"), field("Flags", T0 + 4, "flag", ""),
+        field("Flags", T0 + 5, "flag", 1L), field("Flags", T0 + 6, "flag", Boolean.TRUE));
+
+    assertThat(report.written()).isEqualTo(3);
+    assertThat(report.dropped()).isEqualTo(4);
+    // ONE ENTRY PER REASON: THREE TEXTS AND A NUMBER ARE REFUSED FOR TWO OF THEM
+    assertThat(report.unreadableValues()).hasSize(2);
+    assertThat(report.unreadableValues()).allMatch(entry -> entry.startsWith("Flags.flag (field)") && entry.contains("BOOLEAN"));
+    assertThat(valueAt("Flags", "flag", T0)).isEqualTo(true);
+    assertThat(valueAt("Flags", "flag", T0 + 1)).isEqualTo(false);
+    assertThat(valueAt("Flags", "flag", T0 + 6)).isEqualTo(true);
+  }
+
+  @Test
+  void aNumberTheColumnCannotHoldIsRefusedInsteadOfTruncated() throws Exception {
+    database.command("sql", "CREATE TIMESERIES TYPE Narrow TIMESTAMP ts FIELDS (b BYTE, s SHORT, i INTEGER, l LONG, d DOUBLE) SHARDS 1");
+
+    final WriteReport report = write(field("Narrow", T0, "b", 300L), field("Narrow", T0 + 1, "b", 100L),
+        field("Narrow", T0 + 2, "s", 40_000L), field("Narrow", T0 + 3, "i", 3_000_000_000L), field("Narrow", T0 + 4, "i", 7.5e12),
+        field("Narrow", T0 + 5, "l", 1.0e30), field("Narrow", T0 + 6, "l", Double.NaN), field("Narrow", T0 + 7, "d", 1.0e300),
+        field("Narrow", T0 + 8, "l", Long.MAX_VALUE), field("Narrow", T0 + 9, "i", Integer.MIN_VALUE));
+
+    assertThat(report.written()).isEqualTo(4);
+    assertThat(report.dropped()).isEqualTo(6);
+    assertThat(report.unreadableValues()).isNotEmpty().allMatch(entry -> entry.contains("out of range"));
+    assertThat(valueAt("Narrow", "b", T0 + 1)).isEqualTo((byte) 100);
+    assertThat(valueAt("Narrow", "l", T0 + 8)).isEqualTo(Long.MAX_VALUE);
+    assertThat(valueAt("Narrow", "i", T0 + 9)).isEqualTo(Integer.MIN_VALUE);
+  }
+
+  @Test
+  void aStringLongerThanTheRowCanHoldIsDroppedAloneInsteadOfFailingTheBatch() throws Exception {
+    database.command("sql", "CREATE TIMESERIES TYPE Texts TIMESTAMP ts FIELDS (note STRING) SHARDS 1");
+
+    final String fits = "x".repeat(TimeSeriesBucket.MAX_STRING_BYTES);
+    // 86 THREE-BYTE CHARS ARE 258 BYTES: SHORT IN CHARS, TOO LONG IN BYTES
+    final String tooLongInBytes = "€".repeat(86);
+    final WriteReport report = write(field("Texts", T0, "note", fits), field("Texts", T0 + 1, "note", fits + "x"),
+        field("Texts", T0 + 2, "note", tooLongInBytes), field("Texts", T0 + 3, "note", "short"));
+
+    assertThat(report.written()).isEqualTo(2);
+    assertThat(report.dropped()).isEqualTo(2);
+    assertThat(report.unreadableValues()).hasSize(1);
+    assertThat(report.unreadableValues().iterator().next()).contains("'note'").contains("longer than");
+    assertThat(valueAt("Texts", "note", T0)).isEqualTo(fits);
+    assertThat(valueAt("Texts", "note", T0 + 3)).isEqualTo("short");
+  }
+
+  @Test
+  void theReportIsCappedButDroppedCountsEverySample() throws Exception {
+    final int columns = TimeSeriesGateway.MAX_REPORTED_UNREADABLE_VALUES + 20;
+    final StringBuilder ddl = new StringBuilder("CREATE TIMESERIES TYPE Wide TIMESTAMP ts FIELDS (");
+    for (int c = 0; c < columns; c++)
+      ddl.append(c == 0 ? "" : ", ").append('f').append(c).append(" LONG");
+    database.command("sql", ddl.append(") SHARDS 1").toString());
+
+    // ONE UNREADABLE SAMPLE PER COLUMN, SO EVERY ENTRY OF THE REPORT IS A DIFFERENT ONE
+    final Sample[] samples = new Sample[columns];
+    for (int c = 0; c < columns; c++)
+      samples[c] = field("Wide", T0 + c, "f" + c, "not a number");
+
+    final WriteReport report = write(samples);
+
+    assertThat(report.written()).isZero();
+    assertThat(report.dropped()).isEqualTo(columns);
+    assertThat(report.unreadableValues()).hasSize(TimeSeriesGateway.MAX_REPORTED_UNREADABLE_VALUES);
   }
 
   @Test

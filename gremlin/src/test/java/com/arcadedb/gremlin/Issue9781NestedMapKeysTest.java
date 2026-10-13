@@ -23,6 +23,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import org.apache.tinkerpop.gremlin.process.traversal.Path;
+import org.apache.tinkerpop.gremlin.process.traversal.step.util.BulkSet;
 import org.apache.tinkerpop.gremlin.structure.T;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -31,8 +32,10 @@ import org.junit.jupiter.api.Test;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -213,6 +216,48 @@ class Issue9781NestedMapKeysTest {
     final Map<String, Object> top = run("g.V().has('name','a').elementMap()").getFirst().toMap();
     final Map<String, Object> nested = map(run("g.V().has('name','a').project('x').by(elementMap())").getFirst().getProperty("x"));
     assertThat(nested).isEqualTo(top);
+  }
+
+  @Test
+  void aSetHoldingMapsStaysASetOfNamedMaps() {
+    final Map<Object, Object> first = new LinkedHashMap<>();
+    first.put(T.id, "#1:0");
+    final Map<Object, Object> second = new LinkedHashMap<>();
+    second.put(T.id, "#2:0");
+    final Set<Object> set = new LinkedHashSet<>(List.of(first, second));
+
+    final Object normalized = ArcadeGremlin.normalizeNested(set);
+
+    assertThat(normalized).isInstanceOf(Set.class);
+    final List<?> entries = List.copyOf((Set<?>) normalized);
+    assertThat(entries).hasSize(2);
+    assertThat(map(entries.get(0))).containsOnlyKeys("@rid");
+    assertThat(map(entries.get(1)).get("@rid")).isEqualTo("#2:0");
+  }
+
+  @Test
+  void aBulkSetKeepsItsCountsInsteadOfExpandingEveryOccurrence() {
+    final Map<Object, Object> element = new LinkedHashMap<>();
+    element.put(T.id, "#1:0");
+    element.put("id", "uid");
+    final BulkSet<Object> bulk = new BulkSet<>();
+    // A MILLION OCCURRENCES OF ONE MAP: EXPANDED INTO A LIST THEY WOULD BE A MILLION COPIES
+    bulk.add(element, 1_000_000L);
+    bulk.add("plain", 2L);
+
+    final Object normalized = ArcadeGremlin.normalizeNested(bulk);
+
+    assertThat(normalized).isInstanceOf(BulkSet.class);
+    final BulkSet<?> named = (BulkSet<?>) normalized;
+    assertThat(named.asBulk()).hasSize(2);
+    assertThat(named.size()).isEqualTo(1_000_002);
+    final Map.Entry<?, Long> first = named.asBulk().entrySet().iterator().next();
+    assertThat(map(first.getKey())).containsOnlyKeys("@rid", "id");
+    assertThat(first.getValue()).isEqualTo(1_000_000L);
+
+    final BulkSet<Object> scalars = new BulkSet<>();
+    scalars.add("a", 3L);
+    assertThat(ArcadeGremlin.normalizeNested(scalars)).as("nothing to name, nothing rebuilt").isSameAs(scalars);
   }
 
   @Test

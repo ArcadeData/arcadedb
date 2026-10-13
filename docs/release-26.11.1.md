@@ -81,7 +81,8 @@ it was the 0 weight of an edge without one. A custom subclass that referenced it
   `false`), and drops a sample whose value its column cannot store instead of failing the request. The dropped sample is
   reported like an undeclared key: the HTTP `400` carries `unreadableValues` (`<measurement>.<column> (tag|field): <reason>`),
   the gRPC `TimeSeriesWriteSummary` has the new `unreadable_values` field and `TimeSeriesWriteSummary.unreadableValues()` on
-  the Java clients. The engine API names the column too, instead of a `ClassCastException`.
+  the Java clients. The engine API names the column too, instead of a `ClassCastException`. A `BOOLEAN` column keeps a
+  boolean and reads `true` / `false` in any case; any other text or a number is refused instead of being stored as `false`.
 - **The remote driver keeps `@rid`, `@type`, `@in` and `@out` columns of a projection (#9804).** `SELECT @rid FROM Person`
   over `RemoteDatabase` answered a row with no columns, and a Gremlin `elementMap()` lost the `@rid` and `@type` it names its
   tokens with: the driver removed every metadata name from any row carrying the `@props` type hint, which a `@rid` column
@@ -89,7 +90,8 @@ it was the 0 weight of an edge without one. A custom subclass that referenced it
 - **`arcadedb.grpc.compression.enabled` is applied (#9782).** It was read and printed in the startup line, but both
   compression registries were installed whatever it said and `compression.force` did not consult it. Off, the endpoint
   refuses a compressed request (`UNIMPLEMENTED`) and never compresses a response; `compression.force=true` with
-  `enabled=false` is ignored with a warning, and the startup line says `compression: disabled`.
+  `enabled=false` is ignored with a warning, and the startup line says `compression: disabled`. A deployment that set
+  `enabled=false` and relied on it being ignored must either remove it or stop sending compressed requests.
 - **A map nested in a Gremlin result is named like the row (#9781).** `project('x').by(elementMap())`, `group().by(..).by(elementMap())`,
   `elementMap().fold()` and `path().by(elementMap())` kept `T.id` and `T.label` as `id` and `label`, so a property called `id`
   replaced the record id, an edge's endpoints disagreed with the edge, and keys that print alike (the Integer 1 and the Long 1)
