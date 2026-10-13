@@ -81,7 +81,7 @@ class Issue7511SecurityEntryCapabilityGateTest {
     assertThat(PeerCapabilities.LOCAL).containsExactlyInAnyOrder(PeerCapabilities.SCHEMA_DELTA,
         PeerCapabilities.SECURITY_GROUPS_ENTRY, PeerCapabilities.SECURITY_API_TOKENS_ENTRY,
         PeerCapabilities.SECURITY_PRECONDITION, PeerCapabilities.TX_PREPARED_AT_INDEX,
-        PeerCapabilities.SCHEMA_FILE_RENAMES);
+        PeerCapabilities.SCHEMA_FILE_RENAMES, PeerCapabilities.DATABASE_CONFIGURATION_ENTRY);
   }
 
   // -------------------------------------------------------------------------------------------------------
@@ -108,7 +108,8 @@ class Issue7511SecurityEntryCapabilityGateTest {
   @Test
   void everyEntryTypeThatPredatesTheMechanismIsDeliberatelyUngated() {
     for (final RaftLogEntryType type : RaftLogEntryType.values()) {
-      if (type == RaftLogEntryType.SECURITY_GROUPS_ENTRY || type == RaftLogEntryType.SECURITY_API_TOKENS_ENTRY)
+      if (type == RaftLogEntryType.SECURITY_GROUPS_ENTRY || type == RaftLogEntryType.SECURITY_API_TOKENS_ENTRY
+          || type == RaftLogEntryType.DATABASE_CONFIGURATION_ENTRY)
         continue;
       assertThat(SecurityEntryCapabilityGate.capabilityFor(type))
           .as("%s (id %d) predates the capability mechanism and must not be gated", type, type.getId())

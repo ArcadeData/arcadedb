@@ -106,12 +106,19 @@ public final class PeerCapabilities {
   public static final String SCHEMA_FILE_RENAMES = "schema-file-renames";
 
   /**
+   * This node decodes {@code DATABASE_CONFIGURATION_ENTRY}, the Raft log entry type (id 9) that replicates the
+   * settings changed in the {@code configuration.json} of one database (issue #9763). Same contract as {@link #SECURITY_GROUPS_ENTRY}: it
+   * guards the type byte itself, so a cluster with a peer that lacks it refuses the change instead of degrading it.
+   */
+  public static final String DATABASE_CONFIGURATION_ENTRY = "database-configuration-entry";
+
+  /**
    * Everything this build can decode. Immutable, and deliberately a whitelist written out by hand rather than
    * derived from anything: a capability is a promise about the wire format, and the only thing that can make it
    * true is a human having checked that the decoder is present.
    */
   public static final Set<String> LOCAL = Set.of(SCHEMA_DELTA, SECURITY_PRECONDITION, SECURITY_GROUPS_ENTRY,
-      SECURITY_API_TOKENS_ENTRY, TX_PREPARED_AT_INDEX, SCHEMA_FILE_RENAMES);
+      SECURITY_API_TOKENS_ENTRY, TX_PREPARED_AT_INDEX, SCHEMA_FILE_RENAMES, DATABASE_CONFIGURATION_ENTRY);
 
   private PeerCapabilities() {
     // utility class
