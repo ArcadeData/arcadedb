@@ -95,6 +95,11 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
 
   // Optional pushed-down filter predicate (evaluated via column store before emitting)
   private BooleanExpression pushedFilter;
+  // The pushed filter split by the hop that binds what each conjunct reads (issue #9938): [d] is decided once the source
+  // and the first d hop targets are bound, [n] on the complete path. Null when every conjunct waits for the complete path.
+  private BooleanExpression[] filterAtDepth;
+  // What a complete path is checked against: the last entry of filterAtDepth, or the whole pushed filter
+  private BooleanExpression pathFilter;
 
   // Fused aggregation: when set, the parallel DFS counts per group internally
   // instead of producing individual rows. Bypasses GroupByAggregationStep entirely.
@@ -141,7 +146,27 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
    * allocations for rows that will be immediately discarded.
    */
   public void setPushedFilter(final BooleanExpression filter) {
+    setPushedFilter(filter, null);
+  }
+
+  /**
+   * Pushes a WHERE filter into the fused chain, split by the hop that binds the variables each conjunct reads: entry
+   * {@code d} of {@code filterAtDepth} is evaluated as soon as the source and the targets of the first {@code d} hops are
+   * bound, so a partial path that fails it is not walked any deeper (issue #9938), and the last entry on the complete path.
+   * The conjuncts of all entries together must be {@code filter}, which the sources the view does not map are checked
+   * against.
+   *
+   * @param filterAtDepth one entry per depth, {@code chainLength + 1} in all, null entries for the depths with nothing to
+   *                      check, or null to check the whole filter on the complete path
+   */
+  public void setPushedFilter(final BooleanExpression filter, final BooleanExpression[] filterAtDepth) {
+    if (filterAtDepth != null && filterAtDepth.length != hopDirections.length + 1)
+      throw new IllegalArgumentException(
+          "Expected " + (hopDirections.length + 1) + " filter depths for a chain of " + hopDirections.length + " hops, got "
+              + filterAtDepth.length);
     this.pushedFilter = filter;
+    this.filterAtDepth = filterAtDepth;
+    this.pathFilter = filterAtDepth != null ? filterAtDepth[hopDirections.length] : filter;
   }
 
   /**
@@ -242,7 +267,7 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
     for (int t = 0; t < walkerCount; t++) {
       final int start = walkerCount == 1 ? 0 : Math.min(t * chunkSize, totalSources);
       final int end = walkerCount == 1 ? totalSources : Math.min(start + chunkSize, totalSources);
-      walkers[t] = new ChainWalker(sourceNodeIds, start, end, hopViews, trackedTypes, chainLength, guard);
+      walkers[t] = new ChainWalker(sourceNodeIds, start, end, hopViews, trackedTypes, chainLength, guard, db, context);
     }
     return new StreamingRows(walkers, outputNames, db, context, unmappedRows, nodeIdSpace);
   }
@@ -619,7 +644,7 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
     // Pre-allocate reusable filter objects ONCE per thread (zero per-path allocation)
     final Object[] filterValues;
     final GAVResult filterResult;
-    if (pushedFilter != null) {
+    if (pathFilter != null) {
       final String[] filterNames = buildOutputNames();
       filterValues = new Object[filterNames.length];
       filterResult = new GAVResult(filterNames, filterValues);
@@ -629,7 +654,7 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
     }
 
     final long[] total = new long[1];
-    new ChainWalker(sourceNodeIds, start, end, hopViews, trackedTypes, chainLength, guard)
+    new ChainWalker(sourceNodeIds, start, end, hopViews, trackedTypes, chainLength, guard, db, context)
         .walk(Long.MAX_VALUE, stackNodeId -> {
           // Evaluate pushed filter using reusable GAVResult — only nodeId updated per path
           if (filterResult != null) {
@@ -639,7 +664,7 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
             for (int i = 0; i < hopTargetVariables.length; i++)
               if (hopTargetVariables[i] != null && materializeVariable[i + 1])
                 filterValues[filterSlot++] = makeReference(stackNodeId[i + 1], db);
-            if (!Boolean.TRUE.equals(pushedFilter.evaluate(filterResult, context)))
+            if (!Boolean.TRUE.equals(pathFilter.evaluate(filterResult, context)))
               return;
           }
 
@@ -687,6 +712,8 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
     // Undirected untracked hops: how many entries equal to the hop's own vertex were met, to take each self-loop once
     private final int[]            selfLoopEntries;
     private final TrackedAdjacency tracked;
+    // The conjuncts decided on a partial path, null when there are none (issue #9938)
+    private final PartialPathFilter partialFilter;
     private       int              next;
     private       int              depth = -1;
     // One supernode's DFS can dwarf the whole chunk, so the per-source check alone would leave the abort
@@ -695,7 +722,8 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
     private       int              steps;
 
     private ChainWalker(final int[] sourceNodeIds, final int start, final int end, final NeighborView[] hopViews,
-        final TrackedTypes trackedTypes, final int chainLength, final WorkGuard guard) {
+        final TrackedTypes trackedTypes, final int chainLength, final WorkGuard guard, final Database database,
+        final CommandContext context) {
       this.sourceNodeIds = sourceNodeIds;
       this.next = start;
       this.end = end;
@@ -708,6 +736,7 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
       this.fallbackNeighbors = new int[chainLength][];
       this.selfLoopEntries = new int[chainLength];
       this.tracked = trackedTypes != null ? new TrackedAdjacency(trackedTypes, chainLength) : null;
+      this.partialFilter = filterAtDepth != null ? new PartialPathFilter(database, context) : null;
     }
 
     /**
@@ -726,6 +755,8 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
           guard.check();
           final int sourceNodeId = sourceNodeIds[next++];
           stackNodeId[0] = sourceNodeId;
+          if (partialFilter != null && !partialFilter.accepts(stackNodeId, 0))
+            continue;
           depth = 0;
           initHop(hopViews, fallbackNeighbors, tracked, stackCursor, stackEnd, selfLoopEntries, 0, sourceNodeId);
           continue;
@@ -778,11 +809,59 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
           stackCursor[depth]++;
           if (++paths >= maxPaths)
             return false;
+        } else if (partialFilter != null && !partialFilter.accepts(stackNodeId, depth + 1)) {
+          // The partial path already fails a conjunct: none of its extensions is walked
+          stackCursor[depth]++;
         } else {
           depth++;
           initHop(hopViews, fallbackNeighbors, tracked, stackCursor, stackEnd, selfLoopEntries, depth, neighborId);
         }
       }
+    }
+  }
+
+  /**
+   * Evaluates the conjuncts of the pushed filter a partial path can decide (issue #9938). One per walker, so it reuses its
+   * row: only the slots of the variables bound so far are written, and the conjuncts of a depth read no deeper one. A slot
+   * keeps its vertex while the node under it stays the same, so the siblings of a partial path allocate one vertex each.
+   */
+  private final class PartialPathFilter {
+    private final Database       database;
+    private final CommandContext context;
+    private final Object[]       values;
+    private final GAVResult      row;
+    // per stack position: its slot in the row (-1 when the variable is not materialized), and the node the slot holds
+    private final int[]          slotOf;
+    private final int[]          nodeInSlot;
+
+    private PartialPathFilter(final Database database, final CommandContext context) {
+      this.database = database;
+      this.context = context;
+      final String[] names = buildOutputNames();
+      this.values = new Object[names.length];
+      this.row = new GAVResult(names, values);
+      this.slotOf = new int[hopTargetVariables.length + 1];
+      int slot = 0;
+      slotOf[0] = materializeVariable[0] ? slot++ : -1;
+      for (int i = 0; i < hopTargetVariables.length; i++)
+        slotOf[i + 1] = hopTargetVariables[i] != null && materializeVariable[i + 1] ? slot++ : -1;
+      this.nodeInSlot = new int[slotOf.length];
+      Arrays.fill(nodeInSlot, -1);
+    }
+
+    /** Whether the path {@code stackNodeId[0..depth]} passes the conjuncts decided at {@code depth}. */
+    private boolean accepts(final int[] stackNodeId, final int depth) {
+      final BooleanExpression filter = filterAtDepth[depth];
+      if (filter == null)
+        return true;
+      for (int i = 0; i <= depth; i++) {
+        final int slot = slotOf[i];
+        if (slot >= 0 && nodeInSlot[i] != stackNodeId[i]) {
+          values[slot] = makeReference(stackNodeId[i], database);
+          nodeInSlot[i] = stackNodeId[i];
+        }
+      }
+      return Boolean.TRUE.equals(filter.evaluate(row, context));
     }
   }
 
@@ -1002,8 +1081,8 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
     final GAVResult result = new GAVResult(outputNames, values);
 
     // Evaluate pushed filter (column store access) before adding to output
-    if (pushedFilter != null)
-      if (!Boolean.TRUE.equals(pushedFilter.evaluate(result, context)))
+    if (pathFilter != null)
+      if (!Boolean.TRUE.equals(pathFilter.evaluate(result, context)))
         return;
 
     output.add(result);
@@ -1067,6 +1146,13 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
     sb.append(", hops=").append(hopDirections.length);
     if (hopTracked != null)
       sb.append(", unique relationships");
+    if (filterAtDepth != null) {
+      for (int d = 0; d < filterAtDepth.length; d++)
+        if (filterAtDepth[d] != null)
+          sb.append(", filter on (").append(d == 0 ? sourceVariable : hopTargetVariables[d - 1]).append(")=")
+              .append(filterAtDepth[d].getText());
+    } else if (pushedFilter != null)
+      sb.append(", filter=").append(pushedFilter.getText());
     if (groupKeyVariables != null) {
       sb.append(", fused count(*) AS ").append(countOutputName);
       if (groupKeyVariables.length > 0)
