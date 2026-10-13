@@ -249,6 +249,7 @@ class Issue8537ExpandWithoutEdgeLoadTest {
    */
   @Test
   void anchorPredicateKeepsCypherEqualitySemantics() {
+    // isPositive(): the anchor must reach some paths, or matching the brute force would hold for a predicate matching nothing
     assertThat(count("MATCH (p:Person)-[:KNOWS]->(:Person)-[:KNOWS]->(x:Person) WHERE p.id = $id RETURN count(*) AS n", "1"))
         .isEqualTo(bruteForce2(1)).isPositive();
     assertThat(count("MATCH (p:Person)-[:KNOWS]->(:Person)-[:KNOWS]->(x:Person) WHERE p.id = $id RETURN count(*) AS n", "one")).isZero();

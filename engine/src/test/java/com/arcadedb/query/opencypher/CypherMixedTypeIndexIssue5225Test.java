@@ -33,13 +33,15 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Regression test for issue #5225. Creating a Cypher index on an initially-untyped property infers and
  * declares the property's type from the existing data ({@code INTEGER} here, see issue #4222). A later
- * {@code SET n.val = "1"} is therefore coerced to the integer {@code 1}. Since #9794 a declaration defines the text form
- * of its values in both directions, so {@code WHERE n.val = "1"} finds the node the same text was written into, on the
- * index path and on the scan path alike (#9935). The bug
- * was that a <em>range</em> predicate against a String bound (e.g. {@code WHERE n.val < "zzz"}) crashed
- * the index path with an internal {@code ClassCastException} / {@code NumberFormatException}, while the
- * same predicate without an index completed. Cross-type comparisons are undefined (null) in Cypher, so
- * the range must complete and return the same result as the full-scan path, never throw.
+ * {@code SET n.val = "1"} is therefore coerced to the integer {@code 1}. The bug was that a <em>range</em> predicate
+ * against a String bound (e.g. {@code WHERE n.val < "zzz"}) crashed the index path with an internal
+ * {@code ClassCastException} / {@code NumberFormatException}, while the same predicate without an index completed.
+ * Cross-type comparisons are undefined (null) in Cypher, so the range must complete and return the same result as the
+ * full-scan path, never throw.
+ * <p>
+ * Equality is different: since #9794 a declaration defines the text form of its values in both directions, so
+ * {@code WHERE n.val = "1"} finds the node the same text was written into, on the index path and on the scan path alike
+ * (#9935).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
