@@ -24,6 +24,7 @@ import com.arcadedb.schema.EdgeType;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
 
@@ -80,14 +81,19 @@ public class MutableLightEdge extends MutableEdge implements LightEdge {
 
   @Override
   public Map<String, Object> toMap(final boolean includeMetadata) {
-    return includeMetadata ? super.toMap(true) : Collections.emptyMap();
+    return includeMetadata ? lightEdgeMetadata() : new LinkedHashMap<>();
   }
 
+  /**
+   * Same answer as {@link ImmutableLightEdge#toJSON(boolean)}, so the form of an edge does not depend on whether the caller
+   * created it or read it (issue #9839): metadata, {@code @rid} included, exactly when it is asked for. With
+   * {@code includeMetadata=false} that is {@code {}}, as for any record-backed edge without properties: the
+   * {@link com.arcadedb.database.Document#toJSON(boolean)} contract names the endpoints as metadata, and a caller that wants
+   * to tell edges apart asks for it.
+   */
   @Override
   public JSONObject toJSON(final boolean includeMetadata) {
-    // Endpoints are the only content a lightweight edge has, and they are also its identity, so emit them
-    // unconditionally: a caller that receives {} has no way to tell which edge it was handed.
-    return new JSONObject().put("@type", getTypeName()).put("@cat", "e").put("@out", out).put("@in", in);
+    return includeMetadata ? new JSONObject(lightEdgeMetadata()) : new JSONObject();
   }
 
   @Override
