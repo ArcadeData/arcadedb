@@ -192,7 +192,8 @@ class Issue6106StaleVectorGraphTest extends TestHelper {
 
   /**
    * The one case that still rides on the node count is a graph with no manifest at all - written by a version older
-   * than this mechanism, or restored from a backup, which does not carry the sidecar. It is reused, because the
+   * than this mechanism, or restored from a backup taken before #9888 (a backup now archives the graph empty rather
+   * than without its sidecar, so the restored index builds its own). It is reused, because the
    * alternative is a full rebuild of every existing index on the first open after an upgrade, and the reuse is
    * counted so an operator can ask the stats rather than grep the log for the WARNING.
    */
