@@ -273,6 +273,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   static final         long                                              UNPUBLISHED_RELEASE_LOG_THROTTLE_NS = TimeUnit.MINUTES.toNanos(1);
   private final        AtomicLong                                        lastUnpublishedReleaseLog = new AtomicLong(Long.MIN_VALUE);
   private final        AtomicLong                                        unpublishedReleasesSinceLog = new AtomicLong();
+  /** Orders the configuration changes this node submits (issue #9763), see {@link #saveConfiguration()}. */
+  private final        Object                                            configurationReplicationLock = new Object();
 
   /**
    * When {@link #logSchemaDeltaWithheld} last reported that a peer is holding deltas back. Plain volatile rather
@@ -4411,9 +4413,54 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     bucketDeltasOut.add(Collections.emptyMap());
   }
 
+  /**
+   * Replicates the settings changed in this database's {@code configuration.json} to every node instead of writing
+   * them here only (issue #9763).
+   * <p>
+   * {@code ALTER DATABASE} and the "set database setting" command change the in-memory configuration and then call
+   * this. It used to proxy straight to {@link LocalDatabase#saveConfiguration()}: the setting was in force, and on
+   * disk, on the node that ran the command alone, so the followers - and whichever of them became leader after a
+   * failover - kept the previous value. {@code arcadedb.dateImplementation} made that a wrong read, not only a
+   * tuning drift. Every DATABASE-scope setting changed this way is cluster-wide.
+   * <p>
+   * What is shipped is the difference between memory and this node's {@code configuration.json}
+   * ({@link LocalDatabase#pendingConfigurationChanges()}), and every node, the originator included, applies it on top
+   * of its own configuration. Not the whole document: one composed from this node's view would overwrite, cluster-wide,
+   * a change another node committed that this one had not applied yet. The difference is computed and submitted under
+   * a lock, so two changes made on this node are submitted in order. Refused before anything is submitted when a peer
+   * cannot decode the entry yet (the same interlock as the replicated security documents), or when this node is no
+   * longer a member of the cluster and would never apply it; the caller then undoes its in-memory change.
+   */
   @Override
   public void saveConfiguration() throws IOException {
-    proxied.saveConfiguration();
+    final RaftHAServer raft = raftHAServer;
+    if (raft == null) {
+      proxied.saveConfiguration();
+      return;
+    }
+
+    refuseWhileRemovedFromConfiguration("change the database configuration");
+    SecurityEntryCapabilityGate.requireEveryPeerCanDecode(server, raft, RaftLogEntryType.DATABASE_CONFIGURATION_ENTRY,
+        "configuration of database '" + getName() + "'");
+
+    final long committedLogIndex;
+    synchronized (configurationReplicationLock) {
+      final String changes = proxied.pendingConfigurationChanges();
+      if (changes == null)
+        // Nothing this node holds that its file does not: the value set was already the stored one
+        return;
+      committedLogIndex = RaftHAServer.requireTransactionBroker(raft).replicateDatabaseConfiguration(getName(), changes);
+    }
+    // The apply on THIS node is what writes the file here too, so the caller reads its own change back from disk once
+    // this returns. Lenient: the entry is committed cluster-wide whatever the wait says, so a failure of the wait itself
+    // must not reach the caller, which would undo a committed change on this node alone.
+    try {
+      raft.waitForAppliedIndex(getName(), committedLogIndex);
+    } catch (final RuntimeException e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "The configuration change of database '%s' committed at index %d, but waiting for it to apply on this node "
+              + "failed: %s", getName(), committedLogIndex, e.getMessage());
+    }
   }
 
   @Override

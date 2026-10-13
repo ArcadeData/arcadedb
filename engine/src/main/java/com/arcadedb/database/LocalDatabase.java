@@ -105,6 +105,9 @@ import com.arcadedb.schema.VertexType;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityManager;
 import com.arcadedb.serializer.BinarySerializer;
+import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONException;
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.CollectionUtils;
 import com.arcadedb.utility.CoarseClock;
 import com.arcadedb.utility.FileUtils;
@@ -253,6 +256,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   private final      CypherPlanCache                           cypherPlanCache;
   private final      GraphStatisticsCache                      graphStatisticsCache      = new GraphStatisticsCache();
   private final      File                                      configurationFile;
+  /** Serializes the writers of {@link #configurationFile} (issue #9763: the HA apply read-modify-writes it). */
+  private final      Object                                    configurationFileLock     = new Object();
   // VOLATILE: the HA wrap installs the wrapper from the plugin's thread, and handles resolved before it
   // (ServerDatabase.commit(), issue #8282) read it from connection threads with no lock in common
   private volatile   DatabaseInternal                          wrappedDatabaseInstance   = this;
@@ -2950,7 +2955,131 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    * configuration files cannot tolerate - it reads the file by name, with no lock excluding this writer.
    */
   public void saveConfiguration() throws IOException {
-    FileUtils.atomicWriteFile(configurationFile, configuration.toJSON());
+    synchronized (configurationFileLock) {
+      FileUtils.atomicWriteFile(configurationFile, configuration.toJSON());
+    }
+  }
+
+  /**
+   * The settings this database holds in memory that its {@code configuration.json} does not hold yet, as a document
+   * {@link #applyConfigurationChanges(String)} takes: {@code {"configuration": {changed settings}, "removed": [keys]}},
+   * keys without the {@code arcadedb.} prefix as in the file. {@code null} when memory and file agree.
+   * <p>
+   * Issue #9763: under Raft HA this is what {@code ALTER DATABASE} replicates. Only the changed settings, never the
+   * whole document: a node composing a whole document from its own view would overwrite, cluster-wide, a change
+   * another node committed that it had not applied yet, and a value a node holds in its own file only would be lost
+   * on every other change.
+   */
+  public String pendingConfigurationChanges() throws IOException {
+    final JSONObject saved = readSavedConfiguration().getJSONObject("configuration", new JSONObject());
+    final JSONObject current = new JSONObject(configuration.toJSON()).getJSONObject("configuration", new JSONObject());
+
+    final JSONObject changed = new JSONObject();
+    for (final String key : current.keySet()) {
+      final Object value = current.get(key);
+      if (!saved.has(key) || !String.valueOf(saved.get(key)).equals(String.valueOf(value)))
+        changed.put(key, value);
+    }
+    final JSONArray removed = new JSONArray();
+    for (final String key : saved.keySet())
+      if (!current.has(key))
+        removed.put(key);
+
+    if (changed.keySet().isEmpty() && removed.length() == 0)
+      return null;
+    return new JSONObject().put("configuration", changed).put("removed", removed).toString();
+  }
+
+  /**
+   * Applies a document {@link #pendingConfigurationChanges()} produced, in memory with the per-database effects, and
+   * to {@code configuration.json} (issue #9763). Every setting the document does not name keeps its value, in memory
+   * and in the file. The file is updated from its own content, not from memory, so a change made on this node that
+   * is still on its way through the replication is not written ahead of it.
+   */
+  public void applyConfigurationChanges(final String changesJson) throws IOException {
+    final JSONObject changes = new JSONObject(changesJson);
+    final JSONObject changed = changes.getJSONObject("configuration", new JSONObject());
+    final JSONArray removed = changes.getJSONArray("removed", new JSONArray());
+
+    final ContextConfiguration incoming = new ContextConfiguration();
+    incoming.fromJSON(new JSONObject().put("configuration", changed).toString());
+    configuration.merge(incoming);
+    for (int i = 0; i < removed.length(); i++)
+      configuration.setValue(GlobalConfiguration.PREFIX + removed.getString(i), null);
+    configurationChanged();
+
+    // Read-modify-write, so under the lock every writer of the file takes
+    synchronized (configurationFileLock) {
+      final JSONObject saved = readSavedConfiguration();
+      final JSONObject savedSettings = saved.getJSONObject("configuration", new JSONObject());
+      for (final String key : changed.keySet())
+        savedSettings.put(key, changed.get(key));
+      for (int i = 0; i < removed.length(); i++)
+        savedSettings.remove(removed.getString(i));
+      saved.put("configuration", savedSettings);
+      FileUtils.atomicWriteFile(configurationFile, saved.toString());
+    }
+  }
+
+  /**
+   * The {@code configuration.json} on disk, or an empty document when there is none yet. A file that is not valid JSON
+   * counts as empty, with a warning: what it held is unreadable anyway, and refusing would fail every replicated change
+   * on this node instead of letting the next one write a valid file.
+   */
+  private JSONObject readSavedConfiguration() throws IOException {
+    if (!configurationFile.exists())
+      return new JSONObject();
+    final String content = FileUtils.readFileAsString(configurationFile);
+    if (content.isBlank())
+      return new JSONObject();
+    try {
+      return new JSONObject(content);
+    } catch (final JSONException e) {
+      LogManager.instance().log(this, Level.WARNING, "Database configuration file '%s' is not valid JSON, treated as empty: %s",
+          configurationFile, e.getMessage());
+      return new JSONObject();
+    }
+  }
+
+  /** Re-derives what {@link #open()} derives from the configuration, after it changed in memory (issue #9763). */
+  private void configurationChanged() {
+    serializer.setDateImplementation(configuration.getValue(GlobalConfiguration.DATE_IMPLEMENTATION));
+    serializer.setDateTimeImplementation(configuration.getValue(GlobalConfiguration.DATE_TIME_IMPLEMENTATION));
+
+    statementCache.clear();
+    cypherStatementCache.clear();
+  }
+
+  /**
+   * Puts ONE setting back to {@code previousValue} ({@code null}: not set, so it falls back to the default) after a
+   * change to it could not be saved, side effects included (issue #9763). Not when {@code configuration.json} already
+   * holds the value in force: under HA a concurrent change made on this node may have shipped it in its own entry,
+   * which committed, and undoing it here would leave this node alone on the previous value. Every other setting is
+   * left untouched, so
+   * a change to another setting that lands meanwhile, such as a replicated configuration entry, is kept: the put is
+   * one atomic map operation, with no snapshot of the rest of the configuration taken or written back.
+   */
+  public void restoreSetting(final String key, final Object previousValue) {
+    if (isSaved(key))
+      // The value in force already reached configuration.json: another save shipped it, so it is committed and stays
+      return;
+    configuration.setValue(key, previousValue);
+    configurationChanged();
+  }
+
+  /** Whether {@code configuration.json} holds the value {@code key} has in memory. Unreadable file: no. */
+  private boolean isSaved(final String key) {
+    final String fileKey = key.startsWith(GlobalConfiguration.PREFIX) ? key.substring(GlobalConfiguration.PREFIX.length()) : key;
+    final JSONObject saved;
+    try {
+      saved = readSavedConfiguration().getJSONObject("configuration", new JSONObject());
+    } catch (final IOException e) {
+      return false;
+    }
+    final JSONObject current = new JSONObject(configuration.toJSON()).getJSONObject("configuration", new JSONObject());
+    if (!current.has(fileKey))
+      return !saved.has(fileKey);
+    return saved.has(fileKey) && String.valueOf(saved.get(fileKey)).equals(String.valueOf(current.get(fileKey)));
   }
 
   /**

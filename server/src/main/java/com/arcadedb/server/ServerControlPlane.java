@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.MaintenanceCoordinator;
 import com.arcadedb.engine.MaintenanceCoordinator.Operation;
@@ -29,6 +30,8 @@ import com.arcadedb.engine.OperationProgress;
 import com.arcadedb.engine.OperationProgressRegistry;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.DatabaseOperationInProgressException;
+import com.arcadedb.exception.TransactionCommittedRemotelyException;
+import com.arcadedb.exception.TransactionOutcomeUnknownException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.RunningQuery;
 import com.arcadedb.serializer.json.JSONArray;
@@ -1180,8 +1183,25 @@ public class ServerControlPlane {
     requireDatabaseName(databaseName);
 
     final DatabaseInternal database = server.getDatabase(databaseName);
+    // Under Raft HA the save replicates the configuration and can be refused or fail to commit: the setting must not
+    // then stay in force on this node alone (issue #9763), so the value it replaced is put back. Only that setting, so
+    // a change to another one that lands meanwhile is kept.
+    final String storedKey = storedKey(key);
+    final Object previousValue = database.getConfiguration().hasValue(storedKey) ?
+        database.getConfiguration().getValue(storedKey, null) :
+        null;
     applySetting(database.getConfiguration(), key, value);
-    database.saveConfiguration();
+    try {
+      database.saveConfiguration();
+    } catch (final TransactionCommittedRemotelyException | TransactionOutcomeUnknownException e) {
+      // Committed cluster-wide, or possibly: every node, this one included, applies the change if it commits, so undoing
+      // it here would leave this node alone on the previous value (issue #9904)
+      throw e;
+    } catch (final IOException | RuntimeException e) {
+      if (database.getEmbedded() instanceof LocalDatabase local)
+        local.restoreSetting(storedKey, previousValue);
+      throw e;
+    }
   }
 
   /**
@@ -1234,6 +1254,13 @@ public class ServerControlPlane {
    * all, but they go through the same stripping and coercion so a declared setting accepts and refuses the same
    * values on both transports.
    */
+  /** The key {@link #applySetting} stores {@code rawKey} under: the declared one for a known setting. */
+  private static String storedKey(final String rawKey) {
+    final String key = FileUtils.getStringContent(rawKey.trim());
+    final GlobalConfiguration setting = GlobalConfiguration.findByKey(key);
+    return setting != null ? setting.getKey() : key;
+  }
+
   public static void applySetting(final ContextConfiguration configuration, final String rawKey, final String rawValue) {
     final String key = FileUtils.getStringContent(rawKey.trim());
     final String value = FileUtils.getStringContent(rawValue.trim());
