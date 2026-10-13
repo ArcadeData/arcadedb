@@ -62,6 +62,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.query.RunningQuery;
+import com.arcadedb.query.RunningQueryRegistry;
 import com.arcadedb.query.sql.executor.QueryStatistics;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -2813,9 +2814,27 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     // cache the first-chunk effective options to validate consistency
     final AtomicReference<InsertOptions> firstOptsRef = new AtomicReference<>();
 
+    // Issue #9875: listed by "list queries" from the first chunk to the end of the stream, and stopped by "terminate query"
+    final StreamingLoadEntry entry = new StreamingLoadEntry(runningQueries(), "InsertStream");
+    // Ends a terminated load, on a thread of the call's own: what the mode can still retract is retracted, the client is
+    // told, and the entry goes. Once: whatever runs it next finds no context left
+    final Runnable endTerminated = () -> {
+      final InsertContext ctx = ctxRef.getAndSet(null);
+      if (ctx != null)
+        retractTerminatedInsert(ctx, extTxCtxRef.get(), entry);
+      out.onError(mapError(entry.terminated(terminatedInsertOutcome(firstOptsRef.get(), extTxCtxRef.get() != null)), "insertStream"));
+      entry.close();
+    };
+
     call.setOnCancelHandler(() -> {
       cancelled.set(true);
       out.markTerminated();
+    });
+    // A load terminated between two chunks was closed by the termination listener: this is where it is cleaned up
+    setOnCloseHandler(call, () -> {
+      if (entry.isTerminated())
+        endTerminated.run();
+      entry.close();
     });
 
     // Pull the very first inbound message
@@ -2830,6 +2849,12 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           return;
         }
 
+        // A chunk that arrived after the load was terminated: nothing more is written
+        if (entry.isTerminated()) {
+          endTerminated.run();
+          return;
+        }
+
         // Issue #4806: a previous chunk failed at the transaction level and rolled the transaction
         // back. Do not insert further rows into the broken transaction; just keep draining the
         // remaining inbound chunks so the stream still reaches onCompleted and delivers the summary.
@@ -2839,6 +2864,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           return;
         }
 
+        // Bound for the chunk: the rows' checks and the commits it attempts - on this thread or on the client
+        // transaction's - obey a termination, and the termination listener leaves a running chunk alone
+        final StreamingLoadEntry.Bound bound = entry.enter();
         try {
 
           InsertContext ctx = ctxRef.get();
@@ -2898,6 +2926,19 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
             firstOptsRef.set(effective);
 
+            // Once the database has authenticated the caller: the entry names who runs the load, and where
+            final InsertOptions listed = effective;
+            entry.open(ctx.db.getName(), resolvedUsername(c.hasCredentials() ? c.getCredentials() : effective.getCredentials()),
+                txCtx != null ? txCtx.txId : null, () -> insertLoadText("InsertStream", listed, null),
+                () -> entry.runIfIdle(() -> {
+                  // Between two chunks: the call is closed now, and the close handler retracts on the call's thread. A
+                  // commit the client sends meanwhile on its own transaction is refused from here on
+                  final TransactionContext ext = extTxCtxRef.get();
+                  if (ext != null)
+                    ext.terminated = true;
+                  out.onError(mapError(entry.terminated(terminatedInsertOutcome(listed, ext != null)), "insertStream"));
+                }));
+
             LogManager.instance().log(this, Level.FINE, "insertStream: initialized context with options:\n%s",
                 effective);
           } else {
@@ -2947,6 +2988,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             cts = insertRows(runCtx, c.getRowsList().iterator());
           totals.add(cts);
         } catch (Exception e) {
+          // Terminated (issue #9875): not a failure of the chunk to report in the summary, but the end of the load,
+          // which the finally below carries out
+          if (entry.isTerminated())
+            return;
           // Issue #4806: per-row errors are handled row-by-row inside insertRows, so an exception
           // reaching here is a transaction-level failure (typically a mid-stream PER_BATCH/PER_ROW
           // commit that has already rolled the transaction back, or a structural error such as an
@@ -2987,30 +3032,45 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             totals.updated = 0;
           }
         } finally {
-          // Issue #5041 (TX-4): detach the transaction from this (shared) pool thread before
-          // returning, so it is not left parked in the thread-local DatabaseContext between
-          // callbacks where an unrelated request reusing the thread would roll it back. onNext /
-          // onCompleted re-bind it via bindToCurrentThread().
-          final InsertContext parkedCtx = ctxRef.get();
-          if (parkedCtx != null)
-            parkedCtx.unbindFromCurrentThread();
-          if (!cancelled.get())
-            call.request(1);
+          bound.close();
+          if (entry.isTerminated())
+            // Seen by the chunk, or requested while it ran: the load ends here, on the thread its transaction is bound to
+            endTerminated.run();
+          else {
+            // Issue #5041 (TX-4): detach the transaction from this (shared) pool thread before
+            // returning, so it is not left parked in the thread-local DatabaseContext between
+            // callbacks where an unrelated request reusing the thread would roll it back. onNext /
+            // onCompleted re-bind it via bindToCurrentThread().
+            final InsertContext parkedCtx = ctxRef.get();
+            if (parkedCtx != null)
+              parkedCtx.unbindFromCurrentThread();
+            if (!cancelled.get())
+              call.request(1);
+          }
         }
       }
 
       @Override
       public void onError(Throwable t) {
         out.markTerminated();
-        InsertContext ctx = ctxRef.get();
-        if (ctx != null)
-          ctx.closeQuietly();
+        if (entry.isTerminated())
+          endTerminated.run();
+        else {
+          InsertContext ctx = ctxRef.get();
+          if (ctx != null)
+            ctx.closeQuietly();
+        }
+        entry.close();
       }
 
       @Override
       public void onCompleted() {
 
+        final StreamingLoadEntry.Bound bound = entry.enter();
         try {
+          // Terminated: nothing is committed, the finally below ends the load
+          if (entry.isTerminated())
+            return;
 
           InsertContext ctx = ctxRef.get();
 
@@ -3043,6 +3103,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
               ctx.bindToCurrentThread();
               ctx.flushCommit(true); // commit if not validate-only
             } catch (Exception commitEx) {
+              // A commit refused because the load was terminated is the end of the load, not a commit failure to report
+              if (entry.isTerminated())
+                return;
               recordCommitException(totals, commitEx);
             }
           }
@@ -3056,14 +3119,97 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             out.onCompleted();
           }
         } catch (Exception e) {
-          out.onError(mapError(e, "insertStream"));
+          if (!entry.isTerminated())
+            out.onError(mapError(e, "insertStream"));
         } finally {
+          bound.close();
+          // A commit that succeeded before the termination was seen stands, and the client has its summary already
+          if (entry.isTerminated())
+            endTerminated.run();
           InsertContext ctx = ctxRef.get();
           if (ctx != null)
             ctx.closeQuietly();
+          // LAST: THE ENTRY LEAVING THE LIST IS THE PROOF THE WORK IS OVER
+          entry.close();
         }
       }
     };
+  }
+
+  /**
+   * Runs {@code handler} once the server closed the call and the client saw it (issue #9875). gRPC's own observer always
+   * supports it; an observer that does not - a test double built on the abstract class - leaves the stream to its other
+   * ends, onCompleted and onError, which close the running-query entry as well.
+   */
+  private static void setOnCloseHandler(final ServerCallStreamObserver<?> call, final Runnable handler) {
+    try {
+      call.setOnCloseHandler(handler);
+    } catch (final UnsupportedOperationException e) {
+      LogManager.instance().log(ArcadeDbGrpcService.class, Level.FINE, "Call observer %s takes no close handler", call.getClass());
+    }
+  }
+
+  /** The server's running statements, or {@code null} when this service runs without a server (embedded tests). */
+  private RunningQueryRegistry runningQueries() {
+    return arcadeServer != null ? arcadeServer.getRunningQueries() : null;
+  }
+
+  /** What the listing shows for a streamed insert (issue #9875): the RPC, the target type and the transaction mode. */
+  private static String insertLoadText(final String rpc, final InsertOptions options, final String sessionId) {
+    return rpc + (sessionId != null ? " session " + sessionId : "") + " into " + options.getTargetClass() + " ("
+        + (options.getValidateOnly() ? "validate only" : options.getTransactionMode().name().toLowerCase(Locale.ENGLISH)) + ")";
+  }
+
+  /**
+   * What the client of a terminated streamed insert is told became of what it sent (issue #9875), mode by mode - see
+   * {@link #retractTerminatedInsert}.
+   */
+  private static String terminatedInsertOutcome(final InsertOptions options, final boolean externalTransaction) {
+    if (externalTransaction)
+      return "the client transaction it wrote into was rolled back and ended";
+    if (options == null || options.getValidateOnly())
+      return "nothing was written";
+    return switch (options.getTransactionMode()) {
+      case PER_ROW -> "the rows committed before the termination stand, the rest were not applied";
+      case PER_BATCH -> "the batches committed before the termination stand, the open batch was rolled back";
+      default -> "its transaction was rolled back, nothing it sent was committed";
+    };
+  }
+
+  /**
+   * Retracts what a terminated streamed insert can still retract (issue #9875), on a thread of the stream's own: the
+   * transaction it holds is rolled back - the whole load under {@code PER_STREAM} and {@code PER_REQUEST}, the open batch
+   * under {@code PER_BATCH}, nothing under {@code PER_ROW}, whose rows commit one by one - and a client transaction it
+   * wrote into is ended, as a terminated statement's is (issue #9689), so a later commit cannot publish half a load.
+   */
+  private void retractTerminatedInsert(final InsertContext ctx, final TransactionContext extTxCtx,
+      final StreamingLoadEntry entry) {
+    if (ctx.externalTransaction) {
+      endTransactionOfTerminatedLoad(extTxCtx, entry.get());
+      return;
+    }
+    final TransactionMode mode = ctx.opts.getTransactionMode();
+    final boolean wholeLoadRolledBack = ctx.tx != null && !ctx.opts.getValidateOnly()//
+        && (mode == TransactionMode.PER_STREAM || mode == TransactionMode.PER_REQUEST);
+    ctx.closeQuietly();
+    if (wholeLoadRolledBack)
+      entry.setRolledBack();
+  }
+
+  /**
+   * Ends the client transaction a terminated load wrote into, on the transaction's own thread, unless a statement of the
+   * load already ended it there ({@link #submitToActiveTransaction}) or the client did.
+   */
+  private void endTransactionOfTerminatedLoad(final TransactionContext txCtx, final RunningQuery runningQuery) {
+    if (txCtx == null || runningQuery == null || activeTransactions.get(txCtx.txId) != txCtx)
+      return;
+    try {
+      txCtx.executor.submit(() -> endTerminatedTransaction(txCtx, runningQuery)).get();
+    } catch (final RejectedExecutionException | ExecutionException e) {
+      LogManager.instance().log(this, Level.WARNING, "Cannot end the transaction of a terminated load txId=%s", e, txCtx.txId);
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+    }
   }
 
   /**
@@ -3182,9 +3328,33 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     final int[] vertexBatchSize = { GRAPH_BATCH_VERTEX_BUFFER };
     final Boolean[] returnIdMapping = { null };
 
+    // Issue #9875: listed by "list queries" from the first chunk to the end of the stream, and stopped by "terminate query"
+    final StreamingLoadEntry entry = new StreamingLoadEntry(runningQueries(), "GraphBatchLoad");
+    // Ends a terminated load: the batch is dropped like after any other failure - what it flushed stays committed, and
+    // the trailers say how much - and the entry goes. Once: whatever runs it next finds no batch left. Never under a
+    // running chunk (the termination listener runs it only between two), so it reads the stream's state safely
+    final Runnable endTerminated = () -> {
+      errorSent[0] = true;
+      final GraphBatch abandoned = batchRef.getAndSet(null);
+      try {
+        if (abandoned != null)
+          abandoned.abandon();
+        out.onError(graphBatchLoadError(entry.terminated(
+                "what it flushed before the termination stays committed (see the result trailer), the rest was dropped"),
+            partialCommitTrailer(abandoned, counts, tempIdMap, startedAt), ha(), conceal));
+      } finally {
+        entry.close();
+      }
+    };
+
     call.setOnCancelHandler(() -> {
       cancelled.set(true);
       out.markTerminated();
+    });
+    setOnCloseHandler(call, () -> {
+      if (entry.isTerminated())
+        endTerminated.run();
+      entry.close();
     });
     call.request(1);
 
@@ -3194,6 +3364,14 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       public void onNext(final GraphBatchChunk chunk) {
         if (cancelled.get())
           return;
+        // A chunk that arrived after the load was terminated: nothing more is written
+        if (entry.isTerminated()) {
+          endTerminated.run();
+          return;
+        }
+        // Bound for the chunk: the commits of the flushes it triggers obey a termination, and the termination listener
+        // leaves a running chunk alone
+        final StreamingLoadEntry.Bound bound = entry.enter();
         try {
           GraphBatch batch = batchRef.get();
           if (batch == null) {
@@ -3252,10 +3430,16 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
               return;
             }
             batchRef.set(batch);
+
+            // Once the database has authenticated the caller: the entry names who runs the load, and where
+            entry.open(db.getName(), resolvedUsername(chunk.getCredentials()), null, () -> "GraphBatchLoad",
+                () -> entry.runIfIdle(endTerminated));
           }
 
           // Process records in this chunk
           for (final GraphBatchRecord rec : chunk.getRecordsList()) {
+            // Before each record: a terminated load stops here
+            entry.checkNotTerminated();
             if (rec.getKind() == GraphBatchRecord.Kind.EDGE) {
               // Flush remaining vertices on transition to edge phase
               if (!inEdgePhase[0]) {
@@ -3299,6 +3483,12 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           out.onError(graphBatchLoadError(e, trailers, ha(), conceal));
           return;
         } finally {
+          bound.close();
+          // Requested while the chunk ran: the load ends here
+          if (entry.isTerminated())
+            endTerminated.run();
+          else if (errorSent[0])
+            entry.close();
           if (!cancelled.get() && !errorSent[0])
             call.request(1);
         }
@@ -3307,14 +3497,24 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       @Override
       public void onError(final Throwable t) {
         out.markTerminated();
-        closeQuietly(batchRef.getAndSet(null));
+        if (entry.isTerminated())
+          endTerminated.run();
+        else
+          closeQuietly(batchRef.getAndSet(null));
+        entry.close();
       }
 
       @Override
       public void onCompleted() {
-        if (errorSent[0])
+        if (errorSent[0]) {
+          entry.close();
           return;
+        }
+        final StreamingLoadEntry.Bound bound = entry.enter();
         try {
+          // Terminated: the batch is not closed, the finally below drops it
+          if (entry.isTerminated())
+            return;
           final GraphBatch batch = batchRef.get();
           if (batch == null) {
             out.onNext(GraphBatchResult.newBuilder().build());
@@ -3328,6 +3528,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
           // Close batch -> flushes edges, connects incoming edges
           batch.close();
+          // Closed: nothing is left for a termination to drop
+          batchRef.compareAndSet(batch, null);
 
           final GraphBatchResult.Builder result = GraphBatchResult.newBuilder()
               .setVerticesCreated(counts[0])
@@ -3355,7 +3557,13 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           // buffered that the counters must not claim: the batch is asked what it actually flushed.
           final Metadata trailers = partialCommitTrailer(batchRef.get(), counts, tempIdMap, startedAt);
           out.onError(graphBatchLoadError(e, trailers, ha(), conceal));
-          closeQuietly(batchRef.get());
+          closeQuietly(batchRef.getAndSet(null));
+        } finally {
+          bound.close();
+          if (entry.isTerminated())
+            endTerminated.run();
+          // LAST: THE ENTRY LEAVING THE LIST IS THE PROOF THE WORK IS OVER
+          entry.close();
         }
       }
     };
@@ -3483,10 +3691,23 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     final Set<String> undeclaredKeys = new LinkedHashSet<>();
     final Set<String> unreadableValues = new LinkedHashSet<>();
 
+    // Issue #9875: listed by "list queries" from the first chunk to the end of the stream, and stopped by "terminate query"
+    final StreamingLoadEntry entry = new StreamingLoadEntry(runningQueries(), "TimeSeriesWriteStream");
+    // Ends a terminated load. Nothing to retract: every append commits its own shard transactions as it is made
+    final Runnable endTerminated = () -> {
+      failed.set(true);
+      try {
+        out.onError(mapError(entry.terminated("the samples appended before the termination stay written"), "TimeSeriesWriteStream"));
+      } finally {
+        entry.close();
+      }
+    };
+
     call.setOnCancelHandler(() -> {
       cancelled.set(true);
       out.markTerminated();
     });
+    setOnCloseHandler(call, entry::close);
 
     call.request(1);
 
@@ -3496,8 +3717,16 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       public void onNext(final TimeSeriesWriteChunk chunk) {
         if (cancelled.get() || failed.get())
           return;
+        // A chunk that arrived after the load was terminated: nothing more is appended
+        if (entry.isTerminated()) {
+          endTerminated.run();
+          return;
+        }
 
         ProtocolContext.set("grpc");
+        // Bound for the chunk: the commits of its appends obey a termination, and the termination listener leaves a
+        // running chunk alone
+        final StreamingLoadEntry.Bound bound = entry.enter();
         try {
           Database db = dbRef.get();
           if (db == null) {
@@ -3509,8 +3738,13 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             // security lookup on the per-chunk hot path for no gain, since the stream is one authenticated call.
             db = getDatabase(chunk.getDatabase(), chunk.getCredentials());
             dbRef.set(db);
+
+            // Once the database has authenticated the caller: the entry names who runs the load, and where
+            entry.open(db.getName(), resolvedUsername(chunk.getCredentials()), null, () -> "TimeSeriesWriteStream",
+                () -> entry.runIfIdle(endTerminated));
           }
 
+          entry.checkNotTerminated();
           final List<Sample> samples = GrpcTimeSeriesSupport.toSamples(chunk.getPointsList(), chunk.getType(),
               chunk.getPrecision());
           final WriteReport report = TimeSeriesGateway.write((DatabaseInternal) db, samples);
@@ -3537,7 +3771,13 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           failed.set(true);
           out.onError(mapError(e, "TimeSeriesWriteStream"));
         } finally {
+          bound.close();
           ProtocolContext.clear();
+          // Requested while the chunk ran, or the chunk failed: the load is over
+          if (entry.isTerminated())
+            endTerminated.run();
+          else if (failed.get())
+            entry.close();
         }
       }
 
@@ -3546,12 +3786,28 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         cancelled.set(true);
         LogManager.instance().log(this, Level.FINE, "TimeSeriesWriteStream client error: %s", t.getMessage());
         out.markTerminated();
+        entry.close();
       }
 
       @Override
       public void onCompleted() {
-        if (cancelled.get() || failed.get())
+        if (cancelled.get() || failed.get()) {
+          entry.close();
           return;
+        }
+        if (entry.isTerminated()) {
+          endTerminated.run();
+          return;
+        }
+        // The summary is the end of the load: the entry goes after it
+        try {
+          sendTimeSeriesWriteSummary();
+        } finally {
+          entry.close();
+        }
+      }
+
+      private void sendTimeSeriesWriteSummary() {
         out.onNext(TimeSeriesWriteSummary.newBuilder()
             .setReceived(totals[0])
             .setWritten(totals[1])
@@ -4319,6 +4575,26 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     // because isReady() may return false, causing responses to be stuck.
     final Consumer<InsertResponse> sendResponse = out::onNext;
 
+    // Issue #9875: listed by "list queries" from START to the end of the stream, and stopped by "terminate query"
+    final StreamingLoadEntry entry = new StreamingLoadEntry(runningQueries(), "InsertBidirectional");
+
+    // Ends a terminated load on the stream's executor, where its transaction lives: what the mode can still retract is
+    // retracted, the client is told, and the entry goes. Once: whatever runs it next finds no context left
+    final Runnable endTerminated = () -> {
+      final InsertContext ctx = ref.getAndSet(null);
+      final String outcome = terminatedInsertOutcome(ctx != null ? ctx.opts : null, extTxCtxRef.get() != null);
+      try {
+        if (ctx != null) {
+          sessionWatermark.remove(ctx.sessionId);
+          retractTerminatedInsert(ctx, extTxCtxRef.get(), entry);
+        }
+        out.onError(mapError(entry.terminated(outcome), "insertBidirectional"));
+      } finally {
+        entry.close();
+        streamExecutor.shutdown();
+      }
+    };
+
     // Cleanup helper that can be called multiple times safely
     final Runnable cleanupAndShutdown = () -> {
       cancelled.set(true);
@@ -4330,9 +4606,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             sessionWatermark.remove(ctx.sessionId);
             ctx.closeQuietly();
           }
+          entry.close();
         }));
       } catch (RejectedExecutionException ignore) {
         // Executor already shut down - cleanup was already done
+        entry.close();
       }
       streamExecutor.shutdown();
     };
@@ -4354,6 +4632,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           if (cancelled.get())
             return;
 
+          // Bound for the message: the rows' checks and the commits it attempts - on this thread or on the client
+          // transaction's - obey a termination (issue #9875)
+          final StreamingLoadEntry.Bound bound = entry.bind();
           try {
             switch (reqMsg.getMsgCase()) {
 
@@ -4368,6 +4649,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
                     sessionWatermark.remove(existing.sessionId);
                     existing.closeQuietly();
                   }
+                  entry.close();
                   streamExecutor.shutdown();
                   return;
                 }
@@ -4406,6 +4688,18 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
                 ref.set(ctx);
                 extTxCtxRef.set(txCtx);
                 sessionWatermark.put(ctx.sessionId, 0L);
+
+                // Once the database has authenticated the caller: the entry names who runs the load, and where. A
+                // termination is carried out on this executor, after the message running now, which sees it by itself
+                entry.open(ctx.db.getName(), resolvedUsername(startMsg.getCredentials()), txCtx != null ? txCtx.txId : null,
+                    () -> insertLoadText("InsertBidirectional", opts, ctx.sessionId), () -> {
+                      cancelled.set(true);
+                      try {
+                        streamExecutor.submit(grpcContext.wrap(endTerminated));
+                      } catch (final RejectedExecutionException ignore) {
+                        // The stream already ended, and whatever ended it closes the entry
+                      }
+                    });
 
                 sendResponse.accept(
                     InsertResponse.newBuilder().setStarted(Started.newBuilder().setSessionId(ctx.sessionId).build()).build());
@@ -4459,6 +4753,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
                       .build());
 
                 } catch (Exception e) {
+                  // Terminated: not a failed chunk to acknowledge, but the end of the load, which the finally below
+                  // carries out
+                  if (entry.isTerminated())
+                    return;
                   // surface as failed chunk and continue (or switch to resp.onError(...) if you
                   // want to fail fast)
 
@@ -4498,6 +4796,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
                   sessionWatermark.remove(ctx.sessionId);
                   ctx.closeQuietly();
                   ref.set(null);
+                  entry.close();
                   // Issue #5041: COMMIT (success or failure) is terminal - stop the per-stream
                   // executor so its thread does not leak when the client does not half-close.
                   streamExecutor.shutdown();
@@ -4517,9 +4816,15 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
               sessionWatermark.remove(ctx.sessionId);
               ctx.closeQuietly();
             }
+            entry.close();
             // Issue #5041: an unexpected failure is terminal - stop the per-stream executor so its
             // thread does not leak after the error is delivered to the client.
             streamExecutor.shutdown();
+          } finally {
+            bound.close();
+            // Seen by the message, or requested while it ran: the load ends here
+            if (entry.isTerminated())
+              endTerminated.run();
           }
         };
 
@@ -4553,9 +4858,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
               sessionWatermark.remove(ctx.sessionId);
               ctx.closeQuietly();
             }
+            entry.close();
           }));
         } catch (RejectedExecutionException ignore) {
           // Executor already shut down
+          entry.close();
         }
         streamExecutor.shutdown();
       }
@@ -4716,7 +5023,14 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         return c;
       }
 
+    // The entry of the stream the rows come from (issue #9875), bound by the stream on this thread
+    final RunningQuery runningQuery = RunningQuery.current();
+
     while (it.hasNext()) {
+
+      // Before each row: a terminated load stops here, and the stream retracts what its mode can
+      if (runningQuery != null)
+        runningQuery.checkNotTerminated("the insert");
 
       GrpcRecord r = it.next();
 
@@ -4807,6 +5121,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           }
           case CONFLICT_ERROR -> c.err(c.received - 1, "CONFLICT", insertErrorMessage(dup), "");
         }
+      } catch (QueryTerminatedException e) {
+        // Not a failure of the row: the end of the load
+        throw e;
       } catch (Exception e) {
         c.err(c.received - 1, "DB_ERROR", insertErrorMessage(e), "");
       }
