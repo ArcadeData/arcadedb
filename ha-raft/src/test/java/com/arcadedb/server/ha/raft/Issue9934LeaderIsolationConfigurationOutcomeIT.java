@@ -24,6 +24,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.exception.TransactionOutcomeUnknownException;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ServerControlPlane;
 import org.apache.ratis.proto.RaftProtos.LogEntryProto;
@@ -37,6 +38,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.function.BooleanSupplier;
+import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -231,6 +233,8 @@ class Issue9934LeaderIsolationConfigurationOutcomeIT extends BaseRaftHATest {
       final RaftLogEntryCodec.DecodedEntry decoded = RaftLogEntryCodec.decode(data);
       return decoded.type() == RaftLogEntryType.DATABASE_CONFIGURATION_ENTRY && getDatabaseName().equals(decoded.databaseName());
     } catch (final Exception e) {
+      // Not an entry this test intercepts; logged so a codec change that made every entry unreadable is visible
+      LogManager.instance().log(this, Level.FINE, "TEST: cannot decode a Raft log entry: %s", e.getMessage());
       return false;
     }
   }

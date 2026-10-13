@@ -50,11 +50,18 @@ import java.util.logging.Level;
  *       {@link #releaseClientRequests()} lets it through - a request delayed in flight - or refused for good with
  *       {@link #dropClientRequests()}.</li>
  * </ul>
- * Both injection points are JVM-wide, so {@link #close()} must run after the test whatever its outcome.
+ * Both injection points are JVM-wide singletons, so {@link #close()} must run after the test whatever its outcome, and
+ * the tests that use this class must not run concurrently in one JVM (ha-raft ITs run serially in one fork).
+ * {@link #isolate} resets any block a test that did not close its partition left behind.
  */
 final class RaftNetworkPartition implements AutoCloseable {
 
-  /** {@code RaftServerImpl.APPEND_TRANSACTION}, package-private in Ratis: the point a leader appends a client request. */
+  /**
+   * {@code RaftServerImpl.APPEND_TRANSACTION}, package-private in Ratis: the point a leader appends a client request.
+   * Copied as a string, verified against Ratis 3.3.1. Should a Ratis upgrade rename it, nothing is held or dropped any
+   * more, and the tests' waits for {@link #heldClientRequests()} / {@link #droppedClientRequests()} fail rather than
+   * passing for the wrong reason.
+   */
   static final String APPEND_TRANSACTION = "RaftServerImpl.appendTransaction";
 
   private enum ClientTraffic {PASS, HOLD, DROP}
@@ -95,6 +102,7 @@ final class RaftNetworkPartition implements AutoCloseable {
     partition.clientTraffic = clientTraffic;
     CodeInjectionForTesting.put(APPEND_TRANSACTION, partition::onAppendTransaction);
     final BlockRequestHandlingInjection serverTraffic = BlockRequestHandlingInjection.getInstance();
+    serverTraffic.unblockAll();
     // Nobody handles what the isolated peer sends, and the isolated peer handles nothing anybody sends
     serverTraffic.blockRequestor(isolatedPeerId);
     serverTraffic.blockReplier(isolatedPeerId);
@@ -152,6 +160,8 @@ final class RaftNetworkPartition implements AutoCloseable {
         while (clientTraffic == ClientTraffic.HOLD)
           Thread.sleep(50);
       } catch (final InterruptedException e) {
+        // Only a server stopping interrupts this thread, i.e. teardown: refuse every parked request, not only this one,
+        // so none commits on a cluster going down
         Thread.currentThread().interrupt();
         clientTraffic = ClientTraffic.DROP;
       }
