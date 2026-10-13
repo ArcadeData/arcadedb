@@ -120,7 +120,7 @@ public class FetchFromIndexedFunctionStep extends AbstractExecutionStep {
     String result =
         ExecutionStepInternal.getIndent(depth, indent) + "+ FETCH FROM INDEXED FUNCTION " + functionCondition.toString();
     if (limit > -1)
-      result += " (best " + limit + " first)";
+      result += " (best " + limit + " needed)";
     if (context.isProfiling()) {
       result += " (" + getCostFormatted() + ")";
     }

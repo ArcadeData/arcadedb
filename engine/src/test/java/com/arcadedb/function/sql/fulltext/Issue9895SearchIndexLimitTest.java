@@ -74,6 +74,10 @@ class Issue9895SearchIndexLimitTest extends TestHelper {
 
     // SKIP is served out of the same rows
     assertThat(rids("SELECT FROM Doc WHERE " + SEARCH + " SKIP 5 LIMIT 10")).isEqualTo(ordered.subList(5, 15));
+    assertThat(rids("SELECT FROM Doc WHERE " + SEARCH + " LIMIT 0")).isEmpty();
+    // $score projected under another name: the order is still the score's
+    assertThat(rids("SELECT @rid AS @rid, $score AS s FROM Doc WHERE " + SEARCH + " ORDER BY $score DESC LIMIT 10"))
+        .isEqualTo(ordered.subList(0, 10));
 
     // A residual filter, an OR, another order and an aggregation must not be cut short by the limit
     final List<RID> even = new ArrayList<>();
@@ -127,10 +131,10 @@ class Issue9895SearchIndexLimitTest extends TestHelper {
   void theLimitIsPushedDownOnlyWhenItCannotChangeTheAnswer(final String variant) {
     createCorpus(variant);
 
-    assertThat(plan("SELECT FROM Doc WHERE " + SEARCH + " LIMIT 10")).contains("(best 10 first)");
-    assertThat(plan("SELECT FROM Doc WHERE " + SEARCH + " ORDER BY $score DESC LIMIT 10")).contains("(best 10 first)");
-    assertThat(plan("SELECT title, $score FROM Doc WHERE " + SEARCH + " ORDER BY $score DESC LIMIT 10")).contains("(best 10 first)");
-    assertThat(plan("SELECT FROM Doc WHERE " + SEARCH + " SKIP 5 LIMIT 10")).contains("(best 15 first)");
+    assertThat(plan("SELECT FROM Doc WHERE " + SEARCH + " LIMIT 10")).contains("(best 10 needed)");
+    assertThat(plan("SELECT FROM Doc WHERE " + SEARCH + " ORDER BY $score DESC LIMIT 10")).contains("(best 10 needed)");
+    assertThat(plan("SELECT title, $score FROM Doc WHERE " + SEARCH + " ORDER BY $score DESC LIMIT 10")).contains("(best 10 needed)");
+    assertThat(plan("SELECT FROM Doc WHERE " + SEARCH + " SKIP 5 LIMIT 10")).contains("(best 15 needed)");
 
     for (final String query : new String[] { "SELECT FROM Doc WHERE " + SEARCH,
         "SELECT FROM Doc WHERE " + SEARCH + " AND n > 5 LIMIT 10",
@@ -143,8 +147,35 @@ class Issue9895SearchIndexLimitTest extends TestHelper {
         "SELECT n, count(*) FROM Doc WHERE " + SEARCH + " GROUP BY n LIMIT 10",
         "SELECT DISTINCT n FROM Doc WHERE " + SEARCH + " LIMIT 10",
         "SELECT expand(tags) FROM Doc WHERE " + SEARCH + " LIMIT 10",
-        "SELECT FROM Doc WHERE " + SEARCH + " UNWIND tags LIMIT 10" })
-      assertThat(plan(query)).as(query).doesNotContain(" first)");
+        "SELECT FROM Doc WHERE " + SEARCH + " UNWIND tags LIMIT 10",
+        "SELECT FROM bucket:Doc_0 WHERE " + SEARCH + " LIMIT 10" })
+      assertThat(plan(query)).as(query).doesNotContain(" needed)");
+
+    // A bucket target keeps only that bucket's rows: the limit counts after the bucket filter, not before
+    final List<RID> ordered = rids("SELECT FROM Doc WHERE " + SEARCH + " ORDER BY $score DESC");
+    final int bucketId = database.getSchema().getBucketByName("Doc_0").getFileId();
+    final List<RID> inBucket = new ArrayList<>();
+    for (final RID rid : ordered)
+      if (rid.getBucketId() == bucketId)
+        inBucket.add(rid);
+    assertThat(rids("SELECT FROM bucket:Doc_0 WHERE " + SEARCH + " LIMIT 10")).isEqualTo(inBucket.subList(0, 10));
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = { "BM25_1", "CLASSIC_4" })
+  void aSubtypeTargetOverTheSupertypeIndexIsNotCutShort(final String variant) {
+    createCorpus(variant);
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE SubDoc EXTENDS Doc");
+      for (int i = 0; i < 20; i++)
+        database.newDocument("SubDoc").set("n", DOCUMENTS + i).set("content", "common common common common common common").save();
+    });
+
+    // The index of the supertype answers Doc rows too, which the type filter drops after the fetch: the function declines the
+    // limit the plan offers, or the best matches - Doc rows among them - would leave the subtype short
+    final List<RID> subtypeRows = rids("SELECT FROM SubDoc WHERE SEARCH_INDEX('Doc[content]', 'common') = true ORDER BY $score DESC");
+    assertThat(rids("SELECT FROM SubDoc WHERE SEARCH_INDEX('Doc[content]', 'common') = true LIMIT 5"))
+        .isEqualTo(subtypeRows.subList(0, Math.min(5, subtypeRows.size())));
   }
 
   @ParameterizedTest
@@ -179,12 +210,12 @@ class Issue9895SearchIndexLimitTest extends TestHelper {
     // answer from the best matches of the pushed-down fetch, with the score the complete search gives
     final String again = "SELECT @rid AS rid, $score AS score, SEARCH_INDEX('Doc[content]', 'common') AS again FROM Doc WHERE " + SEARCH
         + " LIMIT 10";
-    assertThat(plan(again)).contains("(best 10 first)");
+    assertThat(plan(again)).contains("(best 10 needed)");
     assertSamePrefix(rows(again), complete, true);
 
     // A residual filter keeps the complete search (no pushdown): same rows, same scores
     final String residual = "SELECT @rid AS rid, $score AS score FROM Doc WHERE " + SEARCH + " AND n >= 0 LIMIT 10";
-    assertThat(plan(residual)).doesNotContain(" first)");
+    assertThat(plan(residual)).doesNotContain(" needed)");
     assertSamePrefix(rows(residual), complete, false);
   }
 
@@ -204,7 +235,7 @@ class Issue9895SearchIndexLimitTest extends TestHelper {
 
     final List<RID> alive = new ArrayList<>(ordered);
     alive.removeAll(gone);
-    assertThat(plan("SELECT FROM Doc WHERE " + SEARCH + " LIMIT 10")).contains("(best 10 first)");
+    assertThat(plan("SELECT FROM Doc WHERE " + SEARCH + " LIMIT 10")).contains("(best 10 needed)");
     assertThat(rids("SELECT FROM Doc WHERE " + SEARCH + " LIMIT 10")).isEqualTo(alive.subList(0, 10));
     assertThat(rids("SELECT FROM Doc WHERE " + SEARCH + " ORDER BY $score DESC LIMIT 10")).isEqualTo(alive.subList(0, 10));
     assertThat(rids("SELECT FROM Doc WHERE " + SEARCH + " SKIP 5 LIMIT 10")).isEqualTo(alive.subList(5, 15));

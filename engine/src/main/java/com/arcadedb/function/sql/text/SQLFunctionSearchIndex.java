@@ -208,7 +208,8 @@ public class SQLFunctionSearchIndex extends SQLFunctionAbstract implements Index
 
     final String indexName = resolveStringParam(oExpressions[0], context);
     final String queryString = resolveStringParam(oExpressions[1], context);
-    if (indexName == null || queryString == null)
+    if (indexName == null || queryString == null || limit == 0)
+      // LIMIT 0 consumes no row: nothing to search
       return List.of();
 
     final DatabaseInternal database = (DatabaseInternal) context.getDatabase();
