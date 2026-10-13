@@ -132,7 +132,7 @@ public class PostTimeSeriesQueryHandler extends DatabaseAbstractHandler {
     try {
       fromTs = TimeSeriesHandlerUtils.optLong(payload, "from", Long.MIN_VALUE, "from");
       toTs = TimeSeriesHandlerUtils.optLong(payload, "to", Long.MAX_VALUE, "to");
-      tagFilter = buildTagFilter(payload, columns);
+      tagFilter = buildTagFilter(database, payload, columns);
     } catch (final IllegalArgumentException e) {
       return TimeSeriesHandlerUtils.badRequest(e);
     }
@@ -345,10 +345,11 @@ public class PostTimeSeriesQueryHandler extends DatabaseAbstractHandler {
     return new ExecutionResponse(200, result.toString());
   }
 
-  private TagFilter buildTagFilter(final JSONObject payload, final List<ColumnDefinition> columns) {
+  private TagFilter buildTagFilter(final Database database, final JSONObject payload,
+      final List<ColumnDefinition> columns) {
     if (payload.isNull("tags"))
       return null;
-    return TimeSeriesHandlerUtils.buildTagFilter(
+    return TimeSeriesHandlerUtils.buildTagFilter(database,
         TimeSeriesHandlerUtils.requireObject(payload, "tags", "tags"), columns);
   }
 

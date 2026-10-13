@@ -63,7 +63,7 @@ class Issue7334UnknownTagWidensTheQueryTest {
 
   @Test
   void aMisspelledTagNameIsRefusedInsteadOfDropped() {
-    assertThatThrownBy(() -> TimeSeriesGateway.andTag(null, "hsot", "web1", COLUMNS))
+    assertThatThrownBy(() -> TimeSeriesGateway.andTag(null, null, "hsot", "web1", COLUMNS))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("hsot")
         .hasMessageContaining("host")
@@ -76,7 +76,7 @@ class Issue7334UnknownTagWidensTheQueryTest {
    */
   @Test
   void aMisspelledNameAmongCorrectOnesStillFailsTheWholeFilter() {
-    assertThatThrownBy(() -> TimeSeriesGateway.buildTagFilter(
+    assertThatThrownBy(() -> TimeSeriesGateway.buildTagFilter(null,
         Map.of("host", "web1", "hsot", "web1"), COLUMNS))
         .as("a conjunction the caller wrote three terms of must not be answered with two")
         .isInstanceOf(IllegalArgumentException.class)
@@ -86,10 +86,10 @@ class Issue7334UnknownTagWidensTheQueryTest {
   /** A FIELD column and the TIMESTAMP column are not tags, and naming either is the same mistake. */
   @Test
   void aNonTagColumnIsRefusedAsATagName() {
-    assertThatThrownBy(() -> TimeSeriesGateway.andTag(null, "cpu", 1.0d, COLUMNS))
+    assertThatThrownBy(() -> TimeSeriesGateway.andTag(null, null, "cpu", 1.0d, COLUMNS))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("cpu");
-    assertThatThrownBy(() -> TimeSeriesGateway.andTag(null, "ts", 1_000L, COLUMNS))
+    assertThatThrownBy(() -> TimeSeriesGateway.andTag(null, null, "ts", 1_000L, COLUMNS))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("ts");
   }
@@ -101,7 +101,7 @@ class Issue7334UnknownTagWidensTheQueryTest {
         new ColumnDefinition("ts", Type.LONG, ColumnDefinition.ColumnRole.TIMESTAMP),
         new ColumnDefinition("cpu", Type.DOUBLE, ColumnDefinition.ColumnRole.FIELD));
 
-    assertThatThrownBy(() -> TimeSeriesGateway.andTag(null, "host", "web1", tagless))
+    assertThatThrownBy(() -> TimeSeriesGateway.andTag(null, null, "host", "web1", tagless))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("declares no TAG column");
   }
@@ -109,19 +109,19 @@ class Issue7334UnknownTagWidensTheQueryTest {
   /** Nothing about a correct filter changes: the conjunction is built exactly as before. */
   @Test
   void aCorrectFilterIsUnaffected() {
-    assertThatCode(() -> TimeSeriesGateway.buildTagFilter(Map.of("host", "web1", "region", "eu"), COLUMNS))
+    assertThatCode(() -> TimeSeriesGateway.buildTagFilter(null, Map.of("host", "web1", "region", "eu"), COLUMNS))
         .doesNotThrowAnyException();
 
-    final TagFilter filter = TimeSeriesGateway.buildTagFilter(Map.of("host", "web1", "region", "eu"), COLUMNS);
+    final TagFilter filter = TimeSeriesGateway.buildTagFilter(null, Map.of("host", "web1", "region", "eu"), COLUMNS);
     assertThat(filter.getConditionCount()).isEqualTo(2);
     // row layout is {timestamp, host, region, cpu}; TagFilter#matches offsets by the timestamp.
     assertThat(filter.matches(new Object[] { 1_000L, "web1", "eu", 1.0d })).isTrue();
     assertThat(filter.matches(new Object[] { 1_000L, "web1", "us", 1.0d })).isFalse();
 
-    assertThat(TimeSeriesGateway.buildTagFilter(Map.of(), COLUMNS))
+    assertThat(TimeSeriesGateway.buildTagFilter(null, Map.of(), COLUMNS))
         .as("no tags at all is still no filter, not a refusal")
         .isNull();
-    assertThat(TimeSeriesGateway.buildTagFilter(null, COLUMNS)).isNull();
+    assertThat(TimeSeriesGateway.buildTagFilter(null, null, COLUMNS)).isNull();
   }
 
 }

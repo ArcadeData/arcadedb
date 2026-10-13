@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.http.handler;
 
+import com.arcadedb.database.Database;
 import com.arcadedb.engine.timeseries.AggregationType;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.engine.timeseries.TagFilter;
@@ -447,17 +448,19 @@ final class TimeSeriesHandlerUtils {
 
   /**
    * Builds the conjunction of a {@code tags} request object: every name/value pair becomes an ANDed condition.
+   * {@code database} reads a DATE/DATETIME value given as text as the {@code INSERT} that wrote it did (issue #9879).
    *
    * @throws IllegalArgumentException if a name resolves to no TAG column of the type, or a value cannot be
    *                                  stored as a tag. See {@link TimeSeriesGateway#andTag}
    */
-  static TagFilter buildTagFilter(final JSONObject tagsJson, final List<ColumnDefinition> columns) {
+  static TagFilter buildTagFilter(final Database database, final JSONObject tagsJson,
+      final List<ColumnDefinition> columns) {
     if (tagsJson == null || tagsJson.keySet().isEmpty())
       return null;
 
     TagFilter filter = null;
     for (final String tagName : tagsJson.keySet())
-      filter = TimeSeriesGateway.andTag(filter, tagName, tagsJson.get(tagName), columns);
+      filter = TimeSeriesGateway.andTag(database, filter, tagName, tagsJson.get(tagName), columns);
 
     return filter;
   }
@@ -484,12 +487,14 @@ final class TimeSeriesHandlerUtils {
    * cannot tell apart from a correct filter that matched everything. A blank occurrence is still ignored,
    * because a bare {@code ?tag=} or {@code &tag=&} is what an empty form field produces and says nothing.
    *
+   * @param database  the database the type lives in, which reads a DATE/DATETIME value as the {@code INSERT} did
+   *                  (issue #9879)
    * @param tagParams every occurrence of the parameter, in the order the request carried them; may be
    *                  {@code null} or empty, which yields no filter
    *
    * @throws IllegalArgumentException if an occurrence carries no {@code ':'} separator, or names no TAG column
    */
-  static TagFilter buildTagFilterFromQueryParams(final Collection<String> tagParams,
+  static TagFilter buildTagFilterFromQueryParams(final Database database, final Collection<String> tagParams,
       final List<ColumnDefinition> columns) {
     if (tagParams == null || tagParams.isEmpty())
       return null;
@@ -504,7 +509,7 @@ final class TimeSeriesHandlerUtils {
         throw new IllegalArgumentException("The 'tag' parameter must be in 'name:value' form: received '"
             + truncate(tagParam) + "'");
 
-      filter = TimeSeriesGateway.andTag(filter, tagParam.substring(0, colonIdx),
+      filter = TimeSeriesGateway.andTag(database, filter, tagParam.substring(0, colonIdx),
           tagParam.substring(colonIdx + 1), columns);
     }
 
