@@ -299,6 +299,31 @@ class Issue9896VectorSearchCancellationTest {
     }
   }
 
+  /**
+   * The build a search hands off runs on a thread with none of the search's context. A search inside an open
+   * transaction, which has a database context and a transaction bound to its own thread, still gets the graph built
+   * and its answer.
+   */
+  @Test
+  void searchInsideATransactionGetsTheGraphTheHandedOffBuildPublishes() {
+    populateAndCrashWithoutPersistingAGraph();
+    try (final DatabaseFactory factory = new DatabaseFactory(dbPath)) {
+      final Database db = factory.open();
+      try {
+        final LSMVectorIndex index = vectorIndex(db);
+        final AtomicReference<List<RID>> rids = new AtomicReference<>();
+        db.transaction(() -> {
+          db.newDocument("Doc").set("id", NUM_VECTORS).set("vector", embedding(NUM_VECTORS)).save();
+          rids.set(searchRids(db));
+        });
+        assertThat(rids.get()).contains(ridOf(db, 7));
+        assertThat(index.getStats().get("graphRebuildCount")).isEqualTo(1L);
+      } finally {
+        db.drop();
+      }
+    }
+  }
+
   /** The guard reaches the search itself, not only the waits in front of it. */
   @Test
   void searchGivenATerminatedStatementsGuardFailsAtOnce() {
