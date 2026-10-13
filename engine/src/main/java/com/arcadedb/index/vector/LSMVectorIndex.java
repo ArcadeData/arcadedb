@@ -11515,8 +11515,15 @@ public class LSMVectorIndex implements Index, IndexInternal {
       lock.writeLock().lock();
       try {
         final VectorLocationIndex locations = vectorIndex();
-        int inserted = 0;
+        // Each id is judged by the state it had BEFORE this page, read the first time the page mentions it. Not entry by
+        // entry: a page holding both an id's live entry and its tombstone re-publishes the live one first when it is
+        // applied again (LSM merge-on-read), and the tombstone after it would then read as a fresh delete.
+        final IntHashSet seen = fromPeer && !isCompacted ? new IntHashSet(numberOfEntries) : null;
+        IntHashSet liveBefore = null;
+        IntHashSet unknownBefore = null;
+        IntHashSet queued = null;
         IntHashSet tombstoned = null;
+        int inserted = 0;
 
         // Parse variable-sized entries sequentially (no pointer table)
         int currentOffset = headerSize;
@@ -11574,34 +11581,53 @@ public class LSMVectorIndex implements Index, IndexInternal {
             nextId.accumulateAndGet(id + 1, Math::max);
 
           // What the entry changes for the search, read BEFORE it is published (issue #9857): an id neither live nor
-          // tombstoned is a vector this node has never seen, and a tombstone over a live id is a delete. Anything else
-          // re-reads state this node already has.
-          final boolean tracked = fromPeer && !isCompacted;
-          final boolean wasLive = tracked && locations.isLive(id);
-          final boolean inserting = tracked && !deleted && !wasLive && !locations.isDeleted(id);
+          // tombstoned before this page is a vector this node has never seen, and a tombstone over an id that was live
+          // (or that this page just queued) is a delete. Anything else re-reads state this node already has. Ids are
+          // never reused, so an id that was tombstoned before cannot come back as a new vector.
+          if (seen != null && seen.add(id)) {
+            if (locations.isLive(id)) {
+              if (liveBefore == null)
+                liveBefore = new IntHashSet();
+              liveBefore.add(id);
+            } else if (!locations.isDeleted(id)) {
+              if (unknownBefore == null)
+                unknownBefore = new IntHashSet();
+              unknownBefore.add(id);
+            }
+          }
 
           // Update VectorLocationIndex with this entry's absolute file offset
           // LSM semantics: later entries override earlier ones
           locations.addOrUpdate(id, isCompacted, entryFileOffset, rid, deleted);
 
-          if (inserting) {
-            queueDeltaEntry(new DeltaVectorEntry(id, rid, null));
-            ++inserted;
-          } else if (deleted && wasLive) {
+          if (!deleted) {
+            if (unknownBefore != null && unknownBefore.contains(id)) {
+              if (queued == null)
+                queued = new IntHashSet();
+              if (queued.add(id)) {
+                // No payload: deltaVectorOf() reads the vector back when a search scores the entry, and skips the entry
+                // when it cannot - the record this transaction carries may not be applied yet, or already deleted
+                queueDeltaEntry(new DeltaVectorEntry(id, rid, null));
+                ++inserted;
+              }
+            }
+          } else if ((liveBefore != null && liveBefore.contains(id)) || (queued != null && queued.contains(id))) {
             if (tombstoned == null)
               tombstoned = new IntHashSet();
-            tombstoned.add(id);
-            // Do not let the shared search cache pin a vector that no longer exists (issue #5412)
-            final VectorCache cache = searchVectorCache;
-            if (cache != null)
-              cache.remove(id);
+            if (tombstoned.add(id)) {
+              // Do not let the shared search cache pin a vector that no longer exists (issue #5412)
+              final VectorCache cache = searchVectorCache;
+              if (cache != null)
+                cache.remove(id);
+            }
           }
         }
 
         final int removed = tombstoned == null ? 0 : tombstoned.size();
         if (removed > 0 && !deltaVectors.isEmpty()) {
           // The delta entries of the ids this page tombstoned leave the buffer, as remove() drops them: otherwise every
-          // search scans and skips them, and they hold their payload until the next rebuild (issue #7357)
+          // search scans and skips them, and they hold their payload until the next rebuild (issue #7357). One pass for
+          // the whole page, where remove() makes one per deleted record; the buffer it walks is bounded by the rebuilds.
           final IntHashSet dropped = tombstoned;
           final int[] releasedPayloads = new int[1];
           deltaVectors.removeIf(entry -> {
