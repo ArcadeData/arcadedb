@@ -198,8 +198,12 @@ public class WhereClause extends SimpleNode {
 
     final List<String> definitionFields = index.getPropertyNames();
     final Object[] key = new Object[nMatchingKeys];
-    for (int i = 0; i < nMatchingKeys; i++)
+    for (int i = 0; i < nMatchingKeys; i++) {
       key[i] = convert(conditions.get(definitionFields.get(i)), ((IndexInternal) index).getKeyTypes()[i]);
+      // A VALUE THAT DOES NOT CONVERT TO THE KEY TYPE (OR A LITERAL null) WOULD READ THE NULL ENTRIES, WHICH "= value" NEVER MATCHES
+      if (key[i] == null)
+        return Long.MAX_VALUE;
+    }
 
     final IndexCursor cursor;
     if (nMatchingKeys == definitionFields.size())

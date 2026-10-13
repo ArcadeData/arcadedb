@@ -149,6 +149,8 @@ class Issue9908MatchSearchIndexNotPrefetchedTest extends TestHelper {
     assertThat(estimate("n = 4 OR n = 5")).isEqualTo(2L);
     // A KEY WITH 200 ENTRIES IS COUNTED ONLY UP TO THE THRESHOLD: "NOT SMALL" IS ALL THE PLANNER NEEDS, AND IT ANSWERS THE SCAN BOUND
     assertThat(estimate("parity = 0")).isEqualTo(NOTES / 2);
+    // A VALUE THAT DOES NOT CONVERT TO THE INTEGER KEY GIVES NO BOUND, RATHER THAN A LOOKUP OF THE NULL KEY
+    assertThat(estimate("n = 'not a number'")).isEqualTo(NOTES / 2);
     assertThat(explain("MATCH {type:Note, as:n, where:(n = 4)} RETURN n.n AS n")).contains("PREFETCH n");
   }
 
