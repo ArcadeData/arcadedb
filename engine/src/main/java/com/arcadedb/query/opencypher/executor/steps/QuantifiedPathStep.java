@@ -99,7 +99,11 @@ public class QuantifiedPathStep extends AbstractExecutionStep {
    * @param sourceVariable         variable holding the group's left boundary vertex
    * @param targetVariable         variable the group's right boundary vertex binds to
    * @param pathVariable           enclosing named path variable, or null. It binds one PATH running through every
-   *                               repetition, whether or not the group is the only thing the path spans (issue #9940)
+   *                               repetition, whether or not the group is the only thing the path spans (issue #9940).
+   *                               A path variable declared before a path pattern binds that pattern's one path, in GQL as
+   *                               in Neo4j Cypher 25; only variables declared INSIDE a quantified group are group (list)
+   *                               variables. A LIST of per-repetition paths is what a subpath variable declared inside the
+   *                               group, {@code ((q = (a)-[r]->(b)))+}, would bind - a form this engine refuses
    * @param group                  the quantified path pattern to repeat
    * @param targetNodePattern      right boundary node pattern, for label/property filtering; may be null
    * @param clauseVariables        the owning MATCH clause's own variables - half the isomorphism scope

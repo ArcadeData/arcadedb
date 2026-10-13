@@ -194,6 +194,9 @@ class Issue9940GqlConstructsTest extends TestHelper {
     // only an untaken branch reads must still be bound
     assertThatThrownBy(() -> column("WHEN $x = 1 THEN RETURN $onlyHere AS r ELSE RETURN 'else' AS r", "r", Map.of("x", 2)))
         .hasMessageContaining("onlyHere");
+    // an unbound parameter in a condition is refused too, rather than read as null and falling through to ELSE
+    assertThatThrownBy(() -> column("WHEN $unbound = 1 THEN RETURN 'then' AS r ELSE RETURN 'else' AS r", "r", Map.of()))
+        .hasMessageContaining("unbound");
   }
 
   @Test
@@ -312,6 +315,17 @@ class Issue9940GqlConstructsTest extends TestHelper {
 
     assertThatThrownBy(() -> rows("MATCH (n:Item9940) RETURN n.name ORDER BY n.name LIMIT 2 LIMIT 1"))
         .hasMessageContaining("RETURN");
+  }
+
+  @Test
+  void trailingPageAfterDistinctOrAggregatingReturnSortsTheProjection() {
+    database.transaction(() -> database.command("opencypher",
+        "CREATE (:Item9940b {g:'y', v:1}), (:Item9940b {g:'x', v:2}), (:Item9940b {g:'y', v:3}), (:Item9940b {g:'z', v:4})"));
+    // DISTINCT, with the trailing ORDER BY naming the projected expression
+    assertThat(column("MATCH (n:Item9940b) RETURN DISTINCT n.g LIMIT 2 ORDER BY n.g", "n.g")).containsExactly("x", "y");
+    // aggregation, with the trailing ORDER BY naming the grouping key, SKIP and LIMIT applied after the sort
+    assertThat(column("MATCH (n:Item9940b) RETURN n.g AS g, count(*) AS c LIMIT 2 ORDER BY g SKIP 1", "g"))
+        .containsExactly("y", "z");
   }
 
   // 12. Top-level parenthesized path with a WHERE and no quantifier

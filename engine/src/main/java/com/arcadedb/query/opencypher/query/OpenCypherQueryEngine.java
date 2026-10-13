@@ -466,6 +466,8 @@ public class OpenCypherQueryEngine implements QueryEngine {
     // is planned and cached under a key of its own, since the same text runs different branches for different parameters
     if (statement instanceof ConditionalStatement conditional) {
       final List<CypherStatement> branches = conditional.getBranches();
+      // Each branch is planned and cached under its own key, the query text plus a NUL-separated suffix that query text
+      // written by a user does not contain
       for (int i = 0; i < branches.size(); i++)
         if (isConditionTrue(conditional.getConditions().get(i), parameters))
           return execute(queryString + "\u0000WHEN#" + i, branches.get(i), configuration, parameters, explain, profile,
