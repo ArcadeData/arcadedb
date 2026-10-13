@@ -245,6 +245,16 @@ class Issue9909RidConditionPushdownTest extends TestHelper {
     final List<Result> unionRows = rows("SELECT @rid AS rid, $score AS score FROM Doc WHERE (@rid < :first AND " + SEARCH
         + ") OR (@rid > :last AND " + SEARCH + ")", Map.of("first", first, "last", last));
     assertThat(unionRows).hasSize(10 + 9);
+
+    // Only one branch has an @rid condition: it pushes it, the other searches unfiltered
+    final List<RID> oneBranch = rids("SELECT FROM Doc WHERE (@rid < :first AND " + SEARCH + ") OR (" + SEARCH + " AND n < 0)",
+        Map.of("first", first));
+    assertThat(oneBranch).containsExactlyInAnyOrderElementsOf(byRid.subList(0, 10));
+
+    // A variable a global LET computes is known before the fetch: pushed, with the answer of the parameter it holds
+    final String globalLet = "SELECT FROM Doc LET $c = :cursor WHERE @rid > $c AND " + SEARCH;
+    assertThat(plan(globalLet, first)).contains("RID FILTER (@rid > $c)");
+    assertThat(rids(globalLet, Map.of("cursor", last))).containsExactlyInAnyOrderElementsOf(byRid.subList(DOCUMENTS - 9, DOCUMENTS));
     for (final Result row : unionRows)
       assertThat(row.<Float>getProperty("score")).isEqualTo(scores.get(row.<Object>getProperty("rid")));
   }

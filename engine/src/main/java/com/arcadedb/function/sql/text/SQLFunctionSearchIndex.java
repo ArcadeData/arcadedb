@@ -21,6 +21,7 @@ package com.arcadedb.function.sql.text;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.fulltext.FullTextSearch;
@@ -172,7 +173,7 @@ public class SQLFunctionSearchIndex extends SQLFunctionAbstract implements Index
   /**
    * The search of the named full-text index, which is validated here.
    *
-   * @throws com.arcadedb.exception.SchemaException if no index carries that name
+   * @throws SchemaException          if no index carries that name
    * @throws CommandExecutionException              if the index exists but is not a full-text type index
    */
   private static FullTextFunctionSearch search(final String indexName, final String queryString, final CommandContext context) {
