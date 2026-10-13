@@ -31,6 +31,7 @@ import org.junit.jupiter.api.Test;
 
 import java.io.File;
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.util.concurrent.ConcurrentHashMap;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -64,6 +65,15 @@ class Issue9763SaveFailureRollbackTest {
       if (saveFailure != null)
         throw saveFailure;
       super.saveConfiguration();
+    }
+
+    /** What another save made on this node does when it ships, and so commits, this change too. */
+    private void saveForReal() {
+      try {
+        super.saveConfiguration();
+      } catch (final IOException e) {
+        throw new UncheckedIOException(e);
+      }
     }
   }
 
@@ -120,6 +130,21 @@ class Issue9763SaveFailureRollbackTest {
         .as("the failed change is undone").isEqualTo(3);
     assertThat(database.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_WAL_FLUSH))
         .as("the concurrent change to another setting is kept").isEqualTo(2);
+  }
+
+  /**
+   * Under HA a concurrent change made on this node ships every setting memory holds that the file does not, so it can
+   * commit this change before this save fails. The value is then in the file, committed, and must stay.
+   */
+  @Test
+  void aFailedSaveKeepsAValueAnotherSaveAlreadyCommitted() {
+    database.saveFailure = new IllegalStateException("refused: a peer cannot decode the entry yet");
+    database.duringSave = database::saveForReal;
+
+    assertThatThrownBy(() -> database.command("sql", "ALTER DATABASE `arcadedb.typeDefaultBuckets` 13"))
+        .isInstanceOf(IllegalStateException.class);
+
+    assertThat(database.getConfiguration().getValueAsInteger(GlobalConfiguration.TYPE_DEFAULT_BUCKETS)).isEqualTo(13);
   }
 
   @Test

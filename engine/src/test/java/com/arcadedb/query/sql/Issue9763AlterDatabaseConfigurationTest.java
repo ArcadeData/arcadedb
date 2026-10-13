@@ -48,10 +48,15 @@ class Issue9763AlterDatabaseConfigurationTest extends TestHelper {
   void restoringASettingPutsBackItsValueAndItsPerDatabaseEffect() {
     final LocalDatabase local = (LocalDatabase) ((DatabaseInternal) database).getEmbedded();
     database.command("sql", "ALTER DATABASE `arcadedb.typeDefaultBuckets` 4");
+    // In memory only, as changes whose save is under way hold them
     local.getConfiguration().setValue(GlobalConfiguration.DATE_IMPLEMENTATION, "java.util.Date");
-    local.restoreSetting(GlobalConfiguration.TX_RETRIES.getKey(), 5);
+    local.getConfiguration().setValue(GlobalConfiguration.TX_RETRIES, 5);
+    local.getConfiguration().setValue(GlobalConfiguration.TYPE_DEFAULT_BUCKETS, 6);
+
+    local.restoreSetting(GlobalConfiguration.TYPE_DEFAULT_BUCKETS.getKey(), 4);
+    assertThat(local.getConfiguration().getValueAsInteger(GlobalConfiguration.TYPE_DEFAULT_BUCKETS)).isEqualTo(4);
     assertThat(local.getSerializer().getDateImplementation())
-        .as("the serializer follows without a reopen").isEqualTo(Date.class);
+        .as("the per-database effects are re-derived from the configuration in force").isEqualTo(Date.class);
 
     local.restoreSetting(GlobalConfiguration.DATE_IMPLEMENTATION.getKey(), null);
 
@@ -156,5 +161,18 @@ class Issue9763AlterDatabaseConfigurationTest extends TestHelper {
       assertThat(configuration.delete()).isTrue();
     }
     assertThat(local.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_RETRIES)).isEqualTo(8);
+  }
+
+  /** A configuration.json that is not valid JSON does not block replicated changes: the next one writes a valid file. */
+  @Test
+  void aCorruptFileCountsAsEmpty() throws Exception {
+    final LocalDatabase local = (LocalDatabase) ((DatabaseInternal) database).getEmbedded();
+    final File configuration = new File(local.getDatabasePath(), LocalDatabase.CONFIGURATION_FILE_NAME);
+    FileUtils.writeFile(configuration, "{\"configuration\":{\"txRetries\":");
+
+    local.applyConfigurationChanges("{\"configuration\":{\"txRetries\":8},\"removed\":[]}");
+
+    assertThat(new JSONObject(FileUtils.readFileAsString(configuration)).getJSONObject("configuration").getInt("txRetries"))
+        .isEqualTo(8);
   }
 }

@@ -4452,8 +4452,15 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       committedLogIndex = RaftHAServer.requireTransactionBroker(raft).replicateDatabaseConfiguration(getName(), changes);
     }
     // The apply on THIS node is what writes the file here too, so the caller reads its own change back from disk once
-    // this returns. Lenient: the entry is committed cluster-wide whatever the wait says.
-    raft.waitForAppliedIndex(getName(), committedLogIndex);
+    // this returns. Lenient: the entry is committed cluster-wide whatever the wait says, so a failure of the wait itself
+    // must not reach the caller, which would undo a committed change on this node alone.
+    try {
+      raft.waitForAppliedIndex(getName(), committedLogIndex);
+    } catch (final RuntimeException e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "The configuration change of database '%s' committed at index %d, but waiting for it to apply on this node "
+              + "failed: %s", getName(), committedLogIndex, e.getMessage());
+    }
   }
 
   @Override
