@@ -72,7 +72,6 @@ public class CreateGraphAnalyticalViewStatement extends DDLStatement {
 
     final String[] vtArray = toStringArray(vertexTypes);
     final String[] etArray = toStringArray(edgeTypes);
-    final String[] propArray = toStringArray(properties);
 
     // Build the view — the builder handles persistence via GraphAnalyticalViewPersistence.save()
     final GraphAnalyticalViewBuilder builder = GraphAnalyticalView.builder(database).withName(viewName);
@@ -80,8 +79,10 @@ public class CreateGraphAnalyticalViewStatement extends DDLStatement {
       builder.withVertexTypes(vtArray);
     if (etArray != null && etArray.length > 0)
       builder.withEdgeTypes(etArray);
-    if (propArray != null && propArray.length > 0)
-      builder.withProperties(propArray);
+    // toStringArray() maps an empty array to null, so preserve PROPERTIES () explicitly: it copies no vertex properties
+    // while an omitted clause copies all (issue #9831).
+    if (properties != null)
+      builder.withProperties(properties.length == 0 ? new String[0] : toStringArray(properties));
     final String[] edgePropArray = toStringArray(edgeProperties);
     if (edgePropArray != null && edgePropArray.length > 0)
       builder.withEdgeProperties(edgePropArray);
@@ -129,7 +130,7 @@ public class CreateGraphAnalyticalViewStatement extends DDLStatement {
       appendIdentifiers(params, builder, edgeTypes);
       builder.append(')');
     }
-    if (properties != null && properties.length > 0) {
+    if (properties != null) {
       builder.append(" PROPERTIES (");
       appendIdentifiers(params, builder, properties);
       builder.append(')');
@@ -199,7 +200,8 @@ public class CreateGraphAnalyticalViewStatement extends DDLStatement {
    * The array fields are wrapped in {@code Arrays.asList()} rather than compared as-is: {@code Object[].equals()}
    * is reference identity, so two structurally-equal arrays from an original and its {@code copy()} would never
    * compare equal otherwise. {@code null} is normalized to an empty list so a never-set clause does not need special
-   * casing.
+   * casing, except for {@code properties}: there no clause copies every vertex property and {@code PROPERTIES ()}
+   * copies none, so the two must not compare equal (issue #9831).
    */
   @Override
   protected Object[] getIdentityElements() {
@@ -207,7 +209,7 @@ public class CreateGraphAnalyticalViewStatement extends DDLStatement {
         name,
         vertexTypes == null ? List.of() : Arrays.asList(vertexTypes),
         edgeTypes == null ? List.of() : Arrays.asList(edgeTypes),
-        properties == null ? List.of() : Arrays.asList(properties),
+        properties == null ? null : Arrays.asList(properties),
         edgeProperties == null ? List.of() : Arrays.asList(edgeProperties),
         updateModeStr, compactionThreshold, ifNotExists,
         cchWeights == null ? List.of() : Arrays.asList(cchWeights) };
