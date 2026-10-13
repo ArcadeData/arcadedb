@@ -104,7 +104,7 @@ public class GetTimeSeriesLatestHandler extends DatabaseAbstractHandler {
     // newest sample of some other series as if it were the one asked for.
     final TagFilter tagFilter;
     try {
-      tagFilter = buildTagFilter(exchange, columns);
+      tagFilter = buildTagFilter(database, exchange, columns);
     } catch (final IllegalArgumentException e) {
       return TimeSeriesHandlerUtils.badRequest(e);
     }
@@ -155,7 +155,9 @@ public class GetTimeSeriesLatestHandler extends DatabaseAbstractHandler {
    * first entry and so dropped every occurrence past the first (issue #7321). The conjunction itself is
    * the same helper POST /ts/{database}/query uses for its 'tags' object.
    */
-  private TagFilter buildTagFilter(final HttpServerExchange exchange, final List<ColumnDefinition> columns) {
-    return TimeSeriesHandlerUtils.buildTagFilterFromQueryParams(exchange.getQueryParameters().get("tag"), columns);
+  private TagFilter buildTagFilter(final Database database, final HttpServerExchange exchange,
+      final List<ColumnDefinition> columns) {
+    return TimeSeriesHandlerUtils.buildTagFilterFromQueryParams(database, exchange.getQueryParameters().get("tag"),
+        columns);
   }
 }

@@ -56,21 +56,21 @@ class Issue7394ReadTagFilterMatchesTheWriteRuleTest {
 
   @Test
   void aBytesFilterValueIsRefusedRatherThanMatchingNothing() {
-    assertThatThrownBy(() -> TimeSeriesGateway.buildTagFilter(Map.of("host", new byte[] { 1, 2 }), COLUMNS))
+    assertThatThrownBy(() -> TimeSeriesGateway.buildTagFilter(null, Map.of("host", new byte[] { 1, 2 }), COLUMNS))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("host");
   }
 
   @Test
   void aListFilterValueIsRefused() {
-    assertThatThrownBy(() -> TimeSeriesGateway.buildTagFilter(Map.of("host", List.of("a", "b")), COLUMNS))
+    assertThatThrownBy(() -> TimeSeriesGateway.buildTagFilter(null, Map.of("host", List.of("a", "b")), COLUMNS))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("host");
   }
 
   @Test
   void aMapFilterValueIsRefused() {
-    assertThatThrownBy(() -> TimeSeriesGateway.buildTagFilter(Map.of("host", Map.of("a", "b")), COLUMNS))
+    assertThatThrownBy(() -> TimeSeriesGateway.buildTagFilter(null, Map.of("host", Map.of("a", "b")), COLUMNS))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("host");
   }
@@ -83,7 +83,7 @@ class Issue7394ReadTagFilterMatchesTheWriteRuleTest {
    */
   @Test
   void aJsonArrayFilterValueIsRefused() {
-    assertThatThrownBy(() -> TimeSeriesGateway.buildTagFilter(
+    assertThatThrownBy(() -> TimeSeriesGateway.buildTagFilter(null,
         Map.of("host", new JSONArray(List.of("a", "b"))), COLUMNS))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("host");
@@ -91,7 +91,7 @@ class Issue7394ReadTagFilterMatchesTheWriteRuleTest {
 
   @Test
   void aJsonObjectFilterValueIsRefused() {
-    assertThatThrownBy(() -> TimeSeriesGateway.buildTagFilter(
+    assertThatThrownBy(() -> TimeSeriesGateway.buildTagFilter(null,
         Map.of("host", new JSONObject().put("a", "b")), COLUMNS))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("host");
@@ -105,7 +105,7 @@ class Issue7394ReadTagFilterMatchesTheWriteRuleTest {
    */
   @Test
   void anUnstorableValueIsRefusedEvenUnderANameThatResolvesToNoColumn() {
-    assertThatThrownBy(() -> TimeSeriesGateway.buildTagFilter(Map.of("nosuchtag", new byte[] { 1 }), COLUMNS))
+    assertThatThrownBy(() -> TimeSeriesGateway.buildTagFilter(null, Map.of("nosuchtag", new byte[] { 1 }), COLUMNS))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("nosuchtag")
         .as("the VALUE rule wins: 'not a TAG column' would send the caller to fix the spelling of a name "
@@ -115,10 +115,10 @@ class Issue7394ReadTagFilterMatchesTheWriteRuleTest {
 
   @Test
   void theOrdinaryScalarFilterValuesStillBuildAFilter() {
-    assertThatCode(() -> TimeSeriesGateway.buildTagFilter(Map.of("host", "web1"), COLUMNS))
+    assertThatCode(() -> TimeSeriesGateway.buildTagFilter(null, Map.of("host", "web1"), COLUMNS))
         .doesNotThrowAnyException();
 
-    final TagFilter filter = TimeSeriesGateway.buildTagFilter(Map.of("host", "web1"), COLUMNS);
+    final TagFilter filter = TimeSeriesGateway.buildTagFilter(null, Map.of("host", "web1"), COLUMNS);
     assertThat(filter).isNotNull();
     // row layout is {timestamp, host, cpu}; TagFilter#matches offsets by the timestamp.
     assertThat(filter.matches(new Object[] { 1_000L, "web1", 1.0d })).isTrue();
@@ -127,13 +127,13 @@ class Issue7394ReadTagFilterMatchesTheWriteRuleTest {
 
   @Test
   void aNumberAndABooleanAreStillAcceptedAsTheyAreOnTheWritePath() {
-    assertThatCode(() -> TimeSeriesGateway.andTag(null, "host", 42, COLUMNS)).doesNotThrowAnyException();
-    assertThatCode(() -> TimeSeriesGateway.andTag(null, "host", true, COLUMNS)).doesNotThrowAnyException();
+    assertThatCode(() -> TimeSeriesGateway.andTag(null, null, "host", 42, COLUMNS)).doesNotThrowAnyException();
+    assertThatCode(() -> TimeSeriesGateway.andTag(null, null, "host", true, COLUMNS)).doesNotThrowAnyException();
   }
 
   /** A null value is not a malformed one - it is how "no value" is said, and it was always allowed. */
   @Test
   void aNullFilterValueIsStillAllowed() {
-    assertThatCode(() -> TimeSeriesGateway.andTag(null, "host", null, COLUMNS)).doesNotThrowAnyException();
+    assertThatCode(() -> TimeSeriesGateway.andTag(null, null, "host", null, COLUMNS)).doesNotThrowAnyException();
   }
 }

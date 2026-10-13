@@ -60,13 +60,13 @@ class TimeSeriesTagFilterBuilderTest {
 
   @Test
   void noOccurrenceYieldsNoFilter() {
-    assertThat(TimeSeriesHandlerUtils.buildTagFilterFromQueryParams(null, COLUMNS)).isNull();
-    assertThat(TimeSeriesHandlerUtils.buildTagFilterFromQueryParams(occurrences(), COLUMNS)).isNull();
+    assertThat(TimeSeriesHandlerUtils.buildTagFilterFromQueryParams(null, null, COLUMNS)).isNull();
+    assertThat(TimeSeriesHandlerUtils.buildTagFilterFromQueryParams(null, occurrences(), COLUMNS)).isNull();
   }
 
   @Test
   void oneOccurrenceYieldsOneCondition() {
-    final TagFilter filter = TimeSeriesHandlerUtils.buildTagFilterFromQueryParams(
+    final TagFilter filter = TimeSeriesHandlerUtils.buildTagFilterFromQueryParams(null,
         occurrences("host:web1"), COLUMNS);
 
     assertThat(filter.getConditionCount()).isEqualTo(1);
@@ -81,7 +81,7 @@ class TimeSeriesTagFilterBuilderTest {
    */
   @Test
   void everyOccurrenceBecomesAnAndedCondition() {
-    final TagFilter filter = TimeSeriesHandlerUtils.buildTagFilterFromQueryParams(
+    final TagFilter filter = TimeSeriesHandlerUtils.buildTagFilterFromQueryParams(null,
         occurrences("host:web1", "region:eu"), COLUMNS);
 
     assertThat(filter.getConditionCount()).isEqualTo(2);
@@ -92,10 +92,10 @@ class TimeSeriesTagFilterBuilderTest {
 
   @Test
   void occurrenceOrderDoesNotMatter() {
-    assertThat(TimeSeriesHandlerUtils.buildTagFilterFromQueryParams(
+    assertThat(TimeSeriesHandlerUtils.buildTagFilterFromQueryParams(null,
         occurrences("region:eu", "host:web1"), COLUMNS).describe(new String[] { "host", "region", "cpu" }))
         .isEqualTo("region = 'eu' AND host = 'web1'");
-    assertThat(TimeSeriesHandlerUtils.buildTagFilterFromQueryParams(
+    assertThat(TimeSeriesHandlerUtils.buildTagFilterFromQueryParams(null,
         occurrences("region:eu", "host:web1"), COLUMNS).matches(row("web1", "eu"))).isTrue();
   }
 
@@ -106,7 +106,7 @@ class TimeSeriesTagFilterBuilderTest {
    */
   @Test
   void tagPositionSkipsTheTimestampColumnOnly() {
-    final TagFilter filter = TimeSeriesHandlerUtils.buildTagFilterFromQueryParams(
+    final TagFilter filter = TimeSeriesHandlerUtils.buildTagFilterFromQueryParams(null,
         occurrences("region:eu"), COLUMNS);
     assertThat(filter.getColumnIndex()).isEqualTo(1);
     assertThat(filter.matches(row("eu", "us"))).as("must read region, not host").isFalse();
@@ -118,7 +118,7 @@ class TimeSeriesTagFilterBuilderTest {
    */
   @Test
   void onlyTheFirstColonSeparatesNameFromValue() {
-    final TagFilter filter = TimeSeriesHandlerUtils.buildTagFilterFromQueryParams(
+    final TagFilter filter = TimeSeriesHandlerUtils.buildTagFilterFromQueryParams(null,
         occurrences("host:web1:8080"), COLUMNS);
     assertThat(filter.matches(row("web1:8080", "eu"))).isTrue();
     assertThat(filter.matches(row("web1", "eu"))).isFalse();
@@ -131,7 +131,7 @@ class TimeSeriesTagFilterBuilderTest {
    */
   @Test
   void twoOccurrencesOfTheSameTagAreAndedNotUnioned() {
-    final TagFilter filter = TimeSeriesHandlerUtils.buildTagFilterFromQueryParams(
+    final TagFilter filter = TimeSeriesHandlerUtils.buildTagFilterFromQueryParams(null,
         occurrences("host:web1", "host:web2"), COLUMNS);
 
     assertThat(filter.getConditionCount()).isEqualTo(2);
@@ -155,7 +155,7 @@ class TimeSeriesTagFilterBuilderTest {
         "nosuchtag:x",     // no column of that name
         "cpu:1.0",         // a FIELD column, not a TAG
         "ts:1000" }) {     // the timestamp column
-      assertThatThrownBy(() -> TimeSeriesHandlerUtils.buildTagFilterFromQueryParams(
+      assertThatThrownBy(() -> TimeSeriesHandlerUtils.buildTagFilterFromQueryParams(null,
           occurrences("host:web1", unresolvable), COLUMNS))
           .as("'%s' names no TAG column and must not be dropped", unresolvable)
           .isInstanceOf(IllegalArgumentException.class)
@@ -173,7 +173,7 @@ class TimeSeriesTagFilterBuilderTest {
     for (final String malformed : new String[] {
         "host",            // no ':' at all
         ":web1" }) {       // empty name
-      assertThatThrownBy(() -> TimeSeriesHandlerUtils.buildTagFilterFromQueryParams(
+      assertThatThrownBy(() -> TimeSeriesHandlerUtils.buildTagFilterFromQueryParams(null,
           occurrences("host:web1", malformed), COLUMNS))
           .as("'%s' is not a tag selection and must not be read as one", malformed)
           .isInstanceOf(IllegalArgumentException.class)
@@ -187,7 +187,7 @@ class TimeSeriesTagFilterBuilderTest {
    */
   @Test
   void aBlankOccurrenceIsStillIgnored() {
-    final TagFilter filter = TimeSeriesHandlerUtils.buildTagFilterFromQueryParams(
+    final TagFilter filter = TimeSeriesHandlerUtils.buildTagFilterFromQueryParams(null,
         occurrences("host:web1", "", "   "), COLUMNS);
 
     assertThat(filter.getConditionCount()).isEqualTo(1);
@@ -198,7 +198,7 @@ class TimeSeriesTagFilterBuilderTest {
   /** The 'tags' object of POST /ts/{database}/query is refused the same way, through the same resolver. */
   @Test
   void anUnresolvableNameInTheTagsObjectIsRefusedToo() {
-    assertThatThrownBy(() -> TimeSeriesHandlerUtils.buildTagFilter(
+    assertThatThrownBy(() -> TimeSeriesHandlerUtils.buildTagFilter(null,
         new JSONObject().put("hsot", "web1"), COLUMNS))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("hsot")
@@ -212,14 +212,14 @@ class TimeSeriesTagFilterBuilderTest {
   @Test
   void theTagsObjectPathStillAndsEveryPair() {
     final JSONObject tags = new JSONObject().put("host", "web1").put("region", "eu");
-    final TagFilter filter = TimeSeriesHandlerUtils.buildTagFilter(tags, COLUMNS);
+    final TagFilter filter = TimeSeriesHandlerUtils.buildTagFilter(null, tags, COLUMNS);
 
     assertThat(filter.getConditionCount()).isEqualTo(2);
     assertThat(filter.matches(row("web1", "eu"))).isTrue();
     assertThat(filter.matches(row("web1", "us"))).isFalse();
     assertThat(filter.matches(row("web2", "eu"))).isFalse();
 
-    assertThat(TimeSeriesHandlerUtils.buildTagFilter(null, COLUMNS)).isNull();
-    assertThat(TimeSeriesHandlerUtils.buildTagFilter(new JSONObject(), COLUMNS)).isNull();
+    assertThat(TimeSeriesHandlerUtils.buildTagFilter(null, null, COLUMNS)).isNull();
+    assertThat(TimeSeriesHandlerUtils.buildTagFilter(null, new JSONObject(), COLUMNS)).isNull();
   }
 }

@@ -194,7 +194,7 @@ public class PostGrafanaQueryHandler extends AbstractObservabilityHandler {
     final TagFilter tagFilter;
     try {
       tagFilter = target.isNull("tags") ? null
-          : TimeSeriesHandlerUtils.buildTagFilter(
+          : TimeSeriesHandlerUtils.buildTagFilter(database,
               TimeSeriesHandlerUtils.requireObject(target, "tags", targetPath + ".tags"), columns);
     } catch (final IllegalArgumentException e) {
       return buildErrorFrame(e.getMessage());
