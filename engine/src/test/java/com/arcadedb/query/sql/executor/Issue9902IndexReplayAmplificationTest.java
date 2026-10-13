@@ -407,6 +407,49 @@ class Issue9902IndexReplayAmplificationTest extends TestHelper {
   }
 
   /**
+   * Past the records a key remembers it served, the key is not read again for the entries a commit takes from it, since it could
+   * not tell what it served: those are counted as unsettled, and still no row is served twice or for a key it does not hold.
+   */
+  @Test
+  void pastTheTrackedRecordsAKeyIsNotReadAgainAndServesNoRowTwice() throws Exception {
+    populate("g", 2_000);
+    final Set<RID> served = new HashSet<>();
+    final Set<RID> deleted = new HashSet<>();
+    try (final ResultSet rs = database.query("sql", "SELECT FROM Entity WHERE graph = 'g'")) {
+      final GetValueFromIndexEntryStep step = findStep(rs.getExecutionPlan().orElseThrow());
+      step.trackedRidsPerKey = 10;
+      for (int i = 0; i < 20; i++)
+        served.add(rs.next().getIdentity().orElseThrow());
+
+      inAnotherThread(() -> database.transaction(() -> {
+        int skipped = 0;
+        try (final ResultSet all = database.query("sql", "SELECT FROM Entity WHERE graph = 'g'")) {
+          while (all.hasNext() && deleted.size() < 30) {
+            final RID rid = all.next().getIdentity().orElseThrow();
+            if (++skipped > 500) {
+              rid.asDocument().delete();
+              deleted.add(rid);
+            }
+          }
+        }
+        for (int i = 0; i < 30; i++)
+          database.newDocument("Entity").set("graph", "g").set("score", 1).save();
+      }));
+
+      while (rs.hasNext()) {
+        final Result row = rs.next();
+        assertThat(row.<String>getProperty("graph")).isEqualTo("g");
+        assertThat(served.add(row.getIdentity().orElseThrow())).as("a row served twice").isTrue();
+      }
+      assertThat(step.getKeyRereads()).as("the key cannot tell what it served, so it is not read again").isZero();
+      assertThat(step.getUnsettledEntries()).as("the entries the commit took are counted").isPositive();
+    }
+    for (final RID rid : deleted)
+      assertThat(served).as("a deleted record loaded after the commit is not served").doesNotContain(rid);
+    assertThat(served).hasSize(2_000 - deleted.size());
+  }
+
+  /**
    * Issue #9893: reading a key again stops on the command deadline instead of logging it as a failed read and going on.
    */
   @Test
