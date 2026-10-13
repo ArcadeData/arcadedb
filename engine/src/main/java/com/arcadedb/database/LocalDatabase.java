@@ -2980,6 +2980,19 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   }
 
   /**
+   * Puts ONE setting back to {@code previousValue} ({@code null}: not set, so it falls back to the default) after a
+   * change to it could not be saved, side effects included, leaving every other setting as it stands now (issue #9763).
+   * Restoring a snapshot of the whole document instead would also revert a change to another setting that landed in
+   * between, such as a configuration entry another node replicated.
+   */
+  public void restoreSetting(final String key, final Object previousValue) {
+    final ContextConfiguration restored = new ContextConfiguration();
+    restored.fromJSON(configuration.toJSON());
+    restored.setValue(key, previousValue);
+    installConfiguration(restored.toJSON());
+  }
+
+  /**
    * Fires the AFTER READ listeners, under the same re-entrancy guard as the BEFORE READ ones - see
    * {@code LocalBucket.fireBeforeReadEvents}, which owns the explanation.
    * <p>

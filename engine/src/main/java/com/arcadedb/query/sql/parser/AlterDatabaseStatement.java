@@ -132,7 +132,10 @@ public class AlterDatabaseStatement extends DDLStatement {
       // Kept to undo the change below when it cannot be saved (issue #9763). Under Raft HA the save is what replicates
       // the configuration, and it can be refused - a peer that cannot decode the entry yet - or fail to commit: the
       // setting must then not stay in force on this node alone, which is the divergence the replication exists to end.
-      final String configurationBefore = db.getConfiguration().toJSON();
+      // Only this setting is put back, so a change to another one that lands meanwhile is kept.
+      final Object previousValue = db.getConfiguration().hasValue(cfg.getKey()) ?
+          db.getConfiguration().getValue(cfg.getKey(), null) :
+          null;
 
       db.getConfiguration().setValue(cfg, finalValue);
 
@@ -149,7 +152,9 @@ public class AlterDatabaseStatement extends DDLStatement {
         // Committed cluster-wide: every node, this one included, installs the new document, so there is nothing to undo
         throw e;
       } catch (final IOException | RuntimeException e) {
-        restoreConfiguration(db, configurationBefore);
+        // An outcome Raft cannot confirm either way (the entry was dispatched, then the wait gave up) is undone here
+        // too, and can race this node's own apply of the entry if it does commit: issue #9904.
+        restoreSetting(db, cfg.getKey(), previousValue);
         if (e instanceof RuntimeException runtime)
           throw runtime;
         // Chain the cause and name what was being written: without them a read-only filesystem, a permission
@@ -169,13 +174,13 @@ public class AlterDatabaseStatement extends DDLStatement {
   }
 
   /**
-   * Puts back the configuration this statement found, side effects included, after a save that did not happen (issue
-   * #9763). Only the embedded {@link LocalDatabase} can install a whole configuration document; every database a
-   * statement runs against has one.
+   * Puts back the value this statement replaced, side effects included, after a save that did not happen (issue
+   * #9763). Only the embedded {@link LocalDatabase} can install a configuration; every database a statement runs
+   * against is one or wraps one, which {@link DatabaseInternal#getEmbedded()} returns.
    */
-  private static void restoreConfiguration(final DatabaseInternal db, final String configurationJson) {
+  private static void restoreSetting(final DatabaseInternal db, final String key, final Object previousValue) {
     if (db.getEmbedded() instanceof LocalDatabase local)
-      local.installConfiguration(configurationJson);
+      local.restoreSetting(key, previousValue);
   }
 
   /**

@@ -1183,8 +1183,12 @@ public class ServerControlPlane {
 
     final DatabaseInternal database = server.getDatabase(databaseName);
     // Under Raft HA the save replicates the configuration and can be refused or fail to commit: the setting must not
-    // then stay in force on this node alone (issue #9763), so the configuration it replaced is put back.
-    final String configurationBefore = database.getConfiguration().toJSON();
+    // then stay in force on this node alone (issue #9763), so the value it replaced is put back. Only that setting, so
+    // a change to another one that lands meanwhile is kept.
+    final String storedKey = storedKey(key);
+    final Object previousValue = database.getConfiguration().hasValue(storedKey) ?
+        database.getConfiguration().getValue(storedKey, null) :
+        null;
     applySetting(database.getConfiguration(), key, value);
     try {
       database.saveConfiguration();
@@ -1192,8 +1196,9 @@ public class ServerControlPlane {
       // Committed cluster-wide: every node, this one included, installs the new document, so there is nothing to undo
       throw e;
     } catch (final IOException | RuntimeException e) {
+      // An outcome Raft cannot confirm either way is undone too, and can race this node's own apply: issue #9904
       if (database.getEmbedded() instanceof LocalDatabase local)
-        local.installConfiguration(configurationBefore);
+        local.restoreSetting(storedKey, previousValue);
       throw e;
     }
   }
@@ -1248,6 +1253,13 @@ public class ServerControlPlane {
    * all, but they go through the same stripping and coercion so a declared setting accepts and refuses the same
    * values on both transports.
    */
+  /** The key {@link #applySetting} stores {@code rawKey} under: the declared one for a known setting. */
+  private static String storedKey(final String rawKey) {
+    final String key = FileUtils.getStringContent(rawKey.trim());
+    final GlobalConfiguration setting = GlobalConfiguration.findByKey(key);
+    return setting != null ? setting.getKey() : key;
+  }
+
   public static void applySetting(final ContextConfiguration configuration, final String rawKey, final String rawValue) {
     final String key = FileUtils.getStringContent(rawKey.trim());
     final String value = FileUtils.getStringContent(rawValue.trim());
