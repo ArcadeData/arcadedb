@@ -76,7 +76,7 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
   // Hard cap on the candidate pool when grouping is enabled. Same rationale as
   // SQLFunctionVectorNeighbors.MAX_FETCH_CANDIDATES: bounds memory at a few MB on pathological
   // (k, groupSize) combinations.
-  private static final int MAX_FETCH_CANDIDATES = 100_000;
+  private static final int MAX_FETCH_CANDIDATES = VectorUtils.MAX_FETCH_CANDIDATES;
 
   public SQLFunctionVectorSparseNeighbors() {
     super(NAME);
@@ -226,16 +226,9 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
           (fetchGroups, fetchGroupSize, staleSkipped) -> searchAndEmit(indexes, queryIndices, queryValues, k, fetchGroups,
               allowedRIDs, groupBy, fetchGroupSize, groupSize, minScore, context, staleSkipped, null));
 
-    int fetchK = k;
-    while (true) {
-      final int[] staleSkipped = new int[1];
-      final boolean[] saturated = new boolean[1];
-      final ArrayList<Object> result = searchAndEmit(indexes, queryIndices, queryValues, k, fetchK, allowedRIDs, null,
-          groupSize, groupSize, minScore, context, staleSkipped, saturated);
-      if (result.size() >= k || staleSkipped[0] == 0 || !saturated[0] || fetchK >= MAX_FETCH_CANDIDATES)
-        return result;
-      fetchK = (int) Math.min((long) fetchK * 2L, MAX_FETCH_CANDIDATES);
-    }
+    return VectorUtils.searchWithStaleTopUp(k,
+        (fetchK, staleSkipped, saturated) -> searchAndEmit(indexes, queryIndices, queryValues, k, fetchK, allowedRIDs, null,
+            groupSize, groupSize, minScore, context, staleSkipped, saturated));
   }
 
   /**

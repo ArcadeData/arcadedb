@@ -22,6 +22,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.function.sql.vector.SQLFunctionVectorAbstract;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexInternal;
@@ -117,11 +118,26 @@ public class DbIndexVectorQueryNodes implements CypherProcedure {
     // Get the query vector
     final float[] queryVector = extractQueryVector(key, vectorIndexes.getFirst(), context);
 
+    // A record deleted by a commit that overlaps the search can still be in an index's answer (issue #9858): it is skipped,
+    // and the search widened until it answers k live rows, exactly as vector.neighbors does (#9368).
+    return VectorUtils.searchWithStaleTopUp(limit,
+        (fetchK, staleSkipped, saturated) -> searchAndLoad(vectorIndexes, queryVector, limit, fetchK, staleSkipped, saturated))
+        .stream();
+  }
+
+  /**
+   * One pass of the search: asks every index for {@code fetchK} candidates and loads the nearest {@code limit} distinct live
+   * records, counting in {@code staleSkipped} the candidates whose record no longer exists.
+   */
+  private static List<Result> searchAndLoad(final List<LSMVectorIndex> vectorIndexes, final float[] queryVector, final int limit,
+      final int fetchK, final int[] staleSkipped, final boolean[] saturated) {
     // Search across all indexes and collect results
     final List<Pair<RID, Float>> allNeighbors = new ArrayList<>();
     for (final LSMVectorIndex lsmIndex : vectorIndexes) {
-      final List<Pair<RID, Float>> neighbors = lsmIndex.findNeighborsFromVector(queryVector, limit);
+      final List<Pair<RID, Float>> neighbors = lsmIndex.findNeighborsFromVector(queryVector, fetchK);
       allNeighbors.addAll(neighbors);
+      if (neighbors.size() >= fetchK)
+        saturated[0] = true;
     }
 
     // Sort by distance (ascending - closer is better)
@@ -146,7 +162,14 @@ public class DbIndexVectorQueryNodes implements CypherProcedure {
       if (!emitted.add(neighbor.getFirst()))
         continue;
 
-      final Document record = neighbor.getFirst().asDocument();
+      final Document record;
+      try {
+        record = neighbor.getFirst().asDocument();
+      } catch (final RecordNotFoundException e) {
+        // Deleted between the index search and this load: a candidate lost, not a failed query (issue #9858)
+        staleSkipped[0]++;
+        continue;
+      }
       final float distance = neighbor.getSecond();
 
       final float score = toNeo4jScore(similarityFunction, distance);
@@ -157,7 +180,7 @@ public class DbIndexVectorQueryNodes implements CypherProcedure {
       results.add(r);
     }
 
-    return results.stream();
+    return results;
   }
 
   /**
