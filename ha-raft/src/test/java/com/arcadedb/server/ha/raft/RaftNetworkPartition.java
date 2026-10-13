@@ -25,6 +25,7 @@ import org.apache.ratis.server.impl.BlockRequestHandlingInjection;
 import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
 import org.apache.ratis.util.CodeInjectionForTesting;
 
+import java.lang.reflect.Field;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Predicate;
 import java.util.logging.Level;
@@ -56,13 +57,15 @@ import java.util.logging.Level;
  */
 final class RaftNetworkPartition implements AutoCloseable {
 
+  /** Package-private in Ratis, hence named rather than imported. */
+  private static final String RATIS_SERVER_IMPL = "org.apache.ratis.server.impl.RaftServerImpl";
+
   /**
-   * {@code RaftServerImpl.APPEND_TRANSACTION}, package-private in Ratis: the point a leader appends a client request.
-   * Copied as a string, verified against Ratis 3.3.1. Should a Ratis upgrade rename it, nothing is held or dropped any
-   * more, and the tests' waits for {@link #heldClientRequests()} / {@link #droppedClientRequests()} fail rather than
-   * passing for the wrong reason.
+   * {@code RaftServerImpl.APPEND_TRANSACTION}, the point a leader appends a client request. Package-private in Ratis, so
+   * it is read reflectively rather than copied: a Ratis upgrade that renames it fails here, at once, rather than as a
+   * timed-out wait for a request nothing intercepted.
    */
-  static final String APPEND_TRANSACTION = "RaftServerImpl.appendTransaction";
+  static final String APPEND_TRANSACTION = readRatisInjectionPoint("APPEND_TRANSACTION");
 
   private enum ClientTraffic {PASS, HOLD, DROP}
 
@@ -109,6 +112,17 @@ final class RaftNetworkPartition implements AutoCloseable {
     LogManager.instance().log(RaftNetworkPartition.class, Level.INFO, "TEST: isolated Raft peer %s (client requests: %s)",
         isolatedPeerId, clientTraffic);
     return partition;
+  }
+
+  private static String readRatisInjectionPoint(final String fieldName) {
+    try {
+      final Field field = Class.forName(RATIS_SERVER_IMPL).getDeclaredField(fieldName);
+      field.setAccessible(true);
+      return (String) field.get(null);
+    } catch (final ReflectiveOperationException e) {
+      throw new IllegalStateException("Ratis no longer declares " + RATIS_SERVER_IMPL + "." + fieldName
+          + ": RaftNetworkPartition cannot intercept client requests on this Ratis version", e);
+    }
   }
 
   /** Reconnects the isolated peer's server-to-server traffic. Client requests keep their current treatment. */

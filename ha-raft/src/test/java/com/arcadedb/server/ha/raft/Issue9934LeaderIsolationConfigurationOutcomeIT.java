@@ -47,9 +47,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * Issue #9934: the configuration change of unknown outcome (#9904) driven through a REAL leader isolation rather than
  * a hook that gives up on an entry the cluster then commits normally.
  * <p>
- * The leader is cut off from both followers ({@link RaftNetworkPartition}) and runs {@code ALTER DATABASE} or "set
- * database setting" ({@link ServerControlPlane#setDatabaseSetting}). Its Raft
- * log takes the {@code DATABASE_CONFIGURATION_ENTRY}, which can never reach a quorum; the wait gives up with
+ * The leader is cut off from both followers ({@link RaftNetworkPartition}) and runs {@code ALTER DATABASE} or
+ * "set database setting" ({@link ServerControlPlane#setDatabaseSetting}). Its Raft log takes the {@code DATABASE_CONFIGURATION_ENTRY}, which can never reach a quorum; the wait gives up with
  * {@link TransactionOutcomeUnknownException}, and the node settles the setting on its {@code configuration.json},
  * i.e. on the previous value. The followers elect a leader of their own, and when the partition heals the old
  * leader's uncommitted entry is truncated by the new leader's log. Then two outcomes:
@@ -96,18 +95,18 @@ class Issue9934LeaderIsolationConfigurationOutcomeIT extends BaseRaftHATest {
 
   @Test
   void alterDatabaseOfAnIsolatedLeaderThatNeverCommitsLeavesThePreviousValueEverywhere() throws Exception {
-    assertChangeThatNeverCommitsLeavesThePreviousValueEverywhere(GlobalConfiguration.TYPE_DEFAULT_BUCKETS,
-        "typeDefaultBuckets", (server, value) -> getServerDatabase(server, getDatabaseName())
-            .command("sql", "ALTER DATABASE `arcadedb.typeDefaultBuckets` " + value), GlobalConfiguration.TX_RETRIES,
-        "txRetries");
+    final SettingChange alterDatabase = (server, value) -> getServerDatabase(server, getDatabaseName())
+        .command("sql", "ALTER DATABASE `arcadedb.typeDefaultBuckets` " + value);
+    assertChangeThatNeverCommitsLeavesThePreviousValueEverywhere(GlobalConfiguration.TYPE_DEFAULT_BUCKETS, alterDatabase,
+        GlobalConfiguration.TX_RETRIES);
   }
 
   @Test
   void setDatabaseSettingOfAnIsolatedLeaderThatNeverCommitsLeavesThePreviousValueEverywhere() throws Exception {
-    assertChangeThatNeverCommitsLeavesThePreviousValueEverywhere(GlobalConfiguration.TX_RETRIES, "txRetries",
-        (server, value) -> new ServerControlPlane(getServer(server)).setDatabaseSetting(getDatabaseName(),
-            GlobalConfiguration.TX_RETRIES.getKey(), String.valueOf(value)), GlobalConfiguration.TYPE_DEFAULT_BUCKETS,
-        "typeDefaultBuckets");
+    final SettingChange setDatabaseSetting = (server, value) -> new ServerControlPlane(getServer(server))
+        .setDatabaseSetting(getDatabaseName(), GlobalConfiguration.TX_RETRIES.getKey(), String.valueOf(value));
+    assertChangeThatNeverCommitsLeavesThePreviousValueEverywhere(GlobalConfiguration.TX_RETRIES, setDatabaseSetting,
+        GlobalConfiguration.TYPE_DEFAULT_BUCKETS);
   }
 
   @Test
@@ -147,7 +146,7 @@ class Issue9934LeaderIsolationConfigurationOutcomeIT extends BaseRaftHATest {
     // The old leader's own copy of the entry is replaced by the new leader's log, whose copy committed: its apply
     // installs the new value over the one the old leader settled on
     awaitTrue(() -> isTruncated(raftOf(oldLeader), appended), "the old leader's uncommitted entry is truncated");
-    assertEveryNodeHolds(GlobalConfiguration.TYPE_DEFAULT_BUCKETS, "typeDefaultBuckets", changed);
+    assertEveryNodeHolds(GlobalConfiguration.TYPE_DEFAULT_BUCKETS, changed);
   }
 
   // -----------------------------------------------------------------------------------------------------------
@@ -164,7 +163,7 @@ class Issue9934LeaderIsolationConfigurationOutcomeIT extends BaseRaftHATest {
    * {@code followUp} made on the same node does not carry the abandoned value along.
    */
   private void assertChangeThatNeverCommitsLeavesThePreviousValueEverywhere(final GlobalConfiguration setting,
-      final String fileKey, final SettingChange change, final GlobalConfiguration followUp, final String followUpKey)
+      final SettingChange change, final GlobalConfiguration followUp)
       throws Exception {
     final int oldLeader = findLeaderIndex();
     assertThat(oldLeader).isGreaterThanOrEqualTo(0);
@@ -192,7 +191,7 @@ class Issue9934LeaderIsolationConfigurationOutcomeIT extends BaseRaftHATest {
     awaitTrue(() -> isTruncated(raftOf(oldLeader), appended), "the old leader's uncommitted entry is truncated");
     assertThat(configurationEntryInLogAfter(raftOf(newLeader), baseline)).as("no configuration entry ever committed")
         .isNull();
-    assertEveryNodeHolds(setting, fileKey, previous);
+    assertEveryNodeHolds(setting, previous);
 
     // Nothing was left pending on the node that ran the change: its next change does not carry the abandoned value
     // along. The old leader is a follower now, and the change goes through its fresh Raft client
@@ -200,8 +199,8 @@ class Issue9934LeaderIsolationConfigurationOutcomeIT extends BaseRaftHATest {
     partition = null;
     getServerDatabase(oldLeader, getDatabaseName()).command("sql",
         "ALTER DATABASE `" + followUp.getKey() + "` " + followUpValue);
-    assertEveryNodeHolds(followUp, followUpKey, followUpValue);
-    assertEveryNodeHolds(setting, fileKey, previous);
+    assertEveryNodeHolds(followUp, followUpValue);
+    assertEveryNodeHolds(setting, previous);
   }
 
   private RaftHAServer raftOf(final int serverIndex) {
@@ -257,6 +256,8 @@ class Issue9934LeaderIsolationConfigurationOutcomeIT extends BaseRaftHATest {
       final LogEntryProto current = server.getRaftDivision().getRaftLog().get(appended.getIndex());
       return current != null && current.getTerm() != appended.getTerm();
     } catch (final Exception e) {
+      LogManager.instance().log(Issue9934LeaderIsolationConfigurationOutcomeIT.class, Level.FINE,
+          "TEST: cannot read Raft log entry %d: %s", appended.getIndex(), e.getMessage());
       return false;
     }
   }
@@ -272,14 +273,16 @@ class Issue9934LeaderIsolationConfigurationOutcomeIT extends BaseRaftHATest {
         "server " + serverIndex + " holds " + setting.getKey() + "=" + expected);
   }
 
-  private void assertEveryNodeHolds(final GlobalConfiguration setting, final String fileKey, final int expected)
-      throws Exception {
+  private void assertEveryNodeHolds(final GlobalConfiguration setting, final int expected) throws Exception {
+    // configuration.json names a setting without the "arcadedb." prefix
+    final String fileKey = setting.getKey().substring(GlobalConfiguration.PREFIX.length());
     for (int i = 0; i < getServerCount(); i++) {
       awaitConfiguredValue(i, setting, expected);
       final DatabaseInternal database = (DatabaseInternal) getServerDatabase(i, getDatabaseName());
       assertThat(database.getConfiguration().getValueAsInteger(setting)).as("server %d in memory", i).isEqualTo(expected);
       final JSONObject saved = readConfigurationFile(database);
-      // A setting never changed on this database is not in its file: it holds the default there
+      // A setting never changed on this database is not in its file: it holds the default there, and the in-memory
+      // check above is the whole assertion for it
       if (saved.has(fileKey) || expected != setting.getValueAsInteger())
         assertThat(saved.getInt(fileKey, -1)).as("server %d configuration.json", i).isEqualTo(expected);
     }
