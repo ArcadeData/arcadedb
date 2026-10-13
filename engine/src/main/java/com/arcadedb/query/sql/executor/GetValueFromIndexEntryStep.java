@@ -414,6 +414,9 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
         }
 
         while (!finished) {
+          // Every pass loads a record. The entries a chunk read ahead (pendingEntries) or a re-read found do not come through
+          // the index step's own check, so a terminated statement or one past its deadline is stopped here (#9893)
+          guard.check();
           final long begin = context.isProfiling() ? System.nanoTime() : 0;
           try {
             if (rereadCandidates != null) {
@@ -625,7 +628,8 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
     final DatabaseInternal database = (DatabaseInternal) context.getDatabase();
     RID rid;
     while ((rid = rereadCandidates.pollFirst()) != null) {
-      guard.checkPeriodically(rereadCandidates.size());
+      // a record load each, I/O: checked on every one (#9893)
+      guard.check();
       final Result row = toResult(rid, context, false);
       if (noCommitSince(database, rereadSequence)) {
         if (row != null)
@@ -894,7 +898,8 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
         continue;
       if (value instanceof RID rid)
         readBucketIds.add(rid.getBucketId());
-      guard.checkPeriodically(rows.size());
+      // a record load each, I/O: checked on every one, or a termination waits for the whole chunk (#9893)
+      guard.check();
       final Result row = toResult(value, context);
       if (row != null)
         rows.add(row);

@@ -47,6 +47,21 @@ public interface IndexableSQLFunction {
   Iterable<Record> searchFromTarget(FromClause target, BinaryCompareOperator operator, Object rightValue, CommandContext context, Expression[] oExpressions);
 
   /**
+   * {@link #searchFromTarget(FromClause, BinaryCompareOperator, Object, CommandContext, Expression[])} for a plan that
+   * consumes at most {@code limit} rows of the answer (issue #9895). The planner passes a limit only when the rows it consumes
+   * are the first {@code limit} of the function's own best-first order - the statement has no ORDER BY, or orders by
+   * {@code $score} descending, and nothing between the fetch and the {@code LIMIT} can drop or add a row - so a function
+   * whose answer has such an order may compute only that many. The answer must still be correct past them: a record that
+   * turns out to be gone is skipped, and the rows that make up for it have to come from somewhere.
+   *
+   * @param limit the rows the plan can consume, or -1 for all of them
+   */
+  default Iterable<Record> searchFromTarget(final FromClause target, final BinaryCompareOperator operator, final Object rightValue,
+      final CommandContext context, final Expression[] oExpressions, final int limit) {
+    return searchFromTarget(target, operator, rightValue, context, oExpressions);
+  }
+
+  /**
    * Optional scoring metadata surfaced by {@code EXPLAIN}/{@code PROFILE} for this indexed function (e.g. the BM25 similarity,
    * parameters and per-term IDF for {@code SEARCH_INDEX}). Returns {@code null} when the function has nothing to explain.
    */

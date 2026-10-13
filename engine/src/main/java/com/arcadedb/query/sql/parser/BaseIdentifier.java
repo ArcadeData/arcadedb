@@ -81,9 +81,9 @@ public class BaseIdentifier extends SimpleNode {
   }
 
   public Iterable<Record> executeIndexedFunction(final FromClause target, final CommandContext context, final BinaryCompareOperator operator,
-      final Object right) {
+      final Object right, final int limit) {
     if (levelZero != null)
-      return levelZero.executeIndexedFunction(target, context, operator, right);
+      return levelZero.executeIndexedFunction(target, context, operator, right, limit);
     return null;
   }
 

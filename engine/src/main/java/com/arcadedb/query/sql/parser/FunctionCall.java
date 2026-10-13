@@ -168,14 +168,16 @@ public class FunctionCall extends SimpleNode {
    * @param context
    * @param operator
    * @param rightValue
+   * @param limit      how many rows of the result the plan can consume, or -1 for all of them (see
+   *                   {@link IndexableSQLFunction#searchFromTarget(FromClause, BinaryCompareOperator, Object, CommandContext, Expression[], int)})
    *
    * @return
    */
   public Iterable<Record> executeIndexedFunction(final FromClause target, final CommandContext context, final BinaryCompareOperator operator,
-      final Object rightValue) {
+      final Object rightValue, final int limit) {
     final SQLFunction function = getFunction(context);
     if (function instanceof IndexableSQLFunction lFunction)
-      return lFunction.searchFromTarget(target, operator, rightValue, context, this.getParams().toArray(new Expression[] {}));
+      return lFunction.searchFromTarget(target, operator, rightValue, context, this.getParams().toArray(new Expression[] {}), limit);
 
     return null;
   }

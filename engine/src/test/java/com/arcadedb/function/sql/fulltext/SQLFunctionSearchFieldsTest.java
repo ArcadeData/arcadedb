@@ -57,6 +57,21 @@ class SQLFunctionSearchFieldsTest extends TestHelper {
     });
   }
 
+  /**
+   * The search is cached per statement under a key holding the query text. SEARCH_FIELDS kept it in the variable namespace,
+   * which reads a '.' as a nested $var.field path, so a query with two dots failed with "Nested property access is not
+   * supported" - the bug #4734 fixed for SEARCH_INDEX only.
+   */
+  @Test
+  void searchQueryWithDots() {
+    database.transaction(() -> database.command("sql", "INSERT INTO Article SET title = 'Doc3', content = 'version 1.2.3 released'"));
+    try (final ResultSet result = database.query("sql", "SELECT title FROM Article WHERE SEARCH_FIELDS(['content'], '1.2.3') = true")) {
+      assertThat(result.hasNext()).isTrue();
+      assertThat(result.next().<String>getProperty("title")).isEqualTo("Doc3");
+      assertThat(result.hasNext()).isFalse();
+    }
+  }
+
   @Test
   void searchNoResults() {
     database.transaction(() -> {

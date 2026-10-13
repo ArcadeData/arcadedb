@@ -141,6 +141,8 @@ import static com.arcadedb.schema.Schema.INDEX_TYPE.FULL_TEXT;
 public class SelectExecutionPlanner {
 
   private static final String            LOCAL_NODE_NAME = "local";
+  /** The variable a scoring indexed function such as {@code SEARCH_INDEX} sets on every row it matches. */
+  private static final String            SCORE_VARIABLE  = "$score";
   private final        SelectStatement   statement;
   private              QueryPlanningInfo info;
   /**
@@ -4122,11 +4124,21 @@ public class SelectExecutionPlanner {
           }
         }
 
-        FetchFromIndexedFunctionStep step = new FetchFromIndexedFunctionStep(blockCandidateFunction, info.target, context);
         if (!blockCandidateFunction.executeIndexedFunctionAfterIndexSearch(info.target, context)) {
           block = block.copy();
           block.getSubBlocks().remove(blockCandidateFunction);
         }
+        // An OR splits the WHERE into branches whose rows are merged and deduplicated, so no branch alone knows how many of
+        // its rows the LIMIT will take: only a single block can hand the function its row limit (issue #9895)
+        final int functionLimit = info.flattenedWhereClause.size() == 1 && coversWholeHierarchy(filterClusters, typez, context) ?
+            indexedFunctionRowLimit(blockCandidateFunction, block, info, context) : -1;
+        final FetchFromIndexedFunctionStep step = new FetchFromIndexedFunctionStep(blockCandidateFunction, info.target,
+            functionLimit, context);
+        if (functionLimit > -1 && info.orderBy != null)
+          // A limit is handed over with an ORDER BY only when it is exactly $score DESC (isOrderByScoreDescending), the order
+          // the fetch produces its rows in: a sort would only drain the fetch past the rows the LIMIT takes, into the matches
+          // the limit spared
+          info.orderApplied = true;
         if (info.flattenedWhereClause.size() == 1) {
           plan.chain(step);
           plan.chain(new FilterByClustersStep(filterClusters, context));
@@ -4170,6 +4182,92 @@ public class SelectExecutionPlanner {
     } else {
       return false;
     }
+  }
+
+  /**
+   * How many rows of an indexed function's answer the statement can consume, or -1 when that is not known to be a prefix of
+   * the function's own best-first order (issue #9895). {@code SEARCH_INDEX(...) ... LIMIT n} returns n rows, but its
+   * function used to score, sort and load every match first; with a limit it can keep only the best n.
+   * <p>
+   * That is only right when the rows the LIMIT takes are the first ones the function produces, so every condition below
+   * excludes something that can drop, add or reorder a row between the fetch and the LIMIT:
+   * <ul>
+   *   <li>a residual filter other than the function's own condition, which the plan evaluates again on each row and which
+   *       holds for every row the function returns - a filter could reject a row the limit counted;</li>
+   *   <li>UNWIND and expand, which turn one row into any number; DISTINCT, GROUP BY and aggregates, which fold rows;</li>
+   *   <li>an ORDER BY other than {@code $score DESC}, the order the function produces its rows in;</li>
+   *   <li>a SKIP or LIMIT that cannot be evaluated at planning time. The plan is not cached (the fetch step is not
+   *       cacheable), so a parameter is resolved for this execution only.</li>
+   * </ul>
+   * A bucket filter narrower than the target type (a {@code FROM BUCKET} target, partition pruning) is excluded by the
+   * caller. The type filter that follows the fetch is the function's to respect: it is told the target and keeps the limit
+   * only when every record it can return passes.
+   */
+  private static int indexedFunctionRowLimit(final BinaryCondition function, final AndBlock residual, final QueryPlanningInfo info,
+      final CommandContext context) {
+    if (info.limit == null || info.deferredLetWhereClause != null)
+      return -1;
+    if (info.expand || info.unwind != null || info.distinct || info.groupBy != null || info.aggregateProjection != null)
+      return -1;
+    // By identity: the residual is the planner's own block, or a copy of it made only to remove the function (and then
+    // empty), so the function's condition is the very instance the block holds
+    for (final BooleanExpression condition : residual.getSubBlocks())
+      if (condition != function)
+        return -1;
+    if (info.orderBy != null && !isOrderByScoreDescending(info))
+      return -1;
+
+    try {
+      final int limit = info.limit.getValue(context);
+      if (limit < 0)
+        return -1;
+      final int skip = info.skip == null ? 0 : info.skip.getValue(context);
+      if (skip < 0)
+        return -1;
+      // SKIP is served out of the same rows, so the function has to produce both
+      return Math.addExact(skip, limit);
+    } catch (final RuntimeException e) {
+      // SKIP/LIMIT depend on runtime state, or overflow: the function produces every row, as without a limit
+      return -1;
+    }
+  }
+
+  /**
+   * Whether the bucket filter chained after an indexed fetch keeps every record of {@code type} and its subtypes: a
+   * {@code FROM BUCKET} target or a partition-pruned type narrows it, and then it can drop rows a limit counted.
+   */
+  private static boolean coversWholeHierarchy(final Set<String> filterClusters, final DocumentType type,
+      final CommandContext context) {
+    if (filterClusters == null)
+      return true;
+    final Schema schema = context.getDatabase().getSchema();
+    final Set<Integer> filtered = new HashSet<>(filterClusters.size());
+    for (final String bucketName : filterClusters)
+      if (bucketName != null && schema.existsBucket(bucketName))
+        filtered.add(schema.getBucketByName(bucketName).getFileId());
+    return filtered.containsAll(type.getBucketIds(true));
+  }
+
+  /**
+   * Whether the ORDER BY is exactly {@code $score DESC}, the order a scoring indexed function produces its rows in, and the
+   * projection does not give {@code $score} another meaning.
+   */
+  private static boolean isOrderByScoreDescending(final QueryPlanningInfo info) {
+    if (info.orderBy.getItems() == null || info.orderBy.getItems().size() != 1)
+      return false;
+    final OrderByItem item = info.orderBy.getItems().getFirst();
+    if (item.modifier != null || item.recordAttr != null || item.getDirectionParameter() != null
+        || !OrderByItem.DESC.equalsIgnoreCase(item.getType()))
+      return false;
+    final String sortedBy = item.expression != null ? item.expression.toString() : item.getAlias();
+    if (!SCORE_VARIABLE.equals(sortedBy))
+      return false;
+    if (info.projection != null && info.projection.getItems() != null)
+      for (final ProjectionItem projected : info.projection.getItems())
+        if (SCORE_VARIABLE.equals(projected.getProjectionAliasAsString()) && (projected.getExpression() == null
+            || !SCORE_VARIABLE.equals(projected.getExpression().toString())))
+          return false;
+    return true;
   }
 
   /**

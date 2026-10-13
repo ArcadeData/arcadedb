@@ -24,6 +24,7 @@ import com.arcadedb.index.fulltext.FullTextSearch;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 
@@ -115,7 +116,7 @@ public class DbIndexFulltextQueryNodes implements CypherProcedure {
     if (options.returnsNothing())
       return Stream.empty();
 
-    return options.rows(limit -> FullTextSearch.search(typeIndex, queryText, limit), "node",
+    return options.rows(limit -> FullTextSearch.search(typeIndex, queryText, limit, WorkGuard.forCommandDeadline(context)), "node",
         rid -> rid.asDocument(true)).stream();
   }
 }
