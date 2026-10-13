@@ -102,6 +102,20 @@ class LSMVectorIndexPageParser {
    */
   static int parsePages(final DatabaseInternal database, final int fileId, final int totalPages,
       final int pageSize, final boolean isCompacted, final boolean strict, final Consumer<VectorEntry> consumer) {
+    return parsePages(database, fileId, totalPages, pageSize, isCompacted, strict, consumer, null);
+  }
+
+  /**
+   * Same as {@link #parsePages(DatabaseInternal, int, int, int, boolean, boolean, Consumer)}, also counting the pages
+   * the lenient mode cut short.
+   *
+   * @param pagesCutShort when not null, its first element is incremented once per page whose entries were not all
+   *                      read: a caller that must know whether it saw every id on disk (the vector id allocator) can
+   *                      tell a complete parse from a truncated one
+   */
+  static int parsePages(final DatabaseInternal database, final int fileId, final int totalPages,
+      final int pageSize, final boolean isCompacted, final boolean strict, final Consumer<VectorEntry> consumer,
+      final int[] pagesCutShort) {
 
     int entriesRead = 0;
 
@@ -172,6 +186,8 @@ class LSMVectorIndexPageParser {
             fileId, entryIndex, numberOfEntries, entryIndex, numberOfEntries - 1, e.getMessage());
         if (strict)
           throw new IndexException(message, e);
+        if (pagesCutShort != null)
+          ++pagesCutShort[0];
         LogManager.instance().log(LSMVectorIndexPageParser.class, Level.WARNING, message);
       }
     }
