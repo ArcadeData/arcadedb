@@ -338,6 +338,7 @@ public final class TimeSeriesGateway {
         if (valid == 0)
           continue;
         if (valid < count) {
+          // ONLY WHEN A SAMPLE WAS REFUSED, SO THE COPY IS PAID BY THE FAILING REQUEST AND NEVER BY A CLEAN ONE
           timestamps = Arrays.copyOf(timestamps, valid);
           for (int c = 0; c < columnValues.length; c++)
             columnValues[c] = Arrays.copyOf(columnValues[c], valid);

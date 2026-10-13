@@ -169,6 +169,13 @@ class Issue9809LineProtocolTemporalValueTest extends TestHelper {
   void aFiniteNumberTooLargeForAFloatColumnIsRefusedWhileNaNAndInfinityAreValues() throws Exception {
     database.command("sql", "CREATE TIMESERIES TYPE Floats TIMESTAMP ts FIELDS (f FLOAT, d DOUBLE) SHARDS 1");
 
+    // THE EDGE OF THE RANGE: Float.MAX_VALUE IS A FLOAT, THE NEXT DOUBLE ABOVE IT IS NOT
+    final WriteReport edge = write(field("Floats", T0 + 20, "f", (double) Float.MAX_VALUE),
+        field("Floats", T0 + 21, "f", Math.nextUp((double) Float.MAX_VALUE)));
+    assertThat(edge.written()).isEqualTo(1);
+    assertThat(edge.dropped()).isEqualTo(1);
+    assertThat(((Number) valueAt("Floats", "f", T0 + 20)).floatValue()).isEqualTo(Float.MAX_VALUE);
+
     final WriteReport report = write(field("Floats", T0, "f", 1.0e300), field("Floats", T0 + 1, "f", 1.5e30),
         field("Floats", T0 + 2, "f", Double.NaN), field("Floats", T0 + 3, "f", Double.POSITIVE_INFINITY),
         field("Floats", T0 + 4, "d", 1.0e300), field("Floats", T0 + 5, "d", new BigDecimal("1e500")),
@@ -222,6 +229,23 @@ class Issue9809LineProtocolTemporalValueTest extends TestHelper {
       assertThat(two.<Long>getProperty("b")).isEqualTo(4L);
       assertThat(rs.hasNext()).isFalse();
     }
+  }
+
+  @Test
+  void aRefusedSampleLeavesNothingBehindForTheNextOneWithAMissingValue() throws Exception {
+    database.command("sql", "CREATE TIMESERIES TYPE Gap TIMESTAMP ts FIELDS (a LONG, b LONG) SHARDS 1");
+
+    // THE REFUSED SAMPLE HAS WRITTEN a = 22 INTO THE ROW THE NEXT ONE TAKES; THAT ONE HAS NO a AT ALL
+    final Sample good = new Sample("Gap", Map.of(), Map.of("a", 1L, "b", 2L), T0);
+    final Sample refused = new Sample("Gap", Map.of(), Map.of("a", 22L, "b", "bad"), T0 + 1);
+    final Sample withoutA = new Sample("Gap", Map.of(), Map.of("b", 4L), T0 + 2);
+
+    final WriteReport report = write(good, refused, withoutA);
+
+    assertThat(report.written()).isEqualTo(2);
+    assertThat(report.dropped()).isEqualTo(1);
+    assertThat(valueAt("Gap", "b", T0 + 2)).isEqualTo(4L);
+    assertThat(valueAt("Gap", "a", T0 + 2)).as("no value leaks from the refused sample").isNull();
   }
 
   @Test
