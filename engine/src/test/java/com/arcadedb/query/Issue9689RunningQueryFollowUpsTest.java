@@ -208,7 +208,7 @@ class Issue9689RunningQueryFollowUpsTest {
   @Test
   void aBoundEntryReachesWorkOnAnotherThreadAndLeavesItClean() throws Exception {
     final RunningQueryRegistry registry = newRegistry();
-    final RunningQuery query = registry.open(database.getName(), "alice", "test", null, null);
+    final RunningQuery query = registry.open(database.getName(), "alice", "test", null, null, null, null);
     try {
       // Opened, not published: the opening thread does not carry it
       assertThat(RunningQuery.current()).isNull();
@@ -244,7 +244,7 @@ class Issue9689RunningQueryFollowUpsTest {
   @Test
   void terminationListenersRunOnceAndCanBeWithdrawn() throws Exception {
     final RunningQueryRegistry registry = newRegistry();
-    try (final RunningQuery query = registry.open("db", "alice", "test", null, null)) {
+    try (final RunningQuery query = registry.open("db", "alice", "test", null, null, null, null)) {
       final AtomicInteger notified = new AtomicInteger();
       final AtomicInteger withdrawn = new AtomicInteger();
       query.onTerminate(notified::incrementAndGet);
@@ -267,7 +267,7 @@ class Issue9689RunningQueryFollowUpsTest {
   @Test
   void visibilityIsTheRegistrysOneRule() {
     final RunningQueryRegistry registry = newRegistry();
-    try (final RunningQuery query = registry.open("db", "alice", "test", null, null)) {
+    try (final RunningQuery query = registry.open("db", "alice", "test", null, null, "pg-42", "10.0.0.1:5000")) {
       assertThat(registry.isVisible("root", query)).isTrue();
       assertThat(registry.isVisible("alice", query)).isTrue();
       assertThat(registry.isVisible("bob", query)).isFalse();
@@ -279,11 +279,10 @@ class Issue9689RunningQueryFollowUpsTest {
       assertThat(registry.isVisible((String) null, "alice")).isFalse();
       // A registry nobody set an administrator for has none
       final RunningQueryRegistry plain = new RunningQueryRegistry();
-      try (final RunningQuery other = plain.open("db", "alice", "test", null, null)) {
+      try (final RunningQuery other = plain.open("db", "alice", "test", null, null, null, null)) {
         assertThat(plain.isVisible("root", other)).isFalse();
       }
 
-      query.setConnection("pg-42", "10.0.0.1:5000");
       query.setForwardedFrom("q7-abc");
       assertThat(query.toJSON().getString("connectionId")).isEqualTo("pg-42");
       assertThat(query.toJSON().getString("clientAddress")).isEqualTo("10.0.0.1:5000");
@@ -340,7 +339,7 @@ class Issue9689RunningQueryFollowUpsTest {
   /** Runs {@code text} as Cypher under an entry of {@code user}'s, as a server protocol would. */
   private static List<Result> cypherAs(final RunningQueryRegistry registry, final String user, final String text,
       final Map<String, Object> parameters) {
-    try (final RunningQuery ignored = registry.register(database.getName(), user, "test", null, null)) {
+    try (final RunningQuery ignored = registry.register(database.getName(), user, "test", null, null, null, null)) {
       ignored.setStatement("opencypher", text);
       final List<Result> rows = new ArrayList<>();
       try (final ResultSet rs = database.query("opencypher", text, parameters)) {
@@ -376,7 +375,7 @@ class Issue9689RunningQueryFollowUpsTest {
         final Consumer<RunningQuery> work) throws InterruptedException {
       final Background background = new Background();
       background.thread = new Thread(() -> {
-        try (final RunningQuery q = registry.register(database.getName(), user, "test", null, tag)) {
+        try (final RunningQuery q = registry.register(database.getName(), user, "test", null, tag, null, null)) {
           q.setStatement("opencypher", LONG_CYPHER);
           background.entry = q;
           background.started.countDown();

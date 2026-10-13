@@ -884,9 +884,8 @@ public class BoltNetworkExecutor extends Thread {
       // thread only while RUN, PULL or DISCARD do its work: between messages the thread serves the other streams of the
       // transaction, and what they run must not carry this entry
       stream.runningQuery = server.getRunningQueries().open(database.getName(), user != null ? user.getName() : null, "bolt",
-          null, null);
+          null, null, connectionId, String.valueOf(socket.getRemoteSocketAddress()));
       stream.runningQuery.setStatement("opencypher", query);
-      stream.runningQuery.setConnection(connectionId, String.valueOf(socket.getRemoteSocketAddress()));
       binding = stream.runningQuery.bind();
 
       // Use command() for writes, query() for reads

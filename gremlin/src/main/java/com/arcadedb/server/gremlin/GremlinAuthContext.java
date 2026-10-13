@@ -32,8 +32,35 @@ import com.arcadedb.server.security.ServerSecurityUser;
  */
 public final class GremlinAuthContext {
   private static final ThreadLocal<ServerSecurityUser> CURRENT = new ThreadLocal<>();
+  private static final ThreadLocal<Client>             CLIENT  = new ThreadLocal<>();
+
+  /**
+   * The connection a request arrived on, as {@code list queries} names it beside the user (issue #9962): a Gremlin Server
+   * typically runs with one configured credential, so the user alone does not tell two clients apart.
+   *
+   * @param connectionId the Netty channel id
+   * @param address      the peer address of the channel
+   */
+  public record Client(String connectionId, String address) {
+  }
 
   private GremlinAuthContext() {
+  }
+
+  /**
+   * Publishes the connection of the request being read on this Netty thread, for the execution pool to capture at submit
+   * time like the user; {@code null} clears it. TinkerPop's {@code RequestMessage} carries no channel, so it is published
+   * by the pipeline (see {@link ConcealingWebSocketChannelizer}), around the read that submits the evaluation.
+   */
+  static void setClient(final Client client) {
+    if (client != null)
+      CLIENT.set(client);
+    else
+      CLIENT.remove();
+  }
+
+  static Client getClient() {
+    return CLIENT.get();
   }
 
   public static void set(final ServerSecurityUser user) {

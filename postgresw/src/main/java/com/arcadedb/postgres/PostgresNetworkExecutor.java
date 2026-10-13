@@ -387,9 +387,9 @@ public class PostgresNetworkExecutor extends Thread {
    */
   private RunningStatement startStatement(final String language, final String text) {
     final RunningQuery entry = server.getRunningQueries()
-        .register(database != null ? database.getName() : databaseName, userName, "postgres", null, null);
+        .register(database != null ? database.getName() : databaseName, userName, "postgres", null, null, String.valueOf(processId),
+            clientAddress());
     entry.setStatement(language, text);
-    entry.setConnection(String.valueOf(processId), clientAddress());
     runningStatement = entry;
     return new RunningStatement(entry);
   }
@@ -4178,8 +4178,7 @@ public class PostgresNetworkExecutor extends Thread {
    * cluster put there, not engine detail.
    */
   static String withLeaderRedirect(final String text, final Throwable error) {
-    final ServerIsNotTheLeaderException refusal = ServerIsNotTheLeaderException.redirectIn(error);
-    return refusal != null ? text + ". " + refusal.leaderSentence() : text;
+    return ServerIsNotTheLeaderException.withLeaderSentence(text, error);
   }
 
   /** {@link #clientMessage} without the leader redirect: the message, or the placeholder in production mode. */

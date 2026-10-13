@@ -50,6 +50,11 @@ final class StreamingLoadEntry {
 
   private final RunningQueryRegistry registry;
   private final String               rpc;
+  /**
+   * The peer of the call, as {@link GrpcAdmissionInterceptor} put it on the call's Context, which is current where the
+   * RPC handler builds this (issue #9962).
+   */
+  private final String               client;
   /** Held by a chunk while it runs, so the termination listener of an idle stream never acts under a running chunk. */
   private final ReentrantLock        working = new ReentrantLock();
   private volatile RunningQuery      entry;
@@ -61,6 +66,7 @@ final class StreamingLoadEntry {
   StreamingLoadEntry(final RunningQueryRegistry registry, final String rpc) {
     this.registry = registry;
     this.rpc = rpc;
+    this.client = GrpcAdmissionInterceptor.CLIENT_ADDRESS_KEY.get();
   }
 
   /**
@@ -75,7 +81,7 @@ final class StreamingLoadEntry {
       final Runnable onTerminate) {
     if (registry == null || entry != null)
       return;
-    final RunningQuery opened = registry.open(database, user, "grpc", sessionId, null);
+    final RunningQuery opened = registry.open(database, user, "grpc", sessionId, null, null, client);
     opened.setStatement("grpc", text);
     entry = opened;
     opened.onTerminate(onTerminate);

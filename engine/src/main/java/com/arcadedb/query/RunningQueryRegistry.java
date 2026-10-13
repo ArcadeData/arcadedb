@@ -48,15 +48,21 @@ public final class RunningQueryRegistry {
    * Opens the entry of a statement about to run on the calling thread and publishes it there
    * ({@link RunningQuery#current()}). The caller closes it on the same thread, in a {@code finally} block.
    *
-   * @param database  name of the database the statement runs against, or {@code null}
-   * @param user      name of the user running it
-   * @param protocol  how it reached the server, e.g. {@code http}
-   * @param sessionId the transaction session it runs in, or {@code null}
-   * @param tag       the opaque label the client gave it, or {@code null}
+   * @param database      name of the database the statement runs against, or {@code null}
+   * @param user          name of the user running it
+   * @param protocol      how it reached the server, e.g. {@code http}
+   * @param sessionId     the transaction session it runs in, or {@code null}
+   * @param tag           the opaque label the client gave it, or {@code null}
+   * @param connectionId  the client connection running it in the protocol's own terms (the Postgres backend pid a
+   *                      {@code pg_cancel_backend} takes, a Bolt connection, a channel id), or {@code null} when the
+   *                      protocol has none
+   * @param clientAddress the address of the client that asked for it, or the name of a transport that has no address
+   *                      ({@code stdio}). Taken here rather than by a later call, so a surface cannot open an entry
+   *                      that lists work without saying whose it is (issue #9962)
    */
   public RunningQuery register(final String database, final String user, final String protocol, final String sessionId,
-      final String tag) {
-    final RunningQuery query = open(database, user, protocol, sessionId, tag);
+      final String tag, final String connectionId, final String clientAddress) {
+    final RunningQuery query = open(database, user, protocol, sessionId, tag, connectionId, clientAddress);
     query.publish();
     return query;
   }
@@ -67,8 +73,10 @@ public final class RunningQueryRegistry {
    * work runs and closes it once the statement is over. Same parameters as {@link #register}.
    */
   public RunningQuery open(final String database, final String user, final String protocol, final String sessionId,
-      final String tag) {
+      final String tag, final String connectionId, final String clientAddress) {
     final RunningQuery query = new RunningQuery(this, lastId.incrementAndGet(), database, user, protocol, sessionId, tag);
+    // Before the entry is listed, so no listing sees it without its client
+    query.setConnection(connectionId, clientAddress);
     running.put(query.getNumericId(), query);
     return query;
   }
