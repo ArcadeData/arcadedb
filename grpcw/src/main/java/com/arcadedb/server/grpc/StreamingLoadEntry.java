@@ -83,7 +83,9 @@ final class StreamingLoadEntry {
 
   /**
    * Marks the start of a chunk: the entry, once opened, is bound on the calling thread until the returned binding is
-   * closed, which must happen on the same thread, in a {@code finally} block.
+   * closed, which must happen on the same thread, in a {@code finally} block. Blocks only behind another chunk of the
+   * same call, which gRPC never runs concurrently, or behind the brief {@link #runIfIdle} of a termination. Never call it
+   * from the termination listener: that one only ever tries the lock.
    */
   Bound enter() {
     working.lock();

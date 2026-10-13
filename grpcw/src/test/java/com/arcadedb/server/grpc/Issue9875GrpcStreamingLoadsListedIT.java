@@ -122,6 +122,38 @@ public class Issue9875GrpcStreamingLoadsListedIT extends BaseGrpcServerTest {
   }
 
   @Test
+  void aTerminatedPerBatchInsertStreamKeepsTheBatchesItCommitted() throws Exception {
+    createDocumentType("Batched9875");
+    final Outcome<InsertSummary> outcome = new Outcome<>();
+    final StreamObserver<InsertChunk> stream = asyncStub.insertStream(outcome);
+    // Batches of 4: rows 1-8 commit as two batches, rows 9-10 wait in the open one
+    final InsertChunk chunk = insertChunk("Batched9875", InsertOptions.TransactionMode.PER_BATCH, null, 10);
+    stream.onNext(chunk.toBuilder().setOptions(chunk.getOptions().toBuilder().setServerBatchSize(4)).build());
+
+    final RunningQuery entry = awaitListed("InsertStream into Batched9875 (per_batch)");
+    await().atMost(Duration.ofSeconds(30)).until(() -> count("Batched9875") == 8);
+    entry.terminate("root");
+    outcome.assertTerminated();
+    assertThat(entry.awaitEnd(30_000)).isTrue();
+    assertThat(count("Batched9875")).isEqualTo(8);
+  }
+
+  @Test
+  void aTerminatedPerRowInsertStreamKeepsTheRowsItCommitted() throws Exception {
+    createDocumentType("Rows9875");
+    final Outcome<InsertSummary> outcome = new Outcome<>();
+    final StreamObserver<InsertChunk> stream = asyncStub.insertStream(outcome);
+    stream.onNext(insertChunk("Rows9875", InsertOptions.TransactionMode.PER_ROW, null, 5));
+
+    final RunningQuery entry = awaitListed("InsertStream into Rows9875 (per_row)");
+    await().atMost(Duration.ofSeconds(30)).until(() -> count("Rows9875") == 5);
+    entry.terminate("root");
+    outcome.assertTerminated();
+    assertThat(entry.awaitEnd(30_000)).isTrue();
+    assertThat(count("Rows9875")).isEqualTo(5);
+  }
+
+  @Test
   void anInsertStreamTerminatedWhileItsChunkRunsIsCancelledAndRolledBack() throws Exception {
     createDocumentType("Running9875");
     final Outcome<InsertSummary> outcome = new Outcome<>();

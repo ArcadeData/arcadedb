@@ -2931,8 +2931,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             entry.open(ctx.db.getName(), resolvedUsername(c.hasCredentials() ? c.getCredentials() : effective.getCredentials()),
                 txCtx != null ? txCtx.txId : null, () -> insertLoadText("InsertStream", listed, null),
                 () -> entry.runIfIdle(() -> {
-                  // Between two chunks: the call is closed now, and the close handler retracts on the call's thread. A
-                  // commit the client sends meanwhile on its own transaction is refused from here on
+                  // Between two chunks: the call is closed now, and the close handler retracts on the call's thread, as
+                  // soon as the transport reports the call closed - it does not wait for the client. Until then the
+                  // stream's transaction stays open, holding what it wrote; a commit the client sends meanwhile on its
+                  // own transaction is refused from here on
                   final TransactionContext ext = extTxCtxRef.get();
                   if (ext != null)
                     ext.terminated = true;
@@ -3768,6 +3770,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           // Stop appending and terminate now. Unlike insertStream there is nothing to roll back and nothing to
           // drain for: every chunk before this one is already durable, so the client's useful next step is the
           // error, and the counts it can read from a subsequent query.
+          // Terminated: the finally below tells the client, with what became of the samples already appended
+          if (entry.isTerminated())
+            return;
           failed.set(true);
           out.onError(mapError(e, "TimeSeriesWriteStream"));
         } finally {
