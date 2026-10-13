@@ -33,6 +33,7 @@ import com.arcadedb.query.opencypher.procedures.CypherProcedure;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
+import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.utility.NumberUtils;
 import com.arcadedb.utility.Pair;
@@ -120,9 +121,12 @@ public class DbIndexVectorQueryNodes implements CypherProcedure {
 
     // A record deleted by a commit that overlaps the search can still be in an index's answer (issue #9858): it is skipped,
     // and the search widened until it answers k live rows, exactly as vector.neighbors does (#9368).
+    // The command's deadline and the termination of its statement, honoured inside each search and while it waits for a
+    // graph build (issue #9896)
+    final WorkGuard guard = WorkGuard.forCommand(context, "db.index.vector.queryNodes()");
     return VectorUtils.searchWithStaleTopUp(limit,
-        (fetchK, staleSkipped, saturated) -> searchAndLoad(vectorIndexes, queryVector, limit, fetchK, staleSkipped, saturated))
-        .stream();
+        (fetchK, staleSkipped, saturated) -> searchAndLoad(vectorIndexes, queryVector, limit, fetchK, guard, staleSkipped,
+            saturated)).stream();
   }
 
   /**
@@ -130,11 +134,11 @@ public class DbIndexVectorQueryNodes implements CypherProcedure {
    * records, counting in {@code staleSkipped} the candidates whose record no longer exists.
    */
   private static List<Result> searchAndLoad(final List<LSMVectorIndex> vectorIndexes, final float[] queryVector, final int limit,
-      final int fetchK, final int[] staleSkipped, final boolean[] saturated) {
+      final int fetchK, final WorkGuard guard, final int[] staleSkipped, final boolean[] saturated) {
     // Search across all indexes and collect results
     final List<Pair<RID, Float>> allNeighbors = new ArrayList<>();
     for (final LSMVectorIndex lsmIndex : vectorIndexes) {
-      final List<Pair<RID, Float>> neighbors = lsmIndex.findNeighborsFromVector(queryVector, fetchK);
+      final List<Pair<RID, Float>> neighbors = lsmIndex.findNeighborsFromVector(queryVector, fetchK, -1, null, guard);
       allNeighbors.addAll(neighbors);
       if (neighbors.size() >= fetchK)
         saturated[0] = true;

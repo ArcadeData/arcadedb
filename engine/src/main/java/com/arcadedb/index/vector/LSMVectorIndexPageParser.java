@@ -22,9 +22,12 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.BasePage;
 import com.arcadedb.engine.PageId;
+import com.arcadedb.exception.DatabaseIsClosedException;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.log.LogManager;
 
+import java.io.InterruptedIOException;
+import java.nio.channels.ClosedChannelException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Consumer;
@@ -184,7 +187,11 @@ class LSMVectorIndexPageParser {
         final String message = String.format(
             "Error parsing page %d in file %d at entry %d of %d (entries %d to %d of the page not read): %s", pageNum,
             fileId, entryIndex, numberOfEntries, entryIndex, numberOfEntries - 1, e.getMessage());
-        if (strict)
+        // A page that could not be read because the read was interrupted or the database closed under it says nothing
+        // about the page: the next read finds it intact. Thrown rather than skipped in either mode, so no caller mistakes
+        // it for the bad page the lenient mode carries on past, and latches for good a load that only an interrupt cut
+        // short (issue #9892)
+        if (strict || isInterruption(e))
           throw new IndexException(message, e);
         if (pagesCutShort != null)
           ++pagesCutShort[0];
@@ -193,6 +200,21 @@ class LSMVectorIndexPageParser {
     }
 
     return entriesRead;
+  }
+
+  /**
+   * Whether {@code e} says the read was stopped from outside - the thread interrupted, the file channel closed by that
+   * interrupt, the database closed - rather than that the page holds something unreadable. A transient condition: the
+   * same page reads fine once nothing stops the read.
+   */
+  static boolean isInterruption(final Throwable e) {
+    if (Thread.currentThread().isInterrupted())
+      return true;
+    for (Throwable t = e; t != null; t = t.getCause())
+      if (t instanceof InterruptedException || t instanceof InterruptedIOException || t instanceof ClosedChannelException
+          || t instanceof DatabaseIsClosedException)
+        return true;
+    return false;
   }
 
   /**
