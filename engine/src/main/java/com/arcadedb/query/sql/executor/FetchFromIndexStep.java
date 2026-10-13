@@ -240,7 +240,11 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     guard.check();
     try {
       final List<RID> rids = new ArrayList<>();
-      final IndexCursor again = index.get(keys);
+      // A prefix of a composite key is a range of keys, which a get() of the prefix does not read
+      final List<String> properties = index.getPropertyNames();
+      final IndexCursor again = properties != null && keys.length < properties.size() ?
+          index.range(true, keys, true, keys, true) :
+          index.get(keys);
       try {
         while (again.hasNext()) {
           guard.checkPeriodically(rids.size());
@@ -293,6 +297,29 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     return keyMatcher.found;
   }
 
+  /**
+   * The key of the lookup an entry of a point lookup was found by (#9902). A lookup of a prefix of a composite key reads a range
+   * whose entries each carry their whole key ({@code a = 'p'} on {@code (a, b)} returns {@code [p, 0]}, {@code [p, 1]}, ...), so
+   * the entry key is cut to the slots the lookup fills: what the entries of one lookup share, and what reads them all again.
+   * The same instance when nothing is cut.
+   */
+  Object lookupKeyOf(final Object entryKey) {
+    if (condition instanceof AndBlock and && entryKey instanceof Object[] keys && keys.length > and.getSubBlocks().size())
+      return Arrays.copyOf(keys, and.getSubBlocks().size());
+    return entryKey;
+  }
+
+  /** Whether an entry belongs to the lookup of a key {@link #lookupKeyOf} returned, without cutting the entry key. */
+  static boolean isEntryOf(final Object entryKey, final Object lookupKey) {
+    if (lookupKey instanceof Object[] lookup && entryKey instanceof Object[] entry && entry.length > lookup.length) {
+      for (int i = 0; i < lookup.length; i++)
+        if (!Objects.equals(entry[i], lookup[i]))
+          return false;
+      return true;
+    }
+    return sameKey(entryKey, lookupKey);
+  }
+
   /** Whether two entry keys are the same key: a composite one is an array, compared element by element. */
   static boolean sameKey(final Object a, final Object b) {
     if (a instanceof Object[] left && b instanceof Object[] right)
@@ -323,6 +350,8 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       try {
         converted = index.convertLookupKeys(recordKeys);
       } catch (final IllegalArgumentException e) {
+        // a value of the record the key type cannot read is not indexed under any key, so it matches none
+        LogManager.instance().log(this, Level.FINE, "Indexed values %s cannot be read as a key of the index", e, Arrays.toString(recordKeys));
         return;
       }
       for (int i = 0; i < lookup.length; i++)

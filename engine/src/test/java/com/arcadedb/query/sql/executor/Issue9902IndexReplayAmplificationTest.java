@@ -450,6 +450,52 @@ class Issue9902IndexReplayAmplificationTest extends TestHelper {
   }
 
   /**
+   * A prefix of a composite UNIQUE index is one key with many entries: a read of it again for the entries a commit took must not
+   * serve again the rows served before, although the index is unique.
+   */
+  @Test
+  void aPrefixOfACompositeUniqueKeyReadAgainServesNoRowTwice() throws Exception {
+    database.command("sql", "CREATE DOCUMENT TYPE Pair");
+    database.command("sql", "CREATE PROPERTY Pair.a STRING");
+    database.command("sql", "CREATE PROPERTY Pair.b INTEGER");
+    database.command("sql", "CREATE INDEX ON Pair (a, b) UNIQUE");
+    database.transaction(() -> {
+      for (int i = 0; i < 1_000; i++)
+        database.newDocument("Pair").set("a", "p").set("b", i).save();
+    });
+
+    final Set<RID> served = new HashSet<>();
+    final Set<RID> replacements = new HashSet<>();
+    final GetValueFromIndexEntryStep step;
+    try (final ResultSet rs = database.query("sql", "SELECT FROM Pair WHERE a = 'p'")) {
+      step = findStep(rs.getExecutionPlan().orElseThrow());
+      assertThat(step).isNotNull();
+      for (int i = 0; i < 20; i++)
+        served.add(rs.next().getIdentity().orElseThrow());
+
+      inAnotherThread(() -> database.transaction(() -> {
+        int skipped = 0, deleted = 0;
+        try (final ResultSet all = database.query("sql", "SELECT FROM Pair WHERE a = 'p'")) {
+          while (all.hasNext() && deleted < 20) {
+            final Result row = all.next();
+            if (++skipped <= 500)
+              continue;
+            row.getIdentity().orElseThrow().asDocument().delete();
+            ++deleted;
+          }
+        }
+        for (int i = 0; i < 20; i++)
+          replacements.add(database.newDocument("Pair").set("a", "p").set("b", 10_000 + i).save().getIdentity());
+      }));
+
+      while (rs.hasNext())
+        assertThat(served.add(rs.next().getIdentity().orElseThrow())).as("a row served twice").isTrue();
+    }
+    assertThat(served).containsAll(replacements).hasSize(1_000);
+    assertThat(step.getKeyRereads()).isEqualTo(1);
+  }
+
+  /**
    * Issue #9893: reading a key again stops on the command deadline instead of logging it as a failed read and going on.
    */
   @Test
