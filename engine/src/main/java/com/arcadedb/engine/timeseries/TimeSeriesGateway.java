@@ -28,6 +28,7 @@ import com.arcadedb.security.SecurityDatabaseUser;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -57,6 +58,20 @@ import java.util.TreeSet;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public final class TimeSeriesGateway {
+
+  /**
+   * At most this many entries are kept in {@link WriteReport#undeclaredKeys()}. The keys come from the client, so
+   * a producer sending a fresh key per sample would otherwise grow the report - and the response rendering it -
+   * without bound. The entries locate the problem; {@code dropped} still counts every sample.
+   */
+  public static final int MAX_REPORTED_UNDECLARED_KEYS = 100;
+
+  /**
+   * Cap on the entries {@link WriteReport#unreadableValues()} names, for the same reason as
+   * {@link #MAX_REPORTED_UNDECLARED_KEYS}: a client sending one unreadable value in every line must not grow the report without
+   * bound. {@code dropped} still counts every sample.
+   */
+  public static final int MAX_REPORTED_UNREADABLE_VALUES = 100;
 
   private TimeSeriesGateway() {
   }
@@ -98,13 +113,6 @@ public final class TimeSeriesGateway {
   }
 
   /**
-   * At most this many entries are kept in {@link WriteReport#undeclaredKeys()}. The keys come from the client, so
-   * a producer sending a fresh key per sample would otherwise grow the report - and the response rendering it -
-   * without bound. The entries locate the problem; {@code dropped} still counts every sample.
-   */
-  public static final int MAX_REPORTED_UNDECLARED_KEYS = 100;
-
-  /**
    * What a {@link #write(DatabaseInternal, List)} call did. {@code dropped} counts individual samples, and every
    * parsed sample is either inserted or skipped for exactly one reason, so {@code written + dropped == samples.size()}.
    * <p>
@@ -116,9 +124,21 @@ public final class TimeSeriesGateway {
    * {@link GlobalConfiguration#TIMESERIES_UNDECLARED_KEYS} {@code = reject} (issue #8646), each rendered as
    * {@code <measurement>.<key> (tag|field)}, in first-occurrence order and capped at
    * {@link #MAX_REPORTED_UNDECLARED_KEYS}.
+   * <p>
+   * {@code unreadableValues} names the values a column could not store, each rendered as
+   * {@code <measurement>.<column> (tag|field): <reason>} where the reason names the column and its type (issue #9809), in
+   * first-occurrence order and capped at {@link #MAX_REPORTED_UNREADABLE_VALUES}. The sample carrying one is dropped alone, like a
+   * sample with an undeclared key: the rest of the request is written. An entry is a distinct reason, not a sample: many samples
+   * refused for the same reason are one entry, and {@code dropped} is what counts them.
    */
   public record WriteReport(int written, int dropped, Set<String> unknownTypes, Set<String> nonTimeSeriesTypes,
-                            Set<String> unavailableTypes, Set<String> undeclaredKeys) {
+                            Set<String> unavailableTypes, Set<String> undeclaredKeys, Set<String> unreadableValues) {
+
+    /** The report of a write with no unreadable values, the shape this record had before issue #9809. */
+    public WriteReport(final int written, final int dropped, final Set<String> unknownTypes, final Set<String> nonTimeSeriesTypes,
+        final Set<String> unavailableTypes, final Set<String> undeclaredKeys) {
+      this(written, dropped, unknownTypes, nonTimeSeriesTypes, unavailableTypes, undeclaredKeys, Set.of());
+    }
 
     /** Whether every sample handed in was appended. */
     public boolean isComplete() {
@@ -215,6 +235,7 @@ public final class TimeSeriesGateway {
     final Set<String> nonTimeSeriesTypes = new LinkedHashSet<>();
     final Set<String> unavailableTypes = new LinkedHashSet<>();
     final Set<String> undeclaredKeys = new LinkedHashSet<>();
+    final Set<String> unreadableValues = new LinkedHashSet<>();
     final Map<String, MeasurementBatch> byMeasurement = new LinkedHashMap<>();
     final boolean rejectUndeclared = rejectsUndeclaredKeys(database);
 
@@ -275,13 +296,17 @@ public final class TimeSeriesGateway {
           // Every sample of this measurement was dropped for an undeclared key
           continue;
 
-        final long[] timestamps = new long[count];
+        long[] timestamps = new long[count];
         final Object[][] columnValues = new Object[columns.size() - 1][count]; // exclude timestamp
 
+        // A sample whose value a column cannot store is left out HERE, before anything of it reaches the engine, and named: the
+        // storage layer would otherwise cast it in the middle of the append and fail the whole request (issue #9809). `valid`
+        // is the next free row, so a refused sample leaves a partial row that the next sample overwrites in full: that holds only
+        // because every column is assigned on every pass, a null included, so keep it so
+        int valid = 0;
         for (int s = 0; s < count; s++) {
           final Sample sample = group.get(s);
-          timestamps[s] = sample.getTimestampMs();
-
+          boolean refused = false;
           int colIdx = 0;
           for (int i = 0; i < columns.size(); i++) {
             final ColumnDefinition col = columns.get(i);
@@ -294,13 +319,33 @@ public final class TimeSeriesGateway {
             else
               value = sample.getFields().get(col.getName());
 
-            columnValues[colIdx][s] = value;
+            // Only the conversion is guarded: an IllegalArgumentException from anywhere else is not a column problem
+            try {
+              columnValues[colIdx][valid] = col.storableValue(database, value);
+            } catch (final IllegalArgumentException e) {
+              if (unreadableValues.size() < MAX_REPORTED_UNREADABLE_VALUES)
+                unreadableValues.add(sample.getMeasurement() + "." + col.getName() + " ("
+                    + (col.getRole() == ColumnDefinition.ColumnRole.TAG ? "tag" : "field") + "): " + e.getMessage());
+              refused = true;
+              break;
+            }
             colIdx++;
           }
+          if (!refused)
+            timestamps[valid++] = sample.getTimestampMs();
+        }
+
+        if (valid == 0)
+          continue;
+        if (valid < count) {
+          // Only when a sample was refused, so the copy is paid by the failing request and never by a clean one
+          timestamps = Arrays.copyOf(timestamps, valid);
+          for (int c = 0; c < columnValues.length; c++)
+            columnValues[c] = Arrays.copyOf(columnValues[c], valid);
         }
 
         engine.appendBatch(timestamps, columnValues);
-        inserted += count;
+        inserted += valid;
       }
       if (beganHere)
         database.commit();
@@ -311,7 +356,7 @@ public final class TimeSeriesGateway {
     }
 
     return new WriteReport(inserted, samples.size() - inserted, unknownTypes, nonTimeSeriesTypes, unavailableTypes,
-        undeclaredKeys);
+        undeclaredKeys, unreadableValues);
   }
 
   /**

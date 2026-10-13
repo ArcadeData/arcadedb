@@ -32,17 +32,21 @@ import java.util.List;
  */
 final class ObjectColumnsRowSource implements TimeSeriesRowSource {
 
-  private final long[]     timestamps;
-  private final Object[][] columnValues;
-  private final byte[]     kinds;
+  private final long[]                 timestamps;
+  private final Object[][]             columnValues;
+  private final byte[]                 kinds;
+  private final List<ColumnDefinition> typeColumns;
 
   /**
-   * @param kinds the value-column kinds of the type, as returned by {@link #kindsOf(List)}. Held by
-   *              reference: callers resolve it once per component, not once per append, so a
-   *              single-sample append (the SQL INSERT path) allocates only this view.
+   * @param kinds       the value-column kinds of the type, as returned by {@link #kindsOf(List)}. Held by
+   *                    reference: callers resolve it once per component, not once per append, so a
+   *                    single-sample append (the SQL INSERT path) allocates only this view.
+   * @param typeColumns the columns of the type, only read to name the column of a value that cannot be stored
    */
-  ObjectColumnsRowSource(final byte[] kinds, final long[] timestamps, final Object[][] columnValues) {
+  ObjectColumnsRowSource(final byte[] kinds, final List<ColumnDefinition> typeColumns, final long[] timestamps,
+      final Object[][] columnValues) {
     this.kinds = kinds;
+    this.typeColumns = typeColumns;
     this.timestamps = timestamps;
     this.columnValues = columnValues;
   }
@@ -81,14 +85,19 @@ final class ObjectColumnsRowSource implements TimeSeriesRowSource {
     final Object value = columnValues[columnIndex][row];
     final byte kind = kinds[columnIndex];
 
-    if (kind == TimeSeriesBatch.KIND_BOOLEAN)
+    if (kind == TimeSeriesBatch.KIND_BOOLEAN) {
+      // Null is absent (false), but a value that is not a boolean is refused, not stored as false
+      if (value != null && !(value instanceof Boolean))
+        throw unstorable(columnIndex, value);
       return Boolean.TRUE.equals(value) ? 1L : 0L;
+    }
     if (value == null)
       // The absent marker on a floating-point column, zero elsewhere - where isNull() says the value is absent (issue #9721)
       // to a bucket whose rows can say so: see TimeSeriesBatch.rawNull (issue #7743).
       return TimeSeriesBatch.rawNull(kind);
 
-    final Number number = (Number) value;
+    if (!(value instanceof Number number))
+      throw unstorable(columnIndex, value);
     return switch (kind) {
       case TimeSeriesBatch.KIND_DOUBLE -> Double.doubleToRawLongBits(number.doubleValue());
       case TimeSeriesBatch.KIND_FLOAT -> Float.floatToRawIntBits(number.floatValue());
@@ -111,6 +120,21 @@ final class ObjectColumnsRowSource implements TimeSeriesRowSource {
     // STRING column keeps the strict cast it always had.
     if (kinds[columnIndex] == TimeSeriesBatch.KIND_TEXT)
       return value != null ? value.toString() : null;
-    return (String) value;
+    if (value == null || value instanceof String)
+      return (String) value;
+    throw unstorable(columnIndex, value);
+  }
+
+  /**
+   * The refusal of a value the column cannot store, naming the column: a {@code ClassCastException} from the middle of an append
+   * names nothing, and the writer that produced the value is long gone by then (issue #9809). Only reached on the failing path, so
+   * the column is found by walking the type rather than kept in a table.
+   */
+  private IllegalArgumentException unstorable(final int columnIndex, final Object value) {
+    int valueColumn = 0;
+    for (final ColumnDefinition col : typeColumns)
+      if (col.getRole() != ColumnDefinition.ColumnRole.TIMESTAMP && valueColumn++ == columnIndex)
+        return col.unstorable(value, null);
+    return new IllegalArgumentException("Cannot store a value of type " + value.getClass().getName() + " in value column " + columnIndex);
   }
 }

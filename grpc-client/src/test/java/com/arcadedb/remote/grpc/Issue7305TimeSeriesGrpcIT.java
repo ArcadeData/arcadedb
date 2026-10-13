@@ -319,6 +319,54 @@ class Issue7305TimeSeriesGrpcIT extends BaseGrpcClientServerTest {
     assertThat(summary.undeclaredKeys()).containsExactly(TYPE + ".locaton (tag)");
   }
 
+  /**
+   * Issue #9809: a value the column cannot store (text in a DOUBLE field) used to fail the whole write with a raw cast failure.
+   * Every client must see the sample dropped and the column named, and the rest of the write stored.
+   */
+  private static List<TimeSeriesPoint> oneGoodOneUnreadable(final long base) {
+    return List.of(
+        new TimeSeriesPoint(TYPE, base, Map.of("location", "us-east"), Map.of("temperature", 22.5)),
+        new TimeSeriesPoint(TYPE, base + 1, Map.of("location", "us-west"), Map.of("temperature", "warm")));
+  }
+
+  @Test
+  void anUnreadableValueIsReportedByTheUnaryWrite() {
+    createType();
+
+    final TimeSeriesWriteSummary summary = grpcClient().timeSeriesWrite(oneGoodOneUnreadable(1_000L));
+
+    assertThat(summary.written()).isEqualTo(1);
+    assertThat(summary.dropped()).isEqualTo(1);
+    assertThat(summary.unreadableValues()).hasSize(1);
+    assertThat(summary.unreadableValues().getFirst()).startsWith(TYPE + ".temperature (field)").contains("'temperature'");
+    assertThat(grpcClient().timeSeriesQuery(new TimeSeriesQuery(TYPE)).count()).isEqualTo(1);
+  }
+
+  @Test
+  void anUnreadableValueIsReportedByTheStreamingWrite() {
+    createType();
+
+    final List<TimeSeriesPoint> points = new ArrayList<>(oneGoodOneUnreadable(1_000L));
+    points.addAll(oneGoodOneUnreadable(2_000L));
+    final TimeSeriesWriteSummary summary = grpcClient().timeSeriesWriteStream(points, 1);
+
+    assertThat(summary.written()).isEqualTo(2);
+    assertThat(summary.dropped()).isEqualTo(2);
+    assertThat(summary.unreadableValues()).hasSize(1);
+  }
+
+  @Test
+  void anUnreadableValueIsReportedByTheHttpClient() {
+    createType();
+
+    final TimeSeriesWriteSummary summary = httpClient().timeSeriesWrite(oneGoodOneUnreadable(1_000L));
+
+    assertThat(summary.written()).isEqualTo(1);
+    assertThat(summary.dropped()).isEqualTo(1);
+    assertThat(summary.unreadableValues()).hasSize(1);
+    assertThat(summary.unreadableValues().getFirst()).startsWith(TYPE + ".temperature (field)");
+  }
+
   @Test
   void queryingATypeThatDoesNotExistFailsRatherThanReturningNothing() {
     // An empty answer and "there is no such type" are different facts, and a client that cannot tell them

@@ -24,6 +24,8 @@ import com.arcadedb.engine.timeseries.codec.TimeSeriesCodec;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.DateUtils;
 
+import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.time.DateTimeException;
 
 /**
@@ -42,6 +44,8 @@ public final class ColumnDefinition {
   private final ColumnRole      role;
   private final TimeSeriesCodec compressionHint;
   private final boolean         explicitCodec;
+  // The kind of the storage row this column's type is encoded as, resolved once: storableValue runs for every value of every sample
+  private final byte            kind;
 
   /**
    * A column whose codec is DERIVED from its data type and role, through {@link #defaultCodecFor}.
@@ -56,6 +60,7 @@ public final class ColumnDefinition {
     this.role = role;
     this.compressionHint = defaultCodecFor(dataType, role);
     this.explicitCodec = false;
+    this.kind = TimeSeriesBatch.kindOf(dataType);
   }
 
   /**
@@ -73,6 +78,7 @@ public final class ColumnDefinition {
     this.role = role;
     this.compressionHint = compressionHint != null ? compressionHint : defaultCodecFor(dataType, role);
     this.explicitCodec = compressionHint != null;
+    this.kind = TimeSeriesBatch.kindOf(dataType);
   }
 
   public String getName() {
@@ -308,6 +314,186 @@ public final class ColumnDefinition {
       throw new IllegalArgumentException("Cannot convert a value of type " + value.getClass().getName() + " to the " + dataType
           + " column '" + name + "'");
     return epoch;
+  }
+
+  /**
+   * The value the append path can encode for this column, for a writer that hands over what it parsed without converting it: the
+   * line protocol and gRPC give a quoted datetime as text, a typed tag as text, whatever the client sent (issue #9809). The storage
+   * layer casts a value to the {@code Number} (or {@code String}) its column kind names, so anything else used to surface as a bare
+   * {@code ClassCastException} from the middle of the append.
+   * <ul>
+   * <li>a DATE/DATETIME column keeps a number as it is, a count in the column's unit, the contract of every writer that is not SQL; text
+   * of digits is that same count, the rule {@link #coerceValue} applies to a tag filter, and any other date or instant is read by
+   * {@link #epochOf}, the conversion {@code INSERT} uses, so the same text names the same instant on every surface</li>
+   * <li>any other numeric column keeps a number that its type can hold (a {@code 300} is refused by a BYTE column, where the append
+   * would store {@code 44}) and parses text, as {@code INSERT} does</li>
+   * <li>a BOOLEAN column keeps a boolean and parses {@code true} / {@code false} (any case), so a typed tag sent as {@code "true"} is
+   * not stored as {@code false}; any other text, and a number, is refused rather than stored as {@code false}</li>
+   * <li>a STRING column keeps a string of at most {@link TimeSeriesBucket#MAX_STRING_BYTES} UTF-8 bytes, the limit the row refuses
+   * a longer one at, after the rest of the batch is assembled</li>
+   * </ul>
+   *
+   * @param database may be {@code null}, which reads text with the default formats (see {@link #epochOf})
+   *
+   * @throws IllegalArgumentException naming this column, when the value cannot be stored in it
+   */
+  public Object storableValue(final Database database, final Object value) {
+    if (value == null)
+      return null;
+    // The common case, a number into a numeric column (every kind up to BYTE, the datetimes among them), answers before any dispatch
+    if (kind <= TimeSeriesBatch.KIND_BYTE && value instanceof Number number) {
+      if (fits(number))
+        return value;
+      throw new IllegalArgumentException("Cannot convert a value of type " + value.getClass().getSimpleName() + " to the " + dataType
+          + " column '" + name + "': the number is out of range");
+    }
+    return switch (kind) {
+      case TimeSeriesBatch.KIND_BOOLEAN -> booleanOf(value);
+      case TimeSeriesBatch.KIND_STRING -> {
+        if (value instanceof String text)
+          yield withinStringLimit(text);
+        throw unstorable(value, null);
+      }
+      case TimeSeriesBatch.KIND_TEXT -> withinStringLimit(value instanceof String text ? text : value.toString());
+      default -> {
+        if (value instanceof Number)
+          yield value;
+        if (!(value instanceof String) && !isTemporal())
+          throw unstorable(value, null);
+        try {
+          yield isTemporal() ? temporalCount(database, value) : parseNumericText((String) value);
+        } catch (final RuntimeException e) {
+          throw unstorable(value, e);
+        }
+      }
+    };
+  }
+
+  /**
+   * Whether the number is one the column's type can hold, for the kinds up to BYTE (the numeric ones). A floating point value for an
+   * integral column is range-checked as a double, so NaN and the infinities are refused too. Only the RANGE is checked: a fractional
+   * value in range keeps its integral part (1.5 is stored as 1 in an INTEGER column), as the append has always done.
+   */
+  private boolean fits(final Number number) {
+    return switch (kind) {
+      case TimeSeriesBatch.KIND_INTEGER -> within(number, Integer.MIN_VALUE, Integer.MAX_VALUE);
+      case TimeSeriesBatch.KIND_SHORT -> within(number, Short.MIN_VALUE, Short.MAX_VALUE);
+      case TimeSeriesBatch.KIND_BYTE -> within(number, Byte.MIN_VALUE, Byte.MAX_VALUE);
+      case TimeSeriesBatch.KIND_LONG -> fitsLong(number);
+      case TimeSeriesBatch.KIND_FLOAT -> floatingFits(number, Float.MAX_VALUE);
+      default -> floatingFits(number, Double.MAX_VALUE); // DOUBLE
+    };
+  }
+
+  /**
+   * Whether a floating point column holds the number. NaN and the infinities are values of such a column (a sensor reading can be
+   * NaN, and the engine keeps it), so a Java floating point number is refused only when it is finite and larger than the column's
+   * type, which would otherwise be stored as an infinity nobody sent. An arbitrary-precision number must convert to a finite one.
+   */
+  private static boolean floatingFits(final Number number, final double max) {
+    if (number instanceof BigDecimal || number instanceof BigInteger) {
+      final double value = number.doubleValue();
+      return Double.isFinite(value) && Math.abs(value) <= max;
+    }
+    if (max == Double.MAX_VALUE)
+      return true; // A Double, a Float or a Java integer always fits a DOUBLE
+    final double value = number.doubleValue();
+    return !Double.isFinite(value) || Math.abs(value) <= max;
+  }
+
+  /**
+   * Whether the number is one a LONG holds. A Java integer always is; an arbitrary-precision one is asked exactly, because its
+   * {@code doubleValue()} rounds a value just past the bound back onto it; anything else is a floating point value, whose integral
+   * part must be in range (NaN and the infinities are not).
+   */
+  private static boolean fitsLong(final Number number) {
+    if (isWholeJavaInteger(number))
+      return true;
+    if (number instanceof BigInteger integer)
+      return integer.bitLength() < 64;
+    if (number instanceof BigDecimal decimal)
+      return decimal.toBigInteger().bitLength() < 64;
+    final double value = number.doubleValue();
+    return value >= -0x1p63 && value < 0x1p63;
+  }
+
+  private static boolean isWholeJavaInteger(final Number number) {
+    return number instanceof Long || number instanceof Integer || number instanceof Short || number instanceof Byte;
+  }
+
+  private static boolean within(final Number number, final long min, final long max) {
+    if (isWholeJavaInteger(number)) {
+      final long value = number.longValue();
+      return value >= min && value <= max;
+    }
+    // The bounds of the narrow kinds are far below 2^53, so a double (even of a big number) compares exactly
+    final double value = number.doubleValue();
+    return value >= min && value <= max;
+  }
+
+  private String withinStringLimit(final String text) {
+    // At most 3 bytes per char, so a short text needs no count
+    if (text.length() * 3 > TimeSeriesBucket.MAX_STRING_BYTES) {
+      final int bytes = utf8Length(text);
+      if (bytes > TimeSeriesBucket.MAX_STRING_BYTES)
+        throw new IllegalArgumentException("Cannot store a text of " + bytes + " UTF-8 bytes in the " + dataType + " column '" + name
+            + "': the limit is " + TimeSeriesBucket.MAX_STRING_BYTES + " bytes, so the text is longer than a row can hold");
+    }
+    return text;
+  }
+
+  private static int utf8Length(final String text) {
+    int bytes = 0;
+    for (int i = 0; i < text.length(); i++) {
+      final char c = text.charAt(i);
+      if (c < 0x80)
+        bytes += 1;
+      else if (c < 0x800)
+        bytes += 2;
+      else if (Character.isHighSurrogate(c) && i + 1 < text.length() && Character.isLowSurrogate(text.charAt(i + 1))) {
+        bytes += 4;
+        ++i;
+      } else
+        bytes += 3;
+    }
+    return bytes;
+  }
+
+  private Boolean booleanOf(final Object value) {
+    if (value instanceof Boolean flag)
+      return flag;
+    if (value instanceof String text) {
+      if ("true".equalsIgnoreCase(text))
+        return Boolean.TRUE;
+      if ("false".equalsIgnoreCase(text))
+        return Boolean.FALSE;
+    }
+    throw unstorable(value, null);
+  }
+
+  private Long temporalCount(final Database database, final Object value) {
+    return value instanceof String text && isIntegerText(text) ? Long.parseLong(text) : epochOf(database, value);
+  }
+
+  private Object parseNumericText(final String text) {
+    return switch (dataType) {
+      case DOUBLE -> Double.parseDouble(text);
+      case FLOAT -> Float.parseFloat(text);
+      case INTEGER -> Integer.parseInt(text);
+      case SHORT -> Short.parseShort(text);
+      case BYTE -> Byte.parseByte(text);
+      default -> Long.parseLong(text);
+    };
+  }
+
+  /**
+   * The refusal of a value this column cannot store: it names the column and the type, which the {@code ClassCastException} it
+   * replaces never did.
+   */
+  IllegalArgumentException unstorable(final Object value, final Throwable cause) {
+    // The simple name: this text goes back to the client, which has no use for a package
+    return new IllegalArgumentException("Cannot convert a value of type " + value.getClass().getSimpleName() + " to the " + dataType
+        + " column '" + name + "'", cause);
   }
 
   /**
