@@ -276,9 +276,11 @@ public abstract class SQLFunctionGeoPredicate extends SQLFunctionAbstract implem
           return;
 
         final Index bucketIndex = bucketIndexes.get(nextBucket++);
-        if (bucketIndex instanceof final LSMTreeGeoIndex geoIndex && (ridFilter == null || ridFilter.acceptsBucket(
-            geoIndex.getAssociatedBucketId())))
-          cursor = geoIndex.get(new Object[] { searchShape }, -1);
+        if (bucketIndex instanceof final LSMTreeGeoIndex geoIndex) {
+          final boolean bucketCanMatch = ridFilter == null || ridFilter.acceptsBucket(geoIndex.getAssociatedBucketId());
+          if (bucketCanMatch)
+            cursor = geoIndex.get(new Object[] { searchShape }, -1);
+        }
       }
     }
 

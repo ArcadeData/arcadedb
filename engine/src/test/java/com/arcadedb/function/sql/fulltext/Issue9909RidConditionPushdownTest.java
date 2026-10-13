@@ -205,6 +205,17 @@ class Issue9909RidConditionPushdownTest extends TestHelper {
     final List<RID> union = rids("SELECT FROM Doc WHERE (@rid < :first AND " + SEARCH + ") OR (@rid > :last AND " + SEARCH + ")",
         Map.of("first", first, "last", last));
     assertThat(union).hasSize(10 + 9);
+
+    // Each branch remembers the matches it fetched: the rows of both are answered from their union, with the scores of the
+    // complete search
+    final Map<Object, Float> scores = new HashMap<>();
+    for (final Result row : rows("SELECT @rid AS rid, $score AS score FROM Doc WHERE " + SEARCH, Map.of()))
+      scores.put(row.getProperty("rid"), row.<Float>getProperty("score"));
+    final List<Result> unionRows = rows("SELECT @rid AS rid, $score AS score FROM Doc WHERE (@rid < :first AND " + SEARCH
+        + ") OR (@rid > :last AND " + SEARCH + ")", Map.of("first", first, "last", last));
+    assertThat(unionRows).hasSize(10 + 9);
+    for (final Result row : unionRows)
+      assertThat(row.<Float>getProperty("score")).isEqualTo(scores.get(row.<Object>getProperty("rid")));
   }
 
   @Test
