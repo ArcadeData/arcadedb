@@ -178,6 +178,32 @@ class Issue9940GqlConstructsTest extends TestHelper {
   }
 
   @Test
+  void conditionalQueryConditionCanCallFunctions() {
+    // a function call combined with AND / OR is evaluated directly by the logical expression, so the condition's context
+    // must resolve functions the same way an execution plan does
+    final String query = "WHEN toBoolean($f) AND $e THEN RETURN 'then' AS r ELSE RETURN 'else' AS r";
+    assertThat(column(query, "r", Map.of("f", "true", "e", true))).containsExactly("then");
+    assertThat(column(query, "r", Map.of("f", "false", "e", true))).containsExactly("else");
+    assertThat(column("WHEN size($l) > 2 OR coalesce($x, false) THEN RETURN 1 AS r ELSE RETURN 2 AS r", "r",
+        Map.of("l", List.of(1, 2, 3), "x", false))).containsExactly(1L);
+  }
+
+  @Test
+  void conditionalQueryNeedsTheParametersOfEveryBranch() {
+    // parameters are checked for the whole query before a branch is chosen, as for any other query: a parameter that
+    // only an untaken branch reads must still be bound
+    assertThatThrownBy(() -> column("WHEN $x = 1 THEN RETURN $onlyHere AS r ELSE RETURN 'else' AS r", "r", Map.of("x", 2)))
+        .hasMessageContaining("onlyHere");
+  }
+
+  @Test
+  void conditionalQueryWithAWriteBranchAndNoReturnRuns() {
+    database.transaction(() -> database.command("opencypher",
+        "WHEN true THEN CREATE (:Marker9940b {v:'then'}) ELSE CREATE (:Marker9940b {v:'else'})"));
+    assertThat(column("MATCH (m:Marker9940b) RETURN m.v AS v", "v")).containsExactly("then");
+  }
+
+  @Test
   void conditionalQueryBranchesMustReturnTheSameColumns() {
     assertThatThrownBy(() -> rows("WHEN true THEN RETURN 1 AS a ELSE RETURN 2 AS b")).hasMessageContaining("conditional");
   }

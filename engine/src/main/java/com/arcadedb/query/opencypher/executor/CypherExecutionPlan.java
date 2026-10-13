@@ -879,17 +879,24 @@ public class CypherExecutionPlan {
   private void setupFunctionResolver(final BasicCommandContext context) {
     // A read-only statement cannot change what an unindexed chained MATCH re-reads, so it may answer from a snapshot (issue #8695)
     context.setVariable(MatchNodeStep.READ_ONLY_STATEMENT_KEY, statement.isReadOnly());
-    if (expressionEvaluator != null) {
-      final CypherFunctionFactory factory = expressionEvaluator.getFunctionFactory();
-      context.setVariable(FunctionCallExpression.FUNCTION_RESOLVER_KEY,
-          (Function<String, StatelessFunction>) name -> {
-            try {
-              return factory.getFunctionExecutor(name);
-            } catch (final Exception e) {
-              return null;
-            }
-          });
-    }
+    if (expressionEvaluator != null)
+      installFunctionResolver(context, expressionEvaluator.getFunctionFactory());
+  }
+
+  /**
+   * Makes the functions of {@code factory} resolvable by a {@link FunctionCallExpression} evaluated against {@code context}.
+   * Every context an expression is evaluated against needs it, not only an execution plan's: a logical expression calls
+   * {@link FunctionCallExpression#evaluate} directly (issue #9940, the condition of a conditional query).
+   */
+  public static void installFunctionResolver(final BasicCommandContext context, final CypherFunctionFactory factory) {
+    context.setVariable(FunctionCallExpression.FUNCTION_RESOLVER_KEY,
+        (Function<String, StatelessFunction>) name -> {
+          try {
+            return factory.getFunctionExecutor(name);
+          } catch (final Exception e) {
+            return null;
+          }
+        });
   }
 
   /**
