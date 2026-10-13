@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.ast;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
 /**
@@ -42,6 +43,7 @@ public class ConditionalStatement implements CypherStatement {
   private final List<Expression>      conditions;
   private final List<CypherStatement> branches;
   private final CypherStatement       elseBranch;
+  private final List<CypherStatement> allBranches;
 
   /**
    * @param conditions one condition per {@code WHEN} branch, in written order
@@ -55,6 +57,11 @@ public class ConditionalStatement implements CypherStatement {
     this.conditions = List.copyOf(conditions);
     this.branches = List.copyOf(branches);
     this.elseBranch = elseBranch;
+    final List<CypherStatement> all = new ArrayList<>(branches.size() + 1);
+    all.addAll(branches);
+    if (elseBranch != null)
+      all.add(elseBranch);
+    this.allBranches = Collections.unmodifiableList(all);
   }
 
   public List<Expression> getConditions() {
@@ -76,11 +83,7 @@ public class ConditionalStatement implements CypherStatement {
    * @return every query this statement can run, the {@code ELSE} one last
    */
   public List<CypherStatement> getAllBranches() {
-    final List<CypherStatement> all = new ArrayList<>(branches.size() + 1);
-    all.addAll(branches);
-    if (elseBranch != null)
-      all.add(elseBranch);
-    return all;
+    return allBranches;
   }
 
   @Override
