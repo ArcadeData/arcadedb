@@ -110,16 +110,24 @@ public class AlgoBridges extends AbstractAlgoProcedure {
    * The bridge between {@code a} and {@code b}, source first as the edge is stored. The walk is undirected and does not
    * know which way the single edge between the two points, so the endpoint with the shorter row is asked whether it
    * holds an outgoing one to the other: a scan of edge-list pointers that loads no edge record, bounded by the smaller
-   * degree.
+   * degree. When that vertex can no longer be loaded (deleted since a Graph Analytical View was built) the other endpoint
+   * is asked instead; only when neither can be loaded is the walk's own order kept.
    */
   private static Result bridge(final GraphData graph, final int[][] adj, final int a, final int b, final String[] relTypes) {
     int from = adj[a].length <= adj[b].length ? a : b;
     int to = from == a ? b : a;
     final Vertex fromVertex = graph.getVertex(from);
-    if (fromVertex != null && !isConnectedOut(fromVertex, graph.getRID(to), relTypes)) {
-      final int swap = from;
+    final boolean swap;
+    if (fromVertex != null)
+      swap = !isConnectedOut(fromVertex, graph.getRID(to), relTypes);
+    else {
+      final Vertex toVertex = graph.getVertex(to);
+      swap = toVertex != null && isConnectedOut(toVertex, graph.getRID(from), relTypes);
+    }
+    if (swap) {
+      final int tmp = from;
       from = to;
-      to = swap;
+      to = tmp;
     }
     final ResultInternal r = new ResultInternal();
     r.setProperty("source", graph.getRID(from));

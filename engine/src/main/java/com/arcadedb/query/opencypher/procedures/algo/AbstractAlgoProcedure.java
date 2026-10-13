@@ -182,6 +182,20 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
     requireTypes(db, relTypes, true);
   }
 
+  /**
+   * The weight property of a procedure whose relationship types come first. A name that is an edge type is refused: it is
+   * a call written in the order {@code algo.mst} and {@code algo.apsp} took before #9769, {@code (weightProperty,
+   * relTypes)}, where {@code (null, 'ROAD')} meant "every weight 1 over ROAD" and would now silently read ROAD as the
+   * weight property of every edge type.
+   */
+  protected String extractWeightProperty(final Object arg, final CommandContext context) {
+    final String weightProperty = extractString(arg, "weightProperty");
+    if (weightProperty != null && context.getDatabase().getSchema().getTypeOrNull(weightProperty) instanceof EdgeType)
+      throw new IllegalArgumentException(getName() + "(): '" + weightProperty
+          + "' is a relationship type, not a weight property: the relationship types come first, then the weight property");
+    return weightProperty;
+  }
+
   /** As {@link #extractRelTypes}, for a node-label filter: every name must be a vertex type of the schema. */
   protected String[] extractNodeLabels(final Object arg, final CommandContext context) {
     if (arg instanceof Map<?, ?>)

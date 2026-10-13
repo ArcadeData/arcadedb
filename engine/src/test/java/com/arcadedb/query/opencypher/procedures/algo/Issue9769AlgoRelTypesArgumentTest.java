@@ -109,6 +109,15 @@ class Issue9769AlgoRelTypesArgumentTest {
   }
 
   @Test
+  void oldOrderWithoutWeightIsRefusedToo() {
+    // (null, 'R') used to mean "unit weights over R"; read in the new order R would be the weight property of every type
+    assertThatThrownBy(() -> rows("CALL algo.apsp(null, 'R') YIELD distance RETURN distance"))
+        .hasStackTraceContaining("algo.apsp(): 'R' is a relationship type, not a weight property");
+    assertThatThrownBy(() -> rows("CALL algo.mst(null, 'R') YIELD source RETURN source"))
+        .hasStackTraceContaining("algo.mst(): 'R' is a relationship type, not a weight property");
+  }
+
+  @Test
   void unknownRelTypeIsRefusedAcrossTheFamily() {
     // The ordinary typo, previously as silent as the swapped order
     assertThatThrownBy(() -> rows("CALL algo.bridges('RR') YIELD source RETURN source"))

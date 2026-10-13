@@ -96,6 +96,7 @@ class Issue9766AlgoBridgesUndirectedTest {
     load(3, 0, 1, 2, 1);
     assertThat(bridges()).containsExactlyInAnyOrder("0->1", "2->1");
     assertThat(articulationPoints()).containsExactly(1);
+    assertThat(biconnectedComponents()).containsExactlyInAnyOrder(Set.of(0, 1), Set.of(1, 2));
   }
 
   @Test

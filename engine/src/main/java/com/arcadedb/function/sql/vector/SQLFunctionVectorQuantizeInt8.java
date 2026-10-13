@@ -61,10 +61,14 @@ public class SQLFunctionVectorQuantizeInt8 extends SQLFunctionVectorAbstract {
     if (vector.length == 0)
       throw new CommandSQLParsingException("Vector cannot be empty");
 
-    // Find min and max
+    // Find min and max. A non-finite element has no position inside a [min, max] band: NaN would be skipped by the
+    // comparisons (or poison min/max when first) and an infinity would stretch the band to infinity, so both are refused.
     float min = vector[0];
     float max = vector[0];
-    for (final float value : vector) {
+    for (int i = 0; i < vector.length; i++) {
+      final float value = vector[i];
+      if (!Float.isFinite(value))
+        throw new CommandSQLParsingException(NAME + "() requires finite values, found " + value + " at index " + i);
       if (value < min)
         min = value;
       if (value > max)
@@ -80,11 +84,12 @@ public class SQLFunctionVectorQuantizeInt8 extends SQLFunctionVectorAbstract {
         quantized[i] = 0;
       }
     } else {
-      final float range = max - min;
+      // In double: max - min of two finite floats can still overflow a float (-3e38 .. 3e38)
+      final double range = (double) max - min;
       for (int i = 0; i < vector.length; i++) {
         // Scale to [0, 255] then shift to [-128, 127]
-        final float normalized = (vector[i] - min) / range; // [0, 1]
-        final int scaled = Math.round(normalized * 255.0f); // [0, 255]
+        final double normalized = ((double) vector[i] - min) / range; // [0, 1]
+        final int scaled = (int) Math.round(normalized * 255.0); // [0, 255]
         final byte shifted = (byte) (scaled - 128); // Shift to [-128, 127]
         quantized[i] = shifted;
       }

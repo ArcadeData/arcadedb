@@ -155,6 +155,29 @@ class Issue9776ApproxDistanceInt8BandTest extends TestHelper {
   }
 
   @Test
+  void nonFiniteValuesCannotBeQuantized() {
+    // A NaN or an infinity has no position inside a [min, max] band: it would turn every distance against it into NaN
+    assertThatThrownBy(() -> quantize(new float[] { 1f, Float.NaN, 3f })).isInstanceOf(CommandSQLParsingException.class)
+        .hasMessageContaining("finite");
+    assertThatThrownBy(() -> quantize(new float[] { Float.NaN, 1f })).isInstanceOf(CommandSQLParsingException.class)
+        .hasMessageContaining("finite");
+    assertThatThrownBy(() -> quantize(new float[] { 1f, Float.POSITIVE_INFINITY })).isInstanceOf(CommandSQLParsingException.class)
+        .hasMessageContaining("finite");
+  }
+
+  @Test
+  void bandWiderThanAFloatStaysFinite() {
+    // max - min overflows a float here; the band is carried in double so the distance stays exact
+    final float[] a = { -3e38f, 0f, 3e38f };
+    final float[] b = { -3e38f, 0f, 3e38f };
+    assertThat(approx(a, b)).isEqualTo(0f);
+    final float[] back = (float[]) new SQLFunctionVectorDequantizeInt8().execute(null, null, null, new Object[] { quantize(a) },
+        context);
+    assertThat(back[0]).isEqualTo(-3e38f);
+    assertThat(back[2]).isCloseTo(3e38f, within(3e36f));
+  }
+
+  @Test
   void resultAgainstRawArrayIsRefused() {
     final Object result = quantize(new float[] { 0.1f, 0.5f, 0.9f });
     assertThatThrownBy(() -> approxDistance.execute(null, null, null, new Object[] { result, new byte[] { 1, 2, 3 }, "INT8" },
