@@ -3262,6 +3262,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
    * gRPC counterpart of #9868). A field of its own rather than a sentence in the message: the message is concealed in
    * production mode, and {@code getMessage()} never carried the address anyway. The address is the one the gRPC
    * trailers already hand out for the same refusal, so it reveals nothing those do not.
+   * <p>
+   * {@code code} is used only when {@code e} names no leader: a refusal that does always answers {@code NOT_LEADER},
+   * whatever the caller passed ({@link #commitErrorCode} already returns it for the commit paths, the row and bidi chunk
+   * paths pass {@code DB_ERROR}). {@code redirectIn} returns only a refusal whose address is neither null nor blank.
    */
   private InsertError insertError(final long rowIndex, final String code, final Throwable e) {
     final InsertError.Builder error = InsertError.newBuilder().setRowIndex(rowIndex).setMessage(insertErrorMessage(e)).setField("");
