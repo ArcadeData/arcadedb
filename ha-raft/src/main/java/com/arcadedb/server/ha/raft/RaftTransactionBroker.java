@@ -477,6 +477,17 @@ public class RaftTransactionBroker {
   }
 
   /**
+   * Replicates the whole {@code configuration.json} of {@code dbName} so every node holds the same database settings
+   * (issue #9763).
+   *
+   * @return the Raft log index the entry committed at, for the caller to wait on its local apply
+   */
+  public long replicateDatabaseConfiguration(final String dbName, final String configurationJson) {
+    final ByteString entry = RaftLogEntryCodec.encodeDatabaseConfigurationEntry(dbName, configurationJson);
+    return groupCommitter.submitAndWait(entry.toByteArray());
+  }
+
+  /**
    * Replicates the {@code BOOTSTRAP_FINGERPRINT_ENTRY} that names the peer chosen as the
    * bootstrap source for {@code dbName} at first cluster formation. Issue #4147 phase 4.
    */

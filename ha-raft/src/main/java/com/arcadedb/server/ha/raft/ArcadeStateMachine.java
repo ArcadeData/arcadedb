@@ -1862,6 +1862,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
         case SECURITY_GROUPS_ENTRY -> securitySuperseded[0] = !applySecurityGroupsEntry(decoded, index);
         case SECURITY_API_TOKENS_ENTRY -> securitySuperseded[0] = !applySecurityApiTokensEntry(decoded, index);
         case BOOTSTRAP_FINGERPRINT_ENTRY -> applyBootstrapFingerprintEntry(decoded, index, originatedLocally);
+        case DATABASE_CONFIGURATION_ENTRY -> applyDatabaseConfigurationEntry(decoded);
         }
       };
       boolean staleNoDatabaseEntry = false;
@@ -5383,7 +5384,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
   private boolean isCarriedByInstalledCopy(final RaftLogEntryType type, final boolean originatedLocally) {
     if (originatedLocally || pendingLocalCommits() > 0)
       return false;
-    return type == RaftLogEntryType.TX_ENTRY || type == RaftLogEntryType.SCHEMA_ENTRY;
+    // A database configuration document is a file of the database's own too, archived with the copy and read back when
+    // the installed copy is opened (issue #9763)
+    return type == RaftLogEntryType.TX_ENTRY || type == RaftLogEntryType.SCHEMA_ENTRY
+        || type == RaftLogEntryType.DATABASE_CONFIGURATION_ENTRY;
   }
 
   /**
@@ -7062,6 +7066,42 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // == null) or the file did not exist at the check above: read the persisted value as the final
     // signal. It is -1 for a genuinely fresh node.
     return readPersistedAppliedIndex() < 0;
+  }
+
+  /**
+   * Installs a replicated {@code configuration.json} (issue #9763): in memory, with the per-database effects the
+   * configuration drives, and on disk.
+   * <p>
+   * Applied on every node, the one that submitted it included. The document is the whole configuration, so installing
+   * it there again changes nothing that node did not already hold - unless another node's change committed in between,
+   * in which case every node now agrees on the later of the two, which is the point. A failure to WRITE the file
+   * leaves the configuration in force in memory, and is reported: as for the security documents, halting would turn a
+   * full or read-only volume into a crash loop.
+   */
+  // @VisibleForTesting
+  void applyDatabaseConfigurationEntry(final RaftLogEntryCodec.DecodedEntry decoded) {
+    final String payload = decoded.usersJson();
+    if (payload == null) {
+      LogManager.instance().log(this, Level.WARNING, "DATABASE_CONFIGURATION_ENTRY for '%s' has null payload, skipping",
+          decoded.databaseName());
+      return;
+    }
+
+    final LocalDatabase local = (LocalDatabase) databaseFor(decoded.databaseName()).getEmbedded();
+    local.installConfiguration(payload);
+    try {
+      local.saveConfiguration();
+    } catch (final IOException e) {
+      LogManager.instance().log(this, Level.SEVERE,
+          "Could not write the replicated configuration of database '%s' to disk: it is in force on this node, but a "
+              + "restart before this is fixed reads the previous '%s'. Check that the database directory is writable "
+              + "and has free space, then reissue the change", e, decoded.databaseName(),
+          LocalDatabase.CONFIGURATION_FILE_NAME);
+      throw new ReplicationException(
+          "Failed to persist the replicated configuration of database '" + decoded.databaseName() + "' locally", e);
+    }
+    HALog.log(this, HALog.DETAILED, "Applied DATABASE_CONFIGURATION_ENTRY to database '%s' (%d bytes)",
+        decoded.databaseName(), payload.length());
   }
 
   // @VisibleForTesting

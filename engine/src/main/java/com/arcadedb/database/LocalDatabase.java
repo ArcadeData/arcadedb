@@ -2954,6 +2954,32 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   }
 
   /**
+   * Makes {@code configurationJson} - a whole {@code configuration.json} document, as {@link ContextConfiguration#toJSON()}
+   * writes it - the configuration of this database, in memory only: the caller decides whether to
+   * {@link #saveConfiguration()} afterwards.
+   * <p>
+   * Issue #9763: under Raft HA this is how a follower takes the configuration the leader replicated after an
+   * {@code ALTER DATABASE}, and how a refused change is rolled back on the node that made it. A setting the document
+   * does not carry goes back to its default, exactly as {@link #open()} would leave it after reading the same file.
+   * The per-database effects that {@link #open()} derives from the configuration are re-derived here too, so the
+   * change takes effect without a reopen: the serializer's date implementations, and the statement caches, whose
+   * entries were parsed under the parse limits of the previous configuration.
+   */
+  public void installConfiguration(final String configurationJson) {
+    final ContextConfiguration incoming = new ContextConfiguration();
+    incoming.fromJSON(configurationJson);
+
+    configuration.getContextKeys().retainAll(incoming.getContextKeys());
+    configuration.merge(incoming);
+
+    serializer.setDateImplementation(configuration.getValue(GlobalConfiguration.DATE_IMPLEMENTATION));
+    serializer.setDateTimeImplementation(configuration.getValue(GlobalConfiguration.DATE_TIME_IMPLEMENTATION));
+
+    statementCache.clear();
+    cypherStatementCache.clear();
+  }
+
+  /**
    * Fires the AFTER READ listeners, under the same re-entrancy guard as the BEFORE READ ones - see
    * {@code LocalBucket.fireBeforeReadEvents}, which owns the explanation.
    * <p>

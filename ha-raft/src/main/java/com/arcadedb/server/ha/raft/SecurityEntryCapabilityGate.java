@@ -113,6 +113,7 @@ final class SecurityEntryCapabilityGate {
     return switch (type) {
       case SECURITY_GROUPS_ENTRY -> PeerCapabilities.SECURITY_GROUPS_ENTRY;
       case SECURITY_API_TOKENS_ENTRY -> PeerCapabilities.SECURITY_API_TOKENS_ENTRY;
+      case DATABASE_CONFIGURATION_ENTRY -> PeerCapabilities.DATABASE_CONFIGURATION_ENTRY;
       case TX_ENTRY, SCHEMA_ENTRY, INSTALL_DATABASE_ENTRY, DROP_DATABASE_ENTRY, SECURITY_USERS_ENTRY,
           BOOTSTRAP_FINGERPRINT_ENTRY -> null;
     };

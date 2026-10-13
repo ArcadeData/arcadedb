@@ -23,6 +23,7 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -127,6 +128,11 @@ public class AlterDatabaseStatement extends DDLStatement {
       final Class<?> resolvedClass = finalValue instanceof Class<?> clazz ? clazz : null;
       finalValue = GlobalConfiguration.externalizeValue(finalValue);
 
+      // Kept to undo the change below when it cannot be saved (issue #9763). Under Raft HA the save is what replicates
+      // the configuration, and it can be refused - a peer that cannot decode the entry yet - or fail to commit: the
+      // setting must then not stay in force on this node alone, which is the divergence the replication exists to end.
+      final String configurationBefore = db.getConfiguration().toJSON();
+
       db.getConfiguration().setValue(cfg, finalValue);
 
       // The stored value is what the setting is now worth, which is not always what was asked for: a callback
@@ -138,7 +144,10 @@ public class AlterDatabaseStatement extends DDLStatement {
 
       try {
         db.saveConfiguration();
-      } catch (final IOException e) {
+      } catch (final IOException | RuntimeException e) {
+        restoreConfiguration(db, configurationBefore);
+        if (e instanceof RuntimeException runtime)
+          throw runtime;
         // Chain the cause and name what was being written: without them a read-only filesystem, a permission
         // problem and a full volume are indistinguishable to the caller (issue #7141).
         throw new CommandExecutionException(
@@ -153,6 +162,16 @@ public class AlterDatabaseStatement extends DDLStatement {
     result.setProperty("oldValue", oldValue);
     result.setProperty("newValue", finalValue);
     return result;
+  }
+
+  /**
+   * Puts back the configuration this statement found, side effects included, after a save that did not happen (issue
+   * #9763). Only the embedded {@link LocalDatabase} can install a whole configuration document; every database a
+   * statement runs against has one.
+   */
+  private static void restoreConfiguration(final DatabaseInternal db, final String configurationJson) {
+    if (db.getEmbedded() instanceof LocalDatabase local)
+      local.installConfiguration(configurationJson);
   }
 
   /**

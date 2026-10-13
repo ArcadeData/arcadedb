@@ -273,6 +273,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   static final         long                                              UNPUBLISHED_RELEASE_LOG_THROTTLE_NS = TimeUnit.MINUTES.toNanos(1);
   private final        AtomicLong                                        lastUnpublishedReleaseLog = new AtomicLong(Long.MIN_VALUE);
   private final        AtomicLong                                        unpublishedReleasesSinceLog = new AtomicLong();
+  /** Orders the configuration documents this node submits (issue #9763), see {@link #saveConfiguration()}. */
+  private final        Object                                            configurationReplicationLock = new Object();
 
   /**
    * When {@link #logSchemaDeltaWithheld} last reported that a peer is holding deltas back. Plain volatile rather
@@ -4411,9 +4413,41 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     bucketDeltasOut.add(Collections.emptyMap());
   }
 
+  /**
+   * Replicates this database's {@code configuration.json} to every node instead of writing it here only (issue #9763).
+   * <p>
+   * {@code ALTER DATABASE} and the "set database setting" command change the in-memory configuration and then call
+   * this. It used to proxy straight to {@link LocalDatabase#saveConfiguration()}: the setting was in force, and on
+   * disk, on the node that ran the command alone, so the followers - and whichever of them became leader after a
+   * failover - kept the previous value. {@code arcadedb.dateImplementation} made that a wrong read, not only a
+   * tuning drift. Every DATABASE-scope setting stored here is cluster-wide: a node-local override belongs in the
+   * server configuration, which the database configuration overlays.
+   * <p>
+   * The whole document is shipped and installed as it stands on every node, the originator included, so the
+   * cluster converges on one configuration whatever order concurrent changes commit in. The document is built and
+   * submitted under this database's monitor, so two changes made on this node are submitted in the order they were
+   * built and the later document carries both. Refused before anything is submitted when a peer cannot decode the
+   * entry yet, the same interlock as the replicated security documents; the caller then undoes its in-memory change.
+   */
   @Override
   public void saveConfiguration() throws IOException {
-    proxied.saveConfiguration();
+    final RaftHAServer raft = raftHAServer;
+    if (raft == null) {
+      proxied.saveConfiguration();
+      return;
+    }
+
+    SecurityEntryCapabilityGate.requireEveryPeerCanDecode(server, raft, RaftLogEntryType.DATABASE_CONFIGURATION_ENTRY,
+        "configuration of database '" + getName() + "'");
+
+    final long committedLogIndex;
+    synchronized (configurationReplicationLock) {
+      committedLogIndex = RaftHAServer.requireTransactionBroker(raft)
+          .replicateDatabaseConfiguration(getName(), proxied.getConfiguration().toJSON());
+    }
+    // The apply on THIS node is what writes the file here too, so the caller reads its own change back from disk once
+    // this returns. Lenient: the entry is committed cluster-wide whatever the wait says.
+    raft.waitForAppliedIndex(getName(), committedLogIndex);
   }
 
   @Override

@@ -306,8 +306,9 @@ public final class RaftLogEntryCodec {
       /**
        * The JSON document of a node-scoped security entry: the user list of a {@code SECURITY_USERS_ENTRY}, the
        * group document of a {@code SECURITY_GROUPS_ENTRY}, or the API-token document of a
-       * {@code SECURITY_API_TOKENS_ENTRY} (issue #7373). Which one it is comes from {@link #type()}; the slot is
-       * shared because the three have the identical wire shape. Null for every other entry type.
+       * {@code SECURITY_API_TOKENS_ENTRY} (issue #7373), or the {@code configuration.json} document of a
+       * {@code DATABASE_CONFIGURATION_ENTRY} (issue #9763). Which one it is comes from {@link #type()}; the slot is
+       * shared because the four carry one JSON document each. Null for every other entry type.
        */
       String usersJson,
       boolean forceSnapshot,
@@ -914,6 +915,34 @@ public final class RaftLogEntryCodec {
   }
 
   /**
+   * Encodes the whole {@code configuration.json} document of {@code databaseName} as a
+   * {@code DATABASE_CONFIGURATION_ENTRY} (issue #9763).
+   * <p>
+   * Binary format: type byte, databaseName (UTF), document length (int) and UTF-8 bytes. Length-prefixed rather than
+   * {@code writeUTF}, whose 64KB limit a document has no reason to respect.
+   * <p>
+   * Only to be written once every peer advertises {@link PeerCapabilities#DATABASE_CONFIGURATION_ENTRY}: a peer that
+   * predates the type halts on it.
+   */
+  public static ByteString encodeDatabaseConfigurationEntry(final String databaseName, final String configurationJson) {
+    try {
+      final ByteArrayOutputStream baos = new ByteArrayOutputStream();
+      final DataOutputStream dos = new DataOutputStream(baos);
+
+      dos.writeByte(RaftLogEntryType.DATABASE_CONFIGURATION_ENTRY.getId());
+      dos.writeUTF(databaseName);
+      final byte[] bytes = configurationJson.getBytes(StandardCharsets.UTF_8);
+      dos.writeInt(bytes.length);
+      dos.write(bytes);
+
+      dos.flush();
+      return ByteString.copyFrom(baos.toByteArray());
+    } catch (final IOException e) {
+      throw new IllegalStateException("Failed to encode DATABASE_CONFIGURATION entry", e);
+    }
+  }
+
+  /**
    * Encodes a drop-database entry into a ByteString.
    * <p>
    * Binary format: type byte, databaseName (UTF).
@@ -1001,6 +1030,7 @@ public final class RaftLogEntryCodec {
           Collections.emptyList(), null, null, -1L);
       case SECURITY_USERS_ENTRY, SECURITY_GROUPS_ENTRY, SECURITY_API_TOKENS_ENTRY -> decodeSecurityEntry(dis, type);
       case BOOTSTRAP_FINGERPRINT_ENTRY -> decodeBootstrapFingerprintEntry(dis, databaseName);
+      case DATABASE_CONFIGURATION_ENTRY -> decodeDatabaseConfigurationEntry(dis, databaseName);
     };
 
     return result.withTrailingSections(readTrailingExtensionSections(dis, type));
@@ -1358,6 +1388,18 @@ public final class RaftLogEntryCodec {
     return new DecodedEntry(type, "",
         null, null, null, null, null, null, null, json, false, null, -1L, Collections.emptyList(), false,
         Collections.emptyList(), null, null, -1L);
+  }
+
+  /** Decodes a {@code DATABASE_CONFIGURATION_ENTRY} (issue #9763); the document rides in the {@code usersJson} slot. */
+  private static DecodedEntry decodeDatabaseConfigurationEntry(final DataInputStream dis, final String databaseName)
+      throws IOException {
+    final int length = dis.readInt();
+    checkByteLength(length, dis.available(), RaftLogEntryType.DATABASE_CONFIGURATION_ENTRY.name());
+    final byte[] bytes = new byte[length];
+    dis.readFully(bytes);
+    return new DecodedEntry(RaftLogEntryType.DATABASE_CONFIGURATION_ENTRY, databaseName,
+        null, null, null, null, null, null, null, new String(bytes, StandardCharsets.UTF_8), false, null, -1L,
+        Collections.emptyList(), false, Collections.emptyList(), null, null, -1L);
   }
 
   private static void writeFileMap(final DataOutputStream dos, final Map<Integer, String> fileMap) throws IOException {

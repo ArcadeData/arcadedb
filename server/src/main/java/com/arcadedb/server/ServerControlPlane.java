@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.MaintenanceCoordinator;
 import com.arcadedb.engine.MaintenanceCoordinator.Operation;
@@ -1180,8 +1181,17 @@ public class ServerControlPlane {
     requireDatabaseName(databaseName);
 
     final DatabaseInternal database = server.getDatabase(databaseName);
+    // Under Raft HA the save replicates the configuration and can be refused or fail to commit: the setting must not
+    // then stay in force on this node alone (issue #9763), so the configuration it replaced is put back.
+    final String configurationBefore = database.getConfiguration().toJSON();
     applySetting(database.getConfiguration(), key, value);
-    database.saveConfiguration();
+    try {
+      database.saveConfiguration();
+    } catch (final IOException | RuntimeException e) {
+      if (database.getEmbedded() instanceof LocalDatabase local)
+        local.installConfiguration(configurationBefore);
+      throw e;
+    }
   }
 
   /**
