@@ -26,6 +26,7 @@ import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexCursorEntry;
 import com.arcadedb.index.TempIndexCursor;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.FullTextIndexMetadata;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.TimeBoundRegex;
@@ -105,6 +106,10 @@ public class FullTextQueryExecutor {
   private final LSMTreeFullTextIndex   index;
   private final Analyzer               analyzer;
   private final FullTextIndexMetadata  metadata;
+  // Stops the posting walks and the score accumulation of a statement that was terminated or ran past its deadline (issue
+  // #9894): all of a search's work happens before its first row, so no check of the executor between rows can reach it.
+  private final WorkGuard              guard;
+  private       int                    guardTicks;
   // Cached once: the indexed property names don't change during a query, but isUnqualified() is consulted per matched term.
   private final List<String>           propertyNames;
 
@@ -146,7 +151,18 @@ public class FullTextQueryExecutor {
    * @param index the full-text index to search
    */
   public FullTextQueryExecutor(final LSMTreeFullTextIndex index) {
+    this(index, WorkGuard.forCommandDeadline(null));
+  }
+
+  /**
+   * Creates a new FullTextQueryExecutor for the given index, whose posting walks abort through {@code guard}.
+   *
+   * @param index the full-text index to search
+   * @param guard checked periodically while the postings are walked and the matches combined
+   */
+  public FullTextQueryExecutor(final LSMTreeFullTextIndex index, final WorkGuard guard) {
     this.index = index;
+    this.guard = guard;
     this.analyzer = index.getAnalyzer();
     this.metadata = index.getFullTextMetadata();
     this.propertyNames = index.getPropertyNames();
@@ -178,6 +194,7 @@ public class FullTextQueryExecutor {
    * @return cursor with matching documents, sorted by score descending
    */
   public IndexCursor search(final String queryString, final int limit) {
+    guard.check();
     resetState();
     return executeQuery(parseQuery(queryString), limit);
   }
@@ -229,6 +246,7 @@ public class FullTextQueryExecutor {
     if (!index.isBM25())
       throw new IllegalStateException("BM25 matching requires a BM25 full-text index");
 
+    guard.check();
     resetState();
     final Map<RID, AtomicInteger> matches = collectQueryMatches(parseQuery(queryString));
     return new BM25QueryMatch(Set.copyOf(matches.keySet()), Map.copyOf(scoringTokens), Map.copyOf(documentFrequencies));
@@ -253,11 +271,12 @@ public class FullTextQueryExecutor {
     // whose single query keys flow through). The SQL SEARCH_INDEX function reads only RID + $score from these entries, never
     // getKeys(); a direct executor.search() caller should likewise not rely on getKeys() for this path.
     if (index.isBM25())
-      return index.scoreCandidatesBM25(scoreMap.keySet(), scoringTokens, new Object[] {}, limit);
+      return index.scoreCandidatesBM25(scoreMap.keySet(), scoringTokens, new Object[] {}, limit, guard);
 
     final ArrayList<IndexCursorEntry> list = new ArrayList<>(scoreMap.size());
 
     for (final Map.Entry<RID, AtomicInteger> entry : scoreMap.entrySet()) {
+      tick();
       list.add(new IndexCursorEntry(new Object[] {}, entry.getKey(), entry.getValue().get()));
     }
 
@@ -325,6 +344,7 @@ public class FullTextQueryExecutor {
             mustResults.keySet().retainAll(termResults.keySet());
             // Add scores
             for (final RID rid : mustResults.keySet()) {
+              tick();
               if (termResults.containsKey(rid)) {
                 mustResults.get(rid).addAndGet(termResults.get(rid).get());
               }
@@ -339,6 +359,7 @@ public class FullTextQueryExecutor {
         // MUST clauses exist: only include documents that satisfy all MUST clauses
         // SHOULD clauses add bonus score to documents that already match MUST
         for (final Map.Entry<RID, AtomicInteger> entry : mustResults.entrySet()) {
+          tick();
           final RID rid = entry.getKey();
           int totalScore = entry.getValue().get();
           // Add bonus from SHOULD matches if present
@@ -350,6 +371,7 @@ public class FullTextQueryExecutor {
       } else if (!shouldResults.isEmpty()) {
         // No MUST clauses: SHOULD results are returned (standard OR behavior)
         for (final Map.Entry<RID, AtomicInteger> entry : shouldResults.entrySet()) {
+          tick();
           scoreMap.computeIfAbsent(entry.getKey(), k -> new AtomicInteger(0))
               .addAndGet(entry.getValue().get());
         }
@@ -527,8 +549,10 @@ public class FullTextQueryExecutor {
   private void collectAllIndexedRids(final Map<RID, AtomicInteger> scoreMap) {
     final IndexCursor cursor = index.iterateUnderlying(true, null, true);
     try {
-      while (cursor.hasNext())
+      while (cursor.hasNext()) {
+        tick();
         scoreMap.computeIfAbsent(cursor.next().getIdentity(), k -> new AtomicInteger(1));
+      }
     } finally {
       // a compacted-series cursor registers with its file, so an abandoned one keeps a retired file alive for the
       // lifetime of the database
@@ -557,6 +581,7 @@ public class FullTextQueryExecutor {
     long df = 0L;
     try (final IndexCursor cursor = index.getPostings(searchKey)) {
       while (cursor.hasNext()) {
+        tick();
         final RID rid = cursor.next().getIdentity();
         // Deletion markers carry a negative bucket id: they are not live documents and must not inflate the document frequency.
         if (rid.getBucketId() >= 0)
@@ -593,6 +618,7 @@ public class FullTextQueryExecutor {
       long df = 0L;
       try (final IndexCursor cursor = index.getPostings(searchKey)) {
         while (cursor.hasNext()) {
+          tick();
           final RID rid = cursor.next().getIdentity();
           // Deletion markers carry a negative bucket id and must not inflate the document frequency.
           if (rid.getBucketId() >= 0)
@@ -611,6 +637,7 @@ public class FullTextQueryExecutor {
 
     if (intersection != null) {
       for (final RID rid : intersection.keySet()) {
+        tick();
         scoreMap.computeIfAbsent(rid, k -> new AtomicInteger(0)).addAndGet(terms.length);
       }
     }
@@ -733,6 +760,7 @@ public class FullTextQueryExecutor {
     final Map<String, long[]> walkFrequencies = new HashMap<>();
     try {
       while (cursor.hasNext()) {
+        tick();
         final RID rid = cursor.next().getIdentity();
         final Object[] keys = cursor.getKeys();
         if (keys == null || keys.length == 0 || keys[0] == null)
@@ -757,6 +785,14 @@ public class FullTextQueryExecutor {
 
     for (final Map.Entry<String, long[]> frequency : walkFrequencies.entrySet())
       recordDocumentFrequency(frequency.getKey(), frequency.getValue()[0]);
+  }
+
+  /**
+   * One unit of matching work: a posting read or a match combined. Checks {@link #guard} every 1024 of them, so a cancelled
+   * or timed-out statement stops inside the walk rather than once the whole search is over (issue #9894).
+   */
+  private void tick() {
+    guard.checkPeriodically(++guardTicks);
   }
 
   /**

@@ -88,9 +88,9 @@ public class LevelZeroIdentifier extends SimpleNode {
   }
 
   public Iterable<Record> executeIndexedFunction(final FromClause target, final CommandContext context, final BinaryCompareOperator operator,
-      final Object right) {
+      final Object right, final int limit) {
     if (functionCall != null) {
-      return functionCall.executeIndexedFunction(target, context, operator, right);
+      return functionCall.executeIndexedFunction(target, context, operator, right, limit);
     }
     return null;
   }

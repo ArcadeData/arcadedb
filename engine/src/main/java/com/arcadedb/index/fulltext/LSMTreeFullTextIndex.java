@@ -40,6 +40,7 @@ import com.arcadedb.index.lsm.LSMTreeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.index.lsm.FullTextPostingRID;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.FullTextIndexMetadata;
 import com.arcadedb.schema.IndexBuilder;
 import com.arcadedb.schema.IndexMetadata;
@@ -405,6 +406,9 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     // Parse query text to handle field-specific terms (field:term)
     final String queryText = keys.length > 0 && keys[0] != null ? keys[0].toString() : "";
     final List<QueryTerm> queryTerms = parseQueryTerms(queryText);
+    // No command context on the direct path: the guard stops a terminated statement (issue #9894)
+    final WorkGuard guard = WorkGuard.forCommandDeadline(null);
+    int ticks = 0;
 
     for (final QueryTerm term : queryTerms) {
       // Analyze the term value
@@ -421,6 +425,7 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
         }
 
         while (rids.hasNext()) {
+          guard.checkPeriodically(++ticks);
           final RID rid = rids.next().getIdentity();
 
           // Accumulate score for this RID based on term frequency in the query
@@ -477,16 +482,23 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
    * @param tokenBoosts scoring tokens (stored-key form) mapped to their effective boost
    * @param candidates  documents to score, or {@code null} to score every matching document
    */
-  private Map<RID, double[]> computeBM25Scores(final Map<String, Float> tokenBoosts, final Set<RID> candidates) {
-    return computeBM25Scores(tokenBoosts, candidates, null);
+  private Map<RID, double[]> computeBM25Scores(final Map<String, Float> tokenBoosts, final Set<RID> candidates,
+      final WorkGuard guard) {
+    return computeBM25Scores(tokenBoosts, candidates, null, guard);
   }
 
   /**
    * Scores this bucket's candidates with either bucket-local statistics ({@code scoringContext == null}) or one type-wide
    * context supplied by {@link FullTextSearch}. The latter keeps scores comparable when a logical type spans several buckets.
+   * <p>
+   * {@code guard} is checked every 1024 postings read or candidates seeded: scoring a broad query walks every posting of
+   * every scoring token, and a statement terminated or past its deadline has to stop inside that walk (issue #9894).
    */
   private Map<RID, double[]> computeBM25Scores(final Map<String, Float> tokenBoosts, final Set<RID> candidates,
-      final BM25ScoringContext scoringContext) {
+      final BM25ScoringContext scoringContext, final WorkGuard guard) {
+    // Once per bucket on entry, then every 1024 postings: a bucket's walk can be shorter than the interval
+    guard.check();
+    int ticks = 0;
     ensureCounters();
     final long totalDocs = scoringContext != null ? scoringContext.totalDocs() : resolveTotalDocs();
     final double avgdl = scoringContext != null ? scoringContext.avgDocLength() : resolveAvgDocLength();
@@ -499,8 +511,10 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     // is built. Reading is via getScore() below.
     final Map<RID, double[]> scoreMap = candidates != null ? new HashMap<>(candidates.size()) : new HashMap<>();
     if (candidates != null)
-      for (final RID c : candidates)
+      for (final RID c : candidates) {
+        guard.checkPeriodically(++ticks);
         scoreMap.put(c, new double[1]);
+      }
 
     // Reused across tokens to avoid per-token allocations (candidate path only).
     final List<FullTextPostingRID> hits = new ArrayList<>();
@@ -519,6 +533,7 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
         hits.clear();
         try (final IndexCursor cursor = underlyingIndex.get(storedKey)) {
           while (cursor.hasNext()) {
+            guard.checkPeriodically(++ticks);
             final Identifiable id = cursor.next();
             // Skip deletion markers (negative bucket id): they are not live documents and must not inflate the document frequency.
             if (id.getIdentity().getBucketId() < 0)
@@ -541,6 +556,7 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
         if (scoringContext == null) {
           try (final IndexCursor dfCursor = underlyingIndex.get(storedKey)) {
             while (dfCursor.hasNext()) {
+              guard.checkPeriodically(++ticks);
               if (dfCursor.next().getIdentity().getBucketId() >= 0) // skip deletion markers
                 ++df;
             }
@@ -551,6 +567,7 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
         final double idf = BM25Scorer.idf(totalDocs, df);
         try (final IndexCursor scoreCursor = underlyingIndex.get(storedKey)) {
           while (scoreCursor.hasNext()) {
+            guard.checkPeriodically(++ticks);
             final Identifiable id = scoreCursor.next();
             if (id instanceof FullTextPostingRID s)
               scoreMap.computeIfAbsent(s.getIdentity(), k -> new double[1])[0] +=
@@ -593,7 +610,9 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
           "Full-text get() scoring %d terms on index '%s' with two posting scans each; use SEARCH_INDEX(...) for a single-pass scan.",
           null, tokenBoosts.size(), getName());
 
-    return buildScoredCursor(computeBM25Scores(tokenBoosts, null), keys, limit);
+    // The direct path has no command context: the guard still stops a statement that was terminated (issue #9894)
+    final WorkGuard guard = WorkGuard.forCommandDeadline(null);
+    return buildScoredCursor(computeBM25Scores(tokenBoosts, null, guard), keys, limit, guard);
   }
 
   /**
@@ -640,7 +659,8 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
    * set is requested it selects the top-K with a bounded min-heap (O(N log K)) instead of fully sorting the whole set
    * (O(N log N)) - a meaningful win for the common {@code ORDER BY $score DESC LIMIT k} shape over a large candidate set.
    */
-  private IndexCursor buildScoredCursor(final Map<RID, double[]> scoreMap, final Object[] keys, final int limit) {
+  private IndexCursor buildScoredCursor(final Map<RID, double[]> scoreMap, final Object[] keys, final int limit,
+      final WorkGuard guard) {
     final Comparator<IndexCursorEntry> bestFirst = (o1, o2) -> {
       final int cmp = Float.compare(o2.floatScore, o1.floatScore);
       if (cmp != 0)
@@ -652,7 +672,9 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     if (limit > -1 && limit < size) {
       // Bounded min-heap whose head is the WORST kept entry (reversed comparator), so we can evict it when a better one arrives.
       final PriorityQueue<IndexCursorEntry> heap = new PriorityQueue<>(limit, bestFirst.reversed());
+      int ticks = 0;
       for (final Map.Entry<RID, double[]> e : scoreMap.entrySet()) {
+        guard.checkPeriodically(++ticks);
         final IndexCursorEntry entry = new IndexCursorEntry(keys, canonicalRID(e.getKey()), (float) e.getValue()[0]);
         if (heap.size() < limit)
           heap.add(entry);
@@ -667,10 +689,15 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     }
 
     final ArrayList<IndexCursorEntry> list = new ArrayList<>(size);
-    for (final Map.Entry<RID, double[]> entry : scoreMap.entrySet())
+    int ticks = 0;
+    for (final Map.Entry<RID, double[]> entry : scoreMap.entrySet()) {
+      guard.checkPeriodically(++ticks);
       list.add(new IndexCursorEntry(keys, canonicalRID(entry.getKey()), (float) entry.getValue()[0]));
-    if (list.size() > 1)
+    }
+    if (list.size() > 1) {
+      guard.check();
       list.sort(bestFirst);
+    }
     return new TempIndexCursor(list);
   }
 
@@ -694,7 +721,16 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
    */
   public IndexCursor scoreCandidatesBM25(final Set<RID> candidates, final Map<String, Float> tokenBoosts, final Object[] keys,
       final int limit) {
-    return buildScoredCursor(computeBM25Scores(tokenBoosts, candidates), keys, limit);
+    return scoreCandidatesBM25(candidates, tokenBoosts, keys, limit, WorkGuard.forCommandDeadline(null));
+  }
+
+  /**
+   * {@link #scoreCandidatesBM25(Set, Map, Object[], int)} stopping through {@code guard} when the statement it runs for is
+   * terminated or past its deadline (issue #9894).
+   */
+  public IndexCursor scoreCandidatesBM25(final Set<RID> candidates, final Map<String, Float> tokenBoosts, final Object[] keys,
+      final int limit, final WorkGuard guard) {
+    return buildScoredCursor(computeBM25Scores(tokenBoosts, candidates, guard), keys, limit, guard);
   }
 
   /**
@@ -702,8 +738,8 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
    * posting matching the scoring tokens is eligible, which is the direct TypeIndex.get() path.
    */
   IndexCursor scoreBM25WithContext(final Set<RID> candidates, final Map<String, Float> tokenBoosts, final Object[] keys,
-      final int limit, final BM25ScoringContext scoringContext) {
-    return buildScoredCursor(computeBM25Scores(tokenBoosts, candidates, scoringContext), keys, limit);
+      final int limit, final BM25ScoringContext scoringContext, final WorkGuard guard) {
+    return buildScoredCursor(computeBM25Scores(tokenBoosts, candidates, scoringContext, guard), keys, limit, guard);
   }
 
   /**
@@ -1650,6 +1686,16 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
    * @throws IllegalArgumentException if sourceRids is null, empty, or exceeds maxSourceDocs
    */
   public IndexCursor searchMoreLikeThis(final Set<RID> sourceRids, final MoreLikeThisConfig config) {
+    return searchMoreLikeThis(sourceRids, config, WorkGuard.forCommandDeadline(null));
+  }
+
+  /**
+   * {@link #searchMoreLikeThis(Set, MoreLikeThisConfig)} stopping through {@code guard} while it walks the postings of the
+   * selected terms, when the statement it runs for is terminated or past its deadline (issue #9894).
+   */
+  public IndexCursor searchMoreLikeThis(final Set<RID> sourceRids, final MoreLikeThisConfig config, final WorkGuard guard) {
+    // Once per bucket on entry, then every 1024 postings: a bucket's walk can be shorter than the interval
+    guard.check();
     if (sourceRids == null)
       throw new IllegalArgumentException("sourceRids cannot be null");
     if (sourceRids.isEmpty())
@@ -1689,10 +1735,12 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
 
     // Step 3: Get document frequencies for each term
     final Map<String, Integer> docFreqs = new HashMap<>();
+    int ticks = 0;
     for (final String term : termFreqs.keySet()) {
       int docCount = 0;
       try (final IndexCursor termCursor = underlyingIndex.get(new String[] { term })) {
         while (termCursor.hasNext()) {
+          guard.checkPeriodically(++ticks);
           termCursor.next();
           docCount++;
         }
@@ -1717,6 +1765,7 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     for (final String term : topTerms) {
       try (final IndexCursor termCursor = underlyingIndex.get(new String[] { term })) {
         while (termCursor.hasNext()) {
+          guard.checkPeriodically(++ticks);
           final RID rid = termCursor.next().getIdentity();
           scoreMap.merge(rid, 1, Integer::sum);
         }
@@ -1734,8 +1783,10 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     for (final Map.Entry<RID, Integer> entry : scoreMap.entrySet())
       results.add(new IndexCursorEntry(null, canonicalRID(entry.getKey()), entry.getValue()));
 
-    if (results.size() > 1)
+    if (results.size() > 1) {
+      guard.check();
       results.sort(Comparator.comparingInt((IndexCursorEntry e) -> e.score).reversed());
+    }
 
     return new TempIndexCursor(results);
   }

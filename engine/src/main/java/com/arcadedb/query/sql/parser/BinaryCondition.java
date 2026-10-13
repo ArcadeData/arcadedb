@@ -113,8 +113,14 @@ public class BinaryCondition extends BooleanExpression {
     return left.estimateIndexedFunction(target, context, operator, right.execute((Result) null, context));
   }
 
-  public Iterable<Record> executeIndexedFunction(final FromClause target, final CommandContext context) {
-    return left.executeIndexedFunction(target, context, operator, right.execute((Result) null, context));
+  /**
+   * Answers the records of an indexed-function condition.
+   *
+   * @param limit how many rows of the result the plan can consume, or -1 for all of them: a function whose result has an
+   *              order of its own may stop producing past it (issue #9895)
+   */
+  public Iterable<Record> executeIndexedFunction(final FromClause target, final CommandContext context, final int limit) {
+    return left.executeIndexedFunction(target, context, operator, right.execute((Result) null, context), limit);
   }
 
   /**

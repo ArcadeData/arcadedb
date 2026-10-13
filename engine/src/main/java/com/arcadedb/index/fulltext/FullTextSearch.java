@@ -29,6 +29,7 @@ import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TempIndexCursor;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.FullTextPostingRID;
+import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.FullTextIndexMetadata;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.serializer.json.JSONArray;
@@ -121,19 +122,29 @@ public class FullTextSearch {
    * entries.
    */
   public static Map<RID, Float> search(final TypeIndex typeIndex, final String queryText, final int limit) {
+    return search(typeIndex, queryText, limit, WorkGuard.forCommandDeadline(null));
+  }
+
+  /**
+   * {@link #search(TypeIndex, String, int)} stopping through {@code guard} - checked while the postings are walked, the
+   * candidates scored and the per-bucket results merged - when the statement it runs for is terminated or past its deadline.
+   * All of a search's work happens before its first row is returned, so no check between rows reaches it (issue #9894).
+   */
+  public static Map<RID, Float> search(final TypeIndex typeIndex, final String queryText, final int limit,
+      final WorkGuard guard) {
     final int effectiveLimit = limit < 1 ? -1 : limit;
     final List<LSMTreeFullTextIndex> bucketIndexes = getBucketIndexes(typeIndex);
     if (bucketIndexes.isEmpty())
       return Map.of();
 
-    if (bucketIndexes.size() > 1 && bucketIndexes.get(0).isBM25())
-      return searchBM25(bucketIndexes, queryText, effectiveLimit);
+    if (bucketIndexes.size() > 1 && bucketIndexes.getFirst().isBM25())
+      return searchBM25(bucketIndexes, queryText, effectiveLimit, guard);
 
     final Map<RID, Float> allResults = new HashMap<>();
 
     for (final LSMTreeFullTextIndex ftIndex : bucketIndexes) {
-      try (final IndexCursor cursor = new FullTextQueryExecutor(ftIndex).search(queryText, effectiveLimit)) {
-        mergeCursor(allResults, cursor);
+      try (final IndexCursor cursor = new FullTextQueryExecutor(ftIndex, guard).search(queryText, effectiveLimit)) {
+        mergeCursor(allResults, cursor, guard);
       }
     }
 
@@ -141,7 +152,7 @@ public class FullTextSearch {
   }
 
   private static Map<RID, Float> searchBM25(final List<LSMTreeFullTextIndex> bucketIndexes, final String queryText,
-      final int limit) {
+      final int limit, final WorkGuard guard) {
     // Pass one: match each bucket and count every scoring token's document frequency during the same posting walk, so global
     // statistics cost no extra scan. Matching stays bucket-local, preserving Lucene boolean/phrase/wildcard semantics; only the
     // corpus statistics are pooled. Both passes are needed because no bucket can be scored until every bucket has reported its
@@ -151,7 +162,7 @@ public class FullTextSearch {
     final Map<String, Long> documentFrequencies = new HashMap<>();
 
     for (final LSMTreeFullTextIndex ftIndex : bucketIndexes) {
-      final FullTextQueryExecutor.BM25QueryMatch match = new FullTextQueryExecutor(ftIndex).collectBM25Matches(queryText);
+      final FullTextQueryExecutor.BM25QueryMatch match = new FullTextQueryExecutor(ftIndex, guard).collectBM25Matches(queryText);
       matches.add(match);
       for (final Map.Entry<String, Float> token : match.scoringTokens().entrySet())
         scoringTokens.merge(token.getKey(), token.getValue(), Math::max);
@@ -168,7 +179,7 @@ public class FullTextSearch {
     final Map<RID, Float> allResults = new HashMap<>();
     for (int i = 0; i < bucketIndexes.size(); i++)
       mergeCursor(allResults, bucketIndexes.get(i)
-          .scoreBM25WithContext(matches.get(i).candidates(), scoringTokens, NO_KEYS, limit, scoringContext));
+          .scoreBM25WithContext(matches.get(i).candidates(), scoringTokens, NO_KEYS, limit, scoringContext, guard), guard);
 
     return allResults;
   }
@@ -210,6 +221,8 @@ public class FullTextSearch {
       throw new IllegalArgumentException("searchSimple requires a BM25 full-text index");
 
     final int effectiveLimit = limit < 1 ? -1 : limit;
+    // The literal lookup behind CONTAINSTEXT has no command context: the guard stops a terminated statement (issue #9894)
+    final WorkGuard guard = WorkGuard.forCommandDeadline(null);
 
     final List<Object[]> perProperty = LSMTreeFullTextIndex.splitPositionalKey(typeIndex.getPropertyNames(), keys);
     if (perProperty != null) {
@@ -229,19 +242,19 @@ public class FullTextSearch {
       }
 
       final BM25ScoringContext scoringContext = createScoringContext(bucketIndexes,
-          scanDocumentFrequencies(bucketIndexes, unionScoringTokens));
+          scanDocumentFrequencies(bucketIndexes, unionScoringTokens, guard));
 
       return LSMTreeFullTextIndex.rankedCursor(
           LSMTreeFullTextIndex.intersectPerProperty(perProperty, propertyKey -> scoreAcrossBuckets(bucketIndexes,
-              tokensByProperty.get(propertyKey), propertyKey, -1, scoringContext)),
+              tokensByProperty.get(propertyKey), propertyKey, -1, scoringContext, guard)),
           keys, effectiveLimit);
     }
 
     final Map<String, Float> scoringTokens = bucketIndexes.get(0).getSimpleQueryTokenBoosts(keys);
     final BM25ScoringContext scoringContext = createScoringContext(bucketIndexes,
-        scanDocumentFrequencies(bucketIndexes, scoringTokens));
+        scanDocumentFrequencies(bucketIndexes, scoringTokens, guard));
 
-    return scoreAcrossBuckets(bucketIndexes, scoringTokens, keys, effectiveLimit, scoringContext);
+    return scoreAcrossBuckets(bucketIndexes, scoringTokens, keys, effectiveLimit, scoringContext, guard);
   }
 
   /**
@@ -250,10 +263,11 @@ public class FullTextSearch {
    * conjunction runs through {@link LSMTreeFullTextIndex#intersectPerProperty}.
    */
   private static IndexCursor scoreAcrossBuckets(final List<LSMTreeFullTextIndex> bucketIndexes,
-      final Map<String, Float> scoringTokens, final Object[] keys, final int limit, final BM25ScoringContext scoringContext) {
+      final Map<String, Float> scoringTokens, final Object[] keys, final int limit, final BM25ScoringContext scoringContext,
+      final WorkGuard guard) {
     final Map<RID, Float> allResults = new HashMap<>();
     for (final LSMTreeFullTextIndex ftIndex : bucketIndexes)
-      mergeCursor(allResults, ftIndex.scoreBM25WithContext(null, scoringTokens, keys, limit, scoringContext));
+      mergeCursor(allResults, ftIndex.scoreBM25WithContext(null, scoringTokens, keys, limit, scoringContext, guard), guard);
 
     return LSMTreeFullTextIndex.rankedCursor(allResults, keys, limit);
   }
@@ -271,8 +285,8 @@ public class FullTextSearch {
         FullTextQueryExecutor.MAX_EXPANDED_SCORING_TERMS);
     final Map<String, Float> shownTokens = firstTokens(allTokens, MAX_EXPLAIN_TERMS);
     final BM25ScoringContext context = createScoringContext(bucketIndexes,
-        scanDocumentFrequencies(bucketIndexes, shownTokens));
-    final FullTextIndexMetadata metadata = bucketIndexes.get(0).getFullTextMetadata();
+        scanDocumentFrequencies(bucketIndexes, shownTokens, WorkGuard.forCommandDeadline(null)));
+    final FullTextIndexMetadata metadata = bucketIndexes.getFirst().getFullTextMetadata();
 
     final JSONObject explain = new JSONObject()
         .put("similarity", FullTextIndexMetadata.SIMILARITY_BM25)
@@ -355,14 +369,17 @@ public class FullTextSearch {
    * visits only the tokens it was handed, and {@link #explainScoring}.
    */
   private static Map<String, Long> scanDocumentFrequencies(final List<LSMTreeFullTextIndex> bucketIndexes,
-      final Map<String, Float> scoringTokens) {
+      final Map<String, Float> scoringTokens, final WorkGuard guard) {
     documentFrequencyScanInvocations.incrementAndGet();
+    guard.check();
     final Map<String, Long> documentFrequencies = new HashMap<>();
+    int ticks = 0;
     for (final String token : scoringTokens.keySet()) {
       long df = 0L;
       for (final LSMTreeFullTextIndex ftIndex : bucketIndexes) {
         try (final IndexCursor postings = ftIndex.getPostings(token)) {
           while (postings.hasNext()) {
+            guard.checkPeriodically(++ticks);
             // a deletion marker carries a negative bucket id: it is not a live document
             if (postings.next().getIdentity().getBucketId() >= 0)
               ++df;
@@ -374,8 +391,10 @@ public class FullTextSearch {
     return documentFrequencies;
   }
 
-  private static void mergeCursor(final Map<RID, Float> target, final IndexCursor cursor) {
+  private static void mergeCursor(final Map<RID, Float> target, final IndexCursor cursor, final WorkGuard guard) {
+    int ticks = 0;
     while (cursor.hasNext()) {
+      guard.checkPeriodically(++ticks);
       final Identifiable match = cursor.next();
       target.put(canonicalRID(match.getIdentity()), cursor.getFloatScore());
     }
