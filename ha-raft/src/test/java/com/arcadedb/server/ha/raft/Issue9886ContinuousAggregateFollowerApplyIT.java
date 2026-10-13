@@ -22,6 +22,9 @@ import com.arcadedb.database.Database;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
+import java.util.List;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -78,6 +81,13 @@ class Issue9886ContinuousAggregateFollowerApplyIT extends BaseRaftHATest {
       try (final ResultSet rs = db.query("sql", "SELECT count(*) AS c FROM SensorReading")) {
         assertThat(rs.next().<Number>getProperty("c").longValue()).as("server %d samples", i).isEqualTo(2L);
       }
+      // The tag interned before the DDL and the one interned after it both resolve on every node
+      final List<String> tags = new ArrayList<>();
+      try (final ResultSet rs = db.query("sql", "SELECT sensor_id FROM SensorReading ORDER BY ts")) {
+        while (rs.hasNext())
+          tags.add(rs.next().getProperty("sensor_id"));
+      }
+      assertThat(tags).as("server %d tag values", i).containsExactly("A", "B");
     }
   }
 }
