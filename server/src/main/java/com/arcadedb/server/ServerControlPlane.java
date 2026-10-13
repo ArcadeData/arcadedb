@@ -1193,11 +1193,17 @@ public class ServerControlPlane {
     applySetting(database.getConfiguration(), key, value);
     try {
       database.saveConfiguration();
-    } catch (final TransactionCommittedRemotelyException | TransactionOutcomeUnknownException e) {
-      // Committed cluster-wide, or possibly: every node, this one included, applies the change if it commits, so undoing
-      // it here would leave this node alone on the previous value (issue #9904)
+    } catch (final TransactionCommittedRemotelyException e) {
+      // Committed cluster-wide: every node, this one included, installs the change, so there is nothing to undo
+      throw e;
+    } catch (final TransactionOutcomeUnknownException e) {
+      // Handed to the replication, which may still commit it or never (issue #9904): settle on what this node's
+      // configuration.json holds rather than racing this node's own apply of the change with the previous value
+      if (database.getEmbedded() instanceof LocalDatabase local)
+        local.restoreSettingFromSavedConfiguration(storedKey);
       throw e;
     } catch (final IOException | RuntimeException e) {
+      // A definite failure: the change did not and will not commit, so the previous value is the right one
       if (database.getEmbedded() instanceof LocalDatabase local)
         local.restoreSetting(storedKey, previousValue);
       throw e;
