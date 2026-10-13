@@ -65,6 +65,15 @@ public final class TagFilter {
   }
 
   /**
+   * The values a row's tag is compared with by {@link #eq eq(column, value)}: {@code value} and every other representation a
+   * scan can present the same tag in. A caller that decides a tag equality row by row, rather than through a filter, tests
+   * membership in this set and so selects exactly what the filter would select (issue #9833).
+   */
+  public static Set<Object> equalityForms(final Object value) {
+    return Condition.matchFormsOf(CollectionUtils.singletonSet(value));
+  }
+
+  /**
    * Returns a new TagFilter that ANDs this filter with an additional tag equality condition.
    *
    * @param nonTsColumnIndex zero-based column index excluding the timestamp column
