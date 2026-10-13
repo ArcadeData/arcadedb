@@ -204,12 +204,12 @@ class VectorIdAllocatorAfterPartialLoadTest {
           db.rollback();
         }
 
-        try (final ResultSet rs = db.query("sql", "SELECT count(*) AS c FROM Doc WHERE id = ?", VECTORS)) {
+        try (final ResultSet rs = db.query("sql", "SELECT count(@rid) AS c FROM Doc WHERE id = ?", VECTORS)) {
           assertThat(rs.next().<Long>getProperty("c")).isZero();
         }
         // Deleting a vector mints no id: it stays possible
         db.transaction(() -> db.command("sql", "DELETE FROM Doc WHERE id = 0"));
-        try (final ResultSet rs = db.query("sql", "SELECT count(*) AS c FROM Doc WHERE id = 0")) {
+        try (final ResultSet rs = db.query("sql", "SELECT count(@rid) AS c FROM Doc WHERE id = 0")) {
           assertThat(rs.next().<Long>getProperty("c")).isZero();
         }
       } finally {
@@ -247,6 +247,16 @@ class VectorIdAllocatorAfterPartialLoadTest {
    */
   @Test
   void aPageDamagedOnDiskRefusesNewVectorsUntilRebuilt() throws Exception {
+    damagePageAndExpectRefusalUntilRebuilt(Integer.MAX_VALUE);
+  }
+
+  /** A negative count skips the entry loop without failing: it must still count as a page that was not read. */
+  @Test
+  void aNegativeEntryCountOnDiskRefusesNewVectorsUntilRebuilt() throws Exception {
+    damagePageAndExpectRefusalUntilRebuilt(-5);
+  }
+
+  private void damagePageAndExpectRefusalUntilRebuilt(final int damagedEntryCount) throws Exception {
     createDatabaseWithVectorIndex();
 
     final String filePath;
@@ -263,7 +273,7 @@ class VectorIdAllocatorAfterPartialLoadTest {
     }
     try (final RandomAccessFile file = new RandomAccessFile(filePath, "rw")) {
       file.seek(BasePage.PAGE_HEADER_SIZE + LSMVectorIndex.OFFSET_NUM_ENTRIES);
-      file.writeInt(Integer.MAX_VALUE);
+      file.writeInt(damagedEntryCount);
     }
     assertThat(pageSize).isPositive();
 
