@@ -109,7 +109,7 @@ public class AlgoAPSP extends AbstractAlgoProcedure {
     // in the old (weightProperty, relTypes) order names a property where the relationship types go and is refused by
     // extractRelTypes, rather than walking an empty graph.
     final String[] relTypes     = args.length > 0 ? extractRelTypes(args[0], context) : null;
-    final String weightProperty = args.length > 1 ? extractString(args[1], "weightProperty") : null;
+    final String weightProperty = args.length > 1 ? extractWeightProperty(args[1], context) : null;
 
     final Database db = context.getDatabase();
     final WorkGuard guard = newWorkGuard(context);
