@@ -1833,7 +1833,22 @@ public class PageManagerFlushThread extends Thread {
     }
   }
 
+  /** Purge on a plain close: the deferred batches keep their WAL acks withheld. See {@link #removeAllPagesOfDatabase(Database, boolean)}. */
   public void removeAllPagesOfDatabase(final Database database) {
+    removeAllPagesOfDatabase(database, false);
+  }
+
+  /**
+   * Forgets every pending page and every piece of per-database bookkeeping of a database that is being closed or
+   * dropped.
+   *
+   * @param dropped {@code true} when the database's files are about to be deleted. It decides what happens to the WAL
+   *                acks of the batches deferred while the database was suspended (issue #9881): on a drop nothing will
+   *                ever write or replay those pages, so the acks are released; on a close the pages never reached the
+   *                disk and the un-acked WAL entry is the only durable copy of them, so the acks stay withheld and the
+   *                close preserves the WAL for the next open to replay.
+   */
+  public void removeAllPagesOfDatabase(final Database database, final boolean dropped) {
     // Reference identity ON PURPOSE (issue #6440), not database.equals(pagesToFlush.database): LocalDatabase
     // compares by PATH, so a database dropped and immediately reopened at the same path (a restore, a
     // re-provision, or simply a test's @BeforeEach/@AfterEach hammering one fixed path) would otherwise have
@@ -1910,9 +1925,19 @@ public class PageManagerFlushThread extends Thread {
     // Deliberately outside that monitor: batchRAM takes each batch's own monitor, and the one nesting this class
     // allows is suspendLock BEFORE batch.pages (what the defer path does). These batches are already detached, so
     // no one else can be looking at them, and keeping the accounting out here avoids widening that nesting.
+    //
+    // Their WAL acks depend on why the database goes away (issue #9881). On a drop the files are deleted, so the pages
+    // will never be written nor replayed: the batch is abandoned like a queued one, or the stranded WALFile.pagesToFlush
+    // count keeps TransactionManager.close() retrying to drop WAL files it never can (#6440). On a close the pages never
+    // reached the disk - their database was suspended - so the acks stay withheld: the close's flush wait gives up on
+    // them, the close becomes crash-equivalent, and the preserved WAL replays them on the next open. A close does not
+    // wait on these acks either way: it only closes its WAL files, it deletes nothing.
     if (droppedDeferred != null)
-      for (final PagesToFlush batch : droppedDeferred)
+      for (final PagesToFlush batch : droppedDeferred) {
         addDeferredRAM(database, -batchRAM(batch));
+        if (dropped)
+          abandonBatch(batch);
+      }
 
     // The database is gone: drop its per-database backlog entry with the rest of its bookkeeping, taking whatever
     // it was still charged for out of the JVM-wide total with it - dropping the entry alone would leave the total

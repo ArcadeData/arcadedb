@@ -3228,7 +3228,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         // the files of a dropped database are about to be deleted, so its queued pages must leave the pipeline
         // here or the wait below would sit through a backlog that nobody will ever need on disk. The later call
         // then finds nothing left to purge and only does the forgetting, which is all a drop still needs from it.
-        PageManager.INSTANCE.removeModifiedPagesOfDatabase(this);
+        PageManager.INSTANCE.removeModifiedPagesOfDatabase(this, true);
 
       // #4928: bounded wait. When it gives up (wedged flush / unwritable disk), this close becomes
       // CRASH-EQUIVALENT: the WAL files and the lock file are preserved below, so the next open runs
@@ -3268,7 +3268,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         // the page manager's snapshot barrier monitor. Skipping it on the common path pinned one dead
         // LocalDatabase (and everything it references) per closed database for the lifetime of
         // PageManager.INSTANCE, which any process cycling through databases pays forever.
-        PageManager.INSTANCE.removeModifiedPagesOfDatabase(this);
+        PageManager.INSTANCE.removeModifiedPagesOfDatabase(this, drop);
 
         PageManager.INSTANCE.removeAllReadPagesOfDatabase(this);
       } catch (final Throwable t) {
