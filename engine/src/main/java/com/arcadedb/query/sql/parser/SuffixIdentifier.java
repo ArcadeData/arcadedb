@@ -161,7 +161,7 @@ public class SuffixIdentifier extends SimpleNode {
     }
     if (identifier != null) {
       final String varName = identifier.getStringValue();
-      // THE FIRST CHARACTER FIRST: A PROPERTY NAME RARELY STARTS WITH '$', AND THIS RUNS FOR EVERY PROPERTY READ (ISSUE #9925)
+      // The first character first: a property name rarely starts with '$', and this runs for every property read (issue #9925)
       if (isDollarName(varName)) {
         if (context != null && "$parent".equalsIgnoreCase(varName))
           return context.getParent();
@@ -212,7 +212,7 @@ public class SuffixIdentifier extends SimpleNode {
     }
     if (identifier != null) {
       final String varName = identifier.getStringValue();
-      if (context != null && isDollarName(varName) && "$parent".equalsIgnoreCase(varName))
+      if (context != null && "$parent".equalsIgnoreCase(varName))
         return context.getParent();
 
       // Same predicate as the other two overloads, and for the same reason. Without it this one asked the context about
