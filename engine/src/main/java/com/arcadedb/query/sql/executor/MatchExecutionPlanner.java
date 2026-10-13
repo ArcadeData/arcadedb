@@ -41,6 +41,7 @@ import com.arcadedb.query.sql.parser.MatchStatement;
 import com.arcadedb.query.sql.parser.MultiMatchPathItem;
 import com.arcadedb.query.sql.parser.NestedProjection;
 import com.arcadedb.query.sql.parser.OrderBy;
+import com.arcadedb.query.sql.parser.OrderByItem;
 import com.arcadedb.query.sql.parser.Pattern;
 import com.arcadedb.query.sql.parser.Projection;
 import com.arcadedb.query.sql.parser.ProjectionItem;
@@ -117,6 +118,7 @@ public class MatchExecutionPlanner {
 
   public InternalExecutionPlan createExecutionPlan(final CommandContext context) {
 
+    checkOrderByRecordAttributes();
     buildPatterns(context);
     splitDisjointPatterns(context);
 
@@ -124,8 +126,10 @@ public class MatchExecutionPlanner {
     final Map<String, Long> estimatedRootEntries = estimateRootEntries(aliasTypes, aliasBuckets, aliasRids, aliasFilters, context);
     // A NODE WHOSE where: READS ANOTHER ALIAS THROUGH $matched CANNOT BE PREFETCHED: THE PREFETCH RUNS BEFORE ANY ALIAS IS
     // BOUND, SO THE PREDICATE WOULD BE FALSE FOR EVERY CANDIDATE AND THE STATEMENT WOULD SILENTLY ANSWER NOTHING (ISSUE #7434)
+    // AN UNKNOWN ESTIMATE (AN INDEXED FUNCTION LIKE SEARCH_INDEX THAT CANNOT COUNT ITS RESULT) IS NOT A SMALL ONE: PREFETCHING IT
+    // DRAINED THE WHOLE RESULT INTO A LIST BEFORE THE PATTERN STARTED, WHATEVER THE LIMIT (ISSUE #9908). IT IS STREAMED INSTEAD
     final Set<String> aliasesToPrefetch = estimatedRootEntries.entrySet().stream()
-        .filter(x -> x.getValue() < threshold && matchedDependencies(aliasFilters.get(x.getKey())).isEmpty())
+        .filter(x -> x.getValue() >= 0 && x.getValue() < threshold && matchedDependencies(aliasFilters.get(x.getKey())).isEmpty())
         .map(x -> x.getKey()).collect(Collectors.toSet());
     if (estimatedRootEntries.containsValue(0L)) {
       result.chain(new EmptyStep(context));
@@ -219,6 +223,41 @@ public class MatchExecutionPlanner {
 
     return result;
 
+  }
+
+  /**
+   * Refuses an {@code ORDER BY} on a bare record attribute ({@code ORDER BY @rid}, {@code @type}, ...) when the rows it would
+   * sort are not records (issue #9911). A {@code RETURN} of projections, {@code $paths} or {@code $patterns} builds new rows
+   * out of the matched aliases, with no identity or type of their own, so every sort key was null and the stable sort silently
+   * kept the pattern order: a keyset pagination built on it walked an order the engine never produced. Picking one of the
+   * aliases for the attribute would be a guess, so the statement is refused with the two forms that do mean something.
+   * {@code $elements} and {@code $pathElements} return the records themselves, and so does a {@code RETURN expand(...)}.
+   */
+  private void checkOrderByRecordAttributes() {
+    if (orderBy == null || orderBy.getItems() == null || returnElements || returnPathElements)
+      return;
+    if (!returnPaths && !returnPatterns && returnItems.size() == 1 && returnItems.getFirst().isExpand())
+      return;
+
+    for (final OrderByItem item : orderBy.getItems()) {
+      final String attribute = item.getRecordAttr();
+      if (attribute == null || isReturnedColumn(attribute))
+        continue;
+      throw new CommandExecutionException("ORDER BY " + attribute
+          + " has no meaning on the rows of this MATCH: its RETURN builds new rows out of the matched aliases, which have no "
+          + attribute + " of their own. Order by <alias>." + attribute + " or by a column of the RETURN instead, for example "
+          + "RETURN a." + attribute + " AS key ... ORDER BY key");
+    }
+  }
+
+  /** Whether the RETURN projects a column with this exact name, which an ORDER BY of the same name reads first. */
+  private boolean isReturnedColumn(final String name) {
+    if (returnPaths || returnPatterns)
+      return false;
+    for (final Identifier alias : returnAliases)
+      if (alias != null && name.equals(alias.getStringValue()))
+        return true;
+    return false;
   }
 
   /**
@@ -348,12 +387,7 @@ public class MatchExecutionPlanner {
         plan.chain(new MatchFirstStep(context, node, null, correlated));
       } else {
         //from actual execution plan
-        final String typez = aliasTypes.get(node.alias);
-        final String bucket = aliasBuckets.get(node.alias);
-        final Rid rid = aliasRids.get(node.alias);
-        final WhereClause filter = aliasFilters.get(node.alias);
-        final SelectStatement select = createSelectStatement(typez, bucket, rid, filter);
-        plan.chain(new MatchFirstStep(context, node, select.createExecutionPlan(context), correlated));
+        plan.chain(new MatchFirstStep(context, node, createRootPlan(node.alias, context), correlated));
       }
     }
     return plan;
@@ -480,8 +514,10 @@ public class MatchExecutionPlanner {
 
     // Sort the possible root vertices in order of estimated size, since we want to start with a small vertex set.
     final List<Pair<Long, String>> rootWeights = new ArrayList<>();
+    // AN UNKNOWN ESTIMATE IS AN INDEXED FUNCTION: A BETTER ENTRY POINT THAN A SCAN OF A LARGE TYPE, BUT NOT BETTER THAN A RID OR A
+    // SET KNOWN TO BE SMALL. RANKED AS -1 IT BEAT EVEN THOSE (ISSUE #9908)
     for (final Map.Entry<String, Long> root : estimatedRootEntries.entrySet()) {
-      rootWeights.add(new Pair<>(root.getValue(), root.getKey()));
+      rootWeights.add(new Pair<>(root.getValue() < 0 ? threshold : root.getValue(), root.getKey()));
     }
     rootWeights.sort(Comparator.comparing(Pair::getFirst));
     preferRootsWalkingFromStoringSides(rootWeights, pattern, schema);
@@ -887,24 +923,9 @@ public class MatchExecutionPlanner {
       final boolean first, final boolean correlated) {
     if (first) {
       final PatternNode patternNode = edge.out ? edge.edge.out : edge.edge.in;
-      final String typez = this.aliasTypes.get(patternNode.alias);
-      final String bucket = this.aliasBuckets.get(patternNode.alias);
-      final Rid rid = this.aliasRids.get(patternNode.alias);
-      final WhereClause where = aliasFilters.get(patternNode.alias);
-      final SelectStatement select = new SelectStatement();
-      select.setTarget(new FromClause());
-      select.getTarget().setItem(new FromItem());
-      if (typez != null) {
-        select.getTarget().getItem().setIdentifier(new Identifier(typez));
-      } else if (bucket != null) {
-        select.getTarget().getItem().setBucket(new Bucket(bucket));
-      } else if (rid != null) {
-        select.getTarget().getItem().setRids(List.of(rid));
-      }
-      select.setWhereClause(where == null ? null : where.copy());
       final BasicCommandContext subContxt = new BasicCommandContext();
       subContxt.setParentWithoutOverridingChild(context);
-      plan.chain(new MatchFirstStep(context, patternNode, select.createExecutionPlan(subContxt), correlated));
+      plan.chain(new MatchFirstStep(context, patternNode, createRootPlan(patternNode.alias, subContxt), correlated));
     }
     if (edge.edge.in.isOptionalNode()) {
       foundOptional = true;
@@ -916,35 +937,50 @@ public class MatchExecutionPlanner {
 
   private void addPrefetchSteps(final SelectExecutionPlan result, final Set<String> aliasesToPrefetch,
       final CommandContext context) {
-    for (final String alias : aliasesToPrefetch) {
-      final String targetClass = aliasTypes.get(alias);
-      final String targetCluster = aliasBuckets.get(alias);
-      final Rid targetRid = aliasRids.get(alias);
-      final WhereClause filter = aliasFilters.get(alias);
-      final SelectStatement prefetchStm = createSelectStatement(targetClass, targetCluster, targetRid, filter);
-
-      final MatchPrefetchStep step = new MatchPrefetchStep(context, prefetchStm.createExecutionPlan(context),
-          alias);
-      result.chain(step);
-    }
+    for (final String alias : aliasesToPrefetch)
+      result.chain(new MatchPrefetchStep(context, createRootPlan(alias, context), alias));
   }
 
-  private SelectStatement createSelectStatement(final String targetClass, final String targetCluster, final Rid targetRid,
-      final WhereClause filter) {
-    final SelectStatement prefetchStm = new SelectStatement();
-    prefetchStm.setWhereClause(filter);
-    final FromClause from = new FromClause();
+  /**
+   * The plan that binds a pattern node from the database rather than from a traversal: the node is prefetched, or it is the
+   * root of a single-node pattern, or the root of an edge pattern. One builder for the three, so they cannot disagree on what
+   * a node with several of {@code rid:}, {@code type:} and {@code bucket:} means (issue #9912): the prefetch and the
+   * single-node root used to fetch by RID and drop the type, the edge root to scan the type and drop the RID.
+   * <p>
+   * A {@code rid:} is the cheapest access there is, so it is the fetch; the {@code type:} (polymorphic, like a plain
+   * {@code type:}) and the {@code bucket:} stay as filters on the record it answers, so a RID of another type or bucket
+   * answers no rows. The checks run on the record rather than at planning time because the RID can be a parameter or an
+   * expression, resolved per execution of a cached plan.
+   */
+  private InternalExecutionPlan createRootPlan(final String alias, final CommandContext context) {
+    final String typeName = aliasTypes.get(alias);
+    final String bucketName = aliasBuckets.get(alias);
+    final Rid rid = aliasRids.get(alias);
+    final WhereClause filter = aliasFilters.get(alias);
+
     final FromItem fromItem = new FromItem();
-    if (targetRid != null) {
-      fromItem.setRids(List.of(targetRid));
-    } else if (targetClass != null) {
-      fromItem.setIdentifier(new Identifier(targetClass));
-    } else if (targetCluster != null) {
-      fromItem.setBucket(new Bucket(targetCluster));
-    }
+    if (rid != null)
+      fromItem.setRids(List.of(rid));
+    else if (typeName != null)
+      fromItem.setIdentifier(new Identifier(typeName));
+    else if (bucketName != null)
+      fromItem.setBucket(new Bucket(bucketName));
+    final FromClause from = new FromClause();
     from.setItem(fromItem);
-    prefetchStm.setTarget(from);
-    return prefetchStm;
+
+    final SelectStatement select = new SelectStatement();
+    select.setTarget(from);
+    select.setWhereClause(filter == null ? null : filter.copy());
+
+    final InternalExecutionPlan plan = select.createExecutionPlan(context);
+    if (rid != null && (typeName != null || bucketName != null)) {
+      final SelectExecutionPlan selectPlan = (SelectExecutionPlan) plan;
+      if (typeName != null)
+        selectPlan.chain(new FilterByTypeStep(new Identifier(typeName), context));
+      if (bucketName != null)
+        selectPlan.chain(new FilterByClustersStep(Set.of(bucketName), context));
+    }
+    return plan;
   }
 
   private void buildPatterns(final CommandContext context) {
@@ -1102,14 +1138,30 @@ public class MatchExecutionPlanner {
       final String typeName = aliasUserTypes.get(alias);
       final String bucketName = aliasClusters.get(alias);
       final Rid rid = aliasRids.get(alias);
+
+      // existsType(), NOT getType(): getType() RAISES ON AN UNKNOWN NAME, SO A null CHECK ON IT NEVER REACHED THIS MESSAGE
+      if (typeName != null && !schema.existsType(typeName))
+        throw new CommandExecutionException("Type '" + typeName + "' not defined");
+      // #5636: one null-tolerant lookup instead of two throwing ones. getBucketByName(String) raises on an unknown
+      // name, so the guard was dead and the MATCH-specific message never reached the user.
+      // FQN: the parser's Bucket is already imported in this file under the same simple name.
+      final com.arcadedb.engine.Bucket namedBucket = bucketName != null ? schema.getBucketByNameIfExists(bucketName) : null;
+      if (bucketName != null && namedBucket == null)
+        throw new CommandExecutionException("Bucket '" + bucketName + "' not defined");
+
+      // A rid: BINDS THE NODE TO AT MOST ONE RECORD, WHATEVER ITS type: OR bucket: SAY: THE BEST ROOT THERE IS. IT USED TO BE
+      // ESTIMATED AS THE WHOLE TYPE WHEN A type: WAS GIVEN TOO, AND NOT AT ALL WITHOUT ONE (ISSUE #9912). A RID THAT READS
+      // ANOTHER ALIAS THROUGH $matched CANNOT BE RESOLVED BEFORE THAT ALIAS IS BOUND, SO IT IS NOT A ROOT CANDIDATE
+      if (rid != null && collectMatchedAliases(rid, new HashSet<>()) == 0) {
+        result.put(alias, 1L);
+        continue;
+      }
+
       if (typeName == null && bucketName == null) {
         continue;
       }
 
       if (typeName != null) {
-        if (schema.getType(typeName) == null) {
-          throw new CommandExecutionException("Type '" + typeName + "' not defined");
-        }
         final DocumentType oClass = schema.getType(typeName);
         final long upperBound;
         final WhereClause filter = aliasFilters.get(alias);
@@ -1122,19 +1174,13 @@ public class MatchExecutionPlanner {
         result.put(alias, upperBound);
       } else if (bucketName != null) {
         final Database db = context.getDatabase();
-        // #5636: one null-tolerant lookup instead of two throwing ones. getBucketByName(String) raises on an unknown
-        // name, so the guard was dead and the MATCH-specific message never reached the user.
-        // FQN: the parser's Bucket is already imported in this file under the same simple name.
-        final com.arcadedb.engine.Bucket namedBucket = db.getSchema().getBucketByNameIfExists(bucketName);
-        if (namedBucket == null) {
-          throw new CommandExecutionException("Bucket '" + bucketName + "' not defined");
-        }
         final int bucketId = namedBucket.getFileId();
         final DocumentType oClass = db.getSchema().getTypeByBucketId(bucketId);
         if (oClass != null) {
           final long upperBound;
           final WhereClause filter = aliasFilters.get(alias);
           if (filter != null && matchedDependencies(filter).isEmpty()) {
+            // AN UNKNOWN FILTER ESTIMATE (-1) STAYS UNKNOWN THROUGH THE min (ISSUE #9908)
             upperBound = Math.min(db.countBucket(bucketName), filter.estimate(oClass, threshold, context));
           } else {
             upperBound = db.countBucket(bucketName);
@@ -1143,8 +1189,6 @@ public class MatchExecutionPlanner {
         } else {
           result.put(alias, db.countBucket(bucketName));
         }
-      } else if (rid != null) {
-        result.put(alias, 1L);
       }
     }
     return result;

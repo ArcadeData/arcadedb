@@ -38,6 +38,9 @@ import java.util.logging.Level;
 import java.util.stream.Collectors;
 
 public class WhereClause extends SimpleNode {
+  /** What {@link #estimate} answers when an indexed function cannot tell how many records it returns (issue #9908). */
+  public static final long UNKNOWN_ESTIMATE = -1L;
+
   public BooleanExpression baseExpression;
   protected List<AndBlock>    flattened;
 
@@ -97,7 +100,8 @@ public class WhereClause extends SimpleNode {
    * @param oClass
    *
    * @return an estimation of the number of records of this class returned applying this filter, 0 if and only if sure that no
-   * records are returned
+   * records are returned, {@link #UNKNOWN_ESTIMATE} when the filter is answered by an indexed function that cannot tell how many
+   * records it returns (issue #9908): such a filter is still an index lookup, not a scan, but it is NOT a small result
    */
   public long estimate(final DocumentType oClass, final long threshold, final CommandContext context) {
     long count = context.getDatabase().countType(oClass.getName(), true);
@@ -109,6 +113,7 @@ public class WhereClause extends SimpleNode {
     }
 
     long indexesCount = 0L;
+    boolean unknown = false;
     final List<AndBlock> flattenedConditions = flatten();
     final Collection<TypeIndex> indexes = oClass.getAllIndexes(true);
     for (final AndBlock condition : flattenedConditions) {
@@ -118,14 +123,23 @@ public class WhereClause extends SimpleNode {
       long conditionEstimation = Long.MAX_VALUE;
 
       if (indexedFunctConditions != null) {
+        boolean unknownCondition = false;
         for (final BinaryCondition cond : indexedFunctConditions) {
           final FromClause from = new FromClause();
           from.item = new FromItem();
           from.item.setIdentifier(new Identifier(oClass.getName()));
           final long newCount = cond.estimateIndexed(from, context);
-          if (newCount < conditionEstimation) {
+          // A NEGATIVE ESTIMATION MEANS "CANNOT BE ESTIMATED", NOT "FEWER THAN ANYTHING": TAKEN AS A COUNT IT WON EVERY
+          // COMPARISON AND MADE MATCH MATERIALIZE THE WHOLE RESULT OF A SEARCH_INDEX NODE AS IF IT WERE TINY (ISSUE #9908)
+          if (newCount < 0)
+            unknownCondition = true;
+          else if (newCount < conditionEstimation)
             conditionEstimation = newCount;
-          }
+        }
+        // ANY KNOWN BOUND OF AN AND-BLOCK BOUNDS THE WHOLE BLOCK, SO THE BLOCK IS UNKNOWN ONLY WHEN NO CONDITION HAS ONE
+        if (unknownCondition && conditionEstimation == Long.MAX_VALUE) {
+          unknown = true;
+          continue;
         }
       } else {
         final Map<String, Object> conditions = getEqualityOperations(condition, context);
@@ -164,7 +178,8 @@ public class WhereClause extends SimpleNode {
       }
       indexesCount += conditionEstimation;
     }
-    return Math.min(indexesCount, count);
+    // A BRANCH THAT NEEDS A SCAN WAS ALREADY ANSWERED WITH count ABOVE; OTHERWISE ONE UNKNOWN BRANCH MAKES THE UNION UNKNOWN
+    return unknown ? UNKNOWN_ESTIMATE : Math.min(indexesCount, count);
   }
 
   private long estimateFromIndex(final Index index, final Map<String, Object> conditions, final int nMatchingKeys) {
