@@ -139,16 +139,6 @@ import static com.arcadedb.schema.Schema.INDEX_TYPE.FULL_TEXT;
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */
 public class SelectExecutionPlanner {
-  /**
-   * Context variables the execution assigns per row or per traversal step (the projection's $current, a scoring function's
-   * $score, MATCH's $matched and $currentMatch, TRAVERSE's $depth, $path, $stack and $history): never constant across a
-   * fetch, so an {@code @rid} condition on one is not pushed into an indexed function (issue #9909). A per-record LET is
-   * excluded by name, from the statement's own LET clause. A new variable the execution assigns per row has to be added
-   * here, or an {@code @rid} condition on it would be resolved once for the whole fetch.
-   */
-  private static final Set<String> PER_ROW_VARIABLES = Set.of("$current", "$score", "$matched", "$currentMatch", "$depth", "$path",
-      "$stack", "$history");
-
   private static final String            LOCAL_NODE_NAME = "local";
   /** The variable a scoring indexed function such as {@code SEARCH_INDEX} sets on every row it matches. */
   private static final String            SCORE_VARIABLE  = "$score";
@@ -4303,8 +4293,8 @@ public class SelectExecutionPlanner {
   /**
    * The conjuncts of {@code block} an indexed function can decide on its candidates' RIDs before it loads their records
    * (issue #9909): an {@code @rid} comparison or {@code [NOT] IN} (see {@link RIDFilter#isPushable}) whose right-hand side
-   * is known before the fetch - a literal, a bound parameter, or a variable that no per-record LET and no per-row
-   * evaluation assigns. They are resolved at each execution, so the plan does not depend on this one's values.
+   * is known before the fetch - a literal, a bound parameter, or a variable a global LET of the statement computes. They are
+   * resolved at each execution, so the plan does not depend on this one's values.
    */
   private static List<BooleanExpression> pushableRidConditions(final AndBlock block, final QueryPlanningInfo info) {
     List<BooleanExpression> pushable = null;
@@ -4327,12 +4317,15 @@ public class SelectExecutionPlanner {
   }
 
   /**
-   * Whether {@code expression} is a bare variable that holds the same value for every row of the fetch: not one a
-   * per-record LET recomputes after it, and not one the execution sets per row.
+   * Whether {@code expression} is a bare variable that holds the same value for every row of the fetch: one a global LET of
+   * the statement computes, which {@link #handleGlobalLet} chains ahead of the fetch. An allow-list rather than a list of
+   * the variables that change: any other variable - a per-record LET, one the execution assigns per row or per traversal
+   * step ($current, $score, $matched, $depth...), one set by the caller - keeps its condition in the filter after the
+   * fetch, where it is right whatever it holds, and only the pushdown is lost.
    */
   private static boolean isVariableKnownBeforeFetch(final MathExpression expression, final QueryPlanningInfo info) {
     final String variable = variableName(expression);
-    return variable != null && !isPerRecordLetVariable(variable, info) && !PER_ROW_VARIABLES.contains(variable);
+    return variable != null && isGlobalLetVariable(variable, info);
   }
 
   /**

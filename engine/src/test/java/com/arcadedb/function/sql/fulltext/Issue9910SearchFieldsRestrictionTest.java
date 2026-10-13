@@ -178,8 +178,21 @@ class Issue9910SearchFieldsRestrictionTest extends TestHelper {
     });
 
     assertThat(count("SEARCH_FIELDS(['a'], 'zebra') = true")).isEqualTo(1);
-    assertThat(rids("SELECT FROM UrgentNote WHERE SEARCH_FIELDS(['a'], 'zebra') = true")).hasSize(1);
     assertThat(rids("SELECT FROM UrgentNote WHERE SEARCH_FIELDS(['b'], 'zebra') = true")).isEmpty();
+
+    // The subtype defines its own index over a only. A search FROM the supertype is fetched through the supertype's index, and
+    // the subtype's rows are evaluated again on that same index, with its scores, not on the subtype's own
+    database.command("sql", "CREATE INDEX ON UrgentNote (a) FULL_TEXT");
+    assertThat(rids("SELECT FROM UrgentNote WHERE SEARCH_FIELDS(['a'], 'zebra') = true")).hasSize(1);
+    final Map<Object, Float> viaSupertype = new LinkedHashMap<>();
+    try (final ResultSet rs = database.query("sql",
+        "SELECT @rid AS rid, $score AS score FROM Note WHERE SEARCH_FIELDS(['a'], 'zebra crossing') = true")) {
+      while (rs.hasNext()) {
+        final Result row = rs.next();
+        viaSupertype.put(row.getProperty("rid"), row.<Float>getProperty("score"));
+      }
+    }
+    assertThat(viaSupertype).isEqualTo(scores("SEARCH_INDEX('Note[a,b]', 'a:zebra a:crossing')"));
   }
 
   private void assertSameScores(final String searchFields, final String searchIndex) {
