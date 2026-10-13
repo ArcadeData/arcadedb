@@ -139,6 +139,22 @@ class Issue9776ApproxDistanceInt8BandTest extends TestHelper {
   }
 
   @Test
+  void rawCodesOutsideTheInt8RangeAreRefusedNotWrapped() {
+    // byteValue() would turn 200 into -56, the opposite end of the scale
+    assertThatThrownBy(() -> approxDistance.execute(null, null, null, new Object[] { List.of(200, 0), List.of(0, 0), "INT8" },
+        context)).isInstanceOf(CommandSQLParsingException.class).hasMessageContaining("[-128, 127]");
+    assertThatThrownBy(() -> approxDistance.execute(null, null, null, new Object[] { List.of(1.5, 0), List.of(0, 0), "INT8" },
+        context)).isInstanceOf(CommandSQLParsingException.class).hasMessageContaining("integers");
+    assertThatThrownBy(() -> approxDistance.execute(null, null, null,
+        new Object[] { new Object[] { -129, 0 }, new Object[] { 0, 0 }, "INT8" }, context))
+        .isInstanceOf(CommandSQLParsingException.class).hasMessageContaining("[-128, 127]");
+    // The bounds themselves are codes
+    final Object result = approxDistance.execute(null, null, null, new Object[] { List.of(-128), List.of(127.0), "INT8" },
+        context);
+    assertThat((Float) result).isEqualTo(255f, within(0.0001f));
+  }
+
+  @Test
   void resultAgainstRawArrayIsRefused() {
     final Object result = quantize(new float[] { 0.1f, 0.5f, 0.9f });
     assertThatThrownBy(() -> approxDistance.execute(null, null, null, new Object[] { result, new byte[] { 1, 2, 3 }, "INT8" },

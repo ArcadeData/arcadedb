@@ -89,7 +89,9 @@ class Issue9769AlgoRelTypesArgumentTest {
   @Test
   void mstInTheOldOrderIsRefusedNotAnsweredEmpty() {
     assertThatThrownBy(() -> rows("CALL algo.mst('w', 'R') YIELD source RETURN source"))
-        .hasStackTraceContaining("algo.mst(): relationship type 'w' does not exist");
+        .hasStackTraceContaining("algo.mst(): relationship type 'w' does not exist")
+        // 'w' is declared on R, so the message points at the swapped order
+        .hasStackTraceContaining("'w' is a property of the edge type 'R': the relationship types come first, then the weight property");
     assertThatThrownBy(() -> rows("CALL algo.mst('w') YIELD source RETURN source"))
         .hasStackTraceContaining("relationship type 'w' does not exist");
   }
@@ -128,6 +130,13 @@ class Issue9769AlgoRelTypesArgumentTest {
         .hasStackTraceContaining("'R' is not a node label, it is an edge type");
     assertThat(rows("CALL algo.graphSummary(null, 'N') YIELD nodeCount RETURN nodeCount").getFirst().<Number>getProperty("nodeCount")
         .intValue()).isEqualTo(6);
+    // The types to skip are names too: a misspelt one would skip nothing
+    assertThatThrownBy(() -> rows("MATCH (a:N {k: 0}), (b:N {k: 5}) "
+        + "CALL algo.allSimplePaths(a, b, 'R', 5, {skipRelTypes: ['SS']}) YIELD path RETURN path"))
+        .hasStackTraceContaining("algo.allsimplepaths(): relationship type 'SS' does not exist");
+    assertThatThrownBy(() -> rows("MATCH (a:N {k: 0}), (b:N {k: 5}) "
+        + "CALL algo.allSimplePaths(a, b, 'R', 5, {skipVertexTypes: 'NN'}) YIELD path RETURN path"))
+        .hasStackTraceContaining("algo.allsimplepaths(): node label 'NN' does not exist");
     // The single-type procedures too
     assertThatThrownBy(() -> rows("MATCH (a:N {k: 0}), (b:N {k: 5}) CALL algo.dijkstra(a, b, 'RR', 'w') YIELD path RETURN path"))
         .hasStackTraceContaining("algo.dijkstra(): relationship type 'RR' does not exist");

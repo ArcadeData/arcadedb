@@ -149,6 +149,21 @@ class Issue9766AlgoBridgesUndirectedTest {
   }
 
   @Test
+  void longPathDoesNotOverflowTheStack() {
+    // Every edge of a path is a bridge and the DFS is as deep as the path: the walk is iterative, so no stack frame per
+    // vertex. Edges alternate direction so the undirected walk is what reaches the far end.
+    final int n = 20_000;
+    final int[] pairs = new int[(n - 1) * 2];
+    for (int i = 0; i < n - 1; i++) {
+      pairs[i * 2] = i % 2 == 0 ? i : i + 1;
+      pairs[i * 2 + 1] = i % 2 == 0 ? i + 1 : i;
+    }
+    load(n, pairs);
+    assertThat(bridges()).hasSize(n - 1);
+    assertThat(articulationPoints()).hasSize(n - 2);
+  }
+
+  @Test
   void biconnectedComponentsUnchangedOnTheIssueGraphs() {
     load(6, 0, 1, 1, 2, 2, 0, 3, 2, 3, 4, 4, 5, 5, 3);
     assertThat(biconnectedComponents()).containsExactlyInAnyOrder(Set.of(0, 1, 2), Set.of(2, 3), Set.of(3, 4, 5));
