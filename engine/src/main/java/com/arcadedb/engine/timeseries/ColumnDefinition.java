@@ -236,6 +236,16 @@ public final class ColumnDefinition {
    * the literal has to be coerced instead.
    */
   public Object coerceValue(final Object value) {
+    return coerceValue(null, value);
+  }
+
+  /**
+   * {@link #coerceValue(Object)}, reading a date or an instant given as text through {@code database}, as an {@code INSERT} reads
+   * it, so a literal finds the row an {@code INSERT} with the same literal wrote (issue #9833). With {@code null} the text is read
+   * with the defaults into a {@code java.util.Date}, in the JVM's default time zone, which names another instant whenever that
+   * zone is not UTC.
+   */
+  public Object coerceValue(final Database database, final Object value) {
     if (value == null)
       return null;
     if (dataType == Type.STRING)
@@ -248,7 +258,7 @@ public final class ColumnDefinition {
     // count in the column's unit at this layer, the unit the engine API, the line protocol and every HTTP surface speak.
     if (isTemporal() && !(value instanceof Number) && !(value instanceof String text && isIntegerText(text)))
       try {
-        return epochOf(null, value);
+        return epochOf(database, value);
       } catch (final IllegalArgumentException e) {
         return value;
       }
