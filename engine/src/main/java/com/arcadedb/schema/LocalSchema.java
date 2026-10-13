@@ -3768,7 +3768,41 @@ public class LocalSchema implements Schema {
    *
    * @return how many members could not be restored, for a caller that reports warnings
    */
-  public synchronized int restoreSchemaMembersFromJSON(final JSONObject root, final SchemaMemberSource source) {
+  public int restoreSchemaMembersFromJSON(final JSONObject root, final SchemaMemberSource source) {
+    if (source == SchemaMemberSource.SCHEMA_FILE)
+      // The database's own schema.json being read back: what it names is already this node's (and, under HA, the
+      // cluster's) state, so there is nothing to publish. Its one caller is the schema-file loader, which already
+      // holds this schema's monitor
+      return restoreSchemaMembersFromJSONLocked(root, source);
+
+    // Issue #9764: an imported file is a schema change, so it runs inside a schema recording session, which saves the
+    // schema and, under Raft HA, ships it as a SCHEMA_ENTRY. A bare saveConfiguration() reached this node's schema.json
+    // only, and the followers never got the triggers, views, aggregates and function libraries.
+    //
+    // THE FRAME IS ENTERED BEFORE THE MONITOR IS TAKEN (#7457): entering it waits for the database write lock, and a
+    // thread holding the monitor while waiting for that lock deadlocks against any DDL that is saving.
+    //
+    // A FAILURE IS RETHROWN AFTER THE FRAME, NOT THROUGH IT, as in bulkChange(). The members restored before it are
+    // installed and no schema rollback exists; failing the frame would keep them on this node only. Closing it normally
+    // saves and ships that prefix, so every node holds the same thing, and the caller still sees the failure.
+    final RuntimeException[] failure = new RuntimeException[1];
+    final Integer failures = recordFileChanges(() -> {
+      try {
+        return restoreSchemaMembersFromJSONLocked(root, source);
+      } catch (final RuntimeException e) {
+        failure[0] = e;
+        return null;
+      }
+    });
+
+    if (failure[0] != null)
+      throw failure[0];
+
+    // Null only when the callback failed, which threw just above
+    return failures;
+  }
+
+  private synchronized int restoreSchemaMembersFromJSONLocked(final JSONObject root, final SchemaMemberSource source) {
     // The schema file IS the database's own state: what it names is already installed, so re-reading it replaces
     // rather than merges. An imported file is a second database's state arriving into a live one, which keeps
     // whatever the export did not name.
