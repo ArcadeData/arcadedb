@@ -104,6 +104,31 @@ working there.
 **Who sees a different answer.** A query that used a bare `ORDER BY @rid` on such a MATCH, for example as the cursor of a
 keyset pagination, now fails instead of returning rows in an order the engine never applied.
 
+### Cypher: a path variable over a quantified group binds one PATH, and ignored GQL constructs are refused (#9940)
+
+`MATCH p = ((m)-[r]->(n)){2}`, a path variable over nothing but a quantified group, used to bind a `LIST<PATH>` with one
+path per repetition (#4531). It now binds one `PATH` running through every repetition, as any other path variable does
+and as Neo4j Cypher 25 does (`valueType(p)` is `PATH NOT NULL`, `length(p)` is 2). Group variables declared inside the
+group (`m`, `r`, `n` here) are still lists. A query that read `p` as a list, for example `size(p)` or `p[0]`, must now
+use `length(p)`, `nodes(p)` and `relationships(p)`.
+
+Several GQL / Cypher 25 constructs that the parser accepted and the engine silently ignored are now refused with a
+`FeatureNotImplemented` error naming the construct. A query that used them returned rows the construct did not ask for,
+and now fails instead:
+
+- the path search prefixes `ANY SHORTEST`, `ALL SHORTEST`, `SHORTEST k [GROUPS]` and `ANY [k]` (use `shortestPath()` /
+  `allShortestPaths()`; `ALL` and `ALL PATHS` keep working)
+- the match mode `REPEATABLE ELEMENTS` / `REPEATABLE ELEMENT BINDINGS` (`DIFFERENT RELATIONSHIPS` keeps working)
+- `x IS DIRECTED` (a label named DIRECTED is written `:DIRECTED` or ``IS `DIRECTED` ``)
+- `USE` naming a graph other than the current database
+- a quantified group nested inside another, and a variable-length relationship inside a single-hop group
+
+An `ORDER BY` / `SKIP` / `OFFSET` / `LIMIT` written after `RETURN` (`RETURN ... LIMIT 2 OFFSET 1`) is now applied after the
+RETURN's sort, as one page: sort, then skip, then limit. It used to run before the sort and could drop the wrong row.
+
+`LET`, `IS [NFC|NFD|NFKC|NFKD] NORMALIZED`, `USE` of the current database and the conditional query
+`WHEN ... THEN ... ELSE ...` are now executed.
+
 ## Fixes
 
 - **`vector.sum`, `vector.avg`, `vector.min` and `vector.max` aggregate when written with the dotted name (#9768).** In SQL
