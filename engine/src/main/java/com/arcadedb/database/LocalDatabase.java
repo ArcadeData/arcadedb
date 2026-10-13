@@ -3063,6 +3063,48 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   }
 
   /**
+   * One change to one setting, as {@link #changeSetting(String, Runnable)} made it: the value the setting held before
+   * ({@code null}: not set) and the value the change stored. What {@link #undoSettingChange(SettingChange)} needs to put
+   * the previous value back only while nothing else changed the setting since (issue #9919).
+   */
+  public record SettingChange(String key, Object previousValue, Object valueSet) {
+  }
+
+  /**
+   * Runs {@code change}, which stores a new value for {@code key} (side effects included), and returns the value it
+   * replaced and the value it stored, read under the lock {@link #applyConfigurationChanges(String)} holds. Capturing
+   * the previous value and storing the new one are then one step for the apply: under Raft HA a change to the same
+   * setting committed by another node cannot land between them, where the previous value captured would be one the
+   * apply had already replaced, and an undo of a refused save would put it back (issue #9919).
+   */
+  public SettingChange changeSetting(final String key, final Runnable change) {
+    synchronized (configurationApplyLock) {
+      final Object previousValue = configuration.hasValue(key) ? configuration.getValue(key, null) : null;
+      change.run();
+      return new SettingChange(key, previousValue, configuration.hasValue(key) ? configuration.getValue(key, null) : null);
+    }
+  }
+
+  /**
+   * Undoes a {@link #changeSetting(String, Runnable) change} whose save was refused outright: the previous value goes
+   * back, side effects included, unless the setting no longer holds the value the change stored (issue #9919). Then
+   * another writer changed it since - under Raft HA the apply of a change to the same setting another node committed,
+   * or another change to it on this node whose save is still under way - and that value stands: putting the previous
+   * one back would leave this node on a value no other node holds, and that its own {@code configuration.json} does
+   * not hold. The check and the put run under the lock the apply holds, so an apply cannot land between them.
+   * {@link #restoreSetting(String, Object)} does the rest, a value already saved included.
+   */
+  public void undoSettingChange(final SettingChange change) {
+    synchronized (configurationApplyLock) {
+      final Object current = configuration.hasValue(change.key()) ? configuration.getValue(change.key(), null) : null;
+      if (!Objects.equals(current, change.valueSet()))
+        // Changed since by another writer: its value stands
+        return;
+      restoreSetting(change.key(), change.previousValue());
+    }
+  }
+
+  /**
    * Puts ONE setting back to {@code previousValue} ({@code null}: not set, so it falls back to the default) after a
    * change to it could not be saved, side effects included (issue #9763). Not when {@code configuration.json} already
    * holds the value in force: under HA a concurrent change made on this node may have shipped it in its own entry,

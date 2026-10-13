@@ -1185,12 +1185,18 @@ public class ServerControlPlane {
     final DatabaseInternal database = server.getDatabase(databaseName);
     // Under Raft HA the save replicates the configuration and can be refused or fail to commit: the setting must not
     // then stay in force on this node alone (issue #9763), so the value it replaced is put back. Only that setting, so
-    // a change to another one that lands meanwhile is kept.
+    // a change to another one that lands meanwhile is kept. The value replaced is captured and the new one stored in one
+    // step for the apply of a replicated change, so a change to the same setting another node committed cannot land in
+    // between and be undone with a value it replaced (issue #9919).
     final String storedKey = storedKey(key);
-    final Object previousValue = database.getConfiguration().hasValue(storedKey) ?
-        database.getConfiguration().getValue(storedKey, null) :
-        null;
-    applySetting(database.getConfiguration(), key, value);
+    final LocalDatabase local = database.getEmbedded() instanceof LocalDatabase l ? l : null;
+    final LocalDatabase.SettingChange change;
+    if (local != null)
+      change = local.changeSetting(storedKey, () -> applySetting(database.getConfiguration(), key, value));
+    else {
+      applySetting(database.getConfiguration(), key, value);
+      change = null;
+    }
     try {
       database.saveConfiguration();
     } catch (final TransactionCommittedRemotelyException e) {
@@ -1199,13 +1205,14 @@ public class ServerControlPlane {
     } catch (final TransactionOutcomeUnknownException e) {
       // Handed to the replication, which may still commit it or never (issue #9904): settle on what this node's
       // configuration.json holds rather than racing this node's own apply of the change with the previous value
-      if (database.getEmbedded() instanceof LocalDatabase local)
+      if (local != null)
         local.restoreSettingFromSavedConfiguration(storedKey);
       throw e;
     } catch (final IOException | RuntimeException e) {
-      // A definite failure: the change did not and will not commit, so the previous value is the right one
-      if (database.getEmbedded() instanceof LocalDatabase local)
-        local.restoreSetting(storedKey, previousValue);
+      // A definite failure: the change did not and will not commit, so the previous value is the right one, unless
+      // another writer changed the setting since (issue #9919)
+      if (local != null)
+        local.undoSettingChange(change);
       throw e;
     }
   }

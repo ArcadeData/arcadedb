@@ -133,19 +133,19 @@ public class AlterDatabaseStatement extends DDLStatement {
       // Kept to undo the change below when it cannot be saved (issue #9763). Under Raft HA the save is what replicates
       // the configuration, and it can be refused - a peer that cannot decode the entry yet - or fail to commit: the
       // setting must then not stay in force on this node alone, which is the divergence the replication exists to end.
-      // Only this setting is put back, so a change to another one that lands meanwhile is kept.
-      final Object previousValue = db.getConfiguration().hasValue(cfg.getKey()) ?
-          db.getConfiguration().getValue(cfg.getKey(), null) :
-          null;
-
-      db.getConfiguration().setValue(cfg, finalValue);
+      // Only this setting is put back, so a change to another one that lands meanwhile is kept. The previous value is
+      // captured and the new one stored in one step for the apply of a replicated change, so a change to the same
+      // setting another node committed cannot land in between and be undone with a value it replaced (issue #9919).
+      final Object valueToStore = finalValue;
+      final LocalDatabase.SettingChange change = changeSetting(db, cfg.getKey(), () -> {
+        db.getConfiguration().setValue(cfg, valueToStore);
+        applyDatabaseSideEffect(db, cfg, resolvedClass);
+      });
 
       // The stored value is what the setting is now worth, which is not always what was asked for: a callback
       // reached through the overlay may normalise it (arcadedb.maxPageRAM clamps a page cache larger than 80%
       // of the heap), and the result row has to report the value that took effect (issue #7163).
-      finalValue = GlobalConfiguration.externalizeValue(db.getConfiguration().getValue(cfg));
-
-      applyDatabaseSideEffect(db, cfg, resolvedClass);
+      finalValue = GlobalConfiguration.externalizeValue(change.valueSet() != null ? change.valueSet() : cfg.getValue());
 
       try {
         db.saveConfiguration();
@@ -159,11 +159,12 @@ public class AlterDatabaseStatement extends DDLStatement {
         restoreSettingFromSavedConfiguration(db, cfg.getKey());
         throw e;
       } catch (final RuntimeException e) {
-        // A definite failure: refused or failed before it could commit, so the previous value is the right one
-        restoreSetting(db, cfg.getKey(), previousValue);
+        // A definite failure: refused or failed before it could commit, so the previous value is the right one, unless
+        // another writer changed the setting since (issue #9919)
+        undoSettingChange(db, change);
         throw e;
       } catch (final IOException e) {
-        restoreSetting(db, cfg.getKey(), previousValue);
+        undoSettingChange(db, change);
         // Chain the cause and name what was being written: without them a read-only filesystem, a permission
         // problem and a full volume are indistinguishable to the caller (issue #7141).
         throw new CommandExecutionException(
@@ -181,13 +182,27 @@ public class AlterDatabaseStatement extends DDLStatement {
   }
 
   /**
-   * Puts back the value this statement replaced, side effects included, after a save that did not happen (issue
-   * #9763). Only the embedded {@link LocalDatabase} re-derives the per-database effects; every database a statement
-   * runs against is one or wraps one, which {@link DatabaseInternal#getEmbedded()} returns.
+   * Stores a setting through {@code change}, capturing the value it replaced in the same step for the apply of a
+   * replicated configuration change (issue #9919), see {@link LocalDatabase#changeSetting(String, Runnable)}. Every
+   * database a statement runs against is a {@link LocalDatabase} or wraps one, which
+   * {@link DatabaseInternal#getEmbedded()} returns; anything else has no apply to race with.
    */
-  private static void restoreSetting(final DatabaseInternal db, final String key, final Object previousValue) {
+  private static LocalDatabase.SettingChange changeSetting(final DatabaseInternal db, final String key, final Runnable change) {
     if (db.getEmbedded() instanceof LocalDatabase local)
-      local.restoreSetting(key, previousValue);
+      return local.changeSetting(key, change);
+    final Object previousValue = db.getConfiguration().hasValue(key) ? db.getConfiguration().getValue(key, null) : null;
+    change.run();
+    return new LocalDatabase.SettingChange(key, previousValue, db.getConfiguration().getValue(key, null));
+  }
+
+  /**
+   * Puts back the value this statement replaced, side effects included, after a save that did not happen (issue
+   * #9763), unless another writer changed the setting since (issue #9919). Only the embedded {@link LocalDatabase}
+   * re-derives the per-database effects.
+   */
+  private static void undoSettingChange(final DatabaseInternal db, final LocalDatabase.SettingChange change) {
+    if (db.getEmbedded() instanceof LocalDatabase local)
+      local.undoSettingChange(change);
   }
 
   /**
