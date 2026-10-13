@@ -31,6 +31,7 @@ import com.arcadedb.exception.QueryTerminatedException;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.query.RunningQuery;
 import com.arcadedb.query.RunningQueryRegistry;
 import com.arcadedb.query.sql.executor.Result;
@@ -984,9 +985,15 @@ public class WebSocketInsertSession {
       errors.put(error(rowIndex, "CONFLICT", e));
     }
 
-    /** A duplicate the engine reported on a commit rather than on a row is still a conflict, not a server fault. */
+    /**
+     * A duplicate the engine reported on a commit rather than on a row is still a conflict, not a server fault. Nor is a
+     * refusal by a node that is not the leader and names the one that is: {@code NOT_LEADER}, which tells a client to
+     * send the load to {@code leaderAddress} rather than report a broken server (issue #9868).
+     */
     private static String codeOf(final Exception e) {
-      return e instanceof DuplicatedKeyException ? "CONFLICT" : "DB_ERROR";
+      if (e instanceof DuplicatedKeyException)
+        return "CONFLICT";
+      return ServerIsNotTheLeaderException.redirectIn(e) != null ? "NOT_LEADER" : "DB_ERROR";
     }
 
     /**
@@ -1021,7 +1028,20 @@ public class WebSocketInsertSession {
       error.put("message", ErrorConcealment.clientMessage(concealErrors, WebSocketInsertSession.class, "/ws insert row " + rowIndex,
           e.getMessage() != null ? e.getMessage() : e.toString(), e, Level.FINE, traceServerFault));
       error.put("exception", e.getClass().getName());
+      putLeaderAddress(error, e);
       return error;
     }
+  }
+
+  /**
+   * Adds {@code leaderAddress} to {@code json} when {@code e} is a leader refusal that names the leader (issue #9868). A
+   * field of its own rather than a sentence in the message: the message is concealed in production mode, and the
+   * exception's {@code getMessage()} never carried the address anyway. The address is the one the HTTP handler and the
+   * gRPC trailers already hand out for the same refusal, so it reveals nothing those do not.
+   */
+  static void putLeaderAddress(final JSONObject json, final Throwable e) {
+    final ServerIsNotTheLeaderException refusal = ServerIsNotTheLeaderException.redirectIn(e);
+    if (refusal != null)
+      json.put("leaderAddress", refusal.getLeaderAddress());
   }
 }

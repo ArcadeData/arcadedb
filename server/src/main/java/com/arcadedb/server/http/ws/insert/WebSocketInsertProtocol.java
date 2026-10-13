@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
@@ -82,6 +83,10 @@ import java.util.logging.Level;
  * Server to client: {@code started}, {@code batchAck}, {@code committed}, and an {@code error} the server is free
  * to push unsolicited - which is what the idle sweep does when it rolls back a session the client walked away
  * from.
+ * <p>
+ * A write refused because this node is not the cluster leader names the leader in a {@code leaderAddress} field: on an
+ * {@code errors} entry of a {@code batchAck}, whose {@code code} is then {@code NOT_LEADER}, and on the {@code error}
+ * frame of a refused {@code commit}, whose {@code error} is then {@code "Not the leader"} (issue #9868).
  *
  * <h2>Ordering and threads</h2>
  * Undertow delivers the frames of one connection serially, on an I/O thread that must not be blocked with
@@ -313,9 +318,14 @@ public class WebSocketInsertProtocol {
       send(channel, error("Insert session error", e.getMessage(), message.getString("sessionId", null), e));
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.FINE, "Error on /ws insert session action '%s'", e, action);
-      send(channel, error("Internal error",
+      // A per_stream commit refused because this node is not the leader is no server fault: the client is to send the
+      // load to the leader the refusal names, in 'leaderAddress' (issue #9868)
+      final boolean notTheLeader = ServerIsNotTheLeaderException.redirectIn(e) != null;
+      final JSONObject answer = error(notTheLeader ? "Not the leader" : "Internal error",
           ErrorConcealment.clientMessage(ArcadeDBServer.isProductionMode(configuration), this, "/ws insert", e.getMessage(), e),
-          message.getString("sessionId", null), e));
+          message.getString("sessionId", null), e);
+      WebSocketInsertSession.putLeaderAddress(answer, e);
+      send(channel, answer);
     }
   }
 
