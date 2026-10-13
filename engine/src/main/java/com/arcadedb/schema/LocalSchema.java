@@ -775,8 +775,11 @@ public class LocalSchema implements Schema {
           // resolved the previous one before it had written its page before, and the file size covers it.
           if (component instanceof PaginatedComponent paginated && paginated.getComponentFile() != null) {
             final Component previous = table[fileId];
+            // Everything else a running transaction reserved on the previous instance - the page numbers it was
+            // handed, the new pages and slots it owns until it ends - has to survive the swap too, or the new
+            // instance hands them out again (issue #9835). The component knows what that is; see carryOverFrom().
             if (previous instanceof PaginatedComponent previousPaginated && previous.getName().equals(component.getName()))
-              paginated.updatePageCount(previousPaginated.getCommittedPageCount());
+              paginated.carryOverFrom(previousPaginated);
             try {
               paginated.updatePageCount((int) (paginated.getComponentFile().getSize() / paginated.getPageSize()));
             } catch (final IOException e) {
