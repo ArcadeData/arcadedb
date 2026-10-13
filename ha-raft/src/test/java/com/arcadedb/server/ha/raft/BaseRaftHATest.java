@@ -43,6 +43,7 @@ import java.net.Socket;
 import java.net.UnknownHostException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
@@ -733,6 +734,38 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
         return raftPlugin;
     }
     return null;
+  }
+
+  /**
+   * Makes follower {@code serverIndex} refuse every write it would forward to the leader, as a same-host cluster that
+   * declares no HTTP ports does: with nothing declared, every peer's HTTP address derives to this node's own endpoint,
+   * and {@code RaftReplicatedDatabase} refuses the forward with a
+   * {@link com.arcadedb.network.binary.ServerIsNotTheLeaderException} naming the leader rather than POSTing the write
+   * back to itself (issue #6191). It is the refusal an ordinary client write meets on a follower, which is what a test
+   * outside this package needs to drive one through a wire protocol (issue #9870).
+   * <p>
+   * The capability monitor is paused for the window, since it would learn the real addresses back (issue #9255). Run
+   * the returned action, in a {@code finally}, to restore both.
+   *
+   * @throws IllegalStateException when the leader address the node now resolves is not its own, so the forward would
+   *                               not be refused and a test relying on it would pass or fail for another reason
+   */
+  protected Runnable refuseForwardedWritesOn(final int serverIndex) {
+    final RaftHAServer raft = getRaftPlugin(serverIndex).getRaftHAServer();
+    final Map<RaftPeerId, String> httpAddresses = raft.getHttpAddresses();
+    final Map<RaftPeerId, String> declared = new HashMap<>(httpAddresses);
+    raft.stopCapabilityMonitor();
+    httpAddresses.clear();
+    final Runnable restore = () -> {
+      httpAddresses.putAll(declared);
+      raft.startCapabilityMonitor();
+    };
+    if (raft.isLeader() || !raft.isOwnHttpAddress(raft.getLeaderHttpAddress())) {
+      restore.run();
+      throw new IllegalStateException("Server " + serverIndex + " does not resolve the leader to its own HTTP address (leader="
+          + raft.getLeaderName() + ", resolved=" + raft.getLeaderHttpAddress() + "): its forwards would not be refused");
+    }
+    return restore;
   }
 
   /**

@@ -837,14 +837,14 @@ public class BoltNetworkExecutor extends Thread {
         applySystemQueryTail(query, params, stream);
       } catch (final CommandParsingException e) {
         stream.close(this, "RUN failure");
-        sendFailure(classifyParsingError(e), clientMessage(e.getMessage() != null ? e.getMessage() : "Query parsing error", e));
+        sendExecutionFailure(classifyParsingError(e), clientMessage(e.getMessage() != null ? e.getMessage() : "Query parsing error", e), e);
         state = State.FAILED;
         return;
       } catch (final Exception e) {
         stream.close(this, "RUN failure");
         LogManager.instance().log(this, Level.WARNING, "BOLT system query error", e);
-        sendFailure(classifyExecutionError(e, BoltErrorCodes.DATABASE_ERROR),
-            withLeaderRedirect(loggedClientMessage(e.getMessage() != null ? e.getMessage() : "Database error"), e));
+        sendExecutionFailure(classifyExecutionError(e, BoltErrorCodes.DATABASE_ERROR),
+            loggedClientMessage(e.getMessage() != null ? e.getMessage() : "Database error"), e);
         state = State.FAILED;
         return;
       }
@@ -942,7 +942,7 @@ public class BoltNetworkExecutor extends Thread {
     } catch (final CommandParsingException e) {
       stream.close(this, "RUN failure");
       final String parseMsg = e.getMessage() != null ? e.getMessage() : "Query parsing error";
-      sendFailure(classifyParsingError(e), clientMessage(parseMsg, e));
+      sendExecutionFailure(classifyParsingError(e), clientMessage(parseMsg, e), e);
       state = State.FAILED;
     } catch (final Exception e) {
       // MVCC conflicts (NeedRetryException) are expected under contention and auto-retried by the driver,
@@ -950,7 +950,7 @@ public class BoltNetworkExecutor extends Thread {
       stream.close(this, "RUN failure");
       LogManager.instance().log(this, isRetryableConflict(e) ? Level.FINE : Level.WARNING, "BOLT query error", e);
       final String errorMsg = e.getMessage() != null ? e.getMessage() : "Database error";
-      sendFailure(classifyExecutionError(e, BoltErrorCodes.DATABASE_ERROR), withLeaderRedirect(loggedClientMessage(errorMsg), e));
+      sendExecutionFailure(classifyExecutionError(e, BoltErrorCodes.DATABASE_ERROR), loggedClientMessage(errorMsg), e);
       state = State.FAILED;
     } finally {
       if (binding != null)
@@ -1048,7 +1048,7 @@ public class BoltNetworkExecutor extends Thread {
       // by the driver, so log at FINE to avoid flooding WARNING with recoverable flow; real errors stay WARNING.
       LogManager.instance().log(this, isRetryableConflict(e) ? Level.FINE : Level.WARNING, "BOLT PULL error", e);
       final String errorMsg = e.getMessage() != null ? e.getMessage() : "Error fetching records";
-      sendFailure(classifyExecutionError(e, BoltErrorCodes.DATABASE_ERROR), withLeaderRedirect(loggedClientMessage(errorMsg), e));
+      sendExecutionFailure(classifyExecutionError(e, BoltErrorCodes.DATABASE_ERROR), loggedClientMessage(errorMsg), e);
       // The failed stream can neither be pulled nor discarded any more: released now, with its admission slot (issue #9518),
       // rather than held until the client RESETs or disconnects
       closeStream(stream, "PULL failure");
@@ -1154,7 +1154,7 @@ public class BoltNetworkExecutor extends Thread {
       // fallback: opening a transaction can fail on an MVCC conflict, a lock timeout, a deadline or a security
       // refusal, and hand-coding TransactionNotFound for all of them told a driver's retry predicate that a
       // retryable conflict was a permanent client error (issue #7915).
-      sendFailure(classifyExecutionError(e, BoltErrorCodes.TRANSACTION_ERROR), withLeaderRedirect(clientMessage(errorMsg, e), e));
+      sendExecutionFailure(classifyExecutionError(e, BoltErrorCodes.TRANSACTION_ERROR), clientMessage(errorMsg, e), e);
       state = State.FAILED;
     }
   }
@@ -1196,7 +1196,7 @@ public class BoltNetworkExecutor extends Thread {
 
     } catch (final Exception e) {
       final String message = e.getMessage() != null ? e.getMessage() : "Commit error";
-      sendFailure(classifyExecutionError(e, BoltErrorCodes.TRANSACTION_ERROR), withLeaderRedirect(clientMessage(message, e), e));
+      sendExecutionFailure(classifyExecutionError(e, BoltErrorCodes.TRANSACTION_ERROR), clientMessage(message, e), e);
       state = State.FAILED;
     }
   }
@@ -1231,7 +1231,7 @@ public class BoltNetworkExecutor extends Thread {
       // The third of the three transaction handlers, routed through the one classifier for the same reason the
       // other two are (issue #7915): closeAllStreams() and rollback() both raise engine exceptions, and a
       // timeout or a security refusal reported as TransactionNotFound is a diagnosis the caller cannot act on.
-      sendFailure(classifyExecutionError(e, BoltErrorCodes.TRANSACTION_ERROR), withLeaderRedirect(clientMessage(message, e), e));
+      sendExecutionFailure(classifyExecutionError(e, BoltErrorCodes.TRANSACTION_ERROR), clientMessage(message, e), e);
       state = State.FAILED;
     }
   }
@@ -1426,8 +1426,8 @@ public class BoltNetworkExecutor extends Thread {
       // request on this connection take ensureDatabase()'s already-open fast path.
       database = null;
       final String message = e.getMessage() != null ? e.getMessage() : "Unknown error";
-      sendFailure(classifyDatabaseSelectionError(e),
-          withLeaderRedirect("Cannot open database: " + targetName + " - " + clientMessage(message, e), e));
+      sendExecutionFailure(classifyDatabaseSelectionError(e),
+          "Cannot open database: " + targetName + " - " + clientMessage(message, e), e);
       state = State.FAILED;
       return false;
     }
@@ -1939,6 +1939,17 @@ public class BoltNetworkExecutor extends Thread {
   private void sendFailure(final String code, final String message) throws IOException {
     final FailureMessage failure = new FailureMessage(code, message);
     sendMessage(failure);
+  }
+
+  /**
+   * Send the FAILURE for a caught {@code error}: {@code text}, followed by where the leader is when the error is a
+   * follower's refusal that names one (issue #9845). Every arm that reports an exception whose code a {@code classify*}
+   * method decided goes through here rather than through {@link #sendFailure}, so the code and the redirect cannot be
+   * wired apart: a classifier that answers NotALeader without the address leaves a {@code bolt://} client nothing to
+   * reconnect to. Before issue #9870 each of seven arms appended the redirect by hand, and a new arm could skip it.
+   */
+  private void sendExecutionFailure(final String code, final String text, final Throwable error) throws IOException {
+    sendFailure(code, withLeaderRedirect(text, error));
   }
 
   /**
