@@ -92,6 +92,18 @@ On a `Result` receiver (a sub-query row, a `LET` variable) `values()` used to an
 row that overrode a property of its record it answered the record's value instead of the row's. It now answers one value
 per key, in the order of `keys()`, and the row's own value where the row has one.
 
+### A bare `ORDER BY @rid` on a MATCH that returns columns is refused (#9911)
+
+When a SQL `MATCH` returns columns (`RETURN a.x AS x, ...`), `$paths` or `$patterns`, each row is a new object built from
+the matched aliases and has no `@rid` of its own, so `ORDER BY @rid` sorted on null and silently kept the pattern order.
+It now fails at planning time with a message naming the forms that work: `ORDER BY <alias>.@rid` or `ORDER BY` a
+returned column (`RETURN n.@rid AS noteRid ... ORDER BY noteRid`). The same applies to the other bare record attributes,
+such as `@type`. `RETURN $elements`, `$pathElements` and `RETURN expand(...)` return records, so `ORDER BY @rid` keeps
+working there.
+
+**Who sees a different answer.** A query that used a bare `ORDER BY @rid` on such a MATCH, for example as the cursor of a
+keyset pagination, now fails instead of returning rows in an order the engine never applied.
+
 ## Fixes
 
 - **`vector.sum`, `vector.avg`, `vector.min` and `vector.max` aggregate when written with the dotted name (#9768).** In SQL
@@ -139,3 +151,13 @@ per key, in the order of `keys()`, and the row's own value where the row has one
   were merged. The names of the row (`@rid`, `@type`, `1:Integer` / `1:Long`) now apply to every map a result holds, in a list,
   a set or a `Path` (which stays a `Path`), so the embedded `Result`, its JSON and the HTTP answer agree. A nested map that
   used to render `id` / `label` for the tokens now renders `@rid` / `@type`.
+- **A MATCH node with `rid:` honours its `type:` and `bucket:` (#9912).** `{type: Person, rid: #12:0}` returned `#12:0`
+  whatever its type, and as the first node of a longer pattern on a large type it could ignore the `rid:` and start from every
+  record of the type. The record is now fetched by RID and must match the type (subtypes included) and the bucket, or the
+  node matches nothing. A node bound by `rid:` is the preferred starting point of the pattern; `type:` with `bucket:` applies
+  both on the starting node too; a `rid:` computed from another alias (`{"@rid": $matched.a.ref}`) is resolved after that alias.
+- **A MATCH node filtered by `SEARCH_INDEX()` is streamed (#9908).** It was loaded entirely before the pattern started,
+  whatever the `LIMIT`, because the planner read the function's "cannot estimate" as "very few rows" (geospatial predicates
+  too). It is now streamed, still preferred as a starting point over a scan of a large type. An equality on an indexed
+  property now also helps MATCH choose its starting point (the index count used to be computed and discarded), so
+  `SEARCH_INDEX(...) AND code = 'X'` is bounded by the index on `code`.
