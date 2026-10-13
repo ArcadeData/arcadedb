@@ -1785,7 +1785,8 @@ public class TimeSeriesShard implements AutoCloseable {
 
   /**
    * Releases only what this shard owns outright, leaving the mutable bucket open. Used when a LATER shard of the
-   * same type fails to construct and the engine has to unwind the shards it already built (issue #6839).
+   * same type fails to construct and the engine has to unwind the shards it already built (issue #6839), and when a
+   * schema reload has replaced this shard's engine with one built on the same mutable bucket file (issue #9886).
    * <p>
    * {@link #close()} is wrong there for the reason spelled out in the constructor: the mutable bucket is
    * registered with the schema, which owns closing it, and {@code PaginatedComponentFile.close()} sets
@@ -1795,7 +1796,7 @@ public class TimeSeriesShard implements AutoCloseable {
    * not for anything above it. The sealed store is this shard's own file handle and nothing else will close it,
    * so it still must be.
    */
-  void closeAfterFailedInit() throws IOException {
+  void closeOwnedResources() throws IOException {
     sealedStore.close();
   }
 
