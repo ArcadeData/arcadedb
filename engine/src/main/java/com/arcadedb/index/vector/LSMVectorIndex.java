@@ -287,6 +287,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
   private volatile boolean compactionBlockedBySharedIds;
   /** Records the last build left out of the graph for sharing a vector id; in memory only, like the block above. */
   private volatile int     recordsLeftOutBySharedIds;
+  /**
+   * Set when the location load did not read every entry on disk (a page cut short, a load that threw partway). The
+   * allocator then only knows the ids it read, and the unread entries can hold higher ones: an insert would mint an id
+   * a live record already owns, the shared-id damage CHECK DATABASE reports. Vector writes are refused while it is
+   * set and CHECK DATABASE lists the index, so FIX rebuilds it. Cleared only by a new index instance (issue #9892).
+   */
+  private volatile String  locationLoadIncomplete;
   // Set once the ignored location-cache limit has been reported, so a rebuild does not repeat the warning.
   // compareAndSet, not a plain flag: two threads racing the first call would otherwise both log it.
   private final    AtomicBoolean                 locationCacheCapReported = new AtomicBoolean();
@@ -1432,6 +1439,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       if (lock.isWriteLockedByCurrentThread())
         materializedUnderWriteLock = true;
 
+      boolean interruptedByError = false;
       try {
         LogManager.instance()
             .log(this, Level.FINE, "Loading vectors for index %s on first use (dimensions=%d, pages=%d, fileId=%d)",
@@ -1461,17 +1469,29 @@ public class LSMVectorIndex implements Index, IndexInternal {
         LogManager.instance()
             .log(this, Level.WARNING, "Could not load vectors from pages for index %s: %s", indexName, e.getMessage());
         this.graphState = GraphState.LOADING;
+        // Whatever the parse did not reach may hold ids above the ones it read.
+        markLocationLoadIncomplete("the load failed: " + e);
+      } catch (final Error e) {
+        // An OutOfMemoryError (or any Error) is not the corrupt index the one-attempt contract is about: it is
+        // transient, and latching the half-filled map would leave the allocator below the ids of every page the load
+        // never reached for the life of the process, so each insert would take an id a live record already owns
+        // (issue #9892). Throw the partial map away and leave the materialisation open: the next access loads again from scratch.
+        residentLocations = new VectorLocationIndex();
+        interruptedByError = true;
+        throw e;
       } finally {
-        // The load may have thrown AFTER inserting entries, and the failure above is swallowed by design (one
-        // attempt, carry on with whatever was read). Leaving the allocator at 0 on top of those entries is exactly
-        // what allocateVectorId() exists to prevent: the next put() would hand out 0, 1, 2... and addOrUpdate
-        // would supersede live vectors instead of adding new ones (issue #6762). A no-op on the success path,
-        // where loadVectorsFromPages() already computed the same value.
-        syncNextIdWithResidentLocations();
-        // Written last, and volatile: a thread that reads it true has a happens-before edge on every entry the
-        // loop above put into the map, which is what lets vectorIndex()'s fast path hand the instance out with no
-        // lock at all. Set even when the load threw, so the one-attempt contract above holds.
-        this.locationsMaterialized = true;
+        if (!interruptedByError) {
+          // The load may have thrown AFTER inserting entries, and the failure above is swallowed by design (one
+          // attempt, carry on with whatever was read). Leaving the allocator at 0 on top of those entries is exactly
+          // what allocateVectorId() exists to prevent: the next put() would hand out 0, 1, 2... and addOrUpdate
+          // would supersede live vectors instead of adding new ones (issue #6762). A no-op on the success path,
+          // where loadVectorsFromPages() already computed the same value.
+          syncNextIdWithResidentLocations();
+          // Written last, and volatile: a thread that reads it true has a happens-before edge on every entry the
+          // loop above put into the map, which is what lets vectorIndex()'s fast path hand the instance out with no
+          // lock at all. Set even when the load threw, so the one-attempt contract above holds.
+          this.locationsMaterialized = true;
+        }
       }
     } finally {
       locationsLoadLock.unlock();
@@ -1491,6 +1511,32 @@ public class LSMVectorIndex implements Index, IndexInternal {
   private int allocateVectorId() {
     vectorIndex();
     return nextId.getAndIncrement();
+  }
+
+  /**
+   * Records that the location load missed entries on disk, so the allocator cannot be trusted to stay above every id
+   * already handed out. Logged once at SEVERE: from here on vector writes to this index fail until it is rebuilt.
+   */
+  private void markLocationLoadIncomplete(final String reason) {
+    if (locationLoadIncomplete != null)
+      return;
+    locationLoadIncomplete = reason;
+    LogManager.instance().log(this, Level.SEVERE,
+        "Vector index '%s' could not read every entry of its pages (%s): new vectors are refused, since their ids could "
+            + "collide with the unread ones. Rebuild the index (REBUILD INDEX or CHECK DATABASE FIX)", indexName, reason);
+  }
+
+  /**
+   * Refuses a vector write when the allocator only knows part of the ids on disk: the alternative is minting an id a
+   * live record already owns, and that record silently drops out of vector search.
+   */
+  private void checkIdAllocatorIsComplete() {
+    vectorIndex();
+    final String reason = locationLoadIncomplete;
+    if (reason != null)
+      throw new IndexException("Vector index '" + indexName + "' refuses new vectors: its location load was incomplete ("
+          + reason + "), so a new vector id could collide with an existing one. Rebuild the index (REBUILD INDEX "
+          + indexName + " or CHECK DATABASE FIX)");
   }
 
   /**
@@ -5794,10 +5840,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
     LogManager.instance().log(this, Level.FINE,
         "loadVectorsFromFile: fileId=%d, totalPages=%d, isCompacted=%s", fileId, totalPages, isCompacted);
 
+    final int[] pagesCutShort = { 0 };
     final int entriesRead = LSMVectorIndexPageParser.parsePages(getDatabase(), fileId, totalPages, getPageSize(),
-        isCompacted,
+        isCompacted, false,
         entry -> residentLocations.addOrUpdate(entry.vectorId, entry.isCompacted, entry.absoluteFileOffset, entry.rid,
-            entry.deleted));
+            entry.deleted), pagesCutShort);
+    if (pagesCutShort[0] > 0)
+      markLocationLoadIncomplete(pagesCutShort[0] + " page(s) of file " + fileId + " could not be read to the end");
 
     LogManager.instance().log(this, Level.FINE,
         "loadVectorsFromFile DONE: fileId=%d, entriesRead=%d", fileId, entriesRead);
@@ -6978,7 +7027,18 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // Pass 1 keeps only the owner of each id: does any id carry two different records? A record and the
       // tombstone that deletes it name the same one, so a healthy index never fires, and without it there is
       // nothing for a load to give to another record.
-      if (!anyVectorIdWrittenByTwoRecords())
+      final int[] pagesCutShort = { 0 };
+      final boolean shared = anyVectorIdWrittenByTwoRecords(pagesCutShort);
+
+      // Entries that cannot be read are missing from search, and a location load that missed them refuses new
+      // vectors (their ids are unknown): both need the rebuild FIX performs.
+      final String incomplete = locationLoadIncomplete;
+      if (incomplete != null || pagesCutShort[0] > 0)
+        return List.of(("vector entries cannot be read (%s), so they are missing from search and the index cannot "
+            + "allocate vector ids safely. Rebuild the index (CHECK DATABASE FIX)").formatted(
+            incomplete != null ? incomplete : pagesCutShort[0] + " page(s) could not be read to the end"));
+
+      if (!shared)
         return Collections.emptyList();
 
       replay = new LiveSetReplay(16);
@@ -7004,7 +7064,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
         entry -> replay.accept(entry, false));
   }
 
-  private boolean anyVectorIdWrittenByTwoRecords() {
+  private boolean anyVectorIdWrittenByTwoRecords(final int[] pagesCutShort) {
     final IdOwners owners = new IdOwners();
     final boolean[] shared = { false };
     final Consumer<LSMVectorIndexPageParser.VectorEntry> consumer = entry -> {
@@ -7021,8 +7081,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
     final DatabaseInternal database = getDatabase();
     if (compactedSubIndex != null)
       LSMVectorIndexPageParser.parsePages(database, compactedSubIndex.getFileId(), compactedSubIndex.getTotalPages(),
-          getPageSize(), true, false, consumer);
-    LSMVectorIndexPageParser.parsePages(database, getFileId(), getTotalPages(), getPageSize(), false, false, consumer);
+          getPageSize(), true, false, consumer, pagesCutShort);
+    LSMVectorIndexPageParser.parsePages(database, getFileId(), getTotalPages(), getPageSize(), false, false, consumer,
+        pagesCutShort);
     return shared[0];
   }
 
@@ -9384,7 +9445,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // whole scan - the stall the dedicated load lock exists to avoid, and the one #5391 moved the graph-build
         // validation off this same lock for. Once materialised the flag never goes back, so this single call is
         // what makes every allocateVectorId() below a plain volatile read.
-        vectorIndex();
+        checkIdAllocatorIsComplete();
 
         // No transaction OR during commit replay: apply immediately
         // During commit phases, TransactionIndexContext.commit() calls this method directly
@@ -9711,7 +9772,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // whole scan - the stall the dedicated load lock exists to avoid, and the one #5391 moved the graph-build
     // validation off this same lock for. Once materialised the flag never goes back, so this single call is
     // what makes every allocateVectorId() below a plain volatile read.
-    vectorIndex();
+    checkIdAllocatorIsComplete();
 
     lock.writeLock().lock();
     try {
