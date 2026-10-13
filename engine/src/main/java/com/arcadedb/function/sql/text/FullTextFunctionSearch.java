@@ -190,7 +190,10 @@ final class FullTextFunctionSearch {
   }
 
   /**
-   * Remembers some of the matches with their complete-search scores. Two fetches of the same search in one statement (the
+   * Remembers some of the matches with their complete-search scores. The contract {@link #evaluate} relies on: every entry
+   * is a match of the complete search, with the score the complete search gives it, since a record found here is answered
+   * {@code true} without the complete search. The pushed-down searches only ever drop matches (past the limit, or rejected
+   * by the RID filter) and score with corpus-wide statistics, so their results keep it. Two fetches of the same search in one statement (the
    * branches of an OR, each with its own RID filter) each add theirs: their union is still such a subset.
    */
   private void rememberSubset(final CommandContext context, final Map<RID, Float> subset) {

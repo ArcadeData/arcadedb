@@ -33,6 +33,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.catchThrowable;
 
 /**
  * Issue #9910: {@code SEARCH_FIELDS(['a'], q)} searched every field of the index it picked, so a term found only in another
@@ -135,6 +136,25 @@ class Issue9910SearchFieldsRestrictionTest extends TestHelper {
   }
 
   @Test
+  void fieldNamesAreASetAndAByItemPropertyIsNamedByItsBaseName() {
+    createCorpus("BM25_1");
+    // Order and repetitions change nothing
+    assertSameScores("SEARCH_FIELDS(['b', 'a', 'a'], 'fever')", "SEARCH_INDEX('Note[a,b]', 'fever')");
+    assertSameScores("SEARCH_FIELDS(['a', 'a'], 'fever')", "SEARCH_INDEX('Note[a,b]', 'a:fever')");
+    assertThat(catchThrowable(() -> count("SEARCH_FIELDS([null], 'fever') = true"))).hasMessageContaining("cannot be null");
+
+    database.transaction(() -> {
+      database.command("sql", "CREATE PROPERTY Note.tags LIST OF STRING");
+      database.command("sql", "CREATE INDEX ON Note (a, tags BY ITEM) FULL_TEXT");
+      database.newVertex("Note").set("n", NOTES).set("a", "nothing").set("b", "nothing").set("tags", List.of("okapi", "fever"))
+          .save();
+    });
+    assertThat(count("SEARCH_FIELDS(['tags'], 'okapi') = true")).isEqualTo(1);
+    assertThat(count("SEARCH_FIELDS(['tags'], 'patient') = true")).isZero();
+    assertThat(count("SEARCH_FIELDS(['a'], 'okapi') = true")).isZero();
+  }
+
+  @Test
   void aSubtypeIsSearchedThroughTheIndexOfItsSupertype() {
     createCorpus("BM25_1");
     database.transaction(() -> {
@@ -183,7 +203,7 @@ class Issue9910SearchFieldsRestrictionTest extends TestHelper {
   }
 
   private long count(final String condition) {
-    try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM Note WHERE " + condition)) {
+    try (final ResultSet rs = database.query("sql", "SELECT count(@rid) AS c FROM Note WHERE " + condition)) {
       return rs.next().<Long>getProperty("c");
     }
   }
