@@ -22,6 +22,7 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.index.Index;
+import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
@@ -31,13 +32,15 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
-import com.arcadedb.utility.CollectionUtils;
 
 import java.util.*;
 import java.util.logging.Level;
 import java.util.stream.Collectors;
 
 public class WhereClause extends SimpleNode {
+  /** What {@link #estimate} answers when an indexed function cannot tell how many records it returns (issue #9908). */
+  public static final long UNKNOWN_ESTIMATE = -1L;
+
   public BooleanExpression baseExpression;
   protected List<AndBlock>    flattened;
 
@@ -97,7 +100,8 @@ public class WhereClause extends SimpleNode {
    * @param oClass
    *
    * @return an estimation of the number of records of this class returned applying this filter, 0 if and only if sure that no
-   * records are returned
+   * records are returned, {@link #UNKNOWN_ESTIMATE} when the filter is answered by an indexed function that cannot tell how many
+   * records it returns (issue #9908): such a filter is still an index lookup, not a scan, but it is NOT a small result
    */
   public long estimate(final DocumentType oClass, final long threshold, final CommandContext context) {
     long count = context.getDatabase().countType(oClass.getName(), true);
@@ -109,6 +113,7 @@ public class WhereClause extends SimpleNode {
     }
 
     long indexesCount = 0L;
+    boolean unknown = false;
     final List<AndBlock> flattenedConditions = flatten();
     final Collection<TypeIndex> indexes = oClass.getAllIndexes(true);
     for (final AndBlock condition : flattenedConditions) {
@@ -117,74 +122,106 @@ public class WhereClause extends SimpleNode {
 
       long conditionEstimation = Long.MAX_VALUE;
 
+      boolean unknownCondition = false;
       if (indexedFunctConditions != null) {
         for (final BinaryCondition cond : indexedFunctConditions) {
           final FromClause from = new FromClause();
           from.item = new FromItem();
           from.item.setIdentifier(new Identifier(oClass.getName()));
           final long newCount = cond.estimateIndexed(from, context);
-          if (newCount < conditionEstimation) {
+          // A NEGATIVE ESTIMATION MEANS "CANNOT BE ESTIMATED", NOT "FEWER THAN ANYTHING": TAKEN AS A COUNT IT WON EVERY
+          // COMPARISON AND MADE MATCH MATERIALIZE THE WHOLE RESULT OF A SEARCH_INDEX NODE AS IF IT WERE TINY (ISSUE #9908)
+          if (newCount < 0)
+            unknownCondition = true;
+          else if (newCount < conditionEstimation)
             conditionEstimation = newCount;
-          }
         }
-      } else {
-        final Map<String, Object> conditions = getEqualityOperations(condition, context);
+      }
 
-        for (final TypeIndex index : indexes) {
-          try {
-            // An index created or dropped by a concurrent DDL is no source for an estimation
-            if (!index.isReadyForQueries())
-              continue;
-            if (index.getType() == Schema.INDEX_TYPE.FULL_TEXT)
-              continue;
+      // THE EQUALITIES ON INDEXED PROPERTIES BOUND THE BLOCK TOO, NEXT TO AN INDEXED FUNCTION AS WELL: THEY USED TO BE SKIPPED AS
+      // SOON AS THE BLOCK HAD ONE, SO "SEARCH_INDEX(...) AND code = 'X'" STAYED UNBOUNDED WHEN THE INDEX ON code KNEW BETTER (#9908)
+      final Map<String, Object> conditions = getEqualityOperations(condition, context);
 
-            final List<String> indexedFields = index.getPropertyNames();
-            int nMatchingKeys = 0;
-            for (final String indexedField : indexedFields) {
-              if (conditions.containsKey(indexedField)) {
-                nMatchingKeys++;
-              } else {
-                break;
-              }
+      for (final TypeIndex index : indexes) {
+        try {
+          // An index created or dropped by a concurrent DDL is no source for an estimation
+          if (!index.isReadyForQueries())
+            continue;
+          if (index.getType() == Schema.INDEX_TYPE.FULL_TEXT)
+            continue;
+
+          final List<String> indexedFields = index.getPropertyNames();
+          int nMatchingKeys = 0;
+          for (final String indexedField : indexedFields) {
+            if (conditions.containsKey(indexedField)) {
+              nMatchingKeys++;
+            } else {
+              break;
             }
-            if (nMatchingKeys > 0) {
-              final long newCount = estimateFromIndex(index, conditions, nMatchingKeys);
-              if (newCount < conditionEstimation) {
-                conditionEstimation = newCount;
-              }
-            }
-          } catch (final IndexException e) {
-            // Dropped or rebuilt while reading it: no source for an estimation
-            LogManager.instance().log(this, Level.FINE, "Index '%s' skipped while estimating: %s", index.getName(), e.getMessage());
           }
+          if (nMatchingKeys > 0) {
+            final long newCount = estimateFromIndex(index, conditions, nMatchingKeys, threshold);
+            if (newCount < conditionEstimation) {
+              conditionEstimation = newCount;
+            }
+          }
+        } catch (final IndexException e) {
+          // Dropped or rebuilt while reading it: no source for an estimation
+          LogManager.instance().log(this, Level.FINE, "Index '%s' skipped while estimating: %s", index.getName(), e.getMessage());
         }
+      }
+
+      // ANY KNOWN BOUND OF AN AND-BLOCK BOUNDS THE WHOLE BLOCK, SO THE BLOCK IS UNKNOWN ONLY WHEN NO CONDITION HAS ONE
+      if (unknownCondition && conditionEstimation == Long.MAX_VALUE) {
+        unknown = true;
+        continue;
       }
       if (conditionEstimation > count) {
         return count;
       }
       indexesCount += conditionEstimation;
     }
-    return Math.min(indexesCount, count);
+    // A BRANCH THAT NEEDS A SCAN WAS ALREADY ANSWERED WITH count ABOVE; OTHERWISE ONE UNKNOWN BRANCH MAKES THE UNION UNKNOWN
+    return unknown ? UNKNOWN_ESTIMATE : Math.min(indexesCount, count);
   }
 
-  private long estimateFromIndex(final Index index, final Map<String, Object> conditions, final int nMatchingKeys) {
-    if (nMatchingKeys < 1) {
+  /**
+   * How many entries the index holds under the leading {@code nMatchingKeys} values of the equalities, or {@code Long.MAX_VALUE}
+   * when that is no usable bound. The entries are counted, at most {@code limit} of them: reaching the limit says only "not
+   * small", and counting past it would walk every entry of a common key at planning time. The count used to be computed for a
+   * full key and then dropped, and a partial key answered the cursor's estimateSize(), -1 on an LSM index, which callers took
+   * for a count below every bound (issue #9908).
+   */
+  private long estimateFromIndex(final Index index, final Map<String, Object> conditions, final int nMatchingKeys, final long limit) {
+    if (nMatchingKeys < 1)
       throw new IllegalArgumentException("Cannot estimate from an index with zero keys");
-    }
-    List<String> definitionFields = index.getPropertyNames();
-    Object[] key = new Object[nMatchingKeys];
+
+    final List<String> definitionFields = index.getPropertyNames();
+    final Object[] key = new Object[nMatchingKeys];
     for (int i = 0; i < nMatchingKeys; i++) {
-      Object keyValue = convert(conditions.get(definitionFields.get(i)), ((IndexInternal) index).getKeyTypes()[i]);
-      key[i] = keyValue;
+      key[i] = convert(conditions.get(definitionFields.get(i)), ((IndexInternal) index).getKeyTypes()[i]);
+      // A VALUE THAT DOES NOT CONVERT TO THE KEY TYPE (OR A LITERAL null) WOULD READ THE NULL ENTRIES, WHICH "= value" NEVER MATCHES
+      if (key[i] == null)
+        return Long.MAX_VALUE;
     }
-    if (key != null) {
-      if (conditions.size() == definitionFields.size()) {
-        CollectionUtils.countEntries(index.get(key));
-      } else if (index.supportsOrderedIterations()) {
-        return ((TypeIndex) index).range(true, key, true, key, true).estimateSize();
+
+    final IndexCursor cursor;
+    if (nMatchingKeys == definitionFields.size())
+      cursor = index.get(key);
+    else if (index.supportsOrderedIterations())
+      cursor = ((TypeIndex) index).range(true, key, true, key, true);
+    else
+      return Long.MAX_VALUE;
+
+    try (cursor) {
+      long entries = 0;
+      while (cursor.hasNext()) {
+        cursor.next();
+        if (++entries >= limit)
+          return Long.MAX_VALUE;
       }
+      return entries;
     }
-    return Long.MAX_VALUE;
   }
 
   /**
