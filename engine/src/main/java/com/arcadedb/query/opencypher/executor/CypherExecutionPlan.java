@@ -2685,7 +2685,7 @@ public class CypherExecutionPlan {
               if (!boundVariables.contains(groupVariable))
                 matchVariables.add(groupVariable);
             nextStep = new QuantifiedPathStep(effectiveSourceVar, effectiveTargetVar, pathVariable,
-                bindsGroupPathVariable(pathPattern), quantified, effectiveTargetNode, matchVariables,
+                quantified, effectiveTargetNode, matchVariables,
                 clauseRelVariables, context);
           } else if (relPattern.isVariableLength()) {
             // DFS, not BFS: DFS's active stack is bounded by maxHops regardless of branching
@@ -3087,19 +3087,6 @@ public class CypherExecutionPlan {
     final String targetVariable = pathPattern.getLastNode().getVariable();
     return targetVariable != null && !targetVariable.equals(sourceVariable)
         && targetVariable.equals(physicalPlan.getAnchor().getVariable());
-  }
-
-  /**
-   * Returns true when a named path over {@code pathPattern} names nothing but a single quantified group,
-   * which ISO/IEC 39075 §15.4 (grouped path assignment) binds to a {@code LIST<PATH>} - one path per
-   * repetition - rather than to one path.
-   * <p>
-   * A path that also spans ordinary hops around the group has no such list form and stays a single
-   * concatenated path, so the distinction is made here, on the written pattern, and not inside the step.
-   */
-  private static boolean bindsGroupPathVariable(final PathPattern pathPattern) {
-    return pathPattern.getRelationshipCount() == 1
-        && pathPattern.getRelationship(0) instanceof QuantifiedPathPattern;
   }
 
   /**
@@ -3842,7 +3829,7 @@ public class CypherExecutionPlan {
                     if (!legacyBoundVariables.contains(groupVariable))
                       matchVariables.add(groupVariable);
                   nextStep = new QuantifiedPathStep(currentSourceVar, targetVar, pathVariable,
-                      bindsGroupPathVariable(pathPattern), quantified, targetNode, matchVariables, clauseRelVariables,
+                      quantified, targetNode, matchVariables, clauseRelVariables,
                       context);
                 } else if (relPattern.isVariableLength()) {
                   // Variable-length path - pass path variable, relationship variable, and target node for label

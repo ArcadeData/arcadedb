@@ -121,6 +121,41 @@ class StatementBuilder {
     clausesInOrder.add(new ClauseEntry(ClauseEntry.ClauseType.RETURN, returnClause, clauseOrder++));
   }
 
+  boolean hasReturn() {
+    return returnClause != null;
+  }
+
+  ReturnClause getReturn() {
+    return returnClause;
+  }
+
+  /**
+   * Folds an ORDER BY / SKIP / LIMIT clause written after RETURN into the RETURN's own (issue #9940). The grammar ends a
+   * RETURN body at {@code ORDER BY ... SKIP ... LIMIT ...} in that order, so {@code RETURN x LIMIT 2 OFFSET 1} parses as a
+   * RETURN followed by a standalone {@code OFFSET 1}. Nothing can run after a RETURN, so the clause is one more part of the
+   * RETURN's paging, applied like the rest of it: sort, then skip, then limit, whatever order they were written in. Each
+   * part may be given once: a second ORDER BY, SKIP or LIMIT has no single meaning and is refused.
+   */
+  void mergeTrailingPage(final OrderByClause orderBy, final Expression skip, final Expression limit) {
+    if (orderBy != null && orderByClause != null)
+      throw duplicateAfterReturn("ORDER BY");
+    if (skip != null && this.skip != null)
+      throw duplicateAfterReturn("SKIP/OFFSET");
+    if (limit != null && this.limit != null)
+      throw duplicateAfterReturn("LIMIT");
+    if (orderBy != null)
+      orderByClause = orderBy;
+    if (skip != null)
+      this.skip = skip;
+    if (limit != null)
+      this.limit = limit;
+  }
+
+  private static CommandParsingException duplicateAfterReturn(final String part) {
+    return new CommandParsingException("InvalidClauseComposition: " + part
+        + " is given twice for the same RETURN; ORDER BY, SKIP/OFFSET and LIMIT can each be written once, before or after one another");
+  }
+
   void setOrderBy(final OrderByClause orderBy) {
     this.orderByClause = orderBy;
   }

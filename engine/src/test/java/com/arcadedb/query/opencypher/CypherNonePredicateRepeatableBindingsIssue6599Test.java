@@ -36,6 +36,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@code count(*)} came back 0; appending value-preserving {@code CASE} projections for the
  * subquery's own bound variables made the same predicate see the relationship variable again and
  * the query returned the expected {@code __v = true}.
+ * <p>
+ * The reported query used {@code MATCH REPEATABLE ELEMENT BINDINGS}, which the engine silently ran with relationship
+ * isomorphism. Since #9940 that match mode is refused instead, so the clause here spells the mode it actually ran with,
+ * {@code DIFFERENT RELATIONSHIPS}; the defect under test is about the variable usage, not the match mode.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -61,7 +65,7 @@ class CypherNonePredicateRepeatableBindingsIssue6599Test extends TestHelper {
         MATCH (n0:Outer {k2: true})-[:rt0 {k4: -1230316915, id: 26}]->(:Outer {k2: false})
         WHERE (n0.k2 = false OR n0.k2 = true)
         CALL (n0) {
-          MATCH REPEATABLE ELEMENT BINDINGS
+          MATCH DIFFERENT RELATIONSHIPS
             p1 = (:l11|l10) <-[r0 {k7: 2081692630, k10: [1386720338, 1309075339]}]-
                  ({k7: -1751297746}) -[r1:rt1 {k3: -1101784399, k7: 1596251831}]-> (:l7)
           WHERE none(item IN r1.k10 WHERE item IS NULL)
@@ -73,7 +77,7 @@ class CypherNonePredicateRepeatableBindingsIssue6599Test extends TestHelper {
         MATCH (n0:Outer {k2: true})-[:rt0 {k4: -1230316915, id: 26}]->(:Outer {k2: false})
         WHERE (n0.k2 = false OR n0.k2 = true)
         CALL (n0) {
-          MATCH REPEATABLE ELEMENT BINDINGS
+          MATCH DIFFERENT RELATIONSHIPS
             p1 = (:l11|l10) <-[r0 {k7: 2081692630, k10: [1386720338, 1309075339]}]-
                  ({k7: -1751297746}) -[r1:rt1 {k3: -1101784399, k7: 1596251831}]-> (:l7)
           WHERE none(item IN r1.k10 WHERE item IS NULL)

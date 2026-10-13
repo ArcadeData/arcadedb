@@ -30,6 +30,7 @@ import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParameterMissingException;
 import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.QueryNotIdempotentException;
 import com.arcadedb.exception.SchemaException;
@@ -40,10 +41,12 @@ import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.QuerySession;
 import com.arcadedb.query.literal.LiteralParameterizer.Lookup;
 import com.arcadedb.query.opencypher.Labels;
+import com.arcadedb.query.opencypher.ast.ConditionalStatement;
 import com.arcadedb.query.opencypher.ast.CypherAdminStatement;
 import com.arcadedb.query.opencypher.ast.CypherDDLStatement;
 import com.arcadedb.query.opencypher.ast.CypherShowSchemaStatement;
 import com.arcadedb.query.opencypher.ast.CypherTypeName;
+import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.IsTypedExpression;
 import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
@@ -427,6 +430,21 @@ public class OpenCypherQueryEngine implements QueryEngine {
   }
 
   /**
+   * Evaluates the condition of a conditional query branch. Only {@code true} takes the branch: null and false both pass to
+   * the next one, as a WHERE does. Anything that is not a boolean is a type error rather than a silent "not taken".
+   */
+  private boolean isConditionTrue(final Expression condition, final Map<String, Object> parameters) {
+    final BasicCommandContext context = new BasicCommandContext();
+    context.setDatabase(database);
+    context.setInputParameters(parameters);
+    final Object value = EXPRESSION_EVALUATOR.evaluate(condition, new ResultInternal(), context);
+    if (value == null || value instanceof Boolean)
+      return Boolean.TRUE.equals(value);
+    throw new CommandSemanticException("Type mismatch: the condition of a conditional query (WHEN ... THEN) must be a BOOLEAN, got "
+        + CypherFunctionHelper.cypherTypeName(value));
+  }
+
+  /**
    * Executes a parsed Cypher statement.
    *
    * @param queryString   the original query string (for plan cache key)
@@ -443,6 +461,20 @@ public class OpenCypherQueryEngine implements QueryEngine {
    */
   private ResultSet execute(final String queryString, final CypherStatement statement, final ContextConfiguration configuration,
       final Map<String, Object> parameters, final boolean explain, final boolean profile, final boolean timeExecution) {
+    // A conditional query runs one of its branches, picked now that the parameters its conditions read are known. Each branch
+    // is planned and cached under a key of its own, since the same text runs different branches for different parameters
+    if (statement instanceof ConditionalStatement conditional) {
+      final List<CypherStatement> branches = conditional.getBranches();
+      for (int i = 0; i < branches.size(); i++)
+        if (isConditionTrue(conditional.getConditions().get(i), parameters))
+          return execute(queryString + "\u0000WHEN#" + i, branches.get(i), configuration, parameters, explain, profile,
+              timeExecution);
+      if (conditional.getElseBranch() != null)
+        return execute(queryString + "\u0000ELSE", conditional.getElseBranch(), configuration, parameters, explain, profile,
+            timeExecution);
+      return new InternalResultSet();
+    }
+
     // Try to get cached physical plan first (saves optimization time: 200-500ms)
     final CypherExecutionPlan plan;
     final DatabaseInternal execDb = executionDatabase(statement);

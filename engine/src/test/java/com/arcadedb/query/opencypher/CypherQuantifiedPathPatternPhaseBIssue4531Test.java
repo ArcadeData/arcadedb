@@ -45,7 +45,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *
  * <p>Covered here: multi-relationship inner patterns, inner {@code WHERE} predicates evaluated once
  * per repetition, inner variables surfacing outside the group as parallel {@code LIST<NODE>} /
- * {@code LIST<RELATIONSHIP>} bindings, and grouped path assignment yielding {@code LIST<PATH>}.
+ * {@code LIST<RELATIONSHIP>} bindings, and a path variable over a group binding one path through every repetition.
  *
  * <p>Every query here plans on the legacy pipeline: {@code CypherExecutionPlanner} declines a
  * quantified group, so the optimizer never sees one. {@link #quantifiedGroupPlansAsAQuantifiedPathStep()}
@@ -227,31 +227,27 @@ class CypherQuantifiedPathPatternPhaseBIssue4531Test {
   }
 
   // ---------------------------------------------------------------------------
-  // 4. Grouped path assignment: LIST<PATH>
+  // 4. Path variable over nothing but a group
   // ---------------------------------------------------------------------------
 
-  // Issue #4531: a path variable bound to nothing but a quantified group yields one path per repetition
-  // (ISO/IEC 39075 §15.4), not a single concatenated path.
+  // Issue #9940: a path variable bound to nothing but a quantified group is one PATH running through every repetition, as
+  // any other path variable. It used to bind a LIST<PATH> with one path per repetition, so length(p) and nodes(p) read a
+  // list instead of the path.
   @Test
-  void groupedPathAssignmentYieldsOnePathPerRepetition() {
+  void pathVariableOverAGroupAloneIsOnePath() {
     createWeightedChain();
 
     final List<String> starts = new ArrayList<>();
     try (final ResultSet rs = database.query("opencypher",
-        "MATCH p = ((m:P)-[r:KNOWS]->(n:P)){2} RETURN p AS p")) {
+        "MATCH p = ((m:P)-[r:KNOWS]->(n:P)){2} RETURN p AS p, length(p) AS len")) {
       while (rs.hasNext()) {
-        final List<?> paths = rs.next().getProperty("p");
-        assertThat(paths).hasSize(2);
-        assertThat(paths).allMatch(TraversalPath.class::isInstance);
-        // Each element is one repetition of the inner pattern: exactly one relationship long,
-        // and consecutive elements are joined end-to-start rather than concatenated into one path.
-        final TraversalPath first = (TraversalPath) paths.get(0);
-        final TraversalPath second = (TraversalPath) paths.get(1);
-        assertThat(first.getEdges()).hasSize(1);
-        assertThat(second.getEdges()).hasSize(1);
-        assertThat(second.getVertices().get(0).getIdentity())
-            .isEqualTo(first.getEndVertex().getIdentity());
-        starts.add(first.getVertices().get(0).getString("name"));
+        final Result row = rs.next();
+        assertThat(row.<Object>getProperty("p")).isInstanceOf(TraversalPath.class);
+        final TraversalPath path = row.getProperty("p");
+        assertThat(path.getEdges()).hasSize(2);
+        assertThat(path.getVertices()).hasSize(3);
+        assertThat(row.<Long>getProperty("len")).isEqualTo(2L);
+        starts.add(path.getVertices().get(0).getString("name"));
       }
     }
     // Two-repetition walks exist from A (A->B->C) and from B (B->C->D); C has only one hop left.

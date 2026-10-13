@@ -83,7 +83,6 @@ public class QuantifiedPathStep extends AbstractExecutionStep {
   private final String                sourceVariable;
   private final String                targetVariable;
   private final String                pathVariable;
-  private final boolean               pathVariableBindsGroup;
   private final QuantifiedPathPattern group;
   private final NodePattern           targetNodePattern;
   private final Set<String>           clauseVariables; // see MatchRelationshipStep's fields of the same names
@@ -99,25 +98,21 @@ public class QuantifiedPathStep extends AbstractExecutionStep {
   /**
    * @param sourceVariable         variable holding the group's left boundary vertex
    * @param targetVariable         variable the group's right boundary vertex binds to
-   * @param pathVariable           enclosing named path variable, or null
-   * @param pathVariableBindsGroup true when {@code pathVariable} names nothing but this group, in which
-   *                               case it binds to a {@code LIST<PATH>} with one path per repetition
-   *                               (ISO/IEC 39075 §15.4 grouped path assignment); false when the path
-   *                               spans further segments and must stay a single concatenated path
+   * @param pathVariable           enclosing named path variable, or null. It binds one PATH running through every
+   *                               repetition, whether or not the group is the only thing the path spans (issue #9940)
    * @param group                  the quantified path pattern to repeat
    * @param targetNodePattern      right boundary node pattern, for label/property filtering; may be null
    * @param clauseVariables        the owning MATCH clause's own variables - half the isomorphism scope
    * @param clauseRelationshipVariables every relationship variable the clause writes - the other half
    */
   public QuantifiedPathStep(final String sourceVariable, final String targetVariable, final String pathVariable,
-      final boolean pathVariableBindsGroup, final QuantifiedPathPattern group, final NodePattern targetNodePattern,
+      final QuantifiedPathPattern group, final NodePattern targetNodePattern,
       final Set<String> clauseVariables, final Set<String> clauseRelationshipVariables,
       final CommandContext context) {
     super(context);
     this.sourceVariable = sourceVariable;
     this.targetVariable = targetVariable;
     this.pathVariable = pathVariable != null && !pathVariable.isEmpty() ? pathVariable : null;
-    this.pathVariableBindsGroup = pathVariableBindsGroup;
     this.group = group;
     this.targetNodePattern = targetNodePattern;
     this.clauseVariables = clauseVariables;
@@ -506,22 +501,16 @@ public class QuantifiedPathStep extends AbstractExecutionStep {
     row.setProperty(targetVariable, end);
 
     if (pathVariable != null) {
-      if (pathVariableBindsGroup) {
-        final List<TraversalPath> paths = new ArrayList<>(repetitions.size());
-        for (final Repetition repetition : repetitions)
-          paths.add(toPath(repetition));
-        row.setProperty(pathVariable, paths);
-      } else {
-        TraversalPath concatenated = input.getProperty(pathVariable) instanceof TraversalPath existing ?
-            existing : null;
-        for (final Repetition repetition : repetitions) {
-          final TraversalPath segment = toPath(repetition);
-          concatenated = concatenated == null ? segment : new TraversalPath(concatenated, segment);
-        }
-        if (concatenated == null)
-          concatenated = new TraversalPath(end);
-        row.setProperty(pathVariable, concatenated);
+      // A path variable binds a PATH, also when the group is all the path spans: it used to bind a LIST<PATH> there, one
+      // path per repetition, so length(p) and nodes(p) read a list instead of the path (issue #9940)
+      TraversalPath concatenated = input.getProperty(pathVariable) instanceof TraversalPath existing ? existing : null;
+      for (final Repetition repetition : repetitions) {
+        final TraversalPath segment = toPath(repetition);
+        concatenated = concatenated == null ? segment : new TraversalPath(concatenated, segment);
       }
+      if (concatenated == null)
+        concatenated = new TraversalPath(end);
+      row.setProperty(pathVariable, concatenated);
     }
     return row;
   }
