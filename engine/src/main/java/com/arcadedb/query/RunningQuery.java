@@ -430,8 +430,9 @@ public final class RunningQuery implements AutoCloseable {
   /**
    * Records which client connection runs the statement, for the listing: {@code connectionId} in the protocol's own
    * terms (the Postgres backend pid a {@code pg_cancel_backend} takes, a Bolt connection), and the client's address.
+   * Set only by {@link RunningQueryRegistry#open}, as part of opening the entry (issue #9962).
    */
-  public RunningQuery setConnection(final String connectionId, final String clientAddress) {
+  RunningQuery setConnection(final String connectionId, final String clientAddress) {
     this.connectionId = connectionId;
     this.clientAddress = clientAddress;
     return this;

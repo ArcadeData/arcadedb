@@ -137,7 +137,7 @@ class Issue9680RunningQueryTerminationTest {
   @Test
   void terminatedStatementCommitsNothing() {
     final AtomicReference<Throwable> failure = new AtomicReference<>();
-    try (final RunningQuery q = registry.register(database.getName(), "admin", "test", null, null)) {
+    try (final RunningQuery q = registry.register(database.getName(), "admin", "test", null, null, null, null)) {
       q.terminate("root");
       try {
         database.transaction(() -> database.newDocument("Written").set("x", 1).save());
@@ -161,7 +161,7 @@ class Issue9680RunningQueryTerminationTest {
 
   @Test
   void statementThatEndsBeforeSeeingTheTerminationReportsSo() throws Exception {
-    final RunningQuery q = registry.register(database.getName(), "admin", "test", null, null);
+    final RunningQuery q = registry.register(database.getName(), "admin", "test", null, null, null, null);
     try {
       drain(database.query("opencypher", "RETURN 42 AS answer"));
       q.terminate("root");
@@ -177,7 +177,7 @@ class Issue9680RunningQueryTerminationTest {
   void contextsOnOtherThreadsObeyTheTerminationOfTheStatement() throws Exception {
     // A parallel worker runs on a pooled thread with no entry published, on a COPY of the statement's context or on a
     // context derived from it: both must still stop with the statement
-    try (final RunningQuery q = registry.register(database.getName(), "admin", "test", null, null)) {
+    try (final RunningQuery q = registry.register(database.getName(), "admin", "test", null, null, null, null)) {
       final BasicCommandContext root = new BasicCommandContext();
       root.setDatabase((DatabaseInternal) database);
 
@@ -234,7 +234,7 @@ class Issue9680RunningQueryTerminationTest {
 
   @Test
   void credentialsAreMaskedInTheListedText() {
-    try (final RunningQuery q = registry.register("db", "root", "http", null, null)) {
+    try (final RunningQuery q = registry.register("db", "root", "http", null, null, null, null)) {
       q.setStatement("sql", "CREATE USER bob IDENTIFIED BY s3cr3t ROLE admin");
       assertThat(q.getText()).isEqualTo("CREATE USER bob IDENTIFIED BY *** ROLE admin");
       q.setStatement("sql", "ALTER USER bob SET password = 'my pass', token: \"abc\"");
@@ -275,11 +275,11 @@ class Issue9680RunningQueryTerminationTest {
   @Test
   void anEntryIsPublishedOnlyOnceRegistered() {
     assertThat(RunningQuery.current()).isNull();
-    final RunningQuery q = registry.register("db", "root", "http", null, null);
+    final RunningQuery q = registry.register("db", "root", "http", null, null, null, null);
     try {
       assertThat(RunningQuery.current()).isSameAs(q);
       // a nested entry gives the outer one back when it closes
-      try (final RunningQuery nested = registry.register("db", "root", "http", null, null)) {
+      try (final RunningQuery nested = registry.register("db", "root", "http", null, null, null, null)) {
         assertThat(RunningQuery.current()).isSameAs(nested);
       }
       assertThat(RunningQuery.current()).isSameAs(q);
@@ -291,8 +291,8 @@ class Issue9680RunningQueryTerminationTest {
 
   @Test
   void anEntryClosedOutOfTurnIsNeverLeftBehind() {
-    final RunningQuery outer = registry.register("db", "root", "http", null, null);
-    final RunningQuery inner = registry.register("db", "root", "http", null, null);
+    final RunningQuery outer = registry.register("db", "root", "http", null, null, null, null);
+    final RunningQuery inner = registry.register("db", "root", "http", null, null, null, null);
     outer.terminate("root");
     // The outer entry ends first: the inner one still runs and is still the thread's
     outer.close();
@@ -309,14 +309,14 @@ class Issue9680RunningQueryTerminationTest {
 
   @Test
   void registryResolvesIdsAndForgetsEndedStatements() {
-    final RunningQuery q = registry.register("db", "admin", "http", "AS-1", "bench-1");
+    final RunningQuery q = registry.register("db", "admin", "http", "AS-1", "bench-1", null, null);
     try {
       assertThat(registry.get(q.getId())).isSameAs(q);
       assertThat(registry.get(" " + q.getId().toUpperCase() + " ")).isSameAs(q);
       // Only an id this registry issued: a bare number, or the same number issued by another node, finds nothing here
       assertThat(registry.get(q.getId().substring(0, q.getId().indexOf('-')))).isNull();
       final RunningQueryRegistry otherNode = new RunningQueryRegistry();
-      try (final RunningQuery foreign = otherNode.register("db", "admin", "http", null, null)) {
+      try (final RunningQuery foreign = otherNode.register("db", "admin", "http", null, null, null, null)) {
         assertThat(foreign.getId()).startsWith(q.getId().substring(0, q.getId().indexOf('-') + 1));
         assertThat(registry.get(foreign.getId())).isNull();
       }
@@ -341,7 +341,7 @@ class Issue9680RunningQueryTerminationTest {
     final AtomicReference<RunningQuery> entry = new AtomicReference<>();
     final AtomicReference<Throwable> failure = new AtomicReference<>();
     final Thread runner = new Thread(() -> {
-      try (final RunningQuery q = registry.register(database.getName(), "admin", "test", null, "tag-9680")) {
+      try (final RunningQuery q = registry.register(database.getName(), "admin", "test", null, "tag-9680", null, null)) {
         q.setStatement(language, text);
         entry.set(q);
         work.accept(q);

@@ -22,6 +22,7 @@ import com.arcadedb.Constants;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.query.RunningQuery;
 import com.arcadedb.query.sql.executor.QueryAdmissionGate;
 import com.arcadedb.serializer.json.JSONArray;
@@ -174,8 +175,12 @@ public class MCPDispatcher {
    * Routes one parsed JSON-RPC message. A null message means an empty body. One-way notifications and responses
    * are discarded without consulting server state; messages that require a reply are authenticated before any
    * server state is disclosed.
+   *
+   * @param client the client that sent the message, as {@code list queries} names it beside the user: the peer address
+   *               for the HTTP transport, {@code stdio} for the stdio one (issue #9962). Passed per message rather than
+   *               held, because one HTTP dispatcher serves every client of the endpoint
    */
-  public MCPResponse dispatch(final JSONObject request, final ServerSecurityUser user) {
+  public MCPResponse dispatch(final JSONObject request, final ServerSecurityUser user, final String client) {
     // A response acknowledges a server-to-client request and must never receive another response. ArcadeDB
     // does not currently issue such requests, so valid responses are accepted and discarded.
     if (isResponse(request))
@@ -236,7 +241,7 @@ public class MCPDispatcher {
       return switch (method) {
         case "initialize" -> result(id, initialize(effectiveProfile(user)));
         case "tools/list" -> result(id, new JSONObject().put("tools", toolsForProfile(effectiveProfile(user))));
-        case "tools/call" -> toolsCall(id, params, user, effectiveProfile(user));
+        case "tools/call" -> toolsCall(id, params, user, effectiveProfile(user), client);
         case "resources/list" -> resourcesList(id, user);
         case "resources/read" -> resourcesRead(id, params, user);
         case "prompts/list" -> promptsList(id, effectiveProfile(user)::allows);
@@ -366,9 +371,12 @@ public class MCPDispatcher {
    * statements the tool runs obey a terminate. Listed as the statement the tool runs when it runs one, by the tool and its
    * arguments - with the secrets {@link #formatArgs} masks for the request log masked - otherwise, built only if somebody lists it.
    */
-  private RunningQuery registerRunningQuery(final String toolName, final JSONObject args, final ServerSecurityUser user) {
-    // read without coercion: a member of the wrong type is the tool's to refuse, with its own message
-    final RunningQuery entry = server.getRunningQueries().register(textMember(args, "database"), user.getName(), "mcp", null, null);
+  private RunningQuery registerRunningQuery(final String toolName, final JSONObject args, final ServerSecurityUser user,
+      final String client) {
+    // read without coercion: a member of the wrong type is the tool's to refuse, with its own message. The client is
+    // what tells two agents apart, since an MCP endpoint typically serves all of them as one principal (issue #9962)
+    final RunningQuery entry = server.getRunningQueries()
+        .register(textMember(args, "database"), user.getName(), "mcp", null, null, null, client);
     final String text = "query".equals(toolName) ? textMember(args, "query") :
         "execute_command".equals(toolName) ? textMember(args, "command") : null;
     if (text != null) {
@@ -380,7 +388,7 @@ public class MCPDispatcher {
   }
 
   private MCPResponse toolsCall(final Object id, final JSONObject params, final ServerSecurityUser user,
-      final EffectiveToolProfile profile) {
+      final EffectiveToolProfile profile, final String client) {
     // Guarded for the same reason as the request members in dispatch: a member present but of the wrong JSON type
     // raises out of the read, and these reads sit above the try below. A malformed member here is invalid params
     // rather than a failed tool call, so it answers with a JSON-RPC error rather than an isError tool envelope.
@@ -418,7 +426,7 @@ public class MCPDispatcher {
         try {
           // Listed by "list queries" / SHOW TRANSACTIONS and stopped by a terminate over the same window as the slot, like the
           // work of every other protocol (issue #9774)
-          entry = registerRunningQuery(toolName, args, user);
+          entry = registerRunningQuery(toolName, args, user, client);
           toolResult = runTool(toolName, user, args);
         } finally {
           try {
@@ -473,12 +481,21 @@ public class MCPDispatcher {
    * The text an error answer carries for a failed {@code operation}, logged once: in production mode the concealment
    * logs the detail itself (on one line, a server fault with its stack trace), otherwise the message goes out and is
    * logged as a warning, as it always was.
+   * <p>
+   * A follower's refusal of leader-only work that names the leader also gets the leader's address, in every mode
+   * (issue #9960): the tool error is the whole channel an agent reads - the transport answers HTTP 200 for it - and
+   * neither the refusal's message nor the placeholder says where to go. Appended after concealment, as every other
+   * transport does: it is an address the cluster put there, not engine detail.
    */
-  private String failureMessage(final String operation, final Exception e) {
+  String failureMessage(final String operation, final Exception e) {
+    final String text;
     if (ErrorConcealment.isConcealing(server))
-      return clientMessage(operation + " -> " + e.getMessage(), e);
-    LogManager.instance().log(this, Level.WARNING, "MCP[%s] %s -> error: %s", transport, operation, e.getMessage());
-    return e.getMessage();
+      text = clientMessage(operation + " -> " + e.getMessage(), e);
+    else {
+      LogManager.instance().log(this, Level.WARNING, "MCP[%s] %s -> error: %s", transport, operation, e.getMessage());
+      text = e.getMessage();
+    }
+    return ServerIsNotTheLeaderException.withLeaderSentence(text, e);
   }
 
   private EffectiveToolProfile effectiveProfile(final ServerSecurityUser user) {
@@ -747,12 +764,12 @@ public class MCPDispatcher {
    * dispatched independently and only the elements that are requests contribute a response, so a batch made
    * only of notifications and/or responses yields an empty array and the transport answers with no body.
    */
-  public JSONArray dispatchBatch(final JSONArray batch, final ServerSecurityUser user) {
+  public JSONArray dispatchBatch(final JSONArray batch, final ServerSecurityUser user, final String client) {
     final JSONArray responses = new JSONArray();
     for (int i = 0; i < batch.length(); i++) {
       final Object element = batch.get(i);
       if (element instanceof JSONObject request) {
-        final MCPResponse response = dispatch(request, user);
+        final MCPResponse response = dispatch(request, user, client);
         if (response.json() != null)
           responses.put(response.json());
       } else

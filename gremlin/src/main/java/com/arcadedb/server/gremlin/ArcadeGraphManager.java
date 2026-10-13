@@ -66,6 +66,8 @@ public class ArcadeGraphManager implements GraphManager {
   private static final ThreadLocal<RunningQuery>              RUNNING   = new ThreadLocal<>();
   /** Who sent the request this thread evaluates, published by {@link GremlinPrincipalPropagatingExecutorService}. */
   private static final ThreadLocal<String>                    USER      = new ThreadLocal<>();
+  /** The connection the request this thread evaluates arrived on, published with the user (issue #9962). */
+  private static final ThreadLocal<GremlinAuthContext.Client> CLIENT    = new ThreadLocal<>();
 
   // THE GLOBAL BINDINGS OF THE GREMLIN EXECUTOR, ONCE THE SERVER HAS BUILT THEM (#9147)
   private volatile    Bindings               scriptGlobals;
@@ -449,7 +451,9 @@ public class ArcadeGraphManager implements GraphManager {
     // scans and its adjacency steps check the entry. The script or bytecode is described only if somebody lists it
     final ArcadeDBServer server = serverInstance;
     if (server != null) {
-      final RunningQuery runningQuery = server.getRunningQueries().register(databaseOf(msg), USER.get(), "gremlin", null, null);
+      final GremlinAuthContext.Client client = CLIENT.get();
+      final RunningQuery runningQuery = server.getRunningQueries().register(databaseOf(msg), USER.get(), "gremlin", null, null,
+          client != null ? client.connectionId() : null, client != null ? client.address() : null);
       runningQuery.setStatement("gremlin", () -> String.valueOf(msg.getArgs().get(Tokens.ARGS_GREMLIN)));
       RUNNING.set(runningQuery);
     }
@@ -470,6 +474,14 @@ public class ArcadeGraphManager implements GraphManager {
       USER.set(user);
     else
       USER.remove();
+  }
+
+  /** Publishes, for the evaluation about to run on this thread, the connection it arrived on; {@code null} clears it. */
+  static void setRequestClient(final GremlinAuthContext.Client client) {
+    if (client != null)
+      CLIENT.set(client);
+    else
+      CLIENT.remove();
   }
 
   @Override

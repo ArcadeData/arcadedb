@@ -96,7 +96,7 @@ class Issue9893IndexReplayCancellationTest extends TestHelper {
     };
 
     database.getSchema().getType("Item").getEvents().registerListener(listener);
-    try (final RunningQuery q = registry.register(database.getName(), "admin", "test", null, null)) {
+    try (final RunningQuery q = registry.register(database.getName(), "admin", "test", null, null, null, null)) {
       statement.set(q);
       armed.set(true);
       assertThatThrownBy(() -> {
@@ -122,7 +122,7 @@ class Issue9893IndexReplayCancellationTest extends TestHelper {
     final List<RID> all = step.lookupKeyAgain("hot", WorkGuard.forCommandDeadline(null));
     assertThat(all).hasSize(ENTRIES);
 
-    try (final RunningQuery q = registry.register(database.getName(), "admin", "test", null, null)) {
+    try (final RunningQuery q = registry.register(database.getName(), "admin", "test", null, null, null, null)) {
       q.terminate("root");
       final BasicCommandContext context = new BasicCommandContext();
       context.setDatabase((DatabaseInternal) database);
