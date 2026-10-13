@@ -39,6 +39,10 @@ import com.arcadedb.query.opencypher.procedures.CypherProcedure;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.WorkGuard;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.EdgeType;
+import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.NumberUtils;
 
 import java.util.ArrayList;
@@ -48,6 +52,7 @@ import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 /**
  * Abstract base class for algorithm procedures.
@@ -140,14 +145,105 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
     return arg.toString();
   }
 
-  @SuppressWarnings("unchecked")
-  protected String[] extractRelTypes(final Object arg) {
+  /**
+   * Parses a relationship-type filter (a name, a comma- or pipe-separated list, or a collection; null or blank means every
+   * type) and checks every name against the schema. A name that is not an edge type is refused rather than answered with
+   * an empty graph (issue #9769): a typo ({@code 'KNOWN'} for {@code 'KNOWS'}), or a weight property passed where the
+   * relationship types go, would otherwise walk nothing and return no rows, which reads as a correct answer.
+   */
+  protected String[] extractRelTypes(final Object arg, final CommandContext context) {
+    if (arg instanceof Map<?, ?>)
+      throw new IllegalArgumentException(
+          getName() + "(): expected the relationship types (a name, a list of names or null), got a map");
+    final String[] relTypes = parseTypeNames(arg);
+    if (relTypes != null)
+      requireEdgeTypes(context.getDatabase(), relTypes);
+    return relTypes;
+  }
+
+  /**
+   * Parses a list of type names (a name, a comma- or pipe-separated list, or a collection) without checking them against
+   * the schema; null or blank answers null.
+   */
+  private static String[] parseTypeNames(final Object arg) {
     return switch (arg) {
       case null -> null;
       case String s -> splitRelTypeString(s);
-      case Collection<?> coll -> coll.stream().map(Object::toString).toArray(String[]::new);
+      case Collection<?> coll -> {
+        // Blank and null entries are dropped as the separated-string form drops empty parts; none left means every type
+        final String[] names = coll.stream().filter(Objects::nonNull).map(o -> o.toString().trim()).filter(s -> !s.isEmpty())
+            .toArray(String[]::new);
+        yield names.length == 0 ? null : names;
+      }
       default -> new String[]{arg.toString()};
     };
+  }
+
+  /**
+   * Refuses any name that is not an edge type of the schema. Shared by {@link #extractRelTypes} and by the procedures
+   * that take a single relationship type as a plain string.
+   */
+  protected void requireEdgeTypes(final Database db, final String... relTypes) {
+    requireTypes(db, relTypes, true);
+  }
+
+  /**
+   * The weight property of a procedure whose relationship types come first. A name that is an edge type is refused: it is
+   * a call written in the order {@code algo.mst} and {@code algo.apsp} took before #9769, {@code (weightProperty,
+   * relTypes)}, where {@code (null, 'ROAD')} meant "every weight 1 over ROAD" and would now silently read ROAD as the
+   * weight property of every edge type.
+   */
+  protected String extractWeightProperty(final Object arg, final CommandContext context) {
+    final String weightProperty = extractString(arg, "weightProperty");
+    if (weightProperty != null && context.getDatabase().getSchema().getTypeOrNull(weightProperty) instanceof EdgeType)
+      throw new IllegalArgumentException(getName() + "(): '" + weightProperty
+          + "' is a relationship type, not a weight property: the relationship types come first, then the weight property");
+    return weightProperty;
+  }
+
+  /** As {@link #extractRelTypes}, for a node-label filter: every name must be a vertex type of the schema. */
+  protected String[] extractNodeLabels(final Object arg, final CommandContext context) {
+    if (arg instanceof Map<?, ?>)
+      throw new IllegalArgumentException(getName() + "(): expected the node labels (a name, a list of names or null), got a map");
+    final String[] labels = parseTypeNames(arg);
+    if (labels != null)
+      requireTypes(context.getDatabase(), labels, false);
+    return labels;
+  }
+
+  private void requireTypes(final Database db, final String[] names, final boolean edges) {
+    final Schema schema = db.getSchema();
+    final String expected = edges ? "relationship type" : "node label";
+    for (final String name : names) {
+      if (name == null || name.isEmpty())
+        continue;
+      final DocumentType type = schema.getTypeOrNull(name);
+      if (type == null)
+        throw new IllegalArgumentException(
+            getName() + "(): " + expected + " '" + name + "' does not exist" + (edges ? edgePropertyHint(schema, name) : ""));
+      if (edges ? !(type instanceof EdgeType) : !(type instanceof VertexType))
+        throw new IllegalArgumentException(getName() + "(): '" + name + "' is not a " + expected + ", it is " + describeKind(type));
+    }
+  }
+
+  private static String describeKind(final DocumentType type) {
+    if (type instanceof VertexType)
+      return "a vertex type";
+    if (type instanceof EdgeType)
+      return "an edge type";
+    return "a document type";
+  }
+
+  /**
+   * When the name that is not an edge type is a property declared on one, the caller has most likely passed the weight
+   * property where the relationship types go, the order {@code algo.mst} and {@code algo.apsp} took before #9769.
+   */
+  private static String edgePropertyHint(final Schema schema, final String name) {
+    for (final DocumentType type : schema.getTypes())
+      if (type instanceof EdgeType && type.existsProperty(name))
+        return " ('" + name + "' is a property of the edge type '" + type.getName()
+            + "': the relationship types come first, then the weight property)";
+    return "";
   }
 
   private static String[] splitRelTypeString(final String s) {

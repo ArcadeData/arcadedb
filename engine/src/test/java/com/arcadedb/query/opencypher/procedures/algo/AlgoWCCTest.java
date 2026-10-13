@@ -41,6 +41,7 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Tests for the algo.wcc Cypher procedure (Weakly Connected Components).
@@ -194,9 +195,10 @@ class AlgoWCCTest {
   }
 
   @Test
-  void wccWithUnknownRelTypeIsolatesEveryVertex() {
-    final Map<String, Long> comp = componentsByName("CALL algo.wcc('NOSUCH')");
-    assertThat(Set.copyOf(comp.values())).hasSize(5);
+  void wccWithUnknownRelTypeIsRefused() {
+    // Issue #9769: a filter naming no edge type is refused rather than answered as a graph without edges
+    assertThatThrownBy(() -> componentsByName("CALL algo.wcc('NOSUCH')"))
+        .hasStackTraceContaining("algo.wcc(): relationship type 'NOSUCH' does not exist");
   }
 
   @Test

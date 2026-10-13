@@ -124,7 +124,7 @@ class Issue6317AlgoGraphLoadBudgetTest {
         { "algo.maxFlow", "MATCH (a:Node {idx: 0}), (z:Node {idx: 10}) CALL algo.maxFlow(a, z) YIELD maxFlow RETURN maxFlow" },
         { "algo.kShortestPaths",
             "MATCH (a:Node {idx: 0}), (z:Node {idx: 10}) CALL algo.kShortestPaths(a, z, 2) YIELD weight RETURN weight" },
-        { "algo.mst", "CALL algo.mst('w') YIELD source RETURN source" } })
+        { "algo.mst", "CALL algo.mst(null, 'w') YIELD source RETURN source" } })
       assertThatThrownBy(() -> drain(call[1]))
           .as("%s loads the same graph and must price it", call[0])
           .hasStackTraceContaining(call[0] + "(): the loaded graph would need");
@@ -170,7 +170,7 @@ class Issue6317AlgoGraphLoadBudgetTest {
     database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, -1L);
 
     assertThat(drain("CALL algo.pageRank() YIELD node RETURN node")).hasSize(NODE_COUNT);
-    assertThat(drain("CALL algo.mst('w') YIELD source RETURN source")).hasSize(NODE_COUNT - 1);
+    assertThat(drain("CALL algo.mst(null, 'w') YIELD source RETURN source")).hasSize(NODE_COUNT - 1);
   }
 
   private List<Object> drain(final String query) {

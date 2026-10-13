@@ -110,7 +110,7 @@ class Issue6302AlgoGraphDrivenWorkGuardTest {
   @ParameterizedTest(name = "{0}")
   @CsvSource(delimiter = '|', value = {
       "algo.apsp                        | CALL algo.apsp() YIELD source RETURN source",
-      "algo.mst                         | CALL algo.mst('w') YIELD source RETURN source",
+      "algo.mst                         | CALL algo.mst(null, 'w') YIELD source RETURN source",
       "algo.kShortestPaths              | MATCH (a:Node {name:'A'}), (c:Node {name:'C'}) CALL algo.kShortestPaths(a, c, 3) YIELD rank RETURN rank",
       "algo.steinerTree                 | MATCH (a:Node {name:'A'}), (c:Node {name:'C'}) CALL algo.steinerTree([a, c], 'LINK', 'w') YIELD weight RETURN weight",
       "algo.bellmanford                 | MATCH (a:Node {name:'A'}), (c:Node {name:'C'}) CALL algo.bellmanford(a, c, 'LINK', 'w') YIELD weight RETURN weight",
@@ -147,7 +147,7 @@ class Issue6302AlgoGraphDrivenWorkGuardTest {
   @ParameterizedTest(name = "{0}")
   @CsvSource(delimiter = '|', value = {
       "algo.apsp                        | CALL algo.apsp() YIELD source RETURN source",
-      "algo.mst                         | CALL algo.mst('w') YIELD source RETURN source",
+      "algo.mst                         | CALL algo.mst(null, 'w') YIELD source RETURN source",
       "algo.kShortestPaths              | MATCH (a:Node {name:'A'}), (c:Node {name:'C'}) CALL algo.kShortestPaths(a, c, 3) YIELD rank RETURN rank",
       "algo.steinerTree                 | MATCH (a:Node {name:'A'}), (c:Node {name:'C'}) CALL algo.steinerTree([a, c], 'LINK', 'w') YIELD weight RETURN weight",
       "algo.bellmanford                 | MATCH (a:Node {name:'A'}), (c:Node {name:'C'}) CALL algo.bellmanford(a, c, 'LINK', 'w') YIELD weight RETURN weight",

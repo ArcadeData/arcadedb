@@ -24,13 +24,9 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
-import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Deque;
-import java.util.HashSet;
 import java.util.List;
-import java.util.Set;
 import java.util.stream.Stream;
 
 /**
@@ -88,7 +84,7 @@ public class AlgoBiconnectedComponents extends AbstractAlgoProcedure {
   public Stream<Result> execute(final Object[] args, final Result inputRow, final CommandContext context) {
     validateArgs(args);
 
-    final String[] relTypes = args.length > 0 ? extractRelTypes(args[0]) : null;
+    final String[] relTypes = args.length > 0 ? extractRelTypes(args[0], context) : null;
 
     final Database db = context.getDatabase();
 
@@ -99,109 +95,120 @@ public class AlgoBiconnectedComponents extends AbstractAlgoProcedure {
     if (n == 0)
       return Stream.empty();
     final int[][] adj = graph.adjacency(Vertex.DIRECTION.BOTH, relTypes);
+    final UndirectedLowPointDfs dfs = new UndirectedLowPointDfs(adj);
 
-    final int[] disc   = new int[n];
-    final int[] low    = new int[n];
-    final int[] parent = new int[n];
-    Arrays.fill(disc, -1);
-    Arrays.fill(parent, -1);
+    // EVERY (node, componentId) MEMBERSHIP IN THE ORDER IT IS FOUND: COMPONENT IDS GROW, SO EACH NODE'S IDS ARE ASCENDING
+    final IntPairStack memberships = new IntPairStack();
 
-    // node → list of component IDs it belongs to
-    final List<List<Integer>> nodeComponents = new ArrayList<>(n);
+    // THE EDGES OF THE COMPONENTS STILL OPEN, AS TWO PARALLEL STACKS OF ENDPOINTS. EACH EDGE IS PUSHED ONCE: A TREE EDGE
+    // WHEN IT DISCOVERS ITS CHILD, A BACK EDGE FROM ITS DESCENDANT'S SIDE
+    final IntPairStack edgeStack = new IntPairStack();
+    // THE LAST COMPONENT EACH NODE WAS ADDED TO, SO A NODE MET ON SEVERAL EDGES OF ONE COMPONENT IS ADDED ONCE
+    final int[] lastComponent = new int[n];
+    Arrays.fill(lastComponent, -1);
+
+    dfs.walk(new UndirectedLowPointDfs.Visitor() {
+      private int nextComponentId = 0;
+
+      @Override
+      public void treeEdge(final int parent, final int child) {
+        edgeStack.push(parent, child);
+      }
+
+      @Override
+      public void backEdge(final int descendant, final int ancestor) {
+        edgeStack.push(descendant, ancestor);
+      }
+
+      @Override
+      public void childFinished(final int parent, final int child) {
+        // THE CHILD'S SUBTREE CANNOT CLIMB ABOVE THE PARENT: THE EDGES DOWN TO THE TREE EDGE (parent, child) ARE ONE COMPONENT
+        if (dfs.low[child] >= dfs.disc[parent])
+          popComponent(parent, child);
+      }
+
+      @Override
+      public void rootFinished(final int root) {
+        // EVERY CHILD OF A ROOT CLOSES ITS OWN COMPONENT ABOVE, SO THIS ONLY GUARDS AGAINST EDGES LEFT BEHIND
+        if (!edgeStack.isEmpty())
+          popComponent(-1, -1);
+      }
+
+      private void popComponent(final int parent, final int child) {
+        final int cid = nextComponentId++;
+        while (!edgeStack.isEmpty()) {
+          final int u = edgeStack.topU();
+          final int v = edgeStack.topV();
+          edgeStack.pop();
+          addToComponent(u, cid);
+          addToComponent(v, cid);
+          if (u == parent && v == child)
+            break;
+        }
+      }
+
+      private void addToComponent(final int node, final int cid) {
+        if (lastComponent[node] != cid) {
+          lastComponent[node] = cid;
+          memberships.push(node, cid);
+        }
+      }
+    });
+
+    // GROUPED BY NODE WITH A STABLE COUNTING SORT, WHICH KEEPS EACH NODE'S COMPONENT IDS IN THEIR ASCENDING FIND ORDER
+    final int total = memberships.size;
+    final int[] start = new int[n + 1];
+    for (int m = 0; m < total; m++)
+      start[memberships.us[m] + 1]++;
     for (int i = 0; i < n; i++)
-      nodeComponents.add(new ArrayList<>());
+      start[i + 1] += start[i];
+    final int[] fill = Arrays.copyOf(start, n);
+    final int[] componentIds = new int[total];
+    for (int m = 0; m < total; m++)
+      componentIds[fill[memberships.us[m]]++] = memberships.vs[m];
 
-    final int[] timer   = { 0 };
-    final int[] compId  = { 0 };
-
-    // Edge stack for collecting edges of current component
-    // Each entry: [u, v]
-    final Deque<int[]> edgeStack = new ArrayDeque<>();
-
-    for (int start = 0; start < n; start++) {
-      if (disc[start] != -1)
-        continue;
-      dfs(start, adj, disc, low, parent, timer, compId, edgeStack, nodeComponents);
-    }
-
-    final List<Result> results = new ArrayList<>();
+    final List<Result> results = new ArrayList<>(total);
     for (int i = 0; i < n; i++) {
-      for (final int cid : nodeComponents.get(i)) {
+      for (int m = start[i]; m < start[i + 1]; m++) {
         final ResultInternal r = new ResultInternal();
         r.setProperty("node", graph.getRID(i));
-        r.setProperty("componentId", cid);
+        r.setProperty("componentId", componentIds[m]);
         results.add(r);
       }
     }
     return results.stream();
   }
 
-  private void dfs(final int root, final int[][] adj,
-      final int[] disc, final int[] low, final int[] parent,
-      final int[] timer, final int[] compId,
-      final Deque<int[]> edgeStack, final List<List<Integer>> nodeComponents) {
+  /** A stack of (u, v) int pairs over two growable primitive arrays: no array or boxed pair per entry. */
+  private static final class IntPairStack {
+    private int[] us   = new int[64];
+    private int[] vs   = new int[64];
+    private int   size = 0;
 
-    // Iterative DFS using an explicit call stack: [node, adjacencyPointer]
-    final Deque<int[]> callStack = new ArrayDeque<>();
-    disc[root] = low[root] = timer[0]++;
-    callStack.push(new int[]{ root, 0 });
-
-    while (!callStack.isEmpty()) {
-      final int[] frame = callStack.peek();
-      final int u = frame[0];
-      final int ki = frame[1];
-
-      if (ki < adj[u].length) {
-        frame[1]++; // advance pointer
-        final int v = adj[u][ki];
-
-        if (disc[v] == -1) {
-          // Tree edge
-          parent[v] = u;
-          disc[v] = low[v] = timer[0]++;
-          edgeStack.push(new int[]{ u, v });
-          callStack.push(new int[]{ v, 0 });
-        } else if (v != parent[u] && disc[v] < disc[u]) {
-          // Back edge (avoid going up to direct parent)
-          low[u] = Math.min(low[u], disc[v]);
-          edgeStack.push(new int[]{ u, v });
-        }
-      } else {
-        // Finished processing u — backtrack
-        callStack.pop();
-        if (!callStack.isEmpty()) {
-          final int p = parent[u];
-          low[p] = Math.min(low[p], low[u]);
-
-          // If p is an articulation point w.r.t. edge (p, u), pop a biconnected component
-          if (low[u] >= disc[p]) {
-            final int cid = compId[0]++;
-            final Set<Integer> componentNodes = new HashSet<>();
-            while (true) {
-              final int[] edge = edgeStack.pop();
-              componentNodes.add(edge[0]);
-              componentNodes.add(edge[1]);
-              if (edge[0] == p && edge[1] == u)
-                break;
-            }
-            for (final int node : componentNodes)
-              nodeComponents.get(node).add(cid);
-          }
-        } else {
-          // Root — pop remaining edges as one component
-          if (!edgeStack.isEmpty()) {
-            final int cid = compId[0]++;
-            final Set<Integer> componentNodes = new HashSet<>();
-            while (!edgeStack.isEmpty()) {
-              final int[] edge = edgeStack.pop();
-              componentNodes.add(edge[0]);
-              componentNodes.add(edge[1]);
-            }
-            for (final int node : componentNodes)
-              nodeComponents.get(node).add(cid);
-          }
-        }
+    void push(final int u, final int v) {
+      if (size == us.length) {
+        us = Arrays.copyOf(us, size << 1);
+        vs = Arrays.copyOf(vs, size << 1);
       }
+      us[size] = u;
+      vs[size] = v;
+      size++;
+    }
+
+    int topU() {
+      return us[size - 1];
+    }
+
+    int topV() {
+      return vs[size - 1];
+    }
+
+    void pop() {
+      size--;
+    }
+
+    boolean isEmpty() {
+      return size == 0;
     }
   }
 }

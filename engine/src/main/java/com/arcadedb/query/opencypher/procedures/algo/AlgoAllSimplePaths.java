@@ -100,11 +100,11 @@ public class AlgoAllSimplePaths extends AbstractAlgoProcedure {
 
     final Vertex startNode = extractVertex(args[0], "startNode");
     final Vertex endNode = extractVertex(args[1], "endNode");
-    final String[] relTypes = extractRelTypes(args[2]);
+    final String[] relTypes = extractRelTypes(args[2], context);
     final int maxDepth = NumberUtils.saturateToInt((Number) args[3]);
     final Map<String, Object> options = args.length > 4 ? extractMap(args[4], "options") : null;
-    final Set<String> skipRelTypes = extractSkipTypes(options, "skipRelTypes");
-    final Set<String> skipVertexTypes = extractSkipTypes(options, "skipVertexTypes");
+    final Set<String> skipRelTypes = extractSkipTypes(options, "skipRelTypes", true, context);
+    final Set<String> skipVertexTypes = extractSkipTypes(options, "skipVertexTypes", false, context);
 
     if (maxDepth < 1)
       throw new IllegalArgumentException(getName() + "(): maxDepth must be at least 1");
@@ -143,7 +143,8 @@ public class AlgoAllSimplePaths extends AbstractAlgoProcedure {
     });
   }
 
-  private Set<String> extractSkipTypes(final Map<String, Object> options, final String optionKey) {
+  private Set<String> extractSkipTypes(final Map<String, Object> options, final String optionKey, final boolean edgeTypes,
+      final CommandContext context) {
     if (options == null || options.isEmpty())
       return Collections.emptySet();
 
@@ -151,7 +152,8 @@ public class AlgoAllSimplePaths extends AbstractAlgoProcedure {
     if (value == null)
       return Collections.emptySet();
 
-    final String[] types = extractRelTypes(value);
+    // Checked against the schema like relTypes (issue #9769): a misspelt type to skip would otherwise skip nothing
+    final String[] types = edgeTypes ? extractRelTypes(value, context) : extractNodeLabels(value, context);
     if (types == null || types.length == 0)
       return Collections.emptySet();
 

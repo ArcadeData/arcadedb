@@ -83,7 +83,7 @@ public class AlgoResourceAllocation extends AbstractAlgoProcedure {
     validateArgs(args);
 
     final Vertex sourceVertex  = extractVertex(args[0], "node");
-    final String[] relTypes    = args.length > 1 ? extractRelTypes(args[1]) : null;
+    final String[] relTypes    = args.length > 1 ? extractRelTypes(args[1], context) : null;
     final Vertex.DIRECTION dir = args.length > 2 ? parseDirection(extractString(args[2], "direction")) : Vertex.DIRECTION.BOTH;
     final double cutoff        = args.length > 3 ? ((Number) args[3]).doubleValue() : 0.0;
 
