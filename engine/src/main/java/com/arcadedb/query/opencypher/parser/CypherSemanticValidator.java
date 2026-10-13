@@ -80,6 +80,11 @@ public class CypherSemanticValidator {
       return;
     }
 
+    if (statement instanceof ConditionalStatement conditional) {
+      validateConditional(conditional);
+      return;
+    }
+
     final CypherSemanticValidator v = new CypherSemanticValidator();
     v.validateVariableTypes(statement);
     v.validateVariableBinding(statement);
@@ -108,6 +113,24 @@ public class CypherSemanticValidator {
       // A branch with no RETURN carries no columns to compare and is not a query this validates on its own.
       if (query.getReturnClause() != null)
         validate(query);
+  }
+
+  /**
+   * A conditional query (issue #9940) validates each branch as the query it is, and requires them all to return the same
+   * columns: which branch runs is decided per execution, so a caller could not know otherwise what it gets back.
+   */
+  private static void validateConditional(final ConditionalStatement conditional) {
+    List<String> firstColumns = null;
+    for (final CypherStatement branch : conditional.getAllBranches()) {
+      validate(branch);
+      final ReturnClause returnClause = branch.getReturnClause();
+      final List<String> columns = returnClause != null ? returnClause.getItems() : List.of();
+      if (firstColumns == null)
+        firstColumns = columns;
+      else if (!firstColumns.equals(columns))
+        throw new CommandParsingException(
+            "DifferentColumnsInConditionalQuery: every branch of a conditional query (WHEN ... THEN ... ELSE ...) must return the same column names");
+    }
   }
 
   /**

@@ -32,6 +32,7 @@ import com.arcadedb.query.opencypher.temporal.CypherLocalTime;
 import com.arcadedb.query.opencypher.temporal.CypherTemporalValue;
 import com.arcadedb.query.opencypher.temporal.CypherTime;
 import com.arcadedb.query.opencypher.temporal.TemporalUtil;
+import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.serializer.BinaryComparator;
@@ -157,6 +158,7 @@ public final class CypherFunctionHelper {
       case Vertex ignored -> "NODE";
       case Edge ignored -> "RELATIONSHIP";
       case List ignored -> "LIST<ANY>";
+      case TraversalPath ignored -> "PATH";
       // the temporal values by Neo4j's names, whether Cypher built them or the Java API stored them (#9709)
       case CypherDate ignored -> "DATE";
       case LocalDate ignored -> "DATE";

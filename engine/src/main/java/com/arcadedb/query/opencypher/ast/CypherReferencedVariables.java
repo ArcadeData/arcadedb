@@ -87,7 +87,7 @@ public final class CypherReferencedVariables {
    */
   private static final Set<Class<?>> NAMELESS_PREDICATES = Set.of(
       BooleanCoercionExpression.class, ComparisonExpression.class, InExpression.class, IsNullExpression.class,
-      IsTypedExpression.class, LabelCheckExpression.class, LogicalExpression.class, PatternPredicateExpression.class,
+      IsNormalizedExpression.class, IsTypedExpression.class, LabelCheckExpression.class, LogicalExpression.class, PatternPredicateExpression.class,
       RegexExpression.class, StringMatchExpression.class);
 
   /**

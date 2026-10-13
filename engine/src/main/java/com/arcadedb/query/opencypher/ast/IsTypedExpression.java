@@ -22,6 +22,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 
@@ -97,7 +98,8 @@ public class IsTypedExpression implements BooleanExpression {
       case "NODE" -> value instanceof Vertex;
       case "RELATIONSHIP" -> value instanceof Edge;
       case "ELEMENT" -> value instanceof Document;
-      case "PATH" -> value instanceof Collection || value.getClass().isArray();
+      // a path is a value of its own, not the list of its elements (issue #9940)
+      case "PATH" -> value instanceof TraversalPath;
       default -> false;
     };
   }
