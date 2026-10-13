@@ -28,6 +28,8 @@ import com.arcadedb.schema.LocalTimeSeriesType;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -161,6 +163,47 @@ class Issue9809LineProtocolTemporalValueTest extends TestHelper {
     database.command("sql", "INSERT INTO Tagged SET ts = " + (T0 + 1000) + ", ok = true, day = '2023-11-14', v = 1.5");
     assertThat(valueAt("Tagged", "ok", T0)).isEqualTo(true);
     assertThat(valueAt("Tagged", "day", T0)).isNotNull().isEqualTo(valueAt("Tagged", "day", T0 + 1000));
+  }
+
+  @Test
+  void aRefusedSampleLeavesNoPartialRowWhateverItsPlaceInTheBatch() throws Exception {
+    database.command("sql", "CREATE TIMESERIES TYPE Pair TIMESTAMP ts FIELDS (a LONG, b LONG) SHARDS 1");
+
+    // THE COLUMN BEFORE THE REFUSED ONE IS ALREADY WRITTEN WHEN THE REFUSAL COMES: FIRST, MIDDLE AND LAST PLACE
+    final Sample first = new Sample("Pair", Map.of(), Map.of("a", 11L, "b", "bad"), T0);
+    final Sample good = new Sample("Pair", Map.of(), Map.of("a", 1L, "b", 2L), T0 + 1);
+    final Sample middle = new Sample("Pair", Map.of(), Map.of("a", 22L, "b", "bad"), T0 + 2);
+    final Sample alsoGood = new Sample("Pair", Map.of(), Map.of("a", 3L, "b", 4L), T0 + 3);
+    final Sample last = new Sample("Pair", Map.of(), Map.of("a", 33L, "b", "bad"), T0 + 4);
+
+    final WriteReport report = write(first, good, middle, alsoGood, last);
+
+    assertThat(report.written()).isEqualTo(2);
+    assertThat(report.dropped()).isEqualTo(3);
+    assertThat(rows("Pair")).isEqualTo(2);
+    try (final ResultSet rs = database.query("sql", "SELECT a, b FROM Pair ORDER BY ts")) {
+      final Result one = rs.next();
+      assertThat(one.<Long>getProperty("a")).isEqualTo(1L);
+      assertThat(one.<Long>getProperty("b")).isEqualTo(2L);
+      final Result two = rs.next();
+      assertThat(two.<Long>getProperty("a")).isEqualTo(3L);
+      assertThat(two.<Long>getProperty("b")).isEqualTo(4L);
+      assertThat(rs.hasNext()).isFalse();
+    }
+  }
+
+  @Test
+  void anArbitraryPrecisionNumberIsCheckedExactlyAgainstTheBounds() throws Exception {
+    database.command("sql", "CREATE TIMESERIES TYPE Big TIMESTAMP ts FIELDS (l LONG) SHARDS 1");
+
+    final WriteReport report = write(field("Big", T0, "l", new BigDecimal("9223372036854775807")),
+        field("Big", T0 + 1, "l", new BigDecimal("9223372036854775808")), field("Big", T0 + 2, "l", BigInteger.TWO.pow(63)),
+        field("Big", T0 + 3, "l", BigInteger.TWO.pow(63).negate()), field("Big", T0 + 4, "l", new BigDecimal("1e30")));
+
+    assertThat(report.written()).isEqualTo(2);
+    assertThat(report.dropped()).isEqualTo(3);
+    assertThat(valueAt("Big", "l", T0)).isEqualTo(Long.MAX_VALUE);
+    assertThat(valueAt("Big", "l", T0 + 3)).isEqualTo(Long.MIN_VALUE);
   }
 
   @Test

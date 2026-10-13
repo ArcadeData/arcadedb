@@ -24,6 +24,8 @@ import com.arcadedb.engine.timeseries.codec.TimeSeriesCodec;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.DateUtils;
 
+import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.time.DateTimeException;
 
 /**
@@ -366,9 +368,25 @@ public final class ColumnDefinition {
       case TimeSeriesBatch.KIND_INTEGER -> within(number, Integer.MIN_VALUE, Integer.MAX_VALUE);
       case TimeSeriesBatch.KIND_SHORT -> within(number, Short.MIN_VALUE, Short.MAX_VALUE);
       case TimeSeriesBatch.KIND_BYTE -> within(number, Byte.MIN_VALUE, Byte.MAX_VALUE);
-      case TimeSeriesBatch.KIND_LONG -> isWholeJavaInteger(number) || (number.doubleValue() >= -0x1p63 && number.doubleValue() < 0x1p63);
+      case TimeSeriesBatch.KIND_LONG -> fitsLong(number);
       default -> true; // DOUBLE, FLOAT
     };
+  }
+
+  /**
+   * Whether the number is one a LONG holds. A Java integer always is; an arbitrary-precision one is asked exactly, because its
+   * {@code doubleValue()} rounds a value just past the bound back onto it; anything else is a floating point value, whose integral
+   * part must be in range (NaN and the infinities are not).
+   */
+  private static boolean fitsLong(final Number number) {
+    if (isWholeJavaInteger(number))
+      return true;
+    if (number instanceof BigInteger integer)
+      return integer.bitLength() < 64;
+    if (number instanceof BigDecimal decimal)
+      return decimal.toBigInteger().bitLength() < 64;
+    final double value = number.doubleValue();
+    return value >= -0x1p63 && value < 0x1p63;
   }
 
   private static boolean isWholeJavaInteger(final Number number) {
@@ -380,6 +398,7 @@ public final class ColumnDefinition {
       final long value = number.longValue();
       return value >= min && value <= max;
     }
+    // THE BOUNDS OF THE NARROW KINDS ARE FAR BELOW 2^53, SO A DOUBLE (EVEN OF A BIG NUMBER) COMPARES EXACTLY
     final double value = number.doubleValue();
     return value >= min && value <= max;
   }
