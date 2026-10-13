@@ -361,7 +361,8 @@ public final class ColumnDefinition {
 
   /**
    * Whether the number is one the column's type can hold, for the kinds up to BYTE (the numeric ones). A floating point value for an
-   * integral column is range-checked as a double, so NaN and the infinities are refused too.
+   * integral column is range-checked as a double, so NaN and the infinities are refused too. Only the RANGE is checked: a fractional
+   * value in range keeps its integral part (1.5 is stored as 1 in an INTEGER column), as the append has always done.
    */
   private boolean fits(final Number number) {
     return switch (kind) {
