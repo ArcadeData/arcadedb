@@ -35,6 +35,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
@@ -336,6 +337,37 @@ class Issue9809LineProtocolTemporalValueTest extends TestHelper {
     assertThat(report.written()).isZero();
     assertThat(report.dropped()).isEqualTo(columns);
     assertThat(report.unreadableValues()).hasSize(TimeSeriesGateway.MAX_REPORTED_UNREADABLE_VALUES);
+  }
+
+  @Test
+  void aDatetimeColumnRefusesANumberOutsideTheLongRangeInsteadOfTruncatingIt() throws Exception {
+    database.command("sql", "CREATE TIMESERIES TYPE Moments TIMESTAMP ts FIELDS (at DATETIME, day DATE) SHARDS 1");
+
+    final WriteReport report = write(field("Moments", T0, "at", Double.NaN), field("Moments", T0 + 1, "at", 1.0e30),
+        field("Moments", T0 + 2, "at", new BigDecimal("9223372036854775808")), field("Moments", T0 + 3, "day", Double.POSITIVE_INFINITY),
+        field("Moments", T0 + 4, "at", 1_700_000_002_000L));
+
+    assertThat(report.written()).isEqualTo(1);
+    assertThat(report.dropped()).isEqualTo(4);
+    assertThat(report.unreadableValues()).isNotEmpty().allMatch(entry -> entry.contains("out of range"));
+  }
+
+  @Test
+  void aBooleanColumnIsConvertedBeforeTheStorageLayerWhateverTheWriter() throws Exception {
+    database.command("sql", "CREATE TIMESERIES TYPE Switches TIMESTAMP ts FIELDS (on_ BOOLEAN) SHARDS 1");
+
+    // SQL INSERT: the document layer hands the storage layer a Boolean whatever the statement wrote
+    assertThatCode(() -> database.command("sql", "INSERT INTO Switches SET ts = " + T0 + ", on_ = true")).doesNotThrowAnyException();
+    assertThatCode(() -> database.command("sql", "INSERT INTO Switches SET ts = " + (T0 + 1) + ", on_ = 1")).doesNotThrowAnyException();
+    assertThatCode(() -> database.command("sql", "INSERT INTO Switches SET ts = " + (T0 + 2) + ", on_ = 'true'")).doesNotThrowAnyException();
+    assertThat(valueAt("Switches", "on_", T0)).isEqualTo(true);
+
+    // The engine API: no writer in the codebase hands it a number or text for a boolean, so the storage layer names the column
+    final TimeSeriesEngine engine = ((LocalTimeSeriesType) database.getSchema().getType("Switches")).getEngine();
+    assertThatThrownBy(() -> engine.appendSamples(new long[] { T0 + 10 }, new Object[] { 1L }))
+        .isInstanceOf(IOException.class).hasRootCauseInstanceOf(IllegalArgumentException.class)
+        .rootCause().hasMessageContaining("'on_'").hasMessageContaining("BOOLEAN");
+    assertThat(rows("Switches")).as("nothing was stored for the refused call").isEqualTo(3);
   }
 
   @Test

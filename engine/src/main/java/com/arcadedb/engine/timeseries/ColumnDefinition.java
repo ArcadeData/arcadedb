@@ -330,7 +330,7 @@ public final class ColumnDefinition {
   public Object storableValue(final Database database, final Object value) {
     if (value == null)
       return null;
-    // THE COMMON CASE, A NUMBER INTO A NUMERIC COLUMN (EVERY KIND UP TO BYTE), ANSWERS BEFORE ANY DISPATCH
+    // The common case, a number into a numeric column (every kind up to BYTE, the datetimes among them), answers before any dispatch
     if (kind <= TimeSeriesBatch.KIND_BYTE && value instanceof Number number) {
       if (fits(number))
         return value;
@@ -415,13 +415,13 @@ public final class ColumnDefinition {
       final long value = number.longValue();
       return value >= min && value <= max;
     }
-    // THE BOUNDS OF THE NARROW KINDS ARE FAR BELOW 2^53, SO A DOUBLE (EVEN OF A BIG NUMBER) COMPARES EXACTLY
+    // The bounds of the narrow kinds are far below 2^53, so a double (even of a big number) compares exactly
     final double value = number.doubleValue();
     return value >= min && value <= max;
   }
 
   private String withinStringLimit(final String text) {
-    // AT MOST 3 BYTES PER CHAR, SO A SHORT TEXT NEEDS NO COUNT
+    // At most 3 bytes per char, so a short text needs no count
     if (text.length() * 3 > TimeSeriesBucket.MAX_STRING_BYTES) {
       final int bytes = utf8Length(text);
       if (bytes > TimeSeriesBucket.MAX_STRING_BYTES)
@@ -480,7 +480,7 @@ public final class ColumnDefinition {
    * replaces never did.
    */
   IllegalArgumentException unstorable(final Object value, final Throwable cause) {
-    // THE SIMPLE NAME: THIS TEXT GOES BACK TO THE CLIENT, WHICH HAS NO USE FOR A PACKAGE
+    // The simple name: this text goes back to the client, which has no use for a package
     return new IllegalArgumentException("Cannot convert a value of type " + value.getClass().getSimpleName() + " to the " + dataType
         + " column '" + name + "'", cause);
   }
