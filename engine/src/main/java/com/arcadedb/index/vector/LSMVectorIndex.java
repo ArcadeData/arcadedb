@@ -439,6 +439,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
    */
   private final AtomicInteger deltaResidentPayloads = new AtomicInteger();
 
+  /**
+   * The ids a replicated page mentions, collected by {@link #applyReplicatedPageUpdate(MutablePage, boolean)} to judge
+   * each one by its state before the page (issue #9857). Only touched under {@link #lock}'s write lock, so one instance
+   * serves every page instead of an allocation per page on the replication path.
+   */
+  private final IntHashSet replicatedPageSeenIds = new IntHashSet();
+
   /** Cached answer of {@link #computeDeltaPayloadCapacity()}, and when it was last computed. */
   private volatile int  deltaPayloadCapacity      = -1;
   private volatile long deltaPayloadCapacityAtMs  = 0L;
@@ -11518,7 +11525,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // Each id is judged by the state it had BEFORE this page, read the first time the page mentions it. Not entry by
         // entry: a page holding both an id's live entry and its tombstone re-publishes the live one first when it is
         // applied again (LSM merge-on-read), and the tombstone after it would then read as a fresh delete.
-        final IntHashSet seen = fromPeer && !isCompacted ? new IntHashSet(numberOfEntries) : null;
+        final IntHashSet seen;
+        if (fromPeer && !isCompacted) {
+          // One set per index, reused under the write lock that serializes every apply, rather than one per page
+          seen = replicatedPageSeenIds;
+          seen.clear();
+        } else
+          seen = null;
         IntHashSet liveBefore = null;
         IntHashSet unknownBefore = null;
         IntHashSet queued = null;

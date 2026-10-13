@@ -112,12 +112,14 @@ public class TransactionManager {
    */
   private volatile boolean                   recencySignalReliable;
   /**
-   * True while the open replays this database's own WAL, around each {@link #applyChanges} call of that loop, false for a
-   * transaction written on another node. Only the latter reaches a live search state: a vector index has no graph resident
-   * during recovery, and the first search after the open reconciles what it loads against the pages (#9857). A field rather
-   * than a parameter so the replay keeps going through the one overridable {@link #applyChanges}.
+   * The thread replaying this database's own WAL while it opens, set around each {@link #applyChanges} call of that loop
+   * and {@code null} otherwise. A transaction applied on any other thread was written on another node. Only the latter
+   * reaches a live search state: a vector index has no graph resident during recovery, and the first search after the open
+   * reconciles what it loads against the pages (#9857). A field rather than a parameter so the replay keeps going through
+   * the one overridable {@link #applyChanges}, and a thread rather than a flag so a replicated apply running on another
+   * thread at the same time can never be mistaken for the replay.
    */
-  private volatile boolean                   replayingOwnWAL;
+  private volatile Thread                    ownWALReplayThread;
   /**
    * Held SHARED for the whole of {@link #applyChanges}, and EXCLUSIVELY by the snapshot t0 barrier
    * ({@code PageManager.openSnapshot}, issue #6075). Replicated and crash-recovery replay is the one writer that
@@ -624,11 +626,11 @@ public class TransactionManager {
             break;
 
           try {
-            replayingOwnWAL = true;
+            ownWALReplayThread = Thread.currentThread();
             try {
               applyChanges(walPositions[lowerTx], Collections.emptyMap(), false);
             } finally {
-              replayingOwnWAL = false;
+              ownWALReplayThread = null;
             }
             // Only advance lastTxId after a successful apply, otherwise a failed transaction
             // would wrongly increment the next-tx counter past data that was never written.
@@ -1070,7 +1072,7 @@ public class TransactionManager {
 
   private boolean applyChangesInternal(final WALFile.WALTransaction tx, final Map<Integer, Integer> bucketRecordDelta,
       final boolean ignoreErrors) {
-    final boolean recovery = replayingOwnWAL;
+    final boolean recovery = ownWALReplayThread == Thread.currentThread();
     boolean changed = false;
     // Whether at least one page was written at a version STRICTLY GREATER than the one on disk, i.e. this
     // transaction carried content the database did not have yet. `changed` cannot answer that question: since
