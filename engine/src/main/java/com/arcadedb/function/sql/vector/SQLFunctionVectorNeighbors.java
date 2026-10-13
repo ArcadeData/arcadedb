@@ -35,6 +35,7 @@ import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.index.vector.VectorUtils;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.utility.IntHashSet;
 import com.arcadedb.utility.Pair;
@@ -232,6 +233,10 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
     // Get the query vector
     final float[] queryVector = extractQueryVector(key, vectorIndexes.getFirst(), context);
 
+    // One bound for every pass and every index searched: the command's deadline and the termination of its statement,
+    // honoured inside each search and while it waits for a graph build (issue #9896)
+    final WorkGuard guard = WorkGuard.forCommand(context, NAME + "()");
+
     // Memory-budget guard for the grouped path (issue #4071): the per-group accounting is O(limit * groupSize)
     // per bucket, but we still reject pathological combinations (e.g. limit=10000, groupSize=10000 = 100M
     // candidates) so the search loop does not allocate arrays in the GiB range. Same shape (and exception text)
@@ -252,11 +257,11 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
     if (groupBy != null)
       return searchGroupedWithStaleTopUp(limit, groupSize, MAX_FETCH_CANDIDATES,
           (fetchGroups, fetchGroupSize, staleSkipped) -> searchAndEmit(vectorIndexes, queryVector, limit, fetchGroups, efSearch,
-              allowedRIDs, groupBy, fetchGroupSize, groupSize, maxDistance, context, staleSkipped, null));
+              allowedRIDs, groupBy, fetchGroupSize, groupSize, maxDistance, context, guard, staleSkipped, null));
 
     return VectorUtils.searchWithStaleTopUp(limit,
         (fetchK, staleSkipped, saturated) -> searchAndEmit(vectorIndexes, queryVector, limit, fetchK, efSearch, allowedRIDs,
-            null, groupSize, groupSize, maxDistance, context, staleSkipped, saturated));
+            null, groupSize, groupSize, maxDistance, context, guard, staleSkipped, saturated));
   }
 
   /**
@@ -267,8 +272,8 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
    */
   private ArrayList<Object> searchAndEmit(final List<LSMVectorIndex> vectorIndexes, final float[] queryVector, final int limit,
       final int fetchK, final int efSearch, final Set<RID> allowedRIDs, final String groupBy, final int fetchGroupSize,
-      final int groupSize, final float maxDistance, final CommandContext context, final int[] staleSkipped,
-      final boolean[] saturated) {
+      final int groupSize, final float maxDistance, final CommandContext context, final WorkGuard guard,
+      final int[] staleSkipped, final boolean[] saturated) {
 
     final BasicDatabase db = context.getDatabase();
 
@@ -294,10 +299,10 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
     for (final LSMVectorIndex lsmIndex : vectorIndexes) {
       final List<Pair<RID, Float>> neighbors;
       if (groupBy == null)
-        neighbors = lsmIndex.findNeighborsFromVector(queryVector, fetchK, efSearch, allowedRIDs);
+        neighbors = lsmIndex.findNeighborsFromVector(queryVector, fetchK, efSearch, allowedRIDs, guard);
       else
         neighbors = lsmIndex.findNeighborsFromVectorGrouped(queryVector, fetchK, fetchGroupSize, efSearch, allowedRIDs,
-            groupKeyResolver);
+            groupKeyResolver, guard);
       allNeighbors.addAll(neighbors);
       if (saturated != null && neighbors.size() >= fetchK)
         saturated[0] = true;
@@ -323,7 +328,7 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
       for (final GroupedTopUpPlanner.TopUp topUp : planner.plan())
         allNeighbors.addAll(vectorIndexes.get(topUp.source())
             .findNeighborsFromVectorForGroups(queryVector, topUp.groupKeys(), fetchGroupSize, efSearch, allowedRIDs,
-                groupKeyResolver, -topUp.floor()));
+                groupKeyResolver, -topUp.floor(), guard));
 
     // Sort by distance (ascending - closer is better for similarity search)
     allNeighbors.sort(Comparator.comparing(Pair::getSecond));

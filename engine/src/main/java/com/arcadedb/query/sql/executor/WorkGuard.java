@@ -133,6 +133,32 @@ public final class WorkGuard {
   }
 
   /**
+   * Returns a guard bound by an absolute deadline that no {@link CommandContext} carries - the Java {@code Select} API
+   * keeps its own - and by the termination of the statement running on this thread, if one was registered. Leaves the
+   * thread interrupt flag alone, like {@link #forCommandDeadline(CommandContext)}.
+   *
+   * @param what     what to name in the abort message
+   * @param deadline epoch millis, or {@link Long#MAX_VALUE} for none
+   */
+  public static WorkGuard forDeadline(final String what, final long deadline) {
+    final RunningQuery runningQuery = RunningQuery.current();
+    if (deadline == Long.MAX_VALUE && runningQuery == null)
+      return UNBOUNDED;
+    return new WorkGuard(what, null, deadline, false, false, runningQuery);
+  }
+
+  /**
+   * Milliseconds left before the deadline, {@link Long#MAX_VALUE} when there is none and 0 once it has passed. For a
+   * caller that has to WAIT rather than loop: it sizes each timed wait so the deadline is never slept through, and calls
+   * {@link #check()} between two waits (issue #9896).
+   */
+  public long millisToDeadline() {
+    if (deadline == Long.MAX_VALUE)
+      return Long.MAX_VALUE;
+    return Math.max(0L, deadline - System.currentTimeMillis());
+  }
+
+  /**
    * Aborts the call if the statement was terminated, the query thread was interrupted or the command deadline has
    * passed. Call from a loop whose single iteration already costs enough to swallow a flag test.
    */
@@ -144,7 +170,7 @@ public final class WorkGuard {
     if (deadline < Long.MAX_VALUE && System.currentTimeMillis() > deadline) {
       // The bound is named by the context rather than assumed to be the setting: a SQL TIMEOUT clause pins its
       // own deadline here too, and reporting the configuration's value for it would be a lie.
-      final String message = what + " exceeded the " + context.getCommandDeadlineDescription();
+      final String message = what + " exceeded the " + (context != null ? context.getCommandDeadlineDescription() : "timeout");
       // A RETURN-strategy clause asked for the rows produced so far. The guard still has to stop by throwing -
       // it sits inside the loop - but it throws something the owning step recognizes as a request to end the
       // result set rather than to fail (issue #6304).
