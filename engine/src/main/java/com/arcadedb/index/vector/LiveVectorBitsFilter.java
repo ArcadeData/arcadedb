@@ -19,6 +19,7 @@
 package com.arcadedb.index.vector;
 
 import com.arcadedb.database.RID;
+import com.arcadedb.query.sql.executor.WorkGuard;
 import io.github.jbellis.jvector.util.Bits;
 
 import java.util.Set;
@@ -80,6 +81,13 @@ public class LiveVectorBitsFilter implements Bits {
    * pay for a {@link RID} it would not otherwise have materialized.
    */
   private final Set<RID>            supersededRIDs;
+  /**
+   * The bound of the statement running the search (issue #9896). JVector calls this filter on every candidate the walk
+   * considers, so it is the one place inside the walk that ArcadeDB code runs often enough to stop it: the walk can read a
+   * record per candidate, and its length is the graph's to decide. Null for a walk nothing can stop.
+   */
+  private final WorkGuard           guard;
+  private       int                 calls;
 
   /**
    * @param allowedRIDs               optional RID allow-list; {@code null} or empty means "every live vector"
@@ -100,6 +108,12 @@ public class LiveVectorBitsFilter implements Bits {
    */
   LiveVectorBitsFilter(final Set<RID> allowedRIDs, final int[] ordinalToVectorIdSnapshot,
       final VectorLocationIndex vectorIndex, final Set<RID> supersededRIDs) {
+    this(allowedRIDs, ordinalToVectorIdSnapshot, vectorIndex, supersededRIDs, null);
+  }
+
+  LiveVectorBitsFilter(final Set<RID> allowedRIDs, final int[] ordinalToVectorIdSnapshot,
+      final VectorLocationIndex vectorIndex, final Set<RID> supersededRIDs, final WorkGuard guard) {
+    this.guard = guard;
     this.allowedRIDs = allowedRIDs != null && !allowedRIDs.isEmpty() ? allowedRIDs : null;
     this.ordinalToVectorIdSnapshot = ordinalToVectorIdSnapshot;
     this.vectorIndex = vectorIndex;
@@ -112,6 +126,8 @@ public class LiveVectorBitsFilter implements Bits {
    */
   @Override
   public boolean get(final int ordinal) {
+    if (guard != null)
+      guard.checkPeriodically(++calls);
     if (ordinal < 0 || ordinal >= ordinalToVectorIdSnapshot.length)
       return false;
 

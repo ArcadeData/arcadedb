@@ -20,6 +20,7 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
@@ -63,6 +64,7 @@ import com.arcadedb.utility.MultiIterator;
 import com.arcadedb.utility.Pair;
 
 import java.util.*;
+import java.util.function.Consumer;
 import java.util.logging.Level;
 
 /**
@@ -72,6 +74,8 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
   private static final byte FLOATING_KEYS_UNKNOWN        = 0;
   private static final byte FLOATING_KEYS_VERIFIABLE     = 1;
   private static final byte FLOATING_KEYS_NOT_APPLICABLE = 2;
+  /** {@link #checkedKey} before any key was checked: no key, not even null. */
+  private static final Object NOT_CHECKED                  = new Object();
 
   protected final String                                         indexName;
   /** Package-private so a test can observe that a restart released them instead of only dropping the references. */
@@ -107,6 +111,10 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
   /** The row {@link #keysSatisfyCondition} fills for each entry, one per run, and the property names it is filled with. */
   private         ResultInternal                                 keyRow;
   private         List<String>                                   keyPropertyNames;
+  /** The last key {@link #isKeyOf} checked a record against, and that key in the index's own form (null: no key of the index). */
+  private         Object                                         checkedKey = NOT_CHECKED;
+  private         Object[]                                       checkedLookupKey;
+  private         KeyMatcher                                     keyMatcher;
   /** Package-private for the same reason as {@link #nextCursors}. */
   IndexCursor                                                    cursor;
   private         MultiIterator<Map.Entry<Object, Identifiable>> customIterator;
@@ -218,20 +226,23 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
   }
 
   /**
-   * Looks the key of an entry this step returned up again, for {@link GetValueFromIndexEntryStep} to reconcile an entry
-   * whose record it could not load (#9369). Null when the key cannot be looked up as it is, in which case the caller keeps
-   * the entry dropped.
-   * <p>
-   * A key can hold any number of entries, so the walk checks {@code guard} as it goes, and a statement that was terminated
-   * or ran past its deadline is not reported as a failed re-read: its exception ends the statement (issue #9893).
+   * Looks the key of an entry this step returned up again, for {@link GetValueFromIndexEntryStep} to reconcile the entries
+   * whose record it could not serve (#9369, #9902). Null when the key cannot be looked up as it is, in which case the caller
+   * keeps those entries dropped. A cancelled statement or one past its deadline stops here, with the guard's exception (#9893):
+   * that is not a key that could not be read.
    */
   List<RID> lookupKeyAgain(final Object key, final WorkGuard guard) {
     if (index == null)
       return null;
     final Object[] keys = key instanceof Object[] array ? array : new Object[] { key };
+    guard.check();
     try {
       final List<RID> rids = new ArrayList<>();
-      final IndexCursor again = index.get(keys);
+      // A prefix of a composite key is a range of keys, which a get() of the prefix does not read
+      final List<String> properties = index.getPropertyNames();
+      final IndexCursor again = properties != null && keys.length < properties.size() ?
+          index.range(true, keys, true, keys, true) :
+          index.get(keys);
       try {
         while (again.hasNext()) {
           guard.checkPeriodically(rids.size());
@@ -242,12 +253,108 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       }
       return rids;
     } catch (final TimeoutException | QueryTerminatedException e) {
-      // The statement is over, not the re-read: a fallback to the entry would carry on the work it was told to stop
       throw e;
     } catch (final RuntimeException e) {
-      // The caller keeps the entry it has; say why a re-read was not possible rather than losing the cause
+      // The caller keeps the entries it has; say why a re-read was not possible rather than losing the cause
       LogManager.instance().log(this, Level.WARNING, "Cannot look the key %s of index '%s' up again", e, key, indexName);
       return null;
+    }
+  }
+
+  /**
+   * Whether the record, as it reads now, is indexed under the key of an entry this step returned (#9902): what makes a row
+   * loaded after a commit overlapped the lookup safe to serve, at the cost of the record alone. The commit may have deleted the
+   * record the entry named, moved it to another key, or given its slot to another record; a record that still holds the key is
+   * a row of the key whatever happened. The keys are compared as the index compares them: both sides are taken to the index's
+   * own key form, narrowed to the declared types and folded where the index folds, and a lookup of a prefix of a composite key
+   * matches on that prefix. False when the record holds another key or the comparison cannot be made, which only sends the entry
+   * to be settled by reading the key again.
+   */
+  boolean isKeyOf(final Document record, final Object key) {
+    if (!(index instanceof IndexInternal internal))
+      return false;
+    // The entries of one key carry the same key instance, so the identity test settles nearly every row: a key is converted once
+    if (key != checkedKey && !sameKey(key, checkedKey)) {
+      try {
+        checkedLookupKey = internal.convertLookupKeys(key instanceof Object[] array ? array : new Object[] { key });
+      } catch (final IllegalArgumentException e) {
+        // no key of this index: its entries are settled by reading the key again, which this tells apart from a lost record
+        LogManager.instance().log(this, Level.FINE, "Key %s cannot be read as a key of index '%s'", e, key, indexName);
+        checkedLookupKey = null;
+      }
+      checkedKey = key;
+    }
+    if (checkedLookupKey == null)
+      return false;
+
+    if (keyMatcher == null)
+      keyMatcher = new KeyMatcher();
+    keyMatcher.start(internal, checkedLookupKey);
+    ((DatabaseInternal) context.getDatabase()).getIndexer().forEachIndexKey(index, record, keyMatcher);
+    return keyMatcher.found;
+  }
+
+  /**
+   * The key of the lookup an entry of a point lookup was found by (#9902). A lookup of a prefix of a composite key reads a range
+   * whose entries each carry their whole key ({@code a = 'p'} on {@code (a, b)} returns {@code [p, 0]}, {@code [p, 1]}, ...), so
+   * the entry key is cut to the slots the lookup fills: what the entries of one lookup share, and what reads them all again.
+   * The same instance when nothing is cut.
+   */
+  Object lookupKeyOf(final Object entryKey) {
+    if (condition instanceof AndBlock and && entryKey instanceof Object[] keys && keys.length > and.getSubBlocks().size())
+      return Arrays.copyOf(keys, and.getSubBlocks().size());
+    return entryKey;
+  }
+
+  /** Whether an entry belongs to the lookup of a key {@link #lookupKeyOf} returned, without cutting the entry key. */
+  static boolean isEntryOf(final Object entryKey, final Object lookupKey) {
+    if (lookupKey instanceof Object[] lookup && entryKey instanceof Object[] entry && entry.length > lookup.length) {
+      for (int i = 0; i < lookup.length; i++)
+        if (!Objects.equals(entry[i], lookup[i]))
+          return false;
+      return true;
+    }
+    return sameKey(entryKey, lookupKey);
+  }
+
+  /** Whether two entry keys are the same key: a composite one is an array, compared element by element. */
+  static boolean sameKey(final Object a, final Object b) {
+    if (a instanceof Object[] left && b instanceof Object[] right)
+      return Arrays.equals(left, right);
+    return Objects.equals(a, b);
+  }
+
+  /**
+   * Tells whether one of the keys a record is indexed under matches a lookup key, see {@link #isKeyOf}. One per step, reused for
+   * every row checked: the check runs for every row a large key serves after a commit overlapped it.
+   */
+  private static final class KeyMatcher implements Consumer<Object[]> {
+    private IndexInternal index;
+    private Object[]      lookup;
+    private boolean       found;
+
+    private void start(final IndexInternal index, final Object[] lookup) {
+      this.index = index;
+      this.lookup = lookup;
+      this.found = false;
+    }
+
+    @Override
+    public void accept(final Object[] recordKeys) {
+      if (found || recordKeys.length < lookup.length)
+        return;
+      final Object[] converted;
+      try {
+        converted = index.convertLookupKeys(recordKeys);
+      } catch (final IllegalArgumentException e) {
+        // a value of the record the key type cannot read is not indexed under any key, so it matches none
+        LogManager.instance().log(this, Level.FINE, "Indexed values %s cannot be read as a key of the index", e, Arrays.toString(recordKeys));
+        return;
+      }
+      for (int i = 0; i < lookup.length; i++)
+        if (!BinaryComparator.equals(lookup[i], converted[i]))
+          return;
+      found = true;
     }
   }
 
@@ -1497,6 +1604,8 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     floatingKeys = FLOATING_KEYS_UNKNOWN;
     keyRow = null;
     keyPropertyNames = null;
+    checkedKey = NOT_CHECKED;
+    checkedLookupKey = null;
     pointLookup = null;
     customIterator = null;
     nextEntry = null;

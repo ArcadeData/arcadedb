@@ -20,6 +20,7 @@ package com.arcadedb.index.vector;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.index.IndexException;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
@@ -33,6 +34,7 @@ import java.util.Random;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression test for issue #6762: a failed first-use materialisation must not leave the vector-id allocator at 0.
@@ -89,12 +91,18 @@ class Issue6762VectorIdAllocatorAfterFailedLoadTest {
             .as("but the allocator must sit past every id the map already holds, not back at 0")
             .isGreaterThanOrEqualTo(VECTORS);
 
-        // The observable consequence: with the allocator at 0 this insert would overwrite the entry holding id 0.
-        db.transaction(() -> db.newDocument("Doc").set("id", VECTORS).set("embedding", randomVector(7)).save());
+        // The observable consequence: with the allocator at 0 this insert would overwrite the entry holding id 0. A load
+        // that failed cannot tell which ids it missed either, so the insert is now refused outright until the index is
+        // rebuilt, rather than trusting an allocator that only knows what was read.
+        assertThatThrownBy(
+            () -> db.transaction(() -> db.newDocument("Doc").set("id", VECTORS).set("embedding", randomVector(7)).save()))
+            .as("refused when the record is saved, before the commit applies anything (issue #9892)")
+            .isInstanceOf(IndexException.class)
+            .hasMessageContaining("refuses new vectors");
 
         assertThat(index.countEntries())
-            .as("an insert must ADD a vector, not supersede a live one")
-            .isEqualTo(VECTORS + 1);
+            .as("no live vector was superseded")
+            .isEqualTo(VECTORS);
       } finally {
         db.close();
       }

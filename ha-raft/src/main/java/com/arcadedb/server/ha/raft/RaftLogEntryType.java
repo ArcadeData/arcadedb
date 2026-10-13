@@ -42,7 +42,15 @@ public enum RaftLogEntryType {
    * The whole {@code server-api-tokens.json} document, replicated so a token minted or revoked on one node is
    * minted or revoked on every node (issue #7373). Carries token hashes, never token material.
    */
-  SECURITY_API_TOKENS_ENTRY((byte) 8);
+  SECURITY_API_TOKENS_ENTRY((byte) 8),
+  /**
+   * The settings changed in the {@code configuration.json} of one database, replicated so a setting changed by
+   * {@code ALTER DATABASE} (or the "set database setting" command) is in force on every node and survives a failover
+   * (issue #9763). Before this the change was written on the node that ran the command only: a {@code SCHEMA_ENTRY}
+   * carries {@code schema.json} and nothing else. Gated by {@link PeerCapabilities#DATABASE_CONFIGURATION_ENTRY}: a
+   * peer that predates this type would halt on it.
+   */
+  DATABASE_CONFIGURATION_ENTRY((byte) 9);
 
   private final byte id;
 

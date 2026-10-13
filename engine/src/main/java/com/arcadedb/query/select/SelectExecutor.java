@@ -35,6 +35,7 @@ import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.index.vector.VectorUtils;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.SelectExecutionPlanner;
+import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.utility.IntHashSet;
@@ -313,8 +314,15 @@ public class SelectExecutor {
     // #9858: A RECORD DELETED BY A COMMIT THAT OVERLAPS THE SEARCH CAN STILL BE IN AN INDEX'S ANSWER. IT IS SKIPPED, AND THE
     // SEARCH WIDENED UNTIL IT HAS THE k NEAREST *LIVE* RECORDS. THE POST-FILTER WHERE APPLIES TO THOSE k AFTERWARDS, SO A STALE
     // CANDIDATE NEVER CHANGES WHICH RECORDS THE FILTER IS ASKED ABOUT: EXACTLY THE ONES IT WOULD SEE IF NOTHING WERE STALE
+    // #9896: THE SAME DEADLINE HANDED INTO EACH INDEX SEARCH, SO ONE LONG SEARCH - OR ITS WAIT FOR A GRAPH BUILD, WHICH CAN
+    // QUEUE FOR TEN MINUTES - STOPS AT THE DEADLINE INSTEAD OF RUNNING TO ITS END BEFORE THE NEXT CHECKPOINT SEES IT. ARMED
+    // ON THE WALL CLOCK RATHER THAN THROUGH THE clock SEAM: THE INDEX MEASURES REAL TIME, AND HOW MANY TIMES THE SEAM IS READ
+    // IS WHAT THE #6873 TESTS PIN
+    final long now = System.currentTimeMillis();
+    final WorkGuard guard = WorkGuard.forDeadline("the vector search",
+        select.timeoutInMs <= 0 || select.timeoutInMs > Long.MAX_VALUE - now ? Long.MAX_VALUE : now + select.timeoutInMs);
     final List<SelectVectorResult<T>> nearest = VectorUtils.searchWithStaleTopUp(select.vectorK,
-        (fetchK, staleSkipped, saturated) -> loadNearestLive(vectorIndexes, fetchK, staleSkipped, saturated));
+        (fetchK, staleSkipped, saturated) -> loadNearestLive(vectorIndexes, fetchK, guard, staleSkipped, saturated));
 
     if (select.rootTreeElement == null)
       return nearest;
@@ -334,7 +342,7 @@ public class SelectExecutor {
    */
   @SuppressWarnings("unchecked")
   private <T extends Document> List<SelectVectorResult<T>> loadNearestLive(final List<LSMVectorIndex> vectorIndexes,
-      final int fetchK, final int[] staleSkipped, final boolean[] saturated) {
+      final int fetchK, final WorkGuard guard, final int[] staleSkipped, final boolean[] saturated) {
     final List<Pair<RID, Float>> allNeighbors = new ArrayList<>();
     for (final LSMVectorIndex lsmIndex : vectorIndexes) {
       // #6873: THE COARSEST OF THE THREE CHECKPOINTS - ONE PER BUCKET INDEX, SINCE THE SEARCH INSIDE ONE INDEX IS NOT
@@ -349,10 +357,19 @@ public class SelectExecutor {
       }
 
       final List<Pair<RID, Float>> neighbors;
-      if (select.vectorApproximate)
-        neighbors = lsmIndex.findNeighborsFromVectorApproximate(select.vectorQuery, fetchK);
-      else
-        neighbors = lsmIndex.findNeighborsFromVector(select.vectorQuery, fetchK);
+      try {
+        if (select.vectorApproximate)
+          neighbors = lsmIndex.findNeighborsFromVectorApproximate(select.vectorQuery, fetchK, null, guard);
+        else
+          neighbors = lsmIndex.findNeighborsFromVector(select.vectorQuery, fetchK, -1, null, guard);
+      } catch (final TimeoutException e) {
+        // #9896: THE DEADLINE WENT INSIDE THE SEARCH. THE SAME ANSWER THE CHECKPOINT ABOVE GIVES: THROWN WHEN ASKED FOR, AN
+        // EMPTY LIST OTHERWISE
+        if (select.exceptionOnTimeout)
+          throw e;
+        saturated[0] = false;
+        return new ArrayList<>();
+      }
       allNeighbors.addAll(neighbors);
       if (neighbors.size() >= fetchK)
         saturated[0] = true;

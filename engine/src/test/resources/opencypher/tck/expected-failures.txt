@@ -9,11 +9,6 @@
 # Case-insensitive type names - ArcadeDB follows SQL conventions
 [2] Single-labels expression on relationships
 
-# MISSING FEATURES (Complex features not yet implemented)
-
-# VLP with pre-built relationship list (USING clause)
-[8] Matching relationships into a list and matching variable length using the list
-
 # TEMPORAL RANGE LIMITATIONS (Java LocalDateTime nanosecond precision limits: ~1677-2262)
 
 # LocalDateTime sorting with year 1 and year 9999

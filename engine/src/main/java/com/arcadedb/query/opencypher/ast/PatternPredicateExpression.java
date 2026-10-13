@@ -28,6 +28,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.query.opencypher.InlineProperties;
 import com.arcadedb.query.opencypher.Labels;
+import com.arcadedb.query.opencypher.traversal.GraphTraverser;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.opencypher.traversal.VariableLengthPathTraverser;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -35,6 +36,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.schema.Schema;
 
+import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -199,13 +201,17 @@ public class PatternPredicateExpression implements BooleanExpression {
     final List<String> typesList = relPattern.getTypes();
     final String[] types = typesList != null && !typesList.isEmpty() ? typesList.toArray(new String[0]) : null;
 
+    // The pattern's own path mode (TRAIL unless written otherwise), as MATCH and EXISTS { } use: the legacy
+    // constructor meant ACYCLIC, which refused every cycle back to the start, so WHERE (a)-[*]->(a) was false where
+    // the MATCH spelling of the same pattern found the cycle. Depth-first, like MATCH, keeps memory bounded by the
+    // path length rather than by a whole frontier (#6097).
     // Inline property map, e.g. the {tag:'ok'} in (a)-[:E*1..2 {tag:'ok'}]->(b): every traversed
     // relationship must carry it, as in the MATCH and EXISTS { } spellings. Handing the traverser no map
     // at all dropped the constraint and made the predicate true for any path of the right shape.
     final VariableLengthPathTraverser traverser = new VariableLengthPathTraverser(
         relPattern.getDirection(), types, InlineProperties.resolveAll(relPattern.getProperties(), result, context),
         relPattern.getEffectiveMinHops(), relPattern.getEffectiveMaxHops(),
-        true, true);
+        true, false, pathPattern.getEffectivePathMode());
     // Inline WHERE, e.g. EXISTS { (a)-[r:E*1..2 WHERE r.tag = 'ok']->(x) }: every traversed
     // relationship must satisfy it, as in the MATCH spelling.
     traverser.withEdgePredicate(relPattern.buildInlineWherePredicate(result, context));
@@ -215,12 +221,18 @@ public class PatternPredicateExpression implements BooleanExpression {
     final NodePattern endNodePattern = pathPattern.getNode(1);
     final Vertex endVertex = getVertexFromPattern(endNodePattern, result);
 
-    final Iterator<TraversalPath> paths = traverser.traversePaths(startVertex);
+    // A relationship list an earlier clause bound to this variable is the only path the predicate may take, as in
+    // the MATCH spelling (issue #9828)
+    final String relVariable = relPattern.getVariable();
+    final Iterator<TraversalPath> paths;
+    if (GraphTraverser.isBoundRelationshipList(result, relVariable)) {
+      final TraversalPath bound = traverser.matchBoundPath(startVertex, result.getProperty(relVariable), false, relVariable);
+      paths = bound != null ? List.of(bound).iterator() : Collections.emptyIterator();
+    } else
+      paths = traverser.traversePaths(startVertex);
     while (paths.hasNext()) {
       final TraversalPath path = paths.next();
-      // Skip zero-length paths (the start node itself) unless explicitly requested
-      if (path.length() == 0)
-        continue;
+      // A zero-length path is emitted only when the pattern asks for it (*0..), and then it is a match like any other
       final Vertex target = path.getEndVertex();
       if (endVertex != null) {
         if (target.getIdentity().equals(endVertex.getIdentity()) && matchesNodePattern(target, endNodePattern, result, context))
