@@ -89,8 +89,14 @@ public final class RIDFilter {
         evaluated.add(condition);
     filter.evaluated = evaluated.toArray(new BooleanExpression[0]);
     filter.acceptsNothing = filter.computeAcceptsNothing();
-    if (filter.allowed != null)
-      filter.allowedBuckets = filter.allowed.stream().mapToInt(RID::getBucketId).distinct().sorted().toArray();
+    if (filter.allowed != null) {
+      final int[] buckets = new int[filter.allowed.size()];
+      int i = 0;
+      for (final RID rid : filter.allowed)
+        buckets[i++] = rid.getBucketId();
+      Arrays.sort(buckets);
+      filter.allowedBuckets = buckets;
+    }
     return filter;
   }
 
@@ -142,6 +148,8 @@ public final class RIDFilter {
       return false;
     if (excluded != null && excluded.contains(rid))
       return false;
+    // A condition left to evaluation reads the RID's identity on its left and a value resolved without a record on its right:
+    // it loads nothing, and a value it cannot compare answers false or null, which rejects the RID as the filter it replaces did
     for (final BooleanExpression condition : evaluated)
       if (!Boolean.TRUE.equals(condition.evaluate((Identifiable) rid, context)))
         return false;
