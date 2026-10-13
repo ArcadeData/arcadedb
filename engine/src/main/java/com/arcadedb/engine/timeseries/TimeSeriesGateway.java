@@ -134,6 +134,12 @@ public final class TimeSeriesGateway {
   public record WriteReport(int written, int dropped, Set<String> unknownTypes, Set<String> nonTimeSeriesTypes,
                             Set<String> unavailableTypes, Set<String> undeclaredKeys, Set<String> unreadableValues) {
 
+    /** The report of a write with no unreadable values, the shape this record had before issue #9809. */
+    public WriteReport(final int written, final int dropped, final Set<String> unknownTypes, final Set<String> nonTimeSeriesTypes,
+        final Set<String> unavailableTypes, final Set<String> undeclaredKeys) {
+      this(written, dropped, unknownTypes, nonTimeSeriesTypes, unavailableTypes, undeclaredKeys, Set.of());
+    }
+
     /** Whether every sample handed in was appended. */
     public boolean isComplete() {
       return dropped == 0;

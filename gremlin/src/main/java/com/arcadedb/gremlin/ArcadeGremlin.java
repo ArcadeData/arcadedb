@@ -315,14 +315,17 @@ public class ArcadeGremlin extends ArcadeQuery {
     int processed = 0;
     for (final Map.Entry<?, ?> entry : originalMap.entrySet()) {
       final Object originalKey = entry.getKey();
-      flat.put(originalKey == T.id ? RID_KEY : originalKey == T.label ? TYPE_KEY : String.valueOf(originalKey),
-          normalizeNested(entry.getValue()));
+      // THE VALUES ARE NAMED ONCE, AFTER THE KEYS: A COLLISION BREAKS OUT OF THIS LOOP, AND THE SLOW PATH WOULD NAME THEM AGAIN
+      flat.put(originalKey == T.id ? RID_KEY : originalKey == T.label ? TYPE_KEY : String.valueOf(originalKey), entry.getValue());
       // A SHARED NAME REPLACES AN ENTRY INSTEAD OF ADDING ONE, SO THE SIZE FALLS BEHIND THE COUNT OF ENTRIES READ
       if (flat.size() != ++processed)
         break;
     }
-    if (processed == originalMap.size() && flat.size() == processed)
+    if (processed == originalMap.size() && flat.size() == processed) {
+      for (final Map.Entry<String, Object> entry : flat.entrySet())
+        entry.setValue(normalizeNested(entry.getValue()));
       return flat;
+    }
 
     final Map<String, Object> result = new LinkedHashMap<>(originalMap.size());
 
