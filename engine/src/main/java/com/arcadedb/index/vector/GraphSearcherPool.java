@@ -145,6 +145,15 @@ public class GraphSearcherPool {
   }
 
   /**
+   * Closes a borrowed searcher instead of returning it: for one whose search was stopped halfway (issue #9896), whose
+   * scratch state the next query must not inherit.
+   */
+  public void discard(final GraphSearcher searcher) {
+    if (searcher != null)
+      close(searcher);
+  }
+
+  /**
    * Closes and forgets every pooled searcher. Called when the index is closed and whenever the pooled graph is
    * replaced.
    */

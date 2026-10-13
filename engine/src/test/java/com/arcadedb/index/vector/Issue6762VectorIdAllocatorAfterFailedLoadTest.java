@@ -96,7 +96,9 @@ class Issue6762VectorIdAllocatorAfterFailedLoadTest {
         // rebuilt, rather than trusting an allocator that only knows what was read.
         assertThatThrownBy(
             () -> db.transaction(() -> db.newDocument("Doc").set("id", VECTORS).set("embedding", randomVector(7)).save()))
-            .hasRootCauseInstanceOf(IndexException.class);
+            .as("refused when the record is saved, before the commit applies anything (issue #9892)")
+            .isInstanceOf(IndexException.class)
+            .hasMessageContaining("refuses new vectors");
 
         assertThat(index.countEntries())
             .as("no live vector was superseded")

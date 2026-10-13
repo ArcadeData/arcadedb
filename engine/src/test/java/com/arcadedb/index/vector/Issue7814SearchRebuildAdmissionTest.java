@@ -420,7 +420,8 @@ class Issue7814SearchRebuildAdmissionTest {
           Awaitility.await("the second search parks on the owner's build")
               .atMost(REACHES_THE_PERMIT)
               .pollInterval(Duration.ofMillis(50))
-              .untilAsserted(() -> assertThat(waiter.getState()).isEqualTo(Thread.State.WAITING));
+              // TIMED_WAITING: the wait is cut in slices that check the statement's guard (issue #9896)
+              .untilAsserted(() -> assertThat(waiter.getState()).isEqualTo(Thread.State.TIMED_WAITING));
 
           waiter.interrupt();
           assertThat(waiterReturned.await(REACHES_THE_PERMIT.toMillis(), TimeUnit.MILLISECONDS))

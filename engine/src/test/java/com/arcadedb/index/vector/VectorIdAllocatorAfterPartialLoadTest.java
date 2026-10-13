@@ -20,7 +20,9 @@ package com.arcadedb.index.vector;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
+import com.arcadedb.engine.BasePage;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -31,9 +33,13 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
+import java.io.InterruptedIOException;
+import java.io.RandomAccessFile;
 import java.lang.reflect.Field;
 import java.util.Collection;
+import java.util.List;
 import java.util.Random;
+import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -77,7 +83,8 @@ class VectorIdAllocatorAfterPartialLoadTest {
         assertThat(index.areLocationsMaterializedForTest()).as("reopened: the location map is deferred").isFalse();
 
         // The heap runs out after READ_LIMIT entries: the error reaches whichever caller triggered the first use.
-        setField(index, "residentLocations", new FailingLocationIndex(READ_LIMIT, true));
+        setField(index, "residentLocations",
+            new FailingLocationIndex(READ_LIMIT, () -> new OutOfMemoryError("simulated heap exhaustion during the location load")));
         assertThatThrownBy(index::getVectorIndex).isInstanceOf(OutOfMemoryError.class);
         assertThat(index.areLocationsMaterializedForTest())
             .as("an Error must not latch a half-filled map: the next access loads again")
@@ -105,15 +112,16 @@ class VectorIdAllocatorAfterPartialLoadTest {
         final LSMVectorIndex index = vectorIndexOf(db);
 
         // A page that cannot be parsed to the end: the lenient load carries on, but the ids it did not read are unknown.
-        setField(index, "residentLocations", new FailingLocationIndex(READ_LIMIT, false));
+        setField(index, "residentLocations",
+            new FailingLocationIndex(READ_LIMIT, () -> new IllegalStateException("simulated unreadable page during the location load")));
         index.getVectorIndex();
         assertThat(index.areLocationsMaterializedForTest()).as("one attempt, as before").isTrue();
 
         assertThatThrownBy(() -> db.transaction(
             () -> db.newDocument("Doc").set("id", VECTORS).set("embedding", randomVector(VECTORS)).save()))
             .as("an insert must not mint an id an unread entry may already hold")
-            .hasRootCauseInstanceOf(IndexException.class)
-            .hasStackTraceContaining("refuses new vectors");
+            .isInstanceOf(IndexException.class)
+            .hasMessageContaining("refuses new vectors");
 
         try (final ResultSet rs = db.command("sql", "CHECK DATABASE")) {
           assertThat(rs.next().<Collection<String>>getProperty("corruptedIndexes"))
@@ -130,6 +138,156 @@ class VectorIdAllocatorAfterPartialLoadTest {
         final LSMVectorIndex rebuilt = vectorIndexOf(db);
         assertThat(rebuilt.countEntries()).isEqualTo(VECTORS + INSERTS);
         assertThat(rebuilt.checkIntegrity()).as("after the rebuild, inserts take fresh ids").isEmpty();
+      } finally {
+        db.close();
+      }
+    }
+
+    assertCleanAfterReopen(VECTORS + INSERTS);
+  }
+
+  /**
+   * An interrupted read - the thread interrupted while it waited for the I/O lock, or the database closed under it - says
+   * nothing about the page: the next read finds it intact. Such a load is retried like one an Error stopped, instead of
+   * being latched as "could not read every entry" and refusing writes until a rebuild nothing was wrong enough to need.
+   */
+  @Test
+  void aLoadStoppedByAnInterruptionIsRetriedInsteadOfRefusingWrites() throws Exception {
+    createDatabaseWithVectorIndex();
+
+    try (final DatabaseFactory factory = new DatabaseFactory(DB_PATH)) {
+      final Database db = factory.open();
+      try {
+        final LSMVectorIndex index = vectorIndexOf(db);
+        setField(index, "residentLocations", new FailingLocationIndex(READ_LIMIT,
+            () -> new IndexException("simulated read", new InterruptedIOException("Interrupted while acquiring I/O lock"))));
+
+        assertThatThrownBy(index::getVectorIndex).isInstanceOf(IndexException.class);
+        assertThat(index.areLocationsMaterializedForTest())
+            .as("an interrupted load must not be latched: the next access loads again").isFalse();
+
+        insertVectors(db);
+
+        assertThat(index.countEntries()).as("the retried load read every entry").isEqualTo(VECTORS + INSERTS);
+        assertThat(index.checkIntegrity()).as("no record may share a vector id with another after the inserts").isEmpty();
+      } finally {
+        db.close();
+      }
+    }
+
+    assertCleanAfterReopen(VECTORS + INSERTS);
+  }
+
+  /**
+   * The refusal surfaces when the record is saved, so the transaction fails before its commit applies anything - to this
+   * index or to any other index of the type.
+   */
+  @Test
+  void aRefusedVectorFailsTheSaveNotTheCommit() throws Exception {
+    createDatabaseWithVectorIndex();
+
+    try (final DatabaseFactory factory = new DatabaseFactory(DB_PATH)) {
+      final Database db = factory.open();
+      try {
+        db.command("sql", "CREATE INDEX ON Doc (id) UNIQUE");
+        final LSMVectorIndex index = vectorIndexOf(db);
+        setField(index, "residentLocations", new FailingLocationIndex(READ_LIMIT, IllegalStateException::new));
+        index.getVectorIndex();
+
+        db.begin();
+        try {
+          assertThatThrownBy(() -> db.newDocument("Doc").set("id", VECTORS).set("embedding", randomVector(VECTORS)).save())
+              .as("the save itself is refused, before any commit")
+              .isInstanceOf(IndexException.class)
+              .hasMessageContaining("refuses new vectors");
+        } finally {
+          db.rollback();
+        }
+
+        try (final ResultSet rs = db.query("sql", "SELECT count(*) AS c FROM Doc WHERE id = ?", VECTORS)) {
+          assertThat(rs.next().<Long>getProperty("c")).isZero();
+        }
+        // Deleting a vector mints no id: it stays possible
+        db.transaction(() -> db.command("sql", "DELETE FROM Doc WHERE id = 0"));
+        try (final ResultSet rs = db.query("sql", "SELECT count(*) AS c FROM Doc WHERE id = 0")) {
+          assertThat(rs.next().<Long>getProperty("c")).isZero();
+        }
+      } finally {
+        db.close();
+      }
+    }
+  }
+
+  @Test
+  void aBatchPutIsRefusedToo() throws Exception {
+    createDatabaseWithVectorIndex();
+
+    try (final DatabaseFactory factory = new DatabaseFactory(DB_PATH)) {
+      final Database db = factory.open();
+      try {
+        final LSMVectorIndex index = vectorIndexOf(db);
+        setField(index, "residentLocations", new FailingLocationIndex(READ_LIMIT, IllegalStateException::new));
+
+        final RID rid;
+        try (final ResultSet rs = db.query("sql", "SELECT @rid FROM Doc WHERE id = 0")) {
+          rid = rs.next().getProperty("@rid");
+        }
+        assertThatThrownBy(() -> index.putBatch(List.<Object[]>of(new Object[] { randomVector(VECTORS) }), List.of(rid)))
+            .isInstanceOf(IndexException.class)
+            .hasMessageContaining("refuses new vectors");
+      } finally {
+        db.close();
+      }
+    }
+  }
+
+  /**
+   * The same as {@link #aLoadThatCouldNotReadEveryEntryRefusesNewVectorsUntilRebuilt()}, with a page really damaged on
+   * disk instead of an injected failure: its entry count runs past the end of the page, so the parser cuts it short.
+   */
+  @Test
+  void aPageDamagedOnDiskRefusesNewVectorsUntilRebuilt() throws Exception {
+    createDatabaseWithVectorIndex();
+
+    final String filePath;
+    final int pageSize;
+    try (final DatabaseFactory factory = new DatabaseFactory(DB_PATH)) {
+      final Database db = factory.open();
+      try {
+        final LSMVectorIndex index = vectorIndexOf(db);
+        filePath = ((DatabaseInternal) db).getFileManager().getFile(index.getFileId()).getFilePath();
+        pageSize = index.getPageSize();
+      } finally {
+        db.close();
+      }
+    }
+    try (final RandomAccessFile file = new RandomAccessFile(filePath, "rw")) {
+      file.seek(BasePage.PAGE_HEADER_SIZE + LSMVectorIndex.OFFSET_NUM_ENTRIES);
+      file.writeInt(Integer.MAX_VALUE);
+    }
+    assertThat(pageSize).isPositive();
+
+    try (final DatabaseFactory factory = new DatabaseFactory(DB_PATH)) {
+      final Database db = factory.open();
+      try {
+        final LSMVectorIndex index = vectorIndexOf(db);
+        assertThatThrownBy(() -> db.transaction(
+            () -> db.newDocument("Doc").set("id", VECTORS).set("embedding", randomVector(VECTORS)).save()))
+            .isInstanceOf(IndexException.class)
+            .hasMessageContaining("refuses new vectors");
+
+        try (final ResultSet rs = db.command("sql", "CHECK DATABASE")) {
+          assertThat(rs.next().<Collection<String>>getProperty("corruptedIndexes")).contains(index.getName());
+        }
+        try (final ResultSet rs = db.command("sql", "CHECK DATABASE FIX")) {
+          rs.next();
+        }
+
+        insertVectors(db);
+
+        final LSMVectorIndex rebuilt = vectorIndexOf(db);
+        assertThat(rebuilt.countEntries()).isEqualTo(VECTORS + INSERTS);
+        assertThat(rebuilt.checkIntegrity()).isEmpty();
       } finally {
         db.close();
       }
@@ -161,14 +319,14 @@ class VectorIdAllocatorAfterPartialLoadTest {
 
   /** A location map that gives up after a number of entries, like a load that ran out of heap or hit a bad page. */
   private static class FailingLocationIndex extends VectorLocationIndex {
-    private final int     limit;
-    private final boolean outOfMemory;
-    private       int     added;
-    private       boolean armed = true;
+    private final int                 limit;
+    private final Supplier<Throwable> failure;
+    private       int                 added;
+    private       boolean             armed = true;
 
-    FailingLocationIndex(final int limit, final boolean outOfMemory) {
+    FailingLocationIndex(final int limit, final Supplier<Throwable> failure) {
       this.limit = limit;
-      this.outOfMemory = outOfMemory;
+      this.failure = failure;
     }
 
     @Override
@@ -176,9 +334,10 @@ class VectorIdAllocatorAfterPartialLoadTest {
         final boolean deleted) {
       if (armed && added++ >= limit) {
         armed = false;
-        if (outOfMemory)
-          throw new OutOfMemoryError("simulated heap exhaustion during the location load");
-        throw new IllegalStateException("simulated unreadable page during the location load");
+        final Throwable t = failure.get();
+        if (t instanceof Error e)
+          throw e;
+        throw (RuntimeException) t;
       }
       super.addOrUpdate(id, isCompacted, absoluteFileOffset, rid, deleted);
     }
