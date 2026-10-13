@@ -159,6 +159,10 @@ class Issue9888BackupArchivesEmptyVectorGraphTest {
     vectorIndex(database, type).buildVectorGraphNow();
   }
 
+  /**
+   * The projection is evaluated once per row of the FROM target, so the query needs a target with exactly one row to
+   * call {@code vector.neighbors} once: {@code schema:types LIMIT 1} is one that always exists, whatever the data.
+   */
   private static boolean search(final Database database, final String type) {
     final float[] query = new float[DIMENSIONS];
     for (int j = 0; j < DIMENSIONS; j++)

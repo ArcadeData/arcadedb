@@ -281,10 +281,10 @@ public class FullBackupFormat extends AbstractBackupFormat {
 
       for (final PageSnapshot.SnapshotFile file : snapshot.getFiles())
         if (isArchivedPageFile(file.fileName())) {
-          if (isArchivedEmpty(file.fileName()))
-            origSize += compressEntry(archive, file.fileName(), file.lastModified(), InputStream.nullInputStream());
-          else
-            origSize += compressEntry(archive, file.fileName(), file.lastModified(), snapshot.newInputStream(file.fileId()));
+          final InputStream input = isArchivedEmpty(file.fileName()) ?
+              InputStream.nullInputStream() :
+              snapshot.newInputStream(file.fileId());
+          origSize += compressEntry(archive, file.fileName(), file.lastModified(), input);
         }
 
       // ANY PAGE READ ABOVE COULD HAVE BEEN THE ONE THAT BREACHED THE SHADOW CAP, AND A STREAM THAT ALREADY FAILED
