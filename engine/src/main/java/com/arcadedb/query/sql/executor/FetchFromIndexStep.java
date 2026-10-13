@@ -269,11 +269,14 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
   boolean isKeyOf(final Document record, final Object key) {
     if (!(index instanceof IndexInternal internal))
       return false;
-    if (key != checkedKey) {
-      // The entries of one key carry the same key instance, so a key is converted once and not once per row
+    // The entries of one key carry the same key instance, so the identity test settles nearly every row: a key is converted once
+    if (key != checkedKey && !(key instanceof Object[] array && checkedKey instanceof Object[] checked ? Arrays.equals(array, checked) :
+        Objects.equals(key, checkedKey))) {
       try {
         checkedLookupKey = internal.convertLookupKeys(key instanceof Object[] array ? array : new Object[] { key });
       } catch (final IllegalArgumentException e) {
+        // no key of this index: its entries are settled by reading the key again, which this tells apart from a lost record
+        LogManager.instance().log(this, Level.FINE, "Key %s cannot be read as a key of index '%s'", e, key, indexName);
         checkedLookupKey = null;
       }
       checkedKey = key;
