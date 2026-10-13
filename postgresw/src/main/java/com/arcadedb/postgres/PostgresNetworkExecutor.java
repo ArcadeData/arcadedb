@@ -2111,7 +2111,7 @@ public class PostgresNetworkExecutor extends Thread {
       // Use sendSuspendedOnLimit=false because this is an internal query for schema discovery,
       // not a client-initiated query that should send protocol messages
       final String sampleQuery = "SELECT FROM `" + typeName + "` LIMIT 1";
-      final ResultSet resultSet = database.query("sql", sampleQuery, server.getConfiguration());
+      final ResultSet resultSet = database.query("sql", sampleQuery);
       final List<Result> sampleRows = browseSample(resultSet, 1);
 
       if (!sampleRows.isEmpty()) {
