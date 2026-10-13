@@ -20,12 +20,18 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
+import com.arcadedb.query.literal.LiteralParameterizer;
+
 import java.util.Map;
 import java.util.Objects;
 
 public class NamedParameter extends InputParameter {
 
-  /** A parameter name and the same name with the colon some callers write in front of it, built once (issue #9818). */
+  /**
+   * A parameter name and the same name with the colon some callers write in front of it, built once (issue #9818). Null for a
+   * literal the statement cache extracted into a generated parameter: its value is the one the query text carries, bound
+   * under the plain name, so no spelling a caller binds may stand in for it, and the probe for one costs every read (#9925).
+   */
   private record PrefixedName(String name, String prefixed) {
   }
 
@@ -44,7 +50,8 @@ public class NamedParameter extends InputParameter {
   private PrefixedName prefixedName() {
     PrefixedName result = prefixedName;
     if (result == null || !Objects.equals(result.name, paramName)) {
-      result = new PrefixedName(paramName, ":" + paramName);
+      result = new PrefixedName(paramName,
+          paramName != null && paramName.startsWith(LiteralParameterizer.PARAMETER_PREFIX) ? null : ":" + paramName);
       prefixedName = result;
     }
     return result;
@@ -73,14 +80,14 @@ public class NamedParameter extends InputParameter {
   /**
    * Every literal of a repeated text arrives here as a generated named parameter (issue #8307), and a plan reads it more than
    * once, so this allocates nothing and probes the map once per key it tries. The prefixed key still wins over the plain one,
-   * and a key bound to null still ends the search.
+   * except for a generated parameter, which has none, and a key bound to null still ends the search.
    */
   public Object getValue(final Map<String, Object> params) {
     if (params == null)
       return null;
 
     final String prefixed = prefixedName().prefixed;
-    if (params.containsKey(prefixed))
+    if (prefixed != null && params.containsKey(prefixed))
       return params.get(prefixed);
 
     final String key = paramName;
