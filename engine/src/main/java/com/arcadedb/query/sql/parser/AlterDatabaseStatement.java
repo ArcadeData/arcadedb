@@ -26,6 +26,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.DatabaseOperationException;
+import com.arcadedb.exception.TransactionCommittedRemotelyException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.Result;
@@ -144,6 +145,9 @@ public class AlterDatabaseStatement extends DDLStatement {
 
       try {
         db.saveConfiguration();
+      } catch (final TransactionCommittedRemotelyException e) {
+        // Committed cluster-wide: every node, this one included, installs the new document, so there is nothing to undo
+        throw e;
       } catch (final IOException | RuntimeException e) {
         restoreConfiguration(db, configurationBefore);
         if (e instanceof RuntimeException runtime)

@@ -7075,8 +7075,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * Applied on every node, the one that submitted it included. The document is the whole configuration, so installing
    * it there again changes nothing that node did not already hold - unless another node's change committed in between,
    * in which case every node now agrees on the later of the two, which is the point. A failure to WRITE the file
-   * leaves the configuration in force in memory, and is reported: as for the security documents, halting would turn a
-   * full or read-only volume into a crash loop.
+   * leaves the configuration in force in memory, and fails this entry's apply with a {@link ReplicationException},
+   * logged SEVERE, exactly as the security documents do: the node stays up rather than halting, which would turn a
+   * full or read-only volume into a crash loop. A restart before the volume is fixed reads the previous file back, so
+   * the remedy is to reissue the change.
    */
   // @VisibleForTesting
   void applyDatabaseConfigurationEntry(final RaftLogEntryCodec.DecodedEntry decoded) {

@@ -30,6 +30,7 @@ import com.arcadedb.engine.OperationProgress;
 import com.arcadedb.engine.OperationProgressRegistry;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.DatabaseOperationInProgressException;
+import com.arcadedb.exception.TransactionCommittedRemotelyException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.RunningQuery;
 import com.arcadedb.serializer.json.JSONArray;
@@ -1187,6 +1188,9 @@ public class ServerControlPlane {
     applySetting(database.getConfiguration(), key, value);
     try {
       database.saveConfiguration();
+    } catch (final TransactionCommittedRemotelyException e) {
+      // Committed cluster-wide: every node, this one included, installs the new document, so there is nothing to undo
+      throw e;
     } catch (final IOException | RuntimeException e) {
       if (database.getEmbedded() instanceof LocalDatabase local)
         local.installConfiguration(configurationBefore);

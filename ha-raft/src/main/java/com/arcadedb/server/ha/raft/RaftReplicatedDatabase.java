@@ -4420,8 +4420,11 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * this. It used to proxy straight to {@link LocalDatabase#saveConfiguration()}: the setting was in force, and on
    * disk, on the node that ran the command alone, so the followers - and whichever of them became leader after a
    * failover - kept the previous value. {@code arcadedb.dateImplementation} made that a wrong read, not only a
-   * tuning drift. Every DATABASE-scope setting stored here is cluster-wide: a node-local override belongs in the
-   * server configuration, which the database configuration overlays.
+   * tuning drift. Every DATABASE-scope setting stored here is cluster-wide, and the whole document replaces the one
+   * on every node: a value a node held in its own {@code configuration.json} only, from before this replication
+   * existed, is replaced by the next change made anywhere. A node-local value belongs in that node's process-wide
+   * configuration ({@code -D} or environment), which a database falls back to for every setting its
+   * {@code configuration.json} does not carry.
    * <p>
    * The whole document is shipped and installed as it stands on every node, the originator included, so the
    * cluster converges on one configuration whatever order concurrent changes commit in. The document is built and
