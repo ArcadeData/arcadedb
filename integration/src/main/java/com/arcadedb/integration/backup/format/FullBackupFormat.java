@@ -281,6 +281,8 @@ public class FullBackupFormat extends AbstractBackupFormat {
 
       for (final PageSnapshot.SnapshotFile file : snapshot.getFiles())
         if (isArchivedPageFile(file.fileName())) {
+          // AN EMPTY ENTRY NEVER OPENS THE WINDOW'S STREAM, DELIBERATELY: ITS PAGES ARE NOT PART OF THE ARCHIVE, SO
+          // THERE IS NOTHING OF THEM TO READ, AND THE checkValid() BELOW STILL COVERS EVERY PAGE THAT WAS READ
           final InputStream input = isArchivedEmpty(file.fileName()) ?
               InputStream.nullInputStream() :
               snapshot.newInputStream(file.fileId());
