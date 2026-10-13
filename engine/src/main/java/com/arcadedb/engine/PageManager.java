@@ -570,9 +570,14 @@ public class PageManager extends LockContext {
     }
   }
 
-  public void removeModifiedPagesOfDatabase(final Database database) {
+  /**
+   * @param dropped {@code true} when the database's files are about to be deleted: only then are the WAL acks of the
+   *                pages deferred by a suspension released (issue #9881, see
+   *                {@link PageManagerFlushThread#removeAllPagesOfDatabase(Database, boolean)}).
+   */
+  public void removeModifiedPagesOfDatabase(final Database database, final boolean dropped) {
     if (flushThread != null)
-      flushThread.removeAllPagesOfDatabase(database);
+      flushThread.removeAllPagesOfDatabase(database, dropped);
     // Forget the snapshot barrier monitor too, so a closed/dropped Database instance (and everything it pins) can be
     // garbage collected instead of being retained as a map key for the lifetime of the JVM-wide page manager.
     snapshotBarrierLocks.remove(database);
