@@ -76,6 +76,7 @@ class Issue9927SuspendFlushOnLastDatabaseCloseTest {
   @Test
   void droppingTheLastOpenDatabaseInsideTheSuspensionDoesNotThrow() throws Exception {
     final DatabaseInternal db = createDatabase();
+    final PageManagerFlushThread suspendedOn = PageManager.INSTANCE.getFlushThread();
 
     runSuspended(db, () -> {
       db.drop();
@@ -84,6 +85,10 @@ class Issue9927SuspendFlushOnLastDatabaseCloseTest {
 
     assertThat(db.isOpen()).isFalse();
     assertThat(new File(DB_PATH)).doesNotExist();
+    // The fix releases on the thread that shut down, which is safe only because the close made that thread forget the
+    // database's suspension count: pin that coupling, so a refactor of setSuspended cannot quietly break it.
+    assertThat(suspendedOn.isSuspended(db)).isFalse();
+    assertThat(suspendedOn.setSuspended(db, false)).as("an extra release on the dead thread must be a no-op").isFalse();
     assertPageManagerUsableAgain();
   }
 
