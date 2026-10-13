@@ -26,6 +26,7 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.AggregationContext;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.IndexedFunctionPushdown;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.utility.NumberUtils;
@@ -295,12 +296,12 @@ public class BaseExpression extends MathExpression {
   }
 
   public Iterable<Record> executeIndexedFunction(final FromClause target, final CommandContext context,
-      final BinaryCompareOperator operator, final Object right, final int limit) {
+      final BinaryCompareOperator operator, final Object right, final IndexedFunctionPushdown pushdown) {
     if (expression != null)
-      return expression.executeIndexedFunction(target, context, operator, right, limit);
+      return expression.executeIndexedFunction(target, context, operator, right, pushdown);
     if (this.identifier == null)
       return null;
-    return identifier.executeIndexedFunction(target, context, operator, right, limit);
+    return identifier.executeIndexedFunction(target, context, operator, right, pushdown);
   }
 
   @Override

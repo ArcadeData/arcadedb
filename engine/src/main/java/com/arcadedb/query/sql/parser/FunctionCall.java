@@ -28,6 +28,7 @@ import com.arcadedb.function.sql.graph.SQLFunctionMove;
 import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.query.sql.executor.AggregationContext;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.IndexedFunctionPushdown;
 import com.arcadedb.query.sql.executor.FunctionAggregationContext;
 import com.arcadedb.query.sql.executor.IndexableSQLFunction;
 import com.arcadedb.query.sql.executor.Result;
@@ -168,16 +169,16 @@ public class FunctionCall extends SimpleNode {
    * @param context
    * @param operator
    * @param rightValue
-   * @param limit      how many rows of the result the plan can consume, or -1 for all of them (see
-   *                   {@link IndexableSQLFunction#searchFromTarget(FromClause, BinaryCompareOperator, Object, CommandContext, Expression[], int)})
+   * @param pushdown   the limit, the {@code @rid} conditions and the order the plan hands the function (see
+   *                   {@link IndexableSQLFunction#searchFromTarget(FromClause, BinaryCompareOperator, Object, CommandContext, Expression[], IndexedFunctionPushdown)})
    *
    * @return
    */
   public Iterable<Record> executeIndexedFunction(final FromClause target, final CommandContext context, final BinaryCompareOperator operator,
-      final Object rightValue, final int limit) {
+      final Object rightValue, final IndexedFunctionPushdown pushdown) {
     final SQLFunction function = getFunction(context);
     if (function instanceof IndexableSQLFunction lFunction)
-      return lFunction.searchFromTarget(target, operator, rightValue, context, this.getParams().toArray(new Expression[] {}), limit);
+      return lFunction.searchFromTarget(target, operator, rightValue, context, this.getParams().toArray(new Expression[] {}), pushdown);
 
     return null;
   }
@@ -528,6 +529,11 @@ public class FunctionCall extends SimpleNode {
       return true;
     else
       return "bothV".equalsIgnoreCase(string);
+  }
+
+  /** The function this call names as an {@link IndexableSQLFunction}, or null when it is not one. */
+  public IndexableSQLFunction getIndexableFunction(final CommandContext context) {
+    return getFunction(context) instanceof final IndexableSQLFunction function ? function : null;
   }
 
   private SQLFunction getFunction(final CommandContext context) {

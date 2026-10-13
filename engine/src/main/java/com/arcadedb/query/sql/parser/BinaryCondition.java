@@ -23,6 +23,8 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.Record;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.IndexableSQLFunction;
+import com.arcadedb.query.sql.executor.IndexedFunctionPushdown;
 import com.arcadedb.query.sql.executor.IndexSearchInfo;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.schema.DocumentType;
@@ -116,11 +118,25 @@ public class BinaryCondition extends BooleanExpression {
   /**
    * Answers the records of an indexed-function condition.
    *
-   * @param limit how many rows of the result the plan can consume, or -1 for all of them: a function whose result has an
-   *              order of its own may stop producing past it (issue #9895)
+   * @param pushdown how many rows of the result the plan can consume, which a function whose result has an order of its
+   *                 own may stop producing past (issue #9895), the {@code @rid} conditions the result must satisfy and the
+   *                 order the plan needs (issue #9909)
    */
-  public Iterable<Record> executeIndexedFunction(final FromClause target, final CommandContext context, final int limit) {
-    return left.executeIndexedFunction(target, context, operator, right.execute((Result) null, context), limit);
+  public Iterable<Record> executeIndexedFunction(final FromClause target, final CommandContext context,
+      final IndexedFunctionPushdown pushdown) {
+    return left.executeIndexedFunction(target, context, operator, right.execute((Result) null, context), pushdown);
+  }
+
+  /**
+   * Whether the function of this indexed-function condition can answer its records in RID order (issue #9909). Navigates
+   * the same path {@link #executeIndexedFunction} delegates down: a bare call on the left-hand side.
+   */
+  public boolean indexedFunctionSupportsRIDOrder(final CommandContext context) {
+    if (left == null || !(left.getMathExpression() instanceof final BaseExpression base) || base.identifier == null
+        || base.identifier.levelZero == null || base.identifier.levelZero.functionCall == null)
+      return false;
+    final IndexableSQLFunction function = base.identifier.levelZero.functionCall.getIndexableFunction(context);
+    return function != null && function.supportsRIDOrder();
   }
 
   /**
