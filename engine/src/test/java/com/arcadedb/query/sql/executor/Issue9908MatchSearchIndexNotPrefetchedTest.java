@@ -19,7 +19,10 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
+import com.arcadedb.query.sql.parser.SelectStatement;
+import com.arcadedb.query.sql.parser.WhereClause;
 import org.junit.jupiter.api.Test;
 
 import java.util.HashSet;
@@ -46,6 +49,10 @@ class Issue9908MatchSearchIndexNotPrefetchedTest extends TestHelper {
       database.command("sql", "CREATE PROPERTY Note.a STRING");
       database.command("sql", "CREATE PROPERTY Note.b STRING");
       database.command("sql", "CREATE INDEX ON Note (a, b) FULL_TEXT");
+      database.command("sql", "CREATE PROPERTY Note.n INTEGER");
+      database.command("sql", "CREATE INDEX ON Note (n) NOTUNIQUE");
+      database.command("sql", "CREATE PROPERTY Note.parity INTEGER");
+      database.command("sql", "CREATE INDEX ON Note (parity) NOTUNIQUE");
       database.command("sql", "CREATE VERTEX TYPE Patient");
       database.command("sql", "CREATE VERTEX TYPE Hospital");
       database.command("sql", "CREATE EDGE TYPE R");
@@ -55,7 +62,7 @@ class Issue9908MatchSearchIndexNotPrefetchedTest extends TestHelper {
         database.command("sql", "CREATE VERTEX Hospital SET n = " + i);
       for (int i = 0; i < NOTES; i++) {
         database.command("sql",
-            "CREATE VERTEX Note SET n = " + i + ", a = '" + (i % 2 == 0 ? "fever and cough" : "rash") + "', b = 'note " + i + "'");
+            "CREATE VERTEX Note SET n = " + i + ", parity = " + (i % 2) + ", a = '" + (i % 2 == 0 ? "fever and cough" : "rash") + "', b = 'note " + i + "'");
         database.command("sql", "CREATE VERTEX Patient SET n = " + i);
         database.command("sql", "CREATE EDGE R FROM (SELECT FROM Note WHERE n = " + i + ") TO (SELECT FROM Patient WHERE n = " + i + ")");
         database.command("sql",
@@ -120,6 +127,54 @@ class Issue9908MatchSearchIndexNotPrefetchedTest extends TestHelper {
     assertThat(plan).doesNotContain("PREFETCH n");
     assertThat(plan).contains("+ MATCH      <----\n  {n}.out('H'){h}");
     assertThat(count(query, "c")).isEqualTo(NOTES / 2);
+  }
+
+  @Test
+  void estimateTreatsAnIndexedFunctionWithoutABoundAsUnknown() {
+    final String fever = "SEARCH_INDEX('Note[a,b]', 'fever') = true";
+    assertThat(estimate(fever)).isEqualTo(WhereClause.UNKNOWN_ESTIMATE);
+    // A KNOWN BOUND IN THE SAME AND-BLOCK BOUNDS IT: THE INDEX ON n USED TO BE IGNORED NEXT TO AN INDEXED FUNCTION
+    assertThat(estimate(fever + " AND n = 4")).isEqualTo(1L);
+    // ONE UNKNOWN BRANCH OF AN OR MAKES THE UNION UNKNOWN...
+    assertThat(estimate(fever + " OR n = 4")).isEqualTo(WhereClause.UNKNOWN_ESTIMATE);
+    // ...UNLESS ANOTHER BRANCH NEEDS A SCAN, WHICH ANSWERS THE TYPE COUNT (HALVED, AS FOR EVERY UNBOUNDED FILTER)
+    assertThat(estimate(fever + " OR b = 'x'")).isEqualTo(NOTES / 2);
+    assertThat(estimate("b = 'x' OR " + fever)).isEqualTo(NOTES / 2);
+  }
+
+  @Test
+  void estimateCountsAnIndexedEqualityUpToTheThreshold() {
+    // THE COUNT OF A FULL KEY WAS COMPUTED AND DROPPED, SO AN INDEXED EQUALITY NEVER BOUNDED THE ESTIMATE
+    assertThat(estimate("n = 4")).isEqualTo(1L);
+    assertThat(estimate("n = 4 OR n = 5")).isEqualTo(2L);
+    // A KEY WITH 200 ENTRIES IS COUNTED ONLY UP TO THE THRESHOLD: "NOT SMALL" IS ALL THE PLANNER NEEDS, AND IT ANSWERS THE SCAN BOUND
+    assertThat(estimate("parity = 0")).isEqualTo(NOTES / 2);
+    assertThat(explain("MATCH {type:Note, as:n, where:(n = 4)} RETURN n.n AS n")).contains("PREFETCH n");
+  }
+
+  @Test
+  void aKnownBoundNextToSearchIndexIsPrefetched() {
+    final String query = "MATCH {type:Note, as:n, where:(SEARCH_INDEX('Note[a,b]', 'fever') = true AND n = 4)}.out('R'){as:p} "
+        + "RETURN p.n AS pn";
+    assertThat(explain(query)).contains("PREFETCH n");
+    assertThat(count(query)).isEqualTo(1);
+  }
+
+  @Test
+  void bucketRootedSearchIndexIsStreamed() {
+    final String bucket = database.getSchema().getType("Note").getBuckets(false).getFirst().getName();
+    final String where = "SEARCH_INDEX('Note[a,b]', 'fever') = true";
+    final String query = "MATCH {bucket:" + bucket + ", as:n, where:(" + where + ")} RETURN count(*) AS c";
+    assertThat(explain(query)).doesNotContain("PREFETCH");
+    assertThat(count(query, "c")).isEqualTo(count("SELECT count(*) AS c FROM bucket:" + bucket + " WHERE " + where, "c"));
+  }
+
+  private long estimate(final String where) {
+    final SelectStatement statement = (SelectStatement) ((DatabaseInternal) database).getStatementCache()
+        .get("SELECT FROM Note WHERE " + where);
+    final BasicCommandContext context = new BasicCommandContext();
+    context.setDatabase(database);
+    return statement.getWhereClause().estimate(database.getSchema().getType("Note"), 100, context);
   }
 
   private String explain(final String query) {
