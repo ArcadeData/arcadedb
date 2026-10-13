@@ -109,6 +109,8 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
    * an {@code IN} with a repeated value did before #9902.
    */
   static final int            MAX_TRACKED_RIDS_PER_KEY = 1 << 18;
+  // The served set of the previous key is cleared for the next one up to this size, and replaced past it
+  private static final int    MAX_REUSED_SERVED_SET    = 64;
 
   private final List<Integer> filterBucketIds;
   private final ScanFallback  scanFallback;
@@ -496,7 +498,7 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
   private void startKey(final Object key) {
     streamKey = key;
     // A set grown for a large key is dropped rather than cleared: clearing costs its whole capacity, once per key
-    if (servedOfKey == null || servedOfKey.size() > 64)
+    if (servedOfKey == null || servedOfKey.size() > MAX_REUSED_SERVED_SET)
       servedOfKey = new RidHashSet(16);
     else
       servedOfKey.clear();
@@ -584,7 +586,8 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
       if (unsettledEntries == 0 && pendingLosses > 0)
         LogManager.instance().log(this, Level.WARNING, "Point lookup on index '%s' lost entries of key %s to concurrent commits and "
                 + "did not look for the records that replaced them (key read again %d times, %d records served): the answer may "
-                + "miss records written during the query", null, indexStep.indexName, streamKey, rereadsOfKey, servedOfKey.size());
+                + "miss records written during the query (logged once per execution, PROFILE counts every such entry)", null,
+            indexStep.indexName, streamKey, rereadsOfKey, servedOfKey.size());
       unsettledEntries += pendingLosses;
       pendingLosses = 0;
       return false;
@@ -599,7 +602,7 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
     if ((pageManager.getPublicationSequence() & 1) != 0)
       // A commit is publishing: wait for it to let go of the lock, doing nothing under it. The wait cannot deadlock a reader that
       // holds file locks in its transaction, for the reason given at loadPointLookup(): a committer takes this lock last and
-      // acquires nothing under it
+      // acquires nothing under it. It lasts one commit's publication, so the guard is checked before it and not during it
       pageManager.executeInLock(() -> null);
     unpinRepeatableReadPages(database, indexStep);
     rereadSequence = pageManager.getPublicationSequence();
