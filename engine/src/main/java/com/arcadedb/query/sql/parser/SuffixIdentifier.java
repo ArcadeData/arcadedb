@@ -105,7 +105,7 @@ public class SuffixIdentifier extends SimpleNode {
   }
 
   private static boolean isDollarName(final String name) {
-    return !name.isEmpty() && name.charAt(0) == '$';
+    return name != null && !name.isEmpty() && name.charAt(0) == '$';
   }
 
   public Object execute(final Identifiable currentRecord, final CommandContext context) {
@@ -161,13 +161,14 @@ public class SuffixIdentifier extends SimpleNode {
     }
     if (identifier != null) {
       final String varName = identifier.getStringValue();
-      if (context != null && "$parent".equalsIgnoreCase(varName)) {
-        return context.getParent();
-      }
-      // For $ variables, check record metadata FIRST - this preserves LET variable values
-      // through expand()/UNWIND operations (see GitHub issue #2776)
-      if (currentRecord != null && isDollarName(varName) && currentRecord.getMetadataKeys().contains(varName)) {
-        return currentRecord.getMetadata(varName);
+      // The first character first: a property name rarely starts with '$', and this runs for every property read (issue #9925)
+      if (isDollarName(varName)) {
+        if (context != null && "$parent".equalsIgnoreCase(varName))
+          return context.getParent();
+        // For $ variables, check record metadata FIRST - this preserves LET variable values
+        // through expand()/UNWIND operations (see GitHub issue #2776)
+        if (currentRecord != null && currentRecord.getMetadataKeys().contains(varName))
+          return currentRecord.getMetadata(varName);
       }
       if (context != null && isContextVariable(varName)) {
         final Object ctxVar = context.getVariable(varName);

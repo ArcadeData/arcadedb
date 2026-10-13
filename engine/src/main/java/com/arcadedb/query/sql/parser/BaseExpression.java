@@ -29,7 +29,6 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.IndexedFunctionPushdown;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
-import com.arcadedb.utility.NumberUtils;
 
 import java.util.Collections;
 import java.util.List;
@@ -419,19 +418,18 @@ public class BaseExpression extends MathExpression {
    * {@code identifier} is exactly that shape AND a parameter is actually bound at that position - the single test
    * {@link #execute(Result, CommandContext)} and {@link #isPostgresPositionalParameter(CommandContext)} must agree
    * on, kept as one method so they cannot drift apart again (issue #8288 review).
+   * <p>
+   * It runs before every property read, so the shape is the identifier's, worked out once from the query text (issue #9925):
+   * since literals became generated parameters the map is rarely empty, and parsing the name here cost every row.
    */
   private static String postgresPositionalParameterKey(final BaseIdentifier identifier, final Map<String, Object> params) {
-    if (params == null || params.isEmpty() || identifier == null || identifier.getSuffix() == null
-        || identifier.getSuffix().identifier == null)
+    if (params == null || identifier == null)
       return null;
-    final String v = identifier.getSuffix().identifier.getValue();
-    if (v == null || !v.startsWith("$") || v.length() < 2)
+    final SuffixIdentifier suffix = identifier.getSuffix();
+    if (suffix == null || suffix.identifier == null)
       return null;
-    final Integer pos = NumberUtils.parsePositiveInteger(v.substring(1));
-    if (pos == null)
-      return null;
-    final String key = String.valueOf(pos - 1);
-    return params.containsKey(key) ? key : null;
+    final String key = suffix.identifier.positionalParameterKey();
+    return key != null && params.containsKey(key) ? key : null;
   }
 
   /**
