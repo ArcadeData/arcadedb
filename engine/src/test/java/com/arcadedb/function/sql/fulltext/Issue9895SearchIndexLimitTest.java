@@ -169,6 +169,60 @@ class Issue9895SearchIndexLimitTest extends TestHelper {
     assertThat(pulled).isEqualTo(ordered);
   }
 
+  @ParameterizedTest
+  @ValueSource(strings = { "BM25_1", "BM25_4", "CLASSIC_4" })
+  void theConditionEvaluatedAgainAnswersLikeTheCompleteSearch(final String variant) {
+    createCorpus(variant);
+    final List<Result> complete = rows("SELECT @rid AS rid, $score AS score FROM Doc WHERE " + SEARCH + " ORDER BY $score DESC");
+
+    // The plan evaluates the condition again on every row, and here the projection evaluates the same search once more: both
+    // answer from the best matches of the pushed-down fetch, with the score the complete search gives
+    final String again = "SELECT @rid AS rid, $score AS score, SEARCH_INDEX('Doc[content]', 'common') AS again FROM Doc WHERE " + SEARCH
+        + " LIMIT 10";
+    assertThat(plan(again)).contains("(best 10 first)");
+    assertSamePrefix(rows(again), complete, true);
+
+    // A residual filter keeps the complete search (no pushdown): same rows, same scores
+    final String residual = "SELECT @rid AS rid, $score AS score FROM Doc WHERE " + SEARCH + " AND n >= 0 LIMIT 10";
+    assertThat(plan(residual)).doesNotContain(" first)");
+    assertSamePrefix(rows(residual), complete, false);
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = { "BM25_1", "BM25_4", "CLASSIC_1", "CLASSIC_4" })
+  void matchesWhoseRecordIsGoneAreReplacedFromTheCompleteSearch(final String variant) {
+    createCorpus(variant);
+    final List<RID> ordered = rids("SELECT FROM Doc WHERE " + SEARCH + " ORDER BY $score DESC");
+
+    // Records removed from their bucket behind the index's back: the index still answers them, the load does not. Three of
+    // the best ten, among tied scores, so the rows that replace them come from past the best matches the limit kept
+    final List<RID> gone = List.of(ordered.get(0), ordered.get(4), ordered.get(9));
+    database.transaction(() -> {
+      for (final RID rid : gone)
+        ((DatabaseInternal) database).getSchema().getBucketById(rid.getBucketId()).deleteRecord(rid);
+    });
+
+    final List<RID> alive = new ArrayList<>(ordered);
+    alive.removeAll(gone);
+    assertThat(plan("SELECT FROM Doc WHERE " + SEARCH + " LIMIT 10")).contains("(best 10 first)");
+    assertThat(rids("SELECT FROM Doc WHERE " + SEARCH + " LIMIT 10")).isEqualTo(alive.subList(0, 10));
+    assertThat(rids("SELECT FROM Doc WHERE " + SEARCH + " ORDER BY $score DESC LIMIT 10")).isEqualTo(alive.subList(0, 10));
+    assertThat(rids("SELECT FROM Doc WHERE " + SEARCH + " SKIP 5 LIMIT 10")).isEqualTo(alive.subList(5, 15));
+
+    // The dangling index entries and the bucket counter were left wrong on purpose: drop them before the integrity check
+    database.getSchema().dropType("Doc");
+  }
+
+  private static void assertSamePrefix(final List<Result> actual, final List<Result> complete, final boolean matchedAgain) {
+    assertThat(actual).hasSize(10);
+    for (int i = 0; i < actual.size(); i++) {
+      assertThat(actual.get(i).<Object>getProperty("rid")).isEqualTo(complete.get(i).getProperty("rid"));
+      assertThat(actual.get(i).<Float>getProperty("score")).isEqualTo(complete.get(i).<Float>getProperty("score"));
+      if (matchedAgain)
+        assertThat(actual.get(i).<Boolean>getProperty("again")).isTrue();
+    }
+  }
+
   private void createCorpus(final String variant) {
     final String similarity = variant.substring(0, variant.indexOf('_'));
     final int buckets = Integer.parseInt(variant.substring(variant.indexOf('_') + 1));
