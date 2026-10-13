@@ -298,7 +298,11 @@ final class FullTextFunctionSearch {
       }
     }
 
-    /** The best matches are used up and more rows are pulled: continue in the order of the complete search. */
+    /**
+     * The best matches are used up and more rows are pulled: continue in the order of the complete search. Skipping the
+     * {@code served} first rows of it is exact only because the order is total - equal scores are broken by RID - so the
+     * best matches' heap and the complete one put every shared row in the same position.
+     */
     private void continueWithCompleteSearch() {
       final Supplier<Map<RID, Float>> search = complete;
       complete = null;
