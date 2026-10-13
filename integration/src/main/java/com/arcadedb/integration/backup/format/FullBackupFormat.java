@@ -22,6 +22,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.engine.ComponentFile;
+import com.arcadedb.engine.NodeLocalFiles;
 import com.arcadedb.engine.PageSnapshot;
 import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.engine.timeseries.ListedSealedStore;
@@ -279,8 +280,14 @@ public class FullBackupFormat extends AbstractBackupFormat {
       pause.close();
 
       for (final PageSnapshot.SnapshotFile file : snapshot.getFiles())
-        if (isArchivedPageFile(file.fileName()))
-          origSize += compressEntry(archive, file.fileName(), file.lastModified(), snapshot.newInputStream(file.fileId()));
+        if (isArchivedPageFile(file.fileName())) {
+          // AN EMPTY ENTRY NEVER OPENS THE WINDOW'S STREAM, DELIBERATELY: ITS PAGES ARE NOT PART OF THE ARCHIVE, SO
+          // THERE IS NOTHING OF THEM TO READ, AND THE checkValid() BELOW STILL COVERS EVERY PAGE THAT WAS READ
+          final InputStream input = isArchivedEmpty(file.fileName()) ?
+              InputStream.nullInputStream() :
+              snapshot.newInputStream(file.fileId());
+          origSize += compressEntry(archive, file.fileName(), file.lastModified(), input);
+        }
 
       // ANY PAGE READ ABOVE COULD HAVE BEEN THE ONE THAT BREACHED THE SHADOW CAP, AND A STREAM THAT ALREADY FAILED
       // WOULD HAVE THROWN - BUT RE-CHECKING HERE ALSO CATCHES A WINDOW INVALIDATED AFTER ITS LAST BYTE WAS READ,
@@ -320,8 +327,16 @@ public class FullBackupFormat extends AbstractBackupFormat {
     final Collection<ComponentFile> files = database.getFileManager().getFiles();
 
     for (final ComponentFile file : new ArrayList<>(files))
-      if (file != null && isArchivedPageFile(file.getFileName()))
-        origSize += compressFile(archive, file.getOSFile());
+      if (file != null && isArchivedPageFile(file.getFileName())) {
+        if (isArchivedEmpty(file.getFileName())) {
+          // THE SAME SKIP compressFile APPLIES TO A FILE THAT IS NOT THERE, SO THE TWO KINDS OF ENTRY CANNOT DISAGREE
+          // ABOUT WHICH REGISTERED FILES THE ARCHIVE NAMES
+          final File osFile = file.getOSFile();
+          if (osFile.exists())
+            origSize += compressEntry(archive, osFile.getName(), osFile.lastModified(), InputStream.nullInputStream());
+        } else
+          origSize += compressFile(archive, file.getOSFile());
+      }
 
     return origSize;
   }
@@ -336,6 +351,26 @@ public class FullBackupFormat extends AbstractBackupFormat {
    */
   public static boolean isArchivedPageFile(final String fileName) {
     return !PaginatedComponent.isTemporaryFileName(fileName);
+  }
+
+  /**
+   * Whether an archived page file goes in as an EMPTY entry rather than with its pages: an LSM vector index's
+   * {@code .vecgraph} component (issue #9888, the backup counterpart of #9758). The graph is derived state each
+   * database builds for itself from the vectors the index pages carry, and it is vouched for by plain side files - the
+   * {@code .vecgraphfp} manifest, the {@code .vecordmap} ordinal map and the {@code .vecpq} product quantization - that
+   * neither the page snapshot window nor {@code FileManager.getFiles()} lists. Archived with its pages, the graph was
+   * restored with no manifest beside it, which the index reads as "persisted by a version older than #6106" and reuses
+   * on the node count alone: an unverified reuse, of pages that may even have been captured in the middle of a chunked
+   * graph persist - or wasted bytes, when the index is PRODUCT-quantized and the missing {@code .vecpq} forces a
+   * rebuild anyway.
+   * <p>
+   * Archived EMPTY rather than skipped, which is the state of a freshly created index: the restored database keeps the
+   * component registered under the same file id, and its first search builds a graph of its own - with a manifest.
+   * <p>
+   * Matched by the final extension, so a bucket of a type merely named {@code vecgraph} is still archived in full.
+   */
+  public static boolean isArchivedEmpty(final String fileName) {
+    return NodeLocalFiles.isVectorGraphComponentFileName(fileName);
   }
 
   /**
