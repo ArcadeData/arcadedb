@@ -200,6 +200,24 @@ class Issue9940GqlConstructsTest extends TestHelper {
   }
 
   @Test
+  void conditionalQueryConditionReadingAVariableIsRefusedAtParseTime() {
+    // a conditional query is a whole statement: there is no row, so a condition may read parameters only
+    assertThatThrownBy(() -> rows("WHEN n.x = 1 THEN RETURN 1 AS r ELSE RETURN 2 AS r"))
+        .hasMessageContaining("the condition of a conditional query can read parameters only, not 'n'");
+    assertThatThrownBy(() -> rows("MATCH (n) WITH n WHEN n.x = 1 THEN RETURN 1 AS r"))
+        .hasMessageContaining("Unexpected input 'WHEN'");
+  }
+
+  @Test
+  void explainOfAConditionalQueryShowsTheChosenBranch() {
+    try (final ResultSet rs = database.query("opencypher",
+        "EXPLAIN WHEN $x = 1 THEN MATCH (n:Person) RETURN n.name AS r ELSE RETURN 'none' AS r", Map.of("x", 1))) {
+      assertThat(rs.getExecutionPlan()).isPresent();
+      assertThat(rs.getExecutionPlan().get().prettyPrint(0, 2)).contains("Person");
+    }
+  }
+
+  @Test
   void conditionalQueryWithAWriteBranchAndNoReturnRuns() {
     database.transaction(() -> database.command("opencypher",
         "WHEN true THEN CREATE (:Marker9940b {v:'then'}) ELSE CREATE (:Marker9940b {v:'else'})"));
