@@ -21,6 +21,7 @@ package com.arcadedb.utility;
 import com.arcadedb.exception.TimeoutException;
 
 import java.util.function.Function;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
@@ -110,6 +111,32 @@ public final class TimeBoundRegex {
    */
   public static boolean matchesUntil(final Pattern pattern, final CharSequence input, final long deadlineNanos) {
     return run(pattern, input, deadlineNanos, bounded -> pattern.matcher(bounded).matches());
+  }
+
+  /** The outcome of {@link #fullMatchUntil}. */
+  public enum FullMatch {
+    /** the input matches the pattern in its entirety; a longer input starting with it may or may not */
+    MATCH,
+    /** the input does not match, but the engine ran out of input while trying: some longer input starting with it might */
+    MAY_MATCH_LONGER,
+    /** the input does not match, and no longer input starting with it can (the engine never read past its end) */
+    NEVER_WITH_THIS_PREFIX
+  }
+
+  /**
+   * Matches {@code input} fully against {@code pattern} like {@link #matchesUntil}, and on a failure also tells whether a
+   * longer input starting with {@code input} could still match ({@link java.util.regex.Matcher#hitEnd()}): the primitive a
+   * search over the inputs a pattern could accept prunes on.
+   *
+   * @throws TimeoutException if the match does not complete before {@code deadlineNanos}
+   */
+  public static FullMatch fullMatchUntil(final Pattern pattern, final CharSequence input, final long deadlineNanos) {
+    return run(pattern, input, deadlineNanos, bounded -> {
+      final Matcher matcher = pattern.matcher(bounded);
+      if (matcher.matches())
+        return FullMatch.MATCH;
+      return matcher.hitEnd() ? FullMatch.MAY_MATCH_LONGER : FullMatch.NEVER_WITH_THIS_PREFIX;
+    });
   }
 
   /**
