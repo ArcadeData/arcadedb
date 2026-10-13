@@ -56,8 +56,8 @@ class Issue9723PromQLScalarComparisonWithoutBoolTest extends TestHelper {
 
   @Test
   void aScalarThatIsNotALiteralIsRefusedToo() {
-    for (final String promql : new String[] { "(1) > 0", "-1 < 0", "abs(-1) > 0", "1 + 1 == 2", "(1 > bool 0) == 1",
-        "round(1.4) >= ceil(0.2)" })
+    for (final String promql : new String[] { "(1) > 0", "-1 < 0", "-(1) > 0", "1 + 1 == 2", "(1 > bool 0) == 1",
+        "(2 * 0.7) >= (0.2 + 0)" })
       assertThatThrownBy(() -> instant(promql)).as(promql).isInstanceOf(IllegalArgumentException.class)
           .hasMessageContaining(MESSAGE);
   }
@@ -87,7 +87,7 @@ class Issue9723PromQLScalarComparisonWithoutBoolTest extends TestHelper {
   void theSameComparisonWithBoolStillAnswersZeroOrOne() {
     assertThat(scalar("2 > bool 1")).isEqualTo(1.0);
     assertThat(scalar("1 > bool 2")).isEqualTo(0.0);
-    assertThat(scalar("abs(-1) == bool 1")).isEqualTo(1.0);
+    assertThat(scalar("-(-1) == bool 1")).isEqualTo(1.0);
   }
 
   @Test

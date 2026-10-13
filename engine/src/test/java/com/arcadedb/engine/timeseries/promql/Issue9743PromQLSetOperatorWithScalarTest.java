@@ -69,7 +69,7 @@ class Issue9743PromQLSetOperatorWithScalarTest extends TestHelper {
 
   @Test
   void aScalarThatIsNotALiteralIsRefusedToo() {
-    assertRefused("m9743 and abs(-1)", "and");
+    assertRefused("m9743 and -(1)", "and");
     assertRefused("(1 + 1) or m9743", "or");
     assertRefused("m9743 unless (1 > bool 0)", "unless");
   }
