@@ -115,8 +115,15 @@ public class SQLFunctionSearchFields extends SQLFunctionAbstract implements Inde
   @Override
   public boolean allowsIndexedExecution(final FromClause target, final BinaryCompareOperator operator, final Object right,
       final CommandContext context, final Expression[] oExpressions) {
-    // Only `= true` asks for the matches (see IndexableSQLFunction.selectsMatches)
-    return IndexableSQLFunction.selectsMatches(operator, right) && search(target, context, oExpressions) != null;
+    // Only `= true` asks for the matches (see IndexableSQLFunction.selectsMatches). Planning only asks: nothing is registered,
+    // and arguments the call rejects are left to the per-row evaluation to report, as before the function was indexable
+    if (!IndexableSQLFunction.selectsMatches(operator, right))
+      return false;
+    try {
+      return search(target, context, oExpressions) != null;
+    } catch (final CommandExecutionException e) {
+      return false;
+    }
   }
 
   @Override
@@ -150,7 +157,10 @@ public class SQLFunctionSearchFields extends SQLFunctionAbstract implements Inde
       final Object rightValue, final CommandContext context, final Expression[] oExpressions,
       final IndexedFunctionPushdown pushdown) {
     final FullTextFunctionSearch search = search(target, context, oExpressions);
-    return search != null ? search.search(target, context, pushdown) : List.of();
+    if (search == null)
+      return List.of();
+    registerForHierarchy(target, oExpressions, search, context);
+    return search.search(target, context, pushdown);
   }
 
   @Override
@@ -173,10 +183,8 @@ public class SQLFunctionSearchFields extends SQLFunctionAbstract implements Inde
   // ---- Private helpers ----
 
   /**
-   * The search a call answers on the target type of an indexed fetch, or null when it has no index to search. It is
-   * registered for the target type and each of its subtypes, whose records the fetch returns, so that evaluating the
-   * condition again on those rows uses the same index - and the same scores - rather than one a subtype may define for
-   * itself.
+   * The search a call answers on the target type of an indexed fetch, or null when it has no index to search: when the
+   * target is not a type, or an argument depends on the record (it evaluates to null without one).
    */
   private static FullTextFunctionSearch search(final FromClause target, final CommandContext context,
       final Expression[] oExpressions) {
@@ -190,11 +198,19 @@ public class SQLFunctionSearchFields extends SQLFunctionAbstract implements Inde
     final String queryString = SQLFunctionSearchIndex.resolveStringParam(oExpressions[1], context);
     if (type == null || fields == null || queryString == null)
       return null;
-    final List<String> fieldNames = fieldNames(fields);
-    final FullTextFunctionSearch search = search(type, fieldNames, queryString);
-    if (search != null)
-      registerForHierarchy(type, fieldNames, queryString, search, context);
-    return search;
+    return search(type, fieldNames(fields), queryString);
+  }
+
+  /**
+   * Registers the search the indexed fetch runs for its target type and each of its subtypes, whose records it returns, so
+   * that evaluating the condition again on those rows uses the same index - and the same scores - rather than one a
+   * subtype may define for itself.
+   */
+  private static void registerForHierarchy(final FromClause target, final Expression[] oExpressions,
+      final FullTextFunctionSearch search, final CommandContext context) {
+    final DocumentType type = context.getDatabase().getSchema().getType(target.getItem().getIdentifier().getStringValue());
+    registerForHierarchy(type, fieldNames(oExpressions[0].execute((Identifiable) null, context)),
+        SQLFunctionSearchIndex.resolveStringParam(oExpressions[1], context), search, context);
   }
 
   private static void registerForHierarchy(final DocumentType type, final List<String> fieldNames, final String queryString,
