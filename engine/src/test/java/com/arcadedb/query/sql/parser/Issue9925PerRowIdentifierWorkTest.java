@@ -22,6 +22,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.query.literal.LiteralParameterizer;
 import com.arcadedb.query.literal.LiteralParameterizer.Lookup;
+import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
@@ -132,6 +133,40 @@ class Issue9925PerRowIdentifierWorkTest extends TestHelper {
       assertThat(rs.next().<Object>getProperty("v")).isNull();
       assertThat(rs.hasNext()).isFalse();
     }
+  }
+
+  @Test
+  void dollarNamesStillResolveAfterTheFirstCharacterTest() {
+    // $parent, reached through the Result overload of a sub-query's WHERE
+    try (final ResultSet rs = database.query("sql",
+        "SELECT a, (SELECT count(*) AS c FROM V WHERE a = $parent.$current.a)[0].c AS same FROM V WHERE a = 2")) {
+      assertThat(rs.next().<Long>getProperty("same")).isEqualTo(1L);
+    }
+
+    // a LET variable carried as record metadata
+    try (final ResultSet rs = database.query("sql", "SELECT $x AS v FROM V LET $x = a * 2 WHERE a = 3")) {
+      assertThat(rs.next().<Number>getProperty("v").longValue()).isEqualTo(6L);
+    }
+  }
+
+  @Test
+  void aPlainPropertyIsNotShadowedByAVariableOfTheSameName() {
+    ((DatabaseInternal) database).setGlobalVariable("name", "shadow");
+    try {
+      try (final ResultSet rs = database.query("sql", "SELECT name, $name AS g FROM V WHERE a = 1")) {
+        final Result row = rs.next();
+        assertThat(row.<String>getProperty("name")).isEqualTo("n1");
+        assertThat(row.<String>getProperty("g")).isEqualTo("shadow");
+      }
+    } finally {
+      ((DatabaseInternal) database).setGlobalVariable("name", null);
+    }
+  }
+
+  @Test
+  void anIdentifierWithoutANameEvaluatesToNull() {
+    final SuffixIdentifier suffix = new SuffixIdentifier(new Identifier((String) null));
+    assertThat(suffix.execute((Result) null, null)).isNull();
   }
 
   @Test

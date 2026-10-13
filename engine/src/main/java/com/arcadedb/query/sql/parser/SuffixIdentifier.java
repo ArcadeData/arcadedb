@@ -105,7 +105,7 @@ public class SuffixIdentifier extends SimpleNode {
   }
 
   private static boolean isDollarName(final String name) {
-    return !name.isEmpty() && name.charAt(0) == '$';
+    return name != null && !name.isEmpty() && name.charAt(0) == '$';
   }
 
   public Object execute(final Identifiable currentRecord, final CommandContext context) {
