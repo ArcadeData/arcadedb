@@ -4459,7 +4459,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         // All that is pending is a change whose outcome is still unknown, e.g. the same ALTER sent again. It cannot be
         // reported done: it is not known to have committed, and if it did not it is taken back
         throw new TransactionOutcomeUnknownException("A previous change of the same database settings of '" + getName()
-            + "' has an outcome that is not known yet: check the settings before changing them again");
+            + "' is still being resolved in the background (its outcome is not known yet): retry in a few seconds");
       }
       try {
         committedLogIndex = RaftHAServer.requireTransactionBroker(raft).replicateDatabaseConfiguration(getName(), changes);

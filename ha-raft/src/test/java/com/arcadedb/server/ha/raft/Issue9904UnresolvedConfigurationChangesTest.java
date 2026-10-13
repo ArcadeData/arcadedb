@@ -171,4 +171,20 @@ class Issue9904UnresolvedConfigurationChangesTest {
 
     assertThat(environment.restored.get()).isZero();
   }
+
+  /** The resolver of an earlier change has ended: the next change must get one of its own, not be left unresolved. */
+  @Test
+  void aChangeAddedAfterTheResolverEndedStillGetsResolved() throws Exception {
+    final FakeEnvironment environment = new FakeEnvironment();
+    final UnresolvedConfigurationChanges changes = new UnresolvedConfigurationChanges("db", new Object(), environment);
+
+    for (int round = 0; round < 3; round++) {
+      changes.add(A_5);
+      final long deadline = System.currentTimeMillis() + 30_000L;
+      while (changes.size() > 0 && System.currentTimeMillis() < deadline)
+        Thread.sleep(10);
+      assertThat(changes.size()).as("round %d resolved", round).isZero();
+    }
+    assertThat(environment.restored.get()).isEqualTo(3);
+  }
 }

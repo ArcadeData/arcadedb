@@ -178,23 +178,38 @@ final class UnresolvedConfigurationChanges {
   private void resolveAll() {
     try {
       resolveUntilSettled();
-    } finally {
+    } catch (final Throwable t) {
+      // Any other exit has already given the thread up under the lock, in the same block that decided to
       synchronized (lock) {
         resolving = false;
       }
+      throw t;
     }
   }
 
+  /**
+   * Works through the list. Every normal exit clears {@link #resolving} in the same block, under the lock, that saw the
+   * list empty or decided to stop, so an {@link #add} cannot slip between "nothing left" and "no resolver": it either
+   * lands in the list before the block (and is seen) or finds the flag clear and starts a resolver of its own.
+   */
   private void resolveUntilSettled() {
     long delay = FIRST_RETRY_MS;
     int failures = 0;
-    while (environment.isActive()) {
+    while (true) {
       final List<String> batch;
       synchronized (lock) {
-        if (unresolved.isEmpty())
+        if (unresolved.isEmpty() || !environment.isActive()) {
+          if (!unresolved.isEmpty())
+            LogManager.instance().log(this, Level.WARNING,
+                "Database '%s' is closing or the node is shutting down with %d configuration change(s) of unknown outcome "
+                    + "unresolved: they are in memory only and are gone with the next restart", databaseName,
+                unresolved.size());
+          resolving = false;
           return;
+        }
         batch = new ArrayList<>(unresolved);
       }
+      // The log is ordered, so a change that cannot be settled yet holds the later ones back too: stop at the first
       for (final String changes : batch) {
         try {
           tryResolve(changes);
@@ -212,7 +227,10 @@ final class UnresolvedConfigurationChanges {
         Thread.sleep(delay);
       } catch (final InterruptedException e) {
         Thread.currentThread().interrupt();
-        break;
+        synchronized (lock) {
+          resolving = false;
+        }
+        return;
       }
       delay = Math.min(delay * 2, MAX_RETRY_MS);
     }
