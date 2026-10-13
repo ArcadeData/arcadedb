@@ -20,19 +20,24 @@ package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.FileManager;
+import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import org.junit.jupiter.api.Test;
 
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Proxy;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #9762: a type rename moves its files before it opens the schema recording session that publishes it, so it hands
@@ -104,6 +109,57 @@ class Issue9762TypeRenameRecordsFileRenamesTest extends TestHelper {
 
     assertThat(database.getSchema().existsType("N2")).isTrue();
     assertThat(fileManager().getRecordedRenames()).isEmpty();
+  }
+
+  /**
+   * The publishing session refuses after the files were moved - under HA, leadership lost between the pre-check and the
+   * session. The wrapper refuses the session the way {@code RaftReplicatedDatabase} would, through the same seam the HA
+   * server installs it on. The rename is put back: type, buckets and index files under the old name, after a reopen too.
+   */
+  @Test
+  void aRefusalFromThePublishingSessionPutsEverythingBack() {
+    database.command("sql", "CREATE DOCUMENT TYPE P BUCKETS 2");
+    database.command("sql", "CREATE PROPERTY P.id INTEGER");
+    database.command("sql", "CREATE INDEX ON P (id) UNIQUE");
+    database.transaction(() -> {
+      for (int i = 0; i < 10; i++)
+        database.newDocument("P").set("id", i).save();
+    });
+    final Map<Integer, String> before = componentNames();
+
+    final LocalDatabase local = (LocalDatabase) database;
+    final DatabaseInternal previous = local.getWrappedDatabaseInstance();
+    final boolean[] refused = new boolean[1];
+    local.setWrappedDatabaseInstance((DatabaseInternal) Proxy.newProxyInstance(DatabaseInternal.class.getClassLoader(),
+        new Class<?>[] { DatabaseInternal.class }, (proxy, method, args) -> {
+          if ("recordFileChanges".equals(method.getName())) {
+            refused[0] = true;
+            throw new NeedRetryException("leadership lost (issue 9762 test)");
+          }
+          try {
+            return method.invoke(local, args);
+          } catch (final InvocationTargetException e) {
+            throw e.getCause();
+          }
+        }));
+    try {
+      assertThatThrownBy(() -> database.getSchema().getType("P").rename("P2")).isInstanceOf(NeedRetryException.class)
+          .hasMessageContaining("leadership lost");
+    } finally {
+      local.setWrappedDatabaseInstance(previous);
+    }
+
+    assertThat(refused[0]).as("the refusal came from the publishing session, after the files moved").isTrue();
+    assertThat(componentNames()).as("every file back under its old name").isEqualTo(before);
+    assertThat(database.getSchema().existsType("P")).isTrue();
+    assertThat(database.getSchema().existsType("P2")).isFalse();
+
+    reopenDatabase();
+
+    assertThat(database.getSchema().existsType("P")).isTrue();
+    assertThat(database.getSchema().existsType("P2")).isFalse();
+    assertThat(database.countType("P", false)).isEqualTo(10);
+    assertThat(database.query("sql", "SELECT FROM P WHERE id = 7").hasNext()).isTrue();
   }
 
   /** Renames {@code from} inside a recording session and returns the renames it recorded. */

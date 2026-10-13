@@ -63,8 +63,12 @@ public class LocalDocumentType implements DocumentType {
    * Serialises renames of THIS type against each other (issue #7937). Deliberately a lock of the type instance and
    * not the database write lock: every bucket rename waits for the whole database's page flush queue to drain, and
    * holding the schema write lock across N such drains is the stall the engine keeps outside every lock. Two
-   * renames of DIFFERENT types do not contend. Reentrant because {@code LocalVertexType.rename()} calls
+   * renames of DIFFERENT types do not contend. Reentrant because {@code LocalVertexType.renameFiles()} calls
    * {@code super.rename()} - and again to roll back - inside its own critical section.
+   * <p>
+   * The hold count is also what tells {@link #rename} which call publishes (issue #9762): only the call that takes this
+   * lock first opens the schema recording session, every nested one only moves files. So nothing outside a rename may
+   * take this lock and then call {@code rename()}: that call would look nested and its rename would never be published.
    * <p>
    * Lock hierarchy: this lock is taken BEFORE the database write lock, never after. No path may hold the database
    * write lock and then call {@code rename()} (today only {@code ALTER TYPE} does, without holding it).
