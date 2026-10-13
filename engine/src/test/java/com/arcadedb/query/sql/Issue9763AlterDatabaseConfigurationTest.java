@@ -34,37 +34,31 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Issue #9763, the engine half: {@link LocalDatabase#installConfiguration(String)}, which is how a Raft follower takes
- * the {@code configuration.json} the leader replicated, and the rollback {@code ALTER DATABASE} now performs when the
- * configuration cannot be saved - under HA that save is what replicates it, and a setting left in force on one node
+ * Issue #9763, the engine half: the settings {@link LocalDatabase#pendingConfigurationChanges()} computes and
+ * {@link LocalDatabase#applyConfigurationChanges(String)} applies, which is what a Raft node replicates and takes after
+ * an {@code ALTER DATABASE}, and the rollback {@code ALTER DATABASE} now performs when the configuration cannot be
+ * saved - under HA that save is what replicates it, and a setting left in force on one node
  * only is the divergence the issue reports.
  */
 class Issue9763AlterDatabaseConfigurationTest extends TestHelper {
 
+  /** The rollback of a failed save: one setting back, side effect included, every other setting untouched. */
   @Test
-  void installingADocumentAppliesItsSettingsAndTheirPerDatabaseEffects() {
+  void restoringASettingPutsBackItsValueAndItsPerDatabaseEffect() {
     final LocalDatabase local = (LocalDatabase) ((DatabaseInternal) database).getEmbedded();
     database.command("sql", "ALTER DATABASE `arcadedb.typeDefaultBuckets` 4");
-    final String before = local.getConfiguration().toJSON();
-
-    local.installConfiguration(
-        "{\"configuration\":{\"dateImplementation\":\"java.util.Date\",\"txWalFlush\":2}}");
-
-    assertThat(local.getConfiguration().getValueAsString(GlobalConfiguration.DATE_IMPLEMENTATION))
-        .isEqualTo("java.util.Date");
-    assertThat(local.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_WAL_FLUSH)).isEqualTo(2);
+    local.getConfiguration().setValue(GlobalConfiguration.DATE_IMPLEMENTATION, "java.util.Date");
+    local.restoreSetting(GlobalConfiguration.TX_RETRIES.getKey(), 5);
     assertThat(local.getSerializer().getDateImplementation())
         .as("the serializer follows without a reopen").isEqualTo(Date.class);
-    assertThat(local.getConfiguration().getContextKeys())
-        .as("a setting the document does not carry goes back to its default, as a reopen would leave it")
-        .doesNotContain(GlobalConfiguration.TYPE_DEFAULT_BUCKETS.getKey());
 
-    local.installConfiguration(before);
+    local.restoreSetting(GlobalConfiguration.DATE_IMPLEMENTATION.getKey(), null);
 
-    assertThat(local.getConfiguration().getValueAsInteger(GlobalConfiguration.TYPE_DEFAULT_BUCKETS)).isEqualTo(4);
     assertThat(local.getConfiguration().getContextKeys()).doesNotContain(GlobalConfiguration.DATE_IMPLEMENTATION.getKey());
     assertThat(local.getSerializer().getDateImplementation())
         .isEqualTo(GlobalConfiguration.DATE_IMPLEMENTATION.getDefValue());
+    assertThat(local.getConfiguration().getValueAsInteger(GlobalConfiguration.TYPE_DEFAULT_BUCKETS)).isEqualTo(4);
+    assertThat(local.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_RETRIES)).isEqualTo(5);
   }
 
   /** A save that fails must not leave the setting, or its side effect, in force anyway. */

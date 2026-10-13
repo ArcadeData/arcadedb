@@ -151,12 +151,13 @@ public class AlterDatabaseStatement extends DDLStatement {
       } catch (final TransactionCommittedRemotelyException e) {
         // Committed cluster-wide: every node, this one included, installs the new document, so there is nothing to undo
         throw e;
-      } catch (final IOException | RuntimeException e) {
+      } catch (final RuntimeException e) {
         // An outcome Raft cannot confirm either way (the entry was dispatched, then the wait gave up) is undone here
         // too, and can race this node's own apply of the entry if it does commit: issue #9904.
         restoreSetting(db, cfg.getKey(), previousValue);
-        if (e instanceof RuntimeException runtime)
-          throw runtime;
+        throw e;
+      } catch (final IOException e) {
+        restoreSetting(db, cfg.getKey(), previousValue);
         // Chain the cause and name what was being written: without them a read-only filesystem, a permission
         // problem and a full volume are indistinguishable to the caller (issue #7141).
         throw new CommandExecutionException(
@@ -175,8 +176,8 @@ public class AlterDatabaseStatement extends DDLStatement {
 
   /**
    * Puts back the value this statement replaced, side effects included, after a save that did not happen (issue
-   * #9763). Only the embedded {@link LocalDatabase} can install a configuration; every database a statement runs
-   * against is one or wraps one, which {@link DatabaseInternal#getEmbedded()} returns.
+   * #9763). Only the embedded {@link LocalDatabase} re-derives the per-database effects; every database a statement
+   * runs against is one or wraps one, which {@link DatabaseInternal#getEmbedded()} returns.
    */
   private static void restoreSetting(final DatabaseInternal db, final String key, final Object previousValue) {
     if (db.getEmbedded() instanceof LocalDatabase local)

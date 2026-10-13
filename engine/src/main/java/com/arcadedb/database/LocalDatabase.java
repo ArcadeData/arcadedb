@@ -2956,28 +2956,6 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   }
 
   /**
-   * Makes {@code configurationJson} - a whole {@code configuration.json} document, as {@link ContextConfiguration#toJSON()}
-   * writes it - the configuration of this database, in memory only: the caller decides whether to
-   * {@link #saveConfiguration()} afterwards.
-   * <p>
-   * Issue #9763: this is how a refused change is rolled back on the node that made it (see
-   * {@link #restoreSetting(String, Object)}). A setting the document does not carry goes back to its default, exactly
-   * as {@link #open()} would leave it after reading the same file. The per-database effects that {@link #open()}
-   * derives from the configuration are re-derived here too, so the change takes effect without a reopen: the
-   * serializer's date implementations, and the statement caches, whose entries were parsed under the parse limits of
-   * the previous configuration.
-   */
-  public void installConfiguration(final String configurationJson) {
-    final ContextConfiguration incoming = new ContextConfiguration();
-    incoming.fromJSON(configurationJson);
-
-    configuration.getContextKeys().retainAll(incoming.getContextKeys());
-    configuration.merge(incoming);
-
-    configurationChanged();
-  }
-
-  /**
    * The settings this database holds in memory that its {@code configuration.json} does not hold yet, as a document
    * {@link #applyConfigurationChanges(String)} takes: {@code {"configuration": {changed settings}, "removed": [keys]}},
    * keys without the {@code arcadedb.} prefix as in the file. {@code null} when memory and file agree.
@@ -3054,15 +3032,13 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   /**
    * Puts ONE setting back to {@code previousValue} ({@code null}: not set, so it falls back to the default) after a
-   * change to it could not be saved, side effects included, leaving every other setting as it stands now (issue #9763).
-   * Restoring a snapshot of the whole document instead would also revert a change to another setting that landed in
-   * between, such as a configuration entry another node replicated.
+   * change to it could not be saved, side effects included (issue #9763). Every other setting is left untouched, so
+   * a change to another setting that lands meanwhile, such as a replicated configuration entry, is kept: the put is
+   * one atomic map operation, with no snapshot of the rest of the configuration taken or written back.
    */
   public void restoreSetting(final String key, final Object previousValue) {
-    final ContextConfiguration restored = new ContextConfiguration();
-    restored.fromJSON(configuration.toJSON());
-    restored.setValue(key, previousValue);
-    installConfiguration(restored.toJSON());
+    configuration.setValue(key, previousValue);
+    configurationChanged();
   }
 
   /**
