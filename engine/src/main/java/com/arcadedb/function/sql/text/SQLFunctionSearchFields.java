@@ -34,10 +34,9 @@ import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 
-import java.util.ArrayList;
 import java.util.Collection;
-import java.util.HashSet;
 import java.util.List;
+import java.util.TreeSet;
 
 /**
  * SQL function to search full-text indexes by field names.
@@ -87,10 +86,19 @@ public class SQLFunctionSearchFields extends SQLFunctionAbstract implements Inde
       throw new CommandExecutionException("SEARCH_FIELDS() requires a type context (use in WHERE clause with FROM)");
 
     final List<String> fieldNames = fieldNames(iParams[0]);
-    final DocumentType type = iContext.getDatabase().getSchema().getType(iCurrentRecord.asDocument().getTypeName());
-    final FullTextFunctionSearch search = search(type, fieldNames, iParams[1].toString());
-    if (search == null)
-      throw new CommandExecutionException("No full-text index found for fields: " + fieldNames);
+    final String queryString = iParams[1].toString();
+    final String typeName = iCurrentRecord.asDocument().getTypeName();
+
+    // Resolved once per statement and type, not once per row: the indexed fetch registers the search it ran for its target
+    // type and every subtype, so the rows it returns are evaluated again on the very same index
+    final String resolvedKey = resolvedSearchKey(typeName, fieldNames, queryString);
+    FullTextFunctionSearch search = (FullTextFunctionSearch) iContext.getCachedValue(resolvedKey);
+    if (search == null) {
+      search = search(iContext.getDatabase().getSchema().getType(typeName), fieldNames, queryString);
+      if (search == null)
+        throw new CommandExecutionException("No full-text index found for fields: " + fieldNames);
+      iContext.setCachedValue(resolvedKey, search);
+    }
 
     return search.evaluate(iCurrentRecord, iContext);
   }
@@ -164,7 +172,12 @@ public class SQLFunctionSearchFields extends SQLFunctionAbstract implements Inde
 
   // ---- Private helpers ----
 
-  /** The search a call answers on the target type of an indexed fetch, or null when it has no index to search. */
+  /**
+   * The search a call answers on the target type of an indexed fetch, or null when it has no index to search. It is
+   * registered for the target type and each of its subtypes, whose records the fetch returns, so that evaluating the
+   * condition again on those rows uses the same index - and the same scores - rather than one a subtype may define for
+   * itself.
+   */
   private static FullTextFunctionSearch search(final FromClause target, final CommandContext context,
       final Expression[] oExpressions) {
     if (oExpressions == null || oExpressions.length < 2)
@@ -177,7 +190,23 @@ public class SQLFunctionSearchFields extends SQLFunctionAbstract implements Inde
     final String queryString = SQLFunctionSearchIndex.resolveStringParam(oExpressions[1], context);
     if (type == null || fields == null || queryString == null)
       return null;
-    return search(type, fieldNames(fields), queryString);
+    final List<String> fieldNames = fieldNames(fields);
+    final FullTextFunctionSearch search = search(type, fieldNames, queryString);
+    if (search != null)
+      registerForHierarchy(type, fieldNames, queryString, search, context);
+    return search;
+  }
+
+  private static void registerForHierarchy(final DocumentType type, final List<String> fieldNames, final String queryString,
+      final FullTextFunctionSearch search, final CommandContext context) {
+    context.setCachedValue(resolvedSearchKey(type.getName(), fieldNames, queryString), search);
+    for (final DocumentType subType : type.getSubTypes())
+      registerForHierarchy(subType, fieldNames, queryString, search, context);
+  }
+
+  /** Where the search resolved for a type is kept for the statement. */
+  private static String resolvedSearchKey(final String typeName, final List<String> fieldNames, final String queryString) {
+    return "search_fields_resolved:" + typeName + ":" + fieldNames + ":" + queryString;
   }
 
   /**
@@ -188,16 +217,23 @@ public class SQLFunctionSearchFields extends SQLFunctionAbstract implements Inde
   private static FullTextFunctionSearch search(final DocumentType type, final List<String> fieldNames, final String queryString) {
     TypeIndex best = null;
     for (final TypeIndex typeIndex : TypeIndex.filterReadyForQueries(type.getAllIndexes(true)))
-      if (typeIndex.getType() == Schema.INDEX_TYPE.FULL_TEXT && covers(typeIndex.getPropertyNames(), fieldNames) && (best == null
-          || typeIndex.getPropertyNames().size() < best.getPropertyNames().size() || (
-          typeIndex.getPropertyNames().size() == best.getPropertyNames().size() && typeIndex.getName().compareTo(best.getName()) < 0)))
+      if (typeIndex.getType() == Schema.INDEX_TYPE.FULL_TEXT && covers(typeIndex.getPropertyNames(), fieldNames) && isBetter(
+          typeIndex, best))
         best = typeIndex;
 
     if (best == null)
       return null;
-    // A field named twice still counts once: the index covers exactly the fields when it has no other property
-    final boolean exactly = best.getPropertyNames().size() == new HashSet<>(fieldNames).size();
-    return new FullTextFunctionSearch(best, queryString, exactly ? null : List.copyOf(fieldNames));
+    // The field names are distinct (see fieldNames): the index covers exactly them when it has no other property
+    final boolean exactly = best.getPropertyNames().size() == fieldNames.size();
+    return new FullTextFunctionSearch(best, queryString, exactly ? null : fieldNames);
+  }
+
+  /** Fewer properties first, then the name, so that every evaluation of a statement picks the same index. */
+  private static boolean isBetter(final TypeIndex candidate, final TypeIndex best) {
+    if (best == null)
+      return true;
+    final int bySize = Integer.compare(candidate.getPropertyNames().size(), best.getPropertyNames().size());
+    return bySize != 0 ? bySize < 0 : candidate.getName().compareTo(best.getName()) < 0;
   }
 
   /**
@@ -218,16 +254,28 @@ public class SQLFunctionSearchFields extends SQLFunctionAbstract implements Inde
     return true;
   }
 
+  /**
+   * The field names of the first argument, distinct and sorted: the order and the repetitions of the list change nothing
+   * in the search, so {@code ['a', 'b']} and {@code ['b', 'a', 'a']} share one index choice and one cached search.
+   */
   private static List<String> fieldNames(final Object fieldsParam) {
-    final List<String> fieldNames = new ArrayList<>();
+    final TreeSet<String> fieldNames = new TreeSet<>();
     if (fieldsParam instanceof final Collection<?> collection)
       for (final Object f : collection)
-        fieldNames.add(f.toString());
+        fieldNames.add(fieldName(f));
     else if (fieldsParam instanceof final Object[] array)
       for (final Object f : array)
-        fieldNames.add(f.toString());
+        fieldNames.add(fieldName(f));
     else
-      fieldNames.add(fieldsParam.toString());
-    return fieldNames;
+      fieldNames.add(fieldName(fieldsParam));
+    if (fieldNames.isEmpty())
+      throw new CommandExecutionException("SEARCH_FIELDS() requires at least one field name");
+    return List.copyOf(fieldNames);
+  }
+
+  private static String fieldName(final Object field) {
+    if (field == null)
+      throw new CommandExecutionException("SEARCH_FIELDS() field names cannot be null");
+    return field.toString();
   }
 }
