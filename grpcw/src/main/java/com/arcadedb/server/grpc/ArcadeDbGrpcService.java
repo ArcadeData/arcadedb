@@ -3020,7 +3020,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           // were in the discarded Counts, so the summary under-reports inserted for this chunk. The
           // tests use single-row chunks; a precise per-chunk reconciliation is a separate follow-up.
           totals.received += c.getRowsCount();
-          totals.err(-1, commitErrorCode(e), insertErrorMessage(e), "");
+          totals.err(insertError(-1, commitErrorCode(e), e));
           // A structural failure (e.g. "options changed mid-stream") leaves the transaction still
           // active and bound to this pooled gRPC thread. Roll it back here (on the failing thread,
           // where it is bound) so its locks are released immediately and it is not leaked into a later
@@ -3233,34 +3233,44 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     if (rolledBack == 0)
       totals.failed++;
 
-    totals.errors.add(InsertError.newBuilder()
-        .setRowIndex(-1)
-        .setCode(commitErrorCode(e))
-        .setMessage(insertErrorMessage(e))
-        .setField("")
-        .build());
+    totals.errors.add(insertError(-1, commitErrorCode(e), e));
   }
 
   /**
    * Classifies a transaction-level exception into the structured {@link InsertError} code:
    * {@code CONFLICT} for a {@link DuplicatedKeyException}, {@code CONTRACT_VIOLATION} for a stream
    * contract rejection ({@link IllegalArgumentException}, e.g. "options changed mid-stream", which is
-   * not a commit failure at all), and {@code COMMIT_FAILED} otherwise. Shared by the mid-stream onNext
+   * not a commit failure at all), {@code NOT_LEADER} for a refusal by a follower that names the leader (issue #9930;
+   * {@link #insertError} puts the address beside it), and {@code COMMIT_FAILED} otherwise. Shared by the mid-stream onNext
    * failure path (Issue #4806) and the deferred whole-stream commit path (Issue #4198) so the two stay
    * in sync.
    */
   private static String commitErrorCode(final Exception e) {
     if (e instanceof DuplicatedKeyException)
       return "CONFLICT";
+    if (ServerIsNotTheLeaderException.redirectIn(e) != null)
+      return "NOT_LEADER";
     if (e instanceof IllegalArgumentException)
       return "CONTRACT_VIOLATION";
     return "COMMIT_FAILED";
   }
 
   /**
-   * Returns a non-null human-readable message for an exception, falling back to the simple class name
-   * when {@link Exception#getMessage()} is null.
+   * Builds the {@link InsertError} for a failure that is not a duplicated key: {@code code} unless {@code e} is a
+   * refusal by a node that is not the leader and names the one that is, which is {@code NOT_LEADER} with the leader in
+   * {@code leader_address} - a client is to send the load there rather than report a broken server (issue #9930, the
+   * gRPC counterpart of #9868). A field of its own rather than a sentence in the message: the message is concealed in
+   * production mode, and {@code getMessage()} never carried the address anyway. The address is the one the gRPC
+   * trailers already hand out for the same refusal, so it reveals nothing those do not.
    */
+  private InsertError insertError(final long rowIndex, final String code, final Throwable e) {
+    final InsertError.Builder error = InsertError.newBuilder().setRowIndex(rowIndex).setMessage(insertErrorMessage(e)).setField("");
+    final ServerIsNotTheLeaderException refusal = ServerIsNotTheLeaderException.redirectIn(e);
+    if (refusal == null)
+      return error.setCode(code).build();
+    return error.setCode("NOT_LEADER").setLeaderAddress(refusal.getLeaderAddress()).build();
+  }
+
   /**
    * The free-form text of an {@code InsertError} - the per-row and per-chunk failure channel that
    * {@code insertStream} and {@code insertBidirectional} report through - concealed and logged in production mode.
@@ -4786,9 +4796,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
                   // A whole-chunk exception is transaction-level, not attributable to a single row, so report
                   // row_index=-1 ("not applicable") per the InsertError contract, matching the non-bidi
                   // insertStream path. Per-row failures are already reported chunk-relative inside insertRows.
-                  perChunk.errors.add(InsertError.newBuilder().setRowIndex(-1).setCode(
-                          "DB_ERROR")
-                      .setMessage(insertErrorMessage(e)).build());
+                  // A follower's refusal of the chunk's commit is NOT_LEADER with the leader's address, not a
+                  // server fault (issue #9930)
+                  perChunk.errors.add(insertError(-1, "DB_ERROR", e));
                   ctx.totals.add(perChunk);
                   // intentionally do not advance watermark on failure; client may replay safely
 
@@ -4982,6 +4992,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       failed++;
       errors.add(InsertError.newBuilder().setRowIndex(rowIndex).setCode(code).setMessage(msg).setField(field).build());
     }
+
+    void err(final InsertError error) {
+      failed++;
+      errors.add(error);
+    }
   }
 
   /**
@@ -5135,7 +5150,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
               c.err(c.received - 1, "CONFLICT", insertErrorMessage(retryDup), "");
             } catch (Exception retryEx) {
               // Anything else (IO error, etc.) is a real failure - do not mask it as a CONFLICT.
-              c.err(c.received - 1, "DB_ERROR", insertErrorMessage(retryEx), "");
+              c.err(insertError(c.received - 1, "DB_ERROR", retryEx));
             }
           }
           case CONFLICT_ERROR -> c.err(c.received - 1, "CONFLICT", insertErrorMessage(dup), "");
@@ -5144,7 +5159,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         // Not a failure of the row: the end of the load
         throw e;
       } catch (Exception e) {
-        c.err(c.received - 1, "DB_ERROR", insertErrorMessage(e), "");
+        c.err(insertError(c.received - 1, "DB_ERROR", e));
       }
 
       inBatch++;
