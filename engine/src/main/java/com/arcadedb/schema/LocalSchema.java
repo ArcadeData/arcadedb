@@ -878,7 +878,7 @@ public class LocalSchema implements Schema {
             tsType.closeSuperseded();
           } catch (final Exception e) {
             LogManager.instance().log(this, Level.WARNING,
-                "Error closing TimeSeries type '%s' superseded by a schema reload: %s", null, tsType.getName(),
+                "Error retiring TimeSeries type '%s' superseded by a schema reload: %s", null, tsType.getName(),
                 e.getMessage());
           }
         }
@@ -949,7 +949,7 @@ public class LocalSchema implements Schema {
     // (PR #8001 review). A load that dies after readConfiguration() has initialised a TimeSeries engine per type
     // would otherwise leak one engine, and its file handles, per failed reload.
     if (published.types() != publishedFromStaging) {
-      closeTimeSeriesTypesOf(stagedTypes);
+      retireTimeSeriesTypesOf(stagedTypes);
       // And the indexes it built that never went live (issue #8310), for the same reason. The staged map can carry
       // instances the published generation is still serving - an incremental refresh re-registers the ones it did
       // not touch - which is why this goes through the identity check rather than releasing the map wholesale.
@@ -1007,14 +1007,14 @@ public class LocalSchema implements Schema {
    * one a failed load keeps, or the one a rebuild is about to produce - so closing those files would close them under
    * the engines still serving the type. The database close releases them.
    */
-  private void closeTimeSeriesTypesOf(final Map<String, LocalDocumentType> graph) {
+  private void retireTimeSeriesTypesOf(final Map<String, LocalDocumentType> graph) {
     for (final DocumentType type : graph.values())
       if (type instanceof final LocalTimeSeriesType tsType)
         try {
           tsType.closeSuperseded();
         } catch (final Exception e) {
           LogManager.instance().log(this, Level.WARNING,
-              "Error closing TimeSeries type '%s' during schema reload: %s", null, tsType.getName(), e.getMessage());
+              "Error retiring TimeSeries type '%s' during schema reload: %s", null, tsType.getName(), e.getMessage());
         }
   }
 
@@ -3200,7 +3200,7 @@ public class LocalSchema implements Schema {
     // staging assumption. It is NOT covered by a test, so anything relying on it needs to bring one.
     final Map<String, LocalDocumentType> graph = typeMap();
     if (graph == published.types())
-      closeTimeSeriesTypesOf(graph);
+      retireTimeSeriesTypesOf(graph);
     graph.clear();
 
     loadInRamCompleted = false;
