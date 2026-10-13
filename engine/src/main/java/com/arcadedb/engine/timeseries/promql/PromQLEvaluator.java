@@ -397,11 +397,14 @@ public class PromQLEvaluator {
   private PromQLResult evaluateAggregation(final AggregationExpr agg, final long evalTimeMs, final long queryStartMs,
       final long queryEndMs, final long stepMs, final int depth) {
     final PromQLResult inner = evaluate(agg.expr(), evalTimeMs, queryStartMs, queryEndMs, stepMs, depth);
+    // Prometheus aggregates instant vectors only: a range vector or a scalar used to answer an empty vector (issue #9883).
+    // Checked before the parameter, in the same order as Prometheus' type checker.
+    if (!(inner instanceof InstantVector iv) || agg.expr() instanceof StringLiteral)
+      throw new IllegalArgumentException(
+          "expected type instant vector in aggregation expression, got " + valueTypeName(agg.expr(), inner));
     // k does not depend on the group, and an invalid one is refused even when the vector is empty, like Prometheus
     final boolean ranking = agg.op() == PromQLExpr.AggOp.TOPK || agg.op() == PromQLExpr.AggOp.BOTTOMK;
     final int rankLimit = ranking ? rankingLimit(agg, evalTimeMs, queryStartMs, queryEndMs, stepMs, depth) : 0;
-    if (!(inner instanceof InstantVector iv))
-      return new InstantVector(List.of());
 
     // Group samples by labels
     final Map<String, List<VectorSample>> groups = new LinkedHashMap<>();
@@ -490,11 +493,11 @@ public class PromQLEvaluator {
 
     // Range-vector functions
     if (isRangeFunction(name)) {
-      if (fn.args().isEmpty())
-        throw new IllegalArgumentException("Function '" + fn.name() + "' requires a range vector argument");
+      checkArgumentCount(name, fn.args().size(), 1, 1);
       final PromQLResult argResult = evaluate(fn.args().getFirst(), evalTimeMs, queryStartMs, queryEndMs, stepMs, depth);
       if (!(argResult instanceof RangeVector rv))
-        throw new IllegalArgumentException("Function '" + fn.name() + "' requires a range vector argument");
+        throw new IllegalArgumentException("expected type range vector in call to function \"" + name + "\", got "
+            + valueTypeName(fn.args().getFirst(), argResult));
 
       final List<VectorSample> samples = new ArrayList<>();
       for (final RangeSeries series : rv.series()) {
@@ -525,8 +528,14 @@ public class PromQLEvaluator {
   private PromQLResult evaluateScalarFunction(final FunctionCallExpr fn, final long evalTimeMs, final long queryStartMs,
       final long queryEndMs, final long stepMs, final int depth) {
     final String name = fn.name().toLowerCase(Locale.ROOT);
+    checkArgumentCount(name, fn.args().size(), 1, "round".equals(name) ? 2 : 1);
     final PromQLResult argResult = evaluate(fn.args().getFirst(), evalTimeMs, queryStartMs, queryEndMs, stepMs, depth);
-    final double param = extractSecondParam(fn, evalTimeMs, queryStartMs, queryEndMs, stepMs, depth);
+    // A range vector used to come back unchanged and a string became a NaN scalar (issue #9883). A scalar argument stays
+    // accepted, as before: Prometheus refuses it, but existing queries rely on abs(-1) being a scalar.
+    if (!isScalarOrInstantVector(fn.args().getFirst(), argResult))
+      throw new IllegalArgumentException("expected type instant vector in call to function \"" + name + "\", got "
+          + valueTypeName(fn.args().getFirst(), argResult));
+    final double param = extractSecondParam(fn, name, evalTimeMs, queryStartMs, queryEndMs, stepMs, depth);
 
     if (argResult instanceof ScalarResult sr)
       return new ScalarResult(applyScalarFn(name, sr.value(), param), evalTimeMs);
@@ -540,17 +549,51 @@ public class PromQLEvaluator {
       return new InstantVector(samples);
     }
 
-    return argResult;
+    // unreachable: the argument was checked to be a scalar or an instant vector above
+    throw new IllegalStateException("Unexpected argument type for function '" + name + "'");
   }
 
-  private double extractSecondParam(final FunctionCallExpr fn, final long evalTimeMs, final long queryStartMs,
+  private double extractSecondParam(final FunctionCallExpr fn, final String name, final long evalTimeMs, final long queryStartMs,
       final long queryEndMs, final long stepMs, final int depth) {
     if (fn.args().size() <= 1)
       return 1.0;
-    final PromQLResult paramResult = evaluate(fn.args().get(1), evalTimeMs, queryStartMs, queryEndMs, stepMs, depth);
-    if (paramResult instanceof ScalarResult sr)
-      return sr.value();
-    return 1.0;
+    final PromQLExpr paramExpr = fn.args().get(1);
+    final PromQLResult paramResult = evaluate(paramExpr, evalTimeMs, queryStartMs, queryEndMs, stepMs, depth);
+    // a non-scalar precision used to be silently replaced with 1 (issue #9883)
+    if (!(paramResult instanceof ScalarResult sr) || paramExpr instanceof StringLiteral)
+      throw new IllegalArgumentException(
+          "expected type scalar in call to function \"" + name + "\", got " + valueTypeName(paramExpr, paramResult));
+    return sr.value();
+  }
+
+  /**
+   * Refuses a call with too few or too many arguments, in Prometheus' wording. An extra argument used to be ignored and a
+   * missing one raised a {@code NoSuchElementException} (issue #9883).
+   */
+  private static void checkArgumentCount(final String name, final int count, final int min, final int max) {
+    if (min == max) {
+      if (count != min)
+        throw new IllegalArgumentException(
+            "expected " + min + " argument(s) in call to \"" + name + "\", got " + count);
+    } else if (count < min)
+      throw new IllegalArgumentException("expected at least " + min + " argument(s) in call to \"" + name + "\", got " + count);
+    else if (count > max)
+      throw new IllegalArgumentException("expected at most " + max + " argument(s) in call to \"" + name + "\", got " + count);
+  }
+
+  /**
+   * Prometheus' name for the type of an evaluated expression, as its type-check errors print it. A string literal
+   * evaluates to a NaN scalar here, so its type is read from the expression.
+   */
+  private static String valueTypeName(final PromQLExpr expr, final PromQLResult result) {
+    if (expr instanceof StringLiteral)
+      return "string";
+    return switch (result) {
+      case ScalarResult ignored -> "scalar";
+      case InstantVector ignored -> "instant vector";
+      case RangeVector ignored -> "range vector";
+      case MatrixResult ignored -> "matrix";
+    };
   }
 
   private double applyScalarFn(final String name, final double value, final double param) {
