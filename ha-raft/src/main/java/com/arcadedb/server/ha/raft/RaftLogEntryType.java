@@ -44,7 +44,7 @@ public enum RaftLogEntryType {
    */
   SECURITY_API_TOKENS_ENTRY((byte) 8),
   /**
-   * The whole {@code configuration.json} document of one database, replicated so a setting changed by
+   * The settings changed in the {@code configuration.json} of one database, replicated so a setting changed by
    * {@code ALTER DATABASE} (or the "set database setting" command) is in force on every node and survives a failover
    * (issue #9763). Before this the change was written on the node that ran the command only: a {@code SCHEMA_ENTRY}
    * carries {@code schema.json} and nothing else. Gated by {@link PeerCapabilities#DATABASE_CONFIGURATION_ENTRY}: a

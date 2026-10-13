@@ -306,7 +306,7 @@ public final class RaftLogEntryCodec {
       /**
        * The JSON document of a node-scoped security entry: the user list of a {@code SECURITY_USERS_ENTRY}, the
        * group document of a {@code SECURITY_GROUPS_ENTRY}, or the API-token document of a
-       * {@code SECURITY_API_TOKENS_ENTRY} (issue #7373), or the {@code configuration.json} document of a
+       * {@code SECURITY_API_TOKENS_ENTRY} (issue #7373), or the changed {@code configuration.json} settings of a
        * {@code DATABASE_CONFIGURATION_ENTRY} (issue #9763). Which one it is comes from {@link #type()}; the slot is
        * shared because the four carry one JSON document each. Null for every other entry type.
        */
@@ -915,7 +915,8 @@ public final class RaftLogEntryCodec {
   }
 
   /**
-   * Encodes the whole {@code configuration.json} document of {@code databaseName} as a
+   * Encodes the changed {@code configuration.json} settings of {@code databaseName} (a JSON document, see
+   * {@code LocalDatabase.pendingConfigurationChanges()}) as a
    * {@code DATABASE_CONFIGURATION_ENTRY} (issue #9763).
    * <p>
    * Binary format: type byte, databaseName (UTF), document length (int) and UTF-8 bytes. Length-prefixed rather than

@@ -477,13 +477,14 @@ public class RaftTransactionBroker {
   }
 
   /**
-   * Replicates the whole {@code configuration.json} of {@code dbName} so every node holds the same database settings
+   * Replicates the settings changed in the {@code configuration.json} of {@code dbName}, as
+   * {@code LocalDatabase.pendingConfigurationChanges()} produced them, so every node holds them
    * (issue #9763).
    *
    * @return the Raft log index the entry committed at, for the caller to wait on its local apply
    */
-  public long replicateDatabaseConfiguration(final String dbName, final String configurationJson) {
-    final ByteString entry = RaftLogEntryCodec.encodeDatabaseConfigurationEntry(dbName, configurationJson);
+  public long replicateDatabaseConfiguration(final String dbName, final String changesJson) {
+    final ByteString entry = RaftLogEntryCodec.encodeDatabaseConfigurationEntry(dbName, changesJson);
     return groupCommitter.submitAndWait(entry.toByteArray());
   }
 

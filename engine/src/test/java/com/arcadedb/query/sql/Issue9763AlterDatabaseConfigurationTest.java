@@ -23,6 +23,8 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
@@ -88,5 +90,57 @@ class Issue9763AlterDatabaseConfigurationTest extends TestHelper {
 
     assertThat(db.getConfiguration().getValueAsInteger(GlobalConfiguration.TYPE_DEFAULT_BUCKETS)).isEqualTo(bucketsBefore);
     assertThat(db.getSerializer().getDateImplementation()).isEqualTo(dateImplementationBefore);
+  }
+
+  /** What under HA travels to every node: the settings memory holds that the file does not, and nothing else. */
+  @Test
+  void pendingChangesNameOnlyWhatDiffersFromTheFile() throws Exception {
+    final LocalDatabase local = (LocalDatabase) ((DatabaseInternal) database).getEmbedded();
+    database.command("sql", "ALTER DATABASE `arcadedb.typeDefaultBuckets` 4");
+    assertThat(local.pendingConfigurationChanges()).as("saved, so nothing pending").isNull();
+
+    local.getConfiguration().setValue(GlobalConfiguration.TX_RETRIES, 9);
+    local.getConfiguration().setValue(GlobalConfiguration.TYPE_DEFAULT_BUCKETS, null);
+
+    final JSONObject changes = new JSONObject(local.pendingConfigurationChanges());
+    assertThat(changes.getJSONObject("configuration").keySet()).containsExactly("txRetries");
+    assertThat(changes.getJSONObject("configuration").getInt("txRetries")).isEqualTo(9);
+    assertThat(changes.getJSONArray("removed").toList()).containsExactly("typeDefaultBuckets");
+  }
+
+  /**
+   * Applying replicated changes touches only the settings they name, in memory and on disk, and writes the file from
+   * its own content: a change still on its way through the replication on this node is neither lost nor written ahead.
+   */
+  @Test
+  void applyingChangesKeepsEverySettingTheyDoNotName() throws Exception {
+    final LocalDatabase local = (LocalDatabase) ((DatabaseInternal) database).getEmbedded();
+    database.command("sql", "ALTER DATABASE `arcadedb.typeDefaultBuckets` 4");
+    database.command("sql", "ALTER DATABASE `arcadedb.txWalFlush` 2");
+    // In memory only, as an ALTER DATABASE whose replication has not committed yet holds it
+    local.getConfiguration().setValue(GlobalConfiguration.TX_RETRIES, 9);
+
+    local.applyConfigurationChanges(
+        "{\"configuration\":{\"dateImplementation\":\"java.util.Date\"},\"removed\":[\"txWalFlush\"]}");
+
+    assertThat(local.getConfiguration().getValueAsString(GlobalConfiguration.DATE_IMPLEMENTATION)).isEqualTo("java.util.Date");
+    assertThat(local.getSerializer().getDateImplementation()).isEqualTo(Date.class);
+    assertThat(local.getConfiguration().getContextKeys()).doesNotContain(GlobalConfiguration.TX_WAL_FLUSH.getKey());
+    assertThat(local.getConfiguration().getValueAsInteger(GlobalConfiguration.TYPE_DEFAULT_BUCKETS)).isEqualTo(4);
+    assertThat(local.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_RETRIES))
+        .as("the local change in flight stays in force").isEqualTo(9);
+
+    final JSONObject file = new JSONObject(FileUtils.readFileAsString(
+        new File(local.getDatabasePath(), LocalDatabase.CONFIGURATION_FILE_NAME))).getJSONObject("configuration");
+    assertThat(file.getString("dateImplementation")).isEqualTo("java.util.Date");
+    assertThat(file.has("txWalFlush")).isFalse();
+    assertThat(file.getInt("typeDefaultBuckets")).isEqualTo(4);
+    assertThat(file.has("txRetries")).as("not written ahead of its own replication").isFalse();
+    assertThat(new JSONObject(local.pendingConfigurationChanges()).getJSONObject("configuration").keySet())
+        .containsExactly("txRetries");
+
+    local.applyConfigurationChanges("{\"configuration\":{},\"removed\":[\"dateImplementation\"]}");
+    assertThat(local.getSerializer().getDateImplementation())
+        .isEqualTo(GlobalConfiguration.DATE_IMPLEMENTATION.getDefValue());
   }
 }

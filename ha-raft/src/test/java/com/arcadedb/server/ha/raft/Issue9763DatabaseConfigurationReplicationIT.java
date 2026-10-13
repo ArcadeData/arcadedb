@@ -121,6 +121,41 @@ class Issue9763DatabaseConfigurationReplicationIT extends BaseRaftHATest {
   }
 
   /**
+   * Only the changed settings travel, so a change replaces nothing else on any node: a value one node holds in its own
+   * {@code configuration.json} only (from before this replication existed) survives a change to another setting made
+   * elsewhere, and so do changes to different settings made on different nodes.
+   */
+  @Test
+  void aChangeOnOneNodeKeepsEverySettingItDoesNotName() throws Exception {
+    final int leaderIndex = findLeaderIndex();
+    final int followerIndex = (leaderIndex + 1) % getServerCount();
+    final LocalDatabase followerLocal = (LocalDatabase) ((DatabaseInternal) getServerDatabase(followerIndex,
+        getDatabaseName())).getEmbedded();
+    // Written past the replication, as a node upgraded from a build without it can hold
+    followerLocal.getConfiguration().setValue(GlobalConfiguration.TX_WAL_FLUSH, 2);
+    followerLocal.saveConfiguration();
+
+    leader().command("sql", "ALTER DATABASE `arcadedb.typeDefaultBuckets` 6");
+    new ServerControlPlane(getServer(followerIndex)).setDatabaseSetting(getDatabaseName(),
+        GlobalConfiguration.TX_RETRIES.getKey(), "7");
+
+    assertOnEveryNode((index, database) -> {
+      assertThat(database.getConfiguration().getValueAsInteger(GlobalConfiguration.TYPE_DEFAULT_BUCKETS))
+          .as("server %d in memory", index).isEqualTo(6);
+      assertThat(database.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_RETRIES))
+          .as("server %d in memory", index).isEqualTo(7);
+    }, (index, file) -> {
+      assertThat(file.getInt("typeDefaultBuckets")).as("server %d configuration.json", index).isEqualTo(6);
+      assertThat(file.getInt("txRetries")).as("server %d configuration.json", index).isEqualTo(7);
+    });
+
+    final DatabaseInternal follower = (DatabaseInternal) getServerDatabase(followerIndex, getDatabaseName());
+    assertThat(follower.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_WAL_FLUSH))
+        .as("the follower's own value is not replaced by changes to other settings").isEqualTo(2);
+    assertThat(readConfigurationFile(follower).getInt("txWalFlush")).isEqualTo(2);
+  }
+
+  /**
    * A peer that cannot decode the new entry type would halt on it, so the change is refused before anything is
    * submitted - and the node that ran it must not keep the setting in force on its own, which is the divergence the
    * replication exists to end.

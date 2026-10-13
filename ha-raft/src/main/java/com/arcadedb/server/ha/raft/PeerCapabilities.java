@@ -106,8 +106,8 @@ public final class PeerCapabilities {
   public static final String SCHEMA_FILE_RENAMES = "schema-file-renames";
 
   /**
-   * This node decodes {@code DATABASE_CONFIGURATION_ENTRY}, the Raft log entry type (id 9) that replicates the whole
-   * {@code configuration.json} of one database (issue #9763). Same contract as {@link #SECURITY_GROUPS_ENTRY}: it
+   * This node decodes {@code DATABASE_CONFIGURATION_ENTRY}, the Raft log entry type (id 9) that replicates the
+   * settings changed in the {@code configuration.json} of one database (issue #9763). Same contract as {@link #SECURITY_GROUPS_ENTRY}: it
    * guards the type byte itself, so a cluster with a peer that lacks it refuses the change instead of degrading it.
    */
   public static final String DATABASE_CONFIGURATION_ENTRY = "database-configuration-entry";

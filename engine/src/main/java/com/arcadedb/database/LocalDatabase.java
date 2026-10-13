@@ -105,6 +105,8 @@ import com.arcadedb.schema.VertexType;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityManager;
 import com.arcadedb.serializer.BinarySerializer;
+import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.CollectionUtils;
 import com.arcadedb.utility.CoarseClock;
 import com.arcadedb.utility.FileUtils;
@@ -2958,12 +2960,12 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    * writes it - the configuration of this database, in memory only: the caller decides whether to
    * {@link #saveConfiguration()} afterwards.
    * <p>
-   * Issue #9763: under Raft HA this is how a follower takes the configuration the leader replicated after an
-   * {@code ALTER DATABASE}, and how a refused change is rolled back on the node that made it. A setting the document
-   * does not carry goes back to its default, exactly as {@link #open()} would leave it after reading the same file.
-   * The per-database effects that {@link #open()} derives from the configuration are re-derived here too, so the
-   * change takes effect without a reopen: the serializer's date implementations, and the statement caches, whose
-   * entries were parsed under the parse limits of the previous configuration.
+   * Issue #9763: this is how a refused change is rolled back on the node that made it (see
+   * {@link #restoreSetting(String, Object)}). A setting the document does not carry goes back to its default, exactly
+   * as {@link #open()} would leave it after reading the same file. The per-database effects that {@link #open()}
+   * derives from the configuration are re-derived here too, so the change takes effect without a reopen: the
+   * serializer's date implementations, and the statement caches, whose entries were parsed under the parse limits of
+   * the previous configuration.
    */
   public void installConfiguration(final String configurationJson) {
     final ContextConfiguration incoming = new ContextConfiguration();
@@ -2972,6 +2974,77 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     configuration.getContextKeys().retainAll(incoming.getContextKeys());
     configuration.merge(incoming);
 
+    configurationChanged();
+  }
+
+  /**
+   * The settings this database holds in memory that its {@code configuration.json} does not hold yet, as a document
+   * {@link #applyConfigurationChanges(String)} takes: {@code {"configuration": {changed settings}, "removed": [keys]}},
+   * keys without the {@code arcadedb.} prefix as in the file. {@code null} when memory and file agree.
+   * <p>
+   * Issue #9763: under Raft HA this is what {@code ALTER DATABASE} replicates. Only the changed settings, never the
+   * whole document: a node composing a whole document from its own view would overwrite, cluster-wide, a change
+   * another node committed that it had not applied yet, and a value a node holds in its own file only would be lost
+   * on every other change.
+   */
+  public String pendingConfigurationChanges() throws IOException {
+    final JSONObject saved = readSavedConfiguration().getJSONObject("configuration", new JSONObject());
+    final JSONObject current = new JSONObject(configuration.toJSON()).getJSONObject("configuration", new JSONObject());
+
+    final JSONObject changed = new JSONObject();
+    for (final String key : current.keySet()) {
+      final Object value = current.get(key);
+      if (!saved.has(key) || !String.valueOf(saved.get(key)).equals(String.valueOf(value)))
+        changed.put(key, value);
+    }
+    final JSONArray removed = new JSONArray();
+    for (final String key : saved.keySet())
+      if (!current.has(key))
+        removed.put(key);
+
+    if (changed.keySet().isEmpty() && removed.length() == 0)
+      return null;
+    return new JSONObject().put("configuration", changed).put("removed", removed).toString();
+  }
+
+  /**
+   * Applies a document {@link #pendingConfigurationChanges()} produced, in memory with the per-database effects, and
+   * to {@code configuration.json} (issue #9763). Every setting the document does not name keeps its value, in memory
+   * and in the file. The file is updated from its own content, not from memory, so a change made on this node that
+   * is still on its way through the replication is not written ahead of it.
+   */
+  public void applyConfigurationChanges(final String changesJson) throws IOException {
+    final JSONObject changes = new JSONObject(changesJson);
+    final JSONObject changed = changes.getJSONObject("configuration", new JSONObject());
+    final JSONArray removed = changes.getJSONArray("removed", new JSONArray());
+
+    final ContextConfiguration incoming = new ContextConfiguration();
+    incoming.fromJSON(new JSONObject().put("configuration", changed).toString());
+    configuration.merge(incoming);
+    for (int i = 0; i < removed.length(); i++)
+      configuration.setValue(GlobalConfiguration.PREFIX + removed.getString(i), null);
+    configurationChanged();
+
+    final JSONObject saved = readSavedConfiguration();
+    final JSONObject savedSettings = saved.getJSONObject("configuration", new JSONObject());
+    for (final String key : changed.keySet())
+      savedSettings.put(key, changed.get(key));
+    for (int i = 0; i < removed.length(); i++)
+      savedSettings.remove(removed.getString(i));
+    saved.put("configuration", savedSettings);
+    FileUtils.atomicWriteFile(configurationFile, saved.toString());
+  }
+
+  /** The {@code configuration.json} on disk, or an empty document when there is none yet. */
+  private JSONObject readSavedConfiguration() throws IOException {
+    if (!configurationFile.exists())
+      return new JSONObject();
+    final String content = FileUtils.readFileAsString(configurationFile);
+    return content.isBlank() ? new JSONObject() : new JSONObject(content);
+  }
+
+  /** Re-derives what {@link #open()} derives from the configuration, after it changed in memory (issue #9763). */
+  private void configurationChanged() {
     serializer.setDateImplementation(configuration.getValue(GlobalConfiguration.DATE_IMPLEMENTATION));
     serializer.setDateTimeImplementation(configuration.getValue(GlobalConfiguration.DATE_TIME_IMPLEMENTATION));
 
