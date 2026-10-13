@@ -4992,6 +4992,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       errors.addAll(o.errors);
     }
 
+    /**
+     * For a failure that is no exception the server could have been refused with (a conflict, a missing endpoint, a
+     * contract check). One built from an exception goes through {@link ArcadeDbGrpcService#insertError} and {@link #err(InsertError)},
+     * which answer a leader refusal as {@code NOT_LEADER} with the leader's address (issue #9930).
+     */
     void err(long rowIndex, String code, String msg, String field) {
       failed++;
       errors.add(InsertError.newBuilder().setRowIndex(rowIndex).setCode(code).setMessage(msg).setField(field).build());

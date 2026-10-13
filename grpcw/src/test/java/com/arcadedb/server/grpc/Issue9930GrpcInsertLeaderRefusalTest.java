@@ -64,6 +64,7 @@ class Issue9930GrpcInsertLeaderRefusalTest extends BaseGraphServerTest {
   private final AtomicBoolean refuseCommits = new AtomicBoolean();
   private final AtomicBoolean refuseRows    = new AtomicBoolean();
   private final AtomicBoolean failRows      = new AtomicBoolean();
+  private final AtomicBoolean refuseWrapped = new AtomicBoolean();
 
   private LocalDatabase              local;
   private BeforeRecordCreateListener refuseRow;
@@ -93,6 +94,10 @@ class Issue9930GrpcInsertLeaderRefusalTest extends BaseGraphServerTest {
     refuseRow = record -> {
       if (refuseRows.get())
         throw new ServerIsNotTheLeaderException("This server is not the leader", LEADER);
+      if (refuseWrapped.get())
+        // The engine wraps what it raises: the refusal is found along the cause chain, not only at its head
+        throw new DatabaseOperationException("Error on saving the record",
+            new ServerIsNotTheLeaderException("This server is not the leader", LEADER));
       if (failRows.get())
         throw new DatabaseOperationException("an ordinary row failure");
       return true;
@@ -107,6 +112,7 @@ class Issue9930GrpcInsertLeaderRefusalTest extends BaseGraphServerTest {
     refuseCommits.set(false);
     refuseRows.set(false);
     failRows.set(false);
+    refuseWrapped.set(false);
     if (service != null)
       service.close();
     if (local != null && local.isOpen()) {
@@ -132,6 +138,21 @@ class Issue9930GrpcInsertLeaderRefusalTest extends BaseGraphServerTest {
     assertThat(ack.getErrorsList()).hasSize(2);
     for (int i = 0; i < ack.getErrorsCount(); i++)
       assertNotLeader(ack.getErrors(i), i);
+    req.onCompleted();
+  }
+
+  @Test
+  void bidiRefusalWrappedInAnotherExceptionIsStillReportedAsNotLeader() throws Exception {
+    final RecordingInsertResponseObserver resp = new RecordingInsertResponseObserver();
+    final StreamObserver<InsertRequest> req = service.insertBidirectional(resp);
+    final String sessionId = startBidi(req, resp, InsertOptions.TransactionMode.PER_STREAM);
+
+    refuseWrapped.set(true);
+    final BatchAck ack = sendBidiChunk(req, resp, sessionId, 1);
+    refuseWrapped.set(false);
+
+    assertThat(ack.getErrorsList()).hasSize(1);
+    assertNotLeader(ack.getErrors(0), 0);
     req.onCompleted();
   }
 
