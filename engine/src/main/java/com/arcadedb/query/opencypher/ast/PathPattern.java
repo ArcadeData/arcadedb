@@ -126,6 +126,17 @@ public class PathPattern {
   }
 
   /**
+   * A copy of this pattern over other node patterns, keeping everything else - relationships, path variable, path mode and,
+   * through the override, the kind of pattern it is. The rewrites that move a predicate out of a node pattern rebuild the
+   * path with this, so a {@code shortestPath(...)} stays a shortest-path pattern (issue #9940).
+   *
+   * @param newNodes the node patterns of the copy, as many as this pattern has
+   */
+  public PathPattern withNodes(final List<NodePattern> newNodes) {
+    return new PathPattern(newNodes, relationships, pathVariable, pathMode);
+  }
+
+  /**
    * Returns the effective path mode: the explicit mode if set, otherwise TRAIL (the GQL default).
    */
   public PathMode getEffectivePathMode() {
