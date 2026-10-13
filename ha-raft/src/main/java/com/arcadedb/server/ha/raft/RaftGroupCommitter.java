@@ -71,6 +71,13 @@ class RaftGroupCommitter {
    */
   static volatile Predicate<byte[]> TEST_FORCE_DISPATCHED_TIMEOUT = null;
 
+  /**
+   * Test-only fault injection (issue #9904): like {@link #TEST_FORCE_DISPATCHED_TIMEOUT}, but the accepted entry is
+   * withdrawn before it is even enqueued, so it NEVER reaches the log and cannot commit - the other outcome of the same
+   * indeterminate answer. Always {@code null} in production.
+   */
+  static volatile Predicate<byte[]> TEST_SWALLOW_DISPATCHED_ENTRY = null;
+
   private final    RaftClient                                   raftClient;
   private final    Quorum                                       quorum;
   private final    long                                         quorumTimeout;
@@ -187,6 +194,12 @@ class RaftGroupCommitter {
   }
 
   private CancellablePendingEntry submitAndWaitForEntry(final byte[] entry) {
+    // Test-only: the entry is never enqueued, so it cannot reach the log, and is reported as dispatched
+    final Predicate<byte[]> swallow = TEST_SWALLOW_DISPATCHED_ENTRY;
+    if (swallow != null && swallow.test(entry))
+      throw new ReplicationDispatchedTimeoutException(
+          "TEST: the entry was withdrawn before dispatch, reported as dispatched");
+
     // Pre-check the entry against the maximum size the cluster can actually replicate - the SMALLER
     // of arcadedb.ha.grpcMessageSizeMax and arcadedb.ha.appendBufferSize (see
     // RaftPropertiesBuilder.maxReplicatedEntrySize). Dispatching an oversized entry is far worse than

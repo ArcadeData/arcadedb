@@ -127,6 +127,7 @@ import java.nio.channels.FileChannel;
 import java.nio.channels.FileLock;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
@@ -3000,6 +3001,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     final JSONObject changes = new JSONObject(changesJson);
     final JSONObject changed = changes.getJSONObject("configuration", new JSONObject());
     final JSONArray removed = changes.getJSONArray("removed", new JSONArray());
+    if (changed.keySet().isEmpty() && removed.length() == 0)
+      // An entry that changes nothing (the fence behind a change of unknown outcome, issue #9904): no side effects
+      return;
 
     final ContextConfiguration incoming = new ContextConfiguration();
     incoming.fromJSON(new JSONObject().put("configuration", changed).toString());
@@ -3065,6 +3069,81 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       return;
     configuration.setValue(key, previousValue);
     configurationChanged();
+  }
+
+  /**
+   * Whether {@code configuration.json} holds every change {@code changesJson} (a {@link #pendingConfigurationChanges()}
+   * document) names: each changed setting with that value, each removed setting absent. Under Raft HA that is how a
+   * node tells that a replicated configuration entry it submitted was applied here, which is what writes the file
+   * (issue #9904).
+   */
+  public boolean isConfigurationChangeSaved(final String changesJson) throws IOException {
+    final JSONObject changes = new JSONObject(changesJson);
+    final JSONObject changed = changes.getJSONObject("configuration", new JSONObject());
+    final JSONArray removed = changes.getJSONArray("removed", new JSONArray());
+    final JSONObject saved = readSavedConfiguration().getJSONObject("configuration", new JSONObject());
+
+    for (final String key : changed.keySet())
+      if (!saved.has(key) || !String.valueOf(saved.get(key)).equals(String.valueOf(changed.get(key))))
+        return false;
+    for (int i = 0; i < removed.length(); i++)
+      if (saved.has(removed.getString(i)))
+        return false;
+    return true;
+  }
+
+  /**
+   * Puts the settings a {@link #pendingConfigurationChanges()} document names back to what {@code configuration.json}
+   * holds (not set there: the default), side effects included (issue #9904). For a replicated change known never to
+   * have committed, so the node converges with the cluster and the stale value cannot ride the next change.
+   * <p>
+   * Exactly the named settings, and only each one that is still as the document left it: a setting changed again since
+   * is somebody's newer intent, and one the file now holds the value of was committed after all. Nothing else is
+   * touched.
+   */
+  public void restoreUnsavedConfigurationChanges(final String changesJson) throws IOException {
+    final JSONObject changes = new JSONObject(changesJson);
+    final JSONObject changed = changes.getJSONObject("configuration", new JSONObject());
+    final JSONArray removed = changes.getJSONArray("removed", new JSONArray());
+
+    final JSONObject saved = readSavedConfiguration().getJSONObject("configuration", new JSONObject());
+    final JSONObject current = new JSONObject(configuration.toJSON()).getJSONObject("configuration", new JSONObject());
+
+    final JSONObject back = new JSONObject();
+    final List<String> unset = new ArrayList<>();
+    for (final String key : changed.keySet()) {
+      if (!current.has(key) || !String.valueOf(current.get(key)).equals(String.valueOf(changed.get(key))))
+        // Changed again since
+        continue;
+      if (saved.has(key) && String.valueOf(saved.get(key)).equals(String.valueOf(current.get(key))))
+        // Committed after all
+        continue;
+      putBack(key, saved, back, unset);
+    }
+    for (int i = 0; i < removed.length(); i++) {
+      final String key = removed.getString(i);
+      if (!current.has(key) && saved.has(key))
+        putBack(key, saved, back, unset);
+    }
+
+    if (back.keySet().isEmpty() && unset.isEmpty())
+      return;
+
+    if (!back.keySet().isEmpty()) {
+      final ContextConfiguration incoming = new ContextConfiguration();
+      incoming.fromJSON(new JSONObject().put("configuration", back).toString());
+      configuration.merge(incoming);
+    }
+    for (final String key : unset)
+      configuration.setValue(GlobalConfiguration.PREFIX + key, null);
+    configurationChanged();
+  }
+
+  private static void putBack(final String key, final JSONObject saved, final JSONObject back, final List<String> unset) {
+    if (saved.has(key))
+      back.put(key, saved.get(key));
+    else
+      unset.add(key);
   }
 
   /** Whether {@code configuration.json} holds the value {@code key} has in memory. Unreadable file: no. */

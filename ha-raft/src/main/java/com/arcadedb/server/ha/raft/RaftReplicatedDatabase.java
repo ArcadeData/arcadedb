@@ -68,6 +68,7 @@ import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.exception.TransactionCommittedRemotelyException;
 import com.arcadedb.exception.TransactionException;
+import com.arcadedb.exception.TransactionOutcomeUnknownException;
 import com.arcadedb.exception.ValidationException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GraphBatch;
@@ -275,6 +276,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   private final        AtomicLong                                        unpublishedReleasesSinceLog = new AtomicLong();
   /** Orders the configuration changes this node submits (issue #9763), see {@link #saveConfiguration()}. */
   private final        Object                                            configurationReplicationLock = new Object();
+  /** The configuration changes whose outcome is unknown and the resolution of their fate (issue #9904); lazily built. */
+  private              UnresolvedConfigurationChanges                    unresolvedConfigurationChanges;
 
   /**
    * When {@link #logSchemaDeltaWithheld} last reported that a peer is holding deltas back. Plain volatile rather
@@ -4445,11 +4448,27 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
     final long committedLogIndex;
     synchronized (configurationReplicationLock) {
-      final String changes = proxied.pendingConfigurationChanges();
-      if (changes == null)
-        // Nothing this node holds that its file does not: the value set was already the stored one
-        return;
-      committedLogIndex = RaftHAServer.requireTransactionBroker(raft).replicateDatabaseConfiguration(getName(), changes);
+      final UnresolvedConfigurationChanges unresolved = unresolvedConfigurationChanges(raft);
+      // Not what an earlier change of unknown outcome left pending: it ships by itself or is taken back (issue #9904)
+      final String pending = proxied.pendingConfigurationChanges();
+      final String changes = unresolved.withoutUnresolved(pending);
+      if (changes == null) {
+        if (pending == null)
+          // Nothing this node holds that its file does not: the value set was already the stored one
+          return;
+        // All that is pending is a change whose outcome is still unknown, e.g. the same ALTER sent again. It cannot be
+        // reported done: it is not known to have committed, and if it did not it is taken back
+        throw new TransactionOutcomeUnknownException("A previous change of the same database settings of '" + getName()
+            + "' has an outcome that is not known yet: check the settings before changing them again");
+      }
+      try {
+        committedLogIndex = RaftHAServer.requireTransactionBroker(raft).replicateDatabaseConfiguration(getName(), changes);
+      } catch (final TransactionOutcomeUnknownException e) {
+        // Possibly committed, so the setting stays in force here. Whether it was is found out in the background: if it
+        // was not, the settings go back to what the file holds and nothing of it rides a later change
+        unresolved.add(changes);
+        throw e;
+      }
     }
     // The apply on THIS node is what writes the file here too, so the caller reads its own change back from disk once
     // this returns. Lenient: the entry is committed cluster-wide whatever the wait says, so a failure of the wait itself
@@ -4461,6 +4480,48 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
           "The configuration change of database '%s' committed at index %d, but waiting for it to apply on this node "
               + "failed: %s", getName(), committedLogIndex, e.getMessage());
     }
+  }
+
+  /** Configuration changes of unknown outcome this node is still finding the fate of (issue #9904). */
+  // @VisibleForTesting
+  int unresolvedConfigurationChangeCount() {
+    synchronized (configurationReplicationLock) {
+      return unresolvedConfigurationChanges == null ? 0 : unresolvedConfigurationChanges.size();
+    }
+  }
+
+  private UnresolvedConfigurationChanges unresolvedConfigurationChanges(final RaftHAServer raft) {
+    // Under configurationReplicationLock
+    if (unresolvedConfigurationChanges == null)
+      unresolvedConfigurationChanges = new UnresolvedConfigurationChanges(getName(), configurationReplicationLock,
+          new UnresolvedConfigurationChanges.Environment() {
+            @Override
+            public boolean isSaved(final String changes) throws IOException {
+              return proxied.isConfigurationChangeSaved(changes);
+            }
+
+            @Override
+            public void awaitLaterEntryApplied() {
+              SecurityEntryCapabilityGate.requireEveryPeerCanDecode(server, raft, RaftLogEntryType.DATABASE_CONFIGURATION_ENTRY,
+                  "configuration of database '" + getName() + "'");
+              // An entry with nothing to change: the log is ordered, so once it is applied here so is everything the
+              // cluster committed ahead of it
+              final long index = RaftHAServer.requireTransactionBroker(raft)
+                  .replicateDatabaseConfiguration(getName(), "{\"configuration\":{},\"removed\":[]}");
+              raft.waitForAppliedIndex(getName(), index, true);
+            }
+
+            @Override
+            public void restore(final String changes) throws IOException {
+              proxied.restoreUnsavedConfigurationChanges(changes);
+            }
+
+            @Override
+            public boolean isActive() {
+              return proxied.isOpen() && !raft.isShutdownRequested();
+            }
+          });
+    return unresolvedConfigurationChanges;
   }
 
   @Override
