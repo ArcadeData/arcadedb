@@ -171,6 +171,26 @@ class Issue9909RidConditionPushdownTest extends TestHelper {
   }
 
   @ParameterizedTest
+  @ValueSource(strings = { "BM25_4", "CLASSIC_4" })
+  void ridOrderIsOneOrderAcrossTheBucketsOfTheHierarchy(final String variant) {
+    createCorpus(variant);
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE SubDoc EXTENDS Doc BUCKETS 3");
+      for (int i = 0; i < 60; i++)
+        database.newDocument("SubDoc").set("n", DOCUMENTS + i).set("content", "common filler").save();
+    });
+    final List<RID> all = new ArrayList<>(rids("SELECT FROM Doc WHERE " + SEARCH));
+    all.sort(Comparator.naturalOrder());
+    assertThat(all).hasSize(DOCUMENTS + 60);
+
+    final String descending = "SELECT FROM Doc WHERE @rid > :cursor AND " + SEARCH + " ORDER BY @rid DESC LIMIT 25";
+    assertThat(plan(descending, new RID(-1, -1))).contains("ORDER BY @rid DESC (first 25 needed)");
+    assertThat(rids(descending, Map.of("cursor", new RID(-1, -1)))).isEqualTo(all.reversed().subList(0, 25));
+    assertThat(rids("SELECT FROM Doc WHERE @rid > :cursor AND " + SEARCH + " ORDER BY @rid LIMIT 25", Map.of("cursor",
+        all.get(100)))).isEqualTo(all.subList(101, 126));
+  }
+
+  @ParameterizedTest
   @ValueSource(strings = { "BM25_1", "CLASSIC_4" })
   void aMatchWhoseRecordIsGoneIsSkippedInRidOrder(final String variant) {
     createCorpus(variant);
