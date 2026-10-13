@@ -128,7 +128,8 @@ public final class TimeSeriesGateway {
    * {@code unreadableValues} names the values a column could not store, each rendered as
    * {@code <measurement>.<column> (tag|field): <reason>} where the reason names the column and its type (issue #9809), in
    * first-occurrence order and capped at {@link #MAX_REPORTED_UNREADABLE_VALUES}. The sample carrying one is dropped alone, like a
-   * sample with an undeclared key: the rest of the request is written.
+   * sample with an undeclared key: the rest of the request is written. An entry is a distinct reason, not a sample: many samples
+   * refused for the same reason are one entry, and {@code dropped} is what counts them.
    */
   public record WriteReport(int written, int dropped, Set<String> unknownTypes, Set<String> nonTimeSeriesTypes,
                             Set<String> unavailableTypes, Set<String> undeclaredKeys, Set<String> unreadableValues) {
