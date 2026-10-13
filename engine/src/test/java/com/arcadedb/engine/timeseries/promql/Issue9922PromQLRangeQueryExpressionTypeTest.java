@@ -71,6 +71,8 @@ class Issue9922PromQLRangeQueryExpressionTypeTest extends TestHelper {
     final PromQLEvaluator evaluator = new PromQLEvaluator(db());
     assertThat(evaluator.evaluateInstant(new PromQLParser("m9922[5m]").parse(), 5000L)).isInstanceOf(RangeVector.class);
     assertThat(evaluator.evaluateInstant(new PromQLParser("\"a\"").parse(), 5000L)).isInstanceOf(ScalarResult.class);
+    // and a missing metric is an (empty) instant vector, which is why its range query above answers an empty matrix
+    assertThat(evaluator.evaluateInstant(new PromQLParser("missing_9922").parse(), 5000L)).isInstanceOf(InstantVector.class);
   }
 
   @Test
@@ -87,8 +89,6 @@ class Issue9922PromQLRangeQueryExpressionTypeTest extends TestHelper {
     assertThat(range("sum_over_time(m9922[5m])").series()).hasSize(1);
     // an instant vector with no series is still an instant vector: an empty matrix, not a refusal
     assertThat(range("missing_9922").series()).isEmpty();
-    assertThat(new PromQLEvaluator(db()).evaluateInstant(new PromQLParser("missing_9922").parse(), 5000L))
-        .isInstanceOf(InstantVector.class);
   }
 
   private void assertRefused(final String promql, final String message) {

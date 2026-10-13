@@ -192,7 +192,9 @@ public class PromQLEvaluator {
 
     final long maxSteps = stepsAfterFirst + 1;
 
-    // A string literal evaluates to a NaN scalar, so the result-type test inside the loop cannot see it (issue #9922)
+    // A string literal evaluates to a NaN scalar, so the result-type test inside the loop cannot see it (issue #9922).
+    // The literal is the only string-typed expression there is: the parser returns the inner expression of a
+    // parenthesized one, so `("a")` arrives here bare, and no function, aggregation or operator yields a string
     if (expr instanceof StringLiteral)
       throw new IllegalArgumentException(invalidRangeQueryType("string"));
 
