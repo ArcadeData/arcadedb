@@ -493,6 +493,7 @@ public class PromQLEvaluator {
 
     // Range-vector functions
     if (isRangeFunction(name)) {
+      // every function isRangeFunction() lists takes exactly one argument; quantile_over_time or predict_linear would not
       checkArgumentCount(name, fn.args().size(), 1, 1);
       final PromQLResult argResult = evaluate(fn.args().getFirst(), evalTimeMs, queryStartMs, queryEndMs, stepMs, depth);
       if (!(argResult instanceof RangeVector rv))

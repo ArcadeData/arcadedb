@@ -72,6 +72,7 @@ class Issue9883PromQLFunctionArgumentTypeTest extends TestHelper {
       assertRefused(aggregate(agg, "1"), "expected type instant vector in aggregation expression, got scalar");
       assertRefused(aggregate(agg, "abs(-1)"), "expected type instant vector in aggregation expression, got scalar");
       assertRefused(aggregate(agg, "\"a\""), "expected type instant vector in aggregation expression, got string");
+      assertRefused(aggregate(agg, "(\"a\")"), "expected type instant vector in aggregation expression, got string");
     }
   }
 
@@ -95,6 +96,7 @@ class Issue9883PromQLFunctionArgumentTypeTest extends TestHelper {
     for (final String fn : MATH_FNS) {
       assertRefused(fn + "(\"a\")", "expected type instant vector in call to function \"" + fn + "\", got string");
       assertRefused(fn + "('a')", "expected type instant vector in call to function \"" + fn + "\", got string");
+      assertRefused(fn + "((\"a\"))", "expected type instant vector in call to function \"" + fn + "\", got string");
     }
   }
 
@@ -172,6 +174,10 @@ class Issue9883PromQLFunctionArgumentTypeTest extends TestHelper {
     assertThat(((ScalarResult) instant("floor(-1.5)")).value()).isEqualTo(-2.0);
   }
 
+  /**
+   * Wraps {@code inner} in an aggregation: a plain operator name ({@code sum}) becomes {@code sum(inner)}, a template with a
+   * {@code %s} placeholder ({@code topk(1, %s)}) gets {@code inner} substituted for it.
+   */
   private static String aggregate(final String agg, final String inner) {
     return agg.contains("%s") ? String.format(agg, inner) : agg + "(" + inner + ")";
   }
