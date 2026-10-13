@@ -20,6 +20,7 @@ package com.arcadedb.server.http.ws.insert;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ErrorConcealment;
@@ -283,6 +284,19 @@ public class WebSocketInsertSessionManager {
     session.user = user;
 
     return session;
+  }
+
+  /**
+   * Applies one {@code chunk} frame. A session the chunk closed - a {@code terminate query} stopped it, issue #9838 - is
+   * forgotten at once, so the connection may open another without waiting for the idle sweep to notice it.
+   */
+  public JSONObject applyChunk(final WebSocketInsertSession session, final long chunkSeq, final JSONArray records) {
+    try {
+      return session.applyChunk(chunkSeq, records);
+    } finally {
+      if (session.isClosed())
+        unregister(session);
+    }
   }
 
   /** Ends a session the client itself terminated, and answers with the {@code committed} frame. */
