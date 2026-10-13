@@ -25,6 +25,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.math.BigDecimal;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Random;
@@ -148,6 +149,15 @@ class Issue9776ApproxDistanceInt8BandTest extends TestHelper {
     assertThatThrownBy(() -> approxDistance.execute(null, null, null,
         new Object[] { new Object[] { -129, 0 }, new Object[] { 0, 0 }, "INT8" }, context))
         .isInstanceOf(CommandSQLParsingException.class).hasMessageContaining("[-128, 127]");
+    // Any Number kind is checked on its value, not wrapped through byteValue()
+    assertThatThrownBy(() -> approxDistance.execute(null, null, null, new Object[] { List.of(300L), List.of(0L), "INT8" },
+        context)).isInstanceOf(CommandSQLParsingException.class).hasMessageContaining("[-128, 127]");
+    assertThatThrownBy(() -> approxDistance.execute(null, null, null,
+        new Object[] { List.of(new BigDecimal("0.5")), List.of(BigDecimal.ZERO), "INT8" }, context))
+        .isInstanceOf(CommandSQLParsingException.class).hasMessageContaining("integers");
+    assertThat((Float) approxDistance.execute(null, null, null,
+        new Object[] { List.of(-3L, new BigDecimal("4")), List.of(0L, BigDecimal.ZERO), "INT8" }, context)).isEqualTo(5f,
+        within(0.0001f));
     // The bounds themselves are codes
     final Object result = approxDistance.execute(null, null, null, new Object[] { List.of(-128), List.of(127.0), "INT8" },
         context);
