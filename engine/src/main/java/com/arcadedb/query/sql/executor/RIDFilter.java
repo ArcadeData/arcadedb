@@ -120,7 +120,11 @@ public final class RIDFilter {
     return acceptsNothing;
   }
 
-  /** Whether a record of {@code bucketId} can pass: false when the range or the RID set lies entirely in other buckets. */
+  /**
+   * Whether a record of {@code bucketId} can pass: false when the range or the RID set lies entirely in other buckets. The
+   * range half relies on {@link RID#compareTo} being bucket-major (bucket id first, then position): the range then spans
+   * whole buckets between its bounds' own, which is what lets a bucket outside them be skipped without reading it.
+   */
   public boolean acceptsBucket(final int bucketId) {
     if (acceptsNothing)
       return false;
