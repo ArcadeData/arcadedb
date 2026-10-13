@@ -34,40 +34,47 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Issue #9870: a FAILURE whose code a {@code classify*} method derived from a caught exception must go out through
  * {@code BoltNetworkExecutor.sendExecutionFailure}, the one sender that appends the leader's address to a follower's
  * refusal (issue #9845). Seven arms used to append it by hand, so a new arm could answer NotALeader and leave a
- * {@code bolt://} client without the address to reconnect to. This scans the executor's source and names every arm that
- * still calls {@code sendFailure} with a classified code.
+ * {@code bolt://} client without the address to reconnect to. This scans the executor's source and names every
+ * {@code sendFailure} call whose code is not a {@code BoltException}/{@code BoltErrorCodes} constant: a code computed
+ * from an exception, whether inline or through a local, belongs to {@code sendExecutionFailure}. The one exception is
+ * that sender's own call, which passes its {@code code} parameter on.
  * <p>
- * Limits, kept on purpose for a scan this cheap: the path is relative to the module root, which is Surefire's working
- * directory (an IDE run from another directory fails on the read, not silently); and only a {@code classify*} call
- * written inside the {@code sendFailure(} call is seen, so a classified code first stored in a local escapes it.
+ * The path is relative to the module root, which is Surefire's working directory: an IDE run from another directory
+ * fails on the read, not silently.
  */
 class Issue9870BoltFailureWiringTest {
   private static final Path    EXECUTOR   = Path.of("src/main/java/com/arcadedb/bolt/BoltNetworkExecutor.java");
-  private static final Pattern CLASSIFIED = Pattern.compile("sendFailure\\(\\s*classify\\w*\\(");
+  // A call (not the method's own declaration) whose first argument is neither a constant nor sendExecutionFailure's parameter
+  private static final Pattern COMPUTED   = Pattern.compile("(?<!void )sendFailure\\(\\s*(?!BoltException\\.|BoltErrorCodes\\.|code,)");
 
   @Test
-  void everyClassifiedFailureGoesThroughTheSenderThatAddsTheRedirect() throws IOException {
+  void everyComputedFailureCodeGoesThroughTheSenderThatAddsTheRedirect() throws IOException {
     final String source = Files.readString(EXECUTOR);
     assertThat(source).as("the scan must read the executor itself").contains("private void sendExecutionFailure(");
-    assertThat(offenders(source)).as("arms that send a classified failure without the leader redirect").isEmpty();
+    assertThat(offenders(source)).as("arms that send a computed failure code without the leader redirect").isEmpty();
   }
 
   @Test
-  void theScanFlagsAClassifiedFailureSentDirectly() {
+  void theScanFlagsAComputedCodeSentDirectly() {
     final String source = """
         sendFailure(BoltException.PROTOCOL_ERROR, "Unknown message");
         sendFailure(classifyExecutionError(e, BoltErrorCodes.DATABASE_ERROR), text);
         sendFailure(
             classifyDatabaseSelectionError(e), text);
         sendExecutionFailure(classifyExecutionError(e, BoltErrorCodes.TRANSACTION_ERROR), text, e);
+        final String status = classifyExecutionError(e, BoltErrorCodes.DATABASE_ERROR);
+        sendFailure(status, text);
+        sendFailure(BoltErrorCodes.FORBIDDEN_ERROR, "denied");
+        private void sendFailure(final String code, final String message) throws IOException {
+        sendFailure(code, withLeaderRedirect(text, error));
         """;
-    assertThat(offenders(source)).containsExactly(2, 3);
+    assertThat(offenders(source)).containsExactly(2, 3, 7);
   }
 
-  /** The 1-based line of every {@code sendFailure} call whose code is a {@code classify*} result. */
+  /** The 1-based line of every {@code sendFailure} call whose code is computed rather than a constant. */
   static List<Integer> offenders(final String source) {
     final List<Integer> lines = new ArrayList<>();
-    final Matcher matcher = CLASSIFIED.matcher(source);
+    final Matcher matcher = COMPUTED.matcher(source);
     while (matcher.find())
       lines.add((int) source.substring(0, matcher.start()).chars().filter(c -> c == '\n').count() + 1);
     return lines;

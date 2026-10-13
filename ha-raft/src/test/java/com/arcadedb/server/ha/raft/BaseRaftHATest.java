@@ -739,7 +739,11 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
   /** The index of the server {@code config} belongs to, read from its name ({@code "ArcadeDB_1"} is 1). */
   protected static int serverIndexOf(final ContextConfiguration config) {
     final String serverName = config.getValueAsString(GlobalConfiguration.SERVER_NAME);
-    return Integer.parseInt(serverName.substring(serverName.lastIndexOf('_') + 1));
+    try {
+      return Integer.parseInt(serverName.substring(serverName.lastIndexOf('_') + 1));
+    } catch (final NumberFormatException e) {
+      throw new IllegalStateException("Server name '" + serverName + "' does not end with '_<index>', as the fixture names its servers", e);
+    }
   }
 
   /** {@link #findLeaderIndex()}, failing the test when no leader is elected. */
@@ -774,6 +778,7 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
    */
   protected Runnable refuseForwardedWritesOn(final int serverIndex) {
     final RaftHAServer raft = getRaftPlugin(serverIndex).getRaftHAServer();
+    // The live map, a ConcurrentHashMap: clearing and refilling it while forwarding threads resolve addresses is safe
     final Map<RaftPeerId, String> httpAddresses = raft.getHttpAddresses();
     final Map<RaftPeerId, String> declared = new HashMap<>(httpAddresses);
     raft.stopCapabilityMonitor();

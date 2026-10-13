@@ -114,8 +114,8 @@ class Issue9870BoltFollowerLeaderRefusalIT extends BaseRaftHATest {
     assertThat(((Neo4jException) refused).code())
         .as("a routing driver re-routes on NotALeader, and retries DeadlockDetected on the same follower (issue #9845)")
         .isEqualTo(BoltErrorCodes.NOT_A_LEADER_ERROR);
-    // With no peer HTTP address left to resolve, the cluster has no Bolt endpoint for the leader either: the text names
-    // the leader as the refusal does
+    // The routing table resolves the leader's Bolt endpoint from the same peer HTTP addresses the injection cleared, so
+    // it has none here, and the text falls back to naming the leader the way the refusal does (its server name)
     final String leaderName = getRaftPlugin(follower).getRaftHAServer().getLeaderName();
     assertThat(leaderName).as("the follower must know which node leads").isNotBlank();
     assertThat(refused.getMessage())
