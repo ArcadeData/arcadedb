@@ -437,6 +437,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database);
     context.setInputParameters(parameters);
+    CypherExecutionPlan.installFunctionResolver(context, CYPHER_FUNCTION_FACTORY);
     final Object value = EXPRESSION_EVALUATOR.evaluate(condition, new ResultInternal(), context);
     if (value == null || value instanceof Boolean)
       return Boolean.TRUE.equals(value);

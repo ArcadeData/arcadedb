@@ -65,7 +65,10 @@ class ClauseDispatcher {
     register(Cypher25Parser.ClauseContext::loadCSVClause, this::handleLoadCSV);
     register(Cypher25Parser.ClauseContext::finishClause, this::handleFinish);
     register(Cypher25Parser.ClauseContext::letClause, this::handleLet);
-    register(Cypher25Parser.ClauseContext::useClause, this::handleUse);
+    // USE names the graph to run against. Only the current database can be named: Cypher25AntlrParser refuses any other
+    // name (it knows the database, this dispatcher does not), so a USE that reaches here selects what is selected already.
+    // The graph reference is still resolved, so a form that names no graph by name is refused here too.
+    register(Cypher25Parser.ClauseContext::useClause, (ctx, builder, astBuilder) -> CypherASTBuilder.useGraphName(ctx.useClause()));
   }
 
   /**
@@ -164,14 +167,6 @@ class ClauseDispatcher {
     // an implicit `WITH *, expr AS x` per item. One WITH per item, in order, so an item may read the ones before it.
     for (final WithClause with : astBuilder.visitLetClause(ctx.letClause()))
       builder.addWith(with);
-  }
-
-  private void handleUse(final Cypher25Parser.ClauseContext ctx, final StatementBuilder builder,
-                         final CypherASTBuilder astBuilder) {
-    // USE names the graph to run against. Only the current database can be named: Cypher25AntlrParser refuses any other
-    // name (it knows the database, this dispatcher does not), so a USE that reaches here selects what is selected already.
-    // The graph reference is still resolved, so a form that names no graph by name is refused here too.
-    CypherASTBuilder.useGraphName(ctx.useClause());
   }
 
   private void handleReturn(final Cypher25Parser.ClauseContext ctx, final StatementBuilder builder,
