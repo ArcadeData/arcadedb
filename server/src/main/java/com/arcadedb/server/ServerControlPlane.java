@@ -31,6 +31,7 @@ import com.arcadedb.engine.OperationProgressRegistry;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.DatabaseOperationInProgressException;
 import com.arcadedb.exception.TransactionCommittedRemotelyException;
+import com.arcadedb.exception.TransactionOutcomeUnknownException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.RunningQuery;
 import com.arcadedb.serializer.json.JSONArray;
@@ -1192,11 +1193,11 @@ public class ServerControlPlane {
     applySetting(database.getConfiguration(), key, value);
     try {
       database.saveConfiguration();
-    } catch (final TransactionCommittedRemotelyException e) {
-      // Committed cluster-wide: every node, this one included, installs the new document, so there is nothing to undo
+    } catch (final TransactionCommittedRemotelyException | TransactionOutcomeUnknownException e) {
+      // Committed cluster-wide, or possibly: every node, this one included, applies the change if it commits, so undoing
+      // it here would leave this node alone on the previous value (issue #9904)
       throw e;
     } catch (final IOException | RuntimeException e) {
-      // An outcome Raft cannot confirm either way is undone too, and can race this node's own apply: issue #9904
       if (database.getEmbedded() instanceof LocalDatabase local)
         local.restoreSetting(storedKey, previousValue);
       throw e;

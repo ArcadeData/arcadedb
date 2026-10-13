@@ -23,6 +23,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.PageManager;
 import com.arcadedb.exception.TransactionCommittedRemotelyException;
+import com.arcadedb.exception.TransactionOutcomeUnknownException;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -89,6 +90,20 @@ class Issue9763SaveFailureRollbackTest {
         .isInstanceOf(TransactionCommittedRemotelyException.class);
 
     assertThat(database.getConfiguration().getValueAsInteger(GlobalConfiguration.TYPE_DEFAULT_BUCKETS)).isEqualTo(13);
+  }
+
+  /** Possibly committed: undoing it would leave this node alone on the previous value if it does (issue #9904). */
+  @Test
+  void aSettingWhoseOutcomeIsUnknownStaysInForce() throws Exception {
+    database.saveFailure = new TransactionOutcomeUnknownException("dispatched to Raft, then the wait gave up");
+
+    assertThatThrownBy(() -> database.command("sql", "ALTER DATABASE `arcadedb.typeDefaultBuckets` 13"))
+        .isInstanceOf(TransactionOutcomeUnknownException.class);
+
+    assertThat(database.getConfiguration().getValueAsInteger(GlobalConfiguration.TYPE_DEFAULT_BUCKETS)).isEqualTo(13);
+    assertThat(database.pendingConfigurationChanges())
+        .as("still pending, so the next change made on this node replicates it if this one never commits")
+        .contains("typeDefaultBuckets");
   }
 
   @Test

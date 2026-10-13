@@ -28,6 +28,7 @@ import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
+import java.io.IOException;
 import java.util.Date;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -136,5 +137,24 @@ class Issue9763AlterDatabaseConfigurationTest extends TestHelper {
     local.applyConfigurationChanges("{\"configuration\":{},\"removed\":[\"dateImplementation\"]}");
     assertThat(local.getSerializer().getDateImplementation())
         .isEqualTo(GlobalConfiguration.DATE_IMPLEMENTATION.getDefValue());
+  }
+
+  /**
+   * A replicated change whose file cannot be written is in force in memory anyway, and the failure is reported: the
+   * HA apply turns it into a logged, non-halting entry failure rather than a crash loop on a full or read-only volume.
+   */
+  @Test
+  void aChangeWhoseFileCannotBeWrittenIsInForceAndReported() {
+    final LocalDatabase local = (LocalDatabase) ((DatabaseInternal) database).getEmbedded();
+    final File configuration = new File(local.getDatabasePath(), LocalDatabase.CONFIGURATION_FILE_NAME);
+    assertThat(configuration.delete() || !configuration.exists()).isTrue();
+    assertThat(configuration.mkdir()).isTrue();
+    try {
+      assertThatThrownBy(() -> local.applyConfigurationChanges("{\"configuration\":{\"txRetries\":8},\"removed\":[]}"))
+          .isInstanceOf(IOException.class);
+    } finally {
+      assertThat(configuration.delete()).isTrue();
+    }
+    assertThat(local.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_RETRIES)).isEqualTo(8);
   }
 }

@@ -27,6 +27,7 @@ import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.TransactionCommittedRemotelyException;
+import com.arcadedb.exception.TransactionOutcomeUnknownException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.Result;
@@ -148,12 +149,13 @@ public class AlterDatabaseStatement extends DDLStatement {
 
       try {
         db.saveConfiguration();
-      } catch (final TransactionCommittedRemotelyException e) {
-        // Committed cluster-wide: every node, this one included, installs the new document, so there is nothing to undo
+      } catch (final TransactionCommittedRemotelyException | TransactionOutcomeUnknownException e) {
+        // Committed cluster-wide, or possibly: every node, this one included, applies the change if it commits, so
+        // undoing it here would leave this node alone on the previous value (issue #9904). If it never commits, the
+        // value stays in force here in memory only, and the next change made on this node replicates it.
         throw e;
       } catch (final RuntimeException e) {
-        // An outcome Raft cannot confirm either way (the entry was dispatched, then the wait gave up) is undone here
-        // too, and can race this node's own apply of the entry if it does commit: issue #9904.
+        // Refused or failed before it could commit
         restoreSetting(db, cfg.getKey(), previousValue);
         throw e;
       } catch (final IOException e) {
