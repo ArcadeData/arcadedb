@@ -273,8 +273,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     if (!(index instanceof IndexInternal internal))
       return false;
     // The entries of one key carry the same key instance, so the identity test settles nearly every row: a key is converted once
-    if (key != checkedKey && !(key instanceof Object[] array && checkedKey instanceof Object[] checked ? Arrays.equals(array, checked) :
-        Objects.equals(key, checkedKey))) {
+    if (key != checkedKey && !sameKey(key, checkedKey)) {
       try {
         checkedLookupKey = internal.convertLookupKeys(key instanceof Object[] array ? array : new Object[] { key });
       } catch (final IllegalArgumentException e) {
@@ -292,6 +291,13 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     keyMatcher.start(internal, checkedLookupKey);
     ((DatabaseInternal) context.getDatabase()).getIndexer().forEachIndexKey(index, record, keyMatcher);
     return keyMatcher.found;
+  }
+
+  /** Whether two entry keys are the same key: a composite one is an array, compared element by element. */
+  static boolean sameKey(final Object a, final Object b) {
+    if (a instanceof Object[] left && b instanceof Object[] right)
+      return Arrays.equals(left, right);
+    return Objects.equals(a, b);
   }
 
   /**
