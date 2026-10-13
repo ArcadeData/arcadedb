@@ -97,14 +97,12 @@ public class AlgoBiconnectedComponents extends AbstractAlgoProcedure {
     final int[][] adj = graph.adjacency(Vertex.DIRECTION.BOTH, relTypes);
     final UndirectedLowPointDfs dfs = new UndirectedLowPointDfs(adj);
 
-    // node → list of component IDs it belongs to
-    final List<List<Integer>> nodeComponents = new ArrayList<>(n);
-    for (int i = 0; i < n; i++)
-      nodeComponents.add(new ArrayList<>());
+    // EVERY (node, componentId) MEMBERSHIP IN THE ORDER IT IS FOUND: COMPONENT IDS GROW, SO EACH NODE'S IDS ARE ASCENDING
+    final IntPairStack memberships = new IntPairStack();
 
     // THE EDGES OF THE COMPONENTS STILL OPEN, AS TWO PARALLEL STACKS OF ENDPOINTS. EACH EDGE IS PUSHED ONCE: A TREE EDGE
     // WHEN IT DISCOVERS ITS CHILD, A BACK EDGE FROM ITS DESCENDANT'S SIDE
-    final EdgeStack edgeStack = new EdgeStack();
+    final IntPairStack edgeStack = new IntPairStack();
     // THE LAST COMPONENT EACH NODE WAS ADDED TO, SO A NODE MET ON SEVERAL EDGES OF ONE COMPONENT IS ADDED ONCE
     final int[] lastComponent = new int[n];
     Arrays.fill(lastComponent, -1);
@@ -152,25 +150,37 @@ public class AlgoBiconnectedComponents extends AbstractAlgoProcedure {
       private void addToComponent(final int node, final int cid) {
         if (lastComponent[node] != cid) {
           lastComponent[node] = cid;
-          nodeComponents.get(node).add(cid);
+          memberships.push(node, cid);
         }
       }
     });
 
-    final List<Result> results = new ArrayList<>();
+    // GROUPED BY NODE WITH A STABLE COUNTING SORT, WHICH KEEPS EACH NODE'S COMPONENT IDS IN THEIR ASCENDING FIND ORDER
+    final int total = memberships.size;
+    final int[] start = new int[n + 1];
+    for (int m = 0; m < total; m++)
+      start[memberships.us[m] + 1]++;
+    for (int i = 0; i < n; i++)
+      start[i + 1] += start[i];
+    final int[] fill = Arrays.copyOf(start, n);
+    final int[] componentIds = new int[total];
+    for (int m = 0; m < total; m++)
+      componentIds[fill[memberships.us[m]]++] = memberships.vs[m];
+
+    final List<Result> results = new ArrayList<>(total);
     for (int i = 0; i < n; i++) {
-      for (final int cid : nodeComponents.get(i)) {
+      for (int m = start[i]; m < start[i + 1]; m++) {
         final ResultInternal r = new ResultInternal();
         r.setProperty("node", graph.getRID(i));
-        r.setProperty("componentId", cid);
+        r.setProperty("componentId", componentIds[m]);
         results.add(r);
       }
     }
     return results.stream();
   }
 
-  /** A stack of (u, v) edges over two growable primitive arrays: no array or boxed pair per edge. */
-  private static final class EdgeStack {
+  /** A stack of (u, v) int pairs over two growable primitive arrays: no array or boxed pair per entry. */
+  private static final class IntPairStack {
     private int[] us   = new int[64];
     private int[] vs   = new int[64];
     private int   size = 0;

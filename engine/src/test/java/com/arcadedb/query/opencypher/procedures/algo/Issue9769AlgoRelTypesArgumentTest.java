@@ -157,6 +157,9 @@ class Issue9769AlgoRelTypesArgumentTest {
     assertThat(rows("CALL algo.bridges(['R', 'S']) YIELD source RETURN source")).hasSize(1);
     // An existing type with no edges is a legitimate empty filter, not an error
     assertThat(rows("CALL algo.bridges('S') YIELD source RETURN source")).isEmpty();
+    // A blank entry in a list is dropped like an empty part of 'R,,S'; a list of blanks means every type
+    assertThat(rows("CALL algo.bridges(['R', '']) YIELD source RETURN source")).hasSize(1);
+    assertThat(rows("CALL algo.bridges(['', ' ']) YIELD source RETURN source")).hasSize(1);
     // Blank and null mean every type
     assertThat(rows("CALL algo.bridges('') YIELD source RETURN source")).hasSize(1);
     assertThat(rows("CALL algo.bridges(null) YIELD source RETURN source")).hasSize(1);

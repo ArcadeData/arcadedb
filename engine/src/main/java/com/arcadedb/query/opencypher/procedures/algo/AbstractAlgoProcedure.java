@@ -52,6 +52,7 @@ import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 /**
  * Abstract base class for algorithm procedures.
@@ -169,7 +170,12 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
     return switch (arg) {
       case null -> null;
       case String s -> splitRelTypeString(s);
-      case Collection<?> coll -> coll.stream().map(Object::toString).toArray(String[]::new);
+      case Collection<?> coll -> {
+        // Blank and null entries are dropped as the separated-string form drops empty parts; none left means every type
+        final String[] names = coll.stream().filter(Objects::nonNull).map(o -> o.toString().trim()).filter(s -> !s.isEmpty())
+            .toArray(String[]::new);
+        yield names.length == 0 ? null : names;
+      }
       default -> new String[]{arg.toString()};
     };
   }
