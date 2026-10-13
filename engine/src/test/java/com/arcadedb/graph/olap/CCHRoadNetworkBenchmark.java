@@ -51,13 +51,21 @@ import static org.assertj.core.api.Assertions.assertThat;
  * removed roads, and the cost of a structural change, which rebuilds.
  * <p>
  * Runs on a DIMACS road graph when {@code -Dcch.dimacs=<path to .gr or .gr.gz>} is given (e.g. {@code USA-road-d.CAL}
- * from the 9th DIMACS Implementation Challenge), and on a synthetic 300x300 grid otherwise.
+ * from the 9th DIMACS Implementation Challenge), and on a synthetic 300x300 grid otherwise. The routes start from the
+ * junction {@code -Dcch.source=<id>} (the first one by default) and, besides the quantiles of its shortest-path tree, also
+ * go to {@code -Dcch.target=<id>} when given; ids are numbered from 1, as in the DIMACS files (e.g. 472033 and 624638
+ * are the junctions nearest to Tallahassee and Coral Gables in {@code USA-road-d.FLA}). With
+ * {@code -Dcch.coordinates=<path to the matching .co or .co.gz>} A* is measured too, guided by the straight line to the
+ * destination.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 @Tag("benchmark")
 class CCHRoadNetworkBenchmark {
   private static final int DESTINATIONS = 12;
+  private static final int SOURCE       = Integer.getInteger("cch.source", 1) - 1;
+  private static final int TARGET       = Integer.getInteger("cch.target", 0) - 1;
+  private static final String COORDINATES = System.getProperty("cch.coordinates");
 
   private record Graph(String name, int n, int[] tails, int[] heads, double[] weights) {
     int m() {
@@ -88,21 +96,32 @@ class CCHRoadNetworkBenchmark {
     adjacency(graph, offsets, targets, costs);
 
     // one source, destinations at increasing distance: the quantiles of the source's shortest-path tree
-    final int source = 0;
+    final int source = SOURCE;
     final double[] all = dijkstraAll(graph.n(), offsets, targets, costs, source);
     final int[] byDistance = sortedByDistance(all);
-    final int[] destinations = new int[DESTINATIONS];
-    for (int i = 0; i < DESTINATIONS; i++)
-      destinations[i] = byDistance[(int) ((long) (byDistance.length - 1) * (i + 1) / DESTINATIONS)];
+    final int[] destinations = destinations(byDistance);
 
-    // warm up both
+    // A*, when the coordinates of the junctions are given: the straight line to the destination, scaled so that it
+    // never exceeds the real cost, which keeps A* exact
+    final double[] xyz = path != null && COORDINATES != null ? coordinates(COORDINATES, graph.n()) : null;
+    final double scale = xyz != null ? heuristicScale(graph, xyz) : 0;
+    if (xyz != null)
+      log("A*: straight-line estimate x %.1f (the smallest cost per unit of straight line over all arcs)", scale);
+
+    // warm up all
     for (int r = 0; r < 3; r++)
       for (final int t : destinations) {
         metric.shortestPathWithDistance(source, t);
         dijkstraTo(graph.n(), offsets, targets, costs, source, t);
+        if (xyz != null)
+          astarTo(offsets, targets, costs, xyz, scale, source, t);
       }
 
-    log("%-14s %14s %14s %16s %16s", "distance", "CCH", "Dijkstra", "CCH memory", "Dijkstra memory");
+    if (xyz != null)
+      log("%-14s %14s %14s %14s %16s %16s %16s", "distance", "CCH", "Dijkstra", "A*", "CCH memory", "Dijkstra memory",
+          "A* memory");
+    else
+      log("%-14s %14s %14s %16s %16s", "distance", "CCH", "Dijkstra", "CCH memory", "Dijkstra memory");
     for (final int t : destinations) {
       final int reps = 50;
       long allocated = allocatedBytes();
@@ -121,8 +140,19 @@ class CCHRoadNetworkBenchmark {
 
       assertThat(path0).isNotNull();
       assertThat(path0.distance()).isEqualTo(expected);
-      log("%-14.0f %11.3f ms %11.3f ms %13.1f KB %13.1f MB", expected, cchMicros / 1000, dijkstraMicros / 1000,
-          cchBytes / 1024.0, dijkstraBytes / 1024.0 / 1024.0);
+      if (xyz != null) {
+        allocated = allocatedBytes();
+        begin = System.nanoTime();
+        final double found = astarTo(offsets, targets, costs, xyz, scale, source, t);
+        final double astarMicros = (System.nanoTime() - begin) / 1_000.0;
+        final long astarBytes = allocatedBytes() - allocated;
+        assertThat(found).isEqualTo(expected);
+        log("%-14.0f %11.3f ms %11.3f ms %11.3f ms %13.1f KB %13.1f MB %13.1f MB", expected, cchMicros / 1000,
+            dijkstraMicros / 1000, astarMicros / 1000, cchBytes / 1024.0, dijkstraBytes / 1024.0 / 1024.0,
+            astarBytes / 1024.0 / 1024.0);
+      } else
+        log("%-14.0f %11.3f ms %11.3f ms %13.1f KB %13.1f MB", expected, cchMicros / 1000, dijkstraMicros / 1000,
+            cchBytes / 1024.0, dijkstraBytes / 1024.0 / 1024.0);
     }
     log("CCH per-query scratch (pooled, reused): %.1f KB", 24.0 * topology.maxSearchSpace() / 1024);
 
@@ -200,20 +230,19 @@ class CCHRoadNetworkBenchmark {
       final int[] targets = new int[graph.m()];
       final double[] costs = new double[graph.m()];
       adjacency(graph, offsets, targets, costs);
-      final int[] byDistance = sortedByDistance(dijkstraAll(graph.n(), offsets, targets, costs, 0));
+      final int[] byDistance = sortedByDistance(dijkstraAll(graph.n(), offsets, targets, costs, SOURCE));
       final String[] types = { "ROAD" };
       for (int r = 0; r < 20; r++)
-        ShortestPathFinder.find(database, junctions[0], junctions[byDistance[byDistance.length - 1]], "distance",
+        ShortestPathFinder.find(database, junctions[SOURCE], junctions[byDistance[byDistance.length - 1]], "distance",
             Vertex.DIRECTION.OUT, types, null);
       log("%-14s %14s %16s", "distance", "query", "memory");
-      for (int i = 0; i < DESTINATIONS; i++) {
-        final int t = byDistance[(int) ((long) (byDistance.length - 1) * (i + 1) / DESTINATIONS)];
+      for (final int t : destinations(byDistance)) {
         final int reps = 50;
         final long allocated = allocatedBytes();
         begin = System.nanoTime();
         ShortestPathFinder.Result result = null;
         for (int r = 0; r < reps; r++)
-          result = ShortestPathFinder.find(database, junctions[0], junctions[t], "distance", Vertex.DIRECTION.OUT, types, null);
+          result = ShortestPathFinder.find(database, junctions[SOURCE], junctions[t], "distance", Vertex.DIRECTION.OUT, types, null);
         final double micros = (System.nanoTime() - begin) / 1_000.0 / reps;
         assertThat(result.engine()).isEqualTo(ShortestPathFinder.Engine.CONTRACTION_HIERARCHY);
         log("%-14.0f %11.3f ms %13.1f KB", result.weight(), micros / 1000, (allocatedBytes() - allocated) / reps / 1024.0);
@@ -234,7 +263,7 @@ class CCHRoadNetworkBenchmark {
             updateThroughTheDatabase(database, cch, junctions, graph, random, kinds[1], 1, false));
 
       begin = System.nanoTime();
-      database.transaction(() -> junctions[0].asVertex().modify()
+      database.transaction(() -> junctions[SOURCE].asVertex().modify()
           .newEdge("ROAD", junctions[byDistance[byDistance.length - 1]].asVertex()).set("distance", 1.0).save());
       assertThat(cch.awaitReady(false, 10, TimeUnit.MINUTES)).isTrue();
       log("add edge:           %,d ms (re-contracted in the kept order: %d)", (System.nanoTime() - begin) / 1_000_000,
@@ -242,6 +271,19 @@ class CCHRoadNetworkBenchmark {
     } finally {
       database.drop();
     }
+  }
+
+  /**
+   * The quantiles of the source's shortest-path tree, nearest to farthest, followed by {@code -Dcch.target} when given:
+   * the last row of a report is then that junction.
+   */
+  private static int[] destinations(final int[] byDistance) {
+    final int[] destinations = new int[TARGET >= 0 ? DESTINATIONS + 1 : DESTINATIONS];
+    for (int i = 0; i < DESTINATIONS; i++)
+      destinations[i] = byDistance[(int) ((long) (byDistance.length - 1) * (i + 1) / DESTINATIONS)];
+    if (TARGET >= 0)
+      destinations[DESTINATIONS] = TARGET;
+    return destinations;
   }
 
   /** Commits weight changes to {@code edges} random roads and waits for the hierarchy: "commit + catch-up". */
@@ -389,6 +431,84 @@ class CCHRoadNetworkBenchmark {
       targets[fill[graph.tails()[i]]] = graph.heads()[i];
       costs[fill[graph.tails()[i]]++] = graph.weights()[i];
     }
+  }
+
+  /**
+   * The junctions of a DIMACS {@code .co} file ({@code v <id> <longitude> <latitude>}, in millionths of a degree) as
+   * points on the unit sphere, three doubles each: the straight line between two of them, the chord, is a metric.
+   */
+  private static double[] coordinates(final String path, final int n) throws IOException {
+    final double[] xyz = new double[3 * n];
+    try (final InputStream raw = new FileInputStream(path);
+        final InputStream in = path.endsWith(".gz") ? new GZIPInputStream(raw, 1 << 16) : raw;
+        final BufferedReader reader = new BufferedReader(new InputStreamReader(in, StandardCharsets.US_ASCII), 1 << 16)) {
+      String line;
+      while ((line = reader.readLine()) != null) {
+        if (!line.startsWith("v "))
+          continue;
+        final String[] parts = line.split(" ");
+        final int v = Integer.parseInt(parts[1]) - 1;
+        final double lon = Math.toRadians(Integer.parseInt(parts[2]) / 1e6);
+        final double lat = Math.toRadians(Integer.parseInt(parts[3]) / 1e6);
+        xyz[3 * v] = Math.cos(lat) * Math.cos(lon);
+        xyz[3 * v + 1] = Math.cos(lat) * Math.sin(lon);
+        xyz[3 * v + 2] = Math.sin(lat);
+      }
+    }
+    return xyz;
+  }
+
+  private static double chord(final double[] xyz, final int u, final int v) {
+    final double dx = xyz[3 * u] - xyz[3 * v];
+    final double dy = xyz[3 * u + 1] - xyz[3 * v + 1];
+    final double dz = xyz[3 * u + 2] - xyz[3 * v + 2];
+    return Math.sqrt(dx * dx + dy * dy + dz * dz);
+  }
+
+  /**
+   * The largest factor that keeps {@code factor * chord} at or below the cost of every arc. Every path then costs at least
+   * the factor times the chord between its two ends, by the triangle inequality, so the estimate never overshoots and A*
+   * stays exact. Derived from the data, so it needs no assumption on the units of the weights.
+   */
+  private static double heuristicScale(final Graph graph, final double[] xyz) {
+    double scale = Double.POSITIVE_INFINITY;
+    for (int i = 0; i < graph.m(); i++) {
+      final double length = chord(xyz, graph.tails()[i], graph.heads()[i]);
+      if (length > 0)
+        scale = Math.min(scale, graph.weights()[i] / length);
+    }
+    // a hair below the bound, so that rounding cannot push an estimate above the real cost
+    return scale == Double.POSITIVE_INFINITY ? 0 : scale * (1 - 1e-9);
+  }
+
+  /** A* from {@code source} to {@code target}, guided by {@code scale} times the chord to the target. */
+  private static double astarTo(final int[] offsets, final int[] targets, final double[] costs, final double[] xyz,
+      final double scale, final int source, final int target) {
+    final double[] dist = new double[offsets.length - 1];
+    Arrays.fill(dist, Double.POSITIVE_INFINITY);
+    dist[source] = 0;
+    final PriorityQueue<double[]> heap = new PriorityQueue<>((a, b) -> Double.compare(a[0], b[0]));
+    heap.add(new double[] { scale * chord(xyz, source, target), 0, source });
+    while (!heap.isEmpty()) {
+      final double[] top = heap.poll();
+      final int u = (int) top[2];
+      if (top[1] > dist[u])
+        continue;
+      if (u == target)
+        return top[1];
+      for (int e = offsets[u]; e < offsets[u + 1]; e++) {
+        final double w = costs[e];
+        if (!(w >= 0) || w == Double.POSITIVE_INFINITY)
+          continue;
+        final double g = top[1] + w;
+        final int v = targets[e];
+        if (g < dist[v]) {
+          dist[v] = g;
+          heap.add(new double[] { g + scale * chord(xyz, v, target), g, v });
+        }
+      }
+    }
+    return Double.POSITIVE_INFINITY;
   }
 
   private static int[] sortedByDistance(final double[] dist) {
