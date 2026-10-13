@@ -974,7 +974,10 @@ public class MatchExecutionPlanner {
 
     final InternalExecutionPlan plan = select.createExecutionPlan(context);
     if (rid != null && (typeName != null || bucketName != null)) {
-      final SelectExecutionPlan selectPlan = (SelectExecutionPlan) plan;
+      // THE CHECKS MUST NOT BE SKIPPED SILENTLY: A PLAN THEY CANNOT BE CHAINED TO WOULD ANSWER RECORDS OF ANY TYPE
+      if (!(plan instanceof SelectExecutionPlan selectPlan))
+        throw new CommandExecutionException(
+            "Cannot apply the type/bucket constraints of MATCH alias '" + alias + "' to a " + plan.getClass().getSimpleName());
       if (typeName != null)
         selectPlan.chain(new FilterByTypeStep(new Identifier(typeName), context));
       if (bucketName != null)
@@ -1180,8 +1183,11 @@ public class MatchExecutionPlanner {
           final long upperBound;
           final WhereClause filter = aliasFilters.get(alias);
           if (filter != null && matchedDependencies(filter).isEmpty()) {
-            // AN UNKNOWN FILTER ESTIMATE (-1) STAYS UNKNOWN THROUGH THE min (ISSUE #9908)
-            upperBound = Math.min(db.countBucket(bucketName), filter.estimate(oClass, threshold, context));
+            // AN UNKNOWN FILTER ESTIMATE STAYS UNKNOWN: IT IS NOT A BOUND TO TAKE THE min WITH (ISSUE #9908)
+            final long filterEstimate = filter.estimate(oClass, threshold, context);
+            upperBound = filterEstimate == WhereClause.UNKNOWN_ESTIMATE ?
+                WhereClause.UNKNOWN_ESTIMATE :
+                Math.min(db.countBucket(bucketName), filterEstimate);
           } else {
             upperBound = db.countBucket(bucketName);
           }
