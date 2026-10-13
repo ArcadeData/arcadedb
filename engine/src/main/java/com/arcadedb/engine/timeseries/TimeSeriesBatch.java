@@ -64,6 +64,8 @@ public class TimeSeriesBatch implements TimeSeriesRowSource {
   private static final long ABSENT_DOUBLE_BITS = Double.doubleToRawLongBits(TimeSeriesNaN.ABSENT);
   private static final long ABSENT_FLOAT_BITS  = Float.floatToRawIntBits((float) TimeSeriesNaN.ABSENT);
 
+  // ORDER MATTERS: the numeric kinds (DOUBLE up to BYTE, the datetimes being LONG) come first and BOOLEAN, STRING and TEXT after
+  // them, which ColumnDefinition.storableValue relies on (kind <= KIND_BYTE means "numeric"); KindOrderingTest pins it.
   static final byte KIND_DOUBLE   = 0;
   static final byte KIND_FLOAT    = 1;
   static final byte KIND_LONG     = 2;

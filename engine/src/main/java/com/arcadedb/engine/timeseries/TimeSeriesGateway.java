@@ -319,7 +319,7 @@ public final class TimeSeriesGateway {
             else
               value = sample.getFields().get(col.getName());
 
-            // ONLY THE CONVERSION IS GUARDED: AN IllegalArgumentException FROM ANYWHERE ELSE IS NOT A COLUMN PROBLEM
+            // Only the conversion is guarded: an IllegalArgumentException from anywhere else is not a column problem
             try {
               columnValues[colIdx][valid] = col.storableValue(database, value);
             } catch (final IllegalArgumentException e) {
@@ -338,7 +338,7 @@ public final class TimeSeriesGateway {
         if (valid == 0)
           continue;
         if (valid < count) {
-          // ONLY WHEN A SAMPLE WAS REFUSED, SO THE COPY IS PAID BY THE FAILING REQUEST AND NEVER BY A CLEAN ONE
+          // Only when a sample was refused, so the copy is paid by the failing request and never by a clean one
           timestamps = Arrays.copyOf(timestamps, valid);
           for (int c = 0; c < columnValues.length; c++)
             columnValues[c] = Arrays.copyOf(columnValues[c], valid);

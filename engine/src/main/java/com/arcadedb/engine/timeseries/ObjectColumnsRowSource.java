@@ -86,7 +86,7 @@ final class ObjectColumnsRowSource implements TimeSeriesRowSource {
     final byte kind = kinds[columnIndex];
 
     if (kind == TimeSeriesBatch.KIND_BOOLEAN) {
-      // NULL IS ABSENT (FALSE), BUT A VALUE THAT IS NOT A BOOLEAN IS REFUSED, NOT STORED AS FALSE
+      // Null is absent (false), but a value that is not a boolean is refused, not stored as false
       if (value != null && !(value instanceof Boolean))
         throw unstorable(columnIndex, value);
       return Boolean.TRUE.equals(value) ? 1L : 0L;
