@@ -44,6 +44,13 @@ import static io.github.jbellis.jvector.vector.VectorUtil.squareL2Distance;
 public final class VectorUtils {
 
   /**
+   * Hard cap on the candidates a vector search asks its indexes for, per index, when it widens its fetch: whether to
+   * top up an answer stale candidates left short (see {@link #searchWithStaleTopUp}) or to over-fetch for grouping.
+   * About 100k RID-distance pairs is a few MB of heap, well under the budget of any realistic query.
+   */
+  public static final int MAX_FETCH_CANDIDATES = 100_000;
+
+  /**
    * One-time WARNING gate for {@link #dequantizeInt8ToFloat(byte[])} on byte {@code -128} inputs.
    * Cohere/OpenAI int8 endpoints emit {@code [-127, 127]} only; encountering a {@code -128}
    * indicates a non-Cohere/OpenAI byte source where the silent clamp to {@code -127} (preserving
@@ -620,13 +627,6 @@ public final class VectorUtils {
         return true;
     return false;
   }
-
-  /**
-   * Hard cap on the candidates a vector search asks its indexes for, per index, when it widens its fetch: whether to
-   * top up an answer stale candidates left short (see {@link #searchWithStaleTopUp}) or to over-fetch for grouping.
-   * About 100k RID-distance pairs is a few MB of heap, well under the budget of any realistic query.
-   */
-  public static final int MAX_FETCH_CANDIDATES = 100_000;
 
   /**
    * One search-and-load pass of a k-NN search over one or more vector indexes, used by {@link #searchWithStaleTopUp}.
