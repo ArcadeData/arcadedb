@@ -149,13 +149,17 @@ public class AlterDatabaseStatement extends DDLStatement {
 
       try {
         db.saveConfiguration();
-      } catch (final TransactionCommittedRemotelyException | TransactionOutcomeUnknownException e) {
-        // Committed cluster-wide, or possibly: every node, this one included, applies the change if it commits, so
-        // undoing it here would leave this node alone on the previous value (issue #9904). If it never commits, the
-        // value stays in force here in memory only, and the next change made on this node replicates it.
+      } catch (final TransactionCommittedRemotelyException e) {
+        // Committed cluster-wide: every node, this one included, installs the change, so there is nothing to undo
+        throw e;
+      } catch (final TransactionOutcomeUnknownException e) {
+        // Handed to the replication, which may still commit it or never (issue #9904). Putting the previous value back
+        // blindly would race this node's own apply of the change: run after it, it leaves this node alone on the old
+        // value. The setting takes what this node's configuration.json holds instead, which is what was installed here
+        restoreSettingFromSavedConfiguration(db, cfg.getKey());
         throw e;
       } catch (final RuntimeException e) {
-        // Refused or failed before it could commit
+        // A definite failure: refused or failed before it could commit, so the previous value is the right one
         restoreSetting(db, cfg.getKey(), previousValue);
         throw e;
       } catch (final IOException e) {
@@ -184,6 +188,15 @@ public class AlterDatabaseStatement extends DDLStatement {
   private static void restoreSetting(final DatabaseInternal db, final String key, final Object previousValue) {
     if (db.getEmbedded() instanceof LocalDatabase local)
       local.restoreSetting(key, previousValue);
+  }
+
+  /**
+   * Settles the setting on what {@code configuration.json} holds after a save whose outcome is unknown (issue #9904),
+   * see {@link LocalDatabase#restoreSettingFromSavedConfiguration(String)}.
+   */
+  private static void restoreSettingFromSavedConfiguration(final DatabaseInternal db, final String key) {
+    if (db.getEmbedded() instanceof LocalDatabase local)
+      local.restoreSettingFromSavedConfiguration(key);
   }
 
   /**
