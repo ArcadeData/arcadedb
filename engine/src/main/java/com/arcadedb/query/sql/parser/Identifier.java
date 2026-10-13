@@ -36,12 +36,22 @@ public class Identifier extends SimpleNode {
   protected boolean quoted = false;
 
   /**
+   * Worked out from {@link #value} where it is written ({@link #setValue(String)} and the copy constructor), because a query
+   * reads them for every property reference of every row it evaluates while they depend only on the query text (issue #9925):
+   * the plain name {@link #getStringValue()} returns, and the input-parameter key a Postgres client's {@code $N} addresses.
+   */
+  private transient String plainValue;
+  private transient String positionalParameterKey;
+
+  /**
    * set to true by the query executor/optimizer for internally generated aliases for query optimization
    */
   protected boolean internalAlias = false;
 
   public Identifier(final Identifier copyFrom, final boolean quoted) {
     this.value = copyFrom.value;
+    this.plainValue = copyFrom.plainValue;
+    this.positionalParameterKey = copyFrom.positionalParameterKey;
     this.quoted = quoted;
   }
 
@@ -79,7 +89,16 @@ public class Identifier extends SimpleNode {
    * @return
    */
   public String getStringValue() {
-    return unescape(value);
+    return plainValue;
+  }
+
+  /**
+   * The input-parameter key ({@code "N-1"}, zero-based) a Postgres client's {@code $N} addresses when this identifier has
+   * exactly that shape, else null. Whether a parameter is bound at that position is the caller's question: the same statement
+   * runs with and without one.
+   */
+  String positionalParameterKey() {
+    return positionalParameterKey;
   }
 
   /**
@@ -89,7 +108,7 @@ public class Identifier extends SimpleNode {
    * @param s
    */
   public void setStringValue(final String s) {
-    value = escape(s);
+    setValue(escape(s));
   }
 
   /**
@@ -99,7 +118,33 @@ public class Identifier extends SimpleNode {
    */
   public void setQuotedStringValue(final String s) {
     quoted = true;
-    value = s.substring(1, s.length() - 1);
+    setValue(s.substring(1, s.length() - 1));
+  }
+
+  /** The one write of {@link #value} outside the copy constructor, so nothing derived from it can go stale. */
+  private void setValue(final String escaped) {
+    value = escaped;
+    plainValue = unescape(escaped);
+    positionalParameterKey = positionalParameterKey(plainValue);
+  }
+
+  /**
+   * {@code "N-1"} for a name of the shape {@code $N} with N from 1 to {@link Integer#MAX_VALUE}, else null. A larger N is no
+   * position a caller can bind, and parsing it used to fail the whole query with a {@link NumberFormatException}.
+   */
+  private static String positionalParameterKey(final String name) {
+    if (name == null || name.length() < 2 || name.charAt(0) != '$')
+      return null;
+    long position = 0;
+    for (int i = 1; i < name.length(); i++) {
+      final char c = name.charAt(i);
+      if (c < '0' || c > '9')
+        return null;
+      position = position * 10 + (c - '0');
+      if (position > Integer.MAX_VALUE)
+        return null;
+    }
+    return position == 0 ? null : String.valueOf(position - 1);
   }
 
   /**
@@ -223,8 +268,7 @@ public class Identifier extends SimpleNode {
     if (internalAlias)
       return true;
 
-    String stringVal = getStringValue();
-    return ctx.isScriptVariableDeclared(stringVal); // context variable, for batch scripts
+    return ctx.isScriptVariableDeclared(plainValue); // context variable, for batch scripts
   }
 
   @Override

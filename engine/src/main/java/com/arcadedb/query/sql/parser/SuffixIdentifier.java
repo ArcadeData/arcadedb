@@ -161,13 +161,14 @@ public class SuffixIdentifier extends SimpleNode {
     }
     if (identifier != null) {
       final String varName = identifier.getStringValue();
-      if (context != null && "$parent".equalsIgnoreCase(varName)) {
-        return context.getParent();
-      }
-      // For $ variables, check record metadata FIRST - this preserves LET variable values
-      // through expand()/UNWIND operations (see GitHub issue #2776)
-      if (currentRecord != null && isDollarName(varName) && currentRecord.getMetadataKeys().contains(varName)) {
-        return currentRecord.getMetadata(varName);
+      // THE FIRST CHARACTER FIRST: A PROPERTY NAME RARELY STARTS WITH '$', AND THIS RUNS FOR EVERY PROPERTY READ (ISSUE #9925)
+      if (isDollarName(varName)) {
+        if (context != null && "$parent".equalsIgnoreCase(varName))
+          return context.getParent();
+        // For $ variables, check record metadata FIRST - this preserves LET variable values
+        // through expand()/UNWIND operations (see GitHub issue #2776)
+        if (currentRecord != null && currentRecord.getMetadataKeys().contains(varName))
+          return currentRecord.getMetadata(varName);
       }
       if (context != null && isContextVariable(varName)) {
         final Object ctxVar = context.getVariable(varName);
@@ -211,7 +212,7 @@ public class SuffixIdentifier extends SimpleNode {
     }
     if (identifier != null) {
       final String varName = identifier.getStringValue();
-      if (context != null && "$parent".equalsIgnoreCase(varName))
+      if (context != null && isDollarName(varName) && "$parent".equalsIgnoreCase(varName))
         return context.getParent();
 
       // Same predicate as the other two overloads, and for the same reason. Without it this one asked the context about
