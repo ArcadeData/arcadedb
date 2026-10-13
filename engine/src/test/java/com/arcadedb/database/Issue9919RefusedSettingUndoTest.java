@@ -79,12 +79,11 @@ class Issue9919RefusedSettingUndoTest {
           }
         });
         database.otherNodeApply.start();
-        try {
-          // Expected to time out when the capture holds the apply lock: the apply then lands later, before the refusal
-          database.otherNodeApply.join(500);
-        } catch (final InterruptedException e) {
-          Thread.currentThread().interrupt();
-        }
+        // Until the apply either landed or blocked: it blocks when the capture holds the apply lock, and then lands later,
+        // inside the refused save
+        final Thread apply = database.otherNodeApply;
+        while (apply.isAlive() && apply.getState() != Thread.State.BLOCKED)
+          Thread.onSpinWait();
       }
       return value;
     }

@@ -192,6 +192,7 @@ public class AlterDatabaseStatement extends DDLStatement {
   private static LocalDatabase.SettingChange changeSetting(final DatabaseInternal db, final String key, final Runnable change) {
     if (db.getEmbedded() instanceof LocalDatabase local)
       return local.changeSetting(key, change);
+    // No apply lock and no undo for anything else (undoSettingChange() is a no-op there), as before issue #9919
     final Object previousValue = db.getConfiguration().hasValue(key) ? db.getConfiguration().getValue(key, null) : null;
     change.run();
     return new LocalDatabase.SettingChange(key, previousValue, db.getConfiguration().getValue(key, null));
