@@ -601,6 +601,9 @@ public class PageManager extends LockContext {
     // because the close already made it forget this database's suspension count (removeAllPagesOfDatabase), and
     // the database's own lifecycle reference, held until that close, keeps the field non-null up to the callback.
     final PageManagerFlushThread thread = flushThread;
+    if (thread == null)
+      throw new IllegalStateException(
+          "Cannot suspend the page flush of database '" + database.getName() + "': the page manager is not running");
 
     // FAST PATH (review on PR #8128, round 5): "joined, skip the drain" must never be decided from a peek
     // taken BEFORE the acquire - flushThread.isSuspended(database) followed by a separately-resolved
@@ -2163,6 +2166,9 @@ public class PageManager extends LockContext {
         for (final MutablePage page : updatedPages)
           putPageInReadCache(new CachedPage(page, true));
         handedOver = true;
+        // Read once, without a null check: the caller writes pages of an OPEN database, whose lifecycle reference
+        // keeps the flush thread alive for the whole call (#9927 - only a dereference AFTER that reference can be
+        // released, as in suspendFlushAndExecute, needs the instance captured up front).
         flushThread.scheduleFlushOfPages(updatedPages,
             flushSlotReserved ? updatedPages.getFirst().getPageId().getDatabase() : null);
       } else {
@@ -2363,7 +2369,8 @@ public class PageManager extends LockContext {
       throws IOException {
     final DatabaseInternal database = (DatabaseInternal) pageId.getDatabase();
 
-    // ASSURE THE PAGE IS NOT IN THE FLUSHING QUEUE
+    // ASSURE THE PAGE IS NOT IN THE FLUSHING QUEUE. A single read with no null check: the page belongs to an OPEN
+    // database, whose lifecycle reference keeps the flush thread alive for the whole call (#9927).
     CachedPage page = flushThread.getCachedPageFromMutablePageInQueue(pageId);
     if (page == null) {
       final PaginatedComponentFile file = (PaginatedComponentFile) database.getFileManager().getFile(pageId.getFileId());

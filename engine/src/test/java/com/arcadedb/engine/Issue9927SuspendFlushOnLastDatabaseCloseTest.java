@@ -28,6 +28,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
+import java.util.ArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -48,7 +49,8 @@ import static org.assertj.core.api.Assumptions.assumeThat;
  * wrong reason) if a database leaked by an earlier test class is still holding one.
  */
 class Issue9927SuspendFlushOnLastDatabaseCloseTest {
-  private static final String DB_PATH    = "target/databases/Issue9927SuspendFlushOnLastDatabaseCloseTest";
+  private static final String DB_NAME    = "Issue9927SuspendFlushOnLastDatabaseCloseTest";
+  private static final String DB_PATH    = "target/databases/" + DB_NAME;
   private static final String AFTER_PATH = DB_PATH + "-after";
 
   @BeforeEach
@@ -62,6 +64,11 @@ class Issue9927SuspendFlushOnLastDatabaseCloseTest {
 
   @AfterEach
   void tearDown() {
+    // A failed assertion can leave the database under test (or the AFTER_PATH one) open. Its lifecycle reference
+    // would then make every later test of this class skip on the refcount assumption, so close it here.
+    for (final Database db : new ArrayList<>(DatabaseFactory.getActiveDatabaseInstances()))
+      if (db.getDatabasePath().contains(DB_NAME))
+        db.close();
     FileUtils.deleteRecursively(new File(DB_PATH));
     FileUtils.deleteRecursively(new File(AFTER_PATH));
   }
@@ -128,7 +135,7 @@ class Issue9927SuspendFlushOnLastDatabaseCloseTest {
   }
 
   /** The suspension released against a dead flush thread must leave nothing behind that breaks the next database. */
-  private static void assertPageManagerUsableAgain() {
+  private static void assertPageManagerUsableAgain() throws Exception {
     try (final Database db = new DatabaseFactory(AFTER_PATH).create()) {
       db.getSchema().createDocumentType("Doc");
       db.transaction(() -> db.newDocument("Doc").set("id", 1).save());
@@ -137,8 +144,6 @@ class Issue9927SuspendFlushOnLastDatabaseCloseTest {
       pageManager.suspendFlushAndExecute(db, () -> {
       });
       assertThat(pageManager.isPageFlushingSuspended(db)).isFalse();
-    } catch (final Exception e) {
-      throw new AssertionError(e);
     }
     new DatabaseFactory(AFTER_PATH).open().drop();
     assertThat(PageManager.INSTANCE.getLifecycleRefCount()).isZero();
