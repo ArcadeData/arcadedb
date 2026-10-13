@@ -161,7 +161,7 @@ public class SuffixIdentifier extends SimpleNode {
     }
     if (identifier != null) {
       final String varName = identifier.getStringValue();
-      if (context != null && "$parent".equalsIgnoreCase(varName)) {
+      if (context != null && isDollarName(varName) && "$parent".equalsIgnoreCase(varName)) {
         return context.getParent();
       }
       // For $ variables, check record metadata FIRST - this preserves LET variable values
@@ -211,7 +211,7 @@ public class SuffixIdentifier extends SimpleNode {
     }
     if (identifier != null) {
       final String varName = identifier.getStringValue();
-      if (context != null && "$parent".equalsIgnoreCase(varName))
+      if (context != null && isDollarName(varName) && "$parent".equalsIgnoreCase(varName))
         return context.getParent();
 
       // Same predicate as the other two overloads, and for the same reason. Without it this one asked the context about

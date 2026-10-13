@@ -71,4 +71,36 @@ class IdentifierTest {
     assertThat(identifier.getStringValue()).isNull();
     assertThat(identifier.getValue()).isNull();
   }
+
+  @Test
+  void plainNameFollowsEverySetter() {
+    final Identifier identifier = new Identifier("foo");
+    assertThat(identifier.getStringValue()).isEqualTo("foo");
+
+    identifier.setStringValue("a`b");
+    assertThat(identifier.getStringValue()).isEqualTo("a`b");
+
+    identifier.setQuotedStringValue("`c\\`d`");
+    assertThat(identifier.getStringValue()).isEqualTo("c`d");
+    assertThat(identifier.getValue()).isEqualTo("c\\`d");
+
+    // a copy with another quoting keeps the name
+    assertThat(new Identifier(identifier, false).getStringValue()).isEqualTo("c`d");
+  }
+
+  @Test
+  void positionalParameterKey() {
+    // the Postgres wire's $N names the parameter at zero-based position N - 1
+    assertThat(new Identifier("$1").getPositionalParameterKey()).isEqualTo("0");
+    assertThat(new Identifier("$12").getPositionalParameterKey()).isEqualTo("11");
+    assertThat(new Identifier("$").getPositionalParameterKey()).isNull();
+    assertThat(new Identifier("$a").getPositionalParameterKey()).isNull();
+    assertThat(new Identifier("name").getPositionalParameterKey()).isNull();
+    assertThat(new Identifier((String) null).getPositionalParameterKey()).isNull();
+
+    final Identifier identifier = new Identifier("name");
+    identifier.setStringValue("$3");
+    assertThat(identifier.getPositionalParameterKey()).isEqualTo("2");
+    assertThat(new Identifier(identifier, true).getPositionalParameterKey()).isEqualTo("2");
+  }
 }

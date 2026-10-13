@@ -423,13 +423,9 @@ public class BaseExpression extends MathExpression {
     if (params == null || params.isEmpty() || identifier == null || identifier.getSuffix() == null
         || identifier.getSuffix().identifier == null)
       return null;
-    final String v = identifier.getSuffix().identifier.getValue();
-    if (v == null || !v.startsWith("$") || v.length() < 2)
+    final String key = identifier.getSuffix().identifier.getPositionalParameterKey();
+    if (key == null)
       return null;
-    final Integer pos = NumberUtils.parsePositiveInteger(v.substring(1));
-    if (pos == null)
-      return null;
-    final String key = String.valueOf(pos - 1);
     return params.containsKey(key) ? key : null;
   }
 

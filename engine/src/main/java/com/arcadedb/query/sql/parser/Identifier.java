@@ -21,6 +21,7 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.utility.NumberUtils;
 
 import java.util.Map;
 import java.util.Objects;
@@ -33,6 +34,10 @@ import java.util.Objects;
  */
 public class Identifier extends SimpleNode {
   private   String  value;
+  // THE PLAIN NAME AND THE POSTGRES POSITIONAL PARAMETER KEY THIS IDENTIFIER SPELLS, DERIVED FROM value WHEN IT IS SET: AN EXPRESSION
+  // READS THEM FOR EVERY ROW IT EVALUATES, AND value ONLY CHANGES THROUGH THE SETTERS BELOW
+  private   String  plain;
+  private   String  positionalKey;
   protected boolean quoted = false;
 
   /**
@@ -42,6 +47,8 @@ public class Identifier extends SimpleNode {
 
   public Identifier(final Identifier copyFrom, final boolean quoted) {
     this.value = copyFrom.value;
+    this.plain = copyFrom.plain;
+    this.positionalKey = copyFrom.positionalKey;
     this.quoted = quoted;
   }
 
@@ -79,7 +86,26 @@ public class Identifier extends SimpleNode {
    * @return
    */
   public String getStringValue() {
-    return unescape(value);
+    return plain;
+  }
+
+  /**
+   * The input-parameter key ({@code "N-1"}, zero-based) that a Postgres client's {@code $N} addresses when this identifier is
+   * exactly that shape, else null. It depends on the spelling only, so it is worked out once, not for every row.
+   */
+  String getPositionalParameterKey() {
+    return positionalKey;
+  }
+
+  private void derive() {
+    plain = unescape(value);
+    String key = null;
+    if (value != null && value.length() >= 2 && value.charAt(0) == '$') {
+      final Integer pos = NumberUtils.parsePositiveInteger(value.substring(1));
+      if (pos != null)
+        key = String.valueOf(pos - 1);
+    }
+    positionalKey = key;
   }
 
   /**
@@ -90,6 +116,7 @@ public class Identifier extends SimpleNode {
    */
   public void setStringValue(final String s) {
     value = escape(s);
+    derive();
   }
 
   /**
@@ -100,6 +127,7 @@ public class Identifier extends SimpleNode {
   public void setQuotedStringValue(final String s) {
     quoted = true;
     value = s.substring(1, s.length() - 1);
+    derive();
   }
 
   /**

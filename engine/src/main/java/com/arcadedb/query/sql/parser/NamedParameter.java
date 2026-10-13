@@ -20,13 +20,15 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
+import com.arcadedb.query.literal.LiteralParameterizer;
+
 import java.util.Map;
 import java.util.Objects;
 
 public class NamedParameter extends InputParameter {
 
   /** A parameter name and the same name with the colon some callers write in front of it, built once (issue #9818). */
-  private record PrefixedName(String name, String prefixed) {
+  private record PrefixedName(String name, String prefixed, boolean generated) {
   }
 
   public int    paramNumber;
@@ -44,7 +46,10 @@ public class NamedParameter extends InputParameter {
   private PrefixedName prefixedName() {
     PrefixedName result = prefixedName;
     if (result == null || !Objects.equals(result.name, paramName)) {
-      result = new PrefixedName(paramName, ":" + paramName);
+      // A GENERATED LITERAL PARAMETER IS BOUND BY THE STATEMENT CACHE UNDER ITS OWN NAME: NO CALLER WRITES THE PREFIXED SPELLING OF
+      // IT (A TEXT THAT MENTIONS THE PREFIX IS NEVER PARAMETERIZED), SO ITS READ, DONE FOR EVERY ROW, NEEDS NOT PROBE FOR ONE
+      result = new PrefixedName(paramName, ":" + paramName,
+          paramName != null && paramName.startsWith(LiteralParameterizer.PARAMETER_PREFIX));
       prefixedName = result;
     }
     return result;
@@ -79,9 +84,12 @@ public class NamedParameter extends InputParameter {
     if (params == null)
       return null;
 
-    final String prefixed = prefixedName().prefixed;
-    if (params.containsKey(prefixed))
-      return params.get(prefixed);
+    final PrefixedName names = prefixedName();
+    if (!names.generated) {
+      final String prefixed = names.prefixed;
+      if (params.containsKey(prefixed))
+        return params.get(prefixed);
+    }
 
     final String key = paramName;
     final Object value = params.get(key);
