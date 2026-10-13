@@ -3917,7 +3917,10 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       if (reason != null)
         message.append(" Peer '").append(peer).append("': ").append(reason).append('.');
     }
-    message.append(" Finish the rolling upgrade - or restore contact with those peers - and reissue the request.");
+    // No override, unlike the security entries (issue #9891): see PeerCapabilities.SCHEMA_FILE_RENAMES. Said in the
+    // refusal so an operator does not go looking for one, nor reach for arcadedb.ha.securityEntryCapabilityGate.
+    message.append(" Finish the rolling upgrade - or restore contact with those peers - and reissue the request. There is "
+        + "no setting that overrides this refusal.");
     throw new ClusterCapabilityNotReadyException(message.toString(), PeerCapabilities.SCHEMA_FILE_RENAMES, missing);
   }
 

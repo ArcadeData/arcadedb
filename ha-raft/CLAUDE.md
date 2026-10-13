@@ -185,6 +185,11 @@ Two things that are specific to a refusal and do not apply to a withheld section
   `arcadedb.ha.securityEntryCapabilityGate` (default true) is how an operator who knows the unreachable node
   understands the entry submits anyway; the refusal message names it. Do not remove it in the name of safety -
   without it the only way past a down node is to remove it from the cluster.
+  The escape hatch is per operation, not a pattern to copy by reflex: the `schema-file-renames` refusal of
+  `ALTER TYPE ... NAME` (#9762) deliberately has none (#9891). A rename is not urgent the way a revocation is, so a
+  down peer refusing it costs a wait rather than an incident, and the refusal says there is no override. Decide per
+  refusal whether its operation can wait for the peer; do not reuse `securityEntryCapabilityGate` for a non-security
+  entry.
 
 ### Negotiation governs what is written next, never what is already committed
 
