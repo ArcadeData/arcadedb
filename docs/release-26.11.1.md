@@ -78,7 +78,9 @@ it was the 0 weight of an edge without one. A custom subclass that referenced it
   text through `INSERT` was accepted. The gateway all those writers share now reads the value through the conversion `INSERT`
   uses (a number stays a count in the column's unit, text of digits is that count, any other date or instant is read as SQL
   reads it), parses text sent to a numeric column or to a typed `BOOLEAN` tag (a tag sent as `"true"` used to be stored as
-  `false`), and drops a sample whose value its column cannot store instead of failing the request. The dropped sample is
+  `false`), and drops a sample whose value its column cannot store instead of failing the request (which was answered with a
+  server error, `500`; the request is now answered `400` like any other partial write, and the rest of it is stored, so a client
+  that ignores `dropped` and `unreadableValues` loses those samples without noticing). The dropped sample is
   reported like an undeclared key: the HTTP `400` carries `unreadableValues` (`<measurement>.<column> (tag|field): <reason>`,
   an additional member written only when it is not empty, so a client parsing the body today is not affected),
   the gRPC `TimeSeriesWriteSummary` has the new `unreadable_values` field and `TimeSeriesWriteSummary.unreadableValues()` on

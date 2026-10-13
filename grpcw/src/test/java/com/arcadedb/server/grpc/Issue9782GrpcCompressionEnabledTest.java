@@ -154,6 +154,21 @@ class Issue9782GrpcCompressionEnabledTest {
   }
 
   @Test
+  void compressionDisabledRefusesACompressedStreamingCallToo() throws Exception {
+    start(false, false);
+
+    // THE REFUSAL IS MADE WHEN THE STREAM IS CREATED, WHATEVER THE KIND OF CALL: A SERVER-STREAMING ONE (WATCH) IS REFUSED AS WELL
+    final HealthGrpc.HealthBlockingStub stub = HealthGrpc.newBlockingStub(channel).withDeadlineAfter(30, TimeUnit.SECONDS)
+        .withCompression("gzip");
+    assertThatThrownBy(() -> stub.watch(HealthCheckRequest.getDefaultInstance()).hasNext()).isInstanceOf(StatusRuntimeException.class)
+        .satisfies(e -> assertThat(((StatusRuntimeException) e).getStatus().getCode()).isEqualTo(Status.Code.UNIMPLEMENTED));
+
+    final HealthGrpc.HealthBlockingStub plain = HealthGrpc.newBlockingStub(channel).withDeadlineAfter(30, TimeUnit.SECONDS);
+    assertThat(plain.watch(HealthCheckRequest.getDefaultInstance()).next().getStatus())
+        .isEqualTo(HealthCheckResponse.ServingStatus.SERVING);
+  }
+
+  @Test
   void disabledRegistriesStillUnderstandIdentityWithoutAdvertisingAnything() {
     // grpc-java never sends "grpc-encoding: identity" itself, but other clients do, and the spec has every server accept it
     final DecompressorRegistry disabled = GrpcServerPlugin.decompressorRegistry(false);
