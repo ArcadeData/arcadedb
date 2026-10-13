@@ -5247,6 +5247,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * <p>
    * The search that is not cancelled gets exactly what it got when it built inline: the build's failure is rethrown to
    * it, and a build it no longer needed (the async rebuild published a graph first) is skipped by the same recheck.
+   * <p>
+   * <b>A thread of its own, not a pool</b> - the same choice {@link #startAsyncGraphRebuild()} makes. At most one is alive
+   * per index, since only the search that set {@link #searchRebuildPending} starts one, and what makes a build heavy -
+   * its heap - is bounded JVM-wide by the rebuild permit it queues for. A bounded pool would queue a build behind other
+   * indexes' builds that are themselves only waiting for the permit, and its caller-runs fallback would put the build
+   * back on the search thread, which is what this method exists to avoid. The thread carries no database context or
+   * transaction of the search, and needs none: the build reads committed pages and records exactly as the async rebuild
+   * does, so a search inside a transaction gets the graph of the committed index, which is the one the index serves.
    *
    * @param stillNeeded                  the search's own reason to build, see
    *                                     {@link #buildGraphFromScratchUnderRebuildPermit}
@@ -5313,12 +5321,16 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
       awaitSearchBuild(built, guard);
       final Throwable t = failure.get();
-      if (t instanceof RuntimeException e)
-        throw e;
-      if (t instanceof Error e)
-        throw e;
-      if (t != null)
+      if (t != null) {
+        // Rethrown as it is, so a caller still sees the type the build failed with (an OutOfMemoryError stays one), with
+        // this thread's frames attached: the trace itself is the builder thread's
+        t.addSuppressed(new IndexException("Rethrown to the search waiting for the graph of vector index '" + indexName + "'"));
+        if (t instanceof RuntimeException e)
+          throw e;
+        if (t instanceof Error e)
+          throw e;
         throw new IndexException("Error building the graph of vector index '" + indexName + "'", t);
+      }
     } finally {
       if (!handedOff)
         endSearchRebuildOwnership(alsoClearPersistedGraphLatch);
@@ -5334,6 +5346,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
       while (!built.await(guardedWaitSliceNanos(guard), TimeUnit.NANOSECONDS)) {
         // the next slice checks the guard again
       }
+    } catch (final QueryTerminatedException | TimeoutException | CommandExecutionException e) {
+      LogManager.instance().log(this, Level.FINE,
+          "A search on vector index %s stopped waiting for the graph build it started (%s); the build goes on in the background",
+          indexName, e.getMessage());
+      throw e;
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
       throw new IndexException("Interrupted while waiting for the graph of vector index '" + indexName + "' to be built", e);
