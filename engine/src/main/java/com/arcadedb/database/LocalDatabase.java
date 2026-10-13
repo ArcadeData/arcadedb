@@ -3075,7 +3075,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    * Whether {@code configuration.json} holds every change {@code changesJson} (a {@link #pendingConfigurationChanges()}
    * document) names: each changed setting with that value, each removed setting absent. Under Raft HA that is how a
    * node tells that a replicated configuration entry it submitted was applied here, which is what writes the file
-   * (issue #9904).
+   * (issue #9904). By value, not by entry: whichever entry wrote the values, they are what the cluster holds.
    */
   public boolean isConfigurationChangeSaved(final String changesJson) throws IOException {
     final JSONObject changes = new JSONObject(changesJson);

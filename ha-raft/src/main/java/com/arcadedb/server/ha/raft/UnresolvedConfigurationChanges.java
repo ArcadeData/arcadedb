@@ -93,6 +93,7 @@ final class UnresolvedConfigurationChanges {
   }
 
   /** Registers a change whose outcome is unknown, without resolving it (the caller drives that). */
+  // @VisibleForTesting
   void hold(final String changes) {
     synchronized (lock) {
       unresolved.add(changes);
@@ -107,6 +108,9 @@ final class UnresolvedConfigurationChanges {
         return;
       resolving = true;
     }
+    // A raw daemon thread rather than a pool: this is the rare end of a quorum-wait timeout, one thread per database that
+    // exits when the list is empty, and a pool would hold a thread for the node's lifetime for an event that mostly never
+    // happens. It never touches the JDK common pool.
     final Thread resolver = new Thread(this::resolveAll, "arcadedb-raft-config-fate-" + databaseName);
     resolver.setDaemon(true);
     resolver.start();
@@ -172,15 +176,23 @@ final class UnresolvedConfigurationChanges {
   }
 
   private void resolveAll() {
+    try {
+      resolveUntilSettled();
+    } finally {
+      synchronized (lock) {
+        resolving = false;
+      }
+    }
+  }
+
+  private void resolveUntilSettled() {
     long delay = FIRST_RETRY_MS;
     int failures = 0;
     while (environment.isActive()) {
       final List<String> batch;
       synchronized (lock) {
-        if (unresolved.isEmpty()) {
-          resolving = false;
+        if (unresolved.isEmpty())
           return;
-        }
         batch = new ArrayList<>(unresolved);
       }
       for (final String changes : batch) {
@@ -203,9 +215,6 @@ final class UnresolvedConfigurationChanges {
         break;
       }
       delay = Math.min(delay * 2, MAX_RETRY_MS);
-    }
-    synchronized (lock) {
-      resolving = false;
     }
   }
 
