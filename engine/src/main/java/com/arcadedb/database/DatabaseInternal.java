@@ -323,6 +323,16 @@ public interface DatabaseInternal extends Database {
 
   <RET> RET recordFileChanges(final Callable<Object> callback);
 
+  /**
+   * Refuses, before a single file is moved, a schema change that renames component files when this database could not
+   * publish the renames (issue #9762). A type rename moves its files first and opens a {@link #recordFileChanges} frame
+   * only to publish them, so a refusal from that frame would come after the files were already moved. Nothing to refuse
+   * on an embedded database; a replicated one refuses on a node that is not the leader, and when a peer could not decode
+   * the renames.
+   */
+  default void checkFileRenamesCanBePublished() {
+  }
+
   long getLastUpdatedOn();
 
   long getLastUsedOn();

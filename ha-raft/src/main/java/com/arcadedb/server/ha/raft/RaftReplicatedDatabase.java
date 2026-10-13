@@ -100,6 +100,7 @@ import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.ClusterCapabilityNotReadyException;
 import com.arcadedb.server.ForwardedRequestIdContext;
 import com.arcadedb.server.HAReplicatedDatabase;
 import com.arcadedb.server.HAServerPlugin;
@@ -2547,6 +2548,10 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
       reconcileInstalmentFiles(instalmentState.shippedFiles, addFiles, removeFiles);
 
+      // Issue #9762: the files a type rename moved before opening this session. A follower moves the same files before it
+      // loads the schema below, which names them by their new names.
+      final Map<Integer, String> renameFiles = proxied.getFileManager().getRecordedRenames();
+
       // Issue #6989: ship what the DDL changed rather than the whole schema document, when the cluster is
       // configured for it and the cached base is still what the followers hold. schemaDeltaFor() returns null
       // whenever either is not true, and then the whole document goes out exactly as before.
@@ -2576,14 +2581,14 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       // the session's final entry is the only thing that publishes the change. Leaving it out because nothing was
       // left to say would strand the followers on a half-delivered state they never reload from.
       final int shippedInstalments = instalmentState.instalments;
-      if (!addFiles.isEmpty() || !removeFiles.isEmpty() || schemaChanged || !walEntries.isEmpty()
-          || shippedInstalments > 0) {
+      if (!addFiles.isEmpty() || !removeFiles.isEmpty() || !renameFiles.isEmpty() || schemaChanged
+          || !walEntries.isEmpty() || shippedInstalments > 0) {
         // A failure here leaves the callback's change on this node only, and the finally block quarantines the database
         // once the session is wound down (issue #9555 for a refusal, #9558 for an entry too large to split or a broker
         // that is gone). A ReplicationDispatchedTimeoutException is left alone there: that entry may still commit.
         final RaftHAServer raft = requireRaftServer();
         RaftHAServer.requireTransactionBroker(raft).replicateSchema(getName(), serializedSchema, addFiles, removeFiles,
-            walEntries, bucketDeltas, Collections.emptyList(), Collections.emptyList(), schemaDelta);
+            walEntries, bucketDeltas, Collections.emptyList(), Collections.emptyList(), schemaDelta, renameFiles);
         // Set HERE, not after the logging below: the change is published the moment that call returns, and a
         // diagnostic that threw would otherwise send the finally block into retireAbandonedInstalments to report a
         // divergence that does not exist. Harmless for on-disk state - the compensation only ever targets files
@@ -2602,9 +2607,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
           rememberReplicatedSchema(fullSchema, schemaDelta == null ? serializedSchema.length() : -1);
 
         HALog.log(this, HALog.DETAILED,
-            "Schema changes replicated via Raft: addFiles=%d, removeFiles=%d, schemaChanged=%s, schemaPayload=%s, "
-                + "embeddedWalEntries=%d, instalments=%d",
-            addFiles.size(), removeFiles.size(), schemaChanged,
+            "Schema changes replicated via Raft: addFiles=%d, removeFiles=%d, renameFiles=%d, schemaChanged=%s, "
+                + "schemaPayload=%s, embeddedWalEntries=%d, instalments=%d",
+            addFiles.size(), removeFiles.size(), renameFiles.size(), schemaChanged,
             schemaDelta != null ?
                 "delta of " + schemaDelta.deltaJson().length() + " chars" :
                 "document of " + serializedSchema.length() + " chars",
@@ -3876,6 +3881,42 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         return;
       }
     }
+  }
+
+  /**
+   * Issue #9762: a type rename moves its files before it opens the session that publishes them, so what that session would
+   * refuse is refused here, before anything moves. A replica cannot publish a schema change at all; and a peer that has
+   * not advertised {@link PeerCapabilities#SCHEMA_FILE_RENAMES} would receive a schema naming files it does not have,
+   * there being no form of the rename it could read instead. Asked of {@code peersMissingCapabilityNow}, not of the cache
+   * alone: the verdict has to be the same whichever node asks (see the module's CLAUDE.md), and a leader that has just
+   * started has not filled its cache yet.
+   */
+  @Override
+  public void checkFileRenamesCanBePublished() {
+    if (!isLeader())
+      throw schemaChangesNeedTheLeader();
+
+    final RaftHAServer raft = raftHAServer;
+    if (raft == null)
+      return;
+
+    final List<String> missing = raft.peersMissingCapabilityNow(PeerCapabilities.SCHEMA_FILE_RENAMES);
+    if (missing.isEmpty())
+      return;
+
+    final StringBuilder message = new StringBuilder(256);
+    message.append("Refusing to rename files of database '").append(getName()).append("': peer(s) ").append(missing)
+        .append(" have not advertised the '").append(PeerCapabilities.SCHEMA_FILE_RENAMES)
+        .append("' capability, so they could not move the renamed files and would lose the type's buckets on their next "
+            + "schema reload (issue #9762). Nothing was renamed.");
+    final PeerCapabilityRegistry registry = raft.getPeerCapabilityRegistry();
+    for (final String peer : missing) {
+      final String reason = registry != null ? registry.unknownReasonOf(peer) : null;
+      if (reason != null)
+        message.append(" Peer '").append(peer).append("': ").append(reason).append('.');
+    }
+    message.append(" Finish the rolling upgrade - or restore contact with those peers - and reissue the request.");
+    throw new ClusterCapabilityNotReadyException(message.toString(), PeerCapabilities.SCHEMA_FILE_RENAMES, missing);
   }
 
   private ServerIsNotTheLeaderException schemaChangesNeedTheLeader() {

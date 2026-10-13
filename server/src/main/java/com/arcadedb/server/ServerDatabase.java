@@ -769,6 +769,11 @@ public class ServerDatabase implements DatabaseInternal {
   }
 
   @Override
+  public void checkFileRenamesCanBePublished() {
+    current().checkFileRenamesCanBePublished();
+  }
+
+  @Override
   public void saveConfiguration() throws IOException {
     current().saveConfiguration();
   }

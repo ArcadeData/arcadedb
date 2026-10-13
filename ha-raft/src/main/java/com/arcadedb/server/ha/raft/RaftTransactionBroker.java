@@ -156,8 +156,23 @@ public class RaftTransactionBroker {
       final List<byte[]> walEntries, final List<Map<Integer, Integer>> bucketDeltas,
       final List<RaftLogEntryCodec.TsSealedBlob> sealedFileBlobs,
       final List<RaftLogEntryCodec.TsSealedChunk> sealedFileChunks, final SchemaDelta.Payload schemaDelta) {
+    replicateSchema(dbName, schemaJson, filesToAdd, filesToRemove, walEntries, bucketDeltas, sealedFileBlobs,
+        sealedFileChunks, schemaDelta, Collections.emptyMap());
+  }
+
+  /**
+   * @param filesToRename the component files the change renamed, file id to new component name (issue #9762). They
+   *                      publish, like the schema they make readable, so on a split they ride the LAST chunk.
+   */
+  public void replicateSchema(final String dbName, final String schemaJson,
+      final Map<Integer, String> filesToAdd, final Map<Integer, String> filesToRemove,
+      final List<byte[]> walEntries, final List<Map<Integer, Integer>> bucketDeltas,
+      final List<RaftLogEntryCodec.TsSealedBlob> sealedFileBlobs,
+      final List<RaftLogEntryCodec.TsSealedChunk> sealedFileChunks, final SchemaDelta.Payload schemaDelta,
+      final Map<Integer, String> filesToRename) {
     final ByteString entry = RaftLogEntryCodec.encodeSchemaEntry(dbName, schemaJson,
-        filesToAdd, filesToRemove, walEntries, bucketDeltas, sealedFileBlobs, false, sealedFileChunks, schemaDelta);
+        filesToAdd, filesToRemove, walEntries, bucketDeltas, sealedFileBlobs, false, sealedFileChunks, schemaDelta,
+        filesToRename);
 
     final long cap = groupCommitter.maxEntrySize();
     if (entry.size() <= cap) {
@@ -166,7 +181,7 @@ public class RaftTransactionBroker {
     }
 
     for (final ByteString chunk : splitSchemaEntry(dbName, schemaJson, filesToAdd, filesToRemove, walEntries,
-        bucketDeltas, sealedFileBlobs, sealedFileChunks, cap, entry.size(), false, schemaDelta))
+        bucketDeltas, sealedFileBlobs, sealedFileChunks, cap, entry.size(), false, schemaDelta, filesToRename))
       groupCommitter.submitAndWait(chunk.toByteArray());
   }
 
@@ -313,6 +328,21 @@ public class RaftTransactionBroker {
       final List<RaftLogEntryCodec.TsSealedBlob> sealedFileBlobs,
       final List<RaftLogEntryCodec.TsSealedChunk> sealedFileChunks, final long cap, final int singleEntrySize,
       final boolean moreAfterLast, final SchemaDelta.Payload schemaDelta) {
+    return splitSchemaEntry(dbName, schemaJson, filesToAdd, filesToRemove, walEntries, bucketDeltas, sealedFileBlobs,
+        sealedFileChunks, cap, singleEntrySize, moreAfterLast, schemaDelta, Collections.emptyMap());
+  }
+
+  /**
+   * @param filesToRename the renamed component files (issue #9762). They make the published schema readable, so they go
+   *                      on the LAST chunk with it and are measured into that chunk's header budget.
+   */
+  // @VisibleForTesting
+  static List<ByteString> splitSchemaEntry(final String dbName, final String schemaJson,
+      final Map<Integer, String> filesToAdd, final Map<Integer, String> filesToRemove,
+      final List<byte[]> walEntries, final List<Map<Integer, Integer>> bucketDeltas,
+      final List<RaftLogEntryCodec.TsSealedBlob> sealedFileBlobs,
+      final List<RaftLogEntryCodec.TsSealedChunk> sealedFileChunks, final long cap, final int singleEntrySize,
+      final boolean moreAfterLast, final SchemaDelta.Payload schemaDelta, final Map<Integer, String> filesToRename) {
 
     // Worst-case non-WAL payload: the first entry carries filesToAdd, the last one the schema JSON,
     // filesToRemove, the sealed blobs and the final sealed slices. Measured by encoding both headers with no
@@ -321,7 +351,7 @@ public class RaftTransactionBroker {
         Collections.emptyMap(), Collections.emptyList(), Collections.emptyList(), Collections.emptyList()).size();
     final int lastHeaderSize = RaftLogEntryCodec.encodeSchemaEntry(dbName, schemaJson, Collections.emptyMap(),
         filesToRemove, Collections.emptyList(), Collections.emptyList(), sealedFileBlobs, moreAfterLast,
-        sealedFileChunks, schemaDelta).size();
+        sealedFileChunks, schemaDelta, filesToRename).size();
     final long walBudget = cap - Math.max(firstHeaderSize, lastHeaderSize);
 
     if (walEntries == null || walEntries.isEmpty() || walBudget <= 0)
@@ -387,7 +417,8 @@ public class RaftTransactionBroker {
           last ? sealedFileBlobs : Collections.emptyList(),
           !last || moreAfterLast,
           last ? sealedFileChunks : Collections.emptyList(),
-          last ? schemaDelta : null);
+          last ? schemaDelta : null,
+          last ? filesToRename : Collections.emptyMap());
 
       if (chunk.size() > cap)
         // A single WAL entry (or the header plus one WAL entry) still does not fit. Fail loudly rather

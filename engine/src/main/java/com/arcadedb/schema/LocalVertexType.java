@@ -46,16 +46,14 @@ public class LocalVertexType extends LocalDocumentType implements VertexType {
     return schema.getDatabase().newVertex(name);
   }
 
+  /**
+   * The vertex type's renaming steps. Called by {@link LocalDocumentType#rename} with {@link #renameLock} held, so the
+   * edge-bucket loop and both rollbacks never interleave with a second rename of this type (issue #7937), and published
+   * once with everything they moved (issue #9762). The document part goes through {@code super.rename()}, which nests.
+   */
   @Override
-  public void rename(final String newName) {
-    // The whole method, not only super.rename(): the edge-bucket loop and both rollbacks read and move the same
-    // names, so a second rename of this type must not interleave with any of them (issue #7937). Reentrant.
-    renameLock.lock();
-    try {
-      renameInternal(newName);
-    } finally {
-      renameLock.unlock();
-    }
+  protected void renameFiles(final String newName) {
+    renameInternal(newName);
   }
 
   private void renameInternal(final String newName) {
