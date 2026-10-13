@@ -32,6 +32,8 @@ import com.arcadedb.database.bucketselectionstrategy.PartitionedBucketSelectionS
 import com.arcadedb.database.bucketselectionstrategy.RoundRobinBucketSelectionStrategy;
 import com.arcadedb.database.bucketselectionstrategy.ThreadBucketSelectionStrategy;
 import com.arcadedb.engine.Bucket;
+import com.arcadedb.engine.ComponentFile;
+import com.arcadedb.engine.FileManager;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.Index;
@@ -61,8 +63,12 @@ public class LocalDocumentType implements DocumentType {
    * Serialises renames of THIS type against each other (issue #7937). Deliberately a lock of the type instance and
    * not the database write lock: every bucket rename waits for the whole database's page flush queue to drain, and
    * holding the schema write lock across N such drains is the stall the engine keeps outside every lock. Two
-   * renames of DIFFERENT types do not contend. Reentrant because {@code LocalVertexType.rename()} calls
+   * renames of DIFFERENT types do not contend. Reentrant because {@code LocalVertexType.renameFiles()} calls
    * {@code super.rename()} - and again to roll back - inside its own critical section.
+   * <p>
+   * The hold count is also what tells {@link #rename} which call publishes (issue #9762): only the call that takes this
+   * lock first opens the schema recording session, every nested one only moves files. So nothing outside a rename may
+   * take this lock and then call {@code rename()}: that call would look nested and its rename would never be published.
    * <p>
    * Lock hierarchy: this lock is taken BEFORE the database write lock, never after. No path may hold the database
    * write lock and then call {@code rename()} (today only {@code ALTER TYPE} does, without holding it).
@@ -345,10 +351,99 @@ public class LocalDocumentType implements DocumentType {
     // capturing a name the first is in the middle of replacing and racing it over the same bucket files (#7937).
     renameLock.lock();
     try {
-      renameInternal(newName);
+      if (renameLock.getHoldCount() > 1)
+        // Nested in this type's own rename: a subclass renaming the document part, or a rollback putting it back. The
+        // outermost call publishes the result once.
+        renameInternal(newName);
+      else
+        renameAndPublish(newName);
     } finally {
       renameLock.unlock();
     }
+  }
+
+  /**
+   * Moves every file of the type under the new name. The document type's own steps; {@link LocalVertexType} adds its edge
+   * buckets and super-node stripe pool, calling {@link #rename} for this part. Runs with {@link #renameLock} held.
+   */
+  protected void renameFiles(final String newName) {
+    renameInternal(newName);
+  }
+
+  /**
+   * The outermost rename of this type (issue #9762). The files are moved first, outside every lock (see {@link #rename}),
+   * and then a schema recording session publishes the result: the schema, and which file now carries which component
+   * name. Under HA that session is what ships the rename to the followers - a bare schema save renamed the type and its
+   * buckets on the leader alone, so a follower kept answering to the old name, and the next schema entry named bucket
+   * files it did not have and made it drop the type's buckets on its next reload. A {@code SCHEMA_ENTRY} carries files to
+   * create and to remove, not renames, so the session records them explicitly and the follower moves the same files
+   * before it loads a schema naming them.
+   * <p>
+   * Refused before a single file moves when the change could not be published (a replica, or a peer that cannot decode
+   * the renames). A refusal from the session itself - leadership lost in between - finds the files already moved and puts
+   * them back; a failure after the session ran its callback is the replication layer's to handle, the schema having been
+   * saved locally with the new names.
+   */
+  private void renameAndPublish(final String newName) {
+    final String oldName = name;
+    final DatabaseInternal database = ((DatabaseInternal) schema.getDatabase()).getWrappedDatabaseInstance();
+    // Best effort: leadership or the peer set can still change before the session opens. A refusal from the session is
+    // then met by the rollback below; this check only keeps the common refusal from moving any file at all.
+    database.checkFileRenamesCanBePublished();
+
+    final Map<Integer, String> componentNamesBefore = componentNamesOfFiles(database.getFileManager());
+
+    renameFiles(newName);
+
+    final boolean[] sessionStarted = new boolean[1];
+    try {
+      schema.recordFileChanges(() -> {
+        sessionStarted[0] = true;
+        final FileManager fileManager = database.getFileManager();
+        // The type's files as they are NOW, not only the ones listed before the move: a component attached to the type
+        // in between (an index built concurrently) was moved with the others but has no "before" name. Recording a file
+        // under the name it already has costs a follower nothing - it skips a file already carrying the name.
+        for (final Map.Entry<Integer, String> entry : componentNamesOfFiles(fileManager).entrySet())
+          if (!entry.getValue().equals(componentNamesBefore.get(entry.getKey())))
+            fileManager.recordRename(entry.getKey(), entry.getValue());
+        return null;
+      });
+    } catch (final RuntimeException e) {
+      if (!sessionStarted[0])
+        try {
+          renameFiles(oldName);
+        } catch (final RuntimeException rollbackFailure) {
+          // The files are now neither all under the new name nor all back under the old one, and the schema names the
+          // old ones: said where an operator looks, not only in a suppressed exception the caller may never print
+          LogManager.instance().log(this, Level.SEVERE,
+              "Renaming type '%s' to '%s' was refused after its files were moved, and moving them back failed: check the "
+                  + "file names of its buckets and indexes against the schema", rollbackFailure, oldName, newName);
+          e.addSuppressed(rollbackFailure);
+        }
+      throw e;
+    }
+  }
+
+  /**
+   * File id to component name of every file a rename of this type can move: its buckets with the ones a subclass involves
+   * (edge buckets, stripe pool) and the components of its indexes. Only this type's files, so a concurrent rename of
+   * another type is never published early by this one. A file dropped concurrently is simply absent from the map.
+   */
+  private Map<Integer, String> componentNamesOfFiles(final FileManager fileManager) {
+    final Map<Integer, String> names = new LinkedHashMap<>();
+    for (final Bucket bucket : getInvolvedBuckets())
+      putComponentName(fileManager, bucket.getFileId(), names);
+    for (final TypeIndex index : getAllIndexes(false))
+      for (final IndexInternal subIndex : index.getIndexesOnBuckets())
+        for (final Integer fileId : subIndex.getFileIds())
+          putComponentName(fileManager, fileId, names);
+    return names;
+  }
+
+  private static void putComponentName(final FileManager fileManager, final int fileId, final Map<Integer, String> names) {
+    final ComponentFile file = fileManager.getFileIfExists(fileId);
+    if (file != null)
+      names.put(fileId, file.getComponentName());
   }
 
   private void renameInternal(final String newName) {
@@ -2580,6 +2675,17 @@ public class LocalDocumentType implements DocumentType {
       superType.rebuildPolymorphicBucketsCache();
   }
 
+  /**
+   * Links {@code superType} above this type.
+   *
+   * @param createIndexes {@code true} for a NEW linkage, which is validated (time series hierarchy, a LIGHTWEIGHT edge type
+   *                      below this one against the super type's MANDATORY or default-valued properties, issue #9846) and
+   *                      propagates the super type's indexes. {@code false} marks the two callers that RE-ESTABLISH a linkage
+   *                      that already holds - the schema load, which replays what was accepted when it was declared, and the
+   *                      re-attachment of a dropped type's sub types to its parents, whose properties they already inherit
+   *                      through it - so there is nothing new to validate or to build, and a database written before a check
+   *                      existed must still open
+   */
   DocumentType addSuperType(final DocumentType superType, final boolean createIndexes) {
     checkForSchemaMutation();
     if (this.equals(superType))
@@ -2633,6 +2739,19 @@ public class LocalDocumentType implements DocumentType {
       // modify a list this walk is iterating, straight into a ConcurrentModificationException.
       checkTimeSeriesHierarchy(superType);
 
+      // A lightweight edge type, this one or one below it, would inherit everything the super type carries, including a
+      // MANDATORY or default-valued property that no lightweight edge can honour (#9846). Under the same lock, and for the
+      // same reason, as the check above: it walks the subTypes lists linkSuperType mutates. Skipped for createIndexes=false,
+      // which marks a linkage that already holds (see addSuperType(DocumentType, boolean)).
+      if (createIndexes) {
+        final Property constraint = embeddedSuperType.findPropertyAppliedToEmptyRecord();
+        if (constraint != null) {
+          final LocalEdgeType lightweight = findLightweightEdgeTypeInSubtree();
+          if (lightweight != null)
+            LocalEdgeType.checkCanBeLightweight(lightweight.getName(), embeddedSuperType);
+        }
+      }
+
       // CHECK FOR CONFLICT WITH PROPERTIES NAMES. Here for the same reason checkTimeSeriesHierarchy is, and the
       // reason it used to be outside the callback is that it only logs: getPolymorphicPropertyNames() recurses over
       // the super type's (mutable) superTypes lists, which linkSuperType/unlinkSuperType structurally modify, so a
@@ -2680,6 +2799,54 @@ public class LocalDocumentType implements DocumentType {
 
       return null;
     });
+  }
+
+  /**
+   * This type if it is a LIGHTWEIGHT edge type, otherwise the first type below it that is, or {@code null}. A lightweight
+   * edge type inherits every property its super types carry, so a property that cannot live on one cannot live on any
+   * type above it either (issue #9846). Walks the {@link #subTypes} lists that {@code linkSuperType}/{@code unlinkSuperType}
+   * mutate under the database write lock, so it has to run under it too.
+   */
+  LocalEdgeType findLightweightEdgeTypeInSubtree() {
+    return findLightweightEdgeTypeInSubtree(new HashSet<>());
+  }
+
+  /** A type reachable through more than one path (a diamond) is walked once, so a wide lattice costs its size, not its path count. */
+  private LocalEdgeType findLightweightEdgeTypeInSubtree(final Set<LocalDocumentType> visited) {
+    if (!visited.add(this))
+      return null;
+
+    if (this instanceof LocalEdgeType edgeType && edgeType.isLightweight())
+      return edgeType;
+
+    for (final LocalDocumentType subType : subTypes) {
+      final LocalEdgeType found = subType.findLightweightEdgeTypeInSubtree(visited);
+      if (found != null)
+        return found;
+    }
+    return null;
+  }
+
+  /**
+   * Refuses to make {@code property}, declared here, apply to a record that does not carry it - {@code MANDATORY} or
+   * default-valued - while a LIGHTWEIGHT edge type below this one would inherit it: that edge has no record, so the
+   * constraint would be declared and never applied (issue #9846). Called from the property setters inside the schema
+   * session that publishes the change, so it is ordered against {@code addSuperType} and {@code CREATE EDGE TYPE ...
+   * LIGHTWEIGHT} by the same lock.
+   *
+   * @param constraint {@code "MANDATORY"} or {@code "default-valued"}, for the message
+   */
+  void checkNoLightweightEdgeTypeBelow(final Property property, final String constraint) {
+    // The schema load replays what was accepted when it was declared, and a database written before this check may hold the
+    // combination: it must still open
+    if (schema.getEmbedded().isReadingFromFile())
+      return;
+
+    final LocalEdgeType lightweight = findLightweightEdgeTypeInSubtree();
+    if (lightweight != null)
+      throw new SchemaException("Cannot make the property '" + name + "." + property.getName() + "' " + constraint
+          + " because edge type '" + lightweight.getName() + "' is declared LIGHTWEIGHT and inherits it: a lightweight edge has no "
+          + "record, so the constraint would never be applied to it. Declare the type without LIGHTWEIGHT, or keep the property optional");
   }
 
   /**

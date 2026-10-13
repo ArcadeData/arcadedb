@@ -82,6 +82,7 @@ public class AlgoDijkstra extends AbstractAlgoProcedure {
     final Vertex startNode = extractVertex(args[0], "startNode");
     final Vertex endNode = extractVertex(args[1], "endNode");
     final String relType = extractString(args[2], "relTypes");
+    requireEdgeTypes(context.getDatabase(), relType);
     final String weightProperty = extractString(args[3], "weightProperty");
     final String direction = args.length > 4 ? extractString(args[4], "direction") : "BOTH";
 

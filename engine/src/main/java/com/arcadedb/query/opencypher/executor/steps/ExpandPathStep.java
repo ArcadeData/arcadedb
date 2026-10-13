@@ -29,6 +29,7 @@ import com.arcadedb.query.opencypher.ast.NodePattern;
 import com.arcadedb.query.opencypher.ast.RelationshipPattern;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
+import com.arcadedb.query.opencypher.traversal.GraphTraverser;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.opencypher.ast.PathMode;
 import com.arcadedb.query.opencypher.traversal.VariableLengthPathTraverser;
@@ -251,7 +252,15 @@ public class ExpandPathStep extends AbstractExecutionStep {
 
             if (sourceObj instanceof Vertex) {
               final Vertex sourceVertex = (Vertex) sourceObj;
-              currentPaths = createTraverser(lastResult).traversePaths(sourceVertex);
+              // A relationship list an earlier clause bound to this variable is the whole path: expanding the
+              // graph instead ignored the binding and returned every walk the pattern allows (issue #9828)
+              final VariableLengthPathTraverser traverser = createTraverser(lastResult);
+              if (GraphTraverser.isBoundRelationshipList(lastResult, relationshipVariable)) {
+                final TraversalPath bound = traverser.matchBoundPath(sourceVertex,
+                    lastResult.getProperty(relationshipVariable), reverseResultPath, relationshipVariable);
+                currentPaths = bound != null ? List.of(bound).iterator() : null;
+              } else
+                currentPaths = traverser.traversePaths(sourceVertex);
             } else {
               currentPaths = null;
             }

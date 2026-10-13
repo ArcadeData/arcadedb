@@ -132,7 +132,7 @@ class Issue7689CreateTimeSeriesTypeCompleteDeclarationTest extends TestHelper {
   void everyDeclaredClauseCanAppearInOneStatement() {
     database.command("sql", """
         CREATE TIMESERIES TYPE Everything
-          TIMESTAMP ts PRECISION NANOSECOND CODEC DELTA_OF_DELTA
+          TIMESTAMP ts PRECISION MILLISECOND CODEC DELTA_OF_DELTA
           TAGS (host STRING, zone INTEGER CODEC DICTIONARY)
           FIELDS (cpu DOUBLE CODEC DICTIONARY, mem LONG)
           SHARDS 3
@@ -142,7 +142,7 @@ class Issue7689CreateTimeSeriesTypeCompleteDeclarationTest extends TestHelper {
         """);
 
     final TimeSeriesType type = typeOf("Everything");
-    assertThat(type.getPrecision()).isEqualTo("NANOSECOND");
+    assertThat(type.getPrecision()).isEqualTo("MILLISECOND");
     assertThat(type.getShardCount()).isEqualTo(3);
     assertThat(type.getRetentionMs()).isEqualTo(90L * 86_400_000L);
     assertThat(type.getCompactionBucketIntervalMs()).isEqualTo(2L * 3_600_000L);

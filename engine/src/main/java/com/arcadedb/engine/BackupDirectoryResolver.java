@@ -20,6 +20,9 @@ package com.arcadedb.engine;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.log.LogManager;
+
+import java.util.logging.Level;
 
 /**
  * Where this server keeps its backups, as the engine sees it.
@@ -58,6 +61,45 @@ public interface BackupDirectoryResolver {
    * from.
    */
   String resolveBackupDirectory();
+
+  /**
+   * Applies the retention policy to the archives of {@code databaseName} under {@code backupDirectory} (the directory
+   * {@link #resolveBackupDirectory()} answers, WITHOUT the per-database sub-directory), after a backup the engine ran
+   * (issue #9844).
+   * <p>
+   * The statement writes into the very directory the scheduler and the control plane's {@code trigger backup} prune, and
+   * retention works off what is in it, not off what is registered with the scheduler. So a {@code BACKUP DATABASE} of a
+   * database absent from the auto-backup configuration is pruned by the same effective policy (the server-level defaults)
+   * as one that is in it, instead of growing the directory forever. Only archives that follow the
+   * {@code <db>-backup-<timestamp>.zip} naming convention are visible to it: an archive the operator named with
+   * {@code BACKUP DATABASE '<name>'} is never deleted.
+   * <p>
+   * The default does nothing, which is what a resolver that only resolves gets. Implementations must not let a pruning
+   * failure escape as a failed backup; {@link #applyRetentionAfterBackup} enforces that for the caller regardless.
+   *
+   * @return the number of archives deleted
+   */
+  default int applyRetention(final String backupDirectory, final String databaseName) {
+    return 0;
+  }
+
+  /**
+   * Prunes the archives of {@code database} under {@code backupDirectory} through the resolver bound to it, if any, and
+   * never fails the caller: the archive is written and the caller is about to be told so, and a directory that could not
+   * be pruned is an operational problem to log, not a reason to report a successful backup as an error.
+   */
+  static void applyRetentionAfterBackup(final Database database, final String backupDirectory) {
+    final BackupDirectoryResolver resolver = boundTo(database);
+    if (resolver == null)
+      return;
+
+    try {
+      resolver.applyRetention(backupDirectory, database.getName());
+    } catch (final RuntimeException e) {
+      LogManager.instance().log(BackupDirectoryResolver.class, Level.WARNING,
+          "Cannot apply the backup retention policy for database '%s' after a backup", e, database.getName());
+    }
+  }
 
   /**
    * The resolver bound to this database, or {@code null} when there is none.

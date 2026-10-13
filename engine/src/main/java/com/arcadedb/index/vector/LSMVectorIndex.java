@@ -439,6 +439,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
    */
   private final AtomicInteger deltaResidentPayloads = new AtomicInteger();
 
+  /**
+   * The ids a replicated page mentions, collected by {@link #applyReplicatedPageUpdate(MutablePage, boolean)} to judge
+   * each one by its state before the page (issue #9857). Only touched under {@link #lock}'s write lock, so one instance
+   * serves every page instead of an allocation per page on the replication path.
+   */
+  private final IntHashSet replicatedPageSeenIds = new IntHashSet();
+
   /** Cached answer of {@link #computeDeltaPayloadCapacity()}, and when it was last computed. */
   private volatile int  deltaPayloadCapacity      = -1;
   private volatile long deltaPayloadCapacityAtMs  = 0L;
@@ -1918,16 +1925,27 @@ public class LSMVectorIndex implements Index, IndexInternal {
    */
   private PersistedGraphCheck loadPersistedGraphOrDecidePrefix() {
     // Try to load persisted graph from disk
-    // IMPORTANT: If PRODUCT quantization is enabled but PQ file doesn't exist, we need to rebuild
+    // IMPORTANT: If PRODUCT quantization is enabled but there is no PQ data to use, we need to rebuild
     // the graph from scratch so that ordinalToVectorId is consistent between graph and PQ.
     // Loading graph from disk and then building PQ separately causes ordinal mismatch.
-    final boolean needsGraphRebuildForPQ = metadata.quantizationType == VectorQuantizationType.PRODUCT &&
-        pqFile != null && !pqFile.exists();
+    //
+    // "No PQ data to use" is asked of hasUsableData(), not exists() (issue #9796): a file that is on disk but cannot be
+    // read is no PQ data, and exists() answers it the opposite way from isPQReady(), which sent the open down the route
+    // this comment warns against.
+    //
+    // hasUsableData() only learns that a file is unreadable once a load has been tried, and the PQ is loaded together
+    // with the locations (see materializeLocations). ensureGraphAvailable() has done that by the time it gets here, but
+    // the async rebuild path has not: so the locations are materialised first, here, rather than assuming the caller did.
+    // Only for a PRODUCT-quantized index, and the walk below needs them anyway.
+    final boolean productQuantized = metadata.quantizationType == VectorQuantizationType.PRODUCT && pqFile != null;
+    if (productQuantized)
+      vectorIndex();
+    final boolean needsGraphRebuildForPQ = productQuantized && !pqFile.hasUsableData();
     if (needsGraphRebuildForPQ) {
       LogManager.instance().log(this, Level.INFO,
           """
-              PRODUCT quantization enabled but PQ file missing - rebuilding graph from scratch for ordinal \
-              consistency: %s""",
+              PRODUCT quantization enabled but there is no usable PQ file (missing, or present and unreadable) - \
+              rebuilding graph from scratch for ordinal consistency: %s""",
           indexName);
     }
 
@@ -4234,9 +4252,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
               // PQ was already computed for accelerated graph build — just persist it
               LogManager.instance().log(this, Level.INFO,
                   "Persisting PQ computed during accelerated graph build for index: %s", indexName);
-              pqFile.writePQ(earlyPq, earlyPqVectors);
-              this.productQuantization = earlyPq;
-              this.pqVectors = earlyPqVectors;
+              persistProductQuantization(earlyPq, earlyPqVectors);
             } else {
               buildAndPersistPQ(vectors);
             }
@@ -4563,6 +4579,45 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
+   * Writes the codebook and the codes next to the graph they were built for, and publishes them to searches.
+   * <p>
+   * {@link LSMVectorIndexPQFile#writePQ} never damages the file it replaces, so a failed write leaves the PREVIOUS file
+   * on disk (issue #9796). That file describes the previous graph's ordinals, and this runs after the new graph was
+   * certified: pairing the two on the next open would score the wrong vectors, or, when the old codes are smaller,
+   * leave every query on the exact path with nothing ever rebuilding them (issue #5417). So a failed write drops the
+   * old file, which the next open reads as "no PQ data" and answers by rebuilding graph and PQ together. The codes in
+   * hand are right for the graph in memory, so they are published either way: a disk failure does not cost this
+   * session its approximate search.
+   * <p>
+   * Both callers run under {@link #graphBuildLock} (the post-load PQ build inside
+   * {@link #loadPersistedGraphOrDecidePrefix()}, and the persist at the end of a build), which is what keeps two
+   * writers of the same PQ file from racing on its temporary and its rename.
+   */
+  private void persistProductQuantization(final ProductQuantization pq, final PQVectors codes) {
+    try {
+      pqFile.writePQ(pq, codes);
+    } catch (final Throwable e) {
+      // Throwable, not IndexException: writePQ wraps every Exception in it, but an Error (an OutOfMemoryError while
+      // streaming) passes straight through, and the stale file must be gone whichever way the write failed. An Error
+      // is not absorbed: it goes on to the build's own handler, which already takes Throwable.
+      LogManager.instance().log(this, Level.WARNING,
+          "PQ data of index %s could not be persisted (%s): the previous PQ file belongs to the previous graph and is "
+              + "dropped, the next open rebuilds the graph and the PQ together. Approximate search stays available "
+              + "until then",
+          indexName, e.getMessage());
+      if (!pqFile.deletePQFile())
+        LogManager.instance().log(this, Level.SEVERE,
+            "The stale PQ file %s of index %s could not be deleted: it describes the previous graph and the next open will "
+                + "pair it with the current one. Delete it by hand to force the PQ to be rebuilt",
+            pqFile.getFilePath(), indexName);
+      if (e instanceof Error error)
+        throw error;
+    }
+    this.productQuantization = pq;
+    this.pqVectors = codes;
+  }
+
+  /**
    * Resolve the number of PQ subspaces (M), auto-calculating it when not configured and always making sure it divides the
    * vector dimensions evenly, as required by {@link ProductQuantization}.
    *
@@ -4674,12 +4729,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
           "PQ encoding completed in %d ms (%d vectors encoded)",
           System.currentTimeMillis() - encodeStart, encodedVectors.count());
 
-      // Persist PQ data to file
-      pqFile.writePQ(pq, encodedVectors);
-
-      // Cache in memory for immediate zero-disk-I/O search
-      this.productQuantization = pq;
-      this.pqVectors = encodedVectors;
+      // Persist PQ data to file and cache it in memory for immediate zero-disk-I/O search
+      persistProductQuantization(pq, encodedVectors);
 
       final long totalTime = System.currentTimeMillis() - startTime;
       LogManager.instance().log(this, Level.INFO,
@@ -11397,10 +11448,41 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * in-memory VectorLocationIndex synchronized with replicated pages.
    * <p>
    * This ensures replicas don't have stale VectorLocationIndex that causes offset mismatches.
+   * <p>
+   * A replicated page is also the only way a vector written on ANOTHER node reaches this node's search, so it does what a
+   * local {@code put()}/{@code remove()} does to the in-memory search state (issue #9857): a vector id this node has never
+   * seen is queued in the delta buffer, a live id the page tombstones leaves the buffer and the search cache, both count as
+   * mutations, and the graph turns MUTABLE so a rebuild picks them up. Before this, the location index alone moved: the
+   * first search on a follower built its graph, and every vector replicated afterwards stayed invisible to that node - and
+   * to the leader it later became - until a restart or a REBUILD INDEX. The same path applies a follower's own commit on
+   * the leader (issue #9428), so the leader's search missed the vectors inserted on a follower in the same way.
+   * <p>
+   * "New" is decided against the location index BEFORE the entry is published, because a page carries every entry it
+   * holds and not only the ones this transaction wrote: an id already live or tombstoned is a re-read, and a page applied
+   * twice changes nothing the second time. The delta entry carries no payload - {@link #deltaVectorOf} reads it back on
+   * demand, as it does for an entry whose payload the heap budget declined - so the apply thread never reads a record,
+   * which this transaction may not even have written yet. The pages of the compacted file are left out of the accounting:
+   * a compaction adds and removes no vector, and since #5870 it renumbers the ids it carries.
+   * <p>
+   * The whole page is applied under the index write lock, as {@code put()} applies a local write. That makes the id
+   * allocator, the location index, the delta buffer and the mutation counter move as one step against a concurrent graph
+   * build, which reads the allocator and the counter as one instant (issue #7742) and republishes the location index
+   * under the same lock.
    *
    * @param page The page that was just replicated and written
    */
   public void applyReplicatedPageUpdate(final MutablePage page) {
+    applyReplicatedPageUpdate(page, true);
+  }
+
+  /**
+   * @param page     The page that was just replicated or recovered and written
+   * @param fromPeer true for a page written on another node, false for this database's own WAL replayed while it opens.
+   *                 Recovery rebuilds the locations only: no graph is resident yet, and the first search reconciles the
+   *                 graph it loads against the pages, charging the tombstones it finds there once (issue #7842) - also
+   *                 counting them here would charge them twice
+   */
+  public void applyReplicatedPageUpdate(final MutablePage page, final boolean fromPeer) {
     try {
       final int pageNum = page.getPageId().getPageNumber();
       final int fileId = page.getPageId().getFileId();
@@ -11431,93 +11513,162 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // Calculate absolute file offset for this page
       final long pageStartOffset = (long) pageNum * getPageSize();
 
-      // Parse variable-sized entries sequentially (no pointer table)
-      int currentOffset = headerSize;
-      // Mirror put()/remove() for replicated pages (#9857).
-      List<DeltaVectorEntry> replicatedInserts = null;
-      int replicatedRemovals = 0;
-      for (int i = 0; i < numberOfEntries; i++) {
-        // Record absolute file offset for this entry
-        final long entryFileOffset = pageStartOffset + BasePage.PAGE_HEADER_SIZE + currentOffset;
+      // Materialise the locations BEFORE taking the write lock (issue #6722): the deferred parse is O(index size) page
+      // reads, and running it inside the exclusive section would block every reader and writer of this index for the
+      // whole scan. Once materialised it never goes back, so the vectorIndex() below is a plain volatile read.
+      vectorIndex();
 
-        // Read variable-sized vectorId
-        final long[] vectorIdAndSize = page.readNumberAndSize(currentOffset);
-        final int id = (int) vectorIdAndSize[0];
-        currentOffset += (int) vectorIdAndSize[1];
+      boolean mutated = false;
+      lock.writeLock().lock();
+      try {
+        final VectorLocationIndex locations = vectorIndex();
+        // Each id is judged by the state it had BEFORE this page, read the first time the page mentions it. Not entry by
+        // entry: a page holding both an id's live entry and its tombstone re-publishes the live one first when it is
+        // applied again (LSM merge-on-read), and the tombstone after it would then read as a fresh delete.
+        final IntHashSet seen;
+        if (fromPeer && !isCompacted) {
+          // One set per index, reused under the write lock that serializes every apply, rather than one per page
+          seen = replicatedPageSeenIds;
+          seen.clear();
+        } else
+          seen = null;
+        IntHashSet liveBefore = null;
+        IntHashSet unknownBefore = null;
+        IntHashSet queued = null;
+        IntHashSet tombstoned = null;
+        int inserted = 0;
 
-        // Read variable-sized bucketId
-        final long[] bucketIdAndSize = page.readNumberAndSize(currentOffset);
-        final int bucketId = (int) bucketIdAndSize[0];
-        currentOffset += (int) bucketIdAndSize[1];
+        // Parse variable-sized entries sequentially (no pointer table)
+        int currentOffset = headerSize;
+        for (int i = 0; i < numberOfEntries; i++) {
+          // Record absolute file offset for this entry
+          final long entryFileOffset = pageStartOffset + BasePage.PAGE_HEADER_SIZE + currentOffset;
 
-        // Read variable-sized position
-        final long[] positionAndSize = page.readNumberAndSize(currentOffset);
-        final long position = positionAndSize[0];
-        currentOffset += (int) positionAndSize[1];
+          // Read variable-sized vectorId
+          final long[] vectorIdAndSize = page.readNumberAndSize(currentOffset);
+          final int id = (int) vectorIdAndSize[0];
+          currentOffset += (int) vectorIdAndSize[1];
 
-        final RID rid = new RID(bucketId, position);
+          // Read variable-sized bucketId
+          final long[] bucketIdAndSize = page.readNumberAndSize(currentOffset);
+          final int bucketId = (int) bucketIdAndSize[0];
+          currentOffset += (int) bucketIdAndSize[1];
 
-        // Read deleted flag (fixed 1 byte)
-        final boolean deleted = page.readByte(currentOffset) == 1;
-        currentOffset += 1;
+          // Read variable-sized position
+          final long[] positionAndSize = page.readNumberAndSize(currentOffset);
+          final long position = positionAndSize[0];
+          currentOffset += (int) positionAndSize[1];
 
-        // Read quantization type byte (always written, even if NONE)
-        final byte quantOrdinal = (byte) page.readByte(currentOffset);
-        currentOffset += 1;
-        final VectorQuantizationType quantType = quantOrdinal >= 0 && quantOrdinal < VectorQuantizationType.values().length
-            ? VectorQuantizationType.values()[quantOrdinal] : VectorQuantizationType.NONE;
+          final RID rid = new RID(bucketId, position);
 
-        // Skip quantized vector data based on type
-        if (quantType == VectorQuantizationType.INT8) {
-          final int vectorLength = page.readInt(currentOffset);
-          currentOffset += 4; // vector length (int)
-          currentOffset += vectorLength; // quantized bytes
-          currentOffset += 8; // min + max (2 floats)
-        } else if (quantType == VectorQuantizationType.BINARY) {
-          final int originalLength = page.readInt(currentOffset);
-          currentOffset += 4; // original length (int)
-          currentOffset += (originalLength + 7) / 8; // packed bytes (1 bit per dimension)
-          currentOffset += 4; // median (float)
+          // Read deleted flag (fixed 1 byte)
+          final boolean deleted = page.readByte(currentOffset) == 1;
+          currentOffset += 1;
+
+          // Read quantization type byte (always written, even if NONE)
+          final byte quantOrdinal = (byte) page.readByte(currentOffset);
+          currentOffset += 1;
+          final VectorQuantizationType quantType = quantOrdinal >= 0 && quantOrdinal < VectorQuantizationType.values().length
+              ? VectorQuantizationType.values()[quantOrdinal] : VectorQuantizationType.NONE;
+
+          // Skip quantized vector data based on type
+          if (quantType == VectorQuantizationType.INT8) {
+            final int vectorLength = page.readInt(currentOffset);
+            currentOffset += 4; // vector length (int)
+            currentOffset += vectorLength; // quantized bytes
+            currentOffset += 8; // min + max (2 floats)
+          } else if (quantType == VectorQuantizationType.BINARY) {
+            final int originalLength = page.readInt(currentOffset);
+            currentOffset += 4; // original length (int)
+            currentOffset += (originalLength + 7) / 8; // packed bytes (1 bit per dimension)
+            currentOffset += 4; // median (float)
+          }
+
+          // The page may carry ids another node allocated (issue #9428): a follower's own commit applied on the leader,
+          // the leader's applied on a follower, a build run elsewhere. Left behind them, the next local insert would mint
+          // an id one of these entries already holds and supersede it in the location index of every node. Advanced
+          // BEFORE the entry is published, so no allocation can slip in between the two, and only ever forward, so a
+          // page carrying older ids (a tombstone, a renumbered compaction) never rewinds it. The read is only a fast path
+          // that skips the CAS when the allocator is already ahead; accumulateAndGet alone is what makes it correct.
+          if (id >= nextId.get())
+            nextId.accumulateAndGet(id + 1, Math::max);
+
+          // What the entry changes for the search, read BEFORE it is published (issue #9857): an id neither live nor
+          // tombstoned before this page is a vector this node has never seen, and a tombstone over an id that was live
+          // (or that this page just queued) is a delete. Anything else re-reads state this node already has. Ids are
+          // never reused, so an id that was tombstoned before cannot come back as a new vector.
+          if (seen != null && seen.add(id)) {
+            if (locations.isLive(id)) {
+              if (liveBefore == null)
+                liveBefore = new IntHashSet();
+              liveBefore.add(id);
+            } else if (!locations.isDeleted(id)) {
+              if (unknownBefore == null)
+                unknownBefore = new IntHashSet();
+              unknownBefore.add(id);
+            }
+          }
+
+          // Update VectorLocationIndex with this entry's absolute file offset
+          // LSM semantics: later entries override earlier ones
+          locations.addOrUpdate(id, isCompacted, entryFileOffset, rid, deleted);
+
+          if (!deleted) {
+            if (unknownBefore != null && unknownBefore.contains(id)) {
+              if (queued == null)
+                queued = new IntHashSet();
+              if (queued.add(id)) {
+                // No payload: deltaVectorOf() reads the vector back when a search scores the entry, and skips the entry
+                // when it cannot - the record this transaction carries may not be applied yet, or already deleted
+                queueDeltaEntry(new DeltaVectorEntry(id, rid, null));
+                ++inserted;
+              }
+            }
+          } else if ((liveBefore != null && liveBefore.contains(id)) || (queued != null && queued.contains(id))) {
+            if (tombstoned == null)
+              tombstoned = new IntHashSet();
+            if (tombstoned.add(id)) {
+              // Do not let the shared search cache pin a vector that no longer exists (issue #5412)
+              final VectorCache cache = searchVectorCache;
+              if (cache != null)
+                cache.remove(id);
+            }
+          }
         }
 
-        // The page may carry ids another node allocated (issue #9428): a follower's own commit applied on the leader,
-        // the leader's applied on a follower, a build run elsewhere. Left behind them, the next local insert would mint
-        // an id one of these entries already holds and supersede it in the location index of every node. Advanced
-        // BEFORE the entry is published, so no allocation can slip in between the two, and only ever forward, so a
-        // page carrying older ids (a tombstone, a renumbered compaction) never rewinds it. The read is only a fast path
-        // that skips the CAS when the allocator is already ahead; accumulateAndGet alone is what makes it correct.
-        if (id >= nextId.get())
-          nextId.accumulateAndGet(id + 1, Math::max);
+        final int removed = tombstoned == null ? 0 : tombstoned.size();
+        if (removed > 0 && !deltaVectors.isEmpty()) {
+          // The delta entries of the ids this page tombstoned leave the buffer, as remove() drops them: otherwise every
+          // search scans and skips them, and they hold their payload until the next rebuild (issue #7357). One pass for
+          // the whole page, where remove() makes one per deleted record; the buffer it walks is bounded by the rebuilds.
+          final IntHashSet dropped = tombstoned;
+          final int[] releasedPayloads = new int[1];
+          deltaVectors.removeIf(entry -> {
+            if (!dropped.contains(entry.vectorId))
+              return false;
+            if (entry.vector != null)
+              releasedPayloads[0]++;
+            return true;
+          });
+          if (releasedPayloads[0] > 0)
+            deltaResidentPayloads.addAndGet(-releasedPayloads[0]);
+        }
 
-        final boolean known = isCompacted || vectorIndex().isLive(id) || vectorIndex().isDeleted(id);
-        final boolean wasDeleted = known && vectorIndex().isDeleted(id);
-
-        // Update VectorLocationIndex with this entry's absolute file offset
-        // LSM semantics: later entries override earlier ones
-        vectorIndex().addOrUpdate(id, isCompacted, entryFileOffset, rid, deleted);
-
-        if (!deleted && !known) {
-          if (replicatedInserts == null)
-            replicatedInserts = new ArrayList<>();
-          // Vector is read from the page.
-          replicatedInserts.add(new DeltaVectorEntry(id, rid, null));
-        } else if (deleted && !wasDeleted && !isCompacted)
-          replicatedRemovals++;
-      }
-
-      if (replicatedInserts != null || replicatedRemovals > 0) {
-        lock.writeLock().lock();
-        try {
-          if (replicatedInserts != null)
-            for (final DeltaVectorEntry entry : replicatedInserts)
-              queueDeltaEntry(entry);
-          mutationsSinceSerialize.addAndGet((replicatedInserts != null ? replicatedInserts.size() : 0) + replicatedRemovals);
+        if (inserted + removed > 0) {
           if (graphState == GraphState.IMMUTABLE || graphState == GraphState.LOADING)
             this.graphState = GraphState.MUTABLE;
-        } finally {
-          lock.writeLock().unlock();
+          mutationsSinceSerialize.addAndGet(inserted + removed);
+          mutated = true;
         }
+      } finally {
+        lock.writeLock().unlock();
       }
+
+      // Outside the lock, as put() and remove() do (issue #3737). The rebuild that absorbs the delta buffer then also runs
+      // on a node nobody searches, which keeps the buffer bounded there, and a follower promoted to leader takes over a
+      // graph that already holds everything it replicated.
+      if (mutated)
+        scheduleInactivityRebuild();
 
       LogManager.instance()
           .log(this, Level.FINE, "Applied replicated page update: pageNum=%d, fileId=%d, isCompacted=%b, entries=%d",

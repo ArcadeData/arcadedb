@@ -112,6 +112,15 @@ public class TransactionManager {
    */
   private volatile boolean                   recencySignalReliable;
   /**
+   * The thread replaying this database's own WAL while it opens, set around each {@link #applyChanges} call of that loop
+   * and {@code null} otherwise. A transaction applied on any other thread was written on another node. Only the latter
+   * reaches a live search state: a vector index has no graph resident during recovery, and the first search after the open
+   * reconciles what it loads against the pages (#9857). A field rather than a parameter so the replay keeps going through
+   * the one overridable {@link #applyChanges}, and a thread rather than a flag so a replicated apply running on another
+   * thread at the same time can never be mistaken for the replay.
+   */
+  private volatile Thread                    ownWALReplayThread;
+  /**
    * Held SHARED for the whole of {@link #applyChanges}, and EXCLUSIVELY by the snapshot t0 barrier
    * ({@code PageManager.openSnapshot}, issue #6075). Replicated and crash-recovery replay is the one writer that
    * reaches the data files outside the asynchronous flush pipeline, so parking the flush thread does not park it;
@@ -617,7 +626,12 @@ public class TransactionManager {
             break;
 
           try {
-            applyChanges(walPositions[lowerTx], Collections.emptyMap(), false);
+            ownWALReplayThread = Thread.currentThread();
+            try {
+              applyChanges(walPositions[lowerTx], Collections.emptyMap(), false);
+            } finally {
+              ownWALReplayThread = null;
+            }
             // Only advance lastTxId after a successful apply, otherwise a failed transaction
             // would wrongly increment the next-tx counter past data that was never written.
             // The HIGHEST applied id, not the last one (#9795): a WAL file does NOT hold its transactions in txId
@@ -1058,6 +1072,7 @@ public class TransactionManager {
 
   private boolean applyChangesInternal(final WALFile.WALTransaction tx, final Map<Integer, Integer> bucketRecordDelta,
       final boolean ignoreErrors) {
+    final boolean recovery = Thread.currentThread().equals(ownWALReplayThread);
     boolean changed = false;
     // Whether at least one page was written at a version STRICTLY GREATER than the one on disk, i.e. this
     // transaction carried content the database did not have yet. `changed` cannot answer that question: since
@@ -1246,7 +1261,7 @@ public class TransactionManager {
                 (LSMVectorIndexMutable) component;
             final LSMVectorIndex mainIndex = vectorMutable.getMainIndex();
             if (mainIndex != null) {
-              mainIndex.applyReplicatedPageUpdate(modifiedPage);
+              mainIndex.applyReplicatedPageUpdate(modifiedPage, !recovery);
             } else {
               LogManager.instance().log(this, Level.WARNING,
                   "LSMVectorIndexMutable has null mainIndex for fileId=%d", null, txPage.fileId);
@@ -1255,7 +1270,7 @@ public class TransactionManager {
             final LSMVectorIndex mainIndex =
                 (LSMVectorIndex) ((LSMVectorIndexCompacted) component).getMainComponent();
             if (mainIndex != null) {
-              mainIndex.applyReplicatedPageUpdate(modifiedPage);
+              mainIndex.applyReplicatedPageUpdate(modifiedPage, !recovery);
             }
           }
         }

@@ -20,7 +20,9 @@ package com.arcadedb.mcp.tools;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.mcp.MCPConfiguration;
+import com.arcadedb.mcp.MCPToolArgumentException;
 import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.security.ServerSecurityUser;
@@ -86,15 +88,39 @@ public class FullTextSearchTool {
 
   public static JSONObject execute(final ArcadeDBServer server, final ServerSecurityUser user, final JSONObject args,
       final MCPConfiguration config) {
-    final String databaseName = args.getString("database");
+    final String databaseName = MCPToolUtils.requireString(args, "database");
     // Argument faults are reported before the database is resolved, so a malformed request reads the same
-    // whether or not the database also resolves, and a rejected request does no I/O.
-    FullTextQuery.validateArguments(args);
+    // whether or not the database also resolves, and a rejected request does no I/O. The validator touches no schema,
+    // so what it refuses is the MCP layer's to answer in every mode (issue #9772).
+    MCPToolUtils.validateArguments(() -> FullTextQuery.validateArguments(args));
+    requireIndexAddress(args);
 
     final MCPToolUtils.DatabaseAccess access = MCPToolUtils.resolveDatabase(
         server, user, databaseName, config, MCPToolUtils.RequiredAccess.READ);
     final Database database = access.database();
 
     return FullTextQuery.search(database, args);
+  }
+
+  /**
+   * The index is addressed by 'indexName', or by 'typeName' with optional 'properties'. Neither of the two is a fault of the
+   * request and needs no schema to tell, so it is answered here in every mode; the engine words the same refusal after the
+   * database resolved, appending the indexes it has, which is schema text production mode conceals. Whether the named index
+   * exists is the engine's to answer.
+   */
+  private static void requireIndexAddress(final JSONObject args) {
+    final String indexName = MCPToolUtils.optionalString(args, "indexName", null);
+    final String typeName = MCPToolUtils.optionalString(args, "typeName", null);
+    if ((indexName == null || indexName.isBlank()) && (typeName == null || typeName.isBlank()))
+      throw new MCPToolArgumentException("Provide either 'indexName', or 'typeName' with optional 'properties'");
+
+    final JSONArray properties = MCPToolUtils.optionalArray(args, "properties");
+    if (properties != null)
+      for (int i = 0; i < properties.length(); i++)
+        try {
+          properties.getString(i);
+        } catch (final JSONException e) {
+          throw new MCPToolArgumentException("'properties' must contain only property names");
+        }
   }
 }

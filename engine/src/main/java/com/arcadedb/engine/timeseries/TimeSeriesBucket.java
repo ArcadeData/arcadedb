@@ -371,7 +371,7 @@ public class TimeSeriesBucket extends PaginatedComponent {
    * are held, not copied, and the column kinds come from this bucket's cached table.
    */
   TimeSeriesRowSource newRowSource(final long[] timestamps, final Object[][] columnValues) {
-    return new ObjectColumnsRowSource(columnKinds, timestamps, columnValues);
+    return new ObjectColumnsRowSource(columnKinds, columns, timestamps, columnValues);
   }
 
   /**

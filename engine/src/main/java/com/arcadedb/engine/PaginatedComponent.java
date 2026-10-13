@@ -50,8 +50,13 @@ public abstract class PaginatedComponent extends Component {
    * Without this separation, two concurrent transactions could both compute the same "next page
    * number" and end up writing different chunks to the same physical page slot &mdash; a silent
    * data-corruption bug that the MVCC version check did not catch reliably.
+   * <p>
+   * Not final: a component that replaces this one on a schema reload ADOPTS this very counter (see
+   * {@link #carryOverFrom(PaginatedComponent)}, issue #9835), so the transactions still allocating through the retired
+   * instance and the ones allocating through its replacement draw from one sequence. It is written only before the
+   * replacement is published, and the publication is what makes it visible to everybody else.
    */
-  protected final     AtomicInteger          reservedPageCounter = new AtomicInteger();
+  protected           AtomicInteger          reservedPageCounter = new AtomicInteger();
 
   protected PaginatedComponent(final DatabaseInternal database, final String name, final String filePath, final String ext,
       final ComponentFile.MODE mode,
@@ -187,6 +192,34 @@ public abstract class PaginatedComponent extends Component {
   public void close() {
     if (file != null)
       file.close();
+  }
+
+  /**
+   * Takes over, from the component this one replaces on a schema reload, the state that has to survive the swap
+   * (issue #9835). A reload builds a NEW instance for the same file while transactions that resolved the previous one
+   * keep running on it, so anything those transactions reserved lives in the previous instance only, and a fresh
+   * instance starting from the file would hand it out a second time.
+   * <p>
+   * The reservation counter is SHARED rather than copied: a copy is a snapshot, and a transaction allocating through
+   * the retired instance between the copy and the publication would take a number the replacement then reissues.
+   * Shared, both instances advance one sequence whatever the interleaving, and it is never lowered - the counter this
+   * instance seeded from the file size is folded in with the same monotone raise {@link #updatePageCount(int)} uses.
+   * The committed page count is raised the same way, as it always was on this path.
+   * <p>
+   * The knowledge of WHAT must survive lives here, next to the fields, rather than in the schema loader: a subclass
+   * that keeps allocator state of its own extends this method, and a field added later is not silently dropped by a
+   * loader that enumerates what to carry. Must be called before this instance is published; calling it with this
+   * very instance is a no-op.
+   */
+  public void carryOverFrom(final PaginatedComponent previous) {
+    if (previous == null || previous == this)
+      return;
+
+    final AtomicInteger shared = previous.reservedPageCounter;
+    shared.accumulateAndGet(reservedPageCounter.get(), Math::max);
+    reservedPageCounter = shared;
+
+    updatePageCount(previous.getCommittedPageCount());
   }
 
   /**

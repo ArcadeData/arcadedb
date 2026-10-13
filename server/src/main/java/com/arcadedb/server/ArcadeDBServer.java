@@ -395,13 +395,43 @@ public class ArcadeDBServer {
    * Asks every plugin whether {@code setting} may take {@code value} while the server runs, before an operator's change
    * is stored (see {@link ServerPlugin#checkServerSettingChange}). The first refusal propagates to the caller.
    *
-   * @throws IllegalArgumentException when a plugin refuses the change
+   * @throws ServerSettingRefusedException when a plugin refuses the change
    */
   public void checkServerSettingChange(final GlobalConfiguration setting, final Object value) {
     if (pluginManager == null)
       return;
-    for (final ServerPlugin plugin : pluginManager.getPlugins())
-      plugin.checkServerSettingChange(setting, value);
+    for (final ServerPlugin plugin : pluginManager.getPlugins()) {
+      try {
+        plugin.checkServerSettingChange(setting, value);
+      } catch (final ServerSettingRefusedException e) {
+        throw e;
+      } catch (final IllegalArgumentException e) {
+        throw new ServerSettingRefusedException(e.getMessage(), e);
+      }
+    }
+  }
+
+  /**
+   * Stores a declared server setting an operator changes while the server runs, the one operation every surface that does
+   * so goes through (HTTP and gRPC {@code SET SERVER SETTING} by way of the control plane, the MCP {@code set_server_setting}
+   * tool): the plugins are asked first (issue #9749), then the value is stored, then the key is recorded as one the operator
+   * supplied (issue #9836), because the support diagnostics tell a chosen value from a computed one by that record and by
+   * nothing else. A surface that stores a setting without it leaves a customised server looking vanilla.
+   * <p>
+   * The check is not atomic with the store, and need not be: what a plugin refuses on is state fixed while it runs, and
+   * plugins start before any admin surface listens.
+   *
+   * @param setting the declared setting to change
+   * @param value   its new value, already coerced to the setting's type
+   *
+   * @throws ServerSettingRefusedException when a plugin refuses the change; nothing is stored or recorded
+   */
+  public void storeOperatorSetting(final GlobalConfiguration setting, final Object value) {
+    checkServerSettingChange(setting, value);
+    // setValue also runs the side effect of a declared SCOPE.SERVER setting (arcadedb.server.logFormat swapping the console
+    // formatter), so one whose effect is not a value somebody later reads takes effect here too (issue #7121)
+    configuration.setValue(setting, value);
+    markOperatorSetting(setting.getKey());
   }
 
   /** The configured {@code arcadedb.server.mode}: {@code development}, {@code test} or {@code production}. */

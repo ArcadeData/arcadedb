@@ -37,6 +37,7 @@ import com.arcadedb.engine.ComponentFactory;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.Dictionary;
 import com.arcadedb.engine.LocalBucket;
+import com.arcadedb.engine.OwnTransaction;
 import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.engine.timeseries.TimeSeriesBucket;
 import com.arcadedb.engine.timeseries.TimeSeriesMaintenanceScheduler;
@@ -774,8 +775,11 @@ public class LocalSchema implements Schema {
           // resolved the previous one before it had written its page before, and the file size covers it.
           if (component instanceof PaginatedComponent paginated && paginated.getComponentFile() != null) {
             final Component previous = table[fileId];
+            // Everything else a running transaction reserved on the previous instance - the page numbers it was
+            // handed, the new pages and slots it owns until it ends - has to survive the swap too, or the new
+            // instance hands them out again (issue #9835). The component knows what that is; see carryOverFrom().
             if (previous instanceof PaginatedComponent previousPaginated && previous.getName().equals(component.getName()))
-              paginated.updatePageCount(previousPaginated.getCommittedPageCount());
+              paginated.carryOverFrom(previousPaginated);
             try {
               paginated.updatePageCount((int) (paginated.getComponentFile().getSize() / paginated.getPageSize()));
             } catch (final IOException e) {
@@ -1855,7 +1859,10 @@ public class LocalSchema implements Schema {
       // instance applies its pages on this node only - the type exists everywhere, its records only here.
       final DatabaseInternal db = database.getWrappedDatabaseInstance();
       long copied = 0;
-      db.begin();
+      // The transaction THIS copy owns, and the only one it may roll back (issue #9851): a nested transaction is an independent
+      // one, so once a commit has popped it `db.isTransactionActive()` answers for the CALLER's, and the rollback guarded by it
+      // discarded the caller's uncommitted work - on the successful path too. Re-taken after every batch commit.
+      OwnTransaction copyTransaction = OwnTransaction.begin(db);
       try {
         for (final Iterator<Record> iter = db.iterateType(typeName, false); iter.hasNext(); ) {
 
@@ -1873,16 +1880,17 @@ public class LocalSchema implements Schema {
           ++copied;
 
           if (transactionBatchSize > 0 && copied % transactionBatchSize == 0) {
-            db.commit();
-            db.begin();
+            copyTransaction.commit();
+            copyTransaction = OwnTransaction.begin(db);
           }
         }
 
-        db.commit();
+        copyTransaction.commit();
 
       } finally {
-        if (db.isTransactionActive())
-          db.rollback();
+        // A no-op when the last commit succeeded, when a commit threw (it pops its context either way) and when the begin() after
+        // a batch commit threw: the handle then still names the committed context, which is no longer on the thread's stack.
+        copyTransaction.rollbackIfMine();
       }
 
       // COPY INDEXES. Deliberately outside the record-copy transaction: each index build opens its own transaction
@@ -1971,9 +1979,15 @@ public class LocalSchema implements Schema {
   public void dropIndex(final String indexName) {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
-    checkIndexIsNotBackingAConstraint(indexName);
-
-    dropIndexInternal(indexName);
+    // The guard and the drop run in one schema session, under the write lock that orders every other schema change (#9848,
+    // the same shape as #7672 on dropProperty). A guard evaluated before the lock could pass against a state that a
+    // concurrent ALTER TYPE ... WITH unique = true changes before the drop gets the lock, and the drop would then remove the
+    // index that ALTER had just built.
+    recordFileChanges(() -> {
+      checkIndexIsNotBackingAConstraint(indexName);
+      dropIndexInternal(indexName);
+      return null;
+    });
   }
 
   /**
@@ -3738,7 +3752,41 @@ public class LocalSchema implements Schema {
    *
    * @return how many members could not be restored, for a caller that reports warnings
    */
-  public synchronized int restoreSchemaMembersFromJSON(final JSONObject root, final SchemaMemberSource source) {
+  public int restoreSchemaMembersFromJSON(final JSONObject root, final SchemaMemberSource source) {
+    if (source == SchemaMemberSource.SCHEMA_FILE)
+      // The database's own schema.json being read back: what it names is already this node's (and, under HA, the
+      // cluster's) state, so there is nothing to publish. Its one caller is the schema-file loader, which already
+      // holds this schema's monitor
+      return restoreSchemaMembersFromJSONLocked(root, source);
+
+    // Issue #9764: an imported file is a schema change, so it runs inside a schema recording session, which saves the
+    // schema and, under Raft HA, ships it as a SCHEMA_ENTRY. A bare saveConfiguration() reached this node's schema.json
+    // only, and the followers never got the triggers, views, aggregates and function libraries.
+    //
+    // THE FRAME IS ENTERED BEFORE THE MONITOR IS TAKEN (#7457): entering it waits for the database write lock, and a
+    // thread holding the monitor while waiting for that lock deadlocks against any DDL that is saving.
+    //
+    // A FAILURE IS RETHROWN AFTER THE FRAME, NOT THROUGH IT, as in bulkChange(). The members restored before it are
+    // installed and no schema rollback exists; failing the frame would keep them on this node only. Closing it normally
+    // saves and ships that prefix, so every node holds the same thing, and the caller still sees the failure.
+    final RuntimeException[] failure = new RuntimeException[1];
+    final Integer failures = recordFileChanges(() -> {
+      try {
+        return restoreSchemaMembersFromJSONLocked(root, source);
+      } catch (final RuntimeException e) {
+        failure[0] = e;
+        return null;
+      }
+    });
+
+    if (failure[0] != null)
+      throw failure[0];
+
+    // Null only when the callback failed, which threw just above
+    return failures;
+  }
+
+  private synchronized int restoreSchemaMembersFromJSONLocked(final JSONObject root, final SchemaMemberSource source) {
     // The schema file IS the database's own state: what it names is already installed, so re-reading it replaces
     // rather than merges. An imported file is a second database's state arriving into a live one, which keeps
     // whatever the export did not name.
@@ -5138,8 +5186,13 @@ public class LocalSchema implements Schema {
     // COMPUTE INVOLVED BUCKETS FOR SECURITY
     final Map<Integer, LocalDocumentType> newBucketId2InvolvedTypeMap = new HashMap<>();
     for (final LocalDocumentType t : typeMap().values()) {
-      for (final Bucket b : t.getInvolvedBuckets())
-        newBucketId2InvolvedTypeMap.put(b.getFileId(), t);
+      for (final Bucket b : t.getInvolvedBuckets()) {
+        // A type's own bucket answers to that type, whatever another type's naming convention claims (a vertex type's
+        // stripe pool is found by name, issue #9780): the grants that cover a user bucket stay the grants of its type
+        final LocalDocumentType owner = newBucketId2TypeMap.get(b.getFileId());
+        if (owner == null || owner == t)
+          newBucketId2InvolvedTypeMap.put(b.getFileId(), t);
+      }
     }
 
     if (isStagingPublication()) {

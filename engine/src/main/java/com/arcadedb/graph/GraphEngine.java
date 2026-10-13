@@ -229,28 +229,18 @@ public class GraphEngine {
         database.getSchema().dropBucket(inEdgesBucket);
     }
 
-    // DROP THE SUPER-NODE STRIPE POOL, IF THE TYPE EVER PROMOTED A VERTEX (#5156)
-    // EXACT best-effort sweep: pool buckets are created contiguously (createStripePool loops 0..stripes-1),
-    // so walking until the first gap AT OR PAST the configured count covers a pool of ANY size, past or
-    // present - no fixed cap to leak beyond. Gaps below the configured count (a partially-created pool) are
-    // stepped over; a failed dropBucket is logged and does not abort the sweep (drops are individually
-    // durable, not transactional as a group), and the loop still advances past it.
+    // DROP THE SUPER-NODE STRIPE POOL, IF THE TYPE EVER PROMOTED A VERTEX (#5156). StripedEdgeList.getStripePool walks the
+    // pool of any size, past or present; a failed dropBucket is logged and does not abort the sweep (drops are
+    // individually durable, not transactional as a group).
     final int configuredStripes = database.getConfiguration().getValueAsInteger(GlobalConfiguration.GRAPH_SUPERNODE_STRIPES);
-    for (int i = 0; ; i++) {
-      final String stripeBucketName = StripedEdgeList.stripeBucketName(type.getName(), i);
-      if (!database.getSchema().existsBucket(stripeBucketName)) {
-        if (i == 0)
-          // POOLS ARE CREATED FROM SLOT 0: no slot 0 = this type never promoted, skip the whole sweep
-          break;
-        if (i >= configuredStripes)
-          break;
+    for (final Bucket stripe : StripedEdgeList.getStripePool(database.getSchema(), type.getName(), configuredStripes)) {
+      if (stripe == null)
         continue;
-      }
       try {
-        database.getSchema().dropBucket(stripeBucketName);
+        database.getSchema().dropBucket(stripe.getName());
       } catch (final Exception e) {
         LogManager.instance()
-            .log(this, Level.WARNING, "Error dropping super-node stripe bucket '%s' of type '%s'", e, stripeBucketName, type.getName());
+            .log(this, Level.WARNING, "Error dropping super-node stripe bucket '%s' of type '%s'", e, stripe.getName(), type.getName());
       }
     }
   }
@@ -1049,7 +1039,12 @@ public class GraphEngine {
 
     final MutableEdge newEdge = new MutableEdge(database, edgeType, newOut, newIn);
     if (!properties.isEmpty())
-      newEdge.set(properties);
+      // Every property, an `@special` one included, which set(Map) would skip as metadata. Only a reserved name is
+      // left behind: an edge persisted before #9799 can carry a phantom "@in"/"@out" key, which would otherwise be
+      // taken for an endpoint assignment and point the replacement somewhere else
+      for (final Map.Entry<String, Object> entry : properties.entrySet())
+        if (!MutableDocument.isReservedName(entry.getKey()))
+          newEdge.set(entry.getKey(), entry.getValue());
     newEdge.save();
 
     connectOutgoingEdge(fromVertex, toVertex, newEdge);

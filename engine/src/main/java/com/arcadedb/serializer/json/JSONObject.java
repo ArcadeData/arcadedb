@@ -91,11 +91,19 @@ public class JSONObject implements Map<String, Object> {
       object = new JsonObject();
   }
 
-  public JSONObject(final Map<String, ?> map) {
+  /**
+   * A member name is DERIVED from a map key, it is not the key: the engine stores and returns maps keyed by anything (an Integer
+   * from a {@code MAP} property, the {@code T} enum of a Gremlin {@code elementMap()}, a {@code null}), and a JSON object can
+   * only name a member by text. A {@code null} key is named {@code "null"}, as {@code JsonSerializer.serializeMap} and the Gremlin
+   * result mapping do (#9805). Two keys with the same text (the {@code null} key and the String {@code "null"}, {@code 1} and
+   * {@code "1"}) name the same member and the last entry of the map wins, which for an unordered map ({@code HashMap}) is
+   * unspecified.
+   */
+  public JSONObject(final Map<?, ?> map) {
     object = new JsonObject();
     if (map != null)
-      for (Map.Entry<String, ?> entry : map.entrySet())
-        put(entry.getKey(), entry.getValue());
+      for (final Map.Entry<?, ?> entry : map.entrySet())
+        put(String.valueOf(entry.getKey()), entry.getValue());
   }
 
   public JSONObject copy() {
@@ -175,11 +183,15 @@ public class JSONObject implements Map<String, Object> {
         object.addProperty(name, dateFormat.format(localDate.atStartOfDay()));
     }
     case TemporalAccessor temporalAccessor -> {
-      if (dateFormatAsString == null)
-        // SAVE AS TIMESTAMP
-        object.addProperty(name,
-            DateUtils.dateTimeToTimestamp(value, ChronoUnit.MILLIS));
-      else if (temporalAccessor instanceof Instant instant)
+      if (dateFormatAsString == null) {
+        // SAVE AS TIMESTAMP. A value with no epoch form (a time of day) keeps its text: it used to be written as a JSON null,
+        // so the value was gone (issue #9810), while the conversion of a JSON array element already did this
+        final Long timestamp = DateUtils.dateTimeToTimestamp(value, ChronoUnit.MILLIS);
+        if (timestamp != null)
+          object.addProperty(name, timestamp);
+        else
+          object.addProperty(name, temporalAccessor.toString());
+      } else if (temporalAccessor instanceof Instant instant)
         // SAVE AS STRING: an Instant has no date fields, so it must be anchored to UTC before the
         // schema-wide pattern can be applied (arcadedb.dateTimeImplementation=java.time.Instant).
         object.addProperty(name, dateTimeFormat.format(LocalDateTime.ofInstant(instant, ZoneOffset.UTC)));

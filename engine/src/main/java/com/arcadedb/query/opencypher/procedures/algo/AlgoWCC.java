@@ -32,7 +32,7 @@ import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 /**
- * Procedure: algo.wcc([config])
+ * Procedure: algo.wcc(relTypes?)
  * <p>
  * Finds Weakly Connected Components (WCC) in the graph. Two nodes belong to the same component
  * if there exists a path between them when all edges are treated as undirected. This is
@@ -88,7 +88,7 @@ public class AlgoWCC extends AbstractAlgoProcedure {
 
     final Database db = context.getDatabase();
 
-    final String[] relTypes = args.length > 0 ? extractRelTypes(args[0]) : null;
+    final String[] relTypes = args.length > 0 ? extractRelTypes(args[0], context) : null;
 
     // Try CSR-accelerated path: delegate to native min-label propagation on CSR arrays.
     // findProvider(relTypes) only returns a provider that covers every requested type, and

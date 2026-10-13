@@ -208,11 +208,17 @@ public abstract class BaseDocument extends BaseRecord implements Document, Docum
       parseRecordPrefix(content);
   }
 
+  /** Writes the identity, the properties and, for a vertex or an edge, its graph pointers. See {@link JavaBinarySerializer} for the contract. */
   @Override
   public void writeExternal(final ObjectOutput out) throws IOException {
     JavaBinarySerializer.writeExternal(this, out);
   }
 
+  /**
+   * Reads what {@link #writeExternal} wrote into THIS record, which the caller has to have created for the type, bound to the
+   * database ({@code database.newDocument("Type")}). {@code ObjectInputStream.readObject} cannot build a record from scratch, so
+   * it is not a way in; see {@link JavaBinarySerializer} (issue #9842).
+   */
   @Override
   public void readExternal(final ObjectInput in) throws IOException {
     JavaBinarySerializer.readExternal(this, in);

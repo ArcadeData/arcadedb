@@ -156,9 +156,9 @@ class AlgoGhostEdgeTest {
     buildGraphWithGhostEdge();
 
     // Whole-graph algorithms iterate every vertex's edges, including A's ghost out-edge.
-    assertProcedureDoesNotThrow("CALL algo.apsp('w') YIELD source, target, distance RETURN count(*) AS c");
+    assertProcedureDoesNotThrow("CALL algo.apsp(null, 'w') YIELD source, target, distance RETURN count(*) AS c");
     assertProcedureDoesNotThrow("CALL algo.articlerank() YIELD node, score RETURN count(*) AS c");
-    assertProcedureDoesNotThrow("CALL algo.mst('w') YIELD source, target, weight RETURN count(*) AS c");
+    assertProcedureDoesNotThrow("CALL algo.mst(null, 'w') YIELD source, target, weight RETURN count(*) AS c");
     assertProcedureDoesNotThrow("CALL algo.longestPath() YIELD node RETURN count(*) AS c");
 
     // algo.msa (directed minimum spanning arborescence, Chu-Liu/Edmonds) is rooted at A and reaches B only

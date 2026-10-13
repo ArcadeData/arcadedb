@@ -19,6 +19,9 @@
 package com.arcadedb.mcp;
 
 import com.arcadedb.mcp.tools.MCPToolUtils;
+import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONException;
+import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -72,5 +75,94 @@ class MCPToolUtilsTest {
     assertThatThrownBy(() -> MCPToolUtils.quoteIdentifier("property key", "a\\b"))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("backslash");
+  }
+  /**
+   * Issue #9772: a required string that is present but of another JSON shape is a refusal about the request, like a
+   * missing one. The accessor raises a {@link JSONException} for it, which no catch arm of the dispatcher keeps.
+   */
+  @Test
+  void requireStringRefusesAMemberThatIsNotAString() {
+    assertThatThrownBy(() -> MCPToolUtils.requireString(new JSONObject().put("query", new JSONArray().put("x").put("y")), "query"))
+        .isInstanceOf(MCPToolArgumentException.class)
+        .hasMessageContaining("'query'");
+    assertThatThrownBy(() -> MCPToolUtils.requireString(new JSONObject().put("query", new JSONObject().put("a", 1)), "query"))
+        .isInstanceOf(MCPToolArgumentException.class);
+    assertThatThrownBy(() -> MCPToolUtils.requireString(new JSONObject(), "query"))
+        .isInstanceOf(MCPToolArgumentException.class)
+        .hasMessage("'query' is required");
+    assertThat(MCPToolUtils.requireString(new JSONObject().put("query", "q"), "query")).isEqualTo("q");
+  }
+
+  @Test
+  void optionalStringDefaultsWhenAbsentAndRefusesAWrongShape() {
+    assertThat(MCPToolUtils.optionalString(new JSONObject(), "language", "cypher")).isEqualTo("cypher");
+    assertThat(MCPToolUtils.optionalString(new JSONObject().put("language", "sql"), "language", "cypher")).isEqualTo("sql");
+    assertThat(MCPToolUtils.optionalString(new JSONObject(), "value", null)).isNull();
+    assertThatThrownBy(() -> MCPToolUtils.optionalString(new JSONObject().put("language", new JSONArray().put("sql").put("cypher")), "language", "cypher"))
+        .isInstanceOf(MCPToolArgumentException.class)
+        .hasMessageContaining("'language'");
+  }
+
+  @Test
+  void intArgumentDefaultsWhenAbsentAndRefusesAWrongShape() {
+    assertThat(MCPToolUtils.intArgument(new JSONObject(), "limit", 20)).isEqualTo(20);
+    assertThat(MCPToolUtils.intArgument(new JSONObject().put("limit", 5), "limit", 20)).isEqualTo(5);
+    // the accessor's own coercion of a numeric string is kept, as it always was
+    assertThat(MCPToolUtils.intArgument(new JSONObject().put("limit", "5"), "limit", 20)).isEqualTo(5);
+    assertThatThrownBy(() -> MCPToolUtils.intArgument(new JSONObject().put("limit", "abc"), "limit", 20))
+        .isInstanceOf(MCPToolArgumentException.class)
+        .hasMessageContaining("'limit'");
+    assertThatThrownBy(() -> MCPToolUtils.intArgument(new JSONObject().put("limit", new JSONArray().put(1).put(2)), "limit", 20))
+        .isInstanceOf(MCPToolArgumentException.class);
+  }
+
+  @Test
+  void optionalObjectAndArrayDefaultToNullWhenAbsentAndRefuseAWrongShape() {
+    assertThat(MCPToolUtils.optionalObject(new JSONObject(), "relProperties")).isNull();
+    assertThat(MCPToolUtils.optionalArray(new JSONObject(), "types")).isNull();
+    assertThat(MCPToolUtils.optionalObject(new JSONObject().put("relProperties", new JSONObject().put("a", 1)), "relProperties").getInt("a"))
+        .isEqualTo(1);
+    assertThat(MCPToolUtils.optionalArray(new JSONObject().put("types", new JSONArray().put("V")), "types").length()).isEqualTo(1);
+    assertThatThrownBy(() -> MCPToolUtils.optionalObject(new JSONObject().put("relProperties", new JSONArray()), "relProperties"))
+        .isInstanceOf(MCPToolArgumentException.class)
+        .hasMessageContaining("'relProperties'");
+    assertThatThrownBy(() -> MCPToolUtils.optionalArray(new JSONObject().put("types", "V"), "types"))
+        .isInstanceOf(MCPToolArgumentException.class)
+        .hasMessageContaining("'types'");
+  }
+
+  @Test
+  void requireNonEmptyObjectRefusesAMemberThatIsNotAnObject() {
+    assertThatThrownBy(() -> MCPToolUtils.requireNonEmptyObject(new JSONObject().put("matchKeys", "x"), "matchKeys"))
+        .isInstanceOf(MCPToolArgumentException.class)
+        .hasMessageContaining("'matchKeys'");
+  }
+
+  /**
+   * Issue #9772: the shared validators the search tools delegate to are documented as touching no schema and doing no I/O,
+   * so everything they raise is a statement about the request.
+   */
+  @Test
+  void validateArgumentsTurnsWhateverTheValidatorRaisesIntoAnArgumentRefusal() {
+    assertThatThrownBy(() -> MCPToolUtils.validateArguments(() -> {
+      throw new IllegalArgumentException("'limit' must be between 1 and 100");
+    })).isInstanceOf(MCPToolArgumentException.class).hasMessage("'limit' must be between 1 and 100");
+
+    assertThatThrownBy(() -> MCPToolUtils.validateArguments(() -> {
+      throw new JSONException("JSONObject[k] is not a int (\"abc\")");
+    })).isInstanceOf(MCPToolArgumentException.class).hasMessageContaining("JSONObject[k]");
+
+    // a refusal that carries no text is still self-explanatory
+    assertThatThrownBy(() -> MCPToolUtils.validateArguments(() -> {
+      throw new IllegalArgumentException();
+    })).isInstanceOf(MCPToolArgumentException.class).hasMessage("Invalid arguments");
+
+    // a failure that is neither stays what it is
+    assertThatThrownBy(() -> MCPToolUtils.validateArguments(() -> {
+      throw new IllegalStateException("boom");
+    })).isInstanceOf(IllegalStateException.class).isNotInstanceOf(MCPToolArgumentException.class);
+
+    MCPToolUtils.validateArguments(() -> {
+    });
   }
 }

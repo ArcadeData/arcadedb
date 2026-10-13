@@ -30,6 +30,7 @@ import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerDatabase;
@@ -166,26 +167,93 @@ public class MCPToolUtils {
   }
 
   /**
-   * Returns a required non-blank string argument, throwing an {@link IllegalArgumentException} that names the field
-   * when it is missing or blank. Reading with a {@code null} default avoids the raw parser exception a bare lookup
-   * of an absent key would throw, so the caller gets a clean, self-correcting error.
+   * Returns a required non-blank string argument, throwing an {@link MCPToolArgumentException} that names the field when it
+   * is missing, blank or of another JSON shape. Reading with a {@code null} default avoids the raw parser exception a bare
+   * lookup of an absent key would throw, and {@link #optionalString} the one a member of the wrong shape would, so the caller
+   * gets a clean, self-correcting error that every server mode keeps (issue #9772).
    */
   public static String requireString(final JSONObject args, final String field) {
-    final String value = args.getString(field, null);
+    final String value = optionalString(args, field, null);
     if (value == null || value.isBlank())
       throw new MCPToolArgumentException("'" + field + "' is required");
     return value;
   }
 
   /**
+   * Returns an optional string argument, {@code defaultValue} when it is absent or null. A member of another JSON shape (an
+   * array, an object) is a refusal about the request and raises an {@link MCPToolArgumentException}, not the
+   * {@link JSONException} the accessor raises, which no catch arm of the dispatcher keeps in production mode.
+   */
+  public static String optionalString(final JSONObject args, final String field, final String defaultValue) {
+    try {
+      return args.getString(field, defaultValue);
+    } catch (final JSONException e) {
+      throw new MCPToolArgumentException("'" + field + "' must be a string");
+    }
+  }
+
+  /**
+   * Returns an optional integer argument, {@code defaultValue} when it is absent or null. A member that is not a number
+   * raises an {@link MCPToolArgumentException} naming it (see {@link #optionalString}).
+   */
+  public static int intArgument(final JSONObject args, final String field, final int defaultValue) {
+    try {
+      return args.getInt(field, defaultValue);
+    } catch (final JSONException e) {
+      throw new MCPToolArgumentException("'" + field + "' must be an integer");
+    }
+  }
+
+  /**
+   * Returns an optional object argument, {@code null} when it is absent or null. A member that is not a JSON object raises an
+   * {@link MCPToolArgumentException} naming it (see {@link #optionalString}).
+   */
+  public static JSONObject optionalObject(final JSONObject args, final String field) {
+    try {
+      return args.getJSONObject(field, null);
+    } catch (final JSONException e) {
+      throw new MCPToolArgumentException("'" + field + "' must be an object");
+    }
+  }
+
+  /**
+   * Returns an optional array argument, {@code null} when it is absent or null. A member that is not a JSON array raises an
+   * {@link MCPToolArgumentException} naming it (see {@link #optionalString}).
+   */
+  public static JSONArray optionalArray(final JSONObject args, final String field) {
+    try {
+      return args.getJSONArray(field, null);
+    } catch (final JSONException e) {
+      throw new MCPToolArgumentException("'" + field + "' must be an array");
+    }
+  }
+
+  /**
    * Returns a required object argument that must contain at least one property, throwing an
-   * {@link IllegalArgumentException} that names the field otherwise.
+   * {@link MCPToolArgumentException} that names the field otherwise.
    */
   public static JSONObject requireNonEmptyObject(final JSONObject args, final String field) {
-    final JSONObject value = args.getJSONObject(field, null);
+    final JSONObject value = optionalObject(args, field);
     if (value == null || value.length() == 0)
       throw new MCPToolArgumentException("'" + field + "' is required and must contain at least one property");
     return value;
+  }
+
+  /**
+   * Runs a validator the engine shares with the other protocol surfaces ({@code FullTextQuery}, {@code VectorSearch},
+   * {@code HybridSearch}), re-wording what it refuses as an {@link MCPToolArgumentException}. Those validators are documented
+   * as touching no schema and doing no I/O, so everything they can raise - an {@link IllegalArgumentException} for a bound or
+   * a combination, a {@link JSONException} for a member of the wrong shape - is a statement about the request and not engine
+   * text. The wrapper sits at the one place that calls them, so the shared code does not have to know about MCP. Do NOT wrap
+   * a call that reads the schema or runs a query: the text that raises is the engine's, which production mode conceals (issue
+   * #8749).
+   */
+  public static void validateArguments(final Runnable validator) {
+    try {
+      validator.run();
+    } catch (final IllegalArgumentException | JSONException e) {
+      throw new MCPToolArgumentException(e.getMessage() != null ? e.getMessage() : "Invalid arguments");
+    }
   }
 
   /**

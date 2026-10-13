@@ -24,6 +24,7 @@ import com.arcadedb.mcp.MCPToolArgumentException;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.ServerSettingRefusedException;
 import com.arcadedb.server.security.ServerSecurityUser;
 
 /**
@@ -65,7 +66,7 @@ public class SetServerSettingTool {
     // reading 'value' with an empty-string default turned a call that omitted it into a success that stored "" -
     // for a numeric key, a NumberFormatException deferred to whichever component read the setting next (#6837).
     final String key = MCPToolUtils.requireString(args, "key");
-    final String value = args.getString("value", null);
+    final String value = MCPToolUtils.optionalString(args, "value", null);
     if (value == null)
       throw new MCPToolArgumentException("'value' is required");
 
@@ -91,13 +92,12 @@ public class SetServerSettingTool {
     // reads anything unparseable as false - it has to, it runs in that class's static initializer - so
     // "requireAuthentication"="ture" arrived here, became Boolean.FALSE and was reported back as a success that had
     // just opened the metrics endpoint. A value an administrator typed is refused instead.
-    final Object coerced = cfg.coerceFromAdminCommand(value);
-
-    // The plugins may refuse a value their running state cannot honour - a Gremlin Server channelizer that cannot
-    // conceal engine error text refuses a switch to production mode (issue #9749) - before anything is stored. The
-    // refusal is the server's own wording about the request, so it is answered in every mode like the checks above.
+    //
+    // The parse touches no state and its message names the key, the type and the value the caller sent, so a refusal is
+    // text about the request: answered in every mode, like the checks above (issue #9772).
+    final Object coerced;
     try {
-      server.checkServerSettingChange(cfg, coerced);
+      coerced = cfg.coerceFromAdminCommand(value);
     } catch (final IllegalArgumentException e) {
       throw new MCPToolArgumentException(e.getMessage());
     }
@@ -105,10 +105,20 @@ public class SetServerSettingTool {
     // Externalized: a Class-typed setting is worth the Class itself once coerced, and Class.toString() is
     // "class java.util.Date" - neither what was written nor anything a caller can write back (issue #7163).
     final Object oldValue = GlobalConfiguration.externalizeValue(server.getConfiguration().getValue(cfg));
-    // setValue also runs the side effect of a declared SCOPE.SERVER setting, so one whose effect is not a value
-    // somebody later reads - arcadedb.server.logFormat swapping the console formatter - takes effect here too
-    // rather than being stored and ignored (issue #7121).
-    server.getConfiguration().setValue(cfg, coerced);
+
+    // The same operation the HTTP and gRPC twins run (ServerControlPlane.setServerSetting): the plugins are asked first and
+    // may refuse a value their running state cannot honour - a Gremlin Server channelizer that cannot conceal engine error
+    // text refuses a switch to production mode (issue #9749) - then the value is stored, which also runs the side effect of
+    // a declared SCOPE.SERVER setting (issue #7121), then the key is recorded as one the operator set, which is what the
+    // support diagnostics tell a chosen value from a computed one by (issue #9836). Storing through the server and not
+    // through its configuration is what keeps the three from drifting apart. The refusal is the server's own wording about
+    // the request, so it is answered in every mode like the checks above; only that type is re-worded, so an
+    // IllegalArgumentException the store itself raised stays engine text.
+    try {
+      server.storeOperatorSetting(cfg, coerced);
+    } catch (final ServerSettingRefusedException e) {
+      throw new MCPToolArgumentException(e.getMessage());
+    }
 
     // Re-read rather than echo `coerced`: since issue #7163 the callback's result is what the overlay stores, so
     // a setting whose callback NORMALISES its argument (arcadedb.maxPageRAM clamps a page cache larger than 80%

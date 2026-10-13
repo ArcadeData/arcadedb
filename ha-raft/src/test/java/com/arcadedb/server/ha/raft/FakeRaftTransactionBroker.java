@@ -113,9 +113,9 @@ public class FakeRaftTransactionBroker extends RaftTransactionBroker {
   public void replicateSchema(final String dbName, final String schemaJson, final Map<Integer, String> filesToAdd,
       final Map<Integer, String> filesToRemove, final List<byte[]> walEntries, final List<Map<Integer, Integer>> bucketDeltas,
       final List<RaftLogEntryCodec.TsSealedBlob> sealedFileBlobs, final List<RaftLogEntryCodec.TsSealedChunk> sealedFileChunks,
-      final SchemaDelta.Payload schemaDelta) {
+      final SchemaDelta.Payload schemaDelta, final Map<Integer, String> filesToRename) {
     call("replicateSchema", () -> null, dbName, schemaJson, filesToAdd, filesToRemove, walEntries, bucketDeltas,
-        sealedFileBlobs, sealedFileChunks, schemaDelta);
+        sealedFileBlobs, sealedFileChunks, schemaDelta, filesToRename);
   }
 
   @Override

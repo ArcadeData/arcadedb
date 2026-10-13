@@ -35,6 +35,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.logging.Level;
@@ -60,6 +61,7 @@ public class LocalTimeSeriesType extends LocalDocumentType implements TimeSeries
   // A type created by this build writes the current mutable row format; one restored from JSON keeps
   // whatever version wrote its pages, which is what lets a pre-#5519 database open unchanged.
   private volatile int                    mutableFormatVersion = TimeSeriesBucket.CURRENT_VERSION;
+  private final    AtomicBoolean          legacyPrecisionWarned = new AtomicBoolean();
   private final    List<ColumnDefinition> tsColumns            = new ArrayList<>();
   // Replaced, never mutated in place: TimeSeriesMaintenanceScheduler iterates the list it read with no lock held.
   // Always an immutable copy, so no caller of getDownsamplingTiers() can mutate the published list either.
@@ -242,9 +244,22 @@ public class LocalTimeSeriesType extends LocalDocumentType implements TimeSeries
     return precision;
   }
 
+  /**
+   * Inside a schema recording session, like {@link #setDownsamplingTiers}: {@code ALTER TIMESERIES TYPE ... PRECISION}
+   * changes it on a live type, and under HA only the session ships the schema to the followers (issues #9747, #9800).
+   */
   public void setPrecision(final String precision) {
     checkForSchemaMutation();
-    this.precision = precision;
+    getSchema().getEmbedded().recordChange(() -> this.precision = precision);
+  }
+
+  /**
+   * True the first time it is called on this instance only: the maintenance scheduler logs the suspension of a
+   * legacy-precision type once (issue #9800). Kept on the instance because the type's equality is by name, so a set of
+   * types would mistake the same-named type of another database for this one.
+   */
+  public boolean firstLegacyPrecisionWarning() {
+    return !legacyPrecisionWarned.getAndSet(true);
   }
 
   @Override

@@ -71,10 +71,11 @@ class Issue7219SchemaEntryTrailingSectionTest {
   @Test
   void aSectionAppendedAfterTheDeltaIsRefusedRatherThanIgnored() {
     // What a newer node adding a section would produce. Before #7219 these bytes were dropped on the floor and
-    // the entry applied as if the section were not there - the silent half-apply this issue is about.
+    // the entry applied as if the section were not there - the silent half-apply this issue is about. Appended after
+    // the LAST section this codec knows, which since #9762 is the file-rename section after the delta.
     final ByteString entry = RaftLogEntryCodec.encodeSchemaEntry(DB, "", Collections.emptyMap(),
         Collections.emptyMap(), Collections.emptyList(), Collections.emptyList(), Collections.emptyList(), false,
-        Collections.emptyList(), new SchemaDelta.Payload(41L, "{\"types\":{}}"));
+        Collections.emptyList(), new SchemaDelta.Payload(41L, "{\"types\":{}}"), Map.of(3, "Renamed_0"));
 
     final ByteString withFutureSection = entry.concat(ByteString.copyFrom(new byte[] { 1, 2, 3, 4, 5, 6, 7, 8 }));
 

@@ -28,7 +28,7 @@ import java.util.List;
  * as it is appended, so {@code dropped &gt; 0} is a partial-write signal and not a rollback - the samples
  * counted in {@link #written()} are already durable. Every point is either written or dropped, so
  * {@code written + dropped == received}; a dropped point is accounted for by one of the three type lists or by
- * {@link #undeclaredKeys()}.
+ * {@link #undeclaredKeys()} or {@link #unreadableValues()}.
  *
  * @param received           points handed to the server
  * @param written            samples appended
@@ -38,24 +38,35 @@ import java.util.List;
  * @param unavailableTypes   measurements naming a TIMESERIES type whose storage engine failed to load
  * @param undeclaredKeys     {@code <measurement>.<key> (tag|field)} for each key the type does not declare in that
  *                           role; the points carrying one were dropped (issue #8646). Capped by the server at 100
+ * @param unreadableValues   {@code <measurement>.<column> (tag|field): <reason>} for each value its column cannot store, such
+ *                           as a datetime that is not a date; the reason names the column and its type and the points carrying
+ *                           one were dropped (issue #9809). Capped by the server at 100
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public record TimeSeriesWriteSummary(long received, long written, long dropped, List<String> unknownTypes,
                                      List<String> nonTimeSeriesTypes, List<String> unavailableTypes,
-                                     List<String> undeclaredKeys) {
+                                     List<String> undeclaredKeys, List<String> unreadableValues) {
 
   public TimeSeriesWriteSummary {
     unknownTypes = unknownTypes == null ? List.of() : List.copyOf(unknownTypes);
     nonTimeSeriesTypes = nonTimeSeriesTypes == null ? List.of() : List.copyOf(nonTimeSeriesTypes);
     unavailableTypes = unavailableTypes == null ? List.of() : List.copyOf(unavailableTypes);
     undeclaredKeys = undeclaredKeys == null ? List.of() : List.copyOf(undeclaredKeys);
+    unreadableValues = unreadableValues == null ? List.of() : List.copyOf(unreadableValues);
+  }
+
+  /** The summary of a write with no unreadable values, the shape this record had before issue #9809. */
+  public TimeSeriesWriteSummary(final long received, final long written, final long dropped,
+      final List<String> unknownTypes, final List<String> nonTimeSeriesTypes, final List<String> unavailableTypes,
+      final List<String> undeclaredKeys) {
+    this(received, written, dropped, unknownTypes, nonTimeSeriesTypes, unavailableTypes, undeclaredKeys, List.of());
   }
 
   /** The summary of a write with no undeclared keys, the shape this record had before issue #8646. */
   public TimeSeriesWriteSummary(final long received, final long written, final long dropped,
       final List<String> unknownTypes, final List<String> nonTimeSeriesTypes, final List<String> unavailableTypes) {
-    this(received, written, dropped, unknownTypes, nonTimeSeriesTypes, unavailableTypes, List.of());
+    this(received, written, dropped, unknownTypes, nonTimeSeriesTypes, unavailableTypes, List.of(), List.of());
   }
 
   /** Whether every point handed in was appended. */
@@ -70,7 +81,8 @@ public record TimeSeriesWriteSummary(long received, long written, long dropped, 
   public TimeSeriesWriteSummary plus(final TimeSeriesWriteSummary other) {
     return new TimeSeriesWriteSummary(received + other.received, written + other.written, dropped + other.dropped,
         union(unknownTypes, other.unknownTypes), union(nonTimeSeriesTypes, other.nonTimeSeriesTypes),
-        union(unavailableTypes, other.unavailableTypes), union(undeclaredKeys, other.undeclaredKeys));
+        union(unavailableTypes, other.unavailableTypes), union(undeclaredKeys, other.undeclaredKeys),
+        union(unreadableValues, other.unreadableValues));
   }
 
   private static List<String> union(final List<String> a, final List<String> b) {
@@ -85,6 +97,6 @@ public record TimeSeriesWriteSummary(long received, long written, long dropped, 
 
   /** The empty summary, the identity of {@link #plus(TimeSeriesWriteSummary)}. */
   public static TimeSeriesWriteSummary empty() {
-    return new TimeSeriesWriteSummary(0, 0, 0, List.of(), List.of(), List.of(), List.of());
+    return new TimeSeriesWriteSummary(0, 0, 0, List.of(), List.of(), List.of(), List.of(), List.of());
   }
 }

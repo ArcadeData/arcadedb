@@ -276,14 +276,16 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   // ConcurrentModificationException, even though two inserts of DIFFERENT records always commute. An entry exists
   // only while at least one transaction is inserting into that page, so the map is as small as the write
   // concurrency; see reserveInsertSlot().
-  private final          Map<Integer, PageInsertReservation> insertReservations     = new ConcurrentHashMap<>();
+  // Not final, like the two maps below: a replacement built by a schema reload adopts them (issue #9835, see
+  // carryOverFrom()).
+  private                Map<Integer, PageInsertReservation> insertReservations     = new ConcurrentHashMap<>();
   // #9694: pageNumber → the transaction that created that page and has not ended yet. The creator lists its page in
   // freeSpaceInPages, and page numbers are committed out of order, so other transactions could otherwise read it as an
   // empty page below their horizon and claim the slots its creator already wrote. Released when the creator ends.
-  private final          Map<Integer, TransactionContext> inFlightNewPages          = new ConcurrentHashMap<>();
+  private                Map<Integer, TransactionContext> inFlightNewPages          = new ConcurrentHashMap<>();
   // #9694: pages whose reservations are gone and that wait to be measured and listed in freeSpaceInPages again by the
   // next allocation; filled from transaction teardown, which must not read pages (see relistPage()).
-  private final          Set<Integer>              pagesToRelist                    = ConcurrentHashMap.newKeySet();
+  private                Set<Integer>              pagesToRelist                    = ConcurrentHashMap.newKeySet();
   private final          REUSE_SPACE_MODE          reuseSpaceMode;
   // #4958: both fields are read/written outside the freeSpaceInPages monitor on some paths (delete,
   // updatePageStatistics), so they must be safe on their own: volatile timestamp + atomic counter.
@@ -542,6 +544,38 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     return version >= EXTERNAL_BUCKET_VERSION ? Purpose.EXTERNAL_PROPERTY : Purpose.PRIMARY;
   }
 
+  /**
+   * Besides the reservation counter (see {@link PaginatedComponent#carryOverFrom}), a bucket keeps who owns what
+   * until their transaction ends: the pages running transactions created ({@link #inFlightNewPages}, #9694), the
+   * slots they reserved on existing pages ({@link #insertReservations}, #5279) and the pages waiting to be listed
+   * again ({@link #pagesToRelist}). All three are ADOPTED, not copied, for the reason the counter is: a transaction
+   * that resolved the retired instance keeps reserving into it, and releases into it when it ends - its teardown
+   * holds the instance it reserved on, not the one the schema publishes by then. With the maps shared, that release
+   * reaches the live instance too, so nothing is left owned forever.
+   * <p>
+   * The free-space statistics are a hint the next gather rebuilds, and are not carried.
+   * <p>
+   * The same contract as the counter's: call it only before this instance is published (the schema swap does, under
+   * the file-table lock, ahead of the volatile publication). The adopted fields are not final, and that publication is
+   * what makes them visible to every other thread.
+   */
+  @Override
+  public void carryOverFrom(final PaginatedComponent previous) {
+    super.carryOverFrom(previous);
+    if (previous instanceof LocalBucket previousBucket && previousBucket != this) {
+      insertReservations = previousBucket.insertReservations;
+      inFlightNewPages = previousBucket.inFlightNewPages;
+      pagesToRelist = previousBucket.pagesToRelist;
+    }
+  }
+
+  /**
+   * Clears the reservation maps, which after a schema reload are SHARED with the instance that replaced this one (see
+   * {@link #carryOverFrom}, issue #9835). Only the instance the schema currently publishes may be closed, which is what
+   * every caller does today: a reload retires the previous instance without closing it. Closing a retired instance is
+   * a bug well beyond these maps - {@code super.close()} closes the {@link PaginatedComponentFile} both instances hold,
+   * permanently - so the maps get no guard of their own that would make such a call look survivable.
+   */
   @Override
   public void close() {
     super.close();
@@ -7295,6 +7329,16 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     return gatherScans.get();
   }
 
+  /**
+   * Makes the throttle between two gather scans count as over, so a test can ask whether a scan would run now without
+   * sleeping {@value #MAX_TIMEOUT_GATHER_STATS} ms. A bucket that never scanned keeps its first-run state. Package-private:
+   * for tests only.
+   */
+  void expireGatherThrottleForTesting() {
+    if (timeOfLastStats != 0L)
+      timeOfLastStats = 1L;
+  }
+
   /** The pages the free-space map currently lists. Package-private: for tests only. */
   int[] getListedFreeSpacePagesForTesting() {
     synchronized (freeSpaceInPages) {
@@ -7318,6 +7362,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     // end of the file without filling the map goes back to being throttled.
     final boolean resuming = gatherTruncated;
     if (!firstRun && !resuming && System.currentTimeMillis() - timeOfLastStats <= MAX_TIMEOUT_GATHER_STATS)
+      return;
+
+    // #9575: nothing to consume is the common answer during an append-only load, asked on every allocation made while
+    // the map is empty. A plain read settles it without the atomic write below.
+    if (!firstRun && !resuming && changesFromLastStats.get() == 0L)
       return;
 
     // #5063: consume the change counter atomically at the decision point. The previous
@@ -7409,7 +7458,13 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    *                       change to it (see {@link #accountCompressedPage}).
    */
   private void updatePageStatistics(final MutablePage page, final int availableSpace, final int delta) {
-    changesFromLastStats.incrementAndGet();
+    // #9575: only a write that gives space back, or measures a page, arms the next gather. One that takes space (an insert,
+    // an enlargement) cannot leave a page with room a scan would list, and the pages it fills are tracked by the code below.
+    // Counting them armed a scan of EVERY page of the bucket each time the throttle ran out and an appended page had just
+    // filled up (the map is empty then), so a bulk load got slower the more it had written: 6 minutes of reads per scan at
+    // 1.3M pages.
+    if (delta >= 0)
+      changesFromLastStats.incrementAndGet();
 
     if (reuseSpaceMode.ordinal() < REUSE_SPACE_MODE.HIGH.ordinal())
       return;

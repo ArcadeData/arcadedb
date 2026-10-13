@@ -18,8 +18,11 @@
  */
 package com.arcadedb.query.sql.method;
 
+import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.Record;
 import com.arcadedb.query.sql.executor.MultiValue;
+import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.SQLMethod;
 import com.arcadedb.utility.NumberUtils;
 
@@ -197,6 +200,49 @@ public abstract class AbstractSQLMethod implements SQLMethod {
     for (final Iterator<?> iterator = MultiValue.getMultiValueIterator(value); iterator.hasNext(); )
       materialised.add(iterator.next());
     return materialised;
+  }
+
+  /**
+   * Reads one value a projection method ({@code include()}, {@code exclude()}) filters, as a map of names to values: a
+   * record answers its properties (plus its metadata fields when {@code includeMetadata} is set), a {@link Result} its
+   * {@link Result#toMap()}, a map itself, anything else {@code null}. A projection is a value, never a record: a record
+   * stamped with the source RID turned {@code save()} on the projection into a partial overwrite (issue #9840).
+   * <p>
+   * The returned map may be the caller's own (a map receiver, a {@link Result}'s content): callers copy before they
+   * change it.
+   *
+   * @param value           the value the method was invoked on, or one element of it
+   * @param includeMetadata whether a record's metadata fields are part of the answer, see {@link #referencesMetadata}
+   *
+   * @return the properties to project, or {@code null} when the value is not a record, a result or a map
+   */
+  @SuppressWarnings("unchecked")
+  protected static Map<String, Object> projectionSource(final Object value, final boolean includeMetadata) {
+    if (value instanceof Identifiable identifiable) {
+      final Record record = identifiable.getRecord();
+      return record instanceof Document document ? document.toMap(includeMetadata) : null;
+    }
+    if (value instanceof Result result)
+      return result.toMap();
+    if (value instanceof Map)
+      return (Map<String, Object>) value;
+    return null;
+  }
+
+  /**
+   * Whether any of a projection method's field names is a metadata field ({@code @rid}, {@code @type}, {@code @*},
+   * ...). Metadata is part of a record's projection only when the caller names one, so a plain {@code exclude('secret')}
+   * can be stored back as an embedded map rather than as a map carrying {@code @type}.
+   *
+   * @param fieldNames the method's arguments
+   *
+   * @return true if at least one argument starts with {@code @}
+   */
+  protected static boolean referencesMetadata(final Object[] fieldNames) {
+    for (final Object fn : fieldNames)
+      if (fn != null && fn.toString().startsWith("@"))
+        return true;
+    return false;
   }
 
   protected Object getParameterValue(final Identifiable iRecord, final String iValue) {

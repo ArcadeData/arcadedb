@@ -18,6 +18,10 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.database.Document;
+import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.Record;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.EdgeIdentitySet;
 import com.arcadedb.query.sql.parser.PInteger;
 import com.arcadedb.query.sql.parser.TraverseProjectionItem;
@@ -121,6 +125,51 @@ public abstract class AbstractTraverseStep extends AbstractExecutionStep {
       fetchNextResults(context, nRecords);
       if (context.isProfiling())
         cost += System.nanoTime() - begin;
+    }
+  }
+
+  /**
+   * The entry point a row arriving from the previous step starts the walk from, or {@code null} when it cannot start one.
+   * One answer for both strategies, because they differ in the order they visit nodes and in nothing else: the two private
+   * copies this replaces had drifted apart, and the breadth-first one dropped a one-column row holding a bare RID
+   * ({@code SELECT @rid ...}, a LINK property) where the depth-first one loaded the record, so the same query answered the
+   * whole traversal under one strategy and nothing under the other (issue #9778).
+   */
+  protected static Result toTraverseResult(final Result item) {
+    TraverseResult res = null;
+    if (item instanceof TraverseResult result)
+      res = result;
+    else if (item.isElement() && item.getElement().get().getIdentity() != null) {
+      res = new TraverseResult(item.getElement().get());
+      res.depth = 0;
+    } else if (item.getPropertyNames().size() == 1) {
+      final Object val = item.getProperty(item.getPropertyNames().iterator().next());
+      if (val instanceof Identifiable identifiable && loadEntryPoint(identifiable) instanceof Document document) {
+        res = new TraverseResult(document);
+        res.depth = 0;
+        res.setMetadata("$depth", 0);
+      }
+    } else {
+      res = new TraverseResult();
+      for (final String key : item.getPropertyNames())
+        res.setProperty(key, item.getProperty(key));
+
+      for (final String md : item.getMetadataKeys())
+        res.setMetadata(md, item.getMetadata(md));
+    }
+
+    return res;
+  }
+
+  /**
+   * The record a one-column entry-point row points at, or {@code null} when there is none to start from: a LINK whose record
+   * was deleted has nothing to walk, the same as a LINK left null, so it is skipped rather than failing the whole query.
+   */
+  private static Record loadEntryPoint(final Identifiable identifiable) {
+    try {
+      return identifiable.getRecord();
+    } catch (final RecordNotFoundException e) {
+      return null;
     }
   }
 

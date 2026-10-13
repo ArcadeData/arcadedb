@@ -114,7 +114,9 @@ public interface ServerPlugin {
    * over HTTP and gRPC, the {@code set_server_setting} MCP tool), with the value already parsed to the setting's type.
    * A plugin whose running state is incompatible with the new value refuses it by throwing
    * {@link IllegalArgumentException} with a message the operator can act on: nothing is stored, and every transport
-   * answers the refusal as a rejected argument.
+   * answers the refusal as a rejected argument. The server re-types the exception as a {@link ServerSettingRefusedException}
+   * (still an {@link IllegalArgumentException}) so a surface can tell a refusal from an error of the store; throwing that type
+   * directly is equivalent.
    * <p>
    * This exists for a decision a plugin can only take at start: the Gremlin Server's channelizer is fixed once it
    * listens, so a runtime switch of {@code arcadedb.server.mode} to {@code production} would otherwise leave a
@@ -122,8 +124,9 @@ public interface ServerPlugin {
    * <p>
    * Only those operator surfaces ask, and only for a DECLARED setting: a key that names no {@link GlobalConfiguration} is
    * stored without asking, and code embedding the server that writes its {@code ContextConfiguration} (or a
-   * {@code GlobalConfiguration}) directly bypasses the hook. A new runtime writer of server settings has to call
-   * {@link ArcadeDBServer#checkServerSettingChange} before it stores.
+   * {@code GlobalConfiguration}) directly bypasses the hook. A new runtime writer of server settings has to store through
+   * {@link ArcadeDBServer#storeOperatorSetting}, which asks the plugins, stores and records that an operator set the
+   * setting (the support diagnostics report it as customised only then).
    * <p>
    * Called on the request thread, so the implementation has to be short and non-blocking.
    *

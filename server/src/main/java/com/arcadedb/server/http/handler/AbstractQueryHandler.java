@@ -757,6 +757,9 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
    * {@code $bytes} accepts standard or URL-safe base64 (RFC 4648 sections 4 and 5); {@code $int8}
    * accepts a {@link List} of {@link Number}, {@code float[]}, {@code double[]}, {@code int[]}, or
    * {@code long[]} of values in {@code [-128, 127]}.
+   * <p>
+   * A marker that does not decode is refused with a {@link RequestRefusedBeforeExecutionException}: it is read from the request
+   * alone, so it fails before a statement reaches the engine and must leave the session's transaction as it was (issue #9852).
    */
   protected static Map<String, Object> decodeTypedJsonMarkers(final Map<String, Object> paramMap) {
     if (paramMap == null || paramMap.isEmpty())
@@ -776,7 +779,7 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
 
   private static Object decodeTypedJsonMarker(final Object value, final int depth) {
     if (depth > MAX_TYPED_MARKER_DEPTH)
-      throw new IllegalArgumentException(
+      throw new RequestRefusedBeforeExecutionException(
           "Parameter nesting exceeds " + MAX_TYPED_MARKER_DEPTH + " levels - typed-marker decoder refuses to recurse further.");
     if (value instanceof Map<?, ?> m && m.size() == 1) {
       final Map.Entry<?, ?> only = m.entrySet().iterator().next();
@@ -791,7 +794,7 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
       for (final Map.Entry<?, ?> entry : m.entrySet()) {
         final Object key = entry.getKey();
         if (!(key instanceof String sk))
-          throw new IllegalArgumentException(
+          throw new RequestRefusedBeforeExecutionException(
               "Parameter map keys must be strings, found " + (key == null ? "null" : key.getClass().getSimpleName()));
         final Object original = entry.getValue();
         final Object decoded = decodeTypedJsonMarker(original, depth + 1);
@@ -831,9 +834,9 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
 
   private static byte[] decodeBytesMarker(final Object payload) {
     if (payload == null)
-      throw new IllegalArgumentException("Parameter '$bytes' value must be a base64 string, got null");
+      throw new RequestRefusedBeforeExecutionException("Parameter '$bytes' value must be a base64 string, got null");
     if (!(payload instanceof String b64))
-      throw new IllegalArgumentException(
+      throw new RequestRefusedBeforeExecutionException(
           "Parameter '$bytes' value must be a base64 string, found " + payload.getClass().getSimpleName());
     // Try standard base64 (RFC 4648 section 4) first; on failure retry with URL-safe (section 5)
     // so clients using - and _ in place of + and / are accepted transparently.
@@ -843,7 +846,7 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
       try {
         return Base64.getUrlDecoder().decode(b64);
       } catch (final IllegalArgumentException urlSafeErr) {
-        throw new IllegalArgumentException(
+        throw new RequestRefusedBeforeExecutionException(
             "Parameter '$bytes' is not valid base64 (standard or URL-safe): " + standardErr.getMessage(), standardErr);
       }
     }
@@ -858,7 +861,7 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
       for (int i = 0; i < list.size(); i++) {
         final Object elem = list.get(i);
         if (!(elem instanceof Number n))
-          throw new IllegalArgumentException(
+          throw new RequestRefusedBeforeExecutionException(
               "Parameter '$int8' element at index " + i + " must be a number, found "
                   + (elem == null ? "null" : elem.getClass().getSimpleName()));
         out[i] = toInt8(n.doubleValue(), i);
@@ -889,7 +892,7 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
         out[i] = toInt8(longs[i], i);
       return out;
     }
-    throw new IllegalArgumentException(
+    throw new RequestRefusedBeforeExecutionException(
         "Parameter '$int8' value must be an array of integers in [-128, 127], found "
             + (payload == null ? "null" : payload.getClass().getSimpleName()));
   }
@@ -900,10 +903,10 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
     // and any value with a non-zero fractional part. Infinity slips through here but is caught by
     // the range check below since +/-Infinity exceeds [-128, 127].
     if (v != Math.floor(v))
-      throw new IllegalArgumentException(
+      throw new RequestRefusedBeforeExecutionException(
           "Parameter '$int8' element at index " + index + " is not an integer value: " + v);
     if (v < -128.0 || v > 127.0)
-      throw new IllegalArgumentException(
+      throw new RequestRefusedBeforeExecutionException(
           "Parameter '$int8' element at index " + index + " is out of byte range [-128, 127]: " + v);
     return (byte) v;
   }

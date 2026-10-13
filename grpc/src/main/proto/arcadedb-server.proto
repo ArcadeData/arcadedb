@@ -461,7 +461,7 @@ message ExecuteCommandRequest {
   string language = 6; // "sql" if empty
 
   bool  return_rows = 7; // include rows in response
-  int32 max_rows    = 8; // cap returned rows (server may still count all)
+  int32 max_rows    = 8; // cap returned rows; <= 0 = server default; never above arcadedb.server.grpcQueryMaxResultRows. A larger result fails with RESOURCE_EXHAUSTED
 
   ProjectionSettings projectionSettings = 9;
 }
@@ -863,6 +863,10 @@ message TimeSeriesWriteSummary {
   // '<measurement>.<key> (tag|field)'. The points carrying them were dropped (issue #8646) unless the database sets
   // arcadedb.timeSeriesUndeclaredKeys=ignore. Capped at 100 entries; 'dropped' still counts every point.
   repeated string undeclared_keys = 8;
+  // Values a column of the measurement's TIMESERIES type cannot store (a datetime that is not a date, text in a numeric column), as
+  // '<measurement>.<column> (tag|field): <reason>', the reason naming the column and its type. The points carrying them were
+  // dropped (issue #9809). Capped at 100 entries; 'dropped' still counts every point.
+  repeated string unreadable_values = 9;
 }
 
 // Mirrors com.arcadedb.engine.timeseries.AggregationType. UNSPECIFIED is the proto3 zero value and is

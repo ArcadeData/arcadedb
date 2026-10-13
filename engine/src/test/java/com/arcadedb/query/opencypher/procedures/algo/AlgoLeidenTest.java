@@ -149,8 +149,10 @@ class AlgoLeidenTest {
   }
 
   @ParameterizedTest
-  @ValueSource(strings = {"KNOWS,NONEXISTENT", "KNOWS|NONEXISTENT"})
+  @ValueSource(strings = {"KNOWS,UNUSED", "KNOWS|UNUSED"})
   void leidenWithSeparatedRelTypesYieldsMultiNodeCommunities(final String relTypes) {
+    // The second name must be an existing (here edgeless) edge type: a name that is no edge type is refused (issue #9769)
+    database.getSchema().createEdgeType("UNUSED");
     final ResultSet rs = database.query("opencypher",
         "CALL algo.leiden('" + relTypes + "') YIELD nodeId, community RETURN nodeId, community");
 

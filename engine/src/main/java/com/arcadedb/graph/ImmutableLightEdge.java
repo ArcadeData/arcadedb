@@ -23,11 +23,10 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.ImmutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.Property;
-import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
 
@@ -140,7 +139,7 @@ public class ImmutableLightEdge extends ImmutableDocument implements LightEdge {
 
   @Override
   public Map<String, Object> toMap(final boolean includeMetadata) {
-    return Collections.emptyMap();
+    return includeMetadata ? lightEdgeMetadata() : new LinkedHashMap<>();
   }
 
   @Override
@@ -159,16 +158,7 @@ public class ImmutableLightEdge extends ImmutableDocument implements LightEdge {
    */
   @Override
   public JSONObject toJSON(final boolean includeMetadata) {
-    final JSONObject json = new JsonSerializer(database).map2json(Collections.emptyMap(), type, includeMetadata);
-    if (includeMetadata) {
-      // SAME KEY ORDER THE INHERITED IMPLEMENTATION PRODUCED: @cat FIRST, WHICH IT WROTE AS "d" AND THIS OVERRIDE
-      // REPLACED IN PLACE WITH "e"
-      json.put(Property.CAT_PROPERTY, "e");
-      json.put(Property.TYPE_PROPERTY, type.getName());
-      json.put(Property.RID_PROPERTY, getIdentity().toString());
-      json.put("@in", in).put("@out", out);
-    }
-    return json;
+    return includeMetadata ? new JSONObject(lightEdgeMetadata()) : new JSONObject();
   }
 
   @Override

@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.traversal;
 
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.graph.Vertex;
@@ -28,10 +29,12 @@ import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.ast.PathMode;
 import com.arcadedb.query.opencypher.executor.SelfLoops;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.utility.RidHashSet;
 
 import java.util.Collections;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
 import java.util.function.Predicate;
 
@@ -296,6 +299,77 @@ public abstract class GraphTraverser {
         return false;
     }
     return true;
+  }
+
+  /**
+   * True when {@code variable} names a relationship list the row already binds, e.g. the {@code rs} of
+   * {@code WITH [r1, r2] AS rs MATCH (a)-[rs*]->(b)}: the variable-length pattern must then match that list as its one
+   * path rather than expand the graph (openCypher TCK Match4 [8], issue #9828). A name with two leading spaces is the
+   * planner's own edge tracking, never a binding the query wrote, so it never constrains an expansion.
+   */
+  public static boolean isBoundRelationshipList(final Result row, final String variable) {
+    return variable != null && !variable.isEmpty() && !variable.startsWith("  ") && row != null && row.hasProperty(variable);
+  }
+
+  /**
+   * Matches a relationship list already bound to the pattern's variable as the only path this traversal may take from
+   * {@code start}. The list is accepted when its length is inside the hop range, each relationship passes the same
+   * type, inline property and inline {@code WHERE} filters and the same path-mode uniqueness rule a traversed one
+   * does, and the relationships connect head to tail from {@code start} in this traversal's direction.
+   *
+   * @param start         the vertex the traversal starts from
+   * @param relationships the bound value: null matches nothing, anything but a list of relationships is a TypeError
+   * @param fromLast      true when the plan walks the pattern against its written direction (anchored on the far end):
+   *                      the list is always in written order, so it is then consumed from its last relationship
+   * @param variable      the bound variable, named by the TypeError
+   *
+   * @return the path in traversal order, or null when the list is not a path this traversal could have walked
+   */
+  public TraversalPath matchBoundPath(final Vertex start, final Object relationships, final boolean fromLast,
+      final String variable) {
+    if (relationships == null)
+      return null;
+    if (!(relationships instanceof List<?> list))
+      throw new IllegalArgumentException("TypeError: variable-length relationship '" + variable
+          + "' must be bound to a list of relationships, got " + relationships.getClass().getSimpleName());
+
+    final int hops = list.size();
+    boolean hasNull = false;
+    for (int i = 0; i < hops; i++) {
+      final Object element = list.get(i);
+      if (element == null)
+        hasNull = true;
+      else if (!(element instanceof Edge))
+        throw new IllegalArgumentException("TypeError: variable-length relationship '" + variable
+            + "' must be bound to a list of relationships, but it contains " + element.getClass().getSimpleName());
+    }
+    if (hasNull || hops < minHops || hops > maxHops)
+      return null;
+
+    final TraversalPath path = new TraversalPath(start);
+    Vertex current = start;
+    for (int i = 0; i < hops; i++) {
+      final Edge edge = (Edge) list.get(fromLast ? hops - 1 - i : i);
+      if (!matchesTypeFilter(edge) || !matchesPropertyFilter(edge) || !matchesEdgePredicate(edge))
+        return null;
+      if (pathMode != PathMode.WALK && path.containsEdge(edge))
+        return null;
+
+      final RID at = current.getIdentity();
+      final Vertex next;
+      if (direction != Direction.IN && edge.getOut().equals(at))
+        next = edge.getInVertex();
+      else if (direction != Direction.OUT && edge.getIn().equals(at))
+        next = edge.getOutVertex();
+      else
+        return null;
+
+      if (pathMode == PathMode.ACYCLIC && path.containsVertex(next))
+        return null;
+      path.addStep(edge, next);
+      current = next;
+    }
+    return path;
   }
 
   /**

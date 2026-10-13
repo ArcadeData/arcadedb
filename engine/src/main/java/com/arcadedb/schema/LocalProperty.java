@@ -21,6 +21,7 @@ package com.arcadedb.schema;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.DocumentValidator;
+import com.arcadedb.database.DocumentValidator.RegexpUsability;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.log.LogManager;
@@ -122,6 +123,11 @@ public class LocalProperty extends AbstractProperty {
         // order of the two, so whoever arrives second sees the other's result rather than a snapshot taken before it.
         checkStillDeclaredIn(ownerType);
 
+        // A default applies to a record that does not carry the property, which no LIGHTWEIGHT edge type below this one can
+        // honour (issue #9846). A null default fills in nothing, so it is not one
+        if (convertedValue != null && convertedValue != DEFAULT_NOT_SET)
+          ownerType.checkNoLightweightEdgeTypeBelow(this, "default-valued");
+
         // One publication, so no reader can see the new value with the old (or no) compiled expression.
         this.defaultValue = new DefaultValue(convertedValue, compiled);
         ownerType.setPropertyHasDefault(name, convertedValue != DEFAULT_NOT_SET);
@@ -172,7 +178,12 @@ public class LocalProperty extends AbstractProperty {
     checkForSchemaMutation();
     final boolean changed = !Objects.equals(this.mandatory, mandatory);
     if (changed)
-      publish(() -> this.mandatory = mandatory);
+      publish(() -> {
+        // Checked in the session that publishes it, against the subtypes as they are under the write lock (issue #9846)
+        if (mandatory)
+          ((LocalDocumentType) owner).checkNoLightweightEdgeTypeBelow(this, "MANDATORY");
+        this.mandatory = mandatory;
+      });
     return this;
   }
 
@@ -317,29 +328,42 @@ public class LocalProperty extends AbstractProperty {
   }
 
   /**
-   * Refuses a REGEXP the property's type cannot use (see {@link DocumentValidator#unusableRegexp}) or that is not a valid
-   * pattern, so that an accepted declaration never makes every later write of the property fail (issue #9808): the REGEXP
-   * twin of {@link #checkBound}. Clearing it ({@code null}) is always allowed.
+   * Refuses a REGEXP the property's type cannot use (see {@link DocumentValidator#regexpUsability}) or that is not a valid
+   * pattern, so that an accepted declaration never makes every later write of the property fail (issues #9808, #9853): the
+   * REGEXP twin of {@link #checkBound}. Clearing it ({@code null}) is always allowed. A pattern on a number or a temporal
+   * that could neither be shown to match some value nor shown to match none is accepted with a warning, so the operator
+   * learns of it at the declaration and not at the first write.
    * <p>
    * A schema loaded from disk is not refused: a database written before this rule may carry such a pattern, and refusing it
-   * would make the database unopenable. The load only warns, and {@code ALTER PROPERTY ... REGEXP null} is the remedy.
+   * would make the database unopenable. The load only warns, and {@code ALTER PROPERTY ... REGEXP null} is the remedy. It
+   * does not search the text forms of a number or a temporal either: that is paid at the declaration, not at every open.
    */
   private void checkRegexp(final String regexp) {
     if (regexp == null)
       return;
 
-    String reason = DocumentValidator.unusableRegexp(type, regexp);
-    if (reason == null)
+    final boolean readingFromFile = owner.getSchema().getEmbedded().isReadingFromFile();
+    final RegexpUsability usability = DocumentValidator.regexpUsability(owner.getSchema().getEmbedded().getDatabase(), type,
+        regexp, !readingFromFile);
+    String reason = usability.refusal();
+    if (reason == null && type == Type.STRING)
+      // every other type compiled it in regexpUsability, which reports an invalid pattern as its refusal
       try {
         Pattern.compile(regexp);
       } catch (final PatternSyntaxException e) {
         reason = "is not a valid regular expression: " + e.getDescription();
       }
-    if (reason == null)
+
+    if (reason == null) {
+      if (usability.doubt() != null)
+        LogManager.instance().log(this, Level.WARNING,
+            "The REGEXP '%s' of property '%s.%s' %s: if no value matches it, every write of the property fails. Remove it with ALTER PROPERTY `%s`.`%s` REGEXP null",
+            regexp, owner.getName(), name, usability.doubt(), owner.getName(), name);
       return;
+    }
 
     reason = "The REGEXP '" + regexp + "' of property '" + owner.getName() + "." + name + "' " + reason;
-    if (owner.getSchema().getEmbedded().isReadingFromFile()) {
+    if (readingFromFile) {
       LogManager.instance().log(this, Level.WARNING,
           "%s: a write of a value may fail on it. Remove it with ALTER PROPERTY `%s`.`%s` REGEXP null", reason, owner.getName(),
           name);

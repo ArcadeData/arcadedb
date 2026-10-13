@@ -24,6 +24,7 @@ import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.engine.timeseries.TagFilter;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
 import com.arcadedb.engine.timeseries.promql.PromQLEvaluator;
+import com.arcadedb.engine.timeseries.promql.PromQLEvaluator.RowMatchers;
 import com.arcadedb.engine.timeseries.promql.ast.PromQLExpr;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalTimeSeriesType;
@@ -210,10 +211,11 @@ public class PostPrometheusReadHandler extends AbstractBinaryHttpHandler {
         continue;
 
       final TagFilter tagFilter = matcherEvaluator.tagFilter(matchers, columns);
+      final RowMatchers rowMatchers = matcherEvaluator.rowMatchers(matchers, columns);
       final Map<String, List<Object[]>> grouped = new LinkedHashMap<>();
       final boolean[] overBudget = { false };
       engine.forEachRow(query.getStartTimestampMs(), query.getEndTimestampMs(), null, tagFilter, null, row -> {
-        if (!matcherEvaluator.matchesRow(row, matchers, columns))
+        if (!matcherEvaluator.matchesRow(row, rowMatchers))
           return true;
         // Refused rather than truncated: Prometheus has no way to represent a partial remote-read response, so a silently cut
         // one is indistinguishable from a gap in the data (issue #5719's rule, applied here)

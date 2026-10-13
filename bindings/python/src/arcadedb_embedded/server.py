@@ -175,18 +175,24 @@ class ArcadeDBServer:
         try:
             self._java_server.start()
             self._started = True
-        except Exception as e:
+        except BaseException as e:
             # The engine leaves cleanup to the caller after a failed start: what
             # started before the failure (the HTTP idempotency cleaner, the security
             # and session timers, any plugin already listening) keeps running as
             # non-daemon threads until stop() is called, and stop() below returns at
             # once while _started is False. Without this the process cannot exit.
+            # BaseException, not Exception (#9813): a ^C during a startup that takes
+            # seconds is a KeyboardInterrupt, which skipped this cleanup and left the
+            # JVM-side server running with no way to stop it.
             try:
                 self._java_server.stop()
             except (
                 Exception
             ):  # nosec B110 - best effort; the start error is what the caller needs
                 pass
+            if not isinstance(e, Exception):
+                # an interrupt is the caller's to see as itself, not as a start failure
+                raise
             raise ArcadeDBError(f"Failed to start server: {e}") from e
 
     def stop(self):

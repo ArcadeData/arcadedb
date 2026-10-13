@@ -32,7 +32,12 @@ import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 /**
- * Procedure: algo.apsp(weightProperty?, relTypes?)
+ * Procedure: algo.apsp(relTypes?, weightProperty?)
+ * <p>
+ * The relationship types come first and the weight property second, as in every other weighted {@code algo.*}
+ * procedure. Before 26.11.1 this procedure took them the other way round; a call still written in that order names a
+ * property where the relationship types go and is refused, since no edge type carries that name (issue #9769).
+ * </p>
  * <p>
  * Computes All-Pairs Shortest Paths (APSP) using the Floyd-Warshall algorithm O(V³).
  * Returns one result per reachable (source, target) pair (i ≠ j). When no weight property
@@ -58,7 +63,7 @@ import java.util.stream.Stream;
  * <p>
  * Example:
  * <pre>
- * CALL algo.apsp('distance', 'ROAD')
+ * CALL algo.apsp('ROAD', 'distance')
  * YIELD source, target, distance
  * RETURN source.name, target.name, distance ORDER BY distance ASC
  * </pre>
@@ -100,8 +105,11 @@ public class AlgoAPSP extends AbstractAlgoProcedure {
   public Stream<Result> execute(final Object[] args, final Result inputRow, final CommandContext context) {
     validateArgs(args);
 
-    final String weightProperty = args.length > 0 ? extractString(args[0], "weightProperty") : null;
-    final String[] relTypes     = args.length > 1 ? extractRelTypes(args[1]) : null;
+    // (relTypes, weightProperty), the order of every other weighted algo.* procedure (issue #9769). A call still written
+    // in the old (weightProperty, relTypes) order names a property where the relationship types go and is refused by
+    // extractRelTypes, rather than walking an empty graph.
+    final String[] relTypes     = args.length > 0 ? extractRelTypes(args[0], context) : null;
+    final String weightProperty = args.length > 1 ? extractWeightProperty(args[1], context) : null;
 
     final Database db = context.getDatabase();
     final WorkGuard guard = newWorkGuard(context);

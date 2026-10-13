@@ -81,7 +81,7 @@ public class AlgoPreferentialAttachment extends AbstractAlgoProcedure {
     validateArgs(args);
 
     final Vertex sourceVertex  = extractVertex(args[0], "node");
-    final String[] relTypes    = args.length > 1 ? extractRelTypes(args[1]) : null;
+    final String[] relTypes    = args.length > 1 ? extractRelTypes(args[1], context) : null;
     final Vertex.DIRECTION dir = args.length > 2 ? parseDirection(extractString(args[2], "direction")) : Vertex.DIRECTION.BOTH;
 
     final Database db = context.getDatabase();

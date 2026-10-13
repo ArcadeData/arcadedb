@@ -2004,7 +2004,9 @@ public enum GlobalConfiguration {
       Hard ceiling on the number of rows the gRPC unary ExecuteQuery materializes. A request limit at or below \
       this cap is honored; a result that would exceed it fails the call with RESOURCE_EXHAUSTED (consistent with \
       the StreamQuery MATERIALIZE_ALL path) rather than silently truncating, and a client cannot bypass it with a \
-      larger limit. Bounds heap usage and protects against limitless-query DoS. The default is lower than \
+      larger limit. It bounds the unary ExecuteCommand the same way: it is the default when the request \
+      carries no max_rows, and a larger max_rows cannot bypass it. \
+      Bounds heap usage and protects against limitless-query DoS. The default is lower than \
       grpcStreamMaxMaterializedRows because the unary response is built and returned as a single gRPC message \
       (also bounded by the max inbound/outbound message size), whereas StreamQuery emits incrementally. \
       Set to -1 or 0 for unlimited (WARNING: removes DoS protection). Default is 100000.""",
@@ -3224,11 +3226,12 @@ public enum GlobalConfiguration {
       "Whether the standard gRPC health service is exposed. Default is true", Boolean.class, true),
 
   GRPC_COMPRESSION_ENABLED("arcadedb.grpc.compression.enabled", SCOPE.SERVER,
-      "Whether the gRPC endpoint supports message compression. Default is true", Boolean.class, true),
+      "Whether the gRPC endpoint supports message compression: when false it refuses compressed requests and never compresses a"
+          + " response, whatever arcadedb.grpc.compression.force says. Default is true", Boolean.class, true),
 
   GRPC_COMPRESSION_FORCE("arcadedb.grpc.compression.force", SCOPE.SERVER,
-      "Whether the gRPC endpoint compresses every response, whatever the client asked for. Default is false", Boolean.class,
-      false),
+      "Whether the gRPC endpoint compresses every response to a client that accepts the codec. Ignored, with a warning, when"
+          + " arcadedb.grpc.compression.enabled is false. Default is false", Boolean.class, false),
 
   GRPC_COMPRESSION_TYPE("arcadedb.grpc.compression.type", SCOPE.SERVER,
       "Compression algorithm used when arcadedb.grpc.compression.force is true. Default is 'gzip'", String.class, "gzip"),

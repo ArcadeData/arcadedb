@@ -425,7 +425,7 @@ public class JsonSerializer {
           .setDateTimeFormat(database.getSchema().getDateTimeFormat());
       final TemporalFormats formats = new TemporalFormats(database);
       for (final Map.Entry<Object, Object> entry : value.entrySet())
-        map.put(entry.getKey().toString(), formatNestedTemporal(serializeObject(database, entry.getValue()), formats));
+        map.put(String.valueOf(entry.getKey()), formatNestedTemporal(serializeObject(database, entry.getValue()), formats));
       result = map;
     }
     return result;
@@ -523,9 +523,13 @@ public class JsonSerializer {
 
   /**
    * True for the values of the types that keep more than an instant: a time of day, a zoned datetime and a duration. A
-   * {@code ZonedDateTime} under a DATETIME declaration is still an instant (issue #8572).
+   * {@code ZonedDateTime} under a DATETIME declaration is still an instant (issue #8572). Public so that
+   * {@code Result#valueToJSON} asks the same question and the two renderings of one row cannot drift (issue #9810).
+   *
+   * @param value the value to classify
+   * @param type  the declared property type, or {@code null} when the value comes from a projection with no declaration
    */
-  private static boolean isNativeCypherTemporal(final Object value, final Type type) {
+  public static boolean isNativeCypherTemporal(final Object value, final Type type) {
     if (value instanceof OffsetTime || value instanceof LocalTime || value instanceof CypherDuration)
       return true;
     return value instanceof ZonedDateTime && (type == null || type == Type.ZONED_DATETIME);
@@ -556,11 +560,11 @@ public class JsonSerializer {
     else if (value instanceof Temporal)
       value = DateUtils.dateTimeToTimestamp(value, type != null ? DateUtils.getPrecisionFromType(type) :
           ChronoUnit.MILLIS);
-    else if (value instanceof Map) {
-      final Map<String, Object> m = (Map<String, Object>) value;
+    else if (value instanceof Map<?, ?> m) {
+      // a member name is derived from the key, whatever its class (#9805)
       final JSONObject map = new JSONObject();
-      for (final Map.Entry<String, Object> entry : m.entrySet())
-        map.put(entry.getKey(), convertToJSONType(entry.getValue(), null));
+      for (final Map.Entry<?, ?> entry : m.entrySet())
+        map.put(String.valueOf(entry.getKey()), convertToJSONType(entry.getValue(), null));
       value = map;
     }
 

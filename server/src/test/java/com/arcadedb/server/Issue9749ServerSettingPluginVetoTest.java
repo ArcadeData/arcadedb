@@ -122,6 +122,40 @@ class Issue9749ServerSettingPluginVetoTest extends BaseGraphServerTest {
     assertThat(plugin().getChanges()).isEmpty();
   }
 
+  /**
+   * Issue #9836: the veto, the store and the operator mark are one operation, so a surface that stores a declared setting
+   * through it owes none of them separately. The refusal is its own type so a surface that words refusals itself (the MCP
+   * tool) can tell it from an {@link IllegalArgumentException} the store raised.
+   */
+  @Test
+  void storeOperatorSettingRefusedByAPluginStoresAndMarksNothing() {
+    final String before = getServer(0).getMode();
+
+    assertThatThrownBy(() -> getServer(0).storeOperatorSetting(GlobalConfiguration.SERVER_MODE, "production"))
+        .isInstanceOf(ServerSettingRefusedException.class)
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessage(ServerSettingVetoTestPlugin.REFUSAL);
+
+    assertThat(getServer(0).getMode()).isEqualTo(before);
+    assertThat(getServer(0).getOperatorSettingSource(GlobalConfiguration.SERVER_MODE.getKey())).isNull();
+  }
+
+  @Test
+  void storeOperatorSettingStoresAndMarksWhatThePluginAccepts() {
+    final ContextConfiguration configuration = getServer(0).getConfiguration();
+    final boolean hadValue = configuration.hasValue(GlobalConfiguration.SERVER_MODE.getKey());
+    final Object previous = configuration.getValue(GlobalConfiguration.SERVER_MODE);
+    try {
+      getServer(0).storeOperatorSetting(GlobalConfiguration.SERVER_MODE, "test");
+
+      assertThat(getServer(0).getMode()).isEqualTo("test");
+      assertThat(getServer(0).getOperatorSettingSource(GlobalConfiguration.SERVER_MODE.getKey())).isEqualTo("runtime");
+      assertThat(plugin().getChanges()).containsExactly(new ServerSettingVetoTestPlugin.Change(GlobalConfiguration.SERVER_MODE, "test"));
+    } finally {
+      configuration.setValue(GlobalConfiguration.SERVER_MODE.getKey(), hadValue ? previous : null);
+    }
+  }
+
   private HttpResponse<String> executeServerCommand(final String command) throws Exception {
     final HttpRequest request = HttpRequest.newBuilder()
         .uri(new URI(getServerHttpUrl("/api/v1/server")))

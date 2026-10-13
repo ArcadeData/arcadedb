@@ -46,7 +46,7 @@ public class GetSchemaTool {
 
   public static JSONObject execute(final ArcadeDBServer server, final ServerSecurityUser user, final JSONObject args,
       final MCPConfiguration config) {
-    final String databaseName = args.getString("database");
+    final String databaseName = MCPToolUtils.requireString(args, "database");
 
     final MCPToolUtils.DatabaseAccess access = MCPToolUtils.resolveDatabase(
         server, user, databaseName, config, MCPToolUtils.RequiredAccess.READ);

@@ -282,7 +282,7 @@ public class WebSocketInsertProtocol {
                   + " allowed by '" + GlobalConfiguration.SERVER_WS_MAX_INSERT_CHUNK_ROWS.getKey()
                   + "'. Split it into smaller chunks");
 
-        send(channel, session.applyChunk(chunkSeq, records));
+        send(channel, sessionManager.applyChunk(session, chunkSeq, records));
       }
       case "commit", "rollback" -> {
         final WebSocketInsertSession session = sessionManager.resolve(user, channelId,

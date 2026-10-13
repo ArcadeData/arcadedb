@@ -44,6 +44,13 @@ import static io.github.jbellis.jvector.vector.VectorUtil.squareL2Distance;
 public final class VectorUtils {
 
   /**
+   * Hard cap on the candidates a vector search asks its indexes for, per index, when it widens its fetch: whether to
+   * top up an answer stale candidates left short (see {@link #searchWithStaleTopUp}) or to over-fetch for grouping.
+   * About 100k RID-distance pairs is a few MB of heap, well under the budget of any realistic query.
+   */
+  public static final int MAX_FETCH_CANDIDATES = 100_000;
+
+  /**
    * One-time WARNING gate for {@link #dequantizeInt8ToFloat(byte[])} on byte {@code -128} inputs.
    * Cohere/OpenAI int8 endpoints emit {@code [-127, 127]} only; encountering a {@code -128}
    * indicates a non-Cohere/OpenAI byte source where the silent clamp to {@code -127} (preserving
@@ -619,5 +626,54 @@ public final class VectorUtils {
       if (collected.get(i) == candidate)
         return true;
     return false;
+  }
+
+  /**
+   * One search-and-load pass of a k-NN search over one or more vector indexes, used by {@link #searchWithStaleTopUp}.
+   *
+   * @param <R> the answer the pass builds, one element per live candidate it kept
+   */
+  @FunctionalInterface
+  public interface StaleAwareSearchPass<R extends List<?>> {
+    /**
+     * Asks every index for {@code fetchK} candidates and loads them, nearest first, keeping at most the caller's own
+     * {@code k}.
+     *
+     * @param fetchK       the candidates to ask each index for
+     * @param staleSkipped incremented once per candidate skipped because its record no longer exists
+     * @param saturated    set to true when an index answered with all {@code fetchK} candidates, so it may hold more
+     */
+    R run(int fetchK, int[] staleSkipped, boolean[] saturated);
+  }
+
+  /**
+   * Runs a k-NN search that loads the records its indexes answered with, topping up an answer that stale candidates left
+   * short (issues #9368, #9858).
+   * <p>
+   * A record deleted by a commit that overlaps the search can still be in an index's answer, because the index search and
+   * the record load are two reads with no snapshot between them. The pass skips such a candidate; this asks the indexes
+   * again with a doubled candidate budget, so a stale entry costs a candidate and never an answer row, until the answer
+   * holds {@code k} rows, no candidate was stale (the shortfall is real), no index filled its budget (each handed over
+   * everything it holds), or the budget reaches {@link #MAX_FETCH_CANDIDATES}. A search that meets no stale candidate
+   * makes exactly one pass.
+   * <p>
+   * Each pass starts from scratch rather than resuming the previous one: a commit landing between two passes can delete
+   * a record the first pass kept, and the second pass skips it like any other stale candidate.
+   *
+   * @param k    the rows the caller asked for
+   * @param pass one search-and-load pass
+   *
+   * @return the answer of the last pass
+   */
+  public static <R extends List<?>> R searchWithStaleTopUp(final int k, final StaleAwareSearchPass<R> pass) {
+    int fetchK = k;
+    while (true) {
+      final int[] staleSkipped = new int[1];
+      final boolean[] saturated = new boolean[1];
+      final R result = pass.run(fetchK, staleSkipped, saturated);
+      if (result.size() >= k || staleSkipped[0] == 0 || !saturated[0] || fetchK >= MAX_FETCH_CANDIDATES)
+        return result;
+      fetchK = (int) Math.min((long) fetchK * 2L, MAX_FETCH_CANDIDATES);
+    }
   }
 }

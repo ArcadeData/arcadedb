@@ -146,13 +146,17 @@ public class SQLFunctionVectorDequantizeInt8 extends SQLFunctionVectorAbstract {
     if (quantized.length == 0)
       throw new CommandSQLParsingException("Quantized vector cannot be empty");
 
+    if (!Float.isFinite(min) || !Float.isFinite(max))
+      throw new CommandSQLParsingException("Min and max must be finite, found min=" + min + ", max=" + max);
+
     if (min > max)
       throw new CommandSQLParsingException("Min (" + min + ") must be <= max (" + max + ")");
 
     final float[] result = new float[quantized.length];
-    final float range = max - min;
+    // In double, as vector.quantizeInt8 computes it: max - min of two finite floats can overflow a float
+    final double range = (double) max - min;
 
-    if (range == 0.0f) {
+    if (range == 0.0) {
       // All values were the same, return min value for all
       for (int i = 0; i < quantized.length; i++) {
         result[i] = min;
@@ -162,8 +166,8 @@ public class SQLFunctionVectorDequantizeInt8 extends SQLFunctionVectorAbstract {
         // Reverse quantization: value = (((quantized + 128) / 255) * range) + min
         // Convert signed byte [-128, 127] back to [0, 255] range by adding 128
         final int scaled = (int) quantized[i] + 128; // Convert to [0, 255]
-        final float normalized = scaled / 255.0f; // [0, 1]
-        result[i] = normalized * range + min;
+        final double normalized = scaled / 255.0; // [0, 1]
+        result[i] = (float) (normalized * range + min);
       }
     }
 

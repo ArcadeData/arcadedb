@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher.ast;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.function.misc.CoalesceFunction;
 import com.arcadedb.query.opencypher.LoadCSVRowContext;
+import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 
@@ -45,6 +46,13 @@ public class FunctionCallExpression implements Expression {
    * Marked as transient to avoid serialization issues.
    */
   private transient volatile StatelessFunction cachedFunction;
+
+  /**
+   * Whether this call aggregates, resolved on the first {@link #isAggregation()}: the registry lookup behind it is not free. Like
+   * {@link #cachedFunction}, it is a property of the call site for the life of the AST: a function registered after a plan was
+   * built is not asked again, which the plan's own function lookup would not do either.
+   */
+  private transient volatile Boolean aggregation;
 
   /** Set once {@link #finishCoalesce} has checked the argument count, which is a property of the call site. */
   private transient boolean arityValidated; // plain on purpose: the check is idempotent, so a racing second run is harmless
@@ -150,8 +158,14 @@ public class FunctionCallExpression implements Expression {
 
   @Override
   public boolean isAggregation() {
-    // Check if this is an aggregation function
-    return isAggregationFunction(functionName);
+    Boolean result = aggregation;
+    if (result == null) {
+      // The Cypher aggregates by name, then any namespaced function that says it aggregates (vector.sum): a call the planner
+      // does not see as an aggregation is called once per row and answers a NULL for each (issue #9768)
+      result = isAggregationFunction(functionName) || CypherFunctionFactory.isNamespacedAggregation(functionName, arguments.size());
+      aggregation = result;
+    }
+    return result;
   }
 
   @Override

@@ -18,13 +18,16 @@
  */
 package com.arcadedb.index.sparsevector;
 
+import com.arcadedb.index.sparsevector.SegmentFormat.WeightQuantization;
+
 /**
  * Per-block weight quantization codecs.
  * <p>
  * <b>int8</b>: 254 levels (0..253), packed into a single byte. Byte {@code 0x80} is reserved
  * as a tombstone sentinel, so encoded levels {@code >= 128} get bumped by one to skip it.
  * Decoded weight is {@code weight_min + (level / 253) * (weight_max - weight_min)}, so the
- * end-points of the per-block range are exactly representable.
+ * end-points of the per-block range are representable - the top one up to the float rounding of {@code min + (max -
+ * min)}, which can land one ulp above {@code max} (see {@link #decodedValueOf}, issue #9834).
  * <p>
  * <b>fp16</b>: IEEE 754 half-precision. Sentinel {@code 0xFE00} marks tombstones; it collides with
  * the fp16 image of negative NaN, so {@link #toFp16} refuses NaN outright rather than risk a weight
@@ -143,6 +146,41 @@ public final class WeightCodec {
   /** Exact inverse of the IEEE 754 half-precision encoding, subnormals included. See {@link #toFp16}. */
   public static float fromFp16(final short fp16) {
     return Float.float16ToFloat(fp16);
+  }
+
+  // ---------- shared ----------
+
+  /**
+   * The value the reader will decode for a live weight {@code w} stored under {@code q} in a block whose raw band is
+   * {@code [min, max]} (issue #9834). Every bound a segment stores for pruning has to bound THIS value, not the raw
+   * weight: fp16 rounds to nearest, so the decoded weight lands above the raw one about half the time, and a
+   * Block-Max WAND / MaxScore traversal that trusts a raw-derived ceiling skips documents that belong in the top-K.
+   * <p>
+   * Every branch is monotone non-decreasing in {@code w} (each is a composition of IEEE round-to-nearest operations
+   * and a clamp), so the decoded maximum of a block is the decoded value of its raw maximum.
+   */
+  public static float decodedValueOf(final float w, final WeightQuantization q, final float min, final float max) {
+    return switch (q) {
+      case FP32 -> w;
+      case FP16 -> fromFp16(toFp16(w));
+      case INT8 -> dequantizeInt8(quantizeInt8(w, min, max), min, max);
+    };
+  }
+
+  /**
+   * The block-max bound a reader can trust for a block whose header stores {@code stored} as its bound and {@code [min,
+   * max]} as its raw live-weight band (issue #9834). Never lowers the bound: it is raised to the decode of the raw band
+   * maximum, which by monotonicity of {@link #decodedValueOf} is the largest weight the reader can decode from the
+   * block. A segment written before the fix stored the raw maximum, which an FP16 decode exceeds about half the time
+   * and an INT8 decode ({@code min + 1.0f * (max - min)}) can exceed by a float rounding; a fixed builder already
+   * stores at least this value, so the lift is the identity for it. An unreadable band (NaN, from a corrupt header) is
+   * left to the decode path's own checks and the stored bound is returned as is.
+   */
+  public static float liftBlockBound(final float stored, final WeightQuantization q, final float min, final float max) {
+    if (q == WeightQuantization.FP32 || Float.isNaN(stored) || Float.isNaN(min) || Float.isNaN(max))
+      return stored;
+    final float decoded = decodedValueOf(max, q, min, max);
+    return decoded > stored ? decoded : stored;
   }
 
   // ---------- fp32 ----------

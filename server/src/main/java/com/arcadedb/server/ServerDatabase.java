@@ -71,6 +71,7 @@ import com.arcadedb.server.monitor.ProfilingResultSet;
 import com.arcadedb.server.monitor.ServerQueryProfiler;
 
 import java.io.IOException;
+import java.nio.file.Path;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.Iterator;
@@ -105,8 +106,20 @@ public class ServerDatabase implements DatabaseInternal {
       // out of reach of 'delete backup' and 'restore backup'. Resolved on CALL rather than captured here, so a
       // 'set backup config' that moves the directory is seen by the next statement, and so the control plane's
       // chain stays the single authority instead of being copied into a field at open time.
-      wrapped.setWrapper(BackupDirectoryResolver.WRAPPER_NAME,
-          (BackupDirectoryResolver) () -> new ServerControlPlane(server).resolveBackupDirectory().toString());
+      wrapped.setWrapper(BackupDirectoryResolver.WRAPPER_NAME, new BackupDirectoryResolver() {
+        @Override
+        public String resolveBackupDirectory() {
+          return new ServerControlPlane(server).resolveBackupDirectory().toString();
+        }
+
+        // AND THE RETENTION OF THE DIRECTORY IT WROTE INTO (issue #9844): the statement used to apply none, so a database
+        // absent from the auto-backup configuration grew its archive directory forever. The control plane's own pruning,
+        // so 'BACKUP DATABASE' and 'trigger backup' follow one policy
+        @Override
+        public int applyRetention(final String backupDirectory, final String databaseName) {
+          return new ServerControlPlane(server).pruneBackups(Path.of(backupDirectory), databaseName);
+        }
+      });
     }
   }
 
@@ -753,6 +766,11 @@ public class ServerDatabase implements DatabaseInternal {
 
   public <RET> RET recordFileChanges(final Callable<Object> callback) {
     return current().recordFileChanges(callback);
+  }
+
+  @Override
+  public void checkFileRenamesCanBePublished() {
+    current().checkFileRenamesCanBePublished();
   }
 
   @Override

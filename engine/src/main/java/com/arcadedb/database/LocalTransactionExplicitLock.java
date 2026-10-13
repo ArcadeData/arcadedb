@@ -28,7 +28,9 @@ import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.utility.IntHashSet;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.logging.Level;
 
 /**
@@ -117,21 +119,25 @@ public class LocalTransactionExplicitLock implements TransactionExplicitLock {
       for (final IndexInternal idx : typeIndex.getIndexesOnBuckets())
         addIndexFileIds(idx);
 
-    // Lock all currently involved buckets for this type
-    for (final Bucket b : type.getInvolvedBuckets())
-      addNonNegative(b.getFileId());
-
-    // COMPREHENSIVE BUCKET LOCKING: Also lock all polymorphic buckets (includes subtypes)
-    // This helps handle cases where records might be created in buckets not initially involved
-    for (final Bucket b : type.getBuckets(true)) {
-      addNonNegative(b.getFileId());
-      // A SUBTYPE'S PRIMARY BUCKET HAS ITS OWN PAIRED EXTERNAL BUCKET, OWNED BY THE SUBTYPE
-      addExternalBucketOf(transactionContext.getDatabase().getSchema().getTypeByBucketId(b.getFileId()), b.getFileId());
-    }
+    // Lock all currently involved buckets for this type and for every subtype: locking a type locks its subtypes' records,
+    // and with them every file a subtype writes on their behalf - its primary buckets, their paired external buckets, the
+    // edge-list buckets of its vertices and the stripe pool of its promoted ones. Taking only the subtypes' primary buckets
+    // failed the commit of any edge appended to a subtype vertex under the parent's lock (issue #9780)
+    collectInvolvedBucketsPolymorphic(type, new HashSet<>());
 
     LogManager.instance().log(this, Level.FINE,
       "Explicit lock for type '%s' will lock %d bucket files (threadId=%d)",
       typeName, filesToLock.size(), Thread.currentThread().threadId());
+  }
+
+  private void collectInvolvedBucketsPolymorphic(final DocumentType type, final Set<String> visited) {
+    // A type reached through two supertypes (a diamond) is walked once, not once per path down to it
+    if (!visited.add(type.getName()))
+      return;
+    for (final Bucket b : type.getInvolvedBuckets())
+      addNonNegative(b.getFileId());
+    for (final DocumentType subType : type.getSubTypes())
+      collectInvolvedBucketsPolymorphic(subType, visited);
   }
 
   /**

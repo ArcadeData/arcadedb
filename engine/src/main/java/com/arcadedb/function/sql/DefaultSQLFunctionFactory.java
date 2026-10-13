@@ -20,6 +20,7 @@ package com.arcadedb.function.sql;
 
 // Collections
 
+import com.arcadedb.function.FunctionRegistry;
 import com.arcadedb.function.sql.coll.SQLFunctionDifference;
 import com.arcadedb.function.sql.coll.SQLFunctionFirst;
 import com.arcadedb.function.sql.coll.SQLFunctionIntersect;
@@ -168,6 +169,7 @@ import com.arcadedb.function.sql.vector.SQLFunctionVectorSum;
 import com.arcadedb.function.sql.vector.SQLFunctionVectorToString;
 import com.arcadedb.function.sql.vector.SQLFunctionVectorVariance;
 
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -402,5 +404,19 @@ public final class DefaultSQLFunctionFactory extends SQLFunctionFactoryTemplate 
   public boolean isBuiltIn(final String lowercaseName) {
     final Object builtIn = builtInFunctions.get(lowercaseName);
     return builtIn != null && builtIn == getFunctions().get(lowercaseName);
+  }
+
+  /**
+   * Whether {@code qualifiedName} ({@code namespace.function}, any case) names a function of this factory or a stateless one of
+   * the unified {@link FunctionRegistry}. It needs no database, so the SQL parser asks it while it builds the AST: a dotted call
+   * written without back-ticks is a function call, and not a method call on a property, exactly when this answers true
+   * (issue #9768).
+   * <p>
+   * Both registries are process-wide (every {@code SQLQueryEngine} uses this singleton), and a user-defined function library is
+   * not a namespace here: call it back-ticked, {@code `lib.fn`(...)}. A statement parsed before a function was registered keeps
+   * the reading it was parsed with.
+   */
+  public boolean hasNamespacedFunction(final String qualifiedName) {
+    return hasFunction(qualifiedName.toLowerCase(Locale.ENGLISH)) || FunctionRegistry.hasStatelessFunction(qualifiedName);
   }
 }

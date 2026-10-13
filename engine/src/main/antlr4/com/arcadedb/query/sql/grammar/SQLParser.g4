@@ -558,10 +558,12 @@ tsCodecClause
  * Example: ALTER TIMESERIES TYPE SensorData ADD DOWNSAMPLING POLICY AFTER 7 DAYS GRANULARITY 1 HOURS AFTER 30 DAYS GRANULARITY 1 DAYS
  * Example: ALTER TIMESERIES TYPE SensorData ADD DOWNSAMPLING POLICY AFTER 30 DAYS GRANULARITY 1 DAYS OFFSET -8 HOURS  (days start at local midnight in UTC+8, issue #8798)
  * Example: ALTER TIMESERIES TYPE SensorData DROP DOWNSAMPLING POLICY
+ * Example: ALTER TIMESERIES TYPE SensorData PRECISION MILLISECOND  (confirms a legacy type's unit, issue #9800)
  */
 alterTimeSeriesTypeBody
     : identifier ADD DOWNSAMPLING POLICY downsamplingTierClause+
     | identifier DROP DOWNSAMPLING POLICY
+    | identifier PRECISION tsPrecision
     ;
 
 downsamplingTierClause
@@ -893,7 +895,7 @@ refreshContinuousAggregateBody
  * Syntax: CREATE GRAPH ANALYTICAL VIEW [IF NOT EXISTS] name
  *         [VERTEX TYPES (type1, type2, ...)]
  *         [EDGE TYPES (type1, type2, ...)]
- *         [PROPERTIES (prop1, prop2, ...)]
+ *         [PROPERTIES ([prop1, prop2, ...])]     -- an empty list copies no vertex property
  *         [EDGE PROPERTIES (prop1, prop2, ...)]
  *         [UPDATE MODE OFF|SYNCHRONOUS|ASYNCHRONOUS]
  *         [COMPACTION THRESHOLD n]
@@ -903,7 +905,7 @@ createGraphAnalyticalViewBody
     : (IF NOT EXISTS)? viewName=identifier
       (VERTEX TYPES LPAREN vertexTypeList=gavTypeList RPAREN)?
       (EDGE TYPES LPAREN edgeTypeList=gavTypeList RPAREN)?
-      (PROPERTIES LPAREN propertyList=gavTypeList RPAREN)?
+      (props=PROPERTIES LPAREN propertyList=gavTypeList? RPAREN)?
       (EDGE PROPERTIES LPAREN edgePropertyList=gavTypeList RPAREN)?
       (UPDATE MODE updateModeName=identifier)?
       (COMPACTION THRESHOLD INTEGER_LITERAL)?

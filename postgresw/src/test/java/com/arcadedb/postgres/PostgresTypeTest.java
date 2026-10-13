@@ -40,6 +40,7 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.Date;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
@@ -139,6 +140,24 @@ class PostgresTypeTest {
     map.put("key", "value");
     assertThat(PostgresType.getTypeForValue(map)).isEqualTo(PostgresType.JSON);
     assertThat(PostgresType.getTypeForValue(new HashMap<>())).isEqualTo(PostgresType.JSON);
+  }
+
+  @Test
+  void jsonColumnRendersAMapWhoseKeysAreNotStrings() {
+    // issue #9805: a MAP property takes an Integer key and a null key, and the constructor of the JSON object cast every key to String
+    final Map<Object, Object> map = new LinkedHashMap<>();
+    map.put(1, "one");
+    map.put(2L, "two");
+    map.put(null, "nothing");
+
+    final JSONObject json = new JSONObject(PostgresType.JSON.toText(PostgresType.JSON, map));
+    assertThat(json.keySet()).containsExactlyInAnyOrder("1", "2", "null");
+    assertThat(json.getString("1")).isEqualTo("one");
+    assertThat(json.getString("null")).isEqualTo("nothing");
+
+    // the same map as an element of a json column holding an array
+    final JSONArray array = new JSONArray(PostgresType.JSON.toText(PostgresType.JSON, List.of(map)));
+    assertThat(array.getJSONObject(0).keySet()).containsExactlyInAnyOrder("1", "2", "null");
   }
 
   @Test

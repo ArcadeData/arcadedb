@@ -550,7 +550,9 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
               + "records are unaffected", null, failures);
     }
 
-    schema.saveConfiguration();
+    // No saveConfiguration() here (issue #9764): the recording session the restore ran in saves the schema and, under
+    // Raft HA, ships it. A bare save reached this node's schema.json only. The import runs against an open database, so
+    // that session is never the pass-through of a schema still loading, which would save nothing.
 
     // Counted off the EXPORT rather than off the target's schema: the target's own counts include whatever predated
     // the import - a function library registered programmatically from native Java code is in every database's
@@ -608,8 +610,10 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
       }
     }
 
+    // A type exported before issue #9800 can carry a precision CREATE no longer accepts. The restore keeps it, and
+    // with it the suspension of retention and downsampling that protects data whose unit was never established
     if (type.has("precision"))
-      builder.withPrecision(type.getString("precision"));
+      builder.withLegacyPrecision(type.getString("precision"));
     // 0 is the builder's own "use the default" (it resolves to ASYNC_WORKER_THREADS), which is the right answer
     // for an export written before the count was persisted.
     builder.withShards(type.getInt("shardCount", 0));

@@ -43,6 +43,15 @@ public class AiConfigHandler extends AbstractServerHttpHandler {
     this.portal = portal;
   }
 
+  /**
+   * Reading the plan asks the customer portal over the network whenever the cached answer has expired, and does so under
+   * the portal's lock, which parks the next caller behind it: neither belongs on an Undertow IO thread (issue #9849).
+   */
+  @Override
+  protected boolean mustExecuteOnWorkerThread() {
+    return true;
+  }
+
   @Override
   protected ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user, final JSONObject payload) {
     final JSONObject json = config.toJSON();

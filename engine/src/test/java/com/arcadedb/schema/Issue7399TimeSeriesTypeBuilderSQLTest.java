@@ -238,15 +238,15 @@ class Issue7399TimeSeriesTypeBuilderSQLTest extends TestHelper {
     // form. A builder that stored the caller's spelling verbatim therefore reported "nanosecond" when it created
     // the type in place and "NANOSECOND" when the same builder code ran against a remote schema - a divergence in
     // exactly the invariant the remote builder exists to establish. All three paths are pinned together here.
-    assertThat(builder("LowerCasePrecision").withField("value", Type.DOUBLE).withPrecision("nanosecond").toSQL().getFirst())
-        .contains("PRECISION NANOSECOND");
+    assertThat(builder("LowerCasePrecision").withField("value", Type.DOUBLE).withPrecision("millisecond").toSQL().getFirst())
+        .contains("PRECISION MILLISECOND");
 
-    assertThat(builder("LowerCaseCreated").withField("value", Type.DOUBLE).withPrecision("nanosecond").create()
-        .getPrecision()).isEqualTo("NANOSECOND");
+    assertThat(builder("LowerCaseCreated").withField("value", Type.DOUBLE).withPrecision("millisecond").create()
+        .getPrecision()).isEqualTo("MILLISECOND");
 
-    for (final String sql : builder("LowerCaseViaSQL").withField("value", Type.DOUBLE).withPrecision("nanosecond").toSQL())
+    for (final String sql : builder("LowerCaseViaSQL").withField("value", Type.DOUBLE).withPrecision("millisecond").toSQL())
       database.command("sql", sql);
-    assertThat(((TimeSeriesType) database.getSchema().getType("LowerCaseViaSQL")).getPrecision()).isEqualTo("NANOSECOND");
+    assertThat(((TimeSeriesType) database.getSchema().getType("LowerCaseViaSQL")).getPrecision()).isEqualTo("MILLISECOND");
   }
 
   @Test

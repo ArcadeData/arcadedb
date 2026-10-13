@@ -74,7 +74,7 @@ class AlgoMSTTest {
   void mstHasThreeEdges() {
     // For 4 nodes, the MST must have exactly n-1 = 3 edges
     final ResultSet rs = database.query("opencypher",
-        "CALL algo.mst('w') YIELD source, target, weight, totalWeight RETURN source, target, weight, totalWeight");
+        "CALL algo.mst(null, 'w') YIELD source, target, weight, totalWeight RETURN source, target, weight, totalWeight");
 
     final List<Result> results = new ArrayList<>();
     while (rs.hasNext())
@@ -87,7 +87,7 @@ class AlgoMSTTest {
   void mstTotalWeightIsSix() {
     // MST selects edges with weights 1+2+3=6
     final ResultSet rs = database.query("opencypher",
-        "CALL algo.mst('w') YIELD source, target, weight, totalWeight RETURN source, target, weight, totalWeight");
+        "CALL algo.mst(null, 'w') YIELD source, target, weight, totalWeight RETURN source, target, weight, totalWeight");
 
     assertThat(rs.hasNext()).isTrue();
     final Result first = rs.next();

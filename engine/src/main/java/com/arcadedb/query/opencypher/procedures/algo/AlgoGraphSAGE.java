@@ -102,7 +102,7 @@ public class AlgoGraphSAGE extends AbstractAlgoProcedure {
     final int outDim = config != null && config.get("embeddingDimension") instanceof Number n ? extractEmbeddingDimension(n, "embeddingDimension") : 64;
     final int layers = config != null && config.get("layers") instanceof Number n ? extractInt(n, "layers", 1) : 2;
     final long seed = config != null && config.get("seed") instanceof Number n ? n.longValue() : -1L;
-    final String[] relTypes = config != null ? extractRelTypes(config.get("relTypes")) : null;
+    final String[] relTypes = config != null ? extractRelTypes(config.get("relTypes"), context) : null;
     final Vertex.DIRECTION dir = parseDirection(config != null ? (String) config.get("direction") : null);
 
     final Database db = context.getDatabase();

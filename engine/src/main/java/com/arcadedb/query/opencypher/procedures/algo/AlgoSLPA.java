@@ -102,7 +102,7 @@ public class AlgoSLPA extends AbstractAlgoProcedure {
         num.longValue() : -1L;
     final Random rng = seedVal < 0 ? new Random() : new Random(seedVal);
 
-    final String[] relTypes = config != null ? extractRelTypes(config.get("relTypes")) : null;
+    final String[] relTypes = config != null ? extractRelTypes(config.get("relTypes"), context) : null;
 
     final Database db = context.getDatabase();
     final WorkGuard guard = newWorkGuard(context);

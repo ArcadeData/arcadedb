@@ -28,6 +28,7 @@ import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ChannelBinaryServer;
+import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.query.RunningQuery;
 import com.arcadedb.query.sql.executor.QueryAdmissionGate;
 import com.arcadedb.schema.DocumentType;
@@ -470,6 +471,11 @@ public class RedisNetworkExecutor extends Thread {
     if (error instanceof RedisException redisException && redisException.getKind() != null)
       return redisException.getKind();
 
+    // A follower refusing leader-only work, naming the leader (issue #9845): what Redis answers a write sent to a
+    // replica, and what a Sentinel-aware client reconnects to the master on. TRYAGAIN would have it retry the replica.
+    if (ServerIsNotTheLeaderException.redirectIn(error) != null)
+      return "READONLY";
+
     return switch (ErrorCategory.of(error)) {
       case RETRY -> "TRYAGAIN";
       case SECURITY -> "NOPERM";
@@ -490,7 +496,20 @@ public class RedisNetworkExecutor extends Thread {
     final String message = respErrorMessage(error);
     if (error instanceof RedisException || error instanceof ServerSecurityException)
       return message;
-    return ErrorConcealment.clientMessage(ErrorConcealment.isConcealing(server), this, "Redis", message, error);
+    return withLeaderRedirect(ErrorConcealment.clientMessage(ErrorConcealment.isConcealing(server), this, "Redis", message, error),
+        error);
+  }
+
+  /**
+   * {@code text}, followed by the leader's address when {@code error} is a follower's refusal that names one - the
+   * failure {@link #respErrorPrefix} answers with {@code READONLY} (issue #9845). Appended after concealment, as the
+   * gRPC transport does: it is an address the cluster put there, not engine detail, and the only thing that makes the
+   * refusal actionable.
+   */
+  static String withLeaderRedirect(final String text, final Throwable error) {
+    final ServerIsNotTheLeaderException refusal = ServerIsNotTheLeaderException.redirectIn(error);
+    // A RESP simple error is one line: leaderSentence strips the address's control characters, line breaks included
+    return refusal != null ? text + ". " + refusal.leaderSentence() : text;
   }
 
   /**
@@ -583,7 +602,7 @@ public class RedisNetworkExecutor extends Thread {
       final String databaseName = bucketName.substring(0, pos);
       final String keyType = bucketName.substring(pos + 1);
 
-      final Database database = getAuthorizedDatabase(databaseName);
+      final DatabaseInternal database = getAuthorizedDatabase(databaseName);
 
       if (keyType.startsWith("#")) {
         // The RID of the bucket argument, plus every RID among the keys: each record is deleted once (#9056)
@@ -601,16 +620,15 @@ public class RedisNetworkExecutor extends Thread {
           deleted[0] = removed;
         });
       } else {
-        for (int i = 2; i < list.size(); i++) {
-          final String key = (String) list.get(i);
-
-          // a key a concurrent index DDL hid is retried or refused, never counted as "nothing to delete" (#9811)
-          final Identifiable found = RedisIndexKeys.lookup(database, keyType, key);
-          if (found != null) {
-            found.getRecord().delete();
-            deleted[0]++;
-          }
-        }
+        // one unit of work like the RID form above and the query language: a failure on key k undoes keys 1..k-1 and a conflict is
+        // retried, where one implicit commit per key left the first keys deleted behind an error reply (#9837). The count is
+        // published once, so a retried attempt does not add its discarded count
+        database.transaction(() -> {
+          int removed = 0;
+          for (int i = 2; i < list.size(); i++)
+            removed += RedisRecords.deleteByKey(database, keyType, (String) list.get(i)) ? 1 : 0;
+          deleted[0] = removed;
+        });
       }
     }
     value.append(":");
@@ -706,22 +724,26 @@ public class RedisNetworkExecutor extends Thread {
 
     // Check if transient mode: second argument is JSON (starts with '{')
     if (secondArg.startsWith("{")) {
-      // Transient mode: store JSON objects in globalVariables atomically
+      // Transient mode: store JSON objects in globalVariables. Every element is parsed and validated BEFORE the first is written:
+      // setGlobalVariable is a plain map put that no transaction undoes, so a malformed element k used to leave elements 1..k-1
+      // stored behind an error reply (#9837). The same order as the RID parsing of hDel's transient branch. The stores that follow
+      // cannot fail, but they are still one put at a time: a concurrent reader may see some of the elements and not the others
       final DatabaseInternal database = getAuthorizedDatabase(databaseName);
-      final int[] stored = {0};
-      database.transaction(() -> {
-        for (int i = 2; i < list.size(); i++) {
-          final JSONObject json = new JSONObject((String) list.get(i));
-          if (!json.has("id")) {
-            throw new RedisException("JSON object must have an 'id' field for transient storage");
-          }
-          final String key = json.get("id").toString();
-          database.setGlobalVariable(key, json.toString());
-          stored[0]++;
+      final int count = list.size() - 2;
+      final String[] keys = new String[count];
+      final String[] values = new String[count];
+      for (int i = 0; i < count; i++) {
+        final JSONObject json = new JSONObject((String) list.get(i + 2));
+        if (!json.has("id")) {
+          throw new RedisException("JSON object must have an 'id' field for transient storage");
         }
-      });
+        keys[i] = json.get("id").toString();
+        values[i] = json.toString();
+      }
+      for (int i = 0; i < count; i++)
+        database.setGlobalVariable(keys[i], values[i]);
       value.append(":");
-      value.append(stored[0]);
+      value.append(count);
     } else {
       // Persistent mode: store documents in database type
       // the table minimum of 3 is the transient JSON form; the persistent form also needs a type and one document

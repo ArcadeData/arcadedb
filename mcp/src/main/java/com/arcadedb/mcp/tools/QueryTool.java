@@ -76,10 +76,10 @@ public class QueryTool {
 
   public static JSONObject execute(final ArcadeDBServer server, final ServerSecurityUser user, final JSONObject args,
       final MCPConfiguration config) {
-    final String databaseName = args.getString("database");
-    final String language = args.getString("language", "cypher");
-    final String query = args.getString("query");
-    final int limit = args.getInt("limit", DEFAULT_LIMIT);
+    final String databaseName = MCPToolUtils.requireString(args, "database");
+    final String language = MCPToolUtils.optionalString(args, "language", "cypher");
+    final String query = MCPToolUtils.requireString(args, "query");
+    final int limit = MCPToolUtils.intArgument(args, "limit", DEFAULT_LIMIT);
     if (limit < 1 || limit > MAX_LIMIT)
       throw new MCPToolArgumentException("'limit' must be between 1 and " + MAX_LIMIT);
 
