@@ -76,6 +76,12 @@ public class FileManager {
    * same file id. {@code null} exactly when no session is open.
    */
   private volatile     Map<Integer, String>                      unshippedCreates  = null;
+  /**
+   * The component renames the active session has to publish, file id to the new component name (issue #9762). A
+   * create or a drop is recorded by the file layer itself; a rename is not, because the files are moved before the
+   * session opens - see {@link #recordRename}. {@code null} exactly when no session is open.
+   */
+  private volatile     Map<Integer, String>                      recordedRenames   = null;
   private final static PaginatedComponentFile                    RESERVED_SLOT     = new PaginatedComponentFile();
   /**
    * Decides whether the physical deletion of a dropped file has to be DEFERRED because a point-in-time snapshot
@@ -205,6 +211,7 @@ public class FileManager {
 
     recordedChanges = new ArrayList<>();
     unshippedCreates = new LinkedHashMap<>();
+    recordedRenames = new LinkedHashMap<>();
     recordingThread = Thread.currentThread();
     LogManager.instance().log(this, Level.FINE,
         "startRecordingChanges: new session begun on thread '%s'", null, Thread.currentThread().getName());
@@ -269,7 +276,34 @@ public class FileManager {
     }
     recordedChanges = null;
     unshippedCreates = null;
+    recordedRenames = null;
     recordingThread = null;
+  }
+
+  /**
+   * Records, in the active session, that the file {@code fileId} now belongs to the component {@code newComponentName}
+   * (issue #9762). A type rename moves its bucket and index files one by one OUTSIDE any session - each move waits for
+   * the whole database's page flush queue, which is not something to do under the database write lock - and then opens
+   * a session only to publish the result, so the renames reach that session through here rather than from the file
+   * layer. Under HA the session ships them in its {@code SCHEMA_ENTRY}, so a follower moves the same files before it
+   * loads a schema that names them by their new names.
+   * <p>
+   * A no-op when no session is open: an embedded database has nothing to ship, and its schema is saved by the same frame.
+   * A second rename of the same file in one session replaces the first, the last name being the one the schema names.
+   */
+  public synchronized void recordRename(final int fileId, final String newComponentName) {
+    final Map<Integer, String> renames = recordedRenames;
+    if (renames != null)
+      renames.put(fileId, newComponentName);
+  }
+
+  /**
+   * The renames recorded in the active session by {@link #recordRename}, file id to new component name, in recording
+   * order. A copy; empty when no session is open or nothing was renamed.
+   */
+  public synchronized Map<Integer, String> getRecordedRenames() {
+    final Map<Integer, String> renames = recordedRenames;
+    return renames == null || renames.isEmpty() ? Collections.emptyMap() : new LinkedHashMap<>(renames);
   }
 
   /**

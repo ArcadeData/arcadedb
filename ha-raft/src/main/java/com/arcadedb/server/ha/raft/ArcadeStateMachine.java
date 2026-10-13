@@ -25,11 +25,13 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
+import com.arcadedb.engine.Component;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.FileManager;
 import com.arcadedb.engine.PageId;
 import com.arcadedb.engine.PageManager;
 import com.arcadedb.engine.PageVersionReservations;
+import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.engine.PaginatedComponentFile;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.engine.timeseries.TimeSeriesSealedInstallLock;
@@ -3902,7 +3904,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // a schema change and does need the reload. No producer ships both today - the compaction path always
     // carries the whole document - and this keeps that from becoming a silent skip if one ever does.
     final boolean sealedOnlyEntry = isEmptyMap(decoded.filesToAdd()) && isEmptyMap(decoded.filesToRemove())
-        && decoded.schemaDelta() == null
+        && isEmptyMap(decoded.filesToRename()) && decoded.schemaDelta() == null
         && (isNotEmpty(decoded.sealedFileBlobs()) || isNotEmpty(decoded.sealedFileChunks()));
 
     // A non-final chunk of a schema change split across several entries (see
@@ -3934,6 +3936,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // A delta entry (issue #6989) carries its schema change OUTSIDE schemaJson, so it must not be mistaken for
     // one of these: it publishes a schema change and the reload below is exactly what registers it.
     final boolean walOnlyEntry = isEmptyMap(decoded.filesToAdd()) && isEmptyMap(decoded.filesToRemove())
+        && isEmptyMap(decoded.filesToRename())
         && (decoded.schemaJson() == null || decoded.schemaJson().isEmpty()) && decoded.schemaDelta() == null
         && !isNotEmpty(decoded.sealedFileBlobs()) && !isNotEmpty(decoded.sealedFileChunks())
         && decoded.walEntries() != null && !decoded.walEntries().isEmpty();
@@ -3949,6 +3952,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // follower what it already means on a standalone database.
     try (final TimeSeriesSealedInstallLock sealedInstallLock = TimeSeriesSealedInstallLock.acquire(db,
         sealedShardsOf(decoded), SEALED_INSTALL_LOCK_TIMEOUT_MS)) {
+      // Before anything that reads the schema this entry publishes: it names the renamed files by their new names
+      // (issue #9762)
+      renameFiles(db, decoded.filesToRename());
+
       if (decoded.filesToAdd() != null)
         createNewFiles(db, decoded.filesToAdd());
 
@@ -4052,7 +4059,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // dictionary), which is what keeps the ordering guarantees of #4743 and #5443 on the full-rebuild path.
       if (!sealedOnlyEntry && !deliveryOnlyEntry && !walOnlyEntry) {
         final LocalSchema schema = db.getSchema().getEmbedded();
-        final boolean incremental = incrementalSchemaApplyEnabled()
+        // A rename re-keys components the incremental refresh would look up by their old names (issue #9762): it takes
+        // the full rebuild, which re-reads every component under the name its file now carries
+        final boolean incremental = incrementalSchemaApplyEnabled() && isEmptyMap(decoded.filesToRename())
             && schema.loadIncremental(ComponentFile.MODE.READ_WRITE, keysOrNull(decoded.filesToRemove()),
             walTouchedFileIds);
         if (!incremental)
@@ -4169,6 +4178,44 @@ public class ArcadeStateMachine extends BaseStateMachine {
     } catch (final RuntimeException e) {
       HALog.log(this, HALog.DETAILED,
           "[%s.applySchema] schema JSON parse failed for diagnostics: %s", dbName, e.getMessage());
+    }
+  }
+
+  /**
+   * Moves the component files a schema entry renamed (issue #9762): a type rename on the leader moved its bucket and
+   * index files under the new type name, and the schema this entry publishes names them so. Each file is renamed through
+   * its component, the way the leader renamed it, so the component, the file manager and the file on disk all follow.
+   * <p>
+   * Idempotent: a file already carrying the new name - a replay after a restart that came after the move - is skipped. A
+   * file id this node does not have, or one that is not a paginated component, is not a replay of anything: this node's
+   * file-id space has diverged from the leader's, and the throw sends the database to a resync rather than load a schema
+   * naming files it does not have (the same reasoning as {@link #createNewFiles}).
+   */
+  // @VisibleForTesting
+  static void renameFiles(final DatabaseInternal db, final Map<Integer, String> filesToRename) throws IOException {
+    if (filesToRename == null || filesToRename.isEmpty())
+      return;
+
+    for (final Map.Entry<Integer, String> rename : filesToRename.entrySet()) {
+      final int fileId = rename.getKey();
+      final String newComponentName = rename.getValue();
+      final ComponentFile file = db.getFileManager().getFileIfExists(fileId);
+      if (file == null)
+        throw new SchemaException("File id " + fileId + " of database '" + db.getName() + "' does not exist locally, but a "
+            + "committed schema change renames it to '" + newComponentName + "' - this node's file-id space has diverged "
+            + "from the leader's");
+      if (newComponentName.equals(file.getComponentName()))
+        continue;
+
+      final Component component = db.getSchema().getEmbedded().getFileByIdIfExists(fileId);
+      if (!(component instanceof PaginatedComponent paginated))
+        throw new SchemaException("File id " + fileId + " of database '" + db.getName() + "' ('" + file.getComponentName()
+            + "') is not a paginated component locally, but a committed schema change renames it to '" + newComponentName
+            + "' - this node's file-id space has diverged from the leader's");
+
+      paginated.rename(newComponentName);
+      HALog.log(ArcadeStateMachine.class, HALog.DETAILED, "Renamed file %d of database '%s' to component '%s'", fileId,
+          db.getName(), newComponentName);
     }
   }
 

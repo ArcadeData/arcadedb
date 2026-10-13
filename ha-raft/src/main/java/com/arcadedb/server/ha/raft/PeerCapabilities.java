@@ -95,12 +95,23 @@ public final class PeerCapabilities {
   public static final String TX_PREPARED_AT_INDEX = "tx-prepared-at-index";
 
   /**
+   * This node decodes the trailing file-rename section of {@code SCHEMA_ENTRY} and moves the renamed component files
+   * before it loads the schema the entry publishes (issue #9762).
+   * <p>
+   * Like {@link #SECURITY_GROUPS_ENTRY}, its consumer REFUSES rather than degrades: a type rename shipped without its
+   * file renames would publish a schema naming bucket files the peer does not have, and the peer would drop the type's
+   * buckets on its next reload. So {@code ALTER TYPE ... NAME} is refused, before a single file moves, while any peer
+   * has not advertised this token.
+   */
+  public static final String SCHEMA_FILE_RENAMES = "schema-file-renames";
+
+  /**
    * Everything this build can decode. Immutable, and deliberately a whitelist written out by hand rather than
    * derived from anything: a capability is a promise about the wire format, and the only thing that can make it
    * true is a human having checked that the decoder is present.
    */
   public static final Set<String> LOCAL = Set.of(SCHEMA_DELTA, SECURITY_PRECONDITION, SECURITY_GROUPS_ENTRY,
-      SECURITY_API_TOKENS_ENTRY, TX_PREPARED_AT_INDEX);
+      SECURITY_API_TOKENS_ENTRY, TX_PREPARED_AT_INDEX, SCHEMA_FILE_RENAMES);
 
   private PeerCapabilities() {
     // utility class
