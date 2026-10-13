@@ -53,6 +53,7 @@ import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.QueryAdmissionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.query.RunningQuery;
 import com.arcadedb.query.opencypher.query.CypherSchemaCommands;
 import com.arcadedb.query.opencypher.query.ShowCommandTail;
@@ -843,7 +844,7 @@ public class BoltNetworkExecutor extends Thread {
         stream.close(this, "RUN failure");
         LogManager.instance().log(this, Level.WARNING, "BOLT system query error", e);
         sendFailure(classifyExecutionError(e, BoltErrorCodes.DATABASE_ERROR),
-            loggedClientMessage(e.getMessage() != null ? e.getMessage() : "Database error"));
+            withLeaderRedirect(loggedClientMessage(e.getMessage() != null ? e.getMessage() : "Database error"), e));
         state = State.FAILED;
         return;
       }
@@ -949,7 +950,7 @@ public class BoltNetworkExecutor extends Thread {
       stream.close(this, "RUN failure");
       LogManager.instance().log(this, isRetryableConflict(e) ? Level.FINE : Level.WARNING, "BOLT query error", e);
       final String errorMsg = e.getMessage() != null ? e.getMessage() : "Database error";
-      sendFailure(classifyExecutionError(e, BoltErrorCodes.DATABASE_ERROR), loggedClientMessage(errorMsg));
+      sendFailure(classifyExecutionError(e, BoltErrorCodes.DATABASE_ERROR), withLeaderRedirect(loggedClientMessage(errorMsg), e));
       state = State.FAILED;
     } finally {
       if (binding != null)
@@ -1047,7 +1048,7 @@ public class BoltNetworkExecutor extends Thread {
       // by the driver, so log at FINE to avoid flooding WARNING with recoverable flow; real errors stay WARNING.
       LogManager.instance().log(this, isRetryableConflict(e) ? Level.FINE : Level.WARNING, "BOLT PULL error", e);
       final String errorMsg = e.getMessage() != null ? e.getMessage() : "Error fetching records";
-      sendFailure(classifyExecutionError(e, BoltErrorCodes.DATABASE_ERROR), loggedClientMessage(errorMsg));
+      sendFailure(classifyExecutionError(e, BoltErrorCodes.DATABASE_ERROR), withLeaderRedirect(loggedClientMessage(errorMsg), e));
       // The failed stream can neither be pulled nor discarded any more: released now, with its admission slot (issue #9518),
       // rather than held until the client RESETs or disconnects
       closeStream(stream, "PULL failure");
@@ -1153,7 +1154,7 @@ public class BoltNetworkExecutor extends Thread {
       // fallback: opening a transaction can fail on an MVCC conflict, a lock timeout, a deadline or a security
       // refusal, and hand-coding TransactionNotFound for all of them told a driver's retry predicate that a
       // retryable conflict was a permanent client error (issue #7915).
-      sendFailure(classifyExecutionError(e, BoltErrorCodes.TRANSACTION_ERROR), clientMessage(errorMsg, e));
+      sendFailure(classifyExecutionError(e, BoltErrorCodes.TRANSACTION_ERROR), withLeaderRedirect(clientMessage(errorMsg, e), e));
       state = State.FAILED;
     }
   }
@@ -1195,7 +1196,7 @@ public class BoltNetworkExecutor extends Thread {
 
     } catch (final Exception e) {
       final String message = e.getMessage() != null ? e.getMessage() : "Commit error";
-      sendFailure(classifyExecutionError(e, BoltErrorCodes.TRANSACTION_ERROR), clientMessage(message, e));
+      sendFailure(classifyExecutionError(e, BoltErrorCodes.TRANSACTION_ERROR), withLeaderRedirect(clientMessage(message, e), e));
       state = State.FAILED;
     }
   }
@@ -1230,7 +1231,7 @@ public class BoltNetworkExecutor extends Thread {
       // The third of the three transaction handlers, routed through the one classifier for the same reason the
       // other two are (issue #7915): closeAllStreams() and rollback() both raise engine exceptions, and a
       // timeout or a security refusal reported as TransactionNotFound is a diagnosis the caller cannot act on.
-      sendFailure(classifyExecutionError(e, BoltErrorCodes.TRANSACTION_ERROR), clientMessage(message, e));
+      sendFailure(classifyExecutionError(e, BoltErrorCodes.TRANSACTION_ERROR), withLeaderRedirect(clientMessage(message, e), e));
       state = State.FAILED;
     }
   }
@@ -1425,7 +1426,8 @@ public class BoltNetworkExecutor extends Thread {
       // request on this connection take ensureDatabase()'s already-open fast path.
       database = null;
       final String message = e.getMessage() != null ? e.getMessage() : "Unknown error";
-      sendFailure(classifyDatabaseSelectionError(e), "Cannot open database: " + targetName + " - " + clientMessage(message, e));
+      sendFailure(classifyDatabaseSelectionError(e),
+          withLeaderRedirect("Cannot open database: " + targetName + " - " + clientMessage(message, e), e));
       state = State.FAILED;
       return false;
     }
@@ -1898,6 +1900,34 @@ public class BoltNetworkExecutor extends Thread {
     return ErrorConcealment.clientMessage(ErrorConcealment.isConcealing(server), this, "BOLT", message, cause);
   }
 
+  /** {@link #withLeaderRedirect(String, Throwable, HAServerPlugin)} against this server's cluster view. */
+  private String withLeaderRedirect(final String text, final Throwable error) {
+    return withLeaderRedirect(text, error, server.getHA());
+  }
+
+  /**
+   * {@code text}, followed by where the leader is when {@code error} is a follower's refusal that names one - the
+   * failure {@link #classifyExecutionError} answers with NotALeader (issue #9845). The status code tells a routing
+   * driver to re-route; the address is what a direct ({@code bolt://}) client or an operator reading the log has to
+   * act on, and before this both were dropped. The Bolt address from the routing table is named when the cluster
+   * resolves one, else the address the refusal carries.
+   * <p>
+   * Appended to the text AFTER concealment, as the gRPC transport does: the address is one the cluster put there,
+   * not engine detail, and it is the only thing that makes the refusal actionable.
+   */
+  static String withLeaderRedirect(final String text, final Throwable error, final HAServerPlugin ha) {
+    final ServerIsNotTheLeaderException refusal = ServerIsNotTheLeaderException.redirectIn(error);
+    if (refusal == null)
+      return text;
+    // One routing-table read: a concurrent election cannot make the address named here disagree with itself
+    final HAServerPlugin.RoutingTable routing = ha != null ? ha.getRoutingTable(HAServerPlugin.ROUTING_PROTOCOL.BOLT) : null;
+    final String boltLeader = routing != null ? routing.writer() : null;
+    if (boltLeader != null && !boltLeader.isBlank())
+      return text + ". Reconnect to the leader at '" + ServerIsNotTheLeaderException.wireSafe(boltLeader) + "' (Bolt address) and retry";
+    // What the refusal carries is the leader's HTTP address (or its server name), not a Bolt endpoint: say so
+    return text + ". " + refusal.leaderSentence() + " (HTTP address; use its Bolt port). Retry there";
+  }
+
   /** {@link #clientMessage} for a failure the handler has already logged with its stack trace: nothing is logged twice. */
   private String loggedClientMessage(final String message) {
     return ErrorConcealment.loggedClientMessage(ErrorConcealment.isConcealing(server), message);
@@ -1931,6 +1961,11 @@ public class BoltNetworkExecutor extends Thread {
    *       however it was reached - by a map literal or by copying a value SQL had stored (issue #7729). Tested
    *       only once the category is known, so the {@link ErrorCategory#RETRY}-first precedence documented on
    *       {@link ErrorCategory#of} still decides a chain carrying both;</li>
+   *   <li>a {@link ServerIsNotTheLeaderException} naming the leader - a write sent to a follower. Its
+   *       {@link NeedRetryException} ancestry puts it in {@link ErrorCategory#RETRY}, whose
+   *       DeadlockDetected a managed-transaction driver retries on the same follower until its budget runs out.
+   *       Neo4j's NotALeader is what a routing driver re-routes on (issue #9845). A refusal naming no leader (raised
+   *       mid-election) stays a retryable conflict, as on HTTP;</li>
    *   <li>which of Neo4j's parse-time titles a {@link ErrorCategory#PARSING} failure earns - delegated to
    *       {@link #classifyParsingError}, the same method the statement path calls when the parsing exception
    *       arrives unwrapped;</li>
@@ -1943,6 +1978,11 @@ public class BoltNetworkExecutor extends Thread {
 
     if (category == ErrorCategory.VALIDATION && CauseChain.contains(error, InvalidPropertyTypeException.class))
       return BoltErrorCodes.TYPE_ERROR;
+
+    // A follower's refusal of leader-only work that names the leader: a redirect, not a conflict to retry in place (#9845)
+    // (redirectIn asks for the RETRY category itself, so a termination still wins)
+    if (ServerIsNotTheLeaderException.redirectIn(error) != null)
+      return BoltErrorCodes.NOT_A_LEADER_ERROR;
 
     return switch (category) {
       // A conflict a managed-transaction driver auto-retries (NeedRetryException: a page-version
