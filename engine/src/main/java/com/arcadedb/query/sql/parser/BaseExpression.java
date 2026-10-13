@@ -295,12 +295,12 @@ public class BaseExpression extends MathExpression {
   }
 
   public Iterable<Record> executeIndexedFunction(final FromClause target, final CommandContext context,
-      final BinaryCompareOperator operator, final Object right) {
+      final BinaryCompareOperator operator, final Object right, final int limit) {
     if (expression != null)
-      return expression.executeIndexedFunction(target, context, operator, right);
+      return expression.executeIndexedFunction(target, context, operator, right, limit);
     if (this.identifier == null)
       return null;
-    return identifier.executeIndexedFunction(target, context, operator, right);
+    return identifier.executeIndexedFunction(target, context, operator, right, limit);
   }
 
   @Override

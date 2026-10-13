@@ -30,6 +30,7 @@ import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.fulltext.LSMTreeFullTextIndex;
 import com.arcadedb.index.fulltext.MoreLikeThisConfig;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.function.sql.FunctionOptions;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.schema.DocumentType;
@@ -111,12 +112,13 @@ public class SQLFunctionSearchFieldsMore extends SQLFunctionAbstract {
     if (typeName == null)
       throw new CommandExecutionException("SEARCH_FIELDS_MORE() requires a type context (use in WHERE clause with FROM)");
 
-    // Cache key - use hashCode to avoid special characters
+    // Cache key, kept in the opaque cache rather than the variable namespace, which reads a '.' in a field name as a nested
+    // path (issue #4734)
     final String cacheKey = "search_fields_more:" + typeName + ":" + fieldNames + ":" + sourceRids + ":" + config.hashCode();
 
     // Try to get cached results
     @SuppressWarnings("unchecked")
-    Map<RID, float[]> allResults = (Map<RID, float[]>) iContext.getVariable(cacheKey);
+    Map<RID, float[]> allResults = (Map<RID, float[]>) iContext.getCachedValue(cacheKey);
 
     if (allResults == null) {
       allResults = new HashMap<>();
@@ -144,12 +146,13 @@ public class SQLFunctionSearchFieldsMore extends SQLFunctionAbstract {
           throw new CommandExecutionException("Record " + rid + " not found");
       }
 
-      // Execute MLT search across all bucket indexes
+      // Execute MLT search across all bucket indexes, stopping when the statement is terminated or past its deadline (#9894)
+      final WorkGuard guard = WorkGuard.forCommandDeadline(iContext);
       float maxScore = 0f;
 
       for (final Index bucketIndex : matchingIndex.getIndexesOnBuckets()) {
         if (bucketIndex instanceof final LSMTreeFullTextIndex ftIndex) {
-          try (final IndexCursor cursor = ftIndex.searchMoreLikeThis(sourceRids, config)) {
+          try (final IndexCursor cursor = ftIndex.searchMoreLikeThis(sourceRids, config, guard)) {
             while (cursor.hasNext()) {
               final Identifiable match = cursor.next();
               final float score = (float) cursor.getScore();
@@ -174,7 +177,7 @@ public class SQLFunctionSearchFieldsMore extends SQLFunctionAbstract {
         }
       }
 
-      iContext.setVariable(cacheKey, allResults);
+      iContext.setCachedValue(cacheKey, allResults);
     }
 
     // Check if current record matches

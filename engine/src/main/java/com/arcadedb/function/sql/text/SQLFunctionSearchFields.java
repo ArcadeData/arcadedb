@@ -27,6 +27,7 @@ import com.arcadedb.index.TempIndexCursor;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.fulltext.FullTextSearch;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
@@ -96,12 +97,13 @@ public class SQLFunctionSearchFields extends SQLFunctionAbstract {
     if (typeName == null)
       throw new CommandExecutionException("SEARCH_FIELDS() requires a type context (use in WHERE clause with FROM)");
 
-    // Cache key for this specific search
+    // Cache key for this specific search. The query string is opaque data, so the cache lives in the command context's opaque
+    // cache rather than the variable namespace, which reads a '.' in the key as a nested $var.field path (issue #4734)
     final String cacheKey = "search_fields:" + typeName + ":" + fieldNames + ":" + queryString;
 
     // Try to get cached results
     @SuppressWarnings("unchecked")
-    Map<RID, Float> allResults = (Map<RID, Float>) iContext.getVariable(cacheKey);
+    Map<RID, Float> allResults = (Map<RID, Float>) iContext.getCachedValue(cacheKey);
 
     if (allResults == null) {
       allResults = new HashMap<>();
@@ -125,10 +127,10 @@ public class SQLFunctionSearchFields extends SQLFunctionAbstract {
 
       // Route through the same type-wide scorer as SEARCH_INDEX so BM25 floats retain their precision and remain comparable
       // when the logical index spans several buckets.
-      allResults.putAll(FullTextSearch.search(matchingIndex, queryString, -1));
+      allResults.putAll(FullTextSearch.search(matchingIndex, queryString, -1, WorkGuard.forCommandDeadline(iContext)));
 
       // Cache the results
-      iContext.setVariable(cacheKey, allResults);
+      iContext.setCachedValue(cacheKey, allResults);
     }
 
     // Check if current record matches

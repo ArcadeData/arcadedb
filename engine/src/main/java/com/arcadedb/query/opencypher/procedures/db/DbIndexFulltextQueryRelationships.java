@@ -23,6 +23,7 @@ import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.fulltext.FullTextSearch;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
@@ -110,7 +111,7 @@ public class DbIndexFulltextQueryRelationships implements CypherProcedure {
     if (options.returnsNothing())
       return Stream.empty();
 
-    return options.rows(limit -> FullTextSearch.search(typeIndex, queryText, limit), "relationship",
+    return options.rows(limit -> FullTextSearch.search(typeIndex, queryText, limit, WorkGuard.forCommandDeadline(context)), "relationship",
         rid -> rid.asEdge(true)).stream();
   }
 }

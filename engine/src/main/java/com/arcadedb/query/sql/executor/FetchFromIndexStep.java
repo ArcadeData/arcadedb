@@ -23,6 +23,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.QueryTerminatedException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.index.FloatingKeyBound;
 import com.arcadedb.index.Index;
@@ -220,8 +221,11 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
    * Looks the key of an entry this step returned up again, for {@link GetValueFromIndexEntryStep} to reconcile an entry
    * whose record it could not load (#9369). Null when the key cannot be looked up as it is, in which case the caller keeps
    * the entry dropped.
+   * <p>
+   * A key can hold any number of entries, so the walk checks {@code guard} as it goes, and a statement that was terminated
+   * or ran past its deadline is not reported as a failed re-read: its exception ends the statement (issue #9893).
    */
-  List<RID> lookupKeyAgain(final Object key) {
+  List<RID> lookupKeyAgain(final Object key, final WorkGuard guard) {
     if (index == null)
       return null;
     final Object[] keys = key instanceof Object[] array ? array : new Object[] { key };
@@ -229,12 +233,17 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       final List<RID> rids = new ArrayList<>();
       final IndexCursor again = index.get(keys);
       try {
-        while (again.hasNext())
+        while (again.hasNext()) {
+          guard.checkPeriodically(rids.size());
           rids.add(again.next().getIdentity());
+        }
       } finally {
         again.close();
       }
       return rids;
+    } catch (final TimeoutException | QueryTerminatedException e) {
+      // The statement is over, not the re-read: a fallback to the entry would carry on the work it was told to stop
+      throw e;
     } catch (final RuntimeException e) {
       // The caller keeps the entry it has; say why a re-read was not possible rather than losing the cause
       LogManager.instance().log(this, Level.WARNING, "Cannot look the key %s of index '%s' up again", e, key, indexName);

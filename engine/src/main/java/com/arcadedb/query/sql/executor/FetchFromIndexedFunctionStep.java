@@ -34,15 +34,34 @@ import java.util.logging.Level;
 public class FetchFromIndexedFunctionStep extends AbstractExecutionStep {
   private final BinaryCondition functionCondition;
   private final FromClause      queryTarget;
+  /**
+   * How many rows of the function's answer the plan can consume, or -1 for all of them: set by the planner only when those
+   * are the first rows of the function's own best-first order (issue #9895).
+   */
+  private final int             limit;
 
   //runtime0
   Iterator<Record> fullResult = null;
 
   public FetchFromIndexedFunctionStep(final BinaryCondition functionCondition, final FromClause queryTarget,
       final CommandContext context) {
+    this(functionCondition, queryTarget, -1, context);
+  }
+
+  /**
+   * @param limit how many rows of the function's answer the plan can consume, or -1 for all of them (see the limit variant
+   *              of {@link IndexableSQLFunction}{@code .searchFromTarget()})
+   */
+  public FetchFromIndexedFunctionStep(final BinaryCondition functionCondition, final FromClause queryTarget, final int limit,
+      final CommandContext context) {
     super(context);
     this.functionCondition = functionCondition;
     this.queryTarget = queryTarget;
+    this.limit = limit;
+  }
+
+  public int getLimit() {
+    return limit;
   }
 
   @Override
@@ -87,7 +106,7 @@ public class FetchFromIndexedFunctionStep extends AbstractExecutionStep {
     if (fullResult == null) {
       final long begin = context.isProfiling() ? System.nanoTime() : 0;
       try {
-        fullResult = functionCondition.executeIndexedFunction(queryTarget, context).iterator();
+        fullResult = functionCondition.executeIndexedFunction(queryTarget, context, limit).iterator();
       } finally {
         if (context.isProfiling()) {
           cost += System.nanoTime() - begin;
@@ -100,6 +119,8 @@ public class FetchFromIndexedFunctionStep extends AbstractExecutionStep {
   public String prettyPrint(final int depth, final int indent) {
     String result =
         ExecutionStepInternal.getIndent(depth, indent) + "+ FETCH FROM INDEXED FUNCTION " + functionCondition.toString();
+    if (limit > -1)
+      result += " (best " + limit + " first)";
     if (context.isProfiling()) {
       result += " (" + getCostFormatted() + ")";
     }
