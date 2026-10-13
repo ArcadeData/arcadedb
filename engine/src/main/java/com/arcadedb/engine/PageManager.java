@@ -594,12 +594,10 @@ public class PageManager extends LockContext {
 
   public void suspendFlushAndExecute(final Database database, final CallableNoReturn callback)
       throws IOException, InterruptedException {
-    // #9927: the flush thread is read ONCE, here, and that same instance is used to the end - above all by the
-    // releases in the finally blocks. The callback may close or drop the database, and when it held the LAST
-    // page-manager lifecycle reference, release() -> shutdown() nulls the field under this call: re-reading it to
-    // release the suspension threw a NullPointerException. Releasing on the thread that just shut down is a no-op,
-    // because the close already made it forget this database's suspension count (removeAllPagesOfDatabase), and
-    // the database's own lifecycle reference, held until that close, keeps the field non-null up to the callback.
+    // #9927: read the flush thread ONCE and release on that instance. A callback that closes the last open database
+    // shuts the page manager down and nulls the field. The release on the dead thread is then a no-op: the close
+    // already cleared this database's suspension count (removeAllPagesOfDatabase), and setSuspended(db, false)
+    // returns at its null-count check before touching the deferred backlog or any signal.
     final PageManagerFlushThread thread = flushThread;
     if (thread == null)
       throw new IllegalStateException(
