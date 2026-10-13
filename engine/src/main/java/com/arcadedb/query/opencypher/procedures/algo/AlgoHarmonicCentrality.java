@@ -80,7 +80,7 @@ public class AlgoHarmonicCentrality extends AbstractAlgoProcedure {
   public Stream<Result> execute(final Object[] args, final Result inputRow, final CommandContext context) {
     validateArgs(args);
 
-    final String[] relTypes    = args.length > 0 ? extractRelTypes(args[0]) : null;
+    final String[] relTypes    = args.length > 0 ? extractRelTypes(args[0], context) : null;
     final Vertex.DIRECTION dir = args.length > 1 ? parseDirection(extractString(args[1], "direction")) : Vertex.DIRECTION.BOTH;
     final boolean normalized   = args.length > 2 ? Boolean.parseBoolean(args[2].toString()) : true;
 

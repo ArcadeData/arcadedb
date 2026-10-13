@@ -19,13 +19,13 @@
 package com.arcadedb.query.opencypher.procedures.algo;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.RID;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
 import java.util.stream.Stream;
 
@@ -33,8 +33,10 @@ import java.util.stream.Stream;
  * Procedure: algo.bridges(relTypes?)
  * <p>
  * Finds all bridge edges in the graph using Tarjan's iterative DFS algorithm.
- * A bridge is an edge whose removal increases the number of connected components.
- * Returns one result per bridge edge (source → target).
+ * A bridge is an edge whose removal increases the number of connected components of the UNDIRECTED graph, so the
+ * stored direction of an edge plays no part in whether it is one (issue #9766). Two parallel edges between the same
+ * pair are never bridges, since removing one leaves the other. Returns one result per bridge edge, oriented as the
+ * edge is stored (source → target).
  * </p>
  * <p>
  * Example:
@@ -79,7 +81,7 @@ public class AlgoBridges extends AbstractAlgoProcedure {
   public Stream<Result> execute(final Object[] args, final Result inputRow, final CommandContext context) {
     validateArgs(args);
 
-    final String[] relTypes = args.length > 0 ? extractRelTypes(args[0]) : null;
+    final String[] relTypes = args.length > 0 ? extractRelTypes(args[0], context) : null;
 
     final Database db = context.getDatabase();
     final GraphData graph = loadGraph(db, null, relTypes, context);
@@ -87,63 +89,50 @@ public class AlgoBridges extends AbstractAlgoProcedure {
     if (n == 0)
       return Stream.empty();
 
-    // Use OUT direction for directed bridge detection
-    final int[][] adj = graph.adjacency(Vertex.DIRECTION.OUT, relTypes);
-
-    final int[] disc    = new int[n];
-    final int[] low     = new int[n];
-    final int[] parent  = new int[n];
-    Arrays.fill(disc, -1);
-    Arrays.fill(parent, -1);
-
-    // Iterative DFS stack: track (vertex, edgeIndex) pairs
-    final int[] stack   = new int[n];
-    final int[] edgeIdx = new int[n];
-    int timer = 0;
+    // A BRIDGE IS A PROPERTY OF THE UNDIRECTED GRAPH: EVERY EDGE MUST BE SEEN FROM BOTH OF ITS ENDPOINTS (ISSUE #9766)
+    final int[][] adj = graph.adjacency(Vertex.DIRECTION.BOTH, relTypes);
+    final UndirectedLowPointDfs dfs = new UndirectedLowPointDfs(adj);
 
     final List<Result> results = new ArrayList<>();
-
-    for (int root = 0; root < n; root++) {
-      if (disc[root] != -1)
-        continue;
-
-      int top = 0;
-      stack[top]   = root;
-      edgeIdx[top] = 0;
-      disc[root]   = low[root] = timer++;
-
-      while (top >= 0) {
-        final int v = stack[top];
-        if (edgeIdx[top] < adj[v].length) {
-          final int u = adj[v][edgeIdx[top]++];
-          if (disc[u] == -1) {
-            // Tree edge: visit u
-            parent[u] = v;
-            disc[u]   = low[u] = timer++;
-            top++;
-            stack[top]   = u;
-            edgeIdx[top] = 0;
-          } else if (u != parent[v])
-            // Back edge: update low
-            low[v] = Math.min(low[v], disc[u]);
-        } else {
-          // Done with v, backtrack
-          top--;
-          if (top >= 0) {
-            final int p = stack[top];
-            low[p] = Math.min(low[p], low[v]);
-            // Bridge condition: strictly greater (not >=)
-            if (low[v] > disc[p]) {
-              final ResultInternal r = new ResultInternal();
-              r.setProperty("source", graph.getRID(p));
-              r.setProperty("target", graph.getRID(v));
-              results.add(r);
-            }
-          }
-        }
+    dfs.walk(new UndirectedLowPointDfs.Visitor() {
+      @Override
+      public void childFinished(final int parent, final int child) {
+        // NO BACK EDGE FROM THE CHILD'S SUBTREE REACHES THE PARENT OR ABOVE: THE TREE EDGE IS THE ONLY WAY ACROSS
+        if (dfs.low[child] > dfs.disc[parent])
+          results.add(bridge(graph, adj, parent, child, relTypes));
       }
-    }
+    });
 
     return results.stream();
+  }
+
+  /**
+   * The bridge between {@code a} and {@code b}, source first as the edge is stored. The walk is undirected and does not
+   * know which way the single edge between the two points, so the endpoint with the shorter row is asked whether it
+   * holds an outgoing one to the other: a scan of edge-list pointers that loads no edge record, bounded by the smaller
+   * degree.
+   */
+  private static Result bridge(final GraphData graph, final int[][] adj, final int a, final int b, final String[] relTypes) {
+    int from = adj[a].length <= adj[b].length ? a : b;
+    int to = from == a ? b : a;
+    final Vertex fromVertex = graph.getVertex(from);
+    if (fromVertex != null && !isConnectedOut(fromVertex, graph.getRID(to), relTypes)) {
+      final int swap = from;
+      from = to;
+      to = swap;
+    }
+    final ResultInternal r = new ResultInternal();
+    r.setProperty("source", graph.getRID(from));
+    r.setProperty("target", graph.getRID(to));
+    return r;
+  }
+
+  private static boolean isConnectedOut(final Vertex vertex, final RID other, final String[] relTypes) {
+    if (relTypes == null || relTypes.length == 0)
+      return vertex.isConnectedTo(other, Vertex.DIRECTION.OUT);
+    for (final String relType : relTypes)
+      if (vertex.isConnectedTo(other, Vertex.DIRECTION.OUT, relType))
+        return true;
+    return false;
   }
 }

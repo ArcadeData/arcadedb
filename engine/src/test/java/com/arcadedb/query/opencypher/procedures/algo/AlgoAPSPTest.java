@@ -69,7 +69,7 @@ class AlgoAPSPTest {
   @Test
   void apspDirectEdge() {
     final ResultSet rs = database.query("opencypher",
-        "CALL algo.apsp('w') YIELD source, target, distance RETURN source.name AS src, target.name AS tgt, distance");
+        "CALL algo.apsp(null, 'w') YIELD source, target, distance RETURN source.name AS src, target.name AS tgt, distance");
 
     double distAB = -1;
     while (rs.hasNext()) {
@@ -86,7 +86,7 @@ class AlgoAPSPTest {
   @Test
   void apspShortestPathThroughIntermediary() {
     final ResultSet rs = database.query("opencypher",
-        "CALL algo.apsp('w') YIELD source, target, distance RETURN source.name AS src, target.name AS tgt, distance");
+        "CALL algo.apsp(null, 'w') YIELD source, target, distance RETURN source.name AS src, target.name AS tgt, distance");
 
     double distAC = -1;
     while (rs.hasNext()) {
@@ -104,7 +104,7 @@ class AlgoAPSPTest {
   @Test
   void apspTransitivePath() {
     final ResultSet rs = database.query("opencypher",
-        "CALL algo.apsp('w') YIELD source, target, distance RETURN source.name AS src, target.name AS tgt, distance");
+        "CALL algo.apsp(null, 'w') YIELD source, target, distance RETURN source.name AS src, target.name AS tgt, distance");
 
     double distAD = -1;
     while (rs.hasNext()) {
@@ -122,7 +122,7 @@ class AlgoAPSPTest {
   @Test
   void apspReturnsOnlyReachablePairs() {
     final ResultSet rs = database.query("opencypher",
-        "CALL algo.apsp('w') YIELD source, target, distance RETURN source.name AS src, target.name AS tgt, distance");
+        "CALL algo.apsp(null, 'w') YIELD source, target, distance RETURN source.name AS src, target.name AS tgt, distance");
 
     boolean foundDtoA = false;
     while (rs.hasNext()) {

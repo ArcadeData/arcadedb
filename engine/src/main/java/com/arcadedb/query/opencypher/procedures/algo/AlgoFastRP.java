@@ -106,7 +106,7 @@ public class AlgoFastRP extends AbstractAlgoProcedure {
     final double normStrength = config != null && config.get("normalization") instanceof Number n ? n.doubleValue() : 0.0;
     final double selfInfluence = config != null && config.get("selfInfluence") instanceof Number n ? n.doubleValue() : 0.0;
     final long seed = config != null && config.get("seed") instanceof Number n ? n.longValue() : -1L;
-    final String[] relTypes = config != null ? extractRelTypes(config.get("relTypes")) : null;
+    final String[] relTypes = config != null ? extractRelTypes(config.get("relTypes"), context) : null;
     final Vertex.DIRECTION dir = parseDirection(config != null ? (String) config.get("direction") : null);
 
     final Database db = context.getDatabase();

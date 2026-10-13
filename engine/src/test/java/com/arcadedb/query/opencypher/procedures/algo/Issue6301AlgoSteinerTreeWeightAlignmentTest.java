@@ -377,7 +377,7 @@ class Issue6301AlgoSteinerTreeWeightAlignmentTest {
       context.setDatabase(database);
       final RID fromRid = ((Vertex) vertexNamed(from)).getIdentity();
       final RID toRid = ((Vertex) vertexNamed(to)).getIdentity();
-      final List<Result> rows = collect(new AlgoAPSP().execute(new Object[] { "w" }, null, context));
+      final List<Result> rows = collect(new AlgoAPSP().execute(new Object[] { null, "w" }, null, context));
       csrAccelerated = Boolean.TRUE.equals(context.getVariable(CommandContext.CSR_ACCELERATED_VAR));
       for (final Result row : rows)
         if (fromRid.equals(row.getProperty("source")) && toRid.equals(row.getProperty("target")))

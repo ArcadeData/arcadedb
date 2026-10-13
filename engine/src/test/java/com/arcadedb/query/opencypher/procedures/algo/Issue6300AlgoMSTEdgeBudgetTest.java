@@ -113,7 +113,7 @@ class Issue6300AlgoMSTEdgeBudgetTest {
     // 1056 + 704 = 1760, over the 1156-byte budget before any edge is even looked at.
     database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 1156L);
 
-    assertThatThrownBy(() -> drain("CALL algo.mst('w') YIELD source, target RETURN source, target"))
+    assertThatThrownBy(() -> drain("CALL algo.mst(null, 'w') YIELD source, target RETURN source, target"))
         .as("the weighted adjacency list is the dense working set of an algo.mst call and must be priced like any other")
         .hasStackTraceContaining("algo.mst(): the weighted adjacency list would need")
         .hasStackTraceContaining("0 edge entries")
@@ -148,7 +148,7 @@ class Issue6300AlgoMSTEdgeBudgetTest {
       context.setDatabase(database);
       database.begin();
       try {
-        assertThatThrownBy(() -> new AlgoMST().execute(new Object[] { "w" }, null, context))
+        assertThatThrownBy(() -> new AlgoMST().execute(new Object[] { null, "w" }, null, context))
             .as("weightedAdjacencyFromColumns must be priced the same way weightedAdjacencyFromRecords is")
             .hasStackTraceContaining("algo.mst(): the weighted adjacency list would need")
             .hasStackTraceContaining("0 edge entries")
@@ -181,7 +181,7 @@ class Issue6300AlgoMSTEdgeBudgetTest {
 
     // "1 edge entries" (not the full EDGE_COUNT): the record path must refuse well before materialising all 10
     // edges, mirroring the columnar path's own capacityFor-scaled checkpoint.
-    assertThatThrownBy(() -> drain("CALL algo.mst('w') YIELD source RETURN source"))
+    assertThatThrownBy(() -> drain("CALL algo.mst(null, 'w') YIELD source RETURN source"))
         .hasStackTraceContaining("algo.mst(): the weighted adjacency list would need")
         .hasStackTraceContaining("more than the 1800 bytes allowed")
         .hasStackTraceContaining("1 edge entries");
@@ -194,7 +194,7 @@ class Issue6300AlgoMSTEdgeBudgetTest {
     // edge, at its own weight.
     database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 4096L);
 
-    final List<Object> rows = drain("CALL algo.mst('w') YIELD source, weight, totalWeight RETURN source, weight, totalWeight");
+    final List<Object> rows = drain("CALL algo.mst(null, 'w') YIELD source, weight, totalWeight RETURN source, weight, totalWeight");
     assertThat(rows).hasSize(EDGE_COUNT);
   }
 
@@ -204,7 +204,7 @@ class Issue6300AlgoMSTEdgeBudgetTest {
     // a capacity computed by dividing a negative limit would refuse every graph instead of accepting them all.
     database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, -1L);
 
-    assertThat(drain("CALL algo.mst('w') YIELD source RETURN source")).hasSize(EDGE_COUNT);
+    assertThat(drain("CALL algo.mst(null, 'w') YIELD source RETURN source")).hasSize(EDGE_COUNT);
   }
 
   @Test
@@ -212,7 +212,7 @@ class Issue6300AlgoMSTEdgeBudgetTest {
     // The reservation and the checkpoints must not move the answer. On a path every edge is a bridge, so the MST
     // is the whole path and its total weight is 1 + 2 + ... + EDGE_COUNT.
     final ResultSet rs = database.query("opencypher",
-        "CALL algo.mst('w') YIELD weight, totalWeight RETURN weight, totalWeight");
+        "CALL algo.mst(null, 'w') YIELD weight, totalWeight RETURN weight, totalWeight");
     double sum = 0.0;
     int rows = 0;
     double reportedTotal = -1.0;
@@ -277,16 +277,16 @@ class Issue6300AlgoMSTEdgeBudgetTest {
       // Warm up both call shapes (JIT, class loading) before either measurement, so neither is biased by being
       // the first invocation.
       large.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, refusalBudget);
-      assertThatThrownBy(() -> drain(large, "CALL algo.mst('w') YIELD source RETURN source"))
+      assertThatThrownBy(() -> drain(large, "CALL algo.mst(null, 'w') YIELD source RETURN source"))
           .hasStackTraceContaining("algo.mst(): the weighted adjacency list would need");
       large.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, -1L);
-      assertThat(drain(large, "CALL algo.mst('w') YIELD source RETURN source")).isNotEmpty();
+      assertThat(drain(large, "CALL algo.mst(null, 'w') YIELD source RETURN source")).isNotEmpty();
 
       large.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, -1L);
-      final long unboundedAllocated = measure(threads, () -> assertThat(drain(large, "CALL algo.mst('w') YIELD source RETURN source")).isNotEmpty());
+      final long unboundedAllocated = measure(threads, () -> assertThat(drain(large, "CALL algo.mst(null, 'w') YIELD source RETURN source")).isNotEmpty());
 
       large.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, refusalBudget);
-      final long refusedAllocated = measure(threads, () -> assertThatThrownBy(() -> drain(large, "CALL algo.mst('w') YIELD source RETURN source"))
+      final long refusedAllocated = measure(threads, () -> assertThatThrownBy(() -> drain(large, "CALL algo.mst(null, 'w') YIELD source RETURN source"))
           .hasStackTraceContaining("algo.mst(): the weighted adjacency list would need"));
 
       // A refusal partway through the walk must allocate much less than materialising the whole graph does - if

@@ -100,7 +100,7 @@ class Issue6375AlgoBitsetMatrixBudgetTest {
       { "algo.knn", "CALL algo.knn(2) YIELD node RETURN node" },
       { "algo.kTruss", "CALL algo.kTruss() YIELD node RETURN node" },
       { "algo.clique", "CALL algo.clique() YIELD clique RETURN clique" },
-      { "algo.hierarchicalClustering", "CALL algo.hierarchicalClustering(2) YIELD node RETURN node" } };
+      { "algo.hierarchicalClustering", "CALL algo.hierarchicalClustering(null, 2) YIELD node RETURN node" } };
 
   @Test
   void everyBitsetMatrixIsRefusedWhenItDoesNotFitTheBudget() {

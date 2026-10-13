@@ -232,7 +232,7 @@ class Issue6316AlgoLoadGraphAdoptionTest {
 
   private Set<String> mstEdgeSet(final CommandContext context) {
     final Set<String> result = new HashSet<>();
-    for (final Result row : drain(new AlgoMST().execute(new Object[] { "w" }, null, context))) {
+    for (final Result row : drain(new AlgoMST().execute(new Object[] { null, "w" }, null, context))) {
       final Vertex source = ((RID) row.getProperty("source")).asVertex();
       final Vertex target = ((RID) row.getProperty("target")).asVertex();
       result.add(source.getString("name") + "-" + target.getString("name") + ":" + row.<Number>getProperty("weight").doubleValue());

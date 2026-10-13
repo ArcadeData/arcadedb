@@ -100,7 +100,7 @@ public class AlgoAllSimplePaths extends AbstractAlgoProcedure {
 
     final Vertex startNode = extractVertex(args[0], "startNode");
     final Vertex endNode = extractVertex(args[1], "endNode");
-    final String[] relTypes = extractRelTypes(args[2]);
+    final String[] relTypes = extractRelTypes(args[2], context);
     final int maxDepth = NumberUtils.saturateToInt((Number) args[3]);
     final Map<String, Object> options = args.length > 4 ? extractMap(args[4], "options") : null;
     final Set<String> skipRelTypes = extractSkipTypes(options, "skipRelTypes");
@@ -151,7 +151,7 @@ public class AlgoAllSimplePaths extends AbstractAlgoProcedure {
     if (value == null)
       return Collections.emptySet();
 
-    final String[] types = extractRelTypes(value);
+    final String[] types = parseTypeNames(value);
     if (types == null || types.length == 0)
       return Collections.emptySet();
 

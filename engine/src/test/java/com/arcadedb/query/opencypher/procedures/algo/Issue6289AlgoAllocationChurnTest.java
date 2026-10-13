@@ -227,7 +227,7 @@ class Issue6289AlgoAllocationChurnTest {
     // Kruskal's picks edges in the order the sort produced, so a different order is a different tree. On the
     // chain-with-bypasses graph the minimum spanning forest is deterministic: every bypass detour (2 x ~5) is
     // cheaper than the direct hop (10), so the MST takes both bypass edges of every hop and no direct hop.
-    final List<Result> mst = drain("CALL algo.mst('w') YIELD source, target, weight RETURN weight");
+    final List<Result> mst = drain("CALL algo.mst(null, 'w') YIELD source, target, weight RETURN weight");
     assertThat(mst).hasSize(CHAIN_HOPS * 2);
     for (final Result edge : mst)
       assertThat(edge.<Number>getProperty("weight").doubleValue())
