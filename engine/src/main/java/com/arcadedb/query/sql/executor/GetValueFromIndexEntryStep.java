@@ -126,7 +126,7 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
   // The streaming path of a point lookup (#9902). Kept on the step, not on the page of rows syncPull() returns: a page ends
   // where the consumer stops pulling, not where a key does, and what was served of a key must outlive it
   private Object                      streamKey      = NO_KEY;
-  // The records served for the key, for a non-unique index: so a read of the key again serves only what was not served yet
+  // The records served for the key: so a read of the key again serves only what was not served yet
   private RidHashSet                  servedOfKey;
   // Past MAX_TRACKED_RIDS_PER_KEY: servedOfKey no longer holds every record served of the key
   private boolean                     servedOverflow;
@@ -443,17 +443,17 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
             if (prevStep instanceof FetchFromIndexStep indexStep && finalVal instanceof RID rid) {
               final Object key = val.getProperty("key");
               if (indexStep.isPointLookup()) {
-                if (!FetchFromIndexStep.sameKey(key, streamKey)) {
+                if (!FetchFromIndexStep.isEntryOf(key, streamKey)) {
                   if (keyLostEntries) {
                     // The entries of the key ran out with some lost to a commit: settle them before moving to the next key
                     pendingEntries.addFirst(val);
                     if (!startReread(context, indexStep, guard))
-                      startKey(key);
+                      startKey(indexStep.lookupKeyOf(key));
                     continue;
                   }
-                  startKey(key);
+                  startKey(indexStep.lookupKeyOf(key));
                 }
-                nextItem = pointLookupRow(context, indexStep, key, rid);
+                nextItem = pointLookupRow(context, indexStep, rid);
               } else {
                 nextItem = toResult(finalVal, context);
                 if (nextItem == null) {
@@ -517,34 +517,33 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
    * say. Nothing is materialised up front and no lock is taken, so the work follows the rows the consumer pulls, not the size of
    * the key.
    */
-  private Result pointLookupRow(final CommandContext context, final FetchFromIndexStep indexStep, final Object key, final RID rid) {
-    final boolean unique = indexStep.isIndexUnique();
+  private Result pointLookupRow(final CommandContext context, final FetchFromIndexStep indexStep, final RID rid) {
     // Several entries of a key can name one record only when a lookup repeats the key (an IN listing it twice)
-    if (!unique && servedOfKey.contains(rid))
+    if (servedOfKey.contains(rid))
       return null;
     final Result row = toResult(rid, context, false);
     final DatabaseInternal database = (DatabaseInternal) context.getDatabase();
     if (noCommitSince(database, indexStep.entriesSequence())) {
       if (row != null)
-        return served(row, rid, unique);
+        return served(row, rid);
       if (!isRepeatableRead(database)) {
         // The entry and the records are one committed state: the index names a record that does not exist
         LogManager.instance().log(this, Level.WARNING, "Record %s not found. Skip it from the result set", null, rid);
         return null;
       }
       // Under REPEATABLE_READ the page the record was looked for in may be one this transaction pinned before the record existed
-    } else if (row != null && holdsKey(indexStep, row, key))
-      return served(row, rid, unique);
+    } else if (row != null && holdsKey(indexStep, row, streamKey))
+      return served(row, rid);
     loseEntry(rid);
     return null;
   }
 
   /**
-   * Notes a served record of a non-unique key. A unique key needs none: its one entry is either served or lost, and a read of it
-   * again (the record that replaced a deleted one) cannot find a record of it already served.
+   * Notes a served record of the key, unique index or not: a lookup of a prefix of a composite unique key is one key with many
+   * entries, and a read of it again must not serve them twice.
    */
-  private Result served(final Result row, final RID rid, final boolean unique) {
-    if (!unique && !servedOverflow) {
+  private Result served(final Result row, final RID rid) {
+    if (!servedOverflow) {
       if (servedOfKey.size() >= trackedRidsPerKey)
         servedOverflow = true;
       else
@@ -582,6 +581,7 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
       LogManager.instance().log(this, Level.FINE, "Key %s of index '%s' lost %d entries to commits while it was read and is not read "
               + "again (read again %d times, %d records served): the records that replaced them are not looked for", null, streamKey,
           indexStep.indexName, pendingLosses, rereadsOfKey, servedOfKey.size());
+      // unsettledEntries is still 0 only the first time: one WARNING per execution, however many keys give up
       if (unsettledEntries == 0 && pendingLosses > 0)
         LogManager.instance().log(this, Level.WARNING, "Point lookup on index '%s' lost entries of key %s to concurrent commits and "
                 + "did not look for the records that replaced them (key read again %d times, %d records served): the answer may "
@@ -611,7 +611,7 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
     if (fresh != null) {
       rereadEntries += fresh.size();
       for (final RID rid : fresh)
-        if ((servedOfKey == null || !servedOfKey.contains(rid)) && passesBucketFilter(rid))
+        if (!servedOfKey.contains(rid) && passesBucketFilter(rid))
           rereadCandidates.add(rid);
     }
     return true;
@@ -623,18 +623,17 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
    */
   private Result nextRereadRow(final CommandContext context, final FetchFromIndexStep indexStep, final WorkGuard guard) {
     final DatabaseInternal database = (DatabaseInternal) context.getDatabase();
-    final boolean unique = indexStep.isIndexUnique();
     RID rid;
     while ((rid = rereadCandidates.pollFirst()) != null) {
       guard.checkPeriodically(rereadCandidates.size());
       final Result row = toResult(rid, context, false);
       if (noCommitSince(database, rereadSequence)) {
         if (row != null)
-          return served(row, rid, unique);
+          return served(row, rid);
         // the key and the record were read in one state: a dangling entry, not one a commit took
         LogManager.instance().log(this, Level.WARNING, "Record %s not found. Skip it from the result set", null, rid);
       } else if (row != null && holdsKey(indexStep, row, streamKey))
-        return served(row, rid, unique);
+        return served(row, rid);
       else
         loseEntry(rid);
     }
