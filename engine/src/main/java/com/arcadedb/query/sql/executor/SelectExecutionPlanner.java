@@ -4135,8 +4135,9 @@ public class SelectExecutionPlanner {
         final FetchFromIndexedFunctionStep step = new FetchFromIndexedFunctionStep(blockCandidateFunction, info.target,
             functionLimit, context);
         if (functionLimit > -1 && info.orderBy != null)
-          // The ORDER BY is $score DESC, the order the fetch produces its rows in: a sort would only drain the fetch past the
-          // rows the LIMIT takes, into the matches the limit spared
+          // A limit is handed over with an ORDER BY only when it is exactly $score DESC (isOrderByScoreDescending), the order
+          // the fetch produces its rows in: a sort would only drain the fetch past the rows the LIMIT takes, into the matches
+          // the limit spared
           info.orderApplied = true;
         if (info.flattenedWhereClause.size() == 1) {
           plan.chain(step);
@@ -4208,6 +4209,8 @@ public class SelectExecutionPlanner {
       return -1;
     if (info.expand || info.unwind != null || info.distinct || info.groupBy != null || info.aggregateProjection != null)
       return -1;
+    // By identity: the residual is the planner's own block, or a copy of it made only to remove the function (and then
+    // empty), so the function's condition is the very instance the block holds
     for (final BooleanExpression condition : residual.getSubBlocks())
       if (condition != function)
         return -1;
