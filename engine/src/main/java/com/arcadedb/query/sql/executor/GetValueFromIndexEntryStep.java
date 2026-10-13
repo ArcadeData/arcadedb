@@ -90,6 +90,25 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
 
   enum Strategy {INDEX_ORDER, PHYSICAL_ORDER, PHYSICAL_ORDER_CHUNKED, SCAN}
 
+  // The key of a point lookup's streaming path before the first entry: no key, not even null
+  private static final Object NO_KEY              = new Object();
+  /**
+   * How many times the streaming path reads one key again for the entries commits took from it (#9902). Each read is one more
+   * pass over the key's entries, owed only to commits that deleted or moved records of THIS key while it was being read, so the
+   * bound only matters for a key rewritten faster than it can be read: past it, the entries lost last are not looked for again.
+   * A record that holds the key the whole time is never one of them: it is in the entries the lookup read, and passes its check.
+   */
+  private static final int    MAX_REREADS_PER_KEY = 8;
+  /**
+   * How many records the streaming path of a point lookup remembers it served of one key (#9902), about 6 MB at most: enough
+   * for any key a consumer pulls whole in practice, and a bound on what a statement holds for a key of millions of entries.
+   * What it served is what a read of the key again must not serve twice, so past the bound the key is not read again: entries
+   * a commit takes from it are counted as unsettled instead (PROFILE shows them). Nothing is served twice, no record is served
+   * for a key it does not hold, and a record that holds the key the whole time is still served; only the record that replaced a
+   * deleted one may be missed.
+   */
+  private static final int    MAX_TRACKED_RIDS_PER_KEY = 1 << 18;
+
   private final List<Integer> filterBucketIds;
   private final ScanFallback  scanFallback;
 
@@ -108,6 +127,10 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
   private Object                      streamKey      = NO_KEY;
   // The records served for the key, for a non-unique index: so a read of the key again serves only what was not served yet
   private RidHashSet                  servedOfKey;
+  // Past MAX_TRACKED_RIDS_PER_KEY: servedOfKey no longer holds every record served of the key
+  private boolean                     servedOverflow;
+  // Entries the key lost since it was last read again
+  private int                         pendingLosses;
   // An entry of the key lost its record to a commit: the key is read again once its entries run out
   private boolean                     keyLostEntries;
   private int                         rereadsOfKey;
@@ -119,6 +142,7 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
   private long                        lostEntries;
   private long                        keyRereads;
   private long                        rereadEntries;
+  private long                        unsettledEntries;
   // The buckets the records of a point lookup were read from, so a restart releases their pinned pages whatever the bucket filter
   private final Set<Integer>          readBucketIds  = new HashSet<>();
   private Strategy                    strategy;
@@ -184,6 +208,11 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
   /** How many times a key of a point lookup was read again for the entries it lost. Surfaced for tests. */
   long getKeyRereads() {
     return keyRereads;
+  }
+
+  /** Entries lost to a commit whose key was not read again for them, see {@link #startReread}. Surfaced for tests. */
+  long getUnsettledEntries() {
+    return unsettledEntries;
   }
 
   /** The index entries those reads returned. Surfaced for tests. */
@@ -468,7 +497,9 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
       servedOfKey = new RidHashSet(16);
     else
       servedOfKey.clear();
+    servedOverflow = false;
     keyLostEntries = false;
+    pendingLosses = 0;
     rereadsOfKey = 0;
   }
 
@@ -505,8 +536,12 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
   }
 
   private Result served(final Result row, final RID rid, final boolean unique) {
-    if (!unique)
-      servedOfKey.add(rid);
+    if (!unique && !servedOverflow) {
+      if (servedOfKey.size() >= MAX_TRACKED_RIDS_PER_KEY)
+        servedOverflow = true;
+      else
+        servedOfKey.add(rid);
+    }
     return row;
   }
 
@@ -518,6 +553,7 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
   private void loseEntry(final RID rid) {
     keyLostEntries = true;
     ++lostEntries;
+    ++pendingLosses;
     // its bucket is released under REPEATABLE_READ before the key is read again
     readBucketIds.add(rid.getBucketId());
   }
@@ -528,16 +564,21 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
    * deleted - published by the same commit, maybe on a page not put in the cache yet - is among them. Index entries only: the
    * records are loaded one at a time as the consumer pulls them, see {@link #nextRereadRow}.
    *
-   * @return false when the key was read again too many times already, see {@link #MAX_REREADS_PER_KEY}
+   * @return false when the key is not read again: it was read again too many times already ({@link #MAX_REREADS_PER_KEY}), or
+   * served too many records to tell which ones a read again must skip ({@link #MAX_TRACKED_RIDS_PER_KEY}). The entries lost are
+   * then counted as unsettled
    */
   private boolean startReread(final CommandContext context, final FetchFromIndexStep indexStep, final WorkGuard guard) {
     keyLostEntries = false;
-    if (rereadsOfKey >= MAX_REREADS_PER_KEY) {
-      LogManager.instance().log(this, Level.FINE,
-          "Key %s of index '%s' lost entries to commits %d times while it was read, the entries lost last are not looked for again",
-          null, streamKey, indexStep.indexName, MAX_REREADS_PER_KEY);
+    if (rereadsOfKey >= MAX_REREADS_PER_KEY || servedOverflow) {
+      LogManager.instance().log(this, Level.FINE, "Key %s of index '%s' lost %d entries to commits while it was read and is not read "
+              + "again (read again %d times, %d records served): the records that replaced them are not looked for", null, streamKey,
+          indexStep.indexName, pendingLosses, rereadsOfKey, servedOfKey.size());
+      unsettledEntries += pendingLosses;
+      pendingLosses = 0;
       return false;
     }
+    pendingLosses = 0;
     ++rereadsOfKey;
     ++keyRereads;
 
@@ -576,6 +617,7 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
         if (row != null)
           return served(row, rid, unique);
         // the key and the record were read in one state: a dangling entry, not one a commit took
+        LogManager.instance().log(this, Level.WARNING, "Record %s not found. Skip it from the result set", null, rid);
       } else if (row != null && holdsKey(indexStep, row, streamKey))
         return served(row, rid, unique);
       else
@@ -754,16 +796,8 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
     return false;
   }
 
-  private static final Object NO_KEY = new Object();
   private static final int MAX_RECONCILE_ATTEMPTS   = 8;
   private static final int MAX_POINT_LOOKUP_ENTRIES = 256;
-  /**
-   * How many times the streaming path reads one key again for the entries commits took from it (#9902). Each read is one more
-   * pass over the key's entries, owed only to commits that deleted or moved records of THIS key while it was being read, so the
-   * bound only matters for a key rewritten faster than it can be read: past it, the entries lost last are not looked for again.
-   * A record that holds the key the whole time is never one of them: it is in the entries the lookup read, and passes its check.
-   */
-  private static final int MAX_REREADS_PER_KEY      = 8;
 
   private static boolean sameKey(final Object a, final Object b) {
     if (a instanceof Object[] left && b instanceof Object[] right)
@@ -978,6 +1012,9 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
     lostEntries = 0;
     keyRereads = 0;
     rereadEntries = 0;
+    unsettledEntries = 0;
+    servedOverflow = false;
+    pendingLosses = 0;
     readBucketIds.clear();
     strategy = null;
     matchedEntries = 0;
@@ -1021,11 +1058,13 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
       result.append("]");
     }
 
-    if (context.isProfiling() && (verifiedRows > 0 || keyRereads > 0)) {
+    if (context.isProfiling() && (verifiedRows > 0 || keyRereads > 0 || unsettledEntries > 0)) {
       result.append("\n").append(spaces).append("  ").append(verifiedRows).append(" rows checked against their key after a commit, ")
           .append(lostEntries).append(" entries lost");
       if (keyRereads > 0)
         result.append(", key read again ").append(keyRereads).append(" times (").append(rereadEntries).append(" entries)");
+      if (unsettledEntries > 0)
+        result.append(", ").append(unsettledEntries).append(" lost entries not looked for again");
     }
 
     if (scanFallback != null) {

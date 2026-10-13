@@ -29,6 +29,7 @@ import org.junit.jupiter.api.Test;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
@@ -330,6 +331,79 @@ class Issue9902IndexReplayAmplificationTest extends TestHelper {
         assertThat(step.getKeyRereads()).as(query + ": every row passes the check, nothing to read again").isZero();
       }
     }
+  }
+
+  /**
+   * A lookup of a prefix of a composite key checks a record on that prefix, and a key an {@code IN} lists twice serves each of its
+   * records once, before and after a commit.
+   */
+  @Test
+  void compositePrefixAndRepeatedInKeysAreServedOnce() throws Exception {
+    database.command("sql", "CREATE DOCUMENT TYPE Pair");
+    database.command("sql", "CREATE PROPERTY Pair.a STRING");
+    database.command("sql", "CREATE PROPERTY Pair.b INTEGER");
+    database.command("sql", "CREATE INDEX ON Pair (a, b) NOTUNIQUE");
+    database.transaction(() -> {
+      for (int i = 0; i < 1_000; i++) {
+        database.newDocument("Pair").set("a", "p").set("b", i).save();
+        database.newDocument("Pair").set("a", "q").set("b", i).save();
+      }
+    });
+
+    for (final String query : List.of("SELECT FROM Pair WHERE a = 'p'", "SELECT FROM Pair WHERE a IN ['p', 'p']",
+        "SELECT FROM Pair WHERE a IN ['p', 'q', 'p']")) {
+      final int expectedRows = query.contains("'q'") ? 2_000 : 1_000;
+      final Set<RID> served = new HashSet<>();
+      try (final ResultSet rs = database.query("sql", query)) {
+        final GetValueFromIndexEntryStep step = findStep(rs.getExecutionPlan().orElseThrow());
+        assertThat(step).as(query).isNotNull();
+        served.add(rs.next().getIdentity().orElseThrow());
+        inAnotherThread(() -> database.transaction(() -> database.newDocument("Pair").set("a", "other").set("b", -1).save()));
+        while (rs.hasNext())
+          assertThat(served.add(rs.next().getIdentity().orElseThrow())).as(query + ": a row served twice").isTrue();
+        assertThat(served).as(query).hasSize(expectedRows);
+        assertThat(step.getVerifiedRows()).as(query).isPositive();
+        assertThat(step.getKeyRereads()).as(query).isZero();
+      }
+    }
+  }
+
+  /**
+   * An {@code IN} over more keys of a unique index than are loaded against one state streams them: a key whose record is replaced
+   * while it is read is read again for that one entry, and serves the replacement.
+   */
+  @Test
+  void aUniqueKeyReplacedDuringTheLookupServesItsReplacement() throws Exception {
+    database.command("sql", "CREATE DOCUMENT TYPE Item");
+    database.command("sql", "CREATE PROPERTY Item.code INTEGER");
+    database.command("sql", "CREATE INDEX ON Item (code) UNIQUE");
+    final int count = 1_000;
+    database.transaction(() -> {
+      for (int i = 0; i < count; i++)
+        database.newDocument("Item").set("code", i).save();
+    });
+    final List<Integer> codes = new ArrayList<>();
+    for (int i = 0; i < count; i++)
+      codes.add(i);
+
+    final Set<Integer> served = new HashSet<>();
+    final GetValueFromIndexEntryStep step;
+    try (final ResultSet rs = database.query("sql", "SELECT FROM Item WHERE code IN :codes", Map.of("codes", codes))) {
+      step = findStep(rs.getExecutionPlan().orElseThrow());
+      assertThat(step).isNotNull();
+      served.add(rs.next().getProperty("code"));
+      // replace the records of the last 100 codes, which the lookup has not reached yet
+      inAnotherThread(() -> database.transaction(() -> {
+        for (int code = count - 100; code < count; code++) {
+          database.command("sql", "DELETE FROM Item WHERE code = ?", code).close();
+          database.newDocument("Item").set("code", code).save();
+        }
+      }));
+      while (rs.hasNext())
+        assertThat(served.add(rs.next().getProperty("code"))).as("a code served twice").isTrue();
+    }
+    assertThat(served).as("every code is held by a record in every committed state").hasSize(count);
+    assertThat(step.getKeyRereads()).as("one read again per replaced code").isBetween(1L, 100L);
   }
 
   /**
