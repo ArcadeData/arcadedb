@@ -3112,7 +3112,10 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       final String fileKey = key.startsWith(GlobalConfiguration.PREFIX) ? key.substring(GlobalConfiguration.PREFIX.length()) : key;
 
       Object savedValue = null;
-      if (savedSettings.has(fileKey)) {
+      if (savedSettings.has(fileKey) && GlobalConfiguration.findByKey(key) == null)
+        // A setting nothing declares is stored as given, and fromJSON() skips it: take the file's value as it is
+        savedValue = savedSettings.get(fileKey);
+      else if (savedSettings.has(fileKey)) {
         // Read back the way open() and the apply read the file, so the value is coerced and stored the same way
         final ContextConfiguration saved = new ContextConfiguration();
         saved.fromJSON(new JSONObject().put("configuration", new JSONObject().put(fileKey, savedSettings.get(fileKey))).toString());

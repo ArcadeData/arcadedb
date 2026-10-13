@@ -168,6 +168,26 @@ class Issue9904UnknownSaveOutcomeTest {
     assertThat(database.getConfiguration().getContextKeys()).doesNotContain(GlobalConfiguration.TX_RETRIES.getKey());
   }
 
+  /**
+   * A setting no {@link GlobalConfiguration} declares ({@code set database setting} stores one as given) is settled on
+   * the file too. Reading it back through {@link ContextConfiguration#fromJSON}, which skips undeclared keys, reset it
+   * although the file holds it, and the next change on this node then shipped it as a removal.
+   */
+  @Test
+  void anUndeclaredSettingAppliedBeforeTheWaitGaveUpStaysInForce() throws IOException {
+    final String key = GlobalConfiguration.PREFIX + "issue9904Custom";
+    database.appliedBeforeTheWaitGivesUp = true;
+    database.getConfiguration().setValue(key, "v1");
+
+    assertThatThrownBy(database::saveConfiguration).isInstanceOf(TransactionOutcomeUnknownException.class);
+    database.restoreSettingFromSavedConfiguration(key);
+
+    final Object inForce = database.getConfiguration().getValue(key, null);
+    assertThat(inForce).isEqualTo("v1");
+    assertThat(savedSettings().getString("issue9904Custom")).isEqualTo("v1");
+    assertThat(database.pendingConfigurationChanges()).as("memory and file agree, so nothing ships as a removal").isNull();
+  }
+
   private JSONObject savedSettings() throws IOException {
     return new JSONObject(FileUtils.readFileAsString(new File(DB_PATH, LocalDatabase.CONFIGURATION_FILE_NAME)))
         .getJSONObject("configuration");
