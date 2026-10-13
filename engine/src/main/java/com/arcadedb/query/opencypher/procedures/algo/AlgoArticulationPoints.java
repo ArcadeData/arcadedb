@@ -93,15 +93,15 @@ public class AlgoArticulationPoints extends AbstractAlgoProcedure {
 
     dfs.walk(new UndirectedLowPointDfs.Visitor() {
       @Override
-      public void treeEdge(final int parent, final int child) {
-        childCount[parent]++;
+      public void treeEdge(final int vertex, final int child) {
+        childCount[vertex]++;
       }
 
       @Override
-      public void childFinished(final int parent, final int child) {
+      public void childFinished(final int vertex, final int child) {
         // A ROOT CUTS THE GRAPH WHEN IT HAS TWO DFS CHILDREN; ANY OTHER VERTEX WHEN A CHILD'S SUBTREE CANNOT CLIMB ABOVE IT
-        if (dfs.parent[parent] == -1 ? childCount[parent] >= 2 : dfs.low[child] >= dfs.disc[parent])
-          isAP[parent] = true;
+        if (dfs.parent[vertex] == -1 ? childCount[vertex] >= 2 : dfs.low[child] >= dfs.disc[vertex])
+          isAP[vertex] = true;
       }
     });
 

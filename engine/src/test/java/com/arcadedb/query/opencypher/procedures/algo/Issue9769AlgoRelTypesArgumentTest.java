@@ -146,6 +146,9 @@ class Issue9769AlgoRelTypesArgumentTest {
     assertThatThrownBy(() -> rows("MATCH (a:N {k: 0}), (b:N {k: 5}) "
         + "CALL algo.allSimplePaths(a, b, 'R', 5, {skipVertexTypes: 'NN'}) YIELD path RETURN path"))
         .hasStackTraceContaining("algo.allsimplepaths(): node label 'NN' does not exist");
+    assertThatThrownBy(() -> rows("MATCH (a:N {k: 0}), (b:N {k: 5}) "
+        + "CALL algo.allSimplePaths(a, b, 'R', 5, {skipVertexTypes: 'R'}) YIELD path RETURN path"))
+        .hasStackTraceContaining("'R' is not a node label, it is an edge type");
     // The single-type procedures too
     assertThatThrownBy(() -> rows("MATCH (a:N {k: 0}), (b:N {k: 5}) CALL algo.dijkstra(a, b, 'RR', 'w') YIELD path RETURN path"))
         .hasStackTraceContaining("algo.dijkstra(): relationship type 'RR' does not exist");
