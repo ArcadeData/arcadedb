@@ -109,3 +109,27 @@ per key, in the order of `keys()`, and the row's own value where the row has one
   index key left the first keys deleted behind an error reply and was not retried on a conflict, and the transient `HSET`
   left the first JSON objects stored behind an error reply. A new `DatabaseInternal.deleteRecordReportingVeto(Record)` keeps
   the answer `Record.delete()` throws away, for any caller that counts deletions.
+- **A datetime written through the line protocol or gRPC is stored, or named and dropped (#9809).** A quoted datetime sent to a
+  `DATETIME`, `DATE`, `DATETIME_SECOND`, `DATETIME_MICROS` or `DATETIME_NANOS` field failed the whole write with a raw
+  `ClassCastException` wrapped in `IOException: Failed to append timeseries samples`, answered as a server error, while the same
+  text through `INSERT` was accepted. The gateway all those writers share now reads the value through the conversion `INSERT`
+  uses (a number stays a count in the column's unit, text of digits is that count, any other date or instant is read as SQL
+  reads it), parses text sent to a numeric column or to a typed `BOOLEAN` tag (a tag sent as `"true"` used to be stored as
+  `false`), and drops a sample whose value its column cannot store instead of failing the request. The dropped sample is
+  reported like an undeclared key: the HTTP `400` carries `unreadableValues` (`<measurement>.<column> (tag|field): <reason>`),
+  the gRPC `TimeSeriesWriteSummary` has the new `unreadable_values` field and `TimeSeriesWriteSummary.unreadableValues()` on
+  the Java clients. The engine API names the column too, instead of a `ClassCastException`.
+- **The remote driver keeps `@rid`, `@type`, `@in` and `@out` columns of a projection (#9804).** `SELECT @rid FROM Person`
+  over `RemoteDatabase` answered a row with no columns, and a Gremlin `elementMap()` lost the `@rid` and `@type` it names its
+  tokens with: the driver removed every metadata name from any row carrying the `@props` type hint, which a `@rid` column
+  arms by itself. A row without `@cat` is a projection and its column names belong to the query; only the hint is consumed.
+- **`arcadedb.grpc.compression.enabled` is applied (#9782).** It was read and printed in the startup line, but both
+  compression registries were installed whatever it said and `compression.force` did not consult it. Off, the endpoint
+  refuses a compressed request (`UNIMPLEMENTED`) and never compresses a response; `compression.force=true` with
+  `enabled=false` is ignored with a warning, and the startup line says `compression: disabled`.
+- **A map nested in a Gremlin result is named like the row (#9781).** `project('x').by(elementMap())`, `group().by(..).by(elementMap())`,
+  `elementMap().fold()` and `path().by(elementMap())` kept `T.id` and `T.label` as `id` and `label`, so a property called `id`
+  replaced the record id, an edge's endpoints disagreed with the edge, and keys that print alike (the Integer 1 and the Long 1)
+  were merged. The names of the row (`@rid`, `@type`, `1:Integer` / `1:Long`) now apply to every map a result holds, in a list,
+  a set or a `Path` (which stays a `Path`), so the embedded `Result`, its JSON and the HTTP answer agree. A nested map that
+  used to render `id` / `label` for the tokens now renders `@rid` / `@type`.

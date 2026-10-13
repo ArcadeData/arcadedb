@@ -96,6 +96,45 @@ class Issue9141GremlinMapResultHttpIT extends BaseGraphServerTest {
     });
   }
 
+  // #9781: A MAP ONE by() DEEPER FOLLOWS THE NAMES OF THE ROW, SO THE RECORD ID IS NEVER LOST TO A PROPERTY CALLED id
+  @Test
+  void nestedMapsKeepTheTokenNamesOfTheRow() throws Exception {
+    testEachServer(serverIndex -> {
+      executeGremlin(serverIndex, "g.addV('Nest9781').property('name','a').property('id','uid').iterate()");
+      executeGremlin(serverIndex, "g.addV('Nest9781').property('name','b').iterate()");
+
+      final JSONObject top = executeGremlin(serverIndex, "g.V().has('name','a').elementMap()").getJSONArray("result").getJSONObject(0);
+      final JSONArray rows = executeGremlin(serverIndex, "g.V().hasLabel('Nest9781').order().by('name').project('x').by(elementMap())")
+          .getJSONArray("result");
+      assertThat(rows.length()).isEqualTo(2);
+      final JSONObject a = rows.getJSONObject(0).getJSONObject("x");
+      assertThat(a.getString("@rid")).isEqualTo(top.getString("@rid"));
+      assertThat(a.getString("@type")).isEqualTo("Nest9781");
+      assertThat(a.getString("id")).isEqualTo("uid");
+      final JSONObject b = rows.getJSONObject(1).getJSONObject("x");
+      assertThat(b.has("id")).as("the rid of a vertex without the property is not reported as an id").isFalse();
+      assertThat(b.getString("@rid")).startsWith("#");
+
+      final JSONObject grouped = executeGremlin(serverIndex, "g.V().hasLabel('Nest9781').group().by('name').by(elementMap())")
+          .getJSONArray("result").getJSONObject(0);
+      assertThat(grouped.getJSONObject("a").getString("@rid")).isEqualTo(top.getString("@rid"));
+
+      final JSONObject folded = executeGremlin(serverIndex, "g.V().has('name','a').elementMap().fold()").getJSONArray("result")
+          .getJSONObject(0);
+      assertThat(folded.getJSONArray("result").getJSONObject(0).getString("@rid")).isEqualTo(top.getString("@rid"));
+    });
+  }
+
+  @Test
+  void aNestedNullGroupKeyIsAnswered() throws Exception {
+    testEachServer(serverIndex -> {
+      executeGremlin(serverIndex, "g.addV('NestNull9781').iterate()");
+      final JSONObject json = executeGremlin(serverIndex,
+          "g.V().hasLabel('NestNull9781').project('g').by(group().by(constant(null)).by(count()))");
+      assertThat(json.getJSONArray("result").getJSONObject(0).getJSONObject("g").getLong("null")).isEqualTo(1L);
+    });
+  }
+
   private JSONObject executeGremlin(final int serverIndex, final String command) throws Exception {
     final HttpURLConnection connection = (HttpURLConnection) new URL(
         "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/command/" + getDatabaseName()).openConnection();

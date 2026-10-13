@@ -301,6 +301,73 @@ public final class ColumnDefinition {
   }
 
   /**
+   * The value the append path can encode for this column, for a writer that hands over what it parsed without converting it: the
+   * line protocol and gRPC give a quoted datetime as text, a typed tag as text, whatever the client sent (issue #9809). The storage
+   * layer casts a value to the {@code Number} (or {@code String}) its column kind names, so anything else used to surface as a bare
+   * {@code ClassCastException} from the middle of the append.
+   * <ul>
+   * <li>a DATE/DATETIME column keeps a number as it is, a count in the column's unit, the contract of every writer that is not SQL; text
+   * of digits is that same count, the rule {@link #coerceValue} applies to a tag filter, and any other date or instant is read by
+   * {@link #epochOf}, the conversion {@code INSERT} uses, so the same text names the same instant on every surface</li>
+   * <li>any other numeric column keeps a number and parses text, as {@code INSERT} does</li>
+   * <li>a BOOLEAN column parses text, so a typed tag sent as {@code "true"} is not stored as {@code false}</li>
+   * <li>a STRING column keeps a string</li>
+   * </ul>
+   *
+   * @param database may be {@code null}, which reads text with the default formats (see {@link #epochOf})
+   *
+   * @throws IllegalArgumentException naming this column, when the value cannot be stored in it
+   */
+  public Object storableValue(final Database database, final Object value) {
+    if (value == null)
+      return null;
+    return switch (TimeSeriesBatch.kindOf(dataType)) {
+      case TimeSeriesBatch.KIND_BOOLEAN -> value instanceof String text ? Boolean.parseBoolean(text) : value;
+      case TimeSeriesBatch.KIND_STRING -> {
+        if (value instanceof String)
+          yield value;
+        throw unstorable(value, null);
+      }
+      case TimeSeriesBatch.KIND_TEXT -> value;
+      default -> {
+        if (value instanceof Number)
+          yield value;
+        if (!(value instanceof String) && !isTemporal())
+          throw unstorable(value, null);
+        try {
+          yield isTemporal() ? temporalCount(database, value) : parseNumericText((String) value);
+        } catch (final RuntimeException e) {
+          throw unstorable(value, e);
+        }
+      }
+    };
+  }
+
+  private Long temporalCount(final Database database, final Object value) {
+    return value instanceof String text && isIntegerText(text) ? Long.parseLong(text) : epochOf(database, value);
+  }
+
+  private Object parseNumericText(final String text) {
+    return switch (dataType) {
+      case DOUBLE -> Double.parseDouble(text);
+      case FLOAT -> Float.parseFloat(text);
+      case INTEGER -> Integer.parseInt(text);
+      case SHORT -> Short.parseShort(text);
+      case BYTE -> Byte.parseByte(text);
+      default -> Long.parseLong(text);
+    };
+  }
+
+  /**
+   * The refusal of a value this column cannot store: it names the column and the type, which the {@code ClassCastException} it
+   * replaces never did.
+   */
+  IllegalArgumentException unstorable(final Object value, final Throwable cause) {
+    return new IllegalArgumentException("Cannot convert a value of type " + value.getClass().getName() + " to the " + dataType
+        + " column '" + name + "'", cause);
+  }
+
+  /**
    * The object a document property of this DATE/DATETIME type hands back for the epoch count the column stores, which is what
    * the SQL boundary returns for it (issue #9725): the same instant, in the same Java class, as the twin document property, so a
    * value read from a row can be written back as it is and compared against the literal that wrote it.

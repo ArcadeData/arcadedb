@@ -284,6 +284,40 @@ class PostTimeSeriesWriteHandlerIT extends BaseGraphServerTest {
   }
 
   /**
+   * Issue #9809: a quoted datetime sent to a DATETIME field used to fail with a raw ClassCastException answered as a server
+   * error. A readable one is stored, an unreadable one is reported as a partial write naming the column, like any other drop.
+   */
+  @Test
+  void aDatetimeFieldReadsQuotedTextAndNamesWhatItCannotRead() throws Exception {
+    testEachServer(serverIndex -> {
+      command(serverIndex, "CREATE TIMESERIES TYPE pw_datetime TIMESTAMP ts FIELDS (seen DATETIME) SHARDS 1");
+
+      final HttpURLConnection connection = openWriteConnection(serverIndex, "ms");
+      try (final OutputStream os = connection.getOutputStream()) {
+        os.write("""
+            pw_datetime seen="2023-11-14 22:15:23" 1700000000000
+            pw_datetime seen="not a date" 1700000000001
+            pw_datetime seen=1700000002000i 1700000000002
+            """.getBytes(StandardCharsets.UTF_8));
+        os.flush();
+      }
+
+      assertThat(connection.getResponseCode()).isEqualTo(400);
+
+      final JSONObject error = new JSONObject(readError(connection));
+      assertThat(error.getString("error")).contains("unreadable value(s)").contains("pw_datetime.seen (field)");
+      assertThat(error.getInt("written")).isEqualTo(2);
+      assertThat(error.getInt("dropped")).isEqualTo(1);
+      final JSONArray unreadable = error.getJSONArray("unreadableValues");
+      assertThat(unreadable.length()).isEqualTo(1);
+      assertThat(unreadable.getString(0)).startsWith("pw_datetime.seen (field)").contains("'seen'").contains("DATETIME");
+
+      final JSONObject result = executeCommand(serverIndex, "sql", "SELECT FROM pw_datetime");
+      assertThat(result.getJSONObject("result").getJSONArray("records").length()).isEqualTo(2);
+    });
+  }
+
+  /**
    * Issue #8646: a schema-less producer such as Telegraf sends extra tags the type was never meant to hold. With the
    * database set to {@code ignore} it keeps the pre-#8646 behaviour - the sample stored, the extra keys discarded.
    */
