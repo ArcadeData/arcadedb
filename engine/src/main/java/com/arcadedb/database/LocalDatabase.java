@@ -3078,8 +3078,10 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    * apply had already replaced, and an undo of a refused save would put it back (issue #9919).
    * <p>
    * {@code change} runs under that lock, so it must only store the value and re-derive in-memory state from it: the
-   * setting's {@link GlobalConfiguration} callback and the per-database side effects, which the apply itself runs under
-   * the same lock when it merges a change. Nothing that takes another lock or replicates.
+   * setting's {@link GlobalConfiguration} callback and the per-database side effects (serializer, statement caches),
+   * as {@link #restoreSetting(String, Object)} already does under the same lock. Nothing that replicates or waits on
+   * the replication. That keeps the lock order acyclic: the Raft state machine takes this lock holding no database lock,
+   * and under it only {@code configurationFileLock}.
    */
   public SettingChange changeSetting(final String key, final Runnable change) {
     synchronized (configurationApplyLock) {

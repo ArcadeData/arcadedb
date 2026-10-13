@@ -28,10 +28,12 @@ import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.io.File;
 import java.io.IOException;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -46,6 +48,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * The other node's apply is reproduced with the call the HA layer makes on every node,
  * {@link LocalDatabase#applyConfigurationChanges(String)}, from another thread as the Raft state machine runs it.
  */
+// A hang detector for the wait on the other node's apply, not a latency bound
+@Timeout(value = 2, unit = TimeUnit.MINUTES)
 class Issue9919RefusedSettingUndoTest {
   private static final String DB_PATH  = "target/databases/Issue9919RefusedSettingUndoTest";
   private static final String KEY      = GlobalConfiguration.TYPE_DEFAULT_BUCKETS.getKey();
@@ -82,7 +86,8 @@ class Issue9919RefusedSettingUndoTest {
         // Until the apply either landed or blocked: it blocks when the capture holds the apply lock, and then lands later,
         // inside the refused save
         final Thread apply = database.otherNodeApply;
-        while (apply.isAlive() && apply.getState() != Thread.State.BLOCKED)
+        // The interrupt is how @Timeout ends a wait that never ends
+        while (apply.isAlive() && apply.getState() != Thread.State.BLOCKED && !Thread.currentThread().isInterrupted())
           Thread.onSpinWait();
       }
       return value;
