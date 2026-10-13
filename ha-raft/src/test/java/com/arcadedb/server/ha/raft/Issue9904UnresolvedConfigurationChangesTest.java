@@ -125,7 +125,7 @@ class Issue9904UnresolvedConfigurationChangesTest {
     final UnresolvedConfigurationChanges changes = held(environment);
     environment.saved.set(true);
 
-    assertThat(changes.tryResolve(A_5)).isTrue();
+    changes.tryResolve(A_5);
 
     assertThat(changes.size()).isZero();
     assertThat(environment.restored.get()).isZero();
@@ -136,7 +136,7 @@ class Issue9904UnresolvedConfigurationChangesTest {
     final FakeEnvironment environment = new FakeEnvironment();
     final UnresolvedConfigurationChanges changes = held(environment);
 
-    assertThat(changes.tryResolve(A_5)).isTrue();
+    changes.tryResolve(A_5);
 
     assertThat(environment.barriers.get()).isEqualTo(1);
     assertThat(environment.restoredDoc).containsExactly(A_5);
@@ -167,7 +167,7 @@ class Issue9904UnresolvedConfigurationChangesTest {
     };
     final UnresolvedConfigurationChanges changes = held(environment);
 
-    assertThat(changes.tryResolve(A_5)).isTrue();
+    changes.tryResolve(A_5);
 
     assertThat(environment.restored.get()).isZero();
   }

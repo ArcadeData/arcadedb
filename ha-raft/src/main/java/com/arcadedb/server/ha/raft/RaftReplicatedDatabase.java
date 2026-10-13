@@ -4507,7 +4507,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
               // An entry with nothing to change: the log is ordered, so once it is applied here so is everything the
               // cluster committed ahead of it
               final long index = RaftHAServer.requireTransactionBroker(raft)
-                  .replicateDatabaseConfiguration(getName(), "{\"configuration\":{},\"removed\":[]}");
+                  .replicateDatabaseConfiguration(getName(), UnresolvedConfigurationChanges.FENCE_DOCUMENT);
               raft.waitForAppliedIndex(getName(), index, true);
             }
 

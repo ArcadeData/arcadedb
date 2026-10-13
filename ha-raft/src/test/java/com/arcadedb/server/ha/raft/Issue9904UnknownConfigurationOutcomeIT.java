@@ -117,7 +117,7 @@ class Issue9904UnknownConfigurationOutcomeIT extends BaseRaftHATest {
     // The first change never reaches the log, and neither does anything that would settle it: the originator stays
     // undecided, which is when the next change used to carry the first one along
     final Predicate<byte[]> settingA = carries(SETTING_A);
-    final Predicate<byte[]> barrier = entry -> new String(entry, StandardCharsets.UTF_8).contains("{\"configuration\":{}");
+    final Predicate<byte[]> barrier = entry -> new String(entry, StandardCharsets.UTF_8).contains(UnresolvedConfigurationChanges.FENCE_DOCUMENT);
     RaftGroupCommitter.TEST_SWALLOW_DISPATCHED_ENTRY = entry -> settingA.test(entry) || barrier.test(entry);
     assertThatThrownBy(() -> leader.command("sql", "ALTER DATABASE `" + SETTING_A + "` 5"))
         .isInstanceOf(TransactionOutcomeUnknownException.class);
@@ -151,7 +151,7 @@ class Issue9904UnknownConfigurationOutcomeIT extends BaseRaftHATest {
     final int defaultValue = buckets((DatabaseInternal) leader);
 
     final Predicate<byte[]> settingA = carries(SETTING_A);
-    final Predicate<byte[]> barrier = entry -> new String(entry, StandardCharsets.UTF_8).contains("{\"configuration\":{}");
+    final Predicate<byte[]> barrier = entry -> new String(entry, StandardCharsets.UTF_8).contains(UnresolvedConfigurationChanges.FENCE_DOCUMENT);
     RaftGroupCommitter.TEST_SWALLOW_DISPATCHED_ENTRY = entry -> settingA.test(entry) || barrier.test(entry);
     assertThatThrownBy(() -> leader.command("sql", "ALTER DATABASE `" + SETTING_A + "` 5"))
         .isInstanceOf(TransactionOutcomeUnknownException.class);

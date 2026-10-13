@@ -45,8 +45,8 @@ import java.util.logging.Level;
  *   the file is not going to be. Then the settings go back to what the file holds. Should such an entry commit
  *   regardless (a request delayed in flight), its apply here installs the value again, so the node still converges.</li>
  * </ul>
- * The resolver is a short-lived daemon thread per change: the event is the rare end of a quorum-wait timeout, and the
- * thread ends with the answer, the database closing or the node shutting down.
+ * One short-lived daemon resolver thread per database works through the list: the event is the rare end of a quorum-wait
+ * timeout, and the thread ends when the list is empty, the database closes or the node shuts down.
  */
 final class UnresolvedConfigurationChanges {
   /** What the resolver needs from the database it works for. */
@@ -67,13 +67,20 @@ final class UnresolvedConfigurationChanges {
     boolean isActive();
   }
 
+  /** The entry that changes nothing, submitted behind a change of unknown outcome; the apply treats it as a no-op. */
+  static final String FENCE_DOCUMENT = "{\"configuration\":{},\"removed\":[]}";
+
   private static final long FIRST_RETRY_MS = 200L;
   private static final long MAX_RETRY_MS   = 5_000L;
+  /** Attempts after which a resolution that keeps failing is reported again (about a minute at the maximum delay). */
+  private static final int  REPORT_EVERY   = 12;
 
-  private final String            databaseName;
-  private final Object            lock;
-  private final Environment       environment;
-  private final List<String>      unresolved = new ArrayList<>();
+  private final String       databaseName;
+  private final Object       lock;
+  private final Environment  environment;
+  private final List<String> unresolved = new ArrayList<>();
+  /** Whether the resolver thread of this database is running; guarded by {@link #lock}. */
+  private boolean            resolving;
 
   /**
    * @param lock the lock the owner computes and submits its changes under: a resolution is atomic with respect to
@@ -92,10 +99,15 @@ final class UnresolvedConfigurationChanges {
     }
   }
 
-  /** Registers a change whose outcome is unknown and starts finding out. */
+  /** Registers a change whose outcome is unknown and starts finding out, on the one resolver thread of this database. */
   void add(final String changes) {
-    hold(changes);
-    final Thread resolver = new Thread(() -> resolve(changes), "arcadedb-raft-config-fate-" + databaseName);
+    synchronized (lock) {
+      unresolved.add(changes);
+      if (resolving)
+        return;
+      resolving = true;
+    }
+    final Thread resolver = new Thread(this::resolveAll, "arcadedb-raft-config-fate-" + databaseName);
     resolver.setDaemon(true);
     resolver.start();
   }
@@ -137,11 +149,15 @@ final class UnresolvedConfigurationChanges {
     return new JSONObject().put("configuration", changed).put("removed", new JSONArray(removedKeys)).toString();
   }
 
-  /** One pass of the resolution; {@code true} when the change is settled and was dropped from the list. */
-  boolean tryResolve(final String changes) throws IOException {
+  /**
+   * One pass of the resolution of one change, which drops it from the list when settled and throws when it cannot be.
+   * The file holding the submitted values counts as committed: by value, not by entry, which is enough since the value
+   * is the same whichever entry wrote it.
+   */
+  void tryResolve(final String changes) throws IOException {
     if (environment.isSaved(changes)) {
       forget(changes);
-      return true;
+      return;
     }
     environment.awaitLaterEntryApplied();
     synchronized (lock) {
@@ -153,27 +169,43 @@ final class UnresolvedConfigurationChanges {
       }
       unresolved.remove(changes);
     }
-    return true;
   }
 
-  private void resolve(final String changes) {
+  private void resolveAll() {
     long delay = FIRST_RETRY_MS;
+    int failures = 0;
     while (environment.isActive()) {
-      try {
-        if (tryResolve(changes))
+      final List<String> batch;
+      synchronized (lock) {
+        if (unresolved.isEmpty()) {
+          resolving = false;
           return;
-      } catch (final Exception e) {
-        LogManager.instance().log(this, Level.FINE,
-            "The outcome of a configuration change of database '%s' is still unknown, retrying: %s", databaseName,
-            e.getMessage());
+        }
+        batch = new ArrayList<>(unresolved);
+      }
+      for (final String changes : batch) {
+        try {
+          tryResolve(changes);
+          failures = 0;
+          delay = FIRST_RETRY_MS;
+        } catch (final Exception e) {
+          if (failures++ % REPORT_EVERY == 0)
+            LogManager.instance().log(this, Level.WARNING,
+                "The outcome of a configuration change of database '%s' is still unknown, retrying: %s", databaseName,
+                e.getMessage());
+          break;
+        }
       }
       try {
         Thread.sleep(delay);
       } catch (final InterruptedException e) {
         Thread.currentThread().interrupt();
-        return;
+        break;
       }
       delay = Math.min(delay * 2, MAX_RETRY_MS);
+    }
+    synchronized (lock) {
+      resolving = false;
     }
   }
 

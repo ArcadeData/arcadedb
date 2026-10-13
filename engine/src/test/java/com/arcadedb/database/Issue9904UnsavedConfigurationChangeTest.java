@@ -146,4 +146,14 @@ class Issue9904UnsavedConfigurationChangeTest {
 
     assertThat(database.getConfiguration().getValueAsInteger(GlobalConfiguration.ASYNC_WORKER_THREADS)).isEqualTo(3);
   }
+
+  @Test
+  void anEntryThatChangesNothingTouchesNeitherTheFileNorTheCaches() throws Exception {
+    final File file = database.getConfigurationFile();
+    file.delete();
+
+    database.applyConfigurationChanges("{\"configuration\":{},\"removed\":[]}");
+
+    assertThat(file).as("no file is written for an empty change").doesNotExist();
+  }
 }
