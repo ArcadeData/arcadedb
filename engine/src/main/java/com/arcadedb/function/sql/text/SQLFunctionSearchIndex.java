@@ -234,6 +234,9 @@ public class SQLFunctionSearchIndex extends SQLFunctionAbstract implements Index
 
     final Map<RID, Float> best = FullTextSearch.search(FullTextSearch.resolveFullTextIndex(database, indexName), queryString,
         limit, guard);
+    // One cache entry per statement: only a single AND block with this one function is handed a limit. The map holds each
+    // bucket's best matches, so up to buckets x limit entries: their union contains the global best `limit`, which is the
+    // prefix the iteration trusts
     context.setCachedValue(bestCacheKey(indexName, queryString), best);
     // Fewer matches than the limit: no bucket was cut short, so they are all the matches there are
     final boolean truncated = best.size() >= limit;
