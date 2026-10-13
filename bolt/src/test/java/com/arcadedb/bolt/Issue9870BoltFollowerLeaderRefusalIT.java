@@ -58,8 +58,7 @@ class Issue9870BoltFollowerLeaderRefusalIT extends BaseRaftHATest {
   @Override
   protected void onServerConfiguration(final ContextConfiguration config) {
     super.onServerConfiguration(config);
-    final String serverName = config.getValueAsString(GlobalConfiguration.SERVER_NAME);
-    final int index = Integer.parseInt(serverName.substring(serverName.lastIndexOf('_') + 1));
+    final int index = serverIndexOf(config);
     config.setValue(GlobalConfiguration.SERVER_PLUGINS.getKey(), "Bolt:com.arcadedb.bolt.BoltProtocolPlugin");
     config.setValue(GlobalConfiguration.BOLT_PORT.getKey(), String.valueOf(boltPorts[index]));
   }
@@ -80,8 +79,8 @@ class Issue9870BoltFollowerLeaderRefusalIT extends BaseRaftHATest {
   @Test
   @Timeout(120)
   void anAutoCommitWriteOnAFollowerIsAnsweredNotALeaderNamingTheLeader() {
-    final int leader = leaderIndex();
-    final int follower = followerOf(leader);
+    final int leader = requireLeaderIndex();
+    final int follower = firstFollowerOf(leader);
     final Runnable restore = refuseForwardedWritesOn(follower);
     try (final Session session = followerSession(follower)) {
       final Throwable refused = catchThrowable(() -> session.run("CREATE (n:Issue9870AutoCommit {name: 'refused'})").consume());
@@ -94,8 +93,8 @@ class Issue9870BoltFollowerLeaderRefusalIT extends BaseRaftHATest {
   @Test
   @Timeout(120)
   void aWriteInAnExplicitTransactionOnAFollowerIsAnsweredNotALeaderNamingTheLeader() {
-    final int leader = leaderIndex();
-    final int follower = followerOf(leader);
+    final int leader = requireLeaderIndex();
+    final int follower = firstFollowerOf(leader);
     final Runnable restore = refuseForwardedWritesOn(follower);
     try (final Session session = followerSession(follower)) {
       final Throwable refused = catchThrowable(() -> {
@@ -116,30 +115,17 @@ class Issue9870BoltFollowerLeaderRefusalIT extends BaseRaftHATest {
         .as("a routing driver re-routes on NotALeader, and retries DeadlockDetected on the same follower (issue #9845)")
         .isEqualTo(BoltErrorCodes.NOT_A_LEADER_ERROR);
     // With no peer HTTP address left to resolve, the cluster has no Bolt endpoint for the leader either: the text names
-    // the leader as the refusal does, and says it is not a Bolt address
+    // the leader as the refusal does
     final String leaderName = getRaftPlugin(follower).getRaftHAServer().getLeaderName();
     assertThat(leaderName).as("the follower must know which node leads").isNotBlank();
     assertThat(refused.getMessage())
         .as("a bolt:// client has only the text to find the leader in")
-        .contains("The leader is server '" + leaderName + "' (HTTP address; use its Bolt port). Retry there");
+        .contains("The leader is server '" + leaderName + "'");
   }
 
   private Session followerSession(final int follower) {
     driver = GraphDatabase.driver("bolt://localhost:" + boltPorts[follower], AuthTokens.basic("root", DEFAULT_PASSWORD_FOR_TESTS),
         Config.builder().withoutEncryption().build());
     return driver.session(SessionConfig.builder().withDatabase(getDatabaseName()).build());
-  }
-
-  private int leaderIndex() {
-    final int leader = findLeaderIndex();
-    assertThat(leader).as("a Raft leader must be elected").isGreaterThanOrEqualTo(0);
-    return leader;
-  }
-
-  private int followerOf(final int leader) {
-    for (int i = 0; i < getServerCount(); i++)
-      if (i != leader)
-        return i;
-    throw new IllegalStateException("no follower in a " + getServerCount() + "-node cluster");
   }
 }

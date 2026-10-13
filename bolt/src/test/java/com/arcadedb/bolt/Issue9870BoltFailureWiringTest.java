@@ -36,6 +36,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * refusal (issue #9845). Seven arms used to append it by hand, so a new arm could answer NotALeader and leave a
  * {@code bolt://} client without the address to reconnect to. This scans the executor's source and names every arm that
  * still calls {@code sendFailure} with a classified code.
+ * <p>
+ * Limits, kept on purpose for a scan this cheap: the path is relative to the module root, which is Surefire's working
+ * directory (an IDE run from another directory fails on the read, not silently); and only a {@code classify*} call
+ * written inside the {@code sendFailure(} call is seen, so a classified code first stored in a local escapes it.
  */
 class Issue9870BoltFailureWiringTest {
   private static final Path    EXECUTOR   = Path.of("src/main/java/com/arcadedb/bolt/BoltNetworkExecutor.java");

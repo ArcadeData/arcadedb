@@ -52,8 +52,7 @@ class Issue9870PostgresFollowerLeaderRefusalIT extends BaseRaftHATest {
   @Override
   protected void onServerConfiguration(final ContextConfiguration config) {
     super.onServerConfiguration(config);
-    final String serverName = config.getValueAsString(GlobalConfiguration.SERVER_NAME);
-    final int index = Integer.parseInt(serverName.substring(serverName.lastIndexOf('_') + 1));
+    final int index = serverIndexOf(config);
     config.setValue(GlobalConfiguration.SERVER_PLUGINS.getKey(), "Postgres:com.arcadedb.postgres.PostgresProtocolPlugin");
     config.setValue(GlobalConfiguration.POSTGRES_PORT.getKey(), String.valueOf(postgresPorts[index]));
   }
@@ -72,7 +71,7 @@ class Issue9870PostgresFollowerLeaderRefusalIT extends BaseRaftHATest {
   @Test
   @Timeout(120)
   void aWriteOnTheSimpleQueryProtocolNamesTheLeader() throws Exception {
-    final int leader = leaderIndex();
+    final int leader = requireLeaderIndex();
     final int follower = prepareFollower(leader);
     final Runnable restore = refuseForwardedWritesOn(follower);
     try (final Connection connection = connect(follower, "simple"); final Statement statement = connection.createStatement()) {
@@ -92,7 +91,7 @@ class Issue9870PostgresFollowerLeaderRefusalIT extends BaseRaftHATest {
   @Test
   @Timeout(120)
   void aSchemaChangeOnTheExtendedQueryProtocolNamesTheLeader() throws Exception {
-    final int follower = followerOf(leaderIndex());
+    final int follower = firstFollowerOf(requireLeaderIndex());
     final String leaderAddress = getRaftPlugin(follower).getRaftHAServer().getLeaderHttpAddress();
     assertThat(leaderAddress).as("the follower must know where the leader is").isNotBlank();
     try (final Connection connection = connect(follower, "extended");
@@ -119,7 +118,7 @@ class Issue9870PostgresFollowerLeaderRefusalIT extends BaseRaftHATest {
     final Database leaderDb = getServerDatabase(leader, getDatabaseName());
     leaderDb.command("sql", "CREATE DOCUMENT TYPE " + TYPE + " IF NOT EXISTS");
     waitForAllServers();
-    return followerOf(leader);
+    return firstFollowerOf(leader);
   }
 
   private Connection connect(final int serverIndex, final String queryMode) throws SQLException {
@@ -129,18 +128,5 @@ class Issue9870PostgresFollowerLeaderRefusalIT extends BaseRaftHATest {
     props.setProperty("sslmode", "disable");
     props.setProperty("preferQueryMode", queryMode);
     return DriverManager.getConnection("jdbc:postgresql://localhost:" + postgresPorts[serverIndex] + "/" + getDatabaseName(), props);
-  }
-
-  private int leaderIndex() {
-    final int leader = findLeaderIndex();
-    assertThat(leader).as("a Raft leader must be elected").isGreaterThanOrEqualTo(0);
-    return leader;
-  }
-
-  private int followerOf(final int leader) {
-    for (int i = 0; i < getServerCount(); i++)
-      if (i != leader)
-        return i;
-    throw new IllegalStateException("no follower in a " + getServerCount() + "-node cluster");
   }
 }

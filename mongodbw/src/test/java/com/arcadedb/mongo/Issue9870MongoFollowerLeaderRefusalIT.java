@@ -56,8 +56,7 @@ class Issue9870MongoFollowerLeaderRefusalIT extends BaseRaftHATest {
   @Override
   protected void onServerConfiguration(final ContextConfiguration config) {
     super.onServerConfiguration(config);
-    final String serverName = config.getValueAsString(GlobalConfiguration.SERVER_NAME);
-    final int index = Integer.parseInt(serverName.substring(serverName.lastIndexOf('_') + 1));
+    final int index = serverIndexOf(config);
     config.setValue(GlobalConfiguration.SERVER_PLUGINS.getKey(), "MongoDB:com.arcadedb.mongo.MongoDBProtocolPlugin");
     config.setValue(GlobalConfiguration.MONGO_PORT.getKey(), String.valueOf(mongoPorts[index]));
   }
@@ -78,7 +77,7 @@ class Issue9870MongoFollowerLeaderRefusalIT extends BaseRaftHATest {
   @Test
   @Timeout(120)
   void createCollectionOnAFollowerIsNotWritablePrimaryNamingTheLeader() {
-    final int follower = followerOf(leaderIndex());
+    final int follower = firstFollowerOf(requireLeaderIndex());
     final Throwable refused = catchThrowable(() -> followerDatabase(follower).createCollection("issue9870create"));
     assertNotWritablePrimaryNamingTheLeader(refused, follower);
   }
@@ -86,7 +85,7 @@ class Issue9870MongoFollowerLeaderRefusalIT extends BaseRaftHATest {
   @Test
   @Timeout(120)
   void insertIntoANewCollectionOnAFollowerIsNotWritablePrimaryNamingTheLeader() {
-    final int follower = followerOf(leaderIndex());
+    final int follower = firstFollowerOf(requireLeaderIndex());
     final Throwable refused = catchThrowable(
         () -> followerDatabase(follower).getCollection("issue9870insert").insertOne(new Document("name", "refused")));
     assertNotWritablePrimaryNamingTheLeader(refused, follower);
@@ -95,7 +94,7 @@ class Issue9870MongoFollowerLeaderRefusalIT extends BaseRaftHATest {
   @Test
   @Timeout(120)
   void createIndexOnANewCollectionOnAFollowerIsNotWritablePrimaryNamingTheLeader() {
-    final int follower = followerOf(leaderIndex());
+    final int follower = firstFollowerOf(requireLeaderIndex());
     final Throwable refused = catchThrowable(
         () -> followerDatabase(follower).getCollection("issue9870index").createIndex(new Document("name", 1)));
     assertNotWritablePrimaryNamingTheLeader(refused, follower);
@@ -120,18 +119,5 @@ class Issue9870MongoFollowerLeaderRefusalIT extends BaseRaftHATest {
         MongoCredential.createPlainCredential("root", getDatabaseName(), DEFAULT_PASSWORD_FOR_TESTS.toCharArray()),
         MongoClientOptions.builder().serverSelectionTimeout(5000).retryWrites(false).build());
     return client.getDatabase(getDatabaseName());
-  }
-
-  private int leaderIndex() {
-    final int leader = findLeaderIndex();
-    assertThat(leader).as("a Raft leader must be elected").isGreaterThanOrEqualTo(0);
-    return leader;
-  }
-
-  private int followerOf(final int leader) {
-    for (int i = 0; i < getServerCount(); i++)
-      if (i != leader)
-        return i;
-    throw new IllegalStateException("no follower in a " + getServerCount() + "-node cluster");
   }
 }

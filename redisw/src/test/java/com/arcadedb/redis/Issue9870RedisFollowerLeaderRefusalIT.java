@@ -43,7 +43,8 @@ import static org.assertj.core.api.Assertions.catchThrowable;
  * commits on the node it reached and the commit travels through Raft, so it succeeds on a follower. The refusal is
  * therefore raised on that follower's own save, by a listener registered on its copy of the type only, with the
  * leader's address as the follower itself resolves it. Everything between the save and the client is the production
- * path.
+ * path. A Redis command that changes the schema, or one routed through the follower's forward, would let this test drop
+ * the listener and use a refusal the cluster raises itself, as the MongoDB and Postgres tests do.
  */
 @Tag("slow")
 class Issue9870RedisFollowerLeaderRefusalIT extends BaseRaftHATest {
@@ -55,8 +56,7 @@ class Issue9870RedisFollowerLeaderRefusalIT extends BaseRaftHATest {
   @Override
   protected void onServerConfiguration(final ContextConfiguration config) {
     super.onServerConfiguration(config);
-    final String serverName = config.getValueAsString(GlobalConfiguration.SERVER_NAME);
-    final int index = Integer.parseInt(serverName.substring(serverName.lastIndexOf('_') + 1));
+    final int index = serverIndexOf(config);
     config.setValue(GlobalConfiguration.SERVER_PLUGINS.getKey(), "Redis:com.arcadedb.redis.RedisProtocolPlugin");
     config.setValue(GlobalConfiguration.REDIS_PORT.getKey(), String.valueOf(redisPorts[index]));
   }
@@ -69,11 +69,11 @@ class Issue9870RedisFollowerLeaderRefusalIT extends BaseRaftHATest {
   @Test
   @Timeout(120)
   void aRefusedWriteOnAFollowerIsReadOnlyNamingTheLeader() {
-    final int leader = leaderIndex();
+    final int leader = requireLeaderIndex();
     getServerDatabase(leader, getDatabaseName()).command("sql", "CREATE DOCUMENT TYPE " + TYPE + " IF NOT EXISTS");
     waitForAllServers();
 
-    final int follower = followerOf(leader);
+    final int follower = firstFollowerOf(leader);
     final String leaderAddress = getRaftPlugin(follower).getRaftHAServer().getLeaderHttpAddress();
     assertThat(leaderAddress).as("the follower must know where the leader is").isNotBlank();
 
@@ -99,18 +99,5 @@ class Issue9870RedisFollowerLeaderRefusalIT extends BaseRaftHATest {
       followerDb.getSchema().getType(TYPE).getEvents().unregisterListener(refuse);
     }
     assertThat(followerDb.countType(TYPE, false)).as("the refused write must not stand").isZero();
-  }
-
-  private int leaderIndex() {
-    final int leader = findLeaderIndex();
-    assertThat(leader).as("a Raft leader must be elected").isGreaterThanOrEqualTo(0);
-    return leader;
-  }
-
-  private int followerOf(final int leader) {
-    for (int i = 0; i < getServerCount(); i++)
-      if (i != leader)
-        return i;
-    throw new IllegalStateException("no follower in a " + getServerCount() + "-node cluster");
   }
 }

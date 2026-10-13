@@ -736,6 +736,28 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
     return null;
   }
 
+  /** The index of the server {@code config} belongs to, read from its name ({@code "ArcadeDB_1"} is 1). */
+  protected static int serverIndexOf(final ContextConfiguration config) {
+    final String serverName = config.getValueAsString(GlobalConfiguration.SERVER_NAME);
+    return Integer.parseInt(serverName.substring(serverName.lastIndexOf('_') + 1));
+  }
+
+  /** {@link #findLeaderIndex()}, failing the test when no leader is elected. */
+  protected int requireLeaderIndex() {
+    final int leader = findLeaderIndex();
+    if (leader < 0)
+      throw new AssertionError("a Raft leader must be elected");
+    return leader;
+  }
+
+  /** The lowest-indexed server that is not {@code leader}. */
+  protected int firstFollowerOf(final int leader) {
+    for (int i = 0; i < getServerCount(); i++)
+      if (i != leader)
+        return i;
+    throw new IllegalStateException("no follower in a " + getServerCount() + "-node cluster");
+  }
+
   /**
    * Makes follower {@code serverIndex} refuse every write it would forward to the leader, as a same-host cluster that
    * declares no HTTP ports does: with nothing declared, every peer's HTTP address derives to this node's own endpoint,
