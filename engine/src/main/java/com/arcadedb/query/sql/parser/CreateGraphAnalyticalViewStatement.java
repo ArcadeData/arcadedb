@@ -79,7 +79,8 @@ public class CreateGraphAnalyticalViewStatement extends DDLStatement {
       builder.withVertexTypes(vtArray);
     if (etArray != null && etArray.length > 0)
       builder.withEdgeTypes(etArray);
-    // An empty list is kept as such: the builder then copies no vertex property, while no clause copies all (issue #9831)
+    // toStringArray() maps an empty array to null, so preserve PROPERTIES () explicitly: it copies no vertex properties
+    // while an omitted clause copies all (issue #9831).
     if (properties != null)
       builder.withProperties(properties.length == 0 ? new String[0] : toStringArray(properties));
     final String[] edgePropArray = toStringArray(edgeProperties);
