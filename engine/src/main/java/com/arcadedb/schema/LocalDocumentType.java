@@ -387,6 +387,8 @@ public class LocalDocumentType implements DocumentType {
   private void renameAndPublish(final String newName) {
     final String oldName = name;
     final DatabaseInternal database = ((DatabaseInternal) schema.getDatabase()).getWrappedDatabaseInstance();
+    // Best effort: leadership or the peer set can still change before the session opens. A refusal from the session is
+    // then met by the rollback below; this check only keeps the common refusal from moving any file at all.
     database.checkFileRenamesCanBePublished();
 
     final Map<Integer, String> componentNamesBefore = componentNamesOfFiles(database.getFileManager());
@@ -411,6 +413,11 @@ public class LocalDocumentType implements DocumentType {
         try {
           renameFiles(oldName);
         } catch (final RuntimeException rollbackFailure) {
+          // The files are now neither all under the new name nor all back under the old one, and the schema names the
+          // old ones: said where an operator looks, not only in a suppressed exception the caller may never print
+          LogManager.instance().log(this, Level.SEVERE,
+              "Renaming type '%s' to '%s' was refused after its files were moved, and moving them back failed: check the "
+                  + "file names of its buckets and indexes against the schema", rollbackFailure, oldName, newName);
           e.addSuppressed(rollbackFailure);
         }
       throw e;

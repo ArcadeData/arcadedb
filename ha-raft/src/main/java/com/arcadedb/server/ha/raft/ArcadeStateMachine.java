@@ -3936,7 +3936,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // A delta entry (issue #6989) carries its schema change OUTSIDE schemaJson, so it must not be mistaken for
     // one of these: it publishes a schema change and the reload below is exactly what registers it.
     final boolean walOnlyEntry = isEmptyMap(decoded.filesToAdd()) && isEmptyMap(decoded.filesToRemove())
-        && isEmptyMap(decoded.filesToRename()) && (decoded.schemaJson() == null || decoded.schemaJson().isEmpty()) && decoded.schemaDelta() == null
+        && isEmptyMap(decoded.filesToRename())
+        && (decoded.schemaJson() == null || decoded.schemaJson().isEmpty()) && decoded.schemaDelta() == null
         && !isNotEmpty(decoded.sealedFileBlobs()) && !isNotEmpty(decoded.sealedFileChunks())
         && decoded.walEntries() != null && !decoded.walEntries().isEmpty();
 
