@@ -37,15 +37,16 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@code bolt://} client without the address to reconnect to. This scans the executor's source and names every
  * {@code sendFailure} call whose code is not a {@code BoltException}/{@code BoltErrorCodes} constant: a code computed
  * from an exception, whether inline or through a local, belongs to {@code sendExecutionFailure}. The one exception is
- * that sender's own call, which passes its {@code code} parameter on.
+ * that sender's own call, matched verbatim.
  * <p>
- * The path is relative to the module root, which is Surefire's working directory: an IDE run from another directory
- * fails on the read, not silently.
+ * The path resolves against Maven's {@code basedir} (the module root), or the working directory when it is not set: an
+ * IDE run from elsewhere fails on the read, not silently.
  */
 class Issue9870BoltFailureWiringTest {
-  private static final Path    EXECUTOR   = Path.of("src/main/java/com/arcadedb/bolt/BoltNetworkExecutor.java");
+  private static final Path    EXECUTOR   = Path.of(System.getProperty("basedir", "."),
+      "src/main/java/com/arcadedb/bolt/BoltNetworkExecutor.java");
   // A call (not the method's own declaration) whose first argument is neither a constant nor sendExecutionFailure's parameter
-  private static final Pattern COMPUTED   = Pattern.compile("(?<!void )sendFailure\\(\\s*(?!BoltException\\.|BoltErrorCodes\\.|code,)");
+  private static final Pattern COMPUTED   = Pattern.compile("(?<!void )sendFailure\\(\\s*(?!BoltException\\.|BoltErrorCodes\\.|code, withLeaderRedirect\\(text, error\\)\\);)");
 
   @Test
   void everyComputedFailureCodeGoesThroughTheSenderThatAddsTheRedirect() throws IOException {
@@ -67,8 +68,10 @@ class Issue9870BoltFailureWiringTest {
         sendFailure(BoltErrorCodes.FORBIDDEN_ERROR, "denied");
         private void sendFailure(final String code, final String message) throws IOException {
         sendFailure(code, withLeaderRedirect(text, error));
+        sendFailure(code, text);
+        sendFailure(codeOfTheError, text);
         """;
-    assertThat(offenders(source)).containsExactly(2, 3, 7);
+    assertThat(offenders(source)).containsExactly(2, 3, 7, 11, 12);
   }
 
   /** The 1-based line of every {@code sendFailure} call whose code is computed rather than a constant. */
