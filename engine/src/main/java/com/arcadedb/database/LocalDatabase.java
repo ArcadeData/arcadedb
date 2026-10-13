@@ -258,6 +258,12 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   private final      File                                      configurationFile;
   /** Serializes the writers of {@link #configurationFile} (issue #9763: the HA apply read-modify-writes it). */
   private final      Object                                    configurationFileLock     = new Object();
+  /**
+   * Orders a replicated configuration change against an undo of a setting whose save failed or had an unknown
+   * outcome, so the undo reads {@code configuration.json} and puts the setting back as one step the apply cannot
+   * interleave with (issue #9904).
+   */
+  private final      Object                                    configurationApplyLock    = new Object();
   // VOLATILE: the HA wrap installs the wrapper from the plugin's thread, and handles resolved before it
   // (ServerDatabase.commit(), issue #8282) read it from connection threads with no lock in common
   private volatile   DatabaseInternal                          wrappedDatabaseInstance   = this;
@@ -2997,6 +3003,12 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    * is still on its way through the replication is not written ahead of it.
    */
   public void applyConfigurationChanges(final String changesJson) throws IOException {
+    synchronized (configurationApplyLock) {
+      applyConfigurationChangesLocked(changesJson);
+    }
+  }
+
+  private void applyConfigurationChangesLocked(final String changesJson) throws IOException {
     final JSONObject changes = new JSONObject(changesJson);
     final JSONObject changed = changes.getJSONObject("configuration", new JSONObject());
     final JSONArray removed = changes.getJSONArray("removed", new JSONArray());
@@ -3060,11 +3072,58 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    * one atomic map operation, with no snapshot of the rest of the configuration taken or written back.
    */
   public void restoreSetting(final String key, final Object previousValue) {
-    if (isSaved(key))
-      // The value in force already reached configuration.json: another save shipped it, so it is committed and stays
-      return;
-    configuration.setValue(key, previousValue);
-    configurationChanged();
+    synchronized (configurationApplyLock) {
+      if (isSaved(key))
+        // The value in force already reached configuration.json: another save shipped it, so it is committed and stays
+        return;
+      configuration.setValue(key, previousValue);
+      configurationChanged();
+    }
+  }
+
+  /**
+   * Puts ONE setting back to the value this database's {@code configuration.json} holds for it, side effects
+   * included, after a save whose outcome is unknown: the change was handed to the replication and may still commit,
+   * or never (issue #9904). Under Raft HA the file on this node is written by the apply of a replicated configuration
+   * entry, the one this node submitted included, so it holds what the replication has installed here so far:
+   * <ul>
+   *   <li>the change was applied here already: the file holds the new value, which stays in force;</li>
+   *   <li>it was not applied yet: the previous value is back, and the apply installs the new one if the change does
+   *       commit later;</li>
+   *   <li>it never commits: the previous value is back, matching every other node, and nothing is left pending for
+   *       the next change made on this node to carry along.</li>
+   * </ul>
+   * Reading the file and putting the value back happen under the lock {@link #applyConfigurationChanges} holds, so an
+   * apply cannot land between them and be overwritten. A setting the file does not name falls back to its default.
+   * A file that cannot be read leaves the setting as it is, logged: with no record of what was installed, keeping
+   * the value just asked for is no worse a guess than the previous one.
+   */
+  public void restoreSettingFromSavedConfiguration(final String key) {
+    synchronized (configurationApplyLock) {
+      final JSONObject savedSettings;
+      try {
+        savedSettings = readSavedConfiguration().getJSONObject("configuration", new JSONObject());
+      } catch (final IOException | RuntimeException e) {
+        LogManager.instance().log(this, Level.WARNING,
+            "Cannot read '%s' to settle setting '%s' after a change whose replication outcome is unknown: it keeps the value just set",
+            e, configurationFile, key);
+        return;
+      }
+      final String fileKey = key.startsWith(GlobalConfiguration.PREFIX) ? key.substring(GlobalConfiguration.PREFIX.length()) : key;
+
+      Object savedValue = null;
+      if (savedSettings.has(fileKey) && GlobalConfiguration.findByKey(key) == null)
+        // A setting nothing declares is stored as given, and fromJSON() skips it: take the file's value as it is
+        savedValue = savedSettings.get(fileKey);
+      else if (savedSettings.has(fileKey)) {
+        // Read back the way open() and the apply read the file, so the value is coerced and stored the same way
+        final ContextConfiguration saved = new ContextConfiguration();
+        saved.fromJSON(new JSONObject().put("configuration", new JSONObject().put(fileKey, savedSettings.get(fileKey))).toString());
+        savedValue = saved.hasValue(key) ? saved.getValue(key, null) : null;
+      }
+      configuration.setValue(key, savedValue);
+      configurationChanged();
+    }
   }
 
   /** Whether {@code configuration.json} holds the value {@code key} has in memory. Unreadable file: no. */

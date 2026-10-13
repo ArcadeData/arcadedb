@@ -4429,7 +4429,10 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * a change another node committed that this one had not applied yet. The difference is computed and submitted under
    * a lock, so two changes made on this node are submitted in order. Refused before anything is submitted when a peer
    * cannot decode the entry yet (the same interlock as the replicated security documents), or when this node is no
-   * longer a member of the cluster and would never apply it; the caller then undoes its in-memory change.
+   * longer a member of the cluster and would never apply it; the caller then undoes its in-memory change. An entry
+   * dispatched before the wait gave up ({@link ReplicationDispatchedTimeoutException}, an engine
+   * {@code TransactionOutcomeUnknownException}) may still commit: the caller then settles the setting on what this
+   * node's {@code configuration.json} holds, which the apply of that entry writes, instead of undoing it (issue #9904).
    */
   @Override
   public void saveConfiguration() throws IOException {
