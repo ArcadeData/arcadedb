@@ -20,24 +20,19 @@ package com.arcadedb.query.sql.method.misc;
 
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
-import com.arcadedb.database.MutableDocument;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
-import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
-import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.LocalEdgeType;
-import com.arcadedb.schema.LocalVertexType;
 
 import java.util.ArrayList;
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
 /**
- * Filter the content by including only some fields. If the content is a document, then creates a
- * copy with only the included fields. If it's a collection of documents it acts against on each
- * single entry.
+ * Filter the content by including only some fields. If the content is a document, a result or a map, answers a new map
+ * with only the included properties and metadata fields - never a record, so the projection can not be saved over the
+ * record it was read from (issue #9840). If it's a collection it acts on each single entry.
  *
  * <p>
  *
@@ -87,27 +82,28 @@ public class SQLMethodInclude extends AbstractSQLMethod {
   }
 
   @Override
-  public Object execute(Object current, final Identifiable currentRecord, final CommandContext context, final Object[] params) {
+  public Object execute(final Object current, final Identifiable currentRecord, final CommandContext context, final Object[] params) {
     if (params[0] != null) {
-      if (current instanceof Identifiable identifiable)
-        current = identifiable.getRecord();
-      else if (current instanceof Result result)
-        return copy(result.toMap(), params);
+      final boolean includeMetadata = referencesMetadata(params);
+      if (current instanceof Identifiable identifiable && identifiable.getRecord() instanceof Document document)
+        return copy(document, params, includeMetadata);
 
-      if (current instanceof Document document) {
-        // ACT ON SINGLE DOCUMENT
-        return copy(document, params);
-      } else if (current instanceof Map map) {
-        // ACT ON MAP
-        return copy(map, params);
-      } else if (MultiValue.isMultiValue(current)) {
+      final Map<String, Object> single = projectionSource(current, includeMetadata);
+      if (single != null)
+        return copy(single, params);
+
+      if (MultiValue.isMultiValue(current)) {
         // ACT ON MULTIPLE DOCUMENTS
         final int size = MultiValue.getSizeIfAvailable(current);
         final List<Object> result = size > 0 ? new ArrayList<>(size) : new ArrayList<>();
         for (final Object o : MultiValue.getMultiValueIterable(current, false)) {
-          if (o instanceof Identifiable identifiable) {
-            result.add(copy((Document) identifiable.getRecord(), params));
+          if (o instanceof Identifiable identifiable && identifiable.getRecord() instanceof Document document) {
+            result.add(copy(document, params, includeMetadata));
+            continue;
           }
+          final Map<String, Object> element = projectionSource(o, includeMetadata);
+          if (element != null)
+            result.add(copy(element, params));
         }
         return result;
       }
@@ -117,54 +113,49 @@ public class SQLMethodInclude extends AbstractSQLMethod {
     return null;
   }
 
-  private Object copy(final Document document, final Object[] iFieldNames) {
-    if (referencesMetadata(iFieldNames))
-      return copy(document.toMap(true), iFieldNames);
+  /**
+   * The same projection as {@link #copy(Map, Object[])} over {@link #projectionSource(Object, boolean)}, without
+   * deserializing the whole record: a plain property name is read with {@link Document#get(String)}, and the full map
+   * is built only when a wildcard or a metadata ({@code @}) name needs it.
+   */
+  private Object copy(final Document document, final Object[] iFieldNames, final boolean includeMetadata) {
+    Map<String, Object> full = null;
+    final Map<String, Object> doc = new LinkedHashMap<>(iFieldNames.length);
+    for (final Object iFieldName : iFieldNames) {
+      if (iFieldName != null) {
+        final String fieldName = iFieldName.toString();
 
-    final DocumentType type = document.getDatabase().getSchema().getType(document.getTypeName());
-
-    final MutableDocument doc;
-
-    if (type instanceof LocalVertexType)
-      doc = document.getDatabase().newVertex(document.getTypeName());
-    else if (type instanceof LocalEdgeType)
-      throw new IllegalArgumentException("Cannot copy an edge");
-    else
-      doc = document.getDatabase().newDocument(document.getTypeName());
-
-    doc.setIdentity(document.getIdentity());
-
-    for (int i = 0; i < iFieldNames.length; ++i) {
-      if (iFieldNames[i] != null) {
-
-        final String fieldName = iFieldNames[i].toString();
-
-        if (fieldName.endsWith("*")) {
-          final String fieldPart = fieldName.substring(0, fieldName.length() - 1);
-          final Map<String, Object> map = document.toMap(false);
-          for (final Map.Entry<String, Object> f : map.entrySet()) {
-            if (f.getKey().startsWith(fieldPart))
-              doc.set(f.getKey(), f.getValue());
-          }
+        if (fieldName.endsWith("*") || fieldName.startsWith("@")) {
+          if (full == null)
+            full = document.toMap(includeMetadata);
+          if (fieldName.endsWith("*")) {
+            final String fieldPart = fieldName.substring(0, fieldName.length() - 1);
+            for (final Map.Entry<String, Object> f : full.entrySet())
+              if (f.getKey().startsWith(fieldPart))
+                doc.put(f.getKey(), f.getValue());
+          } else
+            doc.put(fieldName, full.get(fieldName));
 
         } else
-          doc.set(fieldName, document.get(fieldName));
+          doc.put(fieldName, document.get(fieldName));
       }
     }
     return doc;
   }
 
-  private Object copy(final Map map, final Object[] iFieldNames) {
-    final Map<String, Object> doc = new HashMap<>(iFieldNames.length);
-    for (int i = 0; i < iFieldNames.length; ++i) {
-      if (iFieldNames[i] != null) {
-        final String fieldName = iFieldNames[i].toString();
+  private Object copy(final Map<String, Object> map, final Object[] iFieldNames) {
+    final Map<String, Object> doc = new LinkedHashMap<>(iFieldNames.length);
+    for (final Object iFieldName : iFieldNames) {
+      if (iFieldName != null) {
+        final String fieldName = iFieldName.toString();
 
         if (fieldName.endsWith("*")) {
           final String fieldPart = fieldName.substring(0, fieldName.length() - 1);
-          for (final Object f : map.keySet()) {
-            if (f.toString().startsWith(fieldPart))
-              doc.put(f.toString(), map.get(f));
+          // A MAP RECEIVER MAY CARRY NON-STRING KEYS: MATCH ON THEIR TEXT, AS BEFORE
+          for (final Map.Entry<?, ?> f : ((Map<?, ?>) map).entrySet()) {
+            final String key = String.valueOf(f.getKey());
+            if (key.startsWith(fieldPart))
+              doc.put(key, f.getValue());
           }
 
         } else
@@ -172,16 +163,5 @@ public class SQLMethodInclude extends AbstractSQLMethod {
       }
     }
     return doc;
-  }
-
-  private static boolean referencesMetadata(final Object[] fieldNames) {
-    for (final Object fn : fieldNames) {
-      if (fn != null) {
-        final String s = fn.toString();
-        if (s.startsWith("@"))
-          return true;
-      }
-    }
-    return false;
   }
 }

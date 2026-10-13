@@ -18,26 +18,21 @@
  */
 package com.arcadedb.query.sql.method.misc;
 
-import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
-import com.arcadedb.database.MutableDocument;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
-import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
-import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.LocalEdgeType;
-import com.arcadedb.schema.LocalVertexType;
 
 import java.util.ArrayList;
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
 /**
- * Filter the content by excluding only some fields. If the content is a document, then creates a
- * copy without the excluded fields. If it's a collection of documents it acts against on each
- * single entry.
+ * Filter the content by excluding only some fields. If the content is a document, a result or a map, answers a new map
+ * with every property except the excluded ones - plus the metadata fields ({@code @rid}, {@code @type}, ...) when one of
+ * the names is a metadata field - never a record, so the projection can not be saved over the record it was read from
+ * (issue #9840). If it's a collection it acts on each single entry.
  *
  * <p>
  *
@@ -87,27 +82,21 @@ public class SQLMethodExclude extends AbstractSQLMethod {
   }
 
   @Override
-  public Object execute(Object current, final Identifiable currentRecord, final CommandContext context, final Object[] params) {
+  public Object execute(final Object current, final Identifiable currentRecord, final CommandContext context, final Object[] params) {
     if (current != null) {
-      if (current instanceof Identifiable identifiable)
-        current = identifiable.getRecord();
-      else if (current instanceof Result result)
-        return copy(result.toMap(), params);
+      final boolean includeMetadata = referencesMetadata(params);
+      final Map<String, Object> single = projectionSource(current, includeMetadata);
+      if (single != null)
+        return copy(single, params);
 
-      if (current instanceof Document document) {
-        // ACT ON SINGLE DOCUMENT
-        return copy(document, params);
-      } else if (current instanceof Map map) {
-        // ACT ON SINGLE MAP
-        return copy(map, params);
-      } else if (MultiValue.isMultiValue(current)) {
+      if (MultiValue.isMultiValue(current)) {
         // ACT ON MULTIPLE DOCUMENTS
         final int size = MultiValue.getSizeIfAvailable(current);
         final List<Object> result = size > 0 ? new ArrayList<>(size) : new ArrayList<>();
         for (final Object o : MultiValue.getMultiValueIterable(current, false)) {
-          if (o instanceof Identifiable identifiable) {
-            result.add(copy((Document) identifiable.getRecord(), params));
-          }
+          final Map<String, Object> element = projectionSource(o, includeMetadata);
+          if (element != null)
+            result.add(copy(element, params));
         }
         return result;
       }
@@ -117,73 +106,21 @@ public class SQLMethodExclude extends AbstractSQLMethod {
     return null;
   }
 
-  private Object copy(final Document document, final Object[] iFieldNames) {
-    if (referencesMetadata(iFieldNames))
-      return copy(document.toMap(true), iFieldNames);
-
-    final DocumentType type = document.getDatabase().getSchema().getType(document.getTypeName());
-
-    final MutableDocument doc;
-    if (type instanceof LocalVertexType)
-      doc = document.getDatabase().newVertex(document.getTypeName());
-    else if (type instanceof LocalEdgeType)
-      throw new IllegalArgumentException("Cannot copy an edge");
-    else
-      doc = document.getDatabase().newDocument(document.getTypeName());
-
-    doc.set(document.toMap());
-    doc.setIdentity(document.getIdentity());
-
-    for (final Object iFieldName : iFieldNames) {
-      if (iFieldName != null) {
-        final String fieldName = iFieldName.toString();
-        if (fieldName.endsWith("*")) {
-          final String fieldPart = fieldName.substring(0, fieldName.length() - 1);
-          // getPropertyNames() is a snapshot (issue #6818), so pruning while iterating it is safe: the separate
-          // "collect the names first" list this used to need was a workaround for the live key set it returned
-          for (final String f : doc.getPropertyNames())
-            if (f.startsWith(fieldPart))
-              doc.remove(f);
-
-        } else
-          doc.remove(fieldName);
-      }
-    }
-    return doc;
-  }
-
-  private Object copy(final Map map, final Object[] iFieldNames) {
-    final Map<String, Object> doc = new HashMap<>(map);
+  private Object copy(final Map<String, Object> map, final Object[] iFieldNames) {
+    final Map<String, Object> doc = new LinkedHashMap<>(map);
     for (final Object iFieldName : iFieldNames) {
       if (iFieldName != null) {
         final String fieldName = iFieldName.toString();
 
         if (fieldName.endsWith("*")) {
           final String fieldPart = fieldName.substring(0, fieldName.length() - 1);
-          final List<String> toExclude = new ArrayList<>();
-          for (final String f : doc.keySet()) {
-            if (f.startsWith(fieldPart))
-              toExclude.add(f);
-          }
-
-          for (final String f : toExclude)
-            doc.remove(f);
+          // A MAP RECEIVER MAY CARRY NON-STRING KEYS: MATCH ON THEIR TEXT, AS BEFORE
+          ((Map<?, ?>) doc).keySet().removeIf(f -> String.valueOf(f).startsWith(fieldPart));
 
         } else
           doc.remove(fieldName);
       }
     }
     return doc;
-  }
-
-  private static boolean referencesMetadata(final Object[] fieldNames) {
-    for (final Object fn : fieldNames) {
-      if (fn != null) {
-        final String s = fn.toString();
-        if (s.startsWith("@"))
-          return true;
-      }
-    }
-    return false;
   }
 }
