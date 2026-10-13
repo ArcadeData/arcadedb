@@ -166,7 +166,7 @@ public class AlterPropertyStatement extends DDLStatement {
     // compiled first, so an invalid pattern is reported as one before it is judged against the type
     final StoredValueConstraints constraints = StoredValueConstraints.of(db, false, min, max, regexp);
     // before the scan: a pattern the type cannot use is refused for what it is, not for the first record it meets (#9808)
-    DocumentValidator.requireUsableRegexp(type, property, regexp);
+    DocumentValidator.requireUsableRegexp(db, type, property, regexp);
     ExistingRecordsCheck.requireValues(db, type, property, constraints, what);
   }
 

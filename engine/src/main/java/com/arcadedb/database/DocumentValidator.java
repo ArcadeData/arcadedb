@@ -24,6 +24,7 @@ import com.arcadedb.exception.ValidationException;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
+import com.arcadedb.utility.RegexOverAlphabet;
 import com.arcadedb.utility.TimeBoundRegex;
 
 import java.lang.reflect.Array;
@@ -44,6 +45,13 @@ import java.util.regex.PatternSyntaxException;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class DocumentValidator {
+  // the budget of the search for a text form a pattern on a number or a temporal can match, paid once per declaration. The
+  // probes are what normally ends it (every BYTE is about 12,000 of them, a few milliseconds); the time only stops a
+  // pattern that backtracks catastrophically on a probe
+  private static final int  REGEXP_SEARCH_MAX_LENGTH = 64;
+  private static final int  REGEXP_SEARCH_MAX_PROBES = 65_536;
+  private static final long REGEXP_SEARCH_TIMEOUT_MS = 1_000;
+
   public static void validate(final MutableDocument document) throws ValidationException {
     document.checkForLazyLoadingProperties();
     // One shared deadline for every REGEXP-constrained property on this document (issue #5886 follow-up): each
@@ -285,42 +293,122 @@ public class DocumentValidator {
    * {@link #requireReadableBound}, for the paths that check a declaration before applying it.
    */
   public static void requireUsableRegexp(final DocumentType owner, final Property p, final String regexp) {
-    final String reason = unusableRegexp(p.getType(), regexp);
+    requireUsableRegexp(null, owner, p, regexp);
+  }
+
+  /**
+   * Throws when {@code regexp} cannot serve as the REGEXP of {@code p} in {@code database}, see {@link #unusableRegexp}.
+   */
+  public static void requireUsableRegexp(final Database database, final DocumentType owner, final Property p,
+      final String regexp) {
+    final String reason = unusableRegexp(database, p.getType(), regexp);
     if (reason != null)
       throw new CommandExecutionException("The REGEXP '" + regexp + "' of property '" + owner.getName() + "." + p.getName()
           + "' " + reason);
   }
 
   /**
-   * Why {@code regexp} cannot serve as the REGEXP of a property of {@code type}, or null when it can (issue #9808). A pattern
-   * is matched against the text form of the value ({@code toString()}), which only a scalar has: on a BINARY, a LIST, a
-   * MAP, an EMBEDDED document, a LINK or an ARRAY_OF_* it is a class name, a hash or a bracketed dump no pattern was
-   * written for. On a BOOLEAN the text forms are {@code true} and {@code false}, so a pattern matching neither refuses
-   * every value. A pattern on a number or a temporal stays legal ({@code '[0-9]{5}'} on a LONG): nothing tells, in general,
-   * a pattern no number satisfies from one some number does. Kept next to {@link #unreadableBound}, its MIN/MAX twin.
+   * Why {@code regexp} cannot serve as the REGEXP of a property of {@code type} with the default DATE and DATETIME
+   * implementations, or null when it can: {@link #unusableRegexp(Database, Type, String)} without a database.
    */
   public static String unusableRegexp(final Type type, final String regexp) {
+    return unusableRegexp(null, type, regexp);
+  }
+
+  /**
+   * Why {@code regexp} cannot serve as the REGEXP of a property of {@code type}, or null when it can, see
+   * {@link #regexpUsability}.
+   */
+  public static String unusableRegexp(final Database database, final Type type, final String regexp) {
+    return regexpUsability(database, type, regexp).refusal();
+  }
+
+  /**
+   * What is known about {@code regexp} as the REGEXP of a property of {@code type}.
+   *
+   * @param refusal why the pattern cannot serve, or null when it can
+   * @param doubt   when the pattern is not refused, why it may still refuse every value: no value of the type was shown to
+   *                match it within the search budget. Null when one was, or when the type has no fixed set of characters
+   */
+  public record RegexpUsability(String refusal, String doubt) {
+    private static final RegexpUsability USABLE = new RegexpUsability(null, null);
+  }
+
+  /**
+   * Whether {@code regexp} can serve as the REGEXP of a property of {@code type} (issues #9808, #9853). A pattern is matched
+   * against the text form of the value ({@code toString()}), which only a scalar has: on a BINARY, a LIST, a MAP, an
+   * EMBEDDED document, a LINK or an ARRAY_OF_* it is a class name, a hash or a bracketed dump no pattern was written for. On
+   * a BOOLEAN the text forms are {@code true} and {@code false}, so a pattern matching neither refuses every value.
+   * <p>
+   * A number or a temporal has a great many text forms, but all of them are written with a small, fixed set of characters
+   * and have a known shape ({@link TextForm}): a pattern no string over those characters, of that shape, matches cannot
+   * match any value either, and is refused. A pattern some such string matches stays legal ({@code '[0-9]{5}'} on a LONG),
+   * even when no actual value happens to be written that way: the form over-approximates the texts, it does not enumerate
+   * them. When the search for such a string runs out of budget the pattern is not refused but carries a {@code doubt}.
+   * Kept next to {@link #unreadableBound}, its MIN/MAX twin.
+   *
+   * @param database the database the property belongs to, which decides how a DATE or DATETIME value is held (and so
+   *                 written as text); null for the default implementations
+   */
+  public static RegexpUsability regexpUsability(final Database database, final Type type, final String regexp) {
+    return regexpUsability(database, type, regexp, true);
+  }
+
+  /**
+   * @param searchTextForm false to skip the search over the text forms of a number or a temporal, the one part of the check
+   *                       that costs more than a few comparisons: a schema loaded from disk only warns anyway, and is loaded
+   *                       on every open and every replicated schema change
+   */
+  public static RegexpUsability regexpUsability(final Database database, final Type type, final String regexp,
+      final boolean searchTextForm) {
     if (regexp == null)
-      return null;
+      return RegexpUsability.USABLE;
     switch (type) {
     case BINARY, LIST, MAP, EMBEDDED, LINK, ARRAY_OF_SHORTS, ARRAY_OF_INTEGERS, ARRAY_OF_LONGS, ARRAY_OF_FLOATS, ARRAY_OF_DOUBLES -> {
-      return "is not applicable to type " + type + ": its values have no text form a pattern can describe";
+      return new RegexpUsability("is not applicable to type " + type + ": its values have no text form a pattern can describe",
+          null);
     }
-    case BOOLEAN -> {
-      final Pattern pattern;
-      try {
-        pattern = Pattern.compile(regexp);
-      } catch (final PatternSyntaxException e) {
-        return "is not a valid regular expression: " + e.getDescription();
-      }
-      if (!pattern.matcher("true").matches() && !pattern.matcher("false").matches())
-        return "matches neither 'true' nor 'false', so it would refuse every value of a BOOLEAN";
-      return null;
+    case STRING -> {
+      return RegexpUsability.USABLE;
     }
     default -> {
-      return null;
+      // a BOOLEAN, a number or a temporal: judged below, once the pattern is compiled
     }
     }
+
+    final Pattern pattern;
+    try {
+      pattern = Pattern.compile(regexp);
+    } catch (final PatternSyntaxException e) {
+      return new RegexpUsability("is not a valid regular expression: " + e.getDescription(), null);
+    }
+
+    if (type == Type.BOOLEAN) {
+      if (!pattern.matcher("true").matches() && !pattern.matcher("false").matches())
+        return new RegexpUsability("matches neither 'true' nor 'false', so it would refuse every value of a BOOLEAN", null);
+      return RegexpUsability.USABLE;
+    }
+
+    if (!searchTextForm)
+      return RegexpUsability.USABLE;
+
+    final Class<?> held = type.getJavaImplementation(database);
+    final TextForm form = TextForm.of(held);
+    if (form == null)
+      return RegexpUsability.USABLE;
+
+    // how a DATE or DATETIME is written depends on the class the database holds it as, so the message names it
+    final String typeName = type.isDateOrDateTime() ? type + " (held as " + held.getSimpleName() + ")" : type.toString();
+    return switch (RegexOverAlphabet.check(pattern, form.shape(), form.characters(), REGEXP_SEARCH_MAX_LENGTH,
+        REGEXP_SEARCH_MAX_PROBES, TimeBoundRegex.newDeadline(REGEXP_SEARCH_TIMEOUT_MS))) {
+      case SATISFIABLE -> RegexpUsability.USABLE;
+      case UNSATISFIABLE -> new RegexpUsability(
+          "matches no text a value of " + typeName + " can be written as (one of the shape '" + form.shape().pattern()
+              + "'), so it would refuse every value", null);
+      case UNDECIDED -> new RegexpUsability(null,
+          "was not shown to match any text a value of " + typeName + " can be written as (one of the shape '"
+              + form.shape().pattern() + "')");
+    };
   }
 
   /**
