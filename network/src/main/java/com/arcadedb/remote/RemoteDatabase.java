@@ -1274,7 +1274,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
           return new TimeSeriesWriteSummary(points.size(), error.getLong("written"), error.getLong("dropped"),
               stringList(error.getJSONArray("unknownTypes", null)), stringList(error.getJSONArray("nonTimeSeriesTypes", null)),
               stringList(error.getJSONArray("unavailableTypes", null)),
-              stringList(error.getJSONArray("undeclaredKeys", null)));
+              stringList(error.getJSONArray("undeclaredKeys", null)), stringList(error.getJSONArray("unreadableValues", null)));
       }
 
       // The server's sentence in the message, for the reason postToTimeSeriesEndpoint gives (issue #7716).
@@ -1744,14 +1744,12 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
       // numeric aggregates like count(*) preserve their declared Java type (e.g. Long) instead of
       // collapsing to the JSONObject default of Integer when the value fits in 32 bits. Matches the
       // behavior of the gRPC client, which already routes the value through a typed channel.
-      final Map<String, ColumnTypeHint> propTypes = propertyTypeHints((String) map.get(Property.PROPERTY_TYPES_PROPERTY));
-      final Iterator<Map.Entry<String, Object>> it = map.entrySet().iterator();
-      while (it.hasNext()) {
-        final Map.Entry<String, Object> entry = it.next();
-        if (Property.METADATA_PROPERTIES.contains(entry.getKey())) {
-          it.remove();
-          continue;
-        }
+      final Map<String, ColumnTypeHint> propTypes = propertyTypeHints((String) map.remove(Property.PROPERTY_TYPES_PROPERTY));
+      // Issue #9804: the hint is the ONLY key of the metadata vocabulary this row can carry. The row has no @cat, so it is a
+      // projection and the server wrote every other key as a column name chosen by the query: a record never carries @props
+      // (serializeResult emits it for a non-element row alone), and a row carrying @rid, @type, @in or @out is one that selected
+      // them - SELECT @rid always does, its LINK column being what arms the hint - or a Gremlin map named by ArcadeGremlin
+      for (final Map.Entry<String, Object> entry : map.entrySet()) {
         final ColumnTypeHint hint = propTypes.get(entry.getKey());
         final Object value = entry.getValue();
         if (hint != null && value != null)

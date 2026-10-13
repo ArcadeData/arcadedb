@@ -37,6 +37,7 @@ import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.utility.CollectionUtils;
 import org.apache.tinkerpop.gremlin.groovy.jsr223.GremlinGroovyScriptEngine;
 import org.apache.tinkerpop.gremlin.jsr223.GremlinLangScriptEngine;
+import org.apache.tinkerpop.gremlin.process.traversal.Path;
 import org.apache.tinkerpop.gremlin.process.traversal.Step;
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.DefaultGraphTraversal;
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversal;
@@ -48,6 +49,7 @@ import org.apache.tinkerpop.gremlin.process.traversal.step.map.AddVertexStepCont
 import org.apache.tinkerpop.gremlin.process.traversal.step.map.MergeStepContract;
 import org.apache.tinkerpop.gremlin.process.traversal.step.sideEffect.AddPropertyStepContract;
 import org.apache.tinkerpop.gremlin.process.traversal.step.sideEffect.IoStep;
+import org.apache.tinkerpop.gremlin.process.traversal.step.util.MutablePath;
 import org.apache.tinkerpop.gremlin.process.traversal.util.TraversalHelper;
 import org.apache.tinkerpop.gremlin.structure.T;
 
@@ -105,7 +107,8 @@ public class ArcadeGremlin extends ArcadeQuery {
             return new ResultInternal(element.getBaseElement());
           else if (next instanceof Map)
             return mapToResult((Map<Object, Object>) next);
-          return new ResultInternal(CollectionUtils.singletonMap("result", next));
+          // A list, a path or a set can hold maps (fold(), path().by(elementMap())), which follow the naming of the row's own (#9781)
+          return new ResultInternal(CollectionUtils.singletonMap("result", normalizeNested(next)));
         }
       }) {
         @Override
@@ -226,35 +229,103 @@ public class ArcadeGremlin extends ArcadeQuery {
    * their type, {@code 1:Integer} and {@code 1:Long} (whatever the order of the entries), so no entry is lost. These names are labels
    * that keep the entries apart: a numeric suffix ({@code 1:Long2}) is added only when a real key already uses the generated name</li>
    * </ul>
+   * The same rules apply to every map one level down, in a list, a set or a {@link Path} too ({@code project().by(elementMap())},
+   * {@code group().by(..).by(elementMap())}, {@code elementMap().fold()}, {@code path().by(elementMap())}), see
+   * {@link #normalizeNested}: a map is named once, here, wherever the query put it, so the row, the embedded {@code Result.toJSON()},
+   * the HTTP answer and every other protocol agree (#9781).
+   * <p>
    * The shape of a row is fixed by the query, while a generated name depends on the keys of that one map: a row holding both 1 and
    * 1L is named {@code 1:Integer}/{@code 1:Long}, another row holding only 1L keeps {@code 1}. Package-private for the unit tests.
    */
   static ResultInternal mapToResult(final Map<Object, Object> originalMap) {
+    return new ResultInternal(flatten(originalMap));
+  }
+
+  /**
+   * What {@code value}, a value of a result row, becomes once every map in it is named by {@link #flatten}: the value itself when
+   * it holds no map, so a row of scalars costs nothing, and otherwise a copy that keeps its kind (a {@link Path} stays a path with
+   * its labels, a list stays a list; any other collection becomes a list). Package-private for the unit tests.
+   */
+  static Object normalizeNested(final Object value) {
+    if (value instanceof Map<?, ?> map)
+      return flatten(map);
+    if (value instanceof Path path)
+      return normalizePath(path);
+    if (value instanceof Collection<?> collection)
+      return normalizeCollection(collection);
+    return value;
+  }
+
+  private static Object normalizeCollection(final Collection<?> collection) {
+    List<Object> copy = null;
+    int index = 0;
+    for (final Object item : collection) {
+      final Object normalized = normalizeNested(item);
+      if (copy == null && normalized != item) {
+        // THE FIRST ITEM THAT CHANGES: EVERYTHING BEFORE IT IS UNCHANGED, SO IT IS COPIED AS IT IS
+        copy = new ArrayList<>(collection.size());
+        final Iterator<?> unchanged = collection.iterator();
+        for (int i = 0; i < index; i++)
+          copy.add(unchanged.next());
+      }
+      if (copy != null)
+        copy.add(normalized);
+      ++index;
+    }
+    return copy != null ? copy : collection;
+  }
+
+  private static Object normalizePath(final Path path) {
+    final List<Object> objects = path.objects();
+    List<Object> normalized = null;
+    for (int i = 0; i < objects.size(); i++) {
+      final Object object = objects.get(i);
+      final Object named = normalizeNested(object);
+      if (normalized == null && named != object) {
+        normalized = new ArrayList<>(objects.size());
+        for (int j = 0; j < i; j++)
+          normalized.add(objects.get(j));
+      }
+      if (normalized != null)
+        normalized.add(named);
+    }
+    if (normalized == null)
+      return path;
+
+    final List<Set<String>> labels = path.labels();
+    Path rebuilt = MutablePath.make();
+    for (int i = 0; i < normalized.size(); i++)
+      rebuilt = rebuilt.extend(normalized.get(i), labels.get(i));
+    return rebuilt;
+  }
+
+  private static Map<String, Object> flatten(final Map<?, ?> originalMap) {
     // FAST PATH, THE COMMON CASE: NO TWO KEYS SHARE A NAME, SO ONE PASS AND NO EXTRA ALLOCATION
     final Map<String, Object> flat = new LinkedHashMap<>(originalMap.size() * 4 / 3 + 1);
     int processed = 0;
-    for (final Map.Entry<Object, Object> entry : originalMap.entrySet()) {
+    for (final Map.Entry<?, ?> entry : originalMap.entrySet()) {
       final Object originalKey = entry.getKey();
-      flat.put(originalKey == T.id ? RID_KEY : originalKey == T.label ? TYPE_KEY : String.valueOf(originalKey), entry.getValue());
+      flat.put(originalKey == T.id ? RID_KEY : originalKey == T.label ? TYPE_KEY : String.valueOf(originalKey),
+          normalizeNested(entry.getValue()));
       // A SHARED NAME REPLACES AN ENTRY INSTEAD OF ADDING ONE, SO THE SIZE FALLS BEHIND THE COUNT OF ENTRIES READ
       if (flat.size() != ++processed)
         break;
     }
     if (processed == originalMap.size() && flat.size() == processed)
-      return new ResultInternal(flat);
+      return flat;
 
     final Map<String, Object> result = new LinkedHashMap<>(originalMap.size());
 
     // THE TOKENS TAKE THEIR RESERVED NAMES FIRST, SO NOTHING ELSE CAN DISPLACE THEM
     final Set<String> shared = new HashSet<>();
     final Set<String> seen = new HashSet<>(originalMap.size());
-    for (final Map.Entry<Object, Object> entry : originalMap.entrySet()) {
+    for (final Map.Entry<?, ?> entry : originalMap.entrySet()) {
       final Object originalKey = entry.getKey();
       if (originalKey == T.id) {
-        result.put(RID_KEY, entry.getValue());
+        result.put(RID_KEY, normalizeNested(entry.getValue()));
         shared.add(RID_KEY);
       } else if (originalKey == T.label) {
-        result.put(TYPE_KEY, entry.getValue());
+        result.put(TYPE_KEY, normalizeNested(entry.getValue()));
         shared.add(TYPE_KEY);
       } else {
         final String name = String.valueOf(originalKey);
@@ -264,7 +335,7 @@ public class ArcadeGremlin extends ArcadeQuery {
     }
     // A NAME PRINTED BY SEVERAL KEYS (OR BY A RESERVED ONE) IS GIVEN TO NONE OF THEM BARE, SO THE NAME OF A KEY DOES NOT DEPEND ON
     // THE ORDER OF THE ENTRIES: 1 AND 1L ARE ALWAYS "1:Integer" AND "1:Long"
-    for (final Map.Entry<Object, Object> entry : originalMap.entrySet()) {
+    for (final Map.Entry<?, ?> entry : originalMap.entrySet()) {
       final Object originalKey = entry.getKey();
       if (originalKey == T.id || originalKey == T.label)
         continue;
@@ -277,9 +348,9 @@ public class ArcadeGremlin extends ArcadeQuery {
         for (int i = 2; result.containsKey(key); i++)
           key = base + i;
       }
-      result.put(key, entry.getValue());
+      result.put(key, normalizeNested(entry.getValue()));
     }
-    return new ResultInternal(result);
+    return result;
   }
 
   public QueryEngine.AnalyzedQuery parse() {

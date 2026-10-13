@@ -228,6 +228,11 @@ public class PostTimeSeriesWriteHandler extends DatabaseAbstractHandler {
           "Skipped line protocol samples carrying tag/field key(s) their timeseries type does not declare: %s", null,
           report.undeclaredKeys());
 
+    if (report != null && !report.unreadableValues().isEmpty())
+      LogManager.instance().log(this, Level.WARNING,
+          "Skipped line protocol samples carrying a value their timeseries column cannot store: %s", null,
+          report.unreadableValues());
+
     // Any dropped sample or line is a partial write: matching InfluxDB, return 400 naming the dropped
     // measurements and the lines that could not be parsed (with written/dropped counts) even when some samples
     // were inserted, so the client is not told 204 "all good" while data was silently discarded (issues #5036,
@@ -266,6 +271,13 @@ public class PostTimeSeriesWriteHandler extends DatabaseAbstractHandler {
             .append(" (declare them on the type, fix the key, or set ")
             .append(GlobalConfiguration.TIMESERIES_UNDECLARED_KEYS.getKey()).append("=ignore to discard them).");
       }
+      if (report != null && !report.unreadableValues().isEmpty()) {
+        if (!malformedLines.isEmpty() || !report.unknownTypes().isEmpty() || !report.nonTimeSeriesTypes().isEmpty()
+            || !report.unavailableTypes().isEmpty() || !report.undeclaredKeys().isEmpty())
+          msg.append(" ");
+        // Issue #9809: the value is named with its column, as the same value is by a SQL INSERT
+        msg.append("unreadable value(s): ").append(String.join("; ", report.unreadableValues())).append(".");
+      }
 
       final JSONObject error = new JSONObject();
       error.put("error", msg.toString());
@@ -285,6 +297,8 @@ public class PostTimeSeriesWriteHandler extends DatabaseAbstractHandler {
         error.put("unavailableTypes", new JSONArray(report.unavailableTypes()));
       if (report != null && !report.undeclaredKeys().isEmpty())
         error.put("undeclaredKeys", new JSONArray(report.undeclaredKeys()));
+      if (report != null && !report.unreadableValues().isEmpty())
+        error.put("unreadableValues", new JSONArray(report.unreadableValues()));
       return new ExecutionResponse(400, error.toString());
     }
 

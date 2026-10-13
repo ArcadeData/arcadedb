@@ -139,16 +139,18 @@ class Issue8332RemoteResultConversionTest {
     assertThat(database.json2RecordCalls).isEqualTo(1);
     assertThat(row.toMapCalls).isEqualTo(1);
     assertThat(result.isElement()).isFalse();
-    assertThat(result.getPropertyNames()).containsExactly("a");
+    // Issue #9804: a row that is not a record keeps every column the query named, @cat included; only the hint is consumed
+    assertThat(result.getPropertyNames()).containsExactly("@cat", "a");
     assertThat(result.<Object>getProperty("a")).isEqualTo(1L);
   }
 
   @Test
-  void hintedRowDropsEveryMetadataField() {
+  void hintedRowKeepsEveryColumnButTheHint() {
     final Result result = database.json2Result(
         new JSONObject("{\"@rid\":\"#3:4\",\"@type\":\"T\",\"@in\":\"#1:1\",\"@out\":\"#1:2\",\"n\":1,\"@props\":\"n:3\"}"));
 
-    assertThat(result.getPropertyNames()).containsExactly("n");
+    // Issue #9804: this test used to pin the removal of @rid, @type, @in and @out, which deleted the columns of a SELECT @rid
+    assertThat(result.getPropertyNames()).containsExactly("@rid", "@type", "@in", "@out", "n");
     assertThat(result.<Object>getProperty("n")).isEqualTo(1L);
   }
 

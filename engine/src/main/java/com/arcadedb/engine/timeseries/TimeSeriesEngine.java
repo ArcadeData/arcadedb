@@ -159,7 +159,7 @@ public class TimeSeriesEngine implements AutoCloseable {
    * the limit will cause compaction to fail. Plan tag cardinality accordingly.
    */
   public void appendSamples(final long[] timestamps, final Object[]... columnValues) throws IOException {
-    appendSamples(new ObjectColumnsRowSource(columnKinds, timestamps, columnValues));
+    appendSamples(new ObjectColumnsRowSource(columnKinds, columns, timestamps, columnValues));
   }
 
   /**
@@ -191,7 +191,7 @@ public class TimeSeriesEngine implements AutoCloseable {
    * {@link #appendSamples(long[], Object[][])}. The arrays are held, not copied.
    */
   public TimeSeriesRowSource newRowSource(final long[] timestamps, final Object[][] columnValues) {
-    return new ObjectColumnsRowSource(columnKinds, timestamps, columnValues);
+    return new ObjectColumnsRowSource(columnKinds, columns, timestamps, columnValues);
   }
 
   /**
@@ -228,7 +228,7 @@ public class TimeSeriesEngine implements AutoCloseable {
    *                        is the value for column {@code colIdx} of sample {@code sampleIdx}
    */
   public void appendBatch(final long[] allTimestamps, final Object[][] allColumnValues) throws IOException {
-    appendBatch(new ObjectColumnsRowSource(columnKinds, allTimestamps, allColumnValues));
+    appendBatch(new ObjectColumnsRowSource(columnKinds, columns, allTimestamps, allColumnValues));
   }
 
   /**

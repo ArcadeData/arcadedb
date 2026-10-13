@@ -3226,11 +3226,12 @@ public enum GlobalConfiguration {
       "Whether the standard gRPC health service is exposed. Default is true", Boolean.class, true),
 
   GRPC_COMPRESSION_ENABLED("arcadedb.grpc.compression.enabled", SCOPE.SERVER,
-      "Whether the gRPC endpoint supports message compression. Default is true", Boolean.class, true),
+      "Whether the gRPC endpoint supports message compression: when false it refuses compressed requests and never compresses a"
+          + " response, whatever arcadedb.grpc.compression.force says. Default is true", Boolean.class, true),
 
   GRPC_COMPRESSION_FORCE("arcadedb.grpc.compression.force", SCOPE.SERVER,
-      "Whether the gRPC endpoint compresses every response, whatever the client asked for. Default is false", Boolean.class,
-      false),
+      "Whether the gRPC endpoint compresses every response to a client that accepts the codec. Ignored, with a warning, when"
+          + " arcadedb.grpc.compression.enabled is false. Default is false", Boolean.class, false),
 
   GRPC_COMPRESSION_TYPE("arcadedb.grpc.compression.type", SCOPE.SERVER,
       "Compression algorithm used when arcadedb.grpc.compression.force is true. Default is 'gzip'", String.class, "gzip"),

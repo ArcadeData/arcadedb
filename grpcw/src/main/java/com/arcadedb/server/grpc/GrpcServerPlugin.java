@@ -70,6 +70,8 @@ import java.util.logging.Level;
  * - grpc.maxMessageSize: Max message size in MB (default: 100)
  * - grpc.reflection.enabled: Enable gRPC reflection (default: true)
  * - grpc.health.enabled: Enable health checking (default: true)
+ * - grpc.compression.enabled: Understand compressed requests and offer compression (default: true); off, nothing is compressed
+ * - grpc.compression.force: Compress every response to a client that accepts the codec (default: false), only with compression enabled
  */
 public class GrpcServerPlugin implements ServerPlugin {
 
@@ -185,15 +187,13 @@ public class GrpcServerPlugin implements ServerPlugin {
       status.append(", TLS enabled");
     }
 
-    if (getConfigBoolean(config, GlobalConfiguration.GRPC_COMPRESSION_ENABLED)) {
-
-      status.append(", compression: ");
-
-      if (getConfigBoolean(config, GlobalConfiguration.GRPC_COMPRESSION_FORCE)) {
-        status.append("forced-").append(getConfigString(config, GlobalConfiguration.GRPC_COMPRESSION_TYPE));
-      } else {
-        status.append("available");
-      }
+    status.append(", compression: ");
+    if (!getConfigBoolean(config, GlobalConfiguration.GRPC_COMPRESSION_ENABLED)) {
+      status.append("disabled");
+    } else if (getConfigBoolean(config, GlobalConfiguration.GRPC_COMPRESSION_FORCE)) {
+      status.append("forced-").append(getConfigString(config, GlobalConfiguration.GRPC_COMPRESSION_TYPE));
+    } else {
+      status.append("available");
     }
 
     status.append(")");
@@ -280,8 +280,16 @@ public class GrpcServerPlugin implements ServerPlugin {
       serverBuilder.addService(ProtoReflectionService.newInstance());
     }
 
-    serverBuilder.compressorRegistry(CompressorRegistry.getDefaultInstance())
-        .decompressorRegistry(DecompressorRegistry.getDefaultInstance());
+    // Issue #9782: arcadedb.grpc.compression.enabled decides what the endpoint understands and offers. Off, both registries are
+    // empty: a compressed request is refused (UNIMPLEMENTED, "Can't find decompressor") and no response can be compressed,
+    // whatever the client advertises or compression.force says
+    final boolean compressionEnabled = getConfigBoolean(config, GlobalConfiguration.GRPC_COMPRESSION_ENABLED);
+    if (compressionEnabled)
+      serverBuilder.compressorRegistry(CompressorRegistry.getDefaultInstance())
+          .decompressorRegistry(DecompressorRegistry.getDefaultInstance());
+    else
+      serverBuilder.compressorRegistry(CompressorRegistry.newEmptyInstance())
+          .decompressorRegistry(DecompressorRegistry.emptyInstance());
 
     // Configure max message size. Clamp the lower bound to 1 MB (a non-positive value would be rejected by gRPC at
     // startup) and compute in long so a large MB value (>= 2048) does not overflow int and wrap negative.
@@ -317,10 +325,16 @@ public class GrpcServerPlugin implements ServerPlugin {
     // authentication one added below: an unauthenticated call is refused before it can take a slot or wait for one.
     serverBuilder.intercept(new GrpcAdmissionInterceptor(arcadeServer));
 
-    // Add compression interceptor if force compression is enabled
+    // Add compression interceptor if force compression is enabled, and compression is: forcing a codec the endpoint has switched
+    // off would be silently ignored by the empty registry above at best, so the combination is refused loudly instead (#9782)
     if (getConfigBoolean(config, GlobalConfiguration.GRPC_COMPRESSION_FORCE)) {
-      String compressionType = getConfigString(config, GlobalConfiguration.GRPC_COMPRESSION_TYPE);
-      serverBuilder.intercept(new GrpcCompressionInterceptor(true, compressionType));
+      if (compressionEnabled) {
+        String compressionType = getConfigString(config, GlobalConfiguration.GRPC_COMPRESSION_TYPE);
+        serverBuilder.intercept(new GrpcCompressionInterceptor(true, compressionType));
+      } else
+        LogManager.instance().log(this, Level.WARNING,
+            "%s=true is ignored because %s=false: the gRPC endpoint does not compress its responses",
+            GlobalConfiguration.GRPC_COMPRESSION_FORCE.getKey(), GlobalConfiguration.GRPC_COMPRESSION_ENABLED.getKey());
     }
 
     // Add authentication interceptor if security is configured

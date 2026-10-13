@@ -320,6 +320,10 @@ public class TimeSeriesApiSpec implements OpenApiContributor {
         "Tag or field keys the measurement's time-series type does not declare in that role; the samples carrying them "
             + "were dropped. Capped at 100 entries. Set arcadedb.timeSeriesUndeclaredKeys=ignore to store such samples "
             + "with the undeclared keys discarded instead"));
+    schema.addProperty("unreadableValues", SpecBuilders.arrayOf(
+        SpecBuilders.string("'<measurement>.<column> (tag|field): <reason>'"),
+        "Values the column of the time-series type cannot store, such as a datetime that is not a date or text in a numeric "
+            + "column; the samples carrying them were dropped, the reason names the column and its type. Capped at 100 entries"));
     // 'error' plus the two counters are on every rejection; the name lists are written only when they
     // hold something, and 'requestId' only when the request carried a correlation id (issue #7578).
     schema.setRequired(List.of("error", "written", "dropped"));
