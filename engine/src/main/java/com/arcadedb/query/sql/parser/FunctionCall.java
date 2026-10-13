@@ -169,8 +169,8 @@ public class FunctionCall extends SimpleNode {
    * @param context
    * @param operator
    * @param rightValue
-   * @param pushdown   the limit, the {@code @rid} conditions and the order the plan hands the function (see
-   *                   {@link IndexableSQLFunction#searchFromTarget(FromClause, BinaryCompareOperator, Object, CommandContext, Expression[], IndexedFunctionPushdown)})
+   * @param pushdown   the limit, the {@code @rid} conditions and the order the plan hands the function (see the
+   *                   {@link IndexedFunctionPushdown} variant of {@link IndexableSQLFunction}{@code .searchFromTarget()})
    *
    * @return
    */

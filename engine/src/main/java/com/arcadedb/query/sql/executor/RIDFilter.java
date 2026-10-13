@@ -57,6 +57,8 @@ import java.util.logging.Level;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public final class RIDFilter {
+  private static final String RID_ATTRIBUTE = "@rid";
+
   private final List<BooleanExpression> conditions;
   private final CommandContext          context;
   private       RID                     lower;
@@ -267,8 +269,6 @@ public final class RIDFilter {
         || operator instanceof LeOperator || operator instanceof EqualsCompareOperator || operator instanceof NeOperator
         || operator instanceof NeqOperator;
   }
-
-  private static final String RID_ATTRIBUTE = "@rid";
 
   private static final class FilteringIterator implements Iterator<Record>, AutoCloseable {
     private final Iterator<Record> source;
