@@ -106,6 +106,8 @@ class Issue9883PromQLFunctionArgumentTypeTest extends TestHelper {
     assertRefused("round(m9883, m9883[5m])", "expected type scalar in call to function \"round\", got range vector");
     assertRefused("round(m9883, \"a\")", "expected type scalar in call to function \"round\", got string");
     assertRefused("round(1, m9883)", "expected type scalar in call to function \"round\", got instant vector");
+    // both arguments wrong: the first one is reported, like Prometheus
+    assertRefused("round(m9883[5m], \"a\")", "expected type instant vector in call to function \"round\", got range vector");
   }
 
   @Test

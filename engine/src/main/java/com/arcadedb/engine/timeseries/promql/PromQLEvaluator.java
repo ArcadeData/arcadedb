@@ -590,6 +590,7 @@ public class PromQLEvaluator {
       case ScalarResult ignored -> "scalar";
       case InstantVector ignored -> "instant vector";
       case RangeVector ignored -> "range vector";
+      // only evaluateRange() builds one, from the results of evaluate(), so no argument evaluates to it
       case MatrixResult ignored -> "matrix";
     };
   }
@@ -1280,6 +1281,8 @@ public class PromQLEvaluator {
     };
   }
 
+  // evaluateFunction() checks every function listed here for exactly one argument: a function taking more (quantile_over_time,
+  // predict_linear) needs its own count there
   private boolean isRangeFunction(final String name) {
     return switch (name) {
       case "rate", "irate", "increase", "sum_over_time", "avg_over_time", "min_over_time", "max_over_time", "count_over_time" ->
