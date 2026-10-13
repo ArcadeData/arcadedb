@@ -221,7 +221,11 @@ public final class RIDFilter {
     return null;
   }
 
-  /** The RIDs of an IN right-hand side made of RIDs only, or null when any element is something else. */
+  /**
+   * The RIDs of an IN right-hand side made of RIDs only, or null when any element is something else: the whole condition is
+   * then evaluated per RID, with its own semantics for every element. Dropping the elements that are not RIDs instead would
+   * change the answer of a NOT IN, which they can make true or unknown.
+   */
   private static Set<RID> ridsOf(final Object value) {
     if (value instanceof final RID rid)
       return Set.of(rid);

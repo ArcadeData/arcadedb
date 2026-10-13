@@ -203,6 +203,12 @@ class Issue9909RidConditionPushdownTest extends TestHelper {
     final String perRecord = "SELECT FROM Doc WHERE @rid > link AND " + SEARCH;
     assertThat(plan(perRecord, cursor)).doesNotContain("RID FILTER");
 
+    // A variable a per-record LET computes after the fetch changes from row to row: the condition stays in the filter
+    final String perRecordLet = "SELECT FROM Doc LET $self = @rid WHERE @rid >= $self AND " + SEARCH;
+    assertThat(plan(perRecordLet, cursor)).doesNotContain("RID FILTER");
+    assertThat(rids(perRecordLet, Map.of())).hasSize(DOCUMENTS);
+    assertThat(rids(perRecordLet.replace(">=", ">"), Map.of())).isEmpty();
+
     // An OR: each branch pushes its own conditions
     final List<RID> byRid = rids("SELECT FROM Doc WHERE " + SEARCH + " ORDER BY @rid");
     final RID first = byRid.get(10);
