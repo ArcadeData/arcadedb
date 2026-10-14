@@ -255,6 +255,10 @@ class Issue10025PathFilterSyntaxTest {
         .containsExactly("B", "C", "P");
     assertThatThrownBy(() -> nodes("CALL path.subgraphNodes(a, {labelFilter: '-Town', minLevel: 2}) YIELD node RETURN node"))
         .hasStackTraceContaining("path.subgraphnodes(): minLevel can only be 0 or 1");
+    assertThatThrownBy(() -> nodes("CALL path.subgraphNodes(a, {minLevel: 0.5}) YIELD node RETURN node"))
+        .hasStackTraceContaining("path.subgraphnodes(): minLevel can only be 0 or 1, got 0.5");
+    assertThat(nodes("CALL path.subgraphNodes(a, {relationshipFilter: 'ROAD>', minLevel: 1.0}) YIELD node RETURN node"))
+        .containsExactly("B", "C");
 
     // subgraphAll reports the relationships between the nodes it reports, so a walked-through node takes its edges along
     assertThat(nodes("CALL path.subgraphAll(a, {labelFilter: '>Town'}) YIELD nodes UNWIND nodes AS node RETURN node"))

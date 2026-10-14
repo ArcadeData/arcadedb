@@ -174,7 +174,7 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
     final Object value = config.get("minLevel");
     if (value == null)
       return 0;
-    if (!(value instanceof Number number) || (number.longValue() != 0 && number.longValue() != 1))
+    if (!(value instanceof Number number) || (number.doubleValue() != 0 && number.doubleValue() != 1))
       throw new IllegalArgumentException(getName() + "(): minLevel can only be 0 or 1, got " + value);
     return number.intValue();
   }
