@@ -133,6 +133,56 @@ This is a fix that changes results: such a query can now return different rows t
 the parameters of the branches that are not taken. A `LET` that names a variable already in scope is refused
 ("Variable 'n' already declared"), as in Neo4j.
 
+### The `path.*` procedures answer as `apoc.path.*` does (#10025, #10048, #10049)
+
+The Cypher procedures `path.expand`, `path.expandconfig`, `path.spanningtree`, `path.subgraphnodes` and `path.subgraphall`
+were checked, option by option, against Neo4j 5.26 with APOC 5.26.30. Where they differed, they now answer as APOC does.
+
+**`path.expandconfig` and `path.expand` return every trail by default (#10049).** The `uniqueness` option of
+`path.expandconfig` is read, with APOC's nine values (`NODE_GLOBAL`, `NODE_LEVEL`, `NODE_PATH`, `NODE_RECENT`,
+`RELATIONSHIP_GLOBAL`, `RELATIONSHIP_LEVEL`, `RELATIONSHIP_PATH`, `RELATIONSHIP_RECENT`, `NONE`, case-insensitive) and APOC's
+default, `RELATIONSHIP_PATH`: a path may pass through a node more than once, but never walks the same relationship twice.
+Until now the breadth-first walk was always `NODE_GLOBAL` (each node reached once, along its shortest route) and the
+depth-first walk, and `path.expand`, always `NODE_PATH`; the option was ignored. `path.expand` is now APOC's: breadth-first,
+`RELATIONSHIP_PATH`. A value that is no uniqueness is refused, where APOC quietly uses its default. `path.spanningtree`,
+`path.subgraphnodes` and `path.subgraphall` are `NODE_GLOBAL` whatever the option says, as in APOC.
+
+**Who sees a different answer.** A call on a graph with a cycle or with several routes to a node returns more paths than
+before, and the number grows quickly with `maxLevel`. To keep the old answer:
+
+- `path.expandconfig(n, {...})` as it was: add `uniqueness: 'NODE_GLOBAL'`
+- `path.expandconfig(n, {bfs: false, ...})` as it was: add `uniqueness: 'NODE_PATH'`
+- `path.expand(n, rels, labels, min, max)` as it was: call `path.expandconfig(n, {relationshipFilter: rels, labelFilter: labels,
+  minLevel: min, maxLevel: max, bfs: false, uniqueness: 'NODE_PATH'})`
+
+The walk now produces its paths as the query reads them, so a `limit` (or a `LIMIT` after the call) ends it instead of trimming
+the answer of a walk that ran to the end, and the branches it holds are charged to the query's heap
+(`arcadedb.queryMaxHeapElementsAllowedPerOp` and `arcadedb.queryMaxHeapRAM`): a trail walk too wide for them fails the query
+rather than the server. Whatever the uniqueness, a walk never leaves a node by the relationship it arrived by, as in APOC.
+
+**New options (#10049).** `endNodes`, `terminatorNodes`, `allowlistNodes` (also `whitelistNodes`) and `denylistNodes` (also
+`blacklistNodes`) name nodes where the `>`, `/`, `+` and `-` operators of `labelFilter` name labels, and combine with it: a
+node is an answer, and the walk goes on past it, only if every filter says so. They are read by `path.expandconfig`,
+`path.spanningtree`, `path.subgraphnodes` and `path.subgraphall`. `optional: true` answers one row with a null path (or node)
+when the walk finds nothing. A negative `maxLevel` or `limit` is no bound (APOC's `-1`), where it used to stop the walk at the
+start node or fail; `limit` is now read by `path.subgraphnodes` and `path.subgraphall` too (it bounds the nodes).
+
+**`path.subgraphall` answers every relationship between its nodes (#10048).** `relationships` was the list of relationships the
+walk followed. It is now every relationship, of any type, between two of the returned nodes, whatever the
+`relationshipFilter`: `path.subgraphall(a, {relationshipFilter: 'R>'})` over `(a)-[:R]->(b)`, `(b)-[:S]->(a)` returns the `S` too.
+A call that yields only `nodes` is unchanged and still reads no edge record.
+
+**A node a filter turns away is spent (#10049).** In the node-global walks (`path.spanningtree`, `path.subgraphnodes`,
+`path.subgraphall`, and `path.expandconfig` with `uniqueness: 'NODE_GLOBAL'`) a node is used up when it is first met, as APOC
+does, so one that a depth-dependent `sequence` turned away at a hop is not welcome again at another. A node that is
+allowed is unaffected.
+
+**Filter syntax (#10025).** `relationshipFilter` and `labelFilter` read APOC's syntax. Before, the direction markers and the
+label operators were read as part of the name, so `'ROAD>'` or `'+Person'` matched nothing, and a comma separated alternatives
+rather than the hops of a `sequence`. A relationship type or a label that is not in the schema is refused (Neo4j answers an empty
+result), `minLevel` of `path.spanningtree`, `path.subgraphnodes` and `path.subgraphall` is 0 or 1 only, and a `config` that is not
+a map is refused.
+
 ## Fixes
 
 - **`vector.sum`, `vector.avg`, `vector.min` and `vector.max` aggregate when written with the dotted name (#9768).** In SQL

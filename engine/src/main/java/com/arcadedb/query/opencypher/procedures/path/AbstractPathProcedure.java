@@ -19,24 +19,33 @@
 package com.arcadedb.query.opencypher.procedures.path;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
-import com.arcadedb.graph.EdgeIdentitySet;
 import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.utility.NumberUtils;
 import com.arcadedb.utility.RidHashSet;
 
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Spliterator;
+import java.util.Spliterators;
+import java.util.stream.Stream;
+import java.util.stream.StreamSupport;
 
 /**
  * Abstract base class for path expansion procedures.
@@ -47,8 +56,8 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
   /**
    * The "no edge-type filter" argument. {@code getEdges}, {@code getConnectedVertexRIDs} and their iterators all read
    * a null and an empty array the same way, so this is a sentinel, not a behaviour change - and sharing one empty
-   * array is safe where sharing {@link #BOTH_DIRECTIONS} would not be, because an array of length zero has nothing a
-   * stray write could reach.
+   * array is safe where sharing one with elements would not be, because an array of length zero has nothing a stray
+   * write could reach.
    */
   protected static final String[] NO_TYPES = new String[0];
 
@@ -75,11 +84,11 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
     return types == null ? null : edgesOf(context, vertex, direction, types);
   }
 
-  // Private, not protected: `final` on an array fixes the reference and nothing else, so a shared array with
-  // elements in it, handed to subclasses, is one stray write away from corrupting every caller of every path walk
-  private static final Vertex.DIRECTION[] BOTH_DIRECTIONS = { Vertex.DIRECTION.OUT, Vertex.DIRECTION.IN };
-
-  /** The direction of the {@code index}-th side a walk reads (0 = outgoing, 1 = incoming), without sharing an array. */
+  /**
+   * The direction of the {@code index}-th side a walk reads (0 = outgoing, 1 = incoming), without sharing an array: `final`
+   * on an array fixes the reference and nothing else, so a shared array with elements in it, handed to subclasses, is one
+   * stray write away from corrupting every caller of every path walk.
+   */
   protected static Vertex.DIRECTION walkDirection(final int index) {
     return index == 0 ? Vertex.DIRECTION.OUT : Vertex.DIRECTION.IN;
   }
@@ -99,9 +108,10 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
   }
 
   /**
-   * The relationship and label filters of a walk configured by an APOC-style map: {@code relationshipFilter} and
+   * The relationship, label and node filters of a walk configured by an APOC-style map: {@code relationshipFilter} and
    * {@code labelFilter}, or {@code sequence}, which takes precedence over both, plus {@code filterStartNode} and
-   * {@code beginSequenceAtStart} (issue #10025).
+   * {@code beginSequenceAtStart} (issue #10025), and the node lists {@code endNodes}, {@code terminatorNodes},
+   * {@code allowlistNodes} and {@code denylistNodes} (issue #10049).
    *
    * @param minLevel the walk's minimum level, which decides whether a termination node closer than that stops the walk
    */
@@ -109,17 +119,18 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
     final Schema schema = database.getSchema();
     final boolean filterStartNode = extractBoolean(config, "filterStartNode", false);
     final boolean beginSequenceAtStart = extractBoolean(config, "beginSequenceAtStart", true);
+    final NodeFilter nodes = NodeFilter.parse(getName(), config, filterStartNode, minLevel);
 
     final Object sequence = config.get("sequence");
     if (sequence != null) {
       if (!(sequence instanceof String sequenceString))
         throw new IllegalArgumentException(getName() + "(): sequence must be a string, got " + sequence.getClass().getSimpleName());
       if (!sequenceString.isBlank())
-        return extractSequence(sequenceString, schema, filterStartNode, beginSequenceAtStart, minLevel);
+        return extractSequence(sequenceString, schema, filterStartNode, beginSequenceAtStart, minLevel, nodes);
     }
 
     return new Filters(RelationshipFilter.parse(getName(), config.get("relationshipFilter"), schema),
-        LabelFilter.parse(getName(), config.get("labelFilter"), schema, filterStartNode, beginSequenceAtStart, minLevel));
+        LabelFilter.parse(getName(), config.get("labelFilter"), schema, filterStartNode, beginSequenceAtStart, minLevel), nodes);
   }
 
   /** The filters of {@code path.expand}'s positional form, which has neither a sequence nor the start-node options. */
@@ -127,7 +138,7 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
       final int minLevel) {
     final Schema schema = database.getSchema();
     return new Filters(RelationshipFilter.parse(getName(), relationshipFilter, schema),
-        LabelFilter.parse(getName(), labelFilter, schema, false, true, minLevel));
+        LabelFilter.parse(getName(), labelFilter, schema, false, true, minLevel), NodeFilter.NONE);
   }
 
   /**
@@ -136,7 +147,7 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
    * relationship filter of the first hop, and so has as many filters of one kind as of the other.
    */
   private Filters extractSequence(final String sequence, final Schema schema, final boolean filterStartNode,
-      final boolean beginSequenceAtStart, final int minLevel) {
+      final boolean beginSequenceAtStart, final int minLevel, final NodeFilter nodes) {
     final String[] entries = sequence.split(",", -1);
     if (entries.length % 2 != 0)
       throw new IllegalArgumentException(getName() + "(): sequence '" + sequence + "' must alternate label and relationship filters, "
@@ -153,10 +164,10 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
     }
 
     return new Filters(RelationshipFilter.ofSteps(getName(), relationshipSteps, schema),
-        LabelFilter.ofSteps(getName(), labelSteps, schema, filterStartNode, beginSequenceAtStart, minLevel));
+        LabelFilter.ofSteps(getName(), labelSteps, schema, filterStartNode, beginSequenceAtStart, minLevel), nodes);
   }
 
-  private boolean extractBoolean(final Map<String, Object> config, final String key, final boolean defaultValue) {
+  protected boolean extractBoolean(final Map<String, Object> config, final String key, final boolean defaultValue) {
     final Object value = config.get(key);
     if (value == null)
       return defaultValue;
@@ -179,8 +190,76 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
     return number.intValue();
   }
 
-  /** The two filters of a walk, parsed once per call. */
-  protected record Filters(RelationshipFilter relationships, LabelFilter labels) {
+  /**
+   * The filters of a walk, parsed once per call: the relationships to follow, and the label filter and node lists that
+   * decide which of the nodes reached are answers and which the walk goes on past.
+   */
+  protected record Filters(RelationshipFilter relationships, LabelFilter labels, NodeFilter nodes) {
+    /**
+     * The verdict on the node {@code vertexId} names, reached {@code depth} hops from the start node: an answer only if the
+     * label filter and the node lists both include it, and walked past only if both let it, as the evaluators of an APOC
+     * traversal combine. Answered from the RID alone, so a node a filter turns away is never loaded.
+     */
+    LabelFilter.Verdict evaluate(final Database database, final RID vertexId, final int depth) {
+      final LabelFilter.Verdict verdict = labels.evaluate(database, vertexId, depth);
+      if (nodes.isEmpty() || verdict == LabelFilter.Verdict.EXCLUDE_AND_PRUNE)
+        return verdict;
+      return verdict.and(nodes.evaluate(vertexId, depth));
+    }
+  }
+
+  /** An integer option of the configuration map: a missing one is {@code defaultValue}. */
+  protected int extractInt(final Map<String, Object> config, final String key, final int defaultValue) {
+    final Object value = config.get(key);
+    if (value == null)
+      return defaultValue;
+    if (!(value instanceof Number number))
+      throw new IllegalArgumentException(getName() + "(): " + key + " must be a number, got " + value.getClass().getSimpleName());
+    return NumberUtils.saturateToInt(number);
+  }
+
+  /** {@code maxLevel}: no bound when absent, as APOC's default of -1 reads, and for any negative value. */
+  protected int extractMaxLevel(final Map<String, Object> config) {
+    final int maxLevel = extractInt(config, "maxLevel", -1);
+    return maxLevel < 0 ? Integer.MAX_VALUE : maxLevel;
+  }
+
+  /** {@code limit}: no bound when absent, as APOC's default of -1 reads, and for any negative value. */
+  protected int extractLimit(final Map<String, Object> config) {
+    final int limit = extractInt(config, "limit", -1);
+    return limit < 0 ? Integer.MAX_VALUE : limit;
+  }
+
+  /**
+   * The {@code uniqueness} option, checked. Every procedure that reads it checks it - including those that walk
+   * {@link PathUniqueness#NODE_GLOBAL} whatever it says, as APOC's do - so a value that is no uniqueness is refused wherever
+   * it is written.
+   */
+  protected PathUniqueness extractUniqueness(final Map<String, Object> config, final PathUniqueness defaultValue) {
+    return PathUniqueness.parse(getName(), config.get("uniqueness"), defaultValue);
+  }
+
+  /**
+   * The rows of a walk that yields paths. The walk is not run to the end here: it goes on as the query asks for rows.
+   *
+   * @param optional APOC's {@code optional}: when the walk answers nothing, one row with a null path
+   */
+  protected Stream<Result> pathRows(final Iterator<List<Object>> paths, final boolean optional) {
+    if (optional && !paths.hasNext())
+      return Stream.of(nullRow("path"));
+    return StreamSupport.stream(Spliterators.spliteratorUnknownSize(paths, Spliterator.ORDERED | Spliterator.NONNULL), false)
+        .map(elements -> {
+          final ResultInternal result = new ResultInternal();
+          result.setProperty("path", buildPath(elements));
+          return (Result) result;
+        });
+  }
+
+  /** The single row of an {@code optional} walk that found nothing: the field is there, and null. */
+  protected static Result nullRow(final String field) {
+    final ResultInternal result = new ResultInternal();
+    result.setProperty(field, null);
+    return result;
   }
 
   protected Vertex.DIRECTION parseDirection(final String direction) {
@@ -199,8 +278,8 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
   }
 
   /**
-   * Walks the component reachable from {@code startNode} breadth-first, collecting the vertices - and, only when
-   * {@code reachableEdges} is non-null, the edges - it reaches.
+   * Walks the component reachable from {@code startNode} breadth-first, collecting the vertices it reaches - and, only when
+   * {@code reachableEdges} is non-null, the relationships between them.
    * <p>
    * Shared by {@code path.subgraphAll}, {@code path.subgraphNodes} and anything else that needs a reachable
    * component, because the expensive part is not the walk but what the walk loads, and getting that wrong once is
@@ -212,25 +291,21 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
    *   previous walk asked the edge for {@code getInVertex()}/{@code getOutVertex()} FIRST and deduplicated
    *   afterwards, so a component with E adjacency entries and V vertices loaded ~2E vertex records instead of V,
    *   plus an edge record for every one of them.</li>
-   *   <li><b>A label filter is answered from the schema, not from the record.</b> A vertex's label is its type, and
-   *   its type is determined by the bucket its RID names, so a neighbour excluded by {@code labelFilter} is never
-   *   loaded.</li>
-   *   <li><b>Edges are collected only when the caller yields them.</b> Under a plain {@code YIELD nodes} the walk
+   *   <li><b>The label filter and the node lists are answered from the RID, not from the record.</b> A vertex's label is
+   *   its type, and its type is determined by the bucket its RID names, so a neighbour excluded by {@code labelFilter}
+   *   or by a node list is never loaded.</li>
+   *   <li><b>Relationships are collected only when the caller yields them.</b> Under a plain {@code YIELD nodes} the walk
    *   uses the neighbour-RID iterator, which reads the adjacency entries without materialising a single edge.</li>
    * </ul>
-   * An adjacency entry whose far endpoint has no record is dropped whole - neither the vertex nor the edge reaching
-   * it is reported - but this walk never pays to find that out up front: a traversed edge is always appended to
-   * {@code reachableEdges} the moment it is seen (deduplicated by identity), and a closing pass at the end of the
-   * walk drops every edge whose endpoint did not, for whatever reason, make it into {@code reachableNodes} - a
-   * ghost endpoint and one the {@code labelFilter} excludes are the same case from the closing pass's point of
-   * view, and neither has to be resolved just to learn that (issue #7982: {@code relationships} used to keep an
-   * edge whose {@code labelFilter}-excluded endpoint was never in {@code nodes}, which also meant loading exactly
-   * the vertex record the filter exists to avoid loading). Under a plain {@code YIELD nodes} a filtered-out
-   * neighbour is still never read, which remains the filter's whole value there.
+   * The walk is {@link PathUniqueness#NODE_GLOBAL}: a node is spent the moment it is first met, whatever the filters make of
+   * it there, as it is in APOC. A node met again where a label sequence would welcome it is not a new node.
    * <p>
-   * A node the label filter walks THROUGH without reporting it - one that is not an end node when the filter names end
-   * or termination nodes - is visited but kept out of {@code reachableNodes}, so the closing pass drops the edges that
-   * reach it too (APOC answers the same).
+   * The relationships are not the ones the walk followed. They are every relationship, of any type, between two of the
+   * nodes the walk reports: that is what {@code apoc.path.subgraphAll} answers, and what "the subgraph" of a set of nodes
+   * is (issue #10048). They are found after the walk, from the outgoing relationships of each reported node - every
+   * relationship has its source among them or is not wanted - by the RID of the far end alone, so a relationship that leads
+   * out of the subgraph costs one adjacency entry and no record. An adjacency entry whose far endpoint has no record is
+   * not in the node set, so the relationship reaching it is not reported (issue #7982).
    * <p>
    * The walk is level-synchronous rather than a queue of (vertex, level) pairs: the level is a property of the
    * wave, so tracking it per entry allocates one wrapper per vertex to carry a number the loop already knows - and the
@@ -240,21 +315,22 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
    * @param filters        the relationships to follow and the nodes to report
    * @param minLevel       0 to report the start node, 1 to leave it out
    * @param maxLevel       maximum number of hops from {@code startNode}
+   * @param limit          the most nodes to report
    * @param reachableNodes collects the reported vertices, in breadth-first order
-   * @param reachableEdges collects the traversed edges, or {@code null} to skip building them entirely
+   * @param reachableEdges collects the relationships between them, or {@code null} to skip building them entirely
    */
   protected void collectReachableComponent(final Vertex startNode, final Filters filters, final int minLevel, final int maxLevel,
-      final List<Vertex> reachableNodes, final List<Edge> reachableEdges, final CommandContext context) {
+      final int limit, final List<Vertex> reachableNodes, final List<Edge> reachableEdges, final CommandContext context) {
+    if (limit <= 0)
+      return;
+
     final Database database = startNode.getDatabase();
     final RelationshipFilter relationships = filters.relationships();
-    final LabelFilter labels = filters.labels();
-    final boolean collectEdges = reachableEdges != null;
 
     final RidHashSet visitedNodes = new RidHashSet();
     final RidHashSet ghostNodes = new RidHashSet(16);
-    final EdgeIdentitySet visitedEdges = collectEdges ? new EdgeIdentitySet() : null;
 
-    final LabelFilter.Verdict startVerdict = labels.evaluate(database, startNode.getIdentity(), 0);
+    final LabelFilter.Verdict startVerdict = filters.evaluate(database, startNode.getIdentity(), 0);
     if (startVerdict == LabelFilter.Verdict.EXCLUDE_AND_PRUNE)
       // The start node itself is denied (filterStartNode): there is no component to report
       return;
@@ -267,85 +343,89 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
     if (startVerdict.continues)
       frontier.add(startNode);
 
-    for (int level = 0; level < maxLevel && !frontier.isEmpty(); ++level) {
+    for (int level = 0; level < maxLevel && !frontier.isEmpty() && reachableNodes.size() < limit; ++level) {
       final List<Vertex> nextFrontier = new ArrayList<>();
       final int depth = level + 1;
 
-      if (collectEdges) {
-        for (final Vertex current : frontier) {
-          // The edges are part of the answer: materialise them, but still take the neighbour from the edge's RID
-          // rather than from its record, so an already-visited neighbour costs nothing
-          for (final Vertex.DIRECTION direction : BOTH_DIRECTIONS) {
-            final Iterable<Edge> edges = hopEdges(context, current, direction, relationships, level);
-            if (edges == null)
-              continue;
-            for (final Edge edge : edges) {
-              try {
-                // Reading the endpoint is what forces a lazily loaded edge, so a ghost edge record surfaces here
-                final RID neighborId = direction == Vertex.DIRECTION.OUT ? edge.getIn() : edge.getOut();
+      // Only the nodes are asked for: walk the adjacency entries without loading a single edge record. Both sides
+      // are read in one pass when the hop follows the same types both ways and none of them is stored one way only.
+      // THE INCOMING SIDE OF A UNIDIRECTIONAL EDGE TYPE IS ON THE OTHER END ONLY (ISSUE #8629): READ FROM THE EDGES THAT
+      // END IN THE VERTEX
+      final String[] outTypes = relationships.typesFor(level, Vertex.DIRECTION.OUT);
+      final String[] inTypes = relationships.typesFor(level, Vertex.DIRECTION.IN);
+      final boolean incomingSideMissing =
+          inTypes != null && IncomingEdgeLookup.isNeeded(context, database, Vertex.DIRECTION.IN, inTypes);
+      final boolean bothInOnePass = relationships.isSymmetric(level) && !incomingSideMissing;
 
-                // Recorded unconditionally: the closing pass after the walk is what decides whether the endpoint
-                // earned this edge a place in the answer, so no endpoint has to be resolved here just for that
-                if (visitedEdges.add(edge.getIdentity()))
-                  reachableEdges.add(edge);
+      for (final Vertex current : frontier) {
+        if (reachableNodes.size() >= limit)
+          break;
 
-                visitNeighbor(database, neighborId, depth, labels, minLevel, visitedNodes, ghostNodes, reachableNodes, nextFrontier);
-              } catch (final RecordNotFoundException e) {
-                GhostEdgeReporter.reportSkipped(e);
-              }
+        if (bothInOnePass) {
+          for (final RID neighborId : current.getConnectedVertexRIDs(Vertex.DIRECTION.BOTH, outTypes))
+            visitNeighbor(database, neighborId, depth, filters, minLevel, limit, visitedNodes, ghostNodes, reachableNodes,
+                nextFrontier);
+          continue;
+        }
+
+        if (outTypes != null)
+          for (final RID neighborId : current.getConnectedVertexRIDs(Vertex.DIRECTION.OUT, outTypes))
+            visitNeighbor(database, neighborId, depth, filters, minLevel, limit, visitedNodes, ghostNodes, reachableNodes,
+                nextFrontier);
+
+        if (inTypes == null)
+          continue;
+        if (incomingSideMissing) {
+          for (final Edge edge : edgesOf(context, current, Vertex.DIRECTION.IN, inTypes)) {
+            try {
+              visitNeighbor(database, edge.getOut(), depth, filters, minLevel, limit, visitedNodes, ghostNodes, reachableNodes,
+                  nextFrontier);
+            } catch (final RecordNotFoundException e) {
+              GhostEdgeReporter.reportSkipped(e);
             }
           }
-        }
-      } else {
-        // Only the nodes are asked for: walk the adjacency entries without loading a single edge record. Both sides
-        // are read in one pass when the hop follows the same types both ways and none of them is stored one way only.
-        // THE INCOMING SIDE OF A UNIDIRECTIONAL EDGE TYPE IS ON THE OTHER END ONLY (ISSUE #8629): READ FROM THE EDGES THAT
-        // END IN THE VERTEX
-        final String[] outTypes = relationships.typesFor(level, Vertex.DIRECTION.OUT);
-        final String[] inTypes = relationships.typesFor(level, Vertex.DIRECTION.IN);
-        final boolean incomingSideMissing =
-            inTypes != null && IncomingEdgeLookup.isNeeded(context, database, Vertex.DIRECTION.IN, inTypes);
-        final boolean bothInOnePass = relationships.isSymmetric(level) && !incomingSideMissing;
-
-        for (final Vertex current : frontier) {
-          if (bothInOnePass) {
-            for (final RID neighborId : current.getConnectedVertexRIDs(Vertex.DIRECTION.BOTH, outTypes))
-              visitNeighbor(database, neighborId, depth, labels, minLevel, visitedNodes, ghostNodes, reachableNodes, nextFrontier);
-            continue;
-          }
-
-          if (outTypes != null)
-            for (final RID neighborId : current.getConnectedVertexRIDs(Vertex.DIRECTION.OUT, outTypes))
-              visitNeighbor(database, neighborId, depth, labels, minLevel, visitedNodes, ghostNodes, reachableNodes, nextFrontier);
-
-          if (inTypes == null)
-            continue;
-          if (incomingSideMissing) {
-            for (final Edge edge : edgesOf(context, current, Vertex.DIRECTION.IN, inTypes)) {
-              try {
-                visitNeighbor(database, edge.getOut(), depth, labels, minLevel, visitedNodes, ghostNodes, reachableNodes, nextFrontier);
-              } catch (final RecordNotFoundException e) {
-                GhostEdgeReporter.reportSkipped(e);
-              }
-            }
-          } else
-            for (final RID neighborId : current.getConnectedVertexRIDs(Vertex.DIRECTION.IN, inTypes))
-              visitNeighbor(database, neighborId, depth, labels, minLevel, visitedNodes, ghostNodes, reachableNodes, nextFrontier);
-        }
+        } else
+          for (final RID neighborId : current.getConnectedVertexRIDs(Vertex.DIRECTION.IN, inTypes))
+            visitNeighbor(database, neighborId, depth, filters, minLevel, limit, visitedNodes, ghostNodes, reachableNodes,
+                nextFrontier);
       }
 
       frontier = nextFrontier;
     }
 
-    if (collectEdges) {
-      // Close relationships over the final node set: cheap, because reachableNodes is already the RID set the
-      // answer commits to, and this is what keeps an edge from naming a vertex the same result does not contain
-      // (issue #7982) - whether that vertex was excluded by labelFilter or never existed in the first place
-      final RidHashSet finalNodeIds = new RidHashSet(reachableNodes.size());
-      for (final Vertex node : reachableNodes)
-        finalNodeIds.add(node.getIdentity());
+    if (reachableEdges != null)
+      collectRelationshipsBetween(reachableNodes, reachableEdges);
+  }
 
-      reachableEdges.removeIf(edge -> !finalNodeIds.contains(edge.getOut()) || !finalNodeIds.contains(edge.getIn()));
+  /**
+   * Every relationship, of any type, whose two ends are among {@code nodes}. Each is found once, from its source.
+   * <p>
+   * The edges are read off the adjacency lists knowing their endpoints, so a relationship to a node outside the set is
+   * turned away on the RID in the list entry and its record is never read: the cost of this pass is the out-degree of the
+   * reported nodes in entries, not in records. The record of a relationship that is kept is read when the caller reads it.
+   */
+  private static void collectRelationshipsBetween(final List<Vertex> nodes, final List<Edge> edges) {
+    if (nodes.isEmpty())
+      return;
+
+    final RidHashSet nodeIds = new RidHashSet(Math.max(16, nodes.size() * 2));
+    for (final Vertex node : nodes)
+      nodeIds.add(node.getIdentity());
+
+    for (final Vertex node : nodes) {
+      final Iterator<Edge> outgoing = node instanceof VertexInternal internal ?
+          ((DatabaseInternal) node.getDatabase()).getGraphEngine().getEdgesKnowingEndpoints(internal, Vertex.DIRECTION.OUT) :
+          node.getEdges(Vertex.DIRECTION.OUT).iterator();
+      while (outgoing.hasNext()) {
+        try {
+          final Edge edge = outgoing.next();
+          final RID target = edge.getIn();
+          if (target != null && nodeIds.contains(target))
+            edges.add(edge);
+        } catch (final RecordNotFoundException e) {
+          GhostEdgeReporter.reportSkipped(e);
+        }
+      }
     }
   }
 
@@ -358,7 +438,7 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
    * set because the two answer different questions: a ghost was never reached, and marking it as though it had been
    * makes a later edge to it look ordinary (issue #7976).
    */
-  protected Vertex resolveNeighbor(final RID neighborId, final RidHashSet ghostNodes) {
+  protected static Vertex resolveNeighbor(final RID neighborId, final RidHashSet ghostNodes) {
     if (ghostNodes.contains(neighborId))
       return null;
 
@@ -372,27 +452,24 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
   }
 
   /**
-   * Adds a neighbour to the walk unless it has been seen already or the label filter turns it away. The vertex record is
-   * loaded only once both tests have passed, which is what keeps the walk's loads proportional to the component
-   * rather than to its adjacency entries: a neighbour the {@code labelFilter} excludes is never resolved, here or
-   * later, because a closing pass over {@code reachableNodes} (not this method) is what keeps a collected edge from
-   * naming such a neighbour (issue #7982) - so there is nothing this method needs to know about that neighbour
-   * beyond "not part of {@code nodes}".
+   * Adds a neighbour to the walk unless it has been met already or the filters turn it away. The vertex record is loaded only
+   * once both tests have passed, which is what keeps the walk's loads proportional to the component rather than to its
+   * adjacency entries.
    * <p>
-   * A neighbour turned away is not marked visited: in a label sequence the same node can be welcome at another depth.
+   * A neighbour is spent the moment it is first met, before the filters have their say: one turned away is not a new
+   * node when the walk meets it again, even where a label sequence would welcome it. APOC's node-global uniqueness is
+   * recorded when a branch is created, ahead of the evaluators, and answers the same.
    * <p>
-   * A RID with no record behind it is recorded in {@code ghostNodes} rather than in {@code visitedNodes}: the two
-   * answer different questions, and conflating them would mark a missing vertex as reached - so the FIRST edge to
-   * a ghost would be dropped and every later one silently kept, which is worse than either consistent outcome.
+   * A RID with no record behind it is spent too, and reported once, by {@link #resolveNeighbor}.
    */
-  private void visitNeighbor(final Database database, final RID neighborId, final int depth, final LabelFilter labels,
-      final int minLevel, final RidHashSet visitedNodes, final RidHashSet ghostNodes, final List<Vertex> reachableNodes,
-      final List<Vertex> nextFrontier) {
+  private void visitNeighbor(final Database database, final RID neighborId, final int depth, final Filters filters,
+      final int minLevel, final int limit, final RidHashSet visitedNodes, final RidHashSet ghostNodes,
+      final List<Vertex> reachableNodes, final List<Vertex> nextFrontier) {
     // Before any set is touched: RidHashSet reads the bucket and offset off the RID without checking it for null
-    if (neighborId == null || visitedNodes.contains(neighborId) || ghostNodes.contains(neighborId))
+    if (neighborId == null || reachableNodes.size() >= limit || !visitedNodes.add(neighborId))
       return;
 
-    final LabelFilter.Verdict verdict = labels.evaluate(database, neighborId, depth);
+    final LabelFilter.Verdict verdict = filters.evaluate(database, neighborId, depth);
     if (verdict == LabelFilter.Verdict.EXCLUDE_AND_PRUNE)
       return;
 
@@ -400,7 +477,6 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
     if (neighbor == null)
       return;
 
-    visitedNodes.add(neighborId);
     if (verdict.includes && depth >= minLevel)
       reachableNodes.add(neighbor);
     if (verdict.continues)

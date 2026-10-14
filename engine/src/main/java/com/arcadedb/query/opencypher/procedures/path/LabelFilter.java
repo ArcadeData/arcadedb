@@ -74,6 +74,21 @@ final class LabelFilter {
       this.includes = includes;
       this.continues = continues;
     }
+
+    /** The verdict that includes and continues as asked. Never {@link #TERMINATE}, which only {@link #evaluate} resolves. */
+    static Verdict of(final boolean includes, final boolean continues) {
+      if (includes)
+        return continues ? INCLUDE_AND_CONTINUE : INCLUDE_AND_PRUNE;
+      return continues ? EXCLUDE_AND_CONTINUE : EXCLUDE_AND_PRUNE;
+    }
+
+    /**
+     * The verdict of two filters that both have their say, as the evaluators of an APOC traversal combine: a node is an
+     * answer only if both include it, and the walk goes on past it only if both let it.
+     */
+    Verdict and(final Verdict other) {
+      return of(includes && other.includes, continues && other.continues);
+    }
   }
 
   /**
