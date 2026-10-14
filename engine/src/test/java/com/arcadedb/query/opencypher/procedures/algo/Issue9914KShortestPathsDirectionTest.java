@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher.procedures.algo;
 import com.arcadedb.TestHelper;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
@@ -70,16 +71,15 @@ class Issue9914KShortestPathsDirectionTest extends TestHelper {
   }
 
   @Test
-  @SuppressWarnings("unchecked")
   void theYieldedPathCarriesItsRelationships() {
     reporterGraph();
-    final Map<String, Object> path = kShortest("A", "C", 1, "").get(0).getProperty("path");
+    final TraversalPath path = kShortest("A", "C", 1, "").get(0).getProperty("path");
     final List<Object> names = new ArrayList<>();
-    for (final Object node : (List<Object>) path.get("nodes"))
-      names.add(((Vertex) node).getString("name"));
+    for (final Vertex node : path.getVertices())
+      names.add(node.getString("name"));
     assertThat(names).containsExactly("A", "B", "C");
-    assertThat((List<Object>) path.get("relationships")).hasSize(2);
-    assertThat(path.get("length")).isEqualTo(2);
+    assertThat(path.getEdges()).hasSize(2);
+    assertThat(path.length()).isEqualTo(2);
   }
 
   /**
@@ -156,7 +156,7 @@ class Issue9914KShortestPathsDirectionTest extends TestHelper {
     final List<Result> paths = kShortest("A", "C", 2, "", "");
     assertThat(paths).hasSize(1);
     assertThat(paths.get(0).<Number>getProperty("weight").doubleValue()).isEqualTo(2.0);
-    assertThat((List<Object>) paths.get(0).<Map<String, Object>>getProperty("path").get("relationships")).hasSize(2);
+    assertThat(paths.get(0).<TraversalPath>getProperty("path").getEdges()).hasSize(2);
     // the path algo.dijkstra yields used to fail building on a lightweight edge, which has no record to look up
     assertThat(dijkstraWeight("A", "C")).isEqualTo(2.0);
   }
