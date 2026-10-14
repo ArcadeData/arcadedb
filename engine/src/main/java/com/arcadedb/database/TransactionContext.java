@@ -43,6 +43,7 @@ import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.IndexReplayConclusion;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.index.fulltext.FullTextCorpusDeltas;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.RunningQuery;
@@ -2691,6 +2692,12 @@ public class TransactionContext implements Transaction {
           // UPDATE THE CACHE COUNTER ONLY IF ALREADY COMPUTED
           bucket.setCachedRecordCount(bucket.getCachedRecordCount() + delta);
       });
+
+      // THE BM25 CORPUS COUNTERS OF THE FULL-TEXT INDEXES THIS TRANSACTION WROTE MOVE WITH ITS PAGES, LIKE THE RECORD COUNT ABOVE:
+      // A ROLLBACK NEVER REACHES THIS POINT (#10018)
+      final FullTextCorpusDeltas corpusDeltas = FullTextCorpusDeltas.peek(this);
+      if (corpusDeltas != null)
+        corpusDeltas.applyCommitted();
     } catch (final IOException | InterruptedException e) {
       fenceIfPastPointOfNoReturn(e);
       LogManager.instance()

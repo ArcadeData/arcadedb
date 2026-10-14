@@ -21,6 +21,7 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexInternal;
+import com.arcadedb.index.fulltext.LSMTreeFullTextIndex;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.FileUtils;
@@ -100,6 +101,11 @@ public class FetchFromSchemaIndexDetailStep extends AbstractExecutionStep {
           // IGNORE IT, NO SIZE AVAILABLE
         }
       }
+
+      // Read-only: it never runs the drift check, so a drift can be looked at before a query repairs it
+      final Map<String, Object> bm25 = LSMTreeFullTextIndex.describeCorpusCounters(index);
+      if (bm25 != null)
+        r.setProperty("bm25", bm25);
 
       final Map<String, Long> stats = indexInternal.getStats();
       if (stats != null)

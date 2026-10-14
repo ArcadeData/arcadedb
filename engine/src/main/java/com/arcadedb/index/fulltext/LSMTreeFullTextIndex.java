@@ -24,6 +24,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.PaginatedComponent;
@@ -44,6 +45,7 @@ import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.FullTextIndexMetadata;
 import com.arcadedb.schema.IndexBuilder;
 import com.arcadedb.schema.IndexMetadata;
+import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONArray;
@@ -61,6 +63,7 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.PriorityQueue;
@@ -870,8 +873,10 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
   /**
    * Lazily rebuilds the (type-wide) corpus counters when they are not trustworthy (e.g. a BM25 index reopened before the schema
    * carrying the counters was persisted, or an index that predates BM25 support). The {@code countersValid} flag is the
-   * authority: when set the counters are used as-is. Recompute is done in memory only; persistence is deferred to the next schema
-   * save or an explicit {@link #recomputeBM25Counters()}, so the read/query path never calls {@code saveConfiguration}.
+   * authority: when set the counters are used as-is. A recompute done here changes this node's counters only and marks the schema
+   * dirty: it is written by the next schema save or by the close (so a repair is paid once, not on every restart), and the read/query
+   * path never calls {@code saveConfiguration} itself. An explicit {@link #recomputeBM25Counters()} also advances the counters epoch
+   * and is shipped to the other nodes of an HA cluster.
    */
   private void ensureCounters() {
     if (ftMetadata == null)
@@ -902,17 +907,68 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
         final long persisted = ftMetadata.getTotalDocs();
         final boolean rescan = ftMetadata.consumeRescanRequired();
         if (liveCount != persisted || rescan) {
-          // Surface the drift so operators can notice it (e.g. counters inflated by rolled-back inserts) without reading EXPLAIN.
+          // Surface the drift so operators can notice it (e.g. counters left inflated by a crash) without reading EXPLAIN.
           // Escalate to WARNING when the divergence is large (> 10% of the live count): small drift self-heals quietly here, but a
-          // big gap usually signals a heavy-rollback workload worth a scheduled REBUILD INDEX ... WITH statsOnly = true.
+          // big gap usually signals a workload worth a scheduled REBUILD INDEX ... WITH statsOnly = true.
           final boolean large = liveCount > 0 && Math.abs(persisted - liveCount) * 10 > liveCount;
-          LogManager.instance().log(this, large ? Level.WARNING : Level.INFO,
-              "BM25 corpus counters for type '%s' diverged from live data (persisted=%d, live=%d); recomputing.%s", null, typeName,
-              persisted, liveCount, large ? " Consider REBUILD INDEX ... WITH statsOnly = true if this recurs." : "");
+          // The message is an argument, not the format: an index name may contain a '%'
+          LogManager.instance().log(this, large ? Level.WARNING : Level.INFO, "%s", null,
+              corpusDriftMessage(logicalIndexName(), typeName, persisted, liveCount, rescan));
           computeCorpusCounters(false);
         }
       }
     }
+  }
+
+  /**
+   * The warning of a drift check that found the corpus counters of a logical index off. It names the LOGICAL index, because a type
+   * may carry several full-text indexes (one on {@code text}, one on {@code questions_text}) and the type name alone says neither
+   * which one drifted nor which {@code REBUILD INDEX} repairs it, and it carries that statement, ready to run.
+   */
+  static String corpusDriftMessage(final String indexName, final String typeName, final long persisted, final long live,
+      final boolean scanRacedWriters) {
+    final String repair = "REBUILD INDEX `" + indexName + "` WITH statsOnly = true";
+    if (persisted == live && scanRacedWriters)
+      return "BM25 corpus counters of full-text index '" + indexName + "' on type '" + typeName + "' come from a scan that raced "
+          + "concurrent writers (count=" + live + "); recomputing. To repair them on every node run: " + repair;
+    return "BM25 corpus counters of full-text index '" + indexName + "' on type '" + typeName + "' diverged from live data "
+        + "(persisted=" + persisted + ", live=" + live + "); recomputing. To repair them on every node run: " + repair;
+  }
+
+  /**
+   * The BM25 corpus counters of a full-text index as {@code schema:index:<name>} shows them, without running the drift check
+   * that reading them through a query would: an operator can look at a drift before anything repairs it.
+   *
+   * @return the counters and the state of the drift check, or null when {@code index} is not a BM25 full-text index
+   */
+  public static Map<String, Object> describeCorpusCounters(final Index index) {
+    final FullTextIndexMetadata metadata = metadataOf(index);
+    if (metadata == null || !metadata.isBM25())
+      return null;
+    final Map<String, Object> result = new LinkedHashMap<>();
+    result.put("totalDocs", metadata.getTotalDocs());
+    result.put("sumDocLength", metadata.getSumDocLength());
+    result.put("avgDocLength", metadata.avgDocLength());
+    result.put("countersValid", metadata.isCountersValid());
+    result.put("staleCheckDone", metadata.isStaleCheckDone());
+    result.put("scans", metadata.getScans());
+    result.put("epoch", metadata.getCountersEpoch());
+    return result;
+  }
+
+  /**
+   * The counters a full-text index shares with its sibling bucket indexes, whether {@code index} is the logical one or one bucket's.
+   *
+   * @return the shared metadata, or null when {@code index} is not a full-text index
+   */
+  public static FullTextIndexMetadata metadataOf(final Index index) {
+    if (index instanceof LSMTreeFullTextIndex ftIndex)
+      return ftIndex.getFullTextMetadata();
+    if (index instanceof TypeIndex typeIndex)
+      for (final IndexInternal bucketIndex : typeIndex.getIndexesOnBuckets())
+        if (bucketIndex instanceof LSMTreeFullTextIndex ftIndex && ftIndex.getFullTextMetadata() != null)
+          return ftIndex.getFullTextMetadata();
+    return null;
   }
 
   /**
@@ -975,13 +1031,35 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
       sumLen += len;
     }
 
-    ftMetadata.publishScannedCounters(docs, sumLen, docsAtStart, lenAtStart, mutationsAtStart);
+    // The scan reads this transaction's own uncommitted writes, whose effect the commit applies to the counters: leave them out
+    // of the result, or they are counted twice (and counted at all if the transaction rolls back)
+    final TransactionContext tx = db.getTransaction();
+    final FullTextCorpusDeltas pending = tx.getStatus() == TransactionContext.STATUS.BEGUN ? FullTextCorpusDeltas.peek(tx) : null;
+    if (pending != null) {
+      docs -= pending.pendingDocs(ftMetadata);
+      sumLen -= pending.pendingLength(ftMetadata);
+    }
+
+    final long scannedDocs = docs;
+    final long scannedLen = sumLen;
+    final LocalSchema schema = db.getSchema().getEmbedded();
+    if (persist)
+      // An explicit recompute is a schema change: inside a recording session the result is saved and, under HA, shipped to the
+      // followers, which adopt it because its epoch is newer than the one they hold
+      schema.recordIndexStatisticsChange(() -> {
+        ftMetadata.publishScannedCounters(scannedDocs, scannedLen, docsAtStart, lenAtStart, mutationsAtStart);
+        ftMetadata.advanceCountersEpoch();
+      });
+    else {
+      // The read/query path never saves the schema, but a repair must not be paid again after a restart: leave it to the next
+      // schema save, or to the close
+      ftMetadata.publishScannedCounters(scannedDocs, scannedLen, docsAtStart, lenAtStart, mutationsAtStart);
+      schema.markDirty();
+    }
     // Report the result so operators can correlate the cold-start latency above with the corpus size that drove it.
     LogManager.instance().log(this, Level.INFO,
         "Recomputed BM25 corpus statistics for type '%s': %d documents, %d total tokens (avgdl=%.2f)", null, typeName, docs,
         sumLen, docs > 0 ? (double) sumLen / docs : 1.0);
-    if (persist)
-      underlyingIndex.getMutableIndex().getDatabase().getSchema().getEmbedded().saveConfiguration();
   }
 
   /**
@@ -1184,28 +1262,44 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
   }
 
   /**
-   * Updates the persisted corpus counters when a document is indexed. {@code numDocs} is {@code rids.length}: the standard
-   * indexing path passes exactly one RID per document (one document being indexed), so each RID is counted as a distinct
-   * document of length {@code docLen}.
+   * Counts the documents being indexed in the corpus counters. {@code numDocs} is {@code rids.length}: the standard indexing path
+   * passes exactly one RID per document (one document being indexed), so each RID is counted as a distinct document of length
+   * {@code docLen}.
    * <p>
-   * This runs at index time, before the transaction commits, and is NOT reversed on rollback, so a rolled-back insert leaves the
-   * counters slightly inflated. The counters feed only {@code avgDocLength} (a robust normalizer); {@link #recomputeBM25Counters}
-   * (also reachable via {@code REBUILD INDEX <name> WITH statsOnly = true}) repairs any drift exactly.
-   * <p>
-   * Because the increment is pre-commit, a BM25 {@code get()} issued LATER in the SAME open transaction sees the bumped
-   * {@code totalDocs}/{@code sumDocLength}, so a just-inserted (not yet committed) document is reflected in {@code avgDocLength}
-   * for that transaction. This only shifts the length normalizer marginally and resolves at commit; it is not a correctness issue.
-   * <p>
-   * FOLLOW-UP (not done deliberately): the drift could be avoided by deferring this update to an after-commit callback
-   * ({@code TransactionContext.addAfterCommitCallback}) so a rolled-back transaction never bumps the counters. That is left for a
-   * separate change because the counters must stay consistent across an HA cluster: the current update runs inside the index
-   * write that every node replays, whereas an after-commit callback fires only on the committing node and would diverge replica
-   * counters. Reversing on rollback (rather than deferring) would need a rollback hook that does not exist today.
+   * Inside a transaction the effect is only accumulated, and applied once the transaction commits (see
+   * {@link FullTextCorpusDeltas}): a rolled-back insert, or one retried after a {@code ConcurrentModificationException}, never
+   * touches the counters, and a BM25 query issued later in the SAME open transaction scores with the committed statistics. Without
+   * a transaction the index write is immediate, and so is the count.
    */
   private void countDocuments(final int numDocs, final int docLen) {
-    if (ftMetadata != null)
+    if (ftMetadata == null)
+      return;
+    final TransactionContext tx = underlyingIndex.getMutableIndex().getDatabase().getTransaction();
+    if (tx.getStatus() == TransactionContext.STATUS.BEGUN)
+      FullTextCorpusDeltas.record(tx, ftMetadata, logicalIndexName(), numDocs, (long) numDocs * docLen);
+    else
       for (int i = 0; i < numDocs; i++)
         ftMetadata.addDocument(docLen);
+  }
+
+  /**
+   * Takes one document out of the corpus counters, the way {@link #countDocuments} counts one in.
+   */
+  private void uncountDocument(final int docLen) {
+    if (ftMetadata == null)
+      return;
+    final TransactionContext tx = underlyingIndex.getMutableIndex().getDatabase().getTransaction();
+    if (tx.getStatus() == TransactionContext.STATUS.BEGUN)
+      FullTextCorpusDeltas.record(tx, ftMetadata, logicalIndexName(), -1, -(long) docLen);
+    else
+      ftMetadata.removeDocument(docLen);
+  }
+
+  /**
+   * The name a replica resolves in its own schema to find the counters this index shares with its sibling bucket indexes.
+   */
+  private String logicalIndexName() {
+    return typeIndex != null ? typeIndex.getName() : underlyingIndex.getName();
   }
 
   /**
@@ -1274,8 +1368,8 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     // key it would need the same N decrements, but no caller does that.) docLen is recomputed from the keys supplied at remove
     // time: if a field is null now but was set at index time (or the analyzer changed), this under-decrements sumDocLength and
     // avgDocLength drifts. Since avgDocLength is only a length normalizer this is tolerable; recomputeBM25Counters() repairs it.
-    if (underlyingIndex.isStoreTermFrequency() && ftMetadata != null)
-      ftMetadata.removeDocument(docLen);
+    if (underlyingIndex.isStoreTermFrequency())
+      uncountDocument(docLen);
   }
 
   /**
@@ -1381,6 +1475,10 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
   @Override
   public void setMetadata(final JSONObject indexJSON) {
     underlyingIndex.setMetadata(indexJSON);
+    // A schema reload on a node that already holds this index (an HA follower applying the schema its leader shipped) keeps the
+    // live counters, which the replicated transactions maintain; only counters recomputed since, on the leader, replace them
+    if (ftMetadata != null)
+      ftMetadata.adoptPersistedCounters(indexJSON);
   }
 
   @Override
