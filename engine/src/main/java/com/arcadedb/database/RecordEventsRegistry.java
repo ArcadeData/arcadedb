@@ -41,6 +41,19 @@ public class RecordEventsRegistry implements RecordEvents {
   private final List<AfterRecordDeleteListener>  afterDeleteListeners  = new CopyOnWriteArrayList<>();
   private final Object                           changeLock            = new Object();
 
+  /**
+   * Set the first time any registry of this JVM takes a BEFORE READ listener, and never cleared. Until then no record read
+   * has anyone to tell, whatever its type or database, and the bucket skips the schema lookup that finds the type's
+   * registry for every record it hands out (see {@code LocalBucket.fireBeforeReadEvents}). Sticky on purpose: removing
+   * the last listener can only leave it true, which costs the lookup and never a missed event.
+   */
+  private static volatile boolean beforeReadListenerEverRegistered;
+
+  /** False until a BEFORE READ listener was registered anywhere in this JVM; true means "maybe". */
+  public static boolean isBeforeReadListenerEverRegistered() {
+    return beforeReadListenerEverRegistered;
+  }
+
   @Override
   public RecordEventsRegistry registerListener(final BeforeRecordCreateListener listener) {
     synchronized (changeLock) {
@@ -53,6 +66,8 @@ public class RecordEventsRegistry implements RecordEvents {
   @Override
   public RecordEventsRegistry registerListener(final BeforeRecordReadListener listener) {
     synchronized (changeLock) {
+      // BEFORE THE LISTENER IS VISIBLE: A READER THAT SEES THE LISTENER MUST SEE THE FLAG
+      beforeReadListenerEverRegistered = true;
       if (!beforeReadListeners.contains(listener))
         beforeReadListeners.add(listener);
     }

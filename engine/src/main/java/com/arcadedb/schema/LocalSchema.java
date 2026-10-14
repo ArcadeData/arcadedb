@@ -454,6 +454,13 @@ public class LocalSchema implements Schema {
   private final       AtomicLong                             versionSerial                 = new AtomicLong();
   private volatile    UnidirectionalFlag                     unidirectionalFlag;
   private final       AtomicLong                             typesChangeSerial             = new AtomicLong();
+  /**
+   * Set when a property of one of the native temporal types is first declared in this schema, and never cleared: a
+   * reader that sees it false knows no property can need the conversion of a stored String (issue #8572) and skips the
+   * per-property lookup that finding out costs on every String read. Sticky on purpose, so a drop or a rename can only
+   * leave it true, which costs the lookup and never a conversion.
+   */
+  private volatile    boolean                                temporalNativePropertyDeclared;
   private final       Map<String, FunctionLibraryDefinition> functionLibraries             = new ConcurrentHashMap<>();
   private final       Map<Integer, Integer>                  migratedFileIds               = new ConcurrentHashMap<>();
   /**
@@ -5169,6 +5176,22 @@ public class LocalSchema implements Schema {
   }
 
   private record UnidirectionalFlag(long serial, boolean value) {
+  }
+
+  /** Whether {@code type} is one a String stored before the property was declared is converted to when read (issue #8572). */
+  public static boolean convertsStoredStrings(final Type type) {
+    return type == Type.OFFSET_TIME || type == Type.LOCAL_TIME || type == Type.ZONED_DATETIME || type == Type.DURATION;
+  }
+
+  /** Called by every property built in this schema: remembers that one of a type that converts stored Strings exists. */
+  void propertyDeclared(final Type type) {
+    if (!temporalNativePropertyDeclared && convertsStoredStrings(type))
+      temporalNativePropertyDeclared = true;
+  }
+
+  /** False when no property of a type that converts stored Strings was ever declared in this schema; true is "maybe". */
+  public boolean mayHaveStoredStringConversions() {
+    return temporalNativePropertyDeclared;
   }
 
   /** A serial that moves whenever the types of this schema change: what a memo of a type-derived answer is keyed on. */

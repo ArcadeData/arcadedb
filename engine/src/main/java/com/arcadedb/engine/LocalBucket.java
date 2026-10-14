@@ -2450,6 +2450,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * DATABASE as well as per thread; see the field's javadoc for why that distinction matters.
    */
   boolean fireBeforeReadEvents(final RID rid) {
+    if (!RecordEventsRegistry.isBeforeReadListenerEverRegistered())
+      // NOBODY IN THIS JVM EVER LISTENED: NO NEED TO FIND THE TYPE OF THE RECORD TO FIND ITS REGISTRY
+      return true;
+
     final RecordEventsRegistry databaseEvents = (RecordEventsRegistry) database.getEvents();
     final DocumentType type = database.getSchema().getTypeByBucketId(rid.getBucketId());
     final RecordEventsRegistry typeEvents = type != null ? (RecordEventsRegistry) type.getEvents() : null;

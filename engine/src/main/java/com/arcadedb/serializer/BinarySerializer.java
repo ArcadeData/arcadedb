@@ -57,6 +57,7 @@ import com.arcadedb.database.BaseDocument;
 import com.arcadedb.database.DocumentInternal;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalDocumentType;
+import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
@@ -608,11 +609,16 @@ public class BinarySerializer {
     final DocumentType documentType = owner != null ? owner.getType() : null;
     if (documentType == null)
       return value;
+    // NO PROPERTY OF THE SCHEMA IS OF A TYPE THAT CONVERTS A STORED STRING: SKIP THE PROPERTY LOOKUP THAT THE READ OF EVERY
+    // String WOULD OTHERWISE PAY TO FIND THAT OUT. THE SCHEMA IS ASKED OF THE TYPE, NOT OF THE DATABASE: Database.getSchema()
+    // CHECKS THAT THE DATABASE IS OPEN AND LOOKS UP THE THREAD'S CONTEXT, WHICH IS MORE THAN THE LOOKUP IT WOULD SPARE
+    if (!documentType.getSchema().getEmbedded().mayHaveStoredStringConversions())
+      return value;
     final Property property = documentType.getPolymorphicPropertyIfExists(propertyName);
     if (property == null)
       return value;
     final Type declared = property.getType();
-    if (declared != Type.OFFSET_TIME && declared != Type.LOCAL_TIME && declared != Type.ZONED_DATETIME && declared != Type.DURATION)
+    if (!LocalSchema.convertsStoredStrings(declared))
       return value;
     try {
       return Type.convert(database, value, declared.getDefaultJavaType(), property);

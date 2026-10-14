@@ -43,6 +43,7 @@ public class LocalProperty extends AbstractProperty {
 
   public LocalProperty(final LocalDocumentType owner, final String name, final Type type) {
     super(owner, name, type, owner.getSchema().getDictionary().getIdByName(name, true));
+    owner.getSchema().getEmbedded().propertyDeclared(type);
   }
 
   /**
