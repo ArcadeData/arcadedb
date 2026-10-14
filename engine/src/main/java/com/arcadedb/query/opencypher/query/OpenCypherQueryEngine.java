@@ -467,20 +467,19 @@ public class OpenCypherQueryEngine implements QueryEngine {
   private ResultSet execute(final String queryString, final CypherStatement statement, final ContextConfiguration configuration,
       final Map<String, Object> parameters, final boolean explain, final boolean profile, final boolean timeExecution) {
     // A conditional query runs one of its branches, picked now that the parameters its conditions read are known. Each branch
-    // is planned and cached under a key of its own, since the same text runs different branches for different parameters
+    // is planned and cached under a key of its own, since the same text runs different branches for different parameters.
+    // The key STARTS with NUL, which the lexer refuses outside a string literal, so no query text that plans can equal it.
+    // The conditions share one context: they read the same parameters
     if (statement instanceof ConditionalStatement conditional) {
       final List<CypherStatement> branches = conditional.getBranches();
-      // Each branch is planned and cached under its own key, the query text plus a NUL-separated suffix that query text
-      // written by a user does not contain
-      // One context for every condition: they read the same parameters
       final BasicCommandContext conditionContext = conditionContext(parameters);
       for (int i = 0; i < branches.size(); i++)
         if (isConditionTrue(conditional.getConditions().get(i), conditionContext))
-          return execute(queryString + "\u0000WHEN#" + i, branches.get(i), configuration, parameters, explain, profile,
-              timeExecution);
+          return execute("\u0000WHEN#" + i + "\u0000" + queryString, branches.get(i), configuration, parameters, explain,
+              profile, timeExecution);
       if (conditional.getElseBranch() != null)
-        return execute(queryString + "\u0000ELSE", conditional.getElseBranch(), configuration, parameters, explain, profile,
-            timeExecution);
+        return execute("\u0000ELSE\u0000" + queryString, conditional.getElseBranch(), configuration, parameters, explain,
+            profile, timeExecution);
       return new InternalResultSet();
     }
 

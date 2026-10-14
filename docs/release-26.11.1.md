@@ -125,9 +125,11 @@ and now fails instead:
 
 An `ORDER BY` / `SKIP` / `OFFSET` / `LIMIT` written after `RETURN` (`RETURN ... LIMIT 2 OFFSET 1`) is now applied after the
 RETURN's sort, as one page: sort, then skip, then limit. It used to run before the sort and could drop the wrong row.
+This is a fix that changes results: such a query can now return different rows than before.
 
 `LET`, `IS [NFC|NFD|NFKC|NFKD] NORMALIZED`, `USE` of the current database and the conditional query
-`WHEN ... THEN ... ELSE ...` are now executed.
+`WHEN ... THEN ... ELSE ...` are now executed. A `LET` that names a variable already in scope is refused
+("Variable 'n' already declared"), as in Neo4j.
 
 ## Fixes
 

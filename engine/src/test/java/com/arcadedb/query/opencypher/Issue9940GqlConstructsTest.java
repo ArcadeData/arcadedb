@@ -126,6 +126,17 @@ class Issue9940GqlConstructsTest extends TestHelper {
   }
 
   @Test
+  void letRefusesToRedeclareAVariable() {
+    // as Neo4j: a LET declares a new variable, it does not shadow one already in scope
+    assertThatThrownBy(() -> rows("MATCH (n:Person) LET n = 1 RETURN n")).hasMessageContaining("Variable 'n' already declared");
+    assertThatThrownBy(() -> rows("LET x = 1, x = 2 RETURN x")).hasMessageContaining("Variable 'x' already declared");
+    assertThatThrownBy(() -> rows("MATCH (n:Person) WITH * LET n = 1 RETURN n")).hasMessageContaining("Variable 'n' already declared");
+    // a WITH that drops the name frees it for a LET, and a plain WITH may still shadow
+    assertThat(column("MATCH (n:Person {name:'A'}) WITH n.name AS name LET n = 1 RETURN n", "n")).containsExactly(1L);
+    assertThat(column("MATCH (n:Person {name:'A'}) WITH *, 1 AS n RETURN n", "n")).containsExactly(1L);
+  }
+
+  @Test
   void letRefusesAnAggregation() {
     assertThatThrownBy(() -> rows("MATCH (n:Person) LET c = count(n) RETURN c")).hasMessageContaining("LET");
   }
