@@ -378,6 +378,15 @@ public class DocumentValidator {
    */
   public static RegexpUsability regexpUsability(final Type type, final Class<?> held, final String regexp,
       final boolean searchTextForm) {
+    return regexpUsability(type, held, regexp, searchTextForm, TimeBoundRegex.newDeadline(REGEXP_SEARCH_TIMEOUT_MS));
+  }
+
+  /**
+   * @param deadlineNanos when the search over the text forms gives up, leaving the pattern undecided: an absolute
+   *                      {@link System#nanoTime()} deadline, see {@link TimeBoundRegex#newDeadline}
+   */
+  private static RegexpUsability regexpUsability(final Type type, final Class<?> held, final String regexp,
+      final boolean searchTextForm, final long deadlineNanos) {
     if (regexp == null)
       return RegexpUsability.USABLE;
     final String noTextForm = noTextForm(type);
@@ -408,7 +417,7 @@ public class DocumentValidator {
 
     // how a DATE or DATETIME is written depends on the class the database holds it as, so the message names it
     final String typeName = type.isDateOrDateTime() ? type + " (held as " + held.getSimpleName() + ")" : type.toString();
-    return switch (form.admits(pattern, REGEXP_SEARCH_MAX_LENGTH, REGEXP_SEARCH_MAX_PROBES, REGEXP_SEARCH_TIMEOUT_MS)) {
+    return switch (form.admits(pattern, REGEXP_SEARCH_MAX_LENGTH, REGEXP_SEARCH_MAX_PROBES, deadlineNanos)) {
       case SATISFIABLE -> RegexpUsability.USABLE;
       case UNSATISFIABLE -> new RegexpUsability(
           "matches no text a value of " + typeName + " can be written as (one of the shape '" + form.shape().pattern()
@@ -515,6 +524,9 @@ public class DocumentValidator {
     heldAfter.put(Type.DATETIME_MICROS, subMillis);
     heldAfter.put(Type.DATETIME_NANOS, subMillis);
 
+    // one deadline for the whole walk, which runs under the write lock: however many properties carry a pattern, the lock
+    // is held for one search budget at most, and a pattern the budget did not settle is only warned about
+    final long deadline = TimeBoundRegex.newDeadline(REGEXP_SEARCH_TIMEOUT_MS);
     final List<String> broken = new ArrayList<>();
     for (final DocumentType type : schema.getTypes())
       for (final Property p : type.getProperties()) {
@@ -524,10 +536,11 @@ public class DocumentValidator {
         final String named = type.getName() + "." + p.getName();
 
         if (p.getRegexp() != null && held != p.getType().getJavaImplementation(database)) {
-          final RegexpUsability usability = regexpUsability(p.getType(), held, p.getRegexp(), true);
+          final RegexpUsability usability = regexpUsability(p.getType(), held, p.getRegexp(), true, deadline);
           if (usability.refusal() != null) {
             // a pattern the class in force refuses too predates the declaration-time check, and is not this change's doing
-            if (regexpUsability(database, p.getType(), p.getRegexp()).refusal() == null)
+            if (regexpUsability(p.getType(), p.getType().getJavaImplementation(database), p.getRegexp(), true, deadline)
+                .refusal() == null)
               broken.add(named + ": the REGEXP '" + p.getRegexp() + "' " + usability.refusal());
           } else if (usability.doubt() != null)
             LogManager.instance().log(DocumentValidator.class, Level.WARNING,
