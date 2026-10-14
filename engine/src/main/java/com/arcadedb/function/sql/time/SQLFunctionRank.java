@@ -23,13 +23,11 @@ import com.arcadedb.function.sql.SQLAggregatedFunction;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.List;
-import java.util.Objects;
 
 /**
- * Returns the rank of each row based on value, ordered by timestamp.
- * Same values receive the same rank; the next distinct value skips ranks.
+ * Returns the rank of each row by its value (standard SQL {@code RANK() OVER (ORDER BY value)}), listed in timestamp order.
+ * Same values receive the same rank wherever they sit in time; the next distinct value skips ranks. Null values rank last.
  * Syntax: ts.rank(value, timestamp)
  */
 public class SQLFunctionRank extends SQLAggregatedFunction {
@@ -68,24 +66,15 @@ public class SQLFunctionRank extends SQLAggregatedFunction {
     if (pairs.isEmpty())
       return new ArrayList<>();
 
-    // Same shape as ts.lag/ts.lead: the timestamp is optional, so rows without one keep their arrival order rather
-    // than NPE the comparator, and values that cannot be compared with each other are a typed error (#6389, #6390).
-    try {
-      pairs.sort(Comparator.comparing(p -> (Comparable) p[1], Comparator.nullsLast(Comparator.naturalOrder())));
-    } catch (final ClassCastException e) {
-      throw new IllegalArgumentException(
-          NAME + "() cannot order the rows: the <timestamp> values are not mutually comparable", e);
-    }
+    // Two orders, two keys (issue #9956). The OUTPUT is listed in timestamp order, like ts.lag/ts.lead/ts.rowNumber, so
+    // the n-th element belongs to the n-th row in time. The RANK is defined over the value: equal values share a rank
+    // however far apart in time they are, and the next distinct value skips the ranks they took.
+    WindowRows.sortBy(NAME, pairs, 1, "<timestamp>");
+    final int[] ranks = WindowRows.rankBy(NAME, pairs, 0, "<value>");
 
-    final List<Integer> result = new ArrayList<>(pairs.size());
-    result.add(1);
-
-    for (int i = 1; i < pairs.size(); i++) {
-      if (Objects.equals(pairs.get(i)[0], pairs.get(i - 1)[0]))
-        result.add(result.get(i - 1));
-      else
-        result.add(i + 1);
-    }
+    final List<Integer> result = new ArrayList<>(ranks.length);
+    for (final int rank : ranks)
+      result.add(rank);
 
     return result;
   }
