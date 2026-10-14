@@ -156,6 +156,11 @@ public final class FullTextCorpusDeltas {
 
   /**
    * Applies what the transaction did, once its pages are published: called by the commit, on the node that ran it.
+   * <p>
+   * The pages are visible before the counters move, so a BM25 search running at that instant can score the new postings with the
+   * previous corpus statistics. The counters feed only the length normalizer and the inverse document frequency, which a
+   * single transaction moves by a fraction, and the next search sees them whole: the same brief skew the bucket record counts
+   * have, and not worth a lock on the read path.
    */
   public void applyCommitted() {
     for (final Entry e : entries)
@@ -176,8 +181,9 @@ public final class FullTextCorpusDeltas {
           metadata.applyCorpusDelta(delta.docs(), delta.length());
       } catch (final RuntimeException e) {
         // A replicated transaction is not worth failing over the counters, whatever the lookup or the application raised. A node
-        // that skipped a delta has drifted from the rest of the cluster, though: the next search checks its counters against the
-        // live data (when the lookup itself failed there is no metadata to arm, and the schema reload that follows repairs it)
+        // that skipped a delta, or applied only part of it (the pair is two counters), has drifted from the rest of the cluster:
+        // the next search checks its counters against the live data and rescans (when the lookup itself failed there is no
+        // metadata to arm, and the schema reload that follows repairs it)
         if (metadata != null)
           metadata.requireRescan();
         LogManager.instance().log(FullTextCorpusDeltas.class, Level.WARNING,

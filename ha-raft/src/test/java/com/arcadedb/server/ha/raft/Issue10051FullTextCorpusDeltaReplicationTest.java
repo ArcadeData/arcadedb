@@ -202,7 +202,7 @@ class Issue10051FullTextCorpusDeltaReplicationTest {
 
   @Test
   void thisBuildAdvertisesTheCapability() {
-    assertThat(PeerCapabilities.LOCAL).contains(PeerCapabilities.TX_FULLTEXT_CORPUS_DELTA);
+    assertThat(PeerCapabilities.LOCAL).contains(PeerCapabilities.TX_FULLTEXT_CORPUS_DELTAS);
   }
 
   // ---- the originating node
