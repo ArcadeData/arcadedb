@@ -26,6 +26,7 @@ import com.google.protobuf.Descriptors;
 import com.google.protobuf.Message;
 import io.grpc.Context;
 import io.grpc.Contexts;
+import io.grpc.ForwardingServerCall;
 import io.grpc.ForwardingServerCallListener;
 import io.grpc.Grpc;
 import io.grpc.Metadata;
@@ -33,6 +34,7 @@ import io.grpc.MethodDescriptor;
 import io.grpc.ServerCall;
 import io.grpc.ServerCallHandler;
 import io.grpc.ServerInterceptor;
+import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 
 import java.util.Set;
@@ -42,14 +44,16 @@ import java.util.Set;
  * other protocol: in arrival order, when a slot is free and the running queries leave enough of the heap budget.
  * <p>
  * A unary or server-streaming RPC runs its handler in {@code onHalfClose}, on a thread of the gRPC executor, so that is
- * where it is admitted, and the slot goes back when the handler returns. A refused RPC is closed with the status the
- * service gives every retryable failure ({@code ABORTED}, through {@link GrpcErrorMapper}) before its handler ever ran,
- * so it leaves nothing behind.
+ * where it is admitted. The slot goes back BEFORE the call is closed towards the client, which is what a blocking client
+ * waits for, and at the latest when the handler returns: a client that has just read the answer never finds its own slot
+ * still held, so one slot and no queue serve a sequential client without refusing it (issue #10053). A refused RPC is
+ * closed with the status the service gives every retryable failure ({@code ABORTED}, through {@link GrpcErrorMapper})
+ * before its handler ever ran, so it leaves nothing behind.
  * <p>
  * The same RPCs are registered in the server's running statements once admitted (issue #9689), so {@code list queries}
- * and {@code SHOW TRANSACTIONS} list them and a terminate stops them, and the entry goes once the handler returns. A
- * client that gives up on the call - it cancels it, its deadline expires, its connection drops - terminates the entry:
- * nobody is left to read the answer of the work.
+ * and {@code SHOW TRANSACTIONS} list them and a terminate stops them. Unlike the slot, the entry goes only once the handler
+ * has returned, after whatever it still cleans up behind its answer. A client that gives up on the call - it cancels it,
+ * its deadline expires, its connection drops - terminates the entry: nobody is left to read the answer of the work.
  * <p>
  * Not gated: the admin service, health and reflection, which must stay answerable on a server busy with queries;
  * {@code BeginTransaction} and {@code RollbackTransaction}, which only manage a transaction and must never wait behind the
@@ -87,7 +91,10 @@ class GrpcAdmissionInterceptor implements ServerInterceptor {
       return next.startCall(call, headers);
     }
 
-    return new ForwardingServerCallListener.SimpleForwardingServerCallListener<>(next.startCall(call, headers)) {
+    // The handler closes THIS call, so the slot can go back at the moment the answer leaves the server (issue #10053)
+    final AdmittedCall<ReqT, RespT> admittedCall = new AdmittedCall<>(call);
+
+    return new ForwardingServerCallListener.SimpleForwardingServerCallListener<>(next.startCall(admittedCall, headers)) {
       // The request, which says what the statement is: a gated RPC sends exactly one
       private Object request;
 
@@ -107,6 +114,7 @@ class GrpcAdmissionInterceptor implements ServerInterceptor {
           call.close(refusal.getStatus(), refusal.getTrailers() != null ? refusal.getTrailers() : new Metadata());
           return;
         }
+        admittedCall.admission = admission;
         final RunningQuery runningQuery = register(method, headers, request, client(call));
         // A cancelled call cancels its Context at once, on a thread of its own, while the handler still runs here
         final Context context = Context.current();
@@ -117,6 +125,7 @@ class GrpcAdmissionInterceptor implements ServerInterceptor {
         } finally {
           context.removeListener(onCancel);
           try {
+            // A NO-OP WHEN THE CALL WAS CLOSED BEFORE: THE TICKET GIVES THE SLOT BACK ONCE
             admission.close();
           } finally {
             // LAST: THE ENTRY LEAVING THE LIST IS THE PROOF THE WORK IS OVER
@@ -125,6 +134,29 @@ class GrpcAdmissionInterceptor implements ServerInterceptor {
         }
       }
     };
+  }
+
+  /**
+   * The call the handler answers on. Its {@code close} - the status a blocking client or a stream iterator waits for - gives
+   * the admission ticket back first, so a client that has read the end of a call can start the next one at once (issue
+   * #10053). The ticket is closed again, to no effect, when the handler returns; the call may be closed from any thread, and
+   * a ticket is safe to close from one that did not take it.
+   */
+  private static final class AdmittedCall<ReqT, RespT> extends ForwardingServerCall.SimpleForwardingServerCall<ReqT, RespT> {
+    // SET BY THE LISTENER ON THE THREAD THAT ADMITS THE CALL, BEFORE THE HANDLER THAT CLOSES IT RUNS
+    private volatile QueryAdmissionGate.Ticket admission;
+
+    private AdmittedCall(final ServerCall<ReqT, RespT> delegate) {
+      super(delegate);
+    }
+
+    @Override
+    public void close(final Status status, final Metadata trailers) {
+      final QueryAdmissionGate.Ticket ticket = admission;
+      if (ticket != null)
+        ticket.close();
+      super.close(status, trailers);
+    }
   }
 
   /**
