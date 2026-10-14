@@ -84,8 +84,7 @@ public class AlgoCCHShortestPath extends AbstractAlgoProcedure {
     final Vertex endNode = extractVertex(args[1], "endNode");
     final String[] relTypes = extractRelTypes(args[2], context);
     final String weightProperty = extractString(args[3], "weightProperty");
-    final Vertex.DIRECTION direction = args.length > 4 && args[4] != null ?
-        parseDirection(extractString(args[4], "direction")) : Vertex.DIRECTION.BOTH;
+    final Vertex.DIRECTION direction = parseDirection(extractString(argOrDefault(args, 4, "BOTH"), "direction"));
 
     final ShortestPathFinder.Result found = ShortestPathFinder.find(context.getDatabase(), startNode.getIdentity(),
         endNode.getIdentity(), weightProperty, direction, relTypes, newWorkGuard(context), context);

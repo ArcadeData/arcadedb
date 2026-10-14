@@ -25,6 +25,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.executor.steps.ShortestPathStep;
 import com.arcadedb.query.opencypher.executor.steps.ShortestPathStep.EdgeConstraint;
 import com.arcadedb.query.opencypher.executor.steps.ShortestPathStep.HopBounds;
+import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.function.sql.graph.SQLFunctionShortestPath;
@@ -65,8 +66,27 @@ public class ShortestPathExpression implements Expression {
     this.text = text;
   }
 
+  /**
+   * The shortest path as a {@link TraversalPath}, the value the MATCH form binds, or the list of them for
+   * {@code allShortestPaths()} (issue #9913).
+   */
   @Override
   public Object evaluate(final Result result, final CommandContext context) {
+    final Object found = findElements(result, context);
+    if (!(found instanceof List<?> list))
+      return found;
+
+    if (!allPaths)
+      return TraversalPath.ofWalk(list);
+
+    final List<TraversalPath> paths = new ArrayList<>(list.size());
+    for (final Object elements : list)
+      paths.add(TraversalPath.ofWalk((List<?>) elements));
+    return paths;
+  }
+
+  /** The {@code [v0, e0, v1, ...]} elements of the shortest path, the list of them for all of them, or null for none. */
+  private Object findElements(final Result result, final CommandContext context) {
     // Get the start and end vertices from the bound variables
     if (pathPattern.getNodes().size() != 2) {
       throw new IllegalArgumentException("shortestPath pattern must have exactly 2 nodes, got: " + pathPattern.getNodes().size());

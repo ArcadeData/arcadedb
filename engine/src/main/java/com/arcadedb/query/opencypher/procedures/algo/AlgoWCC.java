@@ -88,7 +88,7 @@ public class AlgoWCC extends AbstractAlgoProcedure {
 
     final Database db = context.getDatabase();
 
-    final String[] relTypes = args.length > 0 ? extractRelTypes(args[0], context) : null;
+    final String[] relTypes = extractRelTypes(argOrDefault(args, 0, null), context);
 
     // Try CSR-accelerated path: delegate to native min-label propagation on CSR arrays.
     // findProvider(relTypes) only returns a provider that covers every requested type, and

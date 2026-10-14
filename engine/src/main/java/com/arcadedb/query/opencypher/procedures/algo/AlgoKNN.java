@@ -91,9 +91,9 @@ public class AlgoKNN extends AbstractAlgoProcedure {
   public Stream<Result> execute(final Object[] args, final Result inputRow, final CommandContext context) {
     validateArgs(args);
 
-    final int rawK             = args.length > 0 && args[0] instanceof Number num ? extractCount(num, "k") : 10;
-    final String[] relTypes    = args.length > 1 ? extractRelTypes(args[1], context) : null;
-    final Vertex.DIRECTION dir = args.length > 2 ? parseDirection(extractString(args[2], "direction")) : Vertex.DIRECTION.BOTH;
+    final int rawK             = extractCount(optionalNumberArg(args, 0, "k", 10), "k");
+    final String[] relTypes    = extractRelTypes(argOrDefault(args, 1, null), context);
+    final Vertex.DIRECTION dir = parseDirection(extractString(argOrDefault(args, 2, "BOTH"), "direction"));
 
     final Database db = context.getDatabase();
     final WorkGuard guard = newWorkGuard(context);

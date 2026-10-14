@@ -79,7 +79,7 @@ public class AlgoGraphColoring extends AbstractAlgoProcedure {
   public Stream<Result> execute(final Object[] args, final Result inputRow, final CommandContext context) {
     validateArgs(args);
 
-    final String[] relTypes = args.length > 0 ? extractRelTypes(args[0], context) : null;
+    final String[] relTypes = extractRelTypes(argOrDefault(args, 0, null), context);
 
     final Database db = context.getDatabase();
 

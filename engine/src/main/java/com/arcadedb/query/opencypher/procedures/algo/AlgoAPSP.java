@@ -108,8 +108,8 @@ public class AlgoAPSP extends AbstractAlgoProcedure {
     // (relTypes, weightProperty), the order of every other weighted algo.* procedure (issue #9769). A call still written
     // in the old (weightProperty, relTypes) order names a property where the relationship types go and is refused by
     // extractRelTypes, rather than walking an empty graph.
-    final String[] relTypes     = args.length > 0 ? extractRelTypes(args[0], context) : null;
-    final String weightProperty = args.length > 1 ? extractWeightProperty(args[1], context) : null;
+    final String[] relTypes     = extractRelTypes(argOrDefault(args, 0, null), context);
+    final String weightProperty = extractWeightProperty(argOrDefault(args, 1, null), context);
 
     final Database db = context.getDatabase();
     final WorkGuard guard = newWorkGuard(context);

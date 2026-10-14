@@ -99,7 +99,7 @@ public class AlgoArticleRank extends AbstractAlgoProcedure {
   public Stream<Result> execute(final Object[] args, final Result inputRow, final CommandContext context) {
     validateArgs(args);
 
-    final Map<String, Object> config = args.length > 0 ? extractMap(args[0], "config") : null;
+    final Map<String, Object> config = extractMap(argOrDefault(args, 0, null), "config");
 
     final double dampingFactor = config != null && config.get("dampingFactor") instanceof Number num ?
         num.doubleValue() : 0.85;

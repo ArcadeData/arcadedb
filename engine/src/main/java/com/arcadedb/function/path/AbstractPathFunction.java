@@ -18,22 +18,18 @@
  */
 package com.arcadedb.function.path;
 
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.function.StatelessFunction;
-import com.arcadedb.graph.Edge;
-import com.arcadedb.graph.Vertex;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
-
-import java.util.List;
-import java.util.Map;
 
 /**
  * Abstract base class for path functions.
  * <p>
- * A path reaches these functions in one of three shapes: the {@link TraversalPath} a Cypher pattern binds
- * ({@code MATCH p = ...}), the {@code {_type: 'path', nodes, relationships}} map the path procedures yield, or an
- * alternating {@code [node, rel, node, ...]} list. {@link #asTraversalPath(Object)} reads any of them as a
- * {@link TraversalPath} when its elements are graph elements, which is what a function hands back so that
- * {@code nodes()}, {@code relationships()}, {@code length()} and the drivers see a real path (issue #10017).
+ * Every Cypher path is a {@link TraversalPath} (issue #9913): the one a pattern binds, the one a path procedure yields, and
+ * the one each of these functions returns, so {@code nodes()}, {@code relationships()}, {@code length()} and the drivers
+ * read it as a path (issue #10017). {@link TraversalPath#of(Object)} also reads the {@code {_type: "path"}} map a client may
+ * send back as a parameter.
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
@@ -46,60 +42,15 @@ public abstract class AbstractPathFunction implements StatelessFunction {
   protected abstract String getSimpleName();
 
   /**
-   * Checks if an object is a path representation (list of alternating nodes and relationships).
-   */
-  protected boolean isPath(final Object obj) {
-    if (obj instanceof TraversalPath)
-      return true;
-    if (obj instanceof List) {
-      return true; // Assume list is a path
-    }
-    if (obj instanceof Map) {
-      final Map<?, ?> map = (Map<?, ?>) obj;
-      return map.containsKey("_type") && "path".equals(map.get("_type"));
-    }
-    return false;
-  }
-
-  /**
-   * Reads {@code value} as a graph path: itself when it is a {@link TraversalPath}, or the path a node/relationship map
-   * or an alternating node/relationship list describes, when every element of it is a vertex or an edge where one is
-   * expected and the counts agree (one more node than relationships).
+   * Returns the path argument in any shape {@link TraversalPath#of(Object)} reads. Anything else is a type error rather
+   * than a null or empty answer, which would read as a correct one (issue #9913).
    *
-   * @return the path, or null when {@code value} is not a path of graph elements
+   * @throws CommandSemanticException when the argument is not a path
    */
-  protected static TraversalPath asTraversalPath(final Object value) {
-    if (value instanceof TraversalPath path)
-      return path;
-
-    if (value instanceof Map<?, ?> map) {
-      if (!(map.get("nodes") instanceof List<?> nodes) || nodes.isEmpty())
-        return null;
-      final Object relsValue = map.get("relationships");
-      final List<?> rels = relsValue instanceof List<?> list ? list : List.of();
-      if (nodes.size() != rels.size() + 1 || !(nodes.get(0) instanceof Vertex start))
-        return null;
-      final TraversalPath path = new TraversalPath(start);
-      for (int i = 0; i < rels.size(); i++) {
-        if (!(rels.get(i) instanceof Edge edge) || !(nodes.get(i + 1) instanceof Vertex next))
-          return null;
-        path.addStep(edge, next);
-      }
-      return path;
-    }
-
-    if (value instanceof List<?> elements) {
-      if (elements.isEmpty() || elements.size() % 2 == 0 || !(elements.get(0) instanceof Vertex start))
-        return null;
-      final TraversalPath path = new TraversalPath(start);
-      for (int i = 1; i < elements.size(); i += 2) {
-        if (!(elements.get(i) instanceof Edge edge) || !(elements.get(i + 1) instanceof Vertex next))
-          return null;
-        path.addStep(edge, next);
-      }
-      return path;
-    }
-
-    return null;
+  protected TraversalPath requirePath(final Object value) {
+    final TraversalPath path = TraversalPath.of(value);
+    if (path == null)
+      throw CypherFunctionHelper.typeMismatch(getName(), "a PATH", value);
+    return path;
   }
 }

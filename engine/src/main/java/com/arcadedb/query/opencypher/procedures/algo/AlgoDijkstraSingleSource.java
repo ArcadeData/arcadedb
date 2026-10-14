@@ -106,7 +106,7 @@ public class AlgoDijkstraSingleSource extends AbstractAlgoProcedure {
     final Vertex startNode      = extractVertex(args[0], "startNode");
     final String[] relTypes     = extractRelTypes(args[1], context);
     final String weightProperty = extractString(args[2], "weightProperty");
-    final Vertex.DIRECTION dir  = args.length > 3 ? parseDirection(extractString(args[3], "direction")) : Vertex.DIRECTION.OUT;
+    final Vertex.DIRECTION dir  = parseDirection(extractString(argOrDefault(args, 3, "OUT"), "direction"));
 
     final Database db = context.getDatabase();
 

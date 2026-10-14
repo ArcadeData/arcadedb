@@ -91,9 +91,9 @@ public class AlgoKShortestPaths extends AbstractAlgoProcedure {
     final Vertex startNode = extractVertex(args[0], "startNode");
     final Vertex endNode = extractVertex(args[1], "endNode");
     final int k = extractCount((Number) args[2], "k");
-    final String[] relTypes = args.length > 3 ? extractRelTypes(args[3], context) : null;
-    final String weightProperty = args.length > 4 ? extractWeightProperty(args[4], context) : null;
-    final String directionArg = args.length > 5 ? extractString(args[5], "direction") : null;
+    final String[] relTypes = extractRelTypes(argOrDefault(args, 3, null), context);
+    final String weightProperty = extractWeightProperty(argOrDefault(args, 4, null), context);
+    final String directionArg = extractString(argOrDefault(args, 5, null), "direction");
     final Vertex.DIRECTION direction = directionArg != null && !directionArg.isEmpty() ? parseDirection(directionArg) : Vertex.DIRECTION.BOTH;
 
     final Database db = context.getDatabase();

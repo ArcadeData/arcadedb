@@ -32,7 +32,6 @@ import com.arcadedb.query.opencypher.temporal.CypherLocalTime;
 import com.arcadedb.query.opencypher.temporal.CypherTemporalValue;
 import com.arcadedb.query.opencypher.temporal.CypherTime;
 import com.arcadedb.query.opencypher.temporal.TemporalUtil;
-import com.arcadedb.query.opencypher.traversal.ShortestPathList;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
@@ -140,17 +139,17 @@ public final class CypherFunctionHelper {
   }
 
   /**
-   * True for a path value: a {@link TraversalPath}, or the {@link ShortestPathList} a {@code shortestPath()} /
-   * {@code allShortestPaths()} pattern binds (issue #9940). Any other list is a LIST, even one that alternates vertices and
-   * edges.
+   * True for a path value. Every Cypher path is a {@link TraversalPath} (issue #9913), including the one a
+   * {@code shortestPath()} / {@code allShortestPaths()} pattern binds (issue #9940): any list is a LIST, even one that
+   * alternates vertices and edges.
    */
   public static boolean isPathValue(final Object value) {
-    return value instanceof TraversalPath || value instanceof ShortestPathList;
+    return value instanceof TraversalPath;
   }
 
   /**
    * Returns the Cypher name of the runtime type of a value: INTEGER, FLOAT, STRING, BOOLEAN, LIST&lt;ANY&gt;, MAP,
-   * NODE, RELATIONSHIP, DATE, LOCAL DATETIME, ZONED DATETIME, LOCAL TIME, ZONED TIME, DURATION, POINT or NULL. Used to
+   * NODE, RELATIONSHIP, PATH, DATE, LOCAL DATETIME, ZONED DATETIME, LOCAL TIME, ZONED TIME, DURATION, POINT or NULL. Used to
    * phrase type errors (and by valueType()) with the vocabulary of the language instead of Java class names. A map is
    * a POINT when it has the shape point() gives it: three key lookups, so classifying a map stays cheap.
    */
@@ -167,10 +166,8 @@ public final class CypherFunctionHelper {
       case Boolean ignored -> "BOOLEAN";
       case Vertex ignored -> "NODE";
       case Edge ignored -> "RELATIONSHIP";
-      // before List: a ShortestPathList IS a List, and the first matching case wins
-      case ShortestPathList ignored -> "PATH";
-      case List ignored -> "LIST<ANY>";
       case TraversalPath ignored -> "PATH";
+      case List ignored -> "LIST<ANY>";
       // the temporal values by Neo4j's names, whether Cypher built them or the Java API stored them (#9709)
       case CypherDate ignored -> "DATE";
       case LocalDate ignored -> "DATE";

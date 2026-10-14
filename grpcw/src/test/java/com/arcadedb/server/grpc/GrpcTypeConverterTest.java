@@ -18,7 +18,12 @@
  */
 package com.arcadedb.server.grpc;
 
+import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.RID;
+import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Timestamp;
 import org.junit.jupiter.api.Test;
@@ -419,5 +424,45 @@ class GrpcTypeConverterTest {
   void bytesOfUtf8() {
     // UTF-8 multibyte characters
     assertThat(GrpcTypeConverter.bytesOf("日本")).isEqualTo(6); // 3 bytes each
+  }
+
+  /** Issue #9913: a Cypher path is a TraversalPath, sent as its {_type, nodes, relationships, length} map. */
+  @Test
+  void pathIsSentAsAMap() {
+    final GrpcValue result = GrpcTypeConverter.toGrpcValue(new TraversalPath());
+    assertThat(result.hasMapValue()).isTrue();
+    assertThat(result.getMapValue().getEntriesMap().get("_type").getStringValue()).isEqualTo("path");
+    assertThat(result.getMapValue().getEntriesMap().get("nodes").getListValue().getValuesCount()).isZero();
+  }
+
+  /** The nodes and relationships of a path travel as RID links, not as their toString(). */
+  @Test
+  void pathElementsAreSentAsLinks() {
+    final DatabaseFactory factory = new DatabaseFactory("./target/databases/GrpcTypeConverterTest-path");
+    if (factory.exists())
+      factory.open().drop();
+    final Database database = factory.create();
+    try {
+      database.getSchema().createVertexType("V");
+      database.getSchema().createEdgeType("E");
+      database.transaction(() -> {
+        final MutableVertex a = database.newVertex("V").save();
+        final MutableVertex b = database.newVertex("V").save();
+        final Edge e = a.newEdge("E", b);
+        final TraversalPath path = new TraversalPath(a);
+        path.addStep(e, b);
+
+        final Map<String, GrpcValue> entries = GrpcTypeConverter.toGrpcValue(path).getMapValue().getEntriesMap();
+        final List<GrpcValue> nodes = entries.get("nodes").getListValue().getValuesList();
+        assertThat(nodes).hasSize(2);
+        assertThat(nodes.get(0).getLinkValue().getRid()).isEqualTo(a.getIdentity().toString());
+        assertThat(nodes.get(1).getLinkValue().getRid()).isEqualTo(b.getIdentity().toString());
+        assertThat(entries.get("relationships").getListValue().getValues(0).getLinkValue().getRid())
+            .isEqualTo(e.getIdentity().toString());
+        assertThat(entries.get("length").getInt32Value()).isEqualTo(1);
+      });
+    } finally {
+      database.drop();
+    }
   }
 }

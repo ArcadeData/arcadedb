@@ -27,6 +27,7 @@ import com.arcadedb.graph.GraphBatch;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.antlr.SQLAntlrParser;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -429,8 +430,8 @@ class GraphAnalyticalViewCCHTest {
             + "YIELD path, weight RETURN path, weight", Map.of("s", s, "t", t))) {
       final Result row = rs.next();
       assertThat(((Number) row.getProperty("weight")).doubleValue()).isCloseTo(expected, within(EPS));
-      final Map<String, Object> path = row.getProperty("path");
-      assertThat((List<?>) path.get("relationships")).hasSize(((List<?>) path.get("nodes")).size() - 1);
+      final TraversalPath path = row.getProperty("path");
+      assertThat(path.getEdges()).hasSize(path.getVertices().size() - 1);
     }
     assertThat(cch.getQueryCount()).isGreaterThan(queriesBefore);
     assertThat(cch.getFallbackCount()).isZero();

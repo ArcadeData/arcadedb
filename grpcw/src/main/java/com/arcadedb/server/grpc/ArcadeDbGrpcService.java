@@ -20,6 +20,7 @@ package com.arcadedb.server.grpc;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.query.sql.parser.MatchStatement;
 import com.arcadedb.query.sql.parser.OrderBy;
@@ -147,7 +148,6 @@ import java.util.logging.Level;
 public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImplBase {
   /** The {@code protocol} tag every query this service runs is metered under. */
   private static final String GRPC_PROTOCOL = GrpcProtocolContextInterceptor.GRPC_PROTOCOL;
-
 
   // Pick serializer once
   private static final JsonSerializer FAST = JsonSerializer.createJsonSerializer().setIncludeVertexEdges(false)
@@ -5569,6 +5569,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         mb.putEntries(k, toGrpcValue(doc.get(k), pc));
       return GrpcValue.newBuilder().setMapValue(mb.build()).build();
     }
+
+    // a path as its {_type, nodes, relationships, length} map rather than its toString() (issue #9913)
+    if (o instanceof TraversalPath path)
+      return toGrpcValue(path.toMap(), pc);
 
     if (o instanceof Map<?, ?> m) {
       GrpcMap.Builder mb = GrpcMap.newBuilder();

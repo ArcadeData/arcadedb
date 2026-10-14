@@ -19,6 +19,7 @@
 package com.arcadedb.postgres;
 
 import com.arcadedb.database.Binary;
+import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.schema.Type;
@@ -30,6 +31,7 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
@@ -2462,5 +2464,25 @@ class PostgresTypeTest {
 
     assertThat(PostgresType.byName("hstore")).as("a type this protocol cannot produce").isNull();
     assertThat(PostgresType.byName(null)).isNull();
+  }
+
+  /**
+   * Issue #9913: a Cypher path is a TraversalPath. It travels as the {_type, nodes, relationships, length} JSON object a
+   * procedure's path always had, not as its toString().
+   */
+  @Test
+  void pathIsSentAsJson() {
+    final TraversalPath path = new TraversalPath();
+    assertThat(PostgresType.getTypeForValue(path)).isEqualTo(PostgresType.JSON);
+    assertThat(PostgresType.getArrayTypeForElementType(path)).isEqualTo(PostgresType.JSON);
+    final JSONObject json = new JSONObject(PostgresType.JSON.toText(PostgresType.JSON, path));
+    assertThat(json.getString("_type")).isEqualTo("path");
+    assertThat(json.getInt("length")).isEqualTo(0);
+
+    // the element of a binary json[] array is the same object, not the path's toString()
+    final Binary buffer = new Binary();
+    PostgresType.ARRAY_JSON.serializeAsBinary(PostgresType.ARRAY_JSON, buffer, List.of(path));
+    final String written = new String(buffer.toByteArray(), StandardCharsets.UTF_8);
+    assertThat(written).contains("\"_type\":\"path\"");
   }
 }

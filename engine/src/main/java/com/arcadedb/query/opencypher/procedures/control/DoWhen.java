@@ -28,7 +28,6 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Stream;
@@ -189,7 +188,7 @@ public class DoWhen implements CypherProcedure {
     final boolean condition = extractBoolean(args[0]);
     final String ifQuery = extractString(args[1], "ifQuery");
     final String elseQuery = args[2] == null ? "" : extractString(args[2], "elseQuery");
-    final Map<String, Object> params = extractMap(argAt(args, 3));
+    final Map<String, Object> params = optionalMapArg(args, 3, "params");
 
     final String query = condition ? ifQuery : elseQuery;
     if (query == null || query.isBlank())
@@ -216,16 +215,6 @@ public class DoWhen implements CypherProcedure {
     return rows.stream();
   }
 
-  /**
-   * The argument at {@code index}, or {@code null} when the caller stopped short of it. {@code validateArgs} has
-   * already run, so a shorter array means the argument is one APOC declares with a default - here only
-   * {@code params}, whose absence {@link #extractMap} already resolves to the empty map, the same value APOC
-   * defaults it to (issue #8102).
-   */
-  private static Object argAt(final Object[] args, final int index) {
-    return index < args.length ? args[index] : null;
-  }
-
   private boolean extractBoolean(final Object arg) {
     if (arg instanceof Boolean b)
       return b;
@@ -238,14 +227,5 @@ public class DoWhen implements CypherProcedure {
       throw new IllegalArgumentException(getName() + "(): " + paramName + " must be a string, got " +
           (arg == null ? "null" : arg.getClass().getSimpleName()));
     return s;
-  }
-
-  @SuppressWarnings("unchecked")
-  private Map<String, Object> extractMap(final Object arg) {
-    if (arg == null)
-      return Collections.emptyMap();
-    if (!(arg instanceof Map))
-      throw new IllegalArgumentException(getName() + "(): params must be a map, got " + arg.getClass().getSimpleName());
-    return (Map<String, Object>) arg;
   }
 }
