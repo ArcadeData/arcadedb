@@ -105,11 +105,14 @@ public class CopyDocumentStep extends AbstractExecutionStep {
    * The properties a statement writes from a row ({@code INSERT ... FROM SELECT}, {@code UPDATE ... MERGE} of a sub-query): the
    * row's own properties ({@link Result#toPropertyMap(boolean)}), less the names that are not properties of a record -
    * metadata ({@code @rid}, {@code @type}, ...) and the {@code $} variables a query projects ({@code $score},
-   * {@code $distance}, ...) - so neither ends up stored on the target record.
+   * {@code $distance}, ...) - so neither ends up stored on the target record. A {@code $} name the row's own record stores
+   * is a property like any other, and is written.
    */
   static Map<String, Object> propertiesToWrite(final Result row) {
     final Map<String, Object> properties = row.toPropertyMap(false);
-    properties.keySet().removeIf(name -> name.isEmpty() || name.charAt(0) == '@' || name.charAt(0) == '$');
+    final Document source = row.isElement() ? row.toElement() : null;
+    properties.keySet().removeIf(name -> name.isEmpty() || name.charAt(0) == '@' ||//
+        (name.charAt(0) == '$' && (source == null || !source.has(name))));
     return properties;
   }
 
