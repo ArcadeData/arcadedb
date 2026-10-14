@@ -236,6 +236,28 @@ class Issue9940GqlConstructsTest extends TestHelper {
   }
 
   @Test
+  void conditionalBranchPlanKeysCannotBeQueryText() {
+    // a branch's plan-cache key is "\0WHEN#i\0<query>" or "\0ELSE\0<query>": query text is trimmed (which drops the leading
+    // NUL) and the lexer refuses the NUL that is then left inside the text, so a key can never be query text that plans.
+    // A NUL inside a string literal is ordinary content
+    assertThatThrownBy(() -> rows("\u0000WHEN#0\u0000RETURN 1 AS r")).isInstanceOf(Exception.class);
+    assertThatThrownBy(() -> rows("\u0000ELSE\u0000RETURN 1 AS r")).isInstanceOf(Exception.class);
+    assertThatThrownBy(() -> rows("RETURN 1\u0000 AS r")).hasMessageContaining("Unexpected input");
+    assertThat(column("RETURN 'a\u0000b' AS r", "r")).containsExactly("a\u0000b");
+    // the same conditional text runs each branch from its own cached plan
+    final String query = "WHEN $x = 1 THEN RETURN 'one' AS r ELSE RETURN 'other' AS r";
+    for (int i = 0; i < 3; i++) {
+      assertThat(column(query, "r", Map.of("x", 1))).containsExactly("one");
+      assertThat(column(query, "r", Map.of("x", 2))).containsExactly("other");
+    }
+  }
+
+  @Test
+  void isNormalizedColumnIsNamedAfterTheSourceText() {
+    assertThat(rows("RETURN 'a' IS NORMALIZED").getFirst().keySet()).containsExactly("'a' IS NORMALIZED");
+  }
+
+  @Test
   void conditionalQueryBranchesMustReturnTheSameColumns() {
     assertThatThrownBy(() -> rows("WHEN true THEN RETURN 1 AS a ELSE RETURN 2 AS b")).hasMessageContaining("conditional");
   }
@@ -355,6 +377,8 @@ class Issue9940GqlConstructsTest extends TestHelper {
     // aggregation, with the trailing ORDER BY naming the grouping key, SKIP and LIMIT applied after the sort
     assertThat(column("MATCH (n:Item9940b) RETURN n.g AS g, count(*) AS c LIMIT 2 ORDER BY g SKIP 1", "g"))
         .containsExactly("y", "z");
+    // aggregation, with the trailing ORDER BY naming the pre-aggregation expression the RETURN groups by
+    assertThat(column("MATCH (n:Item9940b) RETURN n.g, count(*) AS c LIMIT 2 ORDER BY n.g", "n.g")).containsExactly("x", "y");
   }
 
   // 12. Top-level parenthesized path with a WHERE and no quantifier

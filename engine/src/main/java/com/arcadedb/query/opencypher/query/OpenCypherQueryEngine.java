@@ -429,10 +429,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
       throw new CommandParameterMissingException(missing.toArray(new String[0]));
   }
 
-  /**
-   * Evaluates the condition of a conditional query branch. Only {@code true} takes the branch: null and false both pass to
-   * the next one, as a WHERE does. Anything that is not a boolean is a type error rather than a silent "not taken".
-   */
+  /** The context the conditions of a conditional query are evaluated against: the database, the parameters, the functions. */
   private BasicCommandContext conditionContext(final Map<String, Object> parameters) {
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database);
@@ -441,6 +438,10 @@ public class OpenCypherQueryEngine implements QueryEngine {
     return context;
   }
 
+  /**
+   * Evaluates the condition of a conditional query branch. Only {@code true} takes the branch: null and false both pass to
+   * the next one, as a WHERE does. Anything that is not a boolean is a type error rather than a silent "not taken".
+   */
   private static boolean isConditionTrue(final Expression condition, final BasicCommandContext context) {
     final Object value = EXPRESSION_EVALUATOR.evaluate(condition, new ResultInternal(), context);
     if (value == null || value instanceof Boolean)
@@ -468,7 +469,8 @@ public class OpenCypherQueryEngine implements QueryEngine {
       final Map<String, Object> parameters, final boolean explain, final boolean profile, final boolean timeExecution) {
     // A conditional query runs one of its branches, picked now that the parameters its conditions read are known. Each branch
     // is planned and cached under a key of its own, since the same text runs different branches for different parameters.
-    // The key STARTS with NUL, which the lexer refuses outside a string literal, so no query text that plans can equal it.
+    // The key carries a NUL inside it ("\0WHEN#i\0<query>"), and the lexer refuses a NUL outside a string literal, so no
+    // query text that plans can equal a key.
     // The conditions share one context: they read the same parameters
     if (statement instanceof ConditionalStatement conditional) {
       final List<CypherStatement> branches = conditional.getBranches();
