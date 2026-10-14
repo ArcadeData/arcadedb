@@ -220,6 +220,9 @@ class Issue9913PathValueTest extends TestHelper {
     assertThatThrownBy(() -> single("MATCH (n:City {name: 'A'}) RETURN nodes({_type: 'path', nodes: [n, n], relationships: []}) AS x"))
         .isInstanceOf(CommandSemanticException.class).hasMessageContaining("PATH");
 
+    // length() of a string keeps answering its length, as it always has
+    assertThat(single("RETURN length('abc') AS l").<Long>getProperty("l")).isEqualTo(3L);
+
     final Result nulls = single("RETURN nodes(null) AS n, relationships(null) AS r, length(null) AS l");
     assertThat(nulls.<Object>getProperty("n")).isNull();
     assertThat(nulls.<Object>getProperty("r")).isNull();
