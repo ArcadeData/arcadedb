@@ -1541,15 +1541,20 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   }
 
   /**
-   * The first of {@code e} and its unwrapped {@code cause} that is an instance of {@code type}, or {@code null}
-   * when neither is. {@code e} is tested first so a mapping reports the outermost throwable of its own type,
-   * which is the one carrying the message and the structured arguments the client is given.
+   * Whether this server is shutting down, which is what turns a closed database into a transient failure (issue #8199).
+   * Read without synchronization: the shutdown sets the status before it closes a database, so a request failing on a
+   * database the shutdown closed always sees it.
    */
   private boolean isServerShuttingDown() {
     final ArcadeDBServer server = httpServer != null ? httpServer.getServer() : null;
     return server != null && server.getStatus() == ArcadeDBServer.STATUS.SHUTTING_DOWN;
   }
 
+  /**
+   * The first of {@code e} and its unwrapped {@code cause} that is an instance of {@code type}, or {@code null}
+   * when neither is. {@code e} is tested first so a mapping reports the outermost throwable of its own type,
+   * which is the one carrying the message and the structured arguments the client is given.
+   */
   private static <T> T firstOf(final Throwable e, final Throwable cause, final Class<T> type) {
     if (type.isInstance(e))
       return type.cast(e);
