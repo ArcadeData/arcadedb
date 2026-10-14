@@ -18,6 +18,11 @@
  */
 package com.arcadedb.function.path;
 
+import com.arcadedb.database.RID;
+import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.util.ArrayList;
@@ -27,7 +32,13 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * path.create(start, relationships) - Create a path from a start node and a list of relationships.
+ * path.create(start, relationships) - Create a path from a start node and a list of relationships (APOC's
+ * {@code apoc.path.create}).
+ * <p>
+ * Each relationship continues the path from the node the previous one reached, in whichever direction it is stored,
+ * so the nodes of the path are derived from the relationships; a relationship that does not touch that node is an
+ * error, and a {@code null} one is skipped. Graph elements build a real path, which {@code nodes()}, {@code length()}
+ * and the drivers read as one (issue #10017).
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
@@ -60,6 +71,9 @@ public class PathCreate extends AbstractPathFunction {
     final Object startNode = args[0];
     final List<Object> relationships = toList(args[1]);
 
+    if (startNode instanceof Vertex start && allEdges(relationships))
+      return buildPath(start, relationships);
+
     // Create path representation
     final Map<String, Object> path = new LinkedHashMap<>();
     path.put("_type", "path");
@@ -76,6 +90,36 @@ public class PathCreate extends AbstractPathFunction {
     path.put("relationships", rels);
     path.put("length", rels.size());
 
+    return path;
+  }
+
+  private static boolean allEdges(final List<Object> relationships) {
+    for (final Object relationship : relationships)
+      if (relationship != null && !(relationship instanceof Edge))
+        return false;
+    return true;
+  }
+
+  private static TraversalPath buildPath(final Vertex start, final List<Object> relationships) {
+    final TraversalPath path = new TraversalPath(start);
+    Vertex current = start;
+    for (final Object relationship : relationships) {
+      if (relationship == null)
+        continue;
+      final Edge edge = (Edge) relationship;
+      final RID at = current.getIdentity();
+      final Vertex next;
+      if (at.equals(edge.getOut()))
+        next = edge.getInVertex();
+      else if (at.equals(edge.getIn()))
+        next = edge.getOutVertex();
+      else
+        throw new CommandExecutionException(
+            "path.create(): relationship " + edge.getIdentity() + " (" + edge.getOut() + " -> " + edge.getIn()
+                + ") does not continue the path, which has reached " + at);
+      path.addStep(edge, next);
+      current = next;
+    }
     return path;
   }
 

@@ -54,6 +54,10 @@ public class EdgeLinkedList {
   protected final Vertex vertex;
   protected final Vertex.DIRECTION direction;
   private EdgeSegment lastSegment;
+  // THE TWINS OF THE LIGHTWEIGHT EDGES THE ITERATIONS OF THIS LIST READ, COUNTED ONLY WHEN ASKED (ISSUE #10008). A CHAIN
+  // OF A STRIPED LIST SHARES THE ONE OF THE WHOLE LIST, WHICH IS WHAT IT COUNTS
+  private EdgeLinkedList  censusOwner;
+  private LightEdgeCensus census;
 
   public EdgeLinkedList(final Vertex vertex, final Vertex.DIRECTION direction, final EdgeSegment lastSegment) {
     this.vertex = vertex;
@@ -70,8 +74,31 @@ public class EdgeLinkedList {
 
   public Iterator<Edge> edgeIterator(final String... edgeTypes) {
     if (edgeTypes == null || edgeTypes.length == 0)
-      return new EdgeIterator(lastSegment, vertex.getIdentity(), direction);
-    return new EdgeIteratorFilter((DatabaseInternal) vertex.getDatabase(), vertex, direction, lastSegment, edgeTypes);
+      return withCensus(new EdgeIterator(lastSegment, vertex.getIdentity(), direction));
+    return withCensus(new EdgeIteratorFilter((DatabaseInternal) vertex.getDatabase(), vertex, direction, lastSegment, edgeTypes));
+  }
+
+  /**
+   * The census of the lightweight edges of this list (see {@link LightEdgeCensus}), created on the first lightweight
+   * edge an iteration hands out: one small object per list read that holds lightweight edges, the counting itself
+   * deferred until an edge needs its occurrence twice.
+   */
+  LightEdgeCensus lightEdgeCensus() {
+    if (censusOwner != null)
+      return censusOwner.lightEdgeCensus();
+    if (census == null)
+      census = new LightEdgeCensus((DatabaseInternal) vertex.getDatabase(), vertex.getIdentity(), direction);
+    return census;
+  }
+
+  /** Makes this chain of a striped list count its twins with the whole list it belongs to. */
+  void shareCensusWith(final EdgeLinkedList owner) {
+    this.censusOwner = owner;
+  }
+
+  private <T extends ResettableIteratorBase<Edge>> T withCensus(final T iterator) {
+    iterator.setCensusSource(this);
+    return iterator;
   }
 
   /**
@@ -88,8 +115,9 @@ public class EdgeLinkedList {
    */
   public Iterator<Edge> edgeIteratorKnowingEndpoints(final String... edgeTypes) {
     if (edgeTypes == null || edgeTypes.length == 0)
-      return new EdgeIterator(lastSegment, vertex.getIdentity(), direction, true);
-    return new EdgeIteratorFilter((DatabaseInternal) vertex.getDatabase(), vertex, direction, lastSegment, edgeTypes, true);
+      return withCensus(new EdgeIterator(lastSegment, vertex.getIdentity(), direction, true));
+    return withCensus(
+        new EdgeIteratorFilter((DatabaseInternal) vertex.getDatabase(), vertex, direction, lastSegment, edgeTypes, true));
   }
 
   /**
@@ -195,6 +223,7 @@ public class EdgeLinkedList {
     else
       iterator = new EdgeIteratorFilter((DatabaseInternal) vertex.getDatabase(), vertex, direction, lastSegment, edgeTypes);
     iterator.setNeighborVertexFilter(neighbor);
+    iterator.setCensusSource(this);
     return iterator;
   }
 

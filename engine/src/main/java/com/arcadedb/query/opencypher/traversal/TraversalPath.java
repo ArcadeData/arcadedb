@@ -199,8 +199,11 @@ public class TraversalPath {
     for (int i = 0; i < vertices.size(); i++)
       if (!vertices.get(i).getIdentity().equals(other.vertices.get(i).getIdentity()))
         return false;
+    // LightEdgeRID.isSameEdge rather than RID equality: two parallel lightweight edges of one type over the same
+    // ordered pair share their RID and are two relationships, so two paths through different twins are two paths
+    // (issue #10008). hashCode() stays on the RID, which twins share: equal paths still hash alike
     for (int i = 0; i < edges.size(); i++)
-      if (!edges.get(i).getIdentity().equals(other.edges.get(i).getIdentity()))
+      if (!LightEdgeRID.isSameEdge(edges.get(i).getIdentity(), other.edges.get(i).getIdentity()))
         return false;
     return true;
   }

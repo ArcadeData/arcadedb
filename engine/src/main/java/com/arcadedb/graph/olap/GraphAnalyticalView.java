@@ -58,6 +58,7 @@ import java.util.Set;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BooleanSupplier;
 import java.util.function.IntConsumer;
 import java.util.logging.Level;
@@ -225,6 +226,14 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     final String[]                       edgeTypes;
     final String[]                       propertyFilter;
     final String[]                       edgePropertyFilter;
+    // Whether every edge of the database is in this snapshot, for the edge types the view does not materialize (issue
+    // #9915): the value the view's uncovered-edge write counter had when the scan that produced it started, when that
+    // scan met no edge of such a type; -1 when it met one, or when nobody knows (a CSR restored from disk). See
+    // coversEveryEdge()
+    final long                           uncoveredEdgeFreeAsOf;
+    // The concrete edge types the scan materialized: a type that leaves the filter later (its super-type changed) keeps
+    // the edges the scan counted as covered, so it never counts as proven empty
+    final Set<String>                    scannedEdgeTypes;
     // Merged (undirected or multi-type) neighbour views, built on first request. A snapshot never changes, so a view stays
     // valid for its life, and merging plus sorting the whole adjacency costs far more than the traversal that asks for it
     // (issue #9282). Soft, so a view over a huge edge set is given back under memory pressure rather than pinned.
@@ -236,6 +245,19 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
         final DeltaOverlay overlay, final long buildTimestamp, final long buildDurationMs,
         final long asOfTransactionId, final boolean restoredFromDisk,
         final String[] vertexTypes, final String[] edgeTypes, final String[] propertyFilter, final String[] edgePropertyFilter) {
+      this(csrPerType, nodeMapping, bucketColumns, edgeColumnStores, bwdToFwd, overlay, buildTimestamp, buildDurationMs,
+          asOfTransactionId, restoredFromDisk, vertexTypes, edgeTypes, propertyFilter, edgePropertyFilter, -1L, null);
+    }
+
+    Snapshot(final Map<String, CSRAdjacencyIndex> csrPerType, final NodeIdMapping nodeMapping,
+        final ColumnStore[] bucketColumns, final Map<String, ColumnStore> edgeColumnStores,
+        final Map<String, int[]> bwdToFwd,
+        final DeltaOverlay overlay, final long buildTimestamp, final long buildDurationMs,
+        final long asOfTransactionId, final boolean restoredFromDisk,
+        final String[] vertexTypes, final String[] edgeTypes, final String[] propertyFilter, final String[] edgePropertyFilter,
+        final long uncoveredEdgeFreeAsOf, final Set<String> scannedEdgeTypes) {
+      this.uncoveredEdgeFreeAsOf = uncoveredEdgeFreeAsOf;
+      this.scannedEdgeTypes = scannedEdgeTypes;
       this.csrPerType = csrPerType;
       this.nodeMapping = nodeMapping;
       this.bucketColumns = bucketColumns;
@@ -255,7 +277,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     Snapshot withOverlay(final DeltaOverlay newOverlay) {
       return new Snapshot(csrPerType, nodeMapping, bucketColumns, edgeColumnStores, bwdToFwd,
           newOverlay, buildTimestamp, buildDurationMs, asOfTransactionId, restoredFromDisk,
-          vertexTypes, edgeTypes, propertyFilter, edgePropertyFilter);
+          vertexTypes, edgeTypes, propertyFilter, edgePropertyFilter, uncoveredEdgeFreeAsOf, scannedEdgeTypes);
     }
 
   }
@@ -278,6 +300,9 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   }
 
   private volatile VertexCoverage allVertexTypesCovered;
+  // Edges written of a type the view does not materialize, since it started tracking changes: what tells a snapshot that
+  // its scan's "no such edge" no longer holds (issue #9915). Only ever grows
+  private final AtomicLong uncoveredEdgeWrites = new AtomicLong();
   private volatile UpdateMode updateMode;
 
   /** Single volatile reference for all mutable CSR state — ensures atomic visibility to readers. */
@@ -470,7 +495,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       final Runnable beforeScan = beforeBuildScanForTest;
       if (beforeScan != null)
         beforeScan.run();
-      final CSRBuilder builder = new CSRBuilder(database, propertyFilter, edgePropertyFilter, propertySampleSize);
+      final CSRBuilder builder = newCSRBuilder();
       builder.setScanObserver(watch);
       final CSRBuilder.CSRResult result = builder.build(vertexTypes, edgeTypes);
       final long durationMs = System.currentTimeMillis() - buildStart;
@@ -750,7 +775,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
             final Runnable beforeScan = beforeBuildScanForTest;
             if (beforeScan != null)
               beforeScan.run();
-            final CSRBuilder builder = new CSRBuilder(database, propertyFilter, edgePropertyFilter, propertySampleSize);
+            final CSRBuilder builder = newCSRBuilder();
             builder.setScanObserver(watch);
             final CSRBuilder.CSRResult result = builder.build(vertexTypes, edgeTypes);
             final long durationMs = System.currentTimeMillis() - buildStart;
@@ -1077,6 +1102,46 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       return true;
     final DocumentType type = database.getSchema().getTypeOrNull(edgeTypeName);
     return type != null && coversEdgeTypeByFilter(type);
+  }
+
+  /**
+   * Whether every edge of the database is in this view: every edge type is materialized ({@link #coversEdgeType}
+   * with {@code null}), or the edge types that are not hold no edge (issue #9915). A schema that grows an edge type the
+   * view does not list - empty, or used by another part of the application - otherwise turned away every request that
+   * names no edge type, which means "all of them", however little the new type changed what such a request walks.
+   * <p>
+   * Bucket counts cannot prove a type empty: a lightweight edge has no record. What proves it is the scan that built the
+   * snapshot, which reads every entry of every edge list it walks, whatever its type, and the view's listeners, which
+   * hear every edge written since - record or lightweight, one by one or in bulk. Read per call, never cached: an edge
+   * written changes the answer without changing the schema, which is also why the plans the query engines cache are
+   * not given this answer ({@link #coversEdgeType} stays the schema-only check they rely on) and only a per-call lookup
+   * such as {@link ContractionHierarchy#find} is.
+   */
+  public boolean coversEveryEdge() {
+    if (coversEdgeType(null))
+      return true;
+    final Snapshot snap = snapshot;
+    if (snap == null || snap.uncoveredEdgeFreeAsOf < 0 || snap.uncoveredEdgeFreeAsOf != uncoveredEdgeWrites.get())
+      return false;
+    // A type the scan materialized that the filter no longer covers (its super-type changed) holds edges the scan did
+    // not count as uncovered
+    if (snap.scannedEdgeTypes != null)
+      for (final DocumentType dt : database.getSchema().getTypes())
+        if (dt instanceof EdgeType && !coversEdgeTypeByFilter(dt) && snap.scannedEdgeTypes.contains(dt.getName()))
+          return false;
+    return true;
+  }
+
+  /** An edge of a type this view does not materialize was written (issue #9915): see {@link #coversEveryEdge()}. */
+  void onUncoveredEdgeWritten() {
+    uncoveredEdgeWrites.incrementAndGet();
+  }
+
+  /** A builder whose scan reports whether it met an edge of a type the view does not materialize (issue #9915). */
+  private CSRBuilder newCSRBuilder() {
+    final CSRBuilder builder = new CSRBuilder(database, propertyFilter, edgePropertyFilter, propertySampleSize);
+    builder.setUncoveredEdgeWrites(uncoveredEdgeWrites);
+    return builder;
   }
 
   /**
@@ -2875,7 +2940,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     return new Snapshot(result.getCsrPerType(), result.getMapping(), result.getBucketColumns(),
         result.getEdgeColumnStores(), result.getBwdToFwd(),
         null, System.currentTimeMillis(), durationMs, asOfTransactionId, false,
-        builtVertexTypes, builtEdgeTypes, builtPropertyFilter, builtEdgePropertyFilter);
+        builtVertexTypes, builtEdgeTypes, builtPropertyFilter, builtEdgePropertyFilter, result.getUncoveredEdgeFreeAsOf(),
+        result.getScannedEdgeTypes());
   }
 
   /**
@@ -3469,7 +3535,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
             database.begin();
             try {
               final long buildStart = System.currentTimeMillis();
-              final CSRBuilder builder = new CSRBuilder(database, propertyFilter, edgePropertyFilter, propertySampleSize);
+              final CSRBuilder builder = newCSRBuilder();
               final CSRBuilder.CSRResult result = builder.build(vertexTypes, edgeTypes);
               final long durationMs = System.currentTimeMillis() - buildStart;
               // Synchronized swap: check that the mode hasn't changed to SYNCHRONOUS during rebuild.
@@ -3657,7 +3723,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
             database.begin();
             try {
               final long buildStart = System.currentTimeMillis();
-              final CSRBuilder builder = new CSRBuilder(database, propertyFilter, edgePropertyFilter, propertySampleSize);
+              final CSRBuilder builder = newCSRBuilder();
               final CSRBuilder.CSRResult result = builder.build(vertexTypes, edgeTypes);
               final long durationMs = System.currentTimeMillis() - buildStart;
 

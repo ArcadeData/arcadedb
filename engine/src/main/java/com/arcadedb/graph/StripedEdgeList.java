@@ -664,7 +664,9 @@ public class StripedEdgeList extends EdgeLinkedList {
     if (headRID == null)
       return;
     try {
-      chains.add(new EdgeLinkedList(vertex, direction, (EdgeSegment) database.lookupByRID(headRID, true)));
+      final EdgeLinkedList chain = new EdgeLinkedList(vertex, direction, (EdgeSegment) database.lookupByRID(headRID, true));
+      chain.shareCensusWith(this);
+      chains.add(chain);
     } catch (final RecordNotFoundException e) {
       if (strict)
         // MUTATING (or dedup-feeding) caller: skipping the chain would silently commit an incomplete operation

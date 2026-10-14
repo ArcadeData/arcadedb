@@ -18,6 +18,7 @@
  */
 package com.arcadedb.function.path;
 
+import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.util.ArrayList;
@@ -61,6 +62,10 @@ public class PathSlice extends AbstractPathFunction {
 
     List<Object> nodes;
     List<Object> rels;
+
+    if (args[0] instanceof TraversalPath path)
+      // A PATH BOUND BY A PATTERN SLICES INTO A PATH (ISSUE #10017)
+      return slice(path, from, args.length > 2 && args[2] != null ? ((Number) args[2]).intValue() : path.length());
 
     if (args[0] instanceof Map) {
       final Map<String, Object> pathMap = (Map<String, Object>) args[0];
@@ -111,5 +116,17 @@ public class PathSlice extends AbstractPathFunction {
     result.put("length", slicedRels.size());
 
     return result;
+  }
+
+  private static TraversalPath slice(final TraversalPath path, final int from, final int to) {
+    if (path.getVertices().isEmpty())
+      return path;
+    final int relCount = path.length();
+    final int actualFrom = Math.max(0, Math.min(from, relCount));
+    final int actualTo = Math.max(actualFrom, Math.min(relCount, to));
+    final TraversalPath sliced = new TraversalPath(path.getVertices().get(actualFrom));
+    for (int i = actualFrom; i < actualTo; i++)
+      sliced.addStep(path.getEdges().get(i), path.getVertices().get(i + 1));
+    return sliced;
   }
 }
