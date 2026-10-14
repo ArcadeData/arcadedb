@@ -3003,7 +3003,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    * was then refused and the caller told nothing had changed.
    */
   public String pendingConfigurationChange(final String key) throws IOException {
-    return pendingConfigurationChanges(ContextConfiguration.jsonKey(key));
+    // A declared setting under its declared key, the one the configuration stores it under, however the caller spelled it
+    final GlobalConfiguration setting = GlobalConfiguration.findByKey(key);
+    return pendingConfigurationChanges(ContextConfiguration.jsonKey(setting != null ? setting.getKey() : key));
   }
 
   /** The difference between memory and {@code configuration.json}, restricted to {@code onlyFileKey} when not null. */

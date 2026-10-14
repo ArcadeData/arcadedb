@@ -99,6 +99,15 @@ class Issue9959PerSettingConfigurationEntryTest {
   }
 
   @Test
+  void aDeclaredSettingIsFoundHoweverTheKeyIsSpelled() throws IOException {
+    database.getConfiguration().setValue(GlobalConfiguration.TYPE_DEFAULT_BUCKETS, 5);
+
+    for (final String spelling : new String[] { "typeDefaultBuckets", "ARCADEDB.TYPEDEFAULTBUCKETS" })
+      assertThat(new JSONObject(database.pendingConfigurationChange(spelling)).getJSONObject("configuration").keySet())
+          .as(spelling).containsExactly("typeDefaultBuckets");
+  }
+
+  @Test
   void aSettingFileAndMemoryAgreeOnHasNoChange() throws IOException {
     database.getConfiguration().setValue(GlobalConfiguration.TYPE_DEFAULT_BUCKETS, 5);
     database.saveConfiguration();

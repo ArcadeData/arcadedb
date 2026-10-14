@@ -382,7 +382,8 @@ public interface DatabaseInternal extends Database {
    * Saves the configuration after the setting {@code key} (as stored, {@code arcadedb.} prefix included) changed. Under
    * Raft HA only that setting is replicated, never another change this node holds in memory and has not saved yet,
    * such as one a concurrent statement is still about to submit (issue #9959). Elsewhere the same as
-   * {@link #saveConfiguration()}.
+   * {@link #saveConfiguration()}. A database that wraps another must forward this method, not inherit the default: the
+   * default would turn the keyed save back into the whole-difference one.
    */
   default void saveConfiguration(final String key) throws IOException {
     saveConfiguration();
