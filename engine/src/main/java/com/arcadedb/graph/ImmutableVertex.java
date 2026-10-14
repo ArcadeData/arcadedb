@@ -62,11 +62,7 @@ public class ImmutableVertex extends ImmutableDocument implements VertexInternal
    * still be read/deleted (issue #4432).
    */
   private void parseEdgePointers(final Binary content) {
-    final int prefixSize = PROPERTIES_OFFSET;
-    if (content.size() < prefixSize)
-      throw new SerializationException(
-          "Cannot read vertex " + rid + " edge pointers: record buffer is truncated or corrupted (size=" + content.size()
-              + ", expected at least " + prefixSize + ")");
+    checkEdgePointersPrefix(content, rid);
     content.position(1); // SKIP RECORD TYPE
     outEdges = new RID(content.getInt(), content.getLong());
     if (outEdges.getBucketId() == -1)
@@ -75,6 +71,17 @@ public class ImmutableVertex extends ImmutableDocument implements VertexInternal
     if (inEdges.getBucketId() == -1)
       inEdges = null;
     propertiesStartingPosition = content.position();
+  }
+
+  /**
+   * The bounds check of the vertex prefix, shared with {@link MutableVertex} so every shape that parses it refuses a
+   * truncated buffer the same way (issue #9985). The prefix has a fixed length, so one comparison covers it.
+   */
+  static void checkEdgePointersPrefix(final Binary content, final RID rid) {
+    if (content.size() < PROPERTIES_OFFSET)
+      throw new SerializationException(
+          "Cannot read vertex " + rid + " edge pointers: record buffer is truncated or corrupted (size=" + content.size()
+              + ", expected at least " + PROPERTIES_OFFSET + ")");
   }
 
   @Override

@@ -200,6 +200,12 @@ public class ContinuousAggregateBuilder {
     final String finalTsColumn = tsColumnInQuery;
 
     return schema.recordFileChanges(() -> {
+      // AGAIN UNDER THE WRITE LOCK, WHICH DROP TYPE TAKES TOO (#9978): a source type dropped after the check above would
+      // otherwise be registered as the one this aggregate reads, and one recreated under the same name need not be a
+      // TimeSeries type any more
+      if (!(schema.getTypeOrNull(sourceTypeName) instanceof LocalTimeSeriesType))
+        throw new SchemaException("Source type '" + sourceTypeName + "' does not exist or is no longer a TimeSeries type");
+
       // Create backing document type
       schema.buildDocumentType().withName(name).create();
 

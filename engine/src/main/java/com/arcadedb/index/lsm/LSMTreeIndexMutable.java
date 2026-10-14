@@ -647,7 +647,7 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
       setCount(currentPage, count + 1);
       setValuesFreePosition(currentPage, keyValueFreePosition);
 
-      if (LogManager.instance().isDebugEnabled())
+      if (LogManager.instance().isLoggable(this, Level.FINE))
         LogManager.instance()
             .log(this, Level.FINE, "Put removed entry %s=%s (original=%s) in index '%s' (page=%s countInPage=%d newPage=%s)", null,
                 Arrays.toString(keys), removedRID, rid, componentName, currentPage.getPageId(), count + 1, newPage);

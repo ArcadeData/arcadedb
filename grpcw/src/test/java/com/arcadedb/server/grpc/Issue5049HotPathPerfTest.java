@@ -18,7 +18,6 @@
  */
 package com.arcadedb.server.grpc;
 
-import com.arcadedb.log.LogManager;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
@@ -32,13 +31,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * length without allocating a throwaway {@code byte[]}, matching
  * {@code String.getBytes(UTF_8).length} for every input class including unpaired surrogates.
  *
- * <p>PERF-1: a converter-level sanity check that toggling the {@code debug} flag never changes
- * conversion output. This exercises {@link GrpcTypeConverter} (which itself contains no logging);
- * the guarded per-value logging added by this fix lives in the private
- * {@code ArcadeDbGrpcService.toGrpcValue}/{@code convert*} paths, which are exercised end-to-end
- * (at the default debug-off level) by {@code ArcadeDbGrpcServiceExtendedTest} and
- * {@code ArcadeDbGrpcServiceCoverageIT}. The guards are behavior-neutral by construction: each
- * only wraps a {@code Level.FINE} log call, never a value-producing statement.
+ * <p>PERF-1, the guarded per-value logging of the private {@code ArcadeDbGrpcService.toGrpcValue}/{@code convert*}
+ * paths, is exercised end-to-end at both levels by {@code Issue9984GrpcFineTraceTest}: the sanity check that sat here
+ * toggled {@code LogManager.isDebugEnabled()} around {@link GrpcTypeConverter}, which contains no logging, and went
+ * with the flag (#9984).
  */
 class Issue5049HotPathPerfTest {
 
@@ -94,28 +90,5 @@ class Issue5049HotPathPerfTest {
     }
     final String s = sb.toString();
     assertThat(GrpcTypeConverter.bytesOf(s)).isEqualTo(s.getBytes(StandardCharsets.UTF_8).length);
-  }
-
-  @Test
-  void conversionResultIsIndependentOfDebugFlag() {
-    final boolean previous = LogManager.instance().isDebugEnabled();
-    try {
-      final Object[] values = { true, 42, 123456789012345L, 3.14d, "text", 2.5f };
-
-      for (final Object v : values) {
-        LogManager.instance().setDebugEnabled(false);
-        final GrpcValue off = GrpcTypeConverter.toGrpcValue(v);
-        final Object offBack = GrpcTypeConverter.fromGrpcValue(off);
-
-        LogManager.instance().setDebugEnabled(true);
-        final GrpcValue on = GrpcTypeConverter.toGrpcValue(v);
-        final Object onBack = GrpcTypeConverter.fromGrpcValue(on);
-
-        assertThat(on).as("encoded value for %s must not depend on debug flag", v).isEqualTo(off);
-        assertThat(onBack).as("decoded value for %s must not depend on debug flag", v).isEqualTo(offBack);
-      }
-    } finally {
-      LogManager.instance().setDebugEnabled(previous);
-    }
   }
 }

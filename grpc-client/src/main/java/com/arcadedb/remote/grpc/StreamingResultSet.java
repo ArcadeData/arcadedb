@@ -78,7 +78,7 @@ class StreamingResultSet implements ResultSet {
       while (stream.hasNext()) {
         final QueryResult queryResult = stream.read();
 
-        if (LogManager.instance().isDebugEnabled()) {
+        if (LogManager.instance().isLoggable(this, Level.FINE)) {
           LogManager.instance().log(this, Level.FINE, "Received batch with %d records, isLastBatch=%s", queryResult.getRecordsCount(),
               queryResult.getIsLastBatch());
         }

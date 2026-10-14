@@ -82,7 +82,7 @@ public class ProtoUtils {
       return "null";
     try {
       if (o instanceof CharSequence s) {
-        if (LogManager.instance().isDebugEnabled() || LOG_SHOW_STR_AT_DEBUG) {
+        if (LOG_SHOW_STR_AT_DEBUG) {
           String txt = s.toString();
           return "String(" + s.length() + ")=\"" + (txt.length() > LOG_STR_PREVIEW ? txt.substring(0, LOG_STR_PREVIEW) + "…" : txt)
               + "\"";
@@ -95,7 +95,10 @@ public class ProtoUtils {
         return o.getClass().getSimpleName() + "[size=" + c.size() + "]";
       if (o instanceof Map<?, ?> m)
         return o.getClass().getSimpleName() + "[size=" + m.size() + "]";
-      return o.getClass().getSimpleName() + "(" + String.valueOf(o) + ")";
+      if (o instanceof Record r)
+        return o.getClass().getSimpleName() + "(" + r.getIdentity() + ")";
+      // A VALUE IS SHOWN ONLY ON OPT-IN, LIKE A STRING: THESE TRACES ARE REACHABLE AT FINE SINCE #9984
+      return LOG_SHOW_STR_AT_DEBUG ? o.getClass().getSimpleName() + "(" + o + ")" : o.getClass().getSimpleName();
     } catch (Exception e) {
       return o.getClass().getSimpleName();
     }
@@ -104,6 +107,16 @@ public class ProtoUtils {
   private static String summarizeGrpc(GrpcValue v) {
     if (v == null)
       return "GrpcValue(null)";
+    if (!LOG_SHOW_STR_AT_DEBUG)
+      return switch (v.getKindCase()) {
+        case STRING_VALUE -> "STRING(" + v.getStringValue().length() + ")";
+        case BYTES_VALUE -> "BYTES[" + v.getBytesValue().size() + "]";
+        case LIST_VALUE -> "LIST[size=" + v.getListValue().getValuesCount() + "]";
+        case MAP_VALUE -> "MAP[size=" + v.getMapValue().getEntriesCount() + "]";
+        case EMBEDDED_VALUE -> "EMBEDDED[type=" + v.getEmbeddedValue().getType() + ", size=" + v.getEmbeddedValue().getFieldsCount() + "]";
+        case LINK_VALUE -> "LINK(" + v.getLinkValue().getRid() + ")";
+        default -> v.getKindCase().name();
+      };
     switch (v.getKindCase()) {
     case BOOL_VALUE:
       return "BOOL(" + v.getBoolValue() + ")";
@@ -116,13 +129,8 @@ public class ProtoUtils {
     case DOUBLE_VALUE:
       return "DOUBLE(" + v.getDoubleValue() + ")";
     case STRING_VALUE: {
-      String s = v.getStringValue();
-      if (LogManager.instance().isDebugEnabled() || LOG_SHOW_STR_AT_DEBUG) {
-        String txt = s;
-        return "STRING(" + s.length() + ")=\"" + (txt.length() > LOG_STR_PREVIEW ? txt.substring(0, LOG_STR_PREVIEW) + "…" : txt)
-            + "\"";
-      }
-      return "STRING(" + s.length() + ")";
+      final String s = v.getStringValue();
+      return "STRING(" + s.length() + ")=\"" + (s.length() > LOG_STR_PREVIEW ? s.substring(0, LOG_STR_PREVIEW) + "…" : s) + "\"";
     }
     case BYTES_VALUE:
       return "BYTES[" + v.getBytesValue().size() + "]";
@@ -145,13 +153,13 @@ public class ProtoUtils {
   }
 
   private static GrpcValue dbgEnc(String where, Object in, GrpcValue out) {
-    if (LogManager.instance().isDebugEnabled())
+    if (LogManager.instance().isLoggable(ProtoUtils.class, Level.FINE))
       LogManager.instance().log(ProtoUtils.class, Level.FINE, "CLIENT GRPC-ENC [%s]%s in=%s -> out=%s", where, ctx(), summarizeJava(in), summarizeGrpc(out));
     return out;
   }
 
   private static Object dbgDec(String where, GrpcValue in, Object out) {
-    if (LogManager.instance().isDebugEnabled())
+    if (LogManager.instance().isLoggable(ProtoUtils.class, Level.FINE))
       LogManager.instance().log(ProtoUtils.class, Level.FINE, "CLIENT GRPC-DEC [%s]%s in=%s -> out=%s", where, ctx(), summarizeGrpc(in), summarizeJava(out));
     return out;
   }
