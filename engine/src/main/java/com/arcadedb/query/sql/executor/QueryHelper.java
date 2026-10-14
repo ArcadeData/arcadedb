@@ -31,8 +31,8 @@ public class QueryHelper {
   /**
    * Answers {@code currentValue LIKE value}: {@code %} matches any sequence of characters, the empty one included,
    * {@code ?} exactly one character (a code point, so a surrogate pair is one character), and {@code \%} and
-   * {@code \?} the literal characters. A backslash before anything else is a literal backslash, and every other
-   * character of the pattern stands for itself. A {@code null} operand never matches.
+   * {@code \?} the literal characters. A backslash before anything else, or closing the pattern, is a literal backslash,
+   * and every other character of the pattern stands for itself. A {@code null} operand never matches.
    * <p>
    * The pattern is matched as it is, with no translation to a regular expression, so nothing is compiled per evaluated
    * row, and a pattern made of many {@code %} segments, which made the {@code .*} translation backtrack
