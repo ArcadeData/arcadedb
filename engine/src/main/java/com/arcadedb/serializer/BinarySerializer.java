@@ -618,6 +618,7 @@ public class BinarySerializer {
    * converts a stored String, so a record of a type that declares none pays no property lookup per String it reads.
    */
   private static DocumentType storedStringConversionType(final Document owner) {
+    // ANY OTHER DocumentType IMPLEMENTATION HAS NO MEMO TO ASK: IT IS RETURNED AS IT IS AND PAYS THE LOOKUP PER String
     final DocumentType type = owner != null ? owner.getType() : null;
     if (type instanceof LocalDocumentType localType && !localType.mayConvertStoredStrings())
       return null;

@@ -204,6 +204,9 @@ public class LocalDocumentType implements DocumentType {
    * converts a stored String, which lets the read of every String skip the polymorphic property lookup that finding out
    * would cost (issue #9997). Exact rather than sticky: the answer is computed from the properties and served only under
    * the schema's types serial it was computed at, which moves on every property and super type change.
+   * <p>
+   * The serial is schema-wide, so a change to any type retires the answer of every type, which each recomputes on its
+   * next read: one walk of its polymorphic properties per DDL statement, cheap next to the DDL itself.
    */
   public boolean mayConvertStoredStrings() {
     if (schema == null)

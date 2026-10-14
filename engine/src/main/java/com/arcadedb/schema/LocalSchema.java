@@ -5204,11 +5204,10 @@ public class LocalSchema implements Schema {
    * is what lets a read skip finding the registry of the record's type while nobody listens (issue #9997).
    */
   RecordEventsRegistry newTypeEventsRegistry() {
-    // THE FALLBACK IS DEFENSIVE: LocalDatabase ALWAYS HOLDS A RecordEventsRegistry, AND THE READ PATH CASTS ITS EVENTS TO
-    // ONE (LocalBucket.fireBeforeReadEvents), SO A DATABASE WHOSE EVENTS WERE ANYTHING ELSE COULD NOT BE READ AT ALL
-    return database.getEmbedded().getEvents() instanceof RecordEventsRegistry databaseEvents ?
-        databaseEvents.newTypeRegistry() :
-        new RecordEventsRegistry();
+    // A CAST, NOT A FALLBACK: LocalDatabase ALWAYS HOLDS A RecordEventsRegistry AND THE READ PATH CASTS ITS EVENTS TO ONE
+    // (LocalBucket.fireBeforeReadEvents). A REGISTRY OF ITS OWN WOULD COUNT ITS LISTENERS WHERE NO READ LOOKS, AND THE
+    // READS WOULD SKIP THEM
+    return ((RecordEventsRegistry) database.getEmbedded().getEvents()).newTypeRegistry();
   }
 
   private void rebuildBucketTypeMap() {
