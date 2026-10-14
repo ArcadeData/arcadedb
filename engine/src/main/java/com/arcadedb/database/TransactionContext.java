@@ -356,6 +356,8 @@ public class TransactionContext implements Transaction {
   private       List<Runnable>                       afterCommitCallbacks        = null;
   private       Set<String>                          registeredCallbackKeys      = null;
   private       Map<String, Object>                  attachments                 = null;
+  // #10040: the client opened this transaction and ends it with its own COMMIT/ROLLBACK, see setClientManaged()
+  private       boolean                              clientManaged               = false;
 
   // #5279: above this many tracked insert reservations the parallel arrays are dropped instead of being reused, so a
   // one-off bulk insert does not keep its (per-record) tracking arrays alive on a long-lived transaction context.
@@ -888,6 +890,22 @@ public class TransactionContext implements Transaction {
     if (attachments == null)
       attachments = new HashMap<>(4);
     attachments.put(key, value);
+  }
+
+  /**
+   * Whether the CLIENT opened this transaction - a Postgres {@code BEGIN}, an HTTP {@code /begin}, a Bolt {@code BEGIN},
+   * a gRPC {@code BeginTransaction} - and so decides with its own {@code COMMIT} or {@code ROLLBACK} what becomes of every
+   * statement it sends meanwhile, as opposed to a transaction a server opened around one request on the client's behalf
+   * (issue #10040). An HA replica runs a write sent inside such a transaction locally, in it, instead of forwarding it
+   * to the leader as a request of its own that a ROLLBACK could not undo. Released by {@link #reset()}.
+   */
+  public boolean isClientManaged() {
+    return clientManaged;
+  }
+
+  /** Declares this transaction opened by the client. See {@link #isClientManaged()}. */
+  public void setClientManaged(final boolean clientManaged) {
+    this.clientManaged = clientManaged;
   }
 
   public boolean hasCallbackKey(final String key) {
@@ -3059,6 +3077,7 @@ public class TransactionContext implements Transaction {
     afterCommitCallbacks = null;
     registeredCallbackKeys = null;
     attachments = null;
+    clientManaged = false;
     commitLockTimeout = null;
     useWALOverride = null;
     txId = -1;

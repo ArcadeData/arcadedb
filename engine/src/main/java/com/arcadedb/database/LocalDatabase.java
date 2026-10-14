@@ -49,6 +49,7 @@ import com.arcadedb.exception.BrokenChunkChainException;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DatabaseIsClosedException;
+import com.arcadedb.exception.DatabaseIsReopeningException;
 import com.arcadedb.exception.DatabaseIsReadOnlyException;
 import com.arcadedb.exception.DatabaseMetadataException;
 import com.arcadedb.exception.DatabaseNotFoundException;
@@ -243,6 +244,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   protected final    Lock                                      asyncLock                 = new ReentrantLock();
   protected          boolean                                   autoTransaction           = false;
   protected volatile boolean                                   open                      = false;
+  /** Set by {@link #closeForReopen()}: this instance was closed so that the same database could be reopened (#8199). */
+  private volatile boolean                                     closedForReopen           = false;
   private            boolean                                   readYourWrites            = true;
   // Database-wide durability settings (issue #8352): null until set, so every thread follows the configuration its
   // transaction context was created with. A thread's own setting (Transaction.setUseWAL() and siblings) wins.
@@ -432,6 +435,18 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   @Override
   public void close() {
+    closeInternal(false);
+  }
+
+  /**
+   * Closes this instance because the same database is about to be reopened under its name, by whoever closes it - an HA
+   * snapshot reinstall swapping its files, say. An operation still holding this handle is then refused with the
+   * retryable {@link DatabaseIsReopeningException} instead of the permanent {@link DatabaseIsClosedException}, since the
+   * database resolved again is the reopened one (issue #8199).
+   */
+  @Override
+  public void closeForReopen() {
+    closedForReopen = true;
     closeInternal(false);
   }
 
@@ -4043,7 +4058,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   protected void checkDatabaseIsOpen(final boolean updateIntent, final String databaseReadOnlyErrorMessage) {
     if (!open)
-      throw new DatabaseIsClosedException(name);
+      throw closedForReopen ? new DatabaseIsReopeningException(name) : new DatabaseIsClosedException(name);
     if (fenceReason != null)
       // #5053: a commit failed AFTER its WAL append - the WAL holds a record whose pages were never
       // published, so the live in-memory state diverges from what recovery will reconstruct. Every further

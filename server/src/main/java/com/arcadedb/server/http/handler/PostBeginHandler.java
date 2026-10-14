@@ -68,6 +68,8 @@ public class PostBeginHandler extends DatabaseAbstractHandler {
       database.begin();
 
     final TransactionContext tx = ((DatabaseInternal) database).getTransaction();
+    // The client ends this transaction with its own /commit or /rollback: an HA replica runs its writes in it (issue #10040)
+    tx.setClientManaged(true);
 
     final HttpSession session = httpServer.getSessionManager().createSession(user, tx);
     // The statements the session runs are listed with this label unless they carry their own (issue #9680)

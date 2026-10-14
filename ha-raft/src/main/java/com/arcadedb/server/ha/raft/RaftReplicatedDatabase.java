@@ -1518,8 +1518,12 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       // bypass leader-coordinated mutations of shared state (e.g., the schema dictionary,
       // see issue #4039), where the local page cache lags behind the asynchronous state
       // machine apply and produces inconsistent IDs across the cluster.
-      if (queryEngine.isExecutedByTheLeader() || analyzed.isDDL() || !analyzed.isIdempotent())
-        return forwardCommandToLeaderViaRaft(language, query, null, args);
+      if (queryEngine.isExecutedByTheLeader() || analyzed.isDDL() || !analyzed.isIdempotent()) {
+        if (!runsInTheClientTransaction(queryEngine, analyzed))
+          return forwardCommandToLeaderViaRaft(language, query, null, args);
+        ForwardedRequestIdContext.markExecutedLocally();
+        return proxied.command(language, query, configuration, args);
+      }
       // Read-only command executed locally on this follower: honor the read-consistency header
       // exactly like query() does. /api/v1/command can carry read-only statements (a SELECT), and
       // a LINEARIZABLE/READ_YOUR_WRITES caller must not get a silently weaker guarantee than via
@@ -1535,6 +1539,34 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     // path pays no extra parsing.
     applyReadConsistencyForReadOnlyCommandIfRequested(language, query);
     return proxied.command(language, query, configuration, args);
+  }
+
+  /**
+   * Whether a statement this follower would forward to the leader runs here instead, inside the transaction the client
+   * opened (issue #10040). Forwarded, a write runs and commits on the leader as a request of its own: the client's
+   * ROLLBACK then discards an empty local transaction, and a block of several writes is no longer atomic. Run here, it
+   * joins the client's transaction, whose commit replicates through Raft like any other follower commit - the leader
+   * refuses a stale base page there, which reaches the client as a retryable conflict at COMMIT.
+   * <p>
+   * Only a transaction the CLIENT opened counts ({@link TransactionContext#isClientManaged()}): the HTTP auto-commit
+   * wrapper and the gRPC auto-wrap open one around a single request too, and those keep forwarding, which is what gives a
+   * retried request its exactly-once execution on the leader (#8323, #8347).
+   * <p>
+   * DDL keeps being forwarded: a schema change is not transactional anywhere - a ROLLBACK does not undo one on the
+   * leader either - and a follower cannot write the schema at all. A script carrying DDL is refused, because it cannot
+   * be honoured either way: forwarded, its writes would escape the transaction; run here, its DDL could not.
+   */
+  private boolean runsInTheClientTransaction(final QueryEngine queryEngine, final QueryEngine.AnalyzedQuery analyzed) {
+    final TransactionContext tx = proxied.getTransactionIfExists();
+    if (tx == null || !tx.isActive() || !tx.isClientManaged())
+      return false;
+    if (!analyzed.isDDL())
+      return true;
+    if (queryEngine.isExecutedByTheLeader())
+      throw new TransactionException("A script that changes the schema cannot run inside a transaction on a replica server: "
+          + "its writes would commit outside the transaction. Run it outside the transaction, or send its schema changes "
+          + "as separate commands");
+    return false;
   }
 
   @Override
@@ -1559,8 +1591,12 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     if (!isLeader()) {
       final QueryEngine queryEngine = proxied.getQueryEngineManager().getEngine(language, this);
       final QueryEngine.AnalyzedQuery analyzed = queryEngine.analyze(query);
-      if (queryEngine.isExecutedByTheLeader() || analyzed.isDDL() || !analyzed.isIdempotent())
-        return forwardCommandToLeaderViaRaft(language, query, args, null);
+      if (queryEngine.isExecutedByTheLeader() || analyzed.isDDL() || !analyzed.isIdempotent()) {
+        if (!runsInTheClientTransaction(queryEngine, analyzed))
+          return forwardCommandToLeaderViaRaft(language, query, args, null);
+        ForwardedRequestIdContext.markExecutedLocally();
+        return proxied.command(language, query, configuration, args);
+      }
       // Read-only command executed locally on this follower: honor the read-consistency header.
       applyReadConsistencyForReadOnlyCommand(analyzed);
       // Executed here, so a write it forwards is a part of the client's request, not the whole of it (issue #8347).

@@ -1294,14 +1294,14 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     // reported the same retryable way a Raft conflict already is, instead of the opaque 500 it fell through to
     // before, which RemoteHttpComponent's NeedRetryException-driven auto-retry never saw (issue #6770).
     //
-    // Scope: this maps EVERY DatabaseIsClosedException to 503, not only the resync race above. A concurrent
-    // DROP/CLOSE DATABASE admin action throws the same exception type on a still in-flight request, and that
-    // close is permanent rather than transient - a retry costs one wasted round trip before falling through to
-    // the arm below (issue #6778, #6770 follow-up). Scoping THIS 503 itself to the resync case needs a
-    // resync-vs-permanent-close signal that does not exist yet, so that half of #6778 is not attempted here.
-    final DatabaseIsClosedException databaseClosed = firstOf(e, cause, DatabaseIsClosedException.class);
-    if (databaseClosed != null) {
-      return retryable(databaseClosed);
+    // Scope: only the reinstall's own close, which closes the handle FOR REOPEN and so raises the
+    // DatabaseIsReopeningException subtype. A concurrent DROP/CLOSE DATABASE admin action, or a shutdown, raises the
+    // plain DatabaseIsClosedException on a still in-flight request, and that close is permanent: answered as the 404
+    // below, the same verdict the retry it used to be given ended in once it re-resolved the name (issues #6778,
+    // #8199). ErrorCategory draws the same line for every other wire protocol.
+    final DatabaseIsReopeningException databaseReopening = firstOf(e, cause, DatabaseIsReopeningException.class);
+    if (databaseReopening != null) {
+      return retryable(databaseReopening);
     }
 
     // 404: the wasted retry the comment above describes re-resolves the database with allowLoad=false
@@ -1311,6 +1311,13 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     final DatabaseNotAvailableException notAvailable = firstOf(e, cause, DatabaseNotAvailableException.class);
     if (notAvailable != null) {
       return new ErrorClassification(404, "Database not found", notAvailable, null, ErrorLogKind.USER);
+    }
+
+    // 404: the permanent close the arm above leaves out - a DROP/CLOSE DATABASE or a shutdown closed the handle a
+    // request had resolved (issue #8199). Not a fault of this server and not retryable against the same name.
+    final DatabaseIsClosedException databaseClosed = firstOf(e, cause, DatabaseIsClosedException.class);
+    if (databaseClosed != null) {
+      return new ErrorClassification(404, "Database is closed", databaseClosed, null, ErrorLogKind.USER);
     }
 
     final RecordNotFoundException notFound = firstOf(e, cause, RecordNotFoundException.class);
@@ -1545,7 +1552,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   /**
    * A 503 for a failure the caller can retry as-is - a Raft conflict, a resync race, or a TimeSeries read a
    * downsample overtook, all transient by construction. Shared by the {@link NeedRetryException},
-   * {@link DatabaseIsClosedException} and {@link TimeSeriesWalkCoarsenedException} arms of {@link #classifyError}.
+   * {@link DatabaseIsReopeningException} and {@link TimeSeriesWalkCoarsenedException} arms of {@link #classifyError}.
    */
   private static ErrorClassification retryable(final Throwable retryable) {
     return new ErrorClassification(503, "Cannot execute command", retryable, null, ErrorLogKind.RETRYABLE);

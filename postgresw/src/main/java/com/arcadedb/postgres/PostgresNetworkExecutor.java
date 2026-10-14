@@ -4762,6 +4762,8 @@ public class PostgresNetworkExecutor extends Thread {
         else
           database.begin();
       }
+      // The client ends this transaction with its own COMMIT/ROLLBACK: an HA replica runs its writes in it (issue #10040)
+      ((DatabaseInternal) database).getTransaction().setClientManaged(true);
     }
     case COMMIT -> {
       try {

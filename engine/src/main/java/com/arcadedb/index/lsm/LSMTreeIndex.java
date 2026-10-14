@@ -107,6 +107,28 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
     }
   }
 
+  /**
+   * Loads the mutable component of an index from its file, or answers null - leaving the file out of the schema, untouched
+   * - when the file has no header to load (issue #10046). Such a file is a compaction's new mutable whose pages have not
+   * arrived: an HA follower holds one between the entry that creates a compaction's files and the entry that writes them,
+   * and keeps it when that sequence is cut short. Loaded anyway, it came back with no key types, and once bound to its
+   * index it failed every lookup and range scan with an {@code ArrayIndexOutOfBoundsException}. Left out, the index it
+   * would have stood for is reported missing by the schema, which keeps answering through a scan, and a
+   * {@code REBUILD INDEX} restores it. Never dropped from here: a load must not delete what it cannot read (#4743).
+   */
+  private static PaginatedComponent loadMutable(final DatabaseInternal database, final String name, final boolean unique,
+      final String filePath, final int id, final ComponentFile.MODE mode, final int pageSize, final int version)
+      throws IOException {
+    try {
+      return new LSMTreeIndex(database, name, unique, filePath, id, mode, pageSize, version).mutable;
+    } catch (final LSMTreeIndexMutable.MissingHeaderException e) {
+      LogManager.instance().log(LSMTreeIndex.class, Level.SEVERE,
+          "Index file '%s' (fileId=%d) is not loaded: %s. It is the trace of an index compaction that did not complete; "
+              + "if an index needs it, run 'REBUILD INDEX' on that index", null, filePath, id, e.getMessage());
+      return null;
+    }
+  }
+
   public static class PaginatedComponentFactoryHandlerUnique implements ComponentFactory.PaginatedComponentFactoryHandler {
     @Override
     public PaginatedComponent createOnLoad(final DatabaseInternal database, final String name, final String filePath,
@@ -115,7 +137,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
       if (filePath.endsWith(LSMTreeIndexCompacted.UNIQUE_INDEX_EXT))
         return new LSMTreeIndexCompacted(null, database, name, true, filePath, id, mode, pageSize, version);
 
-      return new LSMTreeIndex(database, name, true, filePath, id, mode, pageSize, version).mutable;
+      return loadMutable(database, name, true, filePath, id, mode, pageSize, version);
     }
   }
 
@@ -127,7 +149,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
       if (filePath.endsWith(LSMTreeIndexCompacted.UNIQUE_INDEX_EXT))
         return new LSMTreeIndexCompacted(null, database, name, false, filePath, id, mode, pageSize, version);
 
-      return new LSMTreeIndex(database, name, false, filePath, id, mode, pageSize, version).mutable;
+      return loadMutable(database, name, false, filePath, id, mode, pageSize, version);
     }
   }
 
