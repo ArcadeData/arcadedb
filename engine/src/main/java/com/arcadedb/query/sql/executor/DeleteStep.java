@@ -39,6 +39,7 @@ public class DeleteStep extends AbstractExecutionStep {
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     final ExecutionStepInternal prevStep = checkForPrevious();
     final DatabaseInternal database = context.getDatabase();
+    // deletes one row ahead of what it returns: only valid under a plan that drains every pull (see SkippingResultSet)
     return new SkippingResultSet(prevStep, context, nRecords) {
       @Override
       protected Result process(final Result result) {

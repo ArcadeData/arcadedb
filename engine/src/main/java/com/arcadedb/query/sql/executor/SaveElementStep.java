@@ -101,6 +101,7 @@ public class SaveElementStep extends AbstractExecutionStep {
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     final ExecutionStepInternal prevStep = checkForPrevious();
+    // saves one row ahead of what it returns: only valid under a plan that drains every pull (see SkippingResultSet)
     return new SkippingResultSet(prevStep, context, nRecords) {
       // the undeclared-key policy, read once per execution instead of once per inserted row (issue #9365)
       private final boolean   rejectUndeclared = TimeSeriesGateway.rejectsUndeclaredKeys(context.getDatabase());

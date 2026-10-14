@@ -22,8 +22,11 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.event.BeforeRecordCreateListener;
 import com.arcadedb.event.BeforeRecordDeleteListener;
 import com.arcadedb.event.BeforeRecordUpdateListener;
+import com.arcadedb.graph.MutableLightEdge;
+import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.EdgeType;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -94,6 +97,23 @@ class Issue9974WriteVetoReportingTest extends TestHelper {
 
     assertThat(applied[0]).isFalse();
     assertThat(count("T")).isZero();
+  }
+
+  /** A lightweight edge has no record to write, so there is nothing a listener could refuse: its save is always applied. */
+  @Test
+  void aLightweightEdgeSaveIsAlwaysApplied() {
+    database.getSchema().createVertexType("V");
+    final EdgeType light = database.getSchema().createEdgeType("Light");
+    light.getEvents().registerListener((BeforeRecordUpdateListener) record -> false);
+
+    final boolean[] applied = new boolean[1];
+    database.transaction(() -> {
+      final MutableVertex v1 = database.newVertex("V").save();
+      final MutableVertex v2 = database.newVertex("V").save();
+      applied[0] = new MutableLightEdge(database, light, v1.getIdentity(), v2.getIdentity()).saveReportingVeto();
+    });
+
+    assertThat(applied[0]).isTrue();
   }
 
   @Test
