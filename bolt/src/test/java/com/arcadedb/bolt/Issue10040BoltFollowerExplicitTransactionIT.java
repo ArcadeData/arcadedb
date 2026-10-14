@@ -108,7 +108,7 @@ class Issue10040BoltFollowerExplicitTransactionIT extends BaseRaftHATest {
 
   private long count(final int serverIndex, final String name) {
     final Database db = getServerDatabase(serverIndex, getDatabaseName());
-    try (final ResultSet rs = db.query("sql", "SELECT count(*) AS c FROM " + LABEL + " WHERE name = ?", name)) {
+    try (final ResultSet rs = db.query("sql", "SELECT count(@rid) AS c FROM " + LABEL + " WHERE name = ?", name)) {
       return rs.next().<Number>getProperty("c").longValue();
     }
   }

@@ -34,8 +34,8 @@ import com.arcadedb.exception.DatabaseIsReadOnlyException;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexCursorEntry;
-import com.arcadedb.index.TempIndexCursor;
 import com.arcadedb.index.IndexException;
+import com.arcadedb.index.TempIndexCursor;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.RidHashSet;
@@ -138,6 +138,10 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
       // The header carries the STORAGE type of each key column, so this file keeps whatever encoding it was created
       // with: one written before #5703 declares TYPE_RID and goes on reading fixed-width LINK keys.
       final int len = currentPage.readByte(pos++);
+      // Every caller re-running this hook (LocalSchema's initComponents() and the incremental load) does so on an instance
+      // the load constructor has just built from the same page 0, which it already refused when blank: reaching this on a
+      // later call needs page 0 rewritten to zeros, which nothing does. Refusing there too keeps the hook from ever
+      // publishing empty key types, whoever calls it.
       if (len <= 0)
         // Every index has at least one key column, so a header declaring none is a page that was never written: served
         // as is, it made every lookup and range scan fail with an ArrayIndexOutOfBoundsException (issue #10046)

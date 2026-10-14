@@ -116,6 +116,62 @@ class Issue10046HeaderlessIndexFileTest extends TestHelper {
     assertThat(headerless.exists()).as("the load must not delete what it cannot read (#4743)").isTrue();
   }
 
+  /**
+   * The mutable that would claim a compacted file is the one waiting for its header, so the load's orphan sweep must not
+   * delete that compacted file: once the header arrives, the index would come back without its compacted entries.
+   */
+  @Test
+  void theCompactedFileOfAHeaderlessMutableIsNotSweptAway() throws Exception {
+    final String typeName = "Issue10046Compacted";
+    database.transaction(() -> {
+      database.getSchema().buildVertexType().withName(typeName).withTotalBuckets(1).create().createProperty("id", Type.INTEGER);
+      database.getSchema().buildTypeIndex(typeName, new String[] { "id" }).withType(Schema.INDEX_TYPE.LSM_TREE).withUnique(false)
+          .withPageSize(2048).create();
+    });
+    for (int batch = 0; batch < 3; batch++) {
+      final int base = batch * 1_000;
+      database.transaction(() -> {
+        for (int i = base; i < base + 1_000; i++)
+          database.newVertex(typeName).set("id", i).save();
+      });
+    }
+
+    final LSMTreeIndex index = (LSMTreeIndex) database.getSchema().getType(typeName).getAllIndexes(false).iterator().next()
+        .getIndexesOnBuckets()[0];
+    database.async().waitCompletion();
+    for (int attempt = 0; attempt < 200 && !index.scheduleCompaction(); ++attempt)
+      Thread.sleep(25); // a background compaction owns the status; let it finish
+    index.compact();
+    final LSMTreeIndexCompacted compacted = index.getMutableIndex().getSubIndex();
+    assertThat(compacted).as("the fixture needs a compacted component").isNotNull();
+
+    final FileManager fileManager = ((DatabaseInternal) database).getFileManager();
+    final File compactedFile = new File(fileManager.getFile(compacted.getFileId()).getFilePath());
+    final String mutableName = index.getMutableIndex().getName();
+    final File mutableFile = new File(fileManager.getFile(index.getMutableIndex().getFileId()).getFilePath());
+    final String headerlessName = LSMTreeIndexAbstract.compactionBaseName(mutableName) + "_" + System.nanoTime();
+
+    database.close();
+
+    final File schemaFile = new File(database.getDatabasePath(), LocalSchema.SCHEMA_FILE_NAME);
+    Files.writeString(schemaFile.toPath(),
+        Files.readString(schemaFile.toPath(), StandardCharsets.UTF_8).replace(mutableName, headerlessName), StandardCharsets.UTF_8);
+    final File prevSchemaFile = new File(database.getDatabasePath(), LocalSchema.SCHEMA_PREV_FILE_NAME);
+    if (prevSchemaFile.exists())
+      Files.delete(prevSchemaFile.toPath());
+    Files.delete(mutableFile.toPath());
+    assertThat(new File(mutableFile.getParentFile(), mutableFile.getName().replace(mutableName, headerlessName)).createNewFile())
+        .isTrue();
+
+    reopenDatabase();
+
+    assertThat(compactedFile.exists()).as("the compacted file of a mutable waiting for its header must survive the load")
+        .isTrue();
+    try (final ResultSet rs = database.query("sql", "SELECT FROM " + typeName + " WHERE id = 2500")) {
+      assertThat(rs.stream().count()).isEqualTo(1L);
+    }
+  }
+
   private void assertLookupsAnswer() {
     try (final ResultSet rs = database.query("opencypher", "MATCH (n:" + TYPE + " {id: 7}) RETURN n.id AS id")) {
       final List<Result> rows = rs.stream().toList();

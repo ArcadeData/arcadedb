@@ -150,7 +150,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
       throw new IllegalArgumentException("Index null strategy is null");
 
     if (keyTypes == null || keyTypes.length == 0)
-      throw new IllegalArgumentException("Key types empty ");
+      throw new IllegalArgumentException("Key types empty");
 
     this.mainIndex = mainIndex;
     this.serializer = database.getSerializer();
@@ -187,7 +187,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
     // The same refusal the creation constructor makes: a clone is what a compaction writes to disk and ships to the
     // replicas, so empty key types copied here would turn one broken instance into a broken file (issue #10046)
     if (storageKeyTypes == null || storageKeyTypes.length == 0)
-      throw new IllegalArgumentException("Key types empty ");
+      throw new IllegalArgumentException("Key types empty");
 
     this.mainIndex = mainIndex;
     this.serializer = database.getSerializer();
