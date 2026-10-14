@@ -135,10 +135,13 @@ class Issue9895SearchIndexLimitTest extends TestHelper {
     assertThat(plan("SELECT FROM Doc WHERE " + SEARCH + " ORDER BY $score DESC LIMIT 10")).contains("(best 10 needed)");
     assertThat(plan("SELECT title, $score FROM Doc WHERE " + SEARCH + " ORDER BY $score DESC LIMIT 10")).contains("(best 10 needed)");
     assertThat(plan("SELECT FROM Doc WHERE " + SEARCH + " SKIP 5 LIMIT 10")).contains("(best 15 needed)");
+    // The branches of an OR of searches are merged by score (issue #10022), so each one is asked for the rows the LIMIT needs
+    assertThat(plan("SELECT FROM Doc WHERE " + SEARCH + " OR SEARCH_INDEX('Doc[content]', 'rare') = true LIMIT 10").split(
+        "\\(best 10 needed\\)", -1)).hasSize(3);
 
     for (final String query : new String[] { "SELECT FROM Doc WHERE " + SEARCH,
         "SELECT FROM Doc WHERE " + SEARCH + " AND n > 5 LIMIT 10",
-        "SELECT FROM Doc WHERE " + SEARCH + " OR SEARCH_INDEX('Doc[content]', 'rare') = true LIMIT 10",
+        "SELECT FROM Doc WHERE " + SEARCH + " OR n < 10 LIMIT 10",
         "SELECT FROM Doc WHERE " + SEARCH + " ORDER BY n LIMIT 10",
         "SELECT FROM Doc WHERE " + SEARCH + " ORDER BY $score ASC LIMIT 10",
         "SELECT FROM Doc WHERE " + SEARCH + " ORDER BY $score DESC, n LIMIT 10",

@@ -132,11 +132,25 @@ public class BinaryCondition extends BooleanExpression {
    * the same path {@link #executeIndexedFunction} delegates down: a bare call on the left-hand side.
    */
   public boolean indexedFunctionSupportsRIDOrder(final CommandContext context) {
+    final IndexableSQLFunction function = indexableFunction(context);
+    return function != null && function.supportsRIDOrder();
+  }
+
+  /**
+   * Whether the function of this indexed-function condition answers best first and sets {@code $score} to the score it
+   * ranked each record by (issue #10022), see {@link IndexableSQLFunction#answersByScore()}.
+   */
+  public boolean indexedFunctionAnswersByScore(final CommandContext context) {
+    final IndexableSQLFunction function = indexableFunction(context);
+    return function != null && function.answersByScore();
+  }
+
+  /** The function of a bare call on the left-hand side, the path {@link #executeIndexedFunction} delegates down. */
+  private IndexableSQLFunction indexableFunction(final CommandContext context) {
     if (left == null || !(left.getMathExpression() instanceof final BaseExpression base) || base.identifier == null
         || base.identifier.levelZero == null || base.identifier.levelZero.functionCall == null)
-      return false;
-    final IndexableSQLFunction function = base.identifier.levelZero.functionCall.getIndexableFunction(context);
-    return function != null && function.supportsRIDOrder();
+      return null;
+    return base.identifier.levelZero.functionCall.getIndexableFunction(context);
   }
 
   /**

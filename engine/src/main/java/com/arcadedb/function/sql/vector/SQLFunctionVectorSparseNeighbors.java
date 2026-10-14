@@ -52,7 +52,6 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
-import java.util.function.Function;
 
 /**
  * Returns the top-K nearest records by sparse-vector dot product against a {@code LSM_SPARSE_VECTOR}
@@ -223,12 +222,12 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
     // per-bucket grouped search and the #8002 second phase - see searchGroupedWithStaleTopUp.
     if (groupBy != null)
       return searchGroupedWithStaleTopUp(k, groupSize, MAX_FETCH_CANDIDATES,
-          (fetchGroups, fetchGroupSize, staleSkipped) -> searchAndEmit(indexes, queryIndices, queryValues, k, fetchGroups,
-              allowedRIDs, groupBy, fetchGroupSize, groupSize, minScore, context, staleSkipped, null));
+          (fetchGroups, fetchGroupSize, staleRids) -> searchAndEmit(indexes, queryIndices, queryValues, k, fetchGroups,
+              allowedRIDs, groupBy, fetchGroupSize, groupSize, minScore, context, new int[1], staleRids, null));
 
     return VectorUtils.searchWithStaleTopUp(k,
         (fetchK, staleSkipped, saturated) -> searchAndEmit(indexes, queryIndices, queryValues, k, fetchK, allowedRIDs, null,
-            groupSize, groupSize, minScore, context, staleSkipped, saturated));
+            groupSize, groupSize, minScore, context, staleSkipped, null, saturated));
   }
 
   /**
@@ -236,25 +235,19 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
    * candidates on the plain path, the group budget and the per-group cap on the grouped one. The answer is always
    * capped at the caller's own {@code k} rows, or {@code k} groups of {@code groupSize}. {@code saturated} is only
    * tracked, and only non-null, on the plain path.
+   * {@code staleRids} is only non-null on the grouped path, where it receives every stale candidate the emit skips, so
+   * the top-up can tell a candidate deleted since the last pass from one it already met (issue #10002).
    */
   private ArrayList<Object> searchAndEmit(final List<LSMSparseVectorIndex> indexes, final int[] queryIndices,
       final float[] queryValues, final int k, final int fetchK, final Set<RID> allowedRIDs, final String groupBy,
       final int fetchGroupSize, final int groupSize, final float minScore, final CommandContext context,
-      final int[] staleSkipped, final boolean[] saturated) {
+      final int[] staleSkipped, final Set<RID> staleRids, final boolean[] saturated) {
     final ArrayList<RidScore> merged = new ArrayList<>();
     final BasicDatabase databaseRef = context.getDatabase();
 
-    // Resolver for the integrated topKGrouped path. lookupByRID misses (record not found, e.g.
-    // stale postings after restore) map to a synthetic null group key so the candidate falls into
-    // the single null bucket, matching the MVP's HashMap null-key behaviour.
-    final Function<RID, Object> groupKeyResolver = groupBy == null ? null : rid -> {
-      try {
-        final Document record = (Document) databaseRef.lookupByRID(rid, true);
-        return readNestedField(record, groupBy);
-      } catch (final RecordNotFoundException e) {
-        return null;
-      }
-    };
+    // One resolver for every search of this pass and for the emit below, so they all group a candidate the same way
+    // and a record that changed under the search is caught at emit (issue #10002) - see GroupKeyMemo.
+    final GroupKeyMemo groupKeyResolver = groupBy == null ? null : new GroupKeyMemo(databaseRef, groupBy);
 
     // Per-bucket fetch cap. The non-grouped path asks for {@code fetchK} candidates, {@code k} on the first pass and
     // wider on a stale top-up; the grouped path uses {@code fetchK} as the distinct-group budget, with
@@ -365,11 +358,24 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
       } catch (final RecordNotFoundException e) {
         // Deleted after the index answered: the caller tops the answer up with a wider fetch (issue #9692).
         staleSkipped[0]++;
+        if (staleRids != null)
+          staleRids.add(neighbor.rid());
         continue;
       }
 
-      if (groupBy != null && !groups.admit(readNestedField(record, groupBy)))
-        continue;
+      if (groupBy != null) {
+        final Object groupKey = readNestedField(record, groupBy);
+        // A commit since the search ranked it updated the field, or gave the RID to a record it inserted (issue
+        // #10002): the row would open a group the searches never filled, so it costs a candidate, as a deleted one does
+        if (!groupKeyResolver.rankedUnder(neighbor.rid(), groupKey)) {
+          staleSkipped[0]++;
+          if (staleRids != null)
+            staleRids.add(neighbor.rid());
+          continue;
+        }
+        if (!groups.admit(groupKey))
+          continue;
+      }
 
       final LinkedHashMap<String, Object> entry = new LinkedHashMap<>();
       entry.put("record", record);

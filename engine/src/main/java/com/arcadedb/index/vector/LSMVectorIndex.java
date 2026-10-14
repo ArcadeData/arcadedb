@@ -8371,7 +8371,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * @param groupSize        max members per group; must be {@code > 0}
    * @param efSearch         search beam width override; {@code -1} uses the index default
    * @param allowedRIDs      optional RID whitelist
-   * @param groupKeyResolver maps a candidate RID to its group key
+   * @param groupKeyResolver maps a candidate RID to its group key, or {@link GroupAdmissionState#UNRESOLVED} for a candidate
+   *                         whose record it cannot read, which is skipped like a deleted one (issue #10002)
    *
    * @return list of (RID, distance) pairs sorted ascending by distance, capped at {@code limit *
    *         groupSize} entries with each distinct group key appearing at most {@code groupSize}
@@ -9059,6 +9060,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
       } catch (final RuntimeException e) {
         // Same verdict the traversal-integrated filter gave an unresolvable candidate: drop it. Counted apart from
         // the cap hits so the log does not read a resolver fault as a full group.
+        unresolvedGroup++;
+        return;
+      }
+      // A record the resolver could not read right now (issue #10002) gets the same verdict, and must not reach the cap
+      // below: it would read there as a full group and mark a BINARY rerank walk truncated for nothing.
+      if (groupKey == GroupAdmissionState.UNRESOLVED) {
         unresolvedGroup++;
         return;
       }
