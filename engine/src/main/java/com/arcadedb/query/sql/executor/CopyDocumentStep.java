@@ -61,10 +61,10 @@ public class CopyDocumentStep extends AbstractExecutionStep {
         try {
           Record resultDoc = null;
           if (toCopy.isElement()) {
-            // THE RECORD DECIDES THE KIND OF THE COPY (VERTEX OR DOCUMENT), THE ROW ITS PROPERTIES: A PROJECTION THAT
-            // EXCLUDED OR OVERRODE A COLUMN HAS ALREADY DECIDED WHAT THE ROW CONTAINS, AND COPYING THE RECORD'S OWN
-            // PROPERTIES WROTE BACK AN EXCLUDED COLUMN AND THE STORED VALUE OF AN OVERRIDDEN ONE (ISSUE #9965). THE ROW'S
-            // METADATA COLUMNS (@rid, @type) ARE SKIPPED BY set(Map)
+            // The record decides the kind of the copy (vertex or document), the row its properties: a projection that
+            // excluded or overrode a column has already decided what the row contains, and copying the record's own
+            // properties wrote back an excluded column and the stored value of an overridden one (issue #9965). The row's
+            // metadata columns (@rid, @type) are skipped by set(Map)
             final Record docToCopy = toCopy.getElement().get().getRecord();
             final Map<String, Object> properties = toCopy.toPropertyMap(false);
 

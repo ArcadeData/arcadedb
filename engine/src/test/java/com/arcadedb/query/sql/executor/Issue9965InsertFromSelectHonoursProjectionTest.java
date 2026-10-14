@@ -20,7 +20,9 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Document;
+import com.arcadedb.database.EmbeddedDocument;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
 
 import java.util.LinkedHashMap;
@@ -95,6 +97,30 @@ class Issue9965InsertFromSelectHonoursProjectionTest extends TestHelper {
     final Document vertex = single("SELECT FROM TV");
     assertThat(vertex).isInstanceOf(Vertex.class);
     assertThat(vertex.toMap(false)).containsOnly(Map.entry("pub", "p"), Map.entry("secret", "SSS"));
+  }
+
+  @Test
+  void embeddedValuesAreCopiedAsValues() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Emb");
+      database.command("sql", "UPDATE S SET e = {\"@type\":\"Emb\",\"x\":1}, le = [{\"@type\":\"Emb\",\"x\":2}, {\"@type\":\"Emb\",\"x\":3}]");
+    });
+    final Document source = single("SELECT FROM S");
+    assertThat(source.get("e")).isInstanceOf(EmbeddedDocument.class);
+    final JSONObject sourceJson = source.toJSON(false);
+
+    for (final String projection : List.of("", "*", "*, !secret")) {
+      database.transaction(() -> {
+        database.command("sql", "DELETE FROM T");
+        database.command("sql", "INSERT INTO T FROM SELECT " + projection + " FROM S");
+      });
+      final Document copy = single("SELECT FROM T");
+      // a value of the copy, not the source's own instance: the same shape and content, owned by the new record
+      assertThat(copy.get("e")).as(projection).isInstanceOf(EmbeddedDocument.class).isNotSameAs(source.get("e"));
+      final JSONObject copyJson = copy.toJSON(false);
+      assertThat(copyJson.getJSONObject("e").toMap()).as(projection).isEqualTo(sourceJson.getJSONObject("e").toMap());
+      assertThat(copyJson.getJSONArray("le").toList()).as(projection).isEqualTo(sourceJson.getJSONArray("le").toList());
+    }
   }
 
   @Test

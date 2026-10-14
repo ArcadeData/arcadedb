@@ -278,6 +278,10 @@ public interface Result {
    * With {@code includeMetadata}, a row backed by a record is first seeded with the record's attributes ({@code @cat},
    * {@code @type}, {@code @rid} and an edge's {@code @in}/{@code @out}), the shape {@link #toJSON()} gives the same row, and
    * the row's properties are written over the seed. An attribute the row dropped stays dropped.
+   * <p>
+   * This default seeds from the record's {@code toMap(true)}, since a generic row has no way to drop an attribute.
+   * {@code ResultInternal} overrides it to seed from the same method its {@code toJSON()} uses, which also honours the
+   * attributes its projection excluded ({@code !@rid}) or its {@code removeProperty()} took back.
    *
    * @param includeMetadata whether a record-backed row also answers its record's attributes
    *

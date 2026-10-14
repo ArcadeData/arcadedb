@@ -100,6 +100,19 @@ class Issue9971UpdateMergeSkipsMetadataKeysTest extends TestHelper {
   }
 
   @Test
+  void aNullValueAndASchemaTypeAreAppliedAsByThePositionalSetter() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE PROPERTY D1.l LONG");
+      database.command("sql", "UPDATE D1 SET gone = 'x'");
+      database.command("sql", "UPDATE D1 MERGE {\"l\": 5, \"gone\": null}");
+    });
+    final Document doc = single();
+    assertThat(doc.get("l")).isInstanceOf(Long.class).isEqualTo(5L);
+    assertThat(doc.has("gone")).isTrue();
+    assertThat(doc.get("gone")).isNull();
+  }
+
+  @Test
   void aParameterPayloadWithMetadataMergesToo() {
     database.transaction(() -> database.command("sql", "UPDATE D1 MERGE :payload",
         Map.of("payload", Map.of("@rid", "#99:99", "@type", "HACKED", "k4", 4))));
