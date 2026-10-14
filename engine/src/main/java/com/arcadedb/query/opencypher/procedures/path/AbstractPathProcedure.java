@@ -242,9 +242,14 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
   /**
    * The rows of a walk that yields paths. The walk is not run to the end here: it goes on as the query asks for rows.
    *
+   * <p>
+   * The heap the walk holds is given back when it ends, or when the stream is closed. A consumer that stops reading
+   * without closing leaves it to the query's heap tracker, which gives back whatever a query still holds once it is
+   * unreachable.
+   *
    * @param optional APOC's {@code optional}: when the walk answers nothing, one row with a null path
    */
-  protected Stream<Result> pathRows(final Iterator<List<Object>> paths, final boolean optional) {
+  protected Stream<Result> pathRows(final PathExpansion paths, final boolean optional) {
     if (optional && !paths.hasNext())
       return Stream.of(nullRow("path"));
     return StreamSupport.stream(Spliterators.spliteratorUnknownSize(paths, Spliterator.ORDERED | Spliterator.NONNULL), false)
@@ -252,7 +257,7 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
           final ResultInternal result = new ResultInternal();
           result.setProperty("path", buildPath(elements));
           return (Result) result;
-        });
+        }).onClose(paths::release);
   }
 
   /** The single row of an {@code optional} walk that found nothing: the field is there, and null. */
