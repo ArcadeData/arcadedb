@@ -264,7 +264,8 @@ public class FullBackupFormat extends AbstractBackupFormat {
     final SnapshotImage image = database.executeInReadLock(() -> {
       // BEFORE THE WINDOW, NOT WITH IT (issue #9917): the side files of a vector graph can only vouch for the pages at
       // t0 if they are proved unchanged ACROSS t0, so the first observation has to precede it. Inside the frame so the
-      // graphs listed are the ones the window is about to list, with no DROP INDEX in between
+      // graphs listed are the ones the window is about to list, with no DROP INDEX in between. It adds two or three
+      // file-attribute reads per vector graph to the time the lock is held, and opens nothing
       final Map<Integer, LSMVectorIndexGraphSideFiles> vectorGraphSideFiles = LSMVectorIndexGraphSideFiles.capture(database);
       final PageSnapshot window = database.getPageManager().openSnapshot(database);
       try {

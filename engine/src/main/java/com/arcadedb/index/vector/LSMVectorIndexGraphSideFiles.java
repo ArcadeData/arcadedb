@@ -200,8 +200,9 @@ public final class LSMVectorIndexGraphSideFiles {
         return null;
 
       final FileIdentity pqIdentity = pqPath != null ? FileIdentity.of(pqPath) : null;
-      if (pqPath != null && pqIdentity == null)
-        // Not written yet for the graph this manifest certifies, or dropped after a failed write
+      if (pqPath != null && (pqIdentity == null || index.isPersistedPQKnownStale()))
+        // Not written yet for the graph this manifest certifies, dropped after a failed write, or an earlier graph's
+        // that could not be deleted
         return null;
 
       return new LSMVectorIndexGraphSideFiles(manifestPath, manifestIdentity, ordinalMapPath, FileIdentity.of(ordinalMapPath),

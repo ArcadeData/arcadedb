@@ -123,6 +123,29 @@ class Issue9917GraphSideFilesTest extends TestHelper {
   }
 
   @Test
+  void aPQThatCannotBeDroppedBeforeAPersistIsNotVouchedFor() throws Exception {
+    createVectorIndex("PqDoc", "PRODUCT");
+    final Path pq = vectorIndex("PqDoc").getProductQuantizationFilePath();
+
+    // A PQ THAT NEITHER THE DROP BEFORE THE PERSIST NOR THE RENAME AFTER IT CAN REPLACE: a non-empty directory under its
+    // name. The persist still completes and certifies its graph, so the manifest is new and unchanged - and the thing
+    // under the PQ's name is not the new graph's PQ
+    assertThat(pq.toFile().delete()).isTrue();
+    Files.createDirectories(pq.resolve("blocker"));
+    try {
+      vectorIndex("PqDoc").buildVectorGraphNow();
+      assertThat(graphFile("PqDoc").getManifest().exists()).as("the fixture: the persist certified its graph").isTrue();
+      assertThat(Files.exists(pq)).as("the fixture: the stale entry survived the persist").isTrue();
+      assertThat(vectorIndex("PqDoc").isPersistedPQKnownStale()).isTrue();
+
+      assertThat(LSMVectorIndexGraphSideFiles.capture(graphFile("PqDoc"))).isNull();
+    } finally {
+      Files.deleteIfExists(pq.resolve("blocker"));
+      Files.deleteIfExists(pq);
+    }
+  }
+
+  @Test
   void aManifestRewrittenWithoutNewPagesStillPairsWithItsPQ() {
     createVectorIndex("PqDoc", "PRODUCT");
 
