@@ -99,14 +99,15 @@ class Issue9697GroupedStaleTopUpLoopTest {
 
   /**
    * Issue #10002: under churn a wider pass meets the records deleted while it ran, and those can leave it no larger than
-   * the pass before. That is not a corpus with nothing more to give, so the loop widens again by what the pass met.
+   * the pass before. That is not a corpus with nothing more to give, so the loop widens again - and since it is racing a
+   * writer, it at least doubles both budgets: (5, 4) becomes (5 + 5, 4 + 4).
    */
   @Test
   void aPassThatDoesNotGrowButMeetsNewStaleCandidatesWidensAgain() {
     final ScriptedPass pass = new ScriptedPass(new Step(4, 0, 1), new Step(4, 2, 3, 4), new Step(6));
     final List<Object> answer = SQLFunctionVectorAbstract.searchGroupedWithStaleTopUp(3, 2, 100_000, pass);
     assertThat(answer).hasSize(6).allMatch(row -> row.toString().startsWith("pass3-"));
-    assertThat(pass.asked).containsExactly(new int[] { 3, 2 }, new int[] { 5, 4 }, new int[] { 8, 7 });
+    assertThat(pass.asked).containsExactly(new int[] { 3, 2 }, new int[] { 5, 4 }, new int[] { 10, 8 });
   }
 
   /** A shrinking pass that met new stale candidates widens again too, and the larger answer wins if nothing better comes. */
@@ -115,12 +116,13 @@ class Issue9697GroupedStaleTopUpLoopTest {
     final ScriptedPass pass = new ScriptedPass(new Step(4, 0, 1), new Step(3, 2), new Step(3, 2));
     final List<Object> answer = SQLFunctionVectorAbstract.searchGroupedWithStaleTopUp(3, 2, 100_000, pass);
     assertThat(answer).hasSize(4).allMatch(row -> row.toString().startsWith("pass1-"));
-    assertThat(pass.asked).containsExactly(new int[] { 3, 2 }, new int[] { 5, 4 }, new int[] { 6, 5 });
+    assertThat(pass.asked).containsExactly(new int[] { 3, 2 }, new int[] { 5, 4 }, new int[] { 10, 8 });
   }
 
   /**
    * Issue #10002: a writer that keeps deleting what the searches rank hands every pass stale candidates no earlier pass met,
-   * and never a full answer. The loop keeps widening, and the candidate budget is what ends it.
+   * and never a full answer. The loop keeps widening, doubling once a pass stops growing, and the candidate budget is what
+   * ends it - after a number of passes that grows with the log of the budget, not with the budget.
    */
   @Test
   void anEndlessStreamOfFreshStaleCandidatesStopsAtTheBudget() {
@@ -137,10 +139,17 @@ class Issue9697GroupedStaleTopUpLoopTest {
         return rows;
       }
     };
-    // groups=3, groupSize=2 widens by 3 a pass: (3,2), (6,5), (9,8), (12,11); the next, (15,14), costs 1,050 > 1,000
-    final List<Object> answer = SQLFunctionVectorAbstract.searchGroupedWithStaleTopUp(3, 2, 1_000, pass);
+    // (3,2) grows from nothing and widens by 3 to (6,5); from there no pass grows, so each doubles: (12,10) costs 600, the
+    // next, (24,20), would cost 2,400 > 1,000
+    List<Object> answer = SQLFunctionVectorAbstract.searchGroupedWithStaleTopUp(3, 2, 1_000, pass);
     assertThat(answer).hasSize(4);
-    assertThat(pass.asked).containsExactly(new int[] { 3, 2 }, new int[] { 6, 5 }, new int[] { 9, 8 }, new int[] { 12, 11 });
+    assertThat(pass.asked).containsExactly(new int[] { 3, 2 }, new int[] { 6, 5 }, new int[] { 12, 10 });
+
+    // Against the default budget the race costs a handful of passes, not one per stale candidate
+    pass.asked.clear();
+    answer = SQLFunctionVectorAbstract.searchGroupedWithStaleTopUp(5, 3, 100_000, pass);
+    assertThat(answer).hasSize(4);
+    assertThat(pass.asked.size()).isLessThanOrEqualTo(8);
   }
 
   @Test

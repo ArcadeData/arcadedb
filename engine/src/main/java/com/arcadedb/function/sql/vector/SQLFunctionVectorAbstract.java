@@ -477,7 +477,7 @@ public abstract class SQLFunctionVectorAbstract extends SQLFunctionAbstract {
    * <em>and</em> met no stale candidate an earlier pass had not already met: the corpus or allow-list has nothing more to
    * give. A wider pass that did meet new ones says nothing of the kind - under steady churn every pass meets the
    * records deleted while it ran (issue #10002), and stopping there returned the short answer the top-up exists to
-   * prevent - so it widens again by what it met, which the budget still bounds. A stale entry that never goes away (a
+   * prevent - so it widens again, at least doubling both budgets, which the budget still bounds. A stale entry that never goes away (a
    * restore leftover) is met again by every pass and so stops the loop as soon as it stops yielding rows.
    * <p>
    * The answer returned is the largest one seen, the fresher on a tie, so when a delete landing between two passes made
@@ -502,8 +502,11 @@ public abstract class SQLFunctionVectorAbstract extends SQLFunctionAbstract {
       // addAll() is true when the pass met a stale candidate no earlier pass had met
       if (!staleSeen.addAll(stale) && !grew)
         return best;
-      final int nextGroups = fetchGroups + stale.size();
-      final int nextGroupSize = fetchGroupSize + stale.size();
+      // A pass that grew needs only room for what it met. One that did not grow while meeting new stale candidates is
+      // racing a writer that deletes what the searches rank: it at least doubles both budgets, so the passes such a race
+      // costs grow with the log of the budget rather than with it
+      final int nextGroups = fetchGroups + (grew ? stale.size() : Math.max(stale.size(), fetchGroups));
+      final int nextGroupSize = fetchGroupSize + (grew ? stale.size() : Math.max(stale.size(), fetchGroupSize));
       if (groupedFetchBudget(nextGroups, nextGroupSize) > maxFetchCandidates)
         return best;
       fetchGroups = nextGroups;
