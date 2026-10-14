@@ -643,6 +643,21 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
   }
 
   /**
+   * True when the conditional query IS the statement: grammar-wise a {@code when} sits in a regularQuery, inside a
+   * nextStatement, inside a queryWithLocalDefinitions that is the statement's own rather than a subquery's body.
+   */
+  private static boolean isWholeStatement(final Cypher25Parser.WhenContext ctx) {
+    ParserRuleContext node = ctx;
+    for (final Class<?> expected : new Class<?>[] { Cypher25Parser.RegularQueryContext.class,
+        Cypher25Parser.NextStatementContext.class, Cypher25Parser.QueryWithLocalDefinitionsContext.class }) {
+      node = node.getParent();
+      if (!expected.isInstance(node))
+        return false;
+    }
+    return node.getParent() instanceof Cypher25Parser.StatementContext;
+  }
+
+  /**
    * Cypher 25 conditional query {@code WHEN cond THEN query [WHEN ...] [ELSE query]} (issue #9940). Without this visit the
    * default one returned the LAST branch, so the conditions were never read. The branch is chosen at execution time, when
    * the parameters the conditions read are known, by {@code OpenCypherQueryEngine}; nested in a subquery the condition could
@@ -650,19 +665,21 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
    */
   @Override
   public CypherStatement visitWhen(final Cypher25Parser.WhenContext ctx) {
-    final ParserRuleContext regularQuery = ctx.getParent();
-    final ParserRuleContext nextStatement = regularQuery != null ? regularQuery.getParent() : null;
-    final ParserRuleContext query = nextStatement != null ? nextStatement.getParent() : null;
-    if (query == null || !(query.getParent() instanceof Cypher25Parser.StatementContext))
-      throw new CommandParsingException(
-          "FeatureNotImplemented: a conditional query (WHEN ... THEN ... ELSE ...) is only supported as a whole statement, not inside a subquery");
+    if (!isWholeStatement(ctx))
+      throw new CommandParsingException("FeatureNotImplemented: a conditional query (WHEN ... THEN ... ELSE ...) is only "
+          + "supported as a whole statement, not inside a subquery");
 
     final List<Expression> conditions = new ArrayList<>(ctx.whenBranch().size());
     final List<CypherStatement> branches = new ArrayList<>(ctx.whenBranch().size());
     for (final Cypher25Parser.WhenBranchContext branch : ctx.whenBranch()) {
       final Expression condition = expressionBuilder.parseExpression(branch.expression());
       final CypherReferencedVariables referenced = CypherReferencedVariables.of(condition);
-      if (referenced.isComplete() && !referenced.getNames().isEmpty())
+      // Fail closed: a condition whose variables cannot all be listed (a subquery body, a pattern) would otherwise be
+      // evaluated against a row that does not exist and quietly read as null
+      if (!referenced.isComplete())
+        throw new CommandParsingException("FeatureNotImplemented: the condition of a conditional query must be an expression "
+            + "over parameters; a subquery or a pattern is not supported there");
+      if (!referenced.getNames().isEmpty())
         throw new CommandParsingException("UndefinedVariable: the condition of a conditional query can read parameters only, not '"
             + referenced.getNames().iterator().next() + "'");
       conditions.add(condition);
