@@ -108,7 +108,9 @@ public class LocalDocumentType implements DocumentType {
    * builder runs on, which is also the type the readiness check asks (the TypeIndex is minted on it), subtypes included.
    */
   private final Map<List<String>, AtomicInteger>    indexesUnderConstruction     = new ConcurrentHashMap<>();
-  protected final RecordEventsRegistry              events                       = new RecordEventsRegistry();
+  // Counted in the database's BEFORE READ listener total, so a read of a database nobody listens to skips finding the
+  // registry of every record's type (issue #9997)
+  protected final RecordEventsRegistry              events;
   protected final Map<String, Object>               custom                       = new HashMap<>();
   // The four bucket lists are copy-on-write: reassigned under the schema mutation lock and read lock-free by query
   // planning through getBuckets(polymorphic)/getBucketIds(polymorphic), both branches of the ternary - the
@@ -170,10 +172,14 @@ public class LocalDocumentType implements DocumentType {
   // {@code now - last} subtraction does not overflow on the first call.
   private static final long                         REPARTITION_WARN_INTERVAL_MS      = 60_000L;
   private final AtomicLong                          lastRepartitionWarnMs             = new AtomicLong(0L);
+  // Whether this type or a super type declares a property of a type that converts a stored String when read (issue
+  // #8572), stamped with the schema's types serial it was computed at and answered only under it (issue #9997)
+  private volatile StoredStringConversions          storedStringConversions;
 
   public LocalDocumentType(final LocalSchema schema, final String name) {
     this.schema = schema;
     this.name = name;
+    this.events = schema != null ? schema.newTypeEventsRegistry() : new RecordEventsRegistry();
   }
 
   @Override
@@ -189,6 +195,36 @@ public class LocalDocumentType implements DocumentType {
   @Override
   public RecordEvents getEvents() {
     return events;
+  }
+
+  /**
+   * Whether a String read from a record of this type can be converted because its property is declared as a native
+   * temporal type (issue #8572): false when neither this type nor a super type declares a property of a type that
+   * converts a stored String, which lets the read of every String skip the polymorphic property lookup that finding out
+   * would cost (issue #9997). Exact rather than sticky: the answer is computed from the properties and served only under
+   * the schema's types serial it was computed at, which moves on every property and super type change.
+   */
+  public boolean mayConvertStoredStrings() {
+    if (schema == null)
+      return true;
+    // THE SERIAL IS READ BEFORE THE PROPERTIES: AN ANSWER COMPUTED WHILE A PROPERTY CHANGE IS LANDING CARRIES THE SERIAL
+    // BEFORE THE CHANGE, WHICH THE CHANGE MOVES, SO IT IS NEVER SERVED AGAIN
+    final long serial = schema.getTypesChangeSerial();
+    final StoredStringConversions cached = storedStringConversions;
+    if (cached != null && cached.serial() == serial)
+      return cached.value();
+
+    boolean value = false;
+    for (final Property property : getPolymorphicProperties())
+      if (property.getType().isConvertedFromStoredString()) {
+        value = true;
+        break;
+      }
+    storedStringConversions = new StoredStringConversions(serial, value);
+    return value;
+  }
+
+  private record StoredStringConversions(long serial, boolean value) {
   }
 
   @Override
@@ -1008,6 +1044,8 @@ public class LocalDocumentType implements DocumentType {
         property.setOfType(ofType);
 
       properties.put(propertyName, property);
+      // AFTER THE PROPERTY IS VISIBLE: AN ANSWER DERIVED FROM THE PROPERTIES BEFORE IT IS NEVER SERVED AGAIN (#9997)
+      schema.typesChanged();
       return property;
     });
   }
@@ -1155,6 +1193,7 @@ public class LocalDocumentType implements DocumentType {
 
       final Property removed = properties.remove(propertyName);
       if (removed != null) {
+        schema.typesChanged();
         // Keep the EXTERNAL counter consistent so hasExternalProperties() stays O(1).
         if (removed.isExternal())
           ownExternalPropertyCount.decrementAndGet();
@@ -1234,6 +1273,7 @@ public class LocalDocumentType implements DocumentType {
 
       properties.remove(propertyName);
       properties.put(newPropertyName, renamed);
+      schema.typesChanged();
       if (propertiesWithDefaultDefined.get().contains(propertyName)) {
         setPropertyHasDefault(propertyName, false);
         setPropertyHasDefault(newPropertyName, true);
@@ -2644,6 +2684,8 @@ public class LocalDocumentType implements DocumentType {
     superTypes.remove(superType);
     superType.subTypes.remove(this);
     superType.rebuildPolymorphicBucketsCache();
+    // THE INHERITED PROPERTIES CHANGED (#9997)
+    schema.typesChanged();
   }
 
   /**
@@ -2858,6 +2900,8 @@ public class LocalDocumentType implements DocumentType {
     superTypes.add(superType);
     superType.subTypes.add(this);
     superType.updatePolymorphicBucketsCache(true, cachedPolymorphicBuckets, cachedPolymorphicBucketIds);
+    // THE INHERITED PROPERTIES CHANGED (#9997)
+    schema.typesChanged();
   }
 
   /**
