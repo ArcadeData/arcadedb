@@ -146,8 +146,11 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
 
     final List<String> labelSteps = new ArrayList<>(entries.length / 2);
     final List<String> relationshipSteps = new ArrayList<>(entries.length / 2);
-    for (int i = 0; i < entries.length; i++)
-      ((i % 2 == 0) == beginSequenceAtStart ? labelSteps : relationshipSteps).add(entries[i]);
+    for (int i = 0; i < entries.length; i++) {
+      // Even entries are label filters when the sequence begins at the start node, relationship filters otherwise
+      final boolean labelEntry = (i % 2 == 0) == beginSequenceAtStart;
+      (labelEntry ? labelSteps : relationshipSteps).add(entries[i]);
+    }
 
     return new Filters(RelationshipFilter.ofSteps(getName(), relationshipSteps, schema),
         LabelFilter.ofSteps(getName(), labelSteps, schema, filterStartNode, beginSequenceAtStart, minLevel));
