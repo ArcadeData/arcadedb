@@ -110,9 +110,9 @@ public class CopyDocumentStep extends AbstractExecutionStep {
    */
   static Map<String, Object> propertiesToWrite(final Result row) {
     final Map<String, Object> properties = row.toPropertyMap(false);
-    final Document source = row.isElement() ? row.toElement() : null;
+    // The source record is asked only about a $ name, which most rows do not have
     properties.keySet().removeIf(name -> name.isEmpty() || name.charAt(0) == '@' ||//
-        (name.charAt(0) == '$' && (source == null || !source.has(name))));
+        (name.charAt(0) == '$' && !(row.isElement() && row.toElement().has(name))));
     return properties;
   }
 
