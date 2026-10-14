@@ -22,6 +22,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
 import java.util.Set;
+import java.util.regex.Pattern;
 
 /**
  * Schema Property.
@@ -167,6 +168,15 @@ public interface Property {
   Property setRegexp(String regexp);
 
   String getRegexp();
+
+  /**
+   * The REGEXP compiled, or null when the property has none. Compiled once per declaration by the schema's own properties,
+   * so the write path, which matches it on every insert and update, does not compile it per write.
+   */
+  default Pattern getRegexpPattern() {
+    final String regexp = getRegexp();
+    return regexp != null ? Pattern.compile(regexp) : null;
+  }
 
   Set<String> getCustomKeys();
 

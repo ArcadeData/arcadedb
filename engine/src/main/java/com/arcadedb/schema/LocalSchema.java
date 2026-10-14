@@ -23,6 +23,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.DocumentValidator;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
@@ -1448,7 +1449,14 @@ public class LocalSchema implements Schema {
   public void setDateFormat(final String dateFormat) {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_DATABASE_SETTINGS);
     if (!Objects.equals(this.dateFormat, dateFormat))
-      recordChange(() -> this.dateFormat = dateFormat);
+      recordChange(() -> {
+        // the MIN and MAX of a date property are read through this pattern on every write (issue #9976 follow-up). Checked
+        // under the write lock, which a concurrent ALTER PROPERTY ... MIN takes too
+        DocumentValidator.requireDateConstraintsSatisfiableUnder(database, "the date format to '" + dateFormat + "'",
+            database.getSerializer().getDateImplementation(), database.getSerializer().getDateTimeImplementation(),
+            this.dateTimeFormat, dateFormat);
+        this.dateFormat = dateFormat;
+      });
   }
 
   @Override
@@ -1460,7 +1468,12 @@ public class LocalSchema implements Schema {
   public void setDateTimeFormat(final String dateTimeFormat) {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_DATABASE_SETTINGS);
     if (!Objects.equals(this.dateTimeFormat, dateTimeFormat))
-      recordChange(() -> this.dateTimeFormat = dateTimeFormat);
+      recordChange(() -> {
+        DocumentValidator.requireDateConstraintsSatisfiableUnder(database, "the datetime format to '" + dateTimeFormat + "'",
+            database.getSerializer().getDateImplementation(), database.getSerializer().getDateTimeImplementation(),
+            dateTimeFormat, this.dateFormat);
+        this.dateTimeFormat = dateTimeFormat;
+      });
   }
 
   /**
@@ -3355,9 +3368,10 @@ public class LocalSchema implements Schema {
         }
         type.restoreExternalBuckets(primaryToExternal);
 
-        type.custom.clear();
-        if (schemaType.has("custom"))
-          type.custom.putAll(schemaType.getJSONObject("custom").toMap());
+        // built aside and published whole, so a reader of a type reloaded in place never sees its custom values cleared
+        type.custom = schemaType.has("custom") ?
+            Collections.unmodifiableMap(new HashMap<>(schemaType.getJSONObject("custom").toMap())) :
+            Collections.emptyMap();
       }
 
       // CREATE THE PROPERTIES AFTER ALL THE TYPES HAVE BEEN CREATED TO FIND ALL THE REFERENCES LINKED WITH `TO`

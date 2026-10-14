@@ -265,7 +265,11 @@ public class LocalProperty extends AbstractProperty {
     final boolean changed = !Objects.equals(this.max, max);
     if (changed) {
       checkBound(max, "Maximum");
-      publish(() -> this.max = max);
+      publish(() -> {
+        // and again under the write lock: a concurrent change of the date formats the bound is read through (#9976)
+        checkBound(max, "Maximum");
+        this.max = max;
+      });
     }
     return this;
   }
@@ -276,7 +280,11 @@ public class LocalProperty extends AbstractProperty {
     final boolean changed = !Objects.equals(this.min, min);
     if (changed) {
       checkBound(min, "Minimum");
-      publish(() -> this.min = min);
+      publish(() -> {
+        // and again under the write lock: a concurrent change of the date formats the bound is read through (#9976)
+        checkBound(min, "Minimum");
+        this.min = min;
+      });
     }
     return this;
   }
@@ -319,10 +327,19 @@ public class LocalProperty extends AbstractProperty {
   @Override
   public Property setRegexp(final String regexp) {
     checkForSchemaMutation();
-    final boolean changed = !Objects.equals(this.regexp, regexp);
+    final boolean changed = !Objects.equals(getRegexp(), regexp);
     if (changed) {
+      // the check can cost a search, so it runs before the write lock is taken, against the class a value is held as now
+      final Database database = owner.getSchema().getEmbedded().getDatabase();
+      final Class<?> heldWhenChecked = type.getJavaImplementation(database);
       checkRegexp(regexp);
-      publish(() -> this.regexp = regexp);
+      final Regexp compiled = Regexp.of(regexp);
+      publish(() -> {
+        // a concurrent ALTER DATABASE may have changed that class meanwhile, and only takes effect under this lock (#9976)
+        if (type.getJavaImplementation(database) != heldWhenChecked)
+          checkRegexp(regexp);
+        this.regexp = compiled;
+      });
     }
     return this;
   }
@@ -411,7 +428,7 @@ public class LocalProperty extends AbstractProperty {
     if (Objects.equals(current, value))
       return current;
 
-    return owner.getSchema().getEmbedded().recordFileChanges(() -> value == null ? custom.remove(key) : custom.put(key, value));
+    return owner.getSchema().getEmbedded().recordFileChanges(() -> replaceCustomValue(key, value));
   }
 
   @Override
@@ -430,7 +447,8 @@ public class LocalProperty extends AbstractProperty {
    */
   LocalProperty copyWithName(final String newName) {
     final LocalProperty copy = new LocalProperty((LocalDocumentType) owner, newName, type);
-    copy.custom = new HashMap<>(custom);
+    // unmodifiable, so the two properties can share it
+    copy.custom = custom;
     copy.readonly = readonly;
     copy.mandatory = mandatory;
     copy.notNull = notNull;

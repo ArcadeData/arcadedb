@@ -23,6 +23,8 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
 
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.Map;
 
 /**
@@ -130,8 +132,13 @@ public class RemoteProperty extends AbstractProperty {
       // embedded database to evaluate an SQL expression against.
       setDefaultValueDefinition(entry.get("default"));
     if (entry.containsKey("regexp"))
-      regexp = (String) entry.get("regexp");
-    if (entry.containsKey("custom"))
-      custom = (Map<String, Object>) entry.get("custom");
+      regexp = Regexp.of((String) entry.get("regexp"));
+    if (entry.containsKey("custom") && entry.get("custom") instanceof Map<?, ?> received) {
+      // built aside and published whole, like every change of the map
+      final Map<String, Object> built = new HashMap<>(received.size());
+      for (final Map.Entry<?, ?> e : received.entrySet())
+        built.put(String.valueOf(e.getKey()), e.getValue());
+      custom = Collections.unmodifiableMap(built);
+    }
   }
 }

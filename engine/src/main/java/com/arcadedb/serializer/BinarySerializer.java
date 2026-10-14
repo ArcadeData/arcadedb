@@ -1772,10 +1772,17 @@ public class BinarySerializer {
   /** See {@link #setDateImplementation(Object)}. */
   public void setDateTimeImplementation(final Object dateTimeImplementation) {
     this.dateTimeImplementation = toClass(dateTimeImplementation);
-    this.subMillisDateTimeImplementation =
-        this.dateTimeImplementation.equals(Date.class) || this.dateTimeImplementation.equals(Calendar.class) ?
-            LocalDateTime.class :
-            this.dateTimeImplementation;
+    this.subMillisDateTimeImplementation = subMillisDateTimeImplementation(this.dateTimeImplementation);
+  }
+
+  /**
+   * The class a DATETIME_MICROS or DATETIME_NANOS value is held as when DATETIME is held as {@code dateTimeImplementation}:
+   * the same one, unless it cannot carry sub-millisecond precision.
+   */
+  public static Class<?> subMillisDateTimeImplementation(final Class<?> dateTimeImplementation) {
+    return dateTimeImplementation.equals(Date.class) || dateTimeImplementation.equals(Calendar.class) ?
+        LocalDateTime.class :
+        dateTimeImplementation;
   }
 
   private static Class<?> toClass(final Object implementation) {

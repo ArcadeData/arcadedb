@@ -22,6 +22,7 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.DocumentValidator;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.exception.CommandExecutionException;
@@ -137,10 +138,27 @@ public class AlterDatabaseStatement extends DDLStatement {
       // captured and the new one stored in one step for the apply of a replicated change, so a change to the same
       // setting another node committed cannot land in between and be undone with a value it replaced (issue #9919).
       final Object valueToStore = finalValue;
-      final LocalDatabase.SettingChange change = changeSetting(db, cfg.getKey(), () -> {
-        db.getConfiguration().setValue(cfg, valueToStore);
-        applyDatabaseSideEffect(db, cfg, resolvedClass);
-      });
+      final Runnable store = () -> putInForce(db, cfg, valueToStore, resolvedClass);
+      final LocalDatabase.SettingChange change;
+      if (resolvedClass != null && (cfg == GlobalConfiguration.DATE_IMPLEMENTATION
+          || cfg == GlobalConfiguration.DATE_TIME_IMPLEMENTATION)) {
+        // A REGEXP on a DATE or DATETIME property is matched against the text of the class the value is held as, which this
+        // setting decides for the whole database: refused before anything changes when a pattern would match no value of
+        // the new class (issue #9976). Checked and put in force under the write lock, which ALTER PROPERTY takes too, so a
+        // pattern declared meanwhile is either checked here or checked against the new class. The database lock is taken
+        // before the apply lock changeSetting takes, never after: the apply of a replicated change holds no database lock
+        final String described = "'" + settingNameAsString + "' to '" + finalValue + "'";
+        change = db.executeInWriteLock(() -> {
+          DocumentValidator.requireDateConstraintsSatisfiableUnder(db, described,
+              cfg == GlobalConfiguration.DATE_IMPLEMENTATION ? resolvedClass : db.getSerializer().getDateImplementation(),
+              cfg == GlobalConfiguration.DATE_TIME_IMPLEMENTATION ?
+                  resolvedClass :
+                  db.getSerializer().getDateTimeImplementation(), db.getSchema().getDateTimeFormat(),
+              db.getSchema().getDateFormat());
+          return changeSetting(db, cfg.getKey(), store);
+        });
+      } else
+        change = changeSetting(db, cfg.getKey(), store);
 
       // The stored value is what the setting is now worth, which is not always what was asked for: a callback
       // reached through the overlay may normalise it (arcadedb.maxPageRAM clamps a page cache larger than 80%
@@ -181,6 +199,27 @@ public class AlterDatabaseStatement extends DDLStatement {
     result.setProperty("oldValue", oldValue);
     result.setProperty("newValue", finalValue);
     return result;
+  }
+
+  /**
+   * Stores the setting and applies its effect on this database. A side effect that fails puts the previous value back, so
+   * the configuration never names a setting this database is not running with. Runs inside
+   * {@link #changeSetting(DatabaseInternal, String, Runnable)}, under the lock the apply of a replicated change holds, so
+   * the value read back here is the one this change replaces (issue #9919).
+   */
+  private void putInForce(final DatabaseInternal db, final GlobalConfiguration cfg, final Object value,
+      final Class<?> resolvedClass) {
+    final Object previousValue = db.getConfiguration().hasValue(cfg.getKey()) ?
+        db.getConfiguration().getValue(cfg.getKey(), null) :
+        null;
+    db.getConfiguration().setValue(cfg, value);
+    try {
+      applyDatabaseSideEffect(db, cfg, resolvedClass);
+    } catch (final RuntimeException | Error e) {
+      if (db.getEmbedded() instanceof LocalDatabase local)
+        local.restoreSetting(cfg.getKey(), previousValue);
+      throw e;
+    }
   }
 
   /**

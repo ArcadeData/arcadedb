@@ -46,7 +46,10 @@ class Issue9808RegexpOnNonTextPropertyTest extends TestHelper {
   void aPatternIsRefusedOnATypeWithoutATextFormThroughEveryDoor() {
     database.command("sql", "CREATE DOCUMENT TYPE E");
     database.command("sql", "CREATE DOCUMENT TYPE T");
-    for (final String declared : List.of("LIST", "MAP", "BINARY", "LINK", "EMBEDDED", "ARRAY_OF_FLOATS", "ARRAY_OF_LONGS")) {
+    // a LINK has a text form since #9992, the RID it points to, so '[A-Z]+' is refused on it as a pattern no RID matches
+    assertThatThrownBy(() -> database.command("sql", "CREATE PROPERTY T.plink LINK (regexp '[A-Z]+')"))
+        .hasMessageContaining("matches no text a value of LINK");
+    for (final String declared : List.of("LIST", "MAP", "BINARY", "EMBEDDED", "ARRAY_OF_FLOATS", "ARRAY_OF_LONGS")) {
       final String name = "p" + declared.toLowerCase();
       assertThatThrownBy(() -> database.command("sql", "CREATE PROPERTY T." + name + " " + declared + " (regexp '[A-Z]+')"))
           .as(declared).hasMessageContaining("is not applicable to type " + declared);
