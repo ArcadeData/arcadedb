@@ -160,6 +160,47 @@ class Issue10051Bm25CounterAdoptionTest extends TestHelper {
     assertThat(metadata().getScans()).as("the counters agree with the live data: nothing to rescan").isZero();
   }
 
+  /**
+   * A commit applying its delta and an adoption of a persisted pair exclude each other: every delta here moves the pair by (1, 3),
+   * so a pair that was never half overwritten keeps the difference length - 3 * docs of the pair that was adopted.
+   */
+  @Test
+  void anAdoptionRacingCommitsNeverLeavesAHalfOverwrittenPair() throws Exception {
+    final FullTextIndexMetadata m = new FullTextIndexMetadata("Doc", new String[] { "content" }, 0);
+    final int threads = 4;
+    final ExecutorService executor = Executors.newFixedThreadPool(threads);
+    try {
+      for (int round = 1; round <= 300; round++) {
+        m.setCounters(1000L, 3000L);
+        final long epoch = round;
+        final JSONObject definition = new JSONObject().put("ft_countersValid", true).put("ft_totalDocs", 50L)
+            .put("ft_sumDocLength", 150L + 7L).put("ft_countersEpoch", epoch);
+        final CountDownLatch start = new CountDownLatch(1);
+        final List<Future<?>> futures = new ArrayList<>();
+        for (int t = 0; t < threads; t++)
+          futures.add(executor.submit(() -> {
+            start.await();
+            for (int i = 0; i < 50; i++)
+              m.applyCorpusDelta(1, 3);
+            return null;
+          }));
+        futures.add(executor.submit(() -> {
+          start.await();
+          m.adoptPersistedCounters(definition);
+          return null;
+        }));
+        start.countDown();
+        for (final Future<?> future : futures)
+          future.get(30, TimeUnit.SECONDS);
+
+        assertThat(m.getCountersEpoch()).isEqualTo(epoch);
+        assertThat(m.getSumDocLength() - 3 * m.getTotalDocs()).as("round %d: the pair was adopted whole", round).isEqualTo(7L);
+      }
+    } finally {
+      executor.shutdownNow();
+    }
+  }
+
   /** The bucket indexes of one logical index all carry the same definition: exactly one reader of it adopts. */
   @Test
   void concurrentAdoptersOfTheSameDefinitionHaveOneWinner() throws Exception {
