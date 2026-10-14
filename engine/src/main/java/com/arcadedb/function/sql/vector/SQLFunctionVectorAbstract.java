@@ -395,7 +395,9 @@ public abstract class SQLFunctionVectorAbstract extends SQLFunctionAbstract {
    * never filled, and the answer came back short with no stale candidate counted. The emit counts it as stale instead,
    * which is what it is: the searches ranked a record that no longer exists in that form.
    * <p>
-   * Thread-safe: the sparse function runs the searches of a pass on pool workers.
+   * Thread-safe: the sparse function runs the searches of a pass on pool workers. Bounded by the candidates the pass
+   * resolves, which the searches' own budgets cap (a grouped walk's candidate budget, {@code MAX_FETCH_CANDIDATES} on the
+   * SQL side), and dropped with the pass.
    */
   protected static final class GroupKeyMemo implements Function<RID, Object> {
     /** Stands for a {@code null} key, which a {@link ConcurrentHashMap} cannot hold. */
