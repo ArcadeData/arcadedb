@@ -32,6 +32,7 @@ import com.arcadedb.query.opencypher.temporal.CypherLocalTime;
 import com.arcadedb.query.opencypher.temporal.CypherTemporalValue;
 import com.arcadedb.query.opencypher.temporal.CypherTime;
 import com.arcadedb.query.opencypher.temporal.TemporalUtil;
+import com.arcadedb.query.opencypher.traversal.ShortestPathList;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
@@ -139,19 +140,12 @@ public final class CypherFunctionHelper {
   }
 
   /**
-   * True for a path value: a {@link TraversalPath}, or the list {@code shortestPath()} / {@code allShortestPaths()} bind,
-   * which alternates vertex and edge, starts and ends on a vertex and holds at least one edge (issue #9940). A plain list
-   * is not a path, even a list of vertices.
+   * True for a path value: a {@link TraversalPath}, or the {@link ShortestPathList} a {@code shortestPath()} /
+   * {@code allShortestPaths()} pattern binds (issue #9940). Any other list is a LIST, even one that alternates vertices and
+   * edges.
    */
   public static boolean isPathValue(final Object value) {
-    if (value instanceof TraversalPath)
-      return true;
-    if (!(value instanceof List<?> list) || list.size() < 3 || list.size() % 2 == 0)
-      return false;
-    for (int i = 0; i < list.size(); i++)
-      if (i % 2 == 0 ? !(list.get(i) instanceof Vertex) : !(list.get(i) instanceof Edge))
-        return false;
-    return true;
+    return value instanceof TraversalPath || value instanceof ShortestPathList;
   }
 
   /**
@@ -173,7 +167,7 @@ public final class CypherFunctionHelper {
       case Boolean ignored -> "BOOLEAN";
       case Vertex ignored -> "NODE";
       case Edge ignored -> "RELATIONSHIP";
-      case List<?> list when isPathValue(list) -> "PATH";
+      case ShortestPathList ignored -> "PATH";
       case List ignored -> "LIST<ANY>";
       case TraversalPath ignored -> "PATH";
       // the temporal values by Neo4j's names, whether Cypher built them or the Java API stored them (#9709)

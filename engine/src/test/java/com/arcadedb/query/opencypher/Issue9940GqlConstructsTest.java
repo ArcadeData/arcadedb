@@ -24,6 +24,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -137,6 +138,12 @@ class Issue9940GqlConstructsTest extends TestHelper {
   }
 
   @Test
+  void letItemsReadEarlierItemsAndFollowAnAggregation() {
+    assertThat(rows("LET x = 1, y = x + 1 RETURN x, y").getFirst()).containsEntry("x", 1L).containsEntry("y", 2L);
+    assertThat(column("MATCH (n:Person) WITH count(n) AS c LET d = c * 2 RETURN d", "d")).containsExactly(8L);
+  }
+
+  @Test
   void letRefusesAnAggregation() {
     assertThatThrownBy(() -> rows("MATCH (n:Person) LET c = count(n) RETURN c")).hasMessageContaining("LET");
   }
@@ -158,6 +165,13 @@ class Issue9940GqlConstructsTest extends TestHelper {
         .hasMessageContaining("otherGraph9940");
     assertThatThrownBy(() -> rows("USE otherGraph9940 { MATCH (n:Person) RETURN count(n) AS c }"))
         .hasMessageContaining("otherGraph9940");
+  }
+
+  @Test
+  void useOfADottedOrCompositeNameIsRefused() {
+    assertThatThrownBy(() -> rows("USE a.b MATCH (n:Person) RETURN count(n) AS c")).hasMessageContaining("USE");
+    assertThatThrownBy(() -> rows("USE `" + database.getName() + "`.x MATCH (n:Person) RETURN count(n) AS c"))
+        .hasMessageContaining("USE");
   }
 
   @Test
@@ -269,6 +283,23 @@ class Issue9940GqlConstructsTest extends TestHelper {
   }
 
   @Test
+  void conditionalQueryBranchesWithAndWithoutAReturnAreRefused() {
+    // the statement's columns are the first branch's, so a branch that returns nothing cannot sit next to one that does
+    assertThatThrownBy(() -> rows("WHEN true THEN CREATE (:Marker9940c) ELSE RETURN 1 AS r")).hasMessageContaining("conditional");
+    assertThatThrownBy(() -> rows("WHEN true THEN RETURN 1 AS r ELSE CREATE (:Marker9940c)")).hasMessageContaining("conditional");
+    // a branch is a single query: a UNION inside one does not parse
+    assertThatThrownBy(() -> rows("WHEN true THEN RETURN 1 AS r UNION RETURN 2 AS r ELSE RETURN 3 AS r")).isInstanceOf(Exception.class);
+  }
+
+  @Test
+  void conditionalQueryWithANullConditionAndNoElseReturnsNoRows() {
+    final Map<String, Object> parameters = new HashMap<>();
+    parameters.put("x", null);
+    assertThat(rows("WHEN $x THEN RETURN 1 AS r", parameters)).isEmpty();
+    assertThat(column("WHEN $x THEN RETURN 1 AS r ELSE RETURN 2 AS r", "r", parameters)).containsExactly(2L);
+  }
+
+  @Test
   void conditionalQueryBranchesMustReturnTheSameColumns() {
     assertThatThrownBy(() -> rows("WHEN true THEN RETURN 1 AS a ELSE RETURN 2 AS b")).hasMessageContaining("conditional");
   }
@@ -373,6 +404,17 @@ class Issue9940GqlConstructsTest extends TestHelper {
       assertThat(typed).as(query).isNotEmpty();
       assertThat(typed).as(query).allMatch(Boolean.TRUE::equals);
     }
+  }
+
+  @Test
+  void aListThatAlternatesVerticesAndEdgesIsNotAPath() {
+    final Map<String, Object> row = rows("MATCH (a:Person {name:'A'})-[r:KNOWS]->(b:Person {name:'B'}) "
+        + "RETURN [a, r, b] IS TYPED PATH AS typed, valueType([a, r, b]) AS vt").getFirst();
+    assertThat(row.get("typed")).isEqualTo(false);
+    assertThat((String) row.get("vt")).startsWith("LIST");
+    // the shortestPath of the same hop is a PATH
+    assertThat(column("MATCH p = shortestPath((:Person {name:'A'})-[:KNOWS*]->(:Person {name:'B'})) RETURN valueType(p) AS vt",
+        "vt")).containsExactly("PATH NOT NULL");
   }
 
   // 11. OFFSET written after LIMIT

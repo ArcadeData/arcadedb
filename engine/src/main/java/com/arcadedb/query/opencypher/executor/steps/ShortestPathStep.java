@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.executor.steps;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.query.opencypher.traversal.ShortestPathList;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
@@ -223,7 +224,7 @@ public class ShortestPathStep extends AbstractExecutionStep {
 
         // Add path binding if path variable is specified
         if (pathVariable != null && !pathVariable.isEmpty()) {
-          result.setProperty(pathVariable, path);
+          result.setProperty(pathVariable, path instanceof ShortestPathList ? path : new ShortestPathList(path));
         }
         return result;
       }

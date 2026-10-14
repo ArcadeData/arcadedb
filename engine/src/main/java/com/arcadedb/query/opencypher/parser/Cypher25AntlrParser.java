@@ -31,6 +31,7 @@ import org.antlr.v4.runtime.CommonTokenStream;
 import org.antlr.v4.runtime.Token;
 import org.antlr.v4.runtime.tree.ParseTree;
 
+import java.util.ArrayDeque;
 import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.Locale;
@@ -226,16 +227,22 @@ public class Cypher25AntlrParser {
     return false;
   }
 
-  private static void checkUseClauses(final ParseTree node, final String databaseName) {
-    if (node instanceof Cypher25Parser.UseClauseContext use) {
-      final String graph = CypherASTBuilder.useGraphName(use);
-      if (!graph.equals(databaseName))
-        throw new CommandParsingException("FeatureNotImplemented: USE " + graph + " is not supported; a query can only USE the "
-            + "database it runs against ('" + databaseName + "')");
-      return;
+  private static void checkUseClauses(final ParseTree root, final String databaseName) {
+    // Iterative, so a deeply nested query cannot overflow the stack here
+    final ArrayDeque<ParseTree> pending = new ArrayDeque<>();
+    pending.push(root);
+    while (!pending.isEmpty()) {
+      final ParseTree node = pending.pop();
+      if (node instanceof Cypher25Parser.UseClauseContext use) {
+        final String graph = CypherASTBuilder.useGraphName(use);
+        if (!graph.equals(databaseName))
+          throw new CommandParsingException("FeatureNotImplemented: USE " + graph + " is not supported; a query can only USE "
+              + "the database it runs against ('" + databaseName + "')");
+        continue;
+      }
+      for (int i = 0; i < node.getChildCount(); i++)
+        pending.push(node.getChild(i));
     }
-    for (int i = 0; i < node.getChildCount(); i++)
-      checkUseClauses(node.getChild(i), databaseName);
   }
 
   private static int maxClauses(final Database database) {
