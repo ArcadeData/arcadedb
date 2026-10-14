@@ -360,6 +360,7 @@ public class PatternComprehensionExpression implements Expression {
 
     final boolean trackPath = pathVariable != null;
     final List<Vertex> vertices = path.getVertices();
+    // A WALK list may name one edge twice: the multiset then holds it twice and the loop after the recursion releases both
     for (int i = 0; i < edges.size(); i++)
       usedEdges.add(edges.get(i).getIdentity());
     if (trackPath)

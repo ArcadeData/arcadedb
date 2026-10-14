@@ -92,6 +92,43 @@ class EdgeIdentityMultisetTest extends TestHelper {
   }
 
   @Test
+  void threeTwinsReleasedInAnotherOrderThroughTheOtherEndpoint() {
+    final RID[] ids = new RID[2];
+    database.transaction(() -> {
+      final MutableVertex a = database.newVertex("P").save();
+      final MutableVertex b = database.newVertex("P").save();
+      for (int i = 0; i < 3; i++)
+        a.newLightEdge("K", b);
+      ids[0] = a.getIdentity();
+      ids[1] = b.getIdentity();
+    });
+
+    final List<RID> out = edges(ids[0], Vertex.DIRECTION.OUT);
+    final List<RID> in = edges(ids[1], Vertex.DIRECTION.IN);
+    assertThat(out).hasSize(3);
+
+    final EdgeIdentityMultiset set = new EdgeIdentityMultiset();
+    for (final RID edge : out)
+      set.add(edge);
+    for (final RID edge : in)
+      assertThat(set.contains(edge)).isTrue();
+
+    // released by objects other than the ones added (the same edges read off the target's list), middle one first
+    assertThat(set.remove(in.get(1))).isTrue();
+    assertThat(set.contains(out.get(1))).isFalse();
+    assertThat(set.contains(out.get(0))).isTrue();
+    assertThat(set.contains(out.get(2))).isTrue();
+    assertThat(set.remove(in.get(1))).isFalse();
+
+    assertThat(set.remove(in.get(2))).isTrue();
+    assertThat(set.contains(out.get(2))).isFalse();
+    assertThat(set.contains(out.get(0))).isTrue();
+
+    assertThat(set.remove(in.get(0))).isTrue();
+    assertThat(set.isEmpty()).isTrue();
+  }
+
+  @Test
   void recordBackedEdgesAreAMultiset() {
     final RID[] edge = new RID[1];
     database.transaction(() -> {
