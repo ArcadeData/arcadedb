@@ -38,14 +38,12 @@ import com.arcadedb.graph.NodeEdgeWeights;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
+import com.arcadedb.query.opencypher.procedures.ProcedureSchemaTypes;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.WorkGuard;
-import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
-import com.arcadedb.schema.Schema;
-import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.NumberUtils;
 
 import java.util.ArrayList;
@@ -215,38 +213,10 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
   }
 
   private void requireTypes(final Database db, final String[] names, final boolean edges) {
-    final Schema schema = db.getSchema();
-    final String expected = edges ? "relationship type" : "node label";
-    for (final String name : names) {
-      if (name == null || name.isEmpty())
-        continue;
-      final DocumentType type = schema.getTypeOrNull(name);
-      if (type == null)
-        throw new IllegalArgumentException(
-            getName() + "(): " + expected + " '" + name + "' does not exist" + (edges ? edgePropertyHint(schema, name) : ""));
-      if (edges ? !(type instanceof EdgeType) : !(type instanceof VertexType))
-        throw new IllegalArgumentException(getName() + "(): '" + name + "' is not a " + expected + ", it is " + describeKind(type));
-    }
-  }
-
-  private static String describeKind(final DocumentType type) {
-    if (type instanceof VertexType)
-      return "a vertex type";
-    if (type instanceof EdgeType)
-      return "an edge type";
-    return "a document type";
-  }
-
-  /**
-   * When the name that is not an edge type is a property declared on one, the caller has most likely passed the weight
-   * property where the relationship types go, the order {@code algo.mst} and {@code algo.apsp} took before #9769.
-   */
-  private static String edgePropertyHint(final Schema schema, final String name) {
-    for (final DocumentType type : schema.getTypes())
-      if (type instanceof EdgeType && type.existsProperty(name))
-        return " ('" + name + "' is a property of the edge type '" + type.getName()
-            + "': the relationship types come first, then the weight property)";
-    return "";
+    if (edges)
+      ProcedureSchemaTypes.requireEdgeTypes(getName(), db.getSchema(), names);
+    else
+      ProcedureSchemaTypes.requireVertexTypes(getName(), db.getSchema(), names);
   }
 
   private static String[] splitRelTypeString(final String s) {
