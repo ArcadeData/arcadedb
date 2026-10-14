@@ -85,6 +85,34 @@ class Issue10040HttpSessionOnFollowerIT extends BaseRaftHATest {
       assertThat(count(i, "ok")).as("server %d must hold the committed session", i).isEqualTo(2L);
   }
 
+  /**
+   * A script that changes the schema cannot be honoured inside the session: forwarded, its writes would commit outside
+   * it; run on the follower, its DDL could not. It is refused, and nothing of it is applied anywhere.
+   */
+  @Test
+  @Timeout(180)
+  void aScriptWithDdlInsideASessionOnAFollowerIsRefused() throws Exception {
+    final int leader = requireLeaderIndex();
+    getServerDatabase(leader, getDatabaseName()).command("sql", "CREATE DOCUMENT TYPE " + TYPE + " IF NOT EXISTS");
+    waitForAllServers();
+    final int follower = firstFollowerOf(leader);
+
+    final String session = begin(follower);
+    final String body = new JSONObject().put("language", "sqlscript")
+        .put("command", "CREATE DOCUMENT TYPE Issue10040Script; INSERT INTO " + TYPE + " SET name = 'script';").toString();
+    final HttpResponse<String> response = post(follower, "/api/v1/command/" + getDatabaseName(), body, session);
+    assertThat(response.statusCode()).as("the script must be refused: %s", response.body()).isNotEqualTo(200);
+    assertThat(response.body()).contains("cannot run inside a transaction on a replica server");
+    // the failed command may already have ended the session's transaction: the outcome of this rollback is not the point
+    post(follower, "/api/v1/rollback/" + getDatabaseName(), "{}", session);
+
+    waitForAllServers();
+    for (int i = 0; i < getServerCount(); i++) {
+      assertThat(getServerDatabase(i, getDatabaseName()).getSchema().existsType("Issue10040Script")).as("server %d", i).isFalse();
+      assertThat(count(i, "script")).as("server %d", i).isZero();
+    }
+  }
+
   private long count(final int serverIndex, final String name) {
     final Database db = getServerDatabase(serverIndex, getDatabaseName());
     try (final ResultSet rs = db.query("sql", "SELECT count(@rid) AS c FROM " + TYPE + " WHERE name = ?", name)) {

@@ -106,6 +106,47 @@ class Issue10040PostgresFollowerExplicitTransactionIT extends BaseRaftHATest {
       assertThat(count(i, "block")).as("server %d must hold the committed block", i).isEqualTo(2L);
   }
 
+  /**
+   * A write that runs on the follower can add a name to the schema dictionary, which every node must agree on: the
+   * reason non-idempotent statements were forwarded in the first place (#4039). The leader writes a new name of its own
+   * first, so the follower's dictionary page is the one the leader moved on from unless the follower applied it. The
+   * block must either commit with every node agreeing on both names, or fail with a retryable conflict, never diverge.
+   */
+  @Test
+  @Timeout(180)
+  void aNewPropertyNameWrittenOnAFollowerIsAgreedByEveryNode() throws Exception {
+    final int leader = requireLeaderIndex();
+    final int follower = prepareFollower(leader);
+
+    final Database leaderDb = getServerDatabase(leader, getDatabaseName());
+    leaderDb.transaction(() -> leaderDb.command("sql", "INSERT INTO " + TYPE + " SET name = 'leader', leaderOnlyProp = 1"));
+
+    boolean committed = false;
+    for (int attempt = 0; attempt < 5 && !committed; attempt++) {
+      try (final Connection connection = connect(follower); final Statement statement = connection.createStatement()) {
+        connection.setAutoCommit(false);
+        statement.execute("INSERT INTO " + TYPE + " SET name = 'dict', followerOnlyProp = 'x'");
+        connection.commit();
+        committed = true;
+      } catch (final SQLException e) {
+        // a stale dictionary page is refused by the leader as the retryable serialization_failure, the same as any conflict
+        assertThat(e.getSQLState()).as("a conflict must be retryable: %s", e.getMessage()).isEqualTo("40001");
+      }
+    }
+    assertThat(committed).as("the block must commit within a few retries").isTrue();
+
+    waitForAllServers();
+    for (int i = 0; i < getServerCount(); i++) {
+      final Database db = getServerDatabase(i, getDatabaseName());
+      try (final ResultSet rs = db.query("sql", "SELECT followerOnlyProp FROM " + TYPE + " WHERE name = 'dict'")) {
+        assertThat(rs.next().<String>getProperty("followerOnlyProp")).as("server %d", i).isEqualTo("x");
+      }
+      try (final ResultSet rs = db.query("sql", "SELECT leaderOnlyProp FROM " + TYPE + " WHERE name = 'leader'")) {
+        assertThat(rs.next().<Number>getProperty("leaderOnlyProp").intValue()).as("server %d", i).isEqualTo(1);
+      }
+    }
+  }
+
   /** Outside a block nothing changes: an auto-commit write is still forwarded and committed on the leader. */
   @Test
   @Timeout(180)

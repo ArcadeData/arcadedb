@@ -66,6 +66,7 @@ import org.junit.jupiter.api.TestFactory;
 import org.mockito.ArgumentCaptor;
 
 import java.io.UncheckedIOException;
+import java.lang.reflect.Field;
 import java.util.List;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
@@ -514,6 +515,23 @@ class Issue6201ErrorStatusParityTest {
             .isNull();
   }
 
+  /**
+   * Issue #8199: a database a server shutdown closed under an in-flight request keeps the 503 it always had, because for
+   * the client it is transient - it retries on another node, or once this one is back - unlike a DROP or CLOSE DATABASE.
+   */
+  @Test
+  void aDatabaseClosedByAShutdownIsStillReportedAsRetryable() throws Exception {
+    final ArcadeDBServer server = TestServerHelper.unstartedServer("test", new ContextConfiguration());
+    final Field status = ArcadeDBServer.class.getDeclaredField("status");
+    status.setAccessible(true);
+    status.set(server, ArcadeDBServer.STATUS.SHUTTING_DOWN);
+
+    final HandledResponse response = handle(new ThrowingHandler(HTTP_SERVERS.of(server), new DatabaseIsClosedException("mydb")));
+
+    assertThat(response.statusCode).isEqualTo(503);
+    assertThat(new JSONObject(response.body).getString("exception")).isEqualTo(DatabaseIsClosedException.class.getName());
+  }
+
   private ThrowingHandler handler(final RuntimeException toThrow) {
     final ArcadeDBServer server = TestServerHelper.unstartedServer("test", new ContextConfiguration());
 
@@ -526,6 +544,10 @@ class Issue6201ErrorStatusParityTest {
    * throws the given exception, and captures the status code and JSON body the classification produces.
    */
   private HandledResponse handle(final RuntimeException toThrow) {
+    return handle(handler(toThrow));
+  }
+
+  private HandledResponse handle(final ThrowingHandler handler) {
     final Sender sender = mock(Sender.class);
     final HttpServerExchange exchange = mock(HttpServerExchange.class);
     final int[] statusCode = { 200 };
@@ -541,7 +563,7 @@ class Issue6201ErrorStatusParityTest {
     when(exchange.getRelativePath()).thenReturn("/command/graph");
     when(exchange.getResponseSender()).thenReturn(sender);
 
-    handler(toThrow).handleRequest(exchange);
+    handler.handleRequest(exchange);
 
     final ArgumentCaptor<String> body = ArgumentCaptor.forClass(String.class);
     verify(sender).send(body.capture());

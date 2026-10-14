@@ -1313,10 +1313,14 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       return new ErrorClassification(404, "Database not found", notAvailable, null, ErrorLogKind.USER);
     }
 
-    // 404: the permanent close the arm above leaves out - a DROP/CLOSE DATABASE or a shutdown closed the handle a
-    // request had resolved (issue #8199). Not a fault of this server and not retryable against the same name.
+    // The close the arm above leaves out (issue #8199). A server shutting down closes every database under the requests
+    // still in flight: transient for a client, which retries on another node or once this one is back, so it keeps the
+    // 503 it has always had. Otherwise a DROP/CLOSE DATABASE closed the handle a request had resolved: permanent, a 404,
+    // not retryable against the same name.
     final DatabaseIsClosedException databaseClosed = firstOf(e, cause, DatabaseIsClosedException.class);
     if (databaseClosed != null) {
+      if (isServerShuttingDown())
+        return retryable(databaseClosed);
       return new ErrorClassification(404, "Database is closed", databaseClosed, null, ErrorLogKind.USER);
     }
 
@@ -1541,6 +1545,11 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
    * when neither is. {@code e} is tested first so a mapping reports the outermost throwable of its own type,
    * which is the one carrying the message and the structured arguments the client is given.
    */
+  private boolean isServerShuttingDown() {
+    final ArcadeDBServer server = httpServer != null ? httpServer.getServer() : null;
+    return server != null && server.getStatus() == ArcadeDBServer.STATUS.SHUTTING_DOWN;
+  }
+
   private static <T> T firstOf(final Throwable e, final Throwable cause, final Class<T> type) {
     if (type.isInstance(e))
       return type.cast(e);
@@ -1552,7 +1561,8 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   /**
    * A 503 for a failure the caller can retry as-is - a Raft conflict, a resync race, or a TimeSeries read a
    * downsample overtook, all transient by construction. Shared by the {@link NeedRetryException},
-   * {@link DatabaseIsReopeningException} and {@link TimeSeriesWalkCoarsenedException} arms of {@link #classifyError}.
+   * {@link DatabaseIsReopeningException} and {@link TimeSeriesWalkCoarsenedException} arms of {@link #classifyError}, and
+   * by a database closed by a shutdown.
    */
   private static ErrorClassification retryable(final Throwable retryable) {
     return new ErrorClassification(503, "Cannot execute command", retryable, null, ErrorLogKind.RETRYABLE);
