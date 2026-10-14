@@ -429,7 +429,10 @@ public final class RegexAutomaton {
       }
       if (size * 2 >= keys.length)
         grow();
-      return insert(keys, pair);
+      if (!insert(keys, pair))
+        return false;
+      ++size;
+      return true;
     }
 
     private boolean insert(final long[] table, final long pair) {
@@ -441,8 +444,6 @@ public final class RegexAutomaton {
         slot = (slot + 1) & mask;
       }
       table[slot] = pair;
-      if (table == keys)
-        ++size;
       return true;
     }
 
