@@ -96,6 +96,14 @@ class Issue10017PathCombineTest extends TestHelper {
   }
 
   @Test
+  void whatIsNotAPathIsRefused() {
+    assertThatThrownBy(() -> single("MATCH p = (:N {id: 1})-[:R]->(:N {id: 2}) RETURN path.combine(p, 42) AS p"))
+        .isInstanceOf(CommandExecutionException.class).hasMessageContaining("expects paths");
+    assertThatThrownBy(() -> single("MATCH p = (:N {id: 1})-[:R]->(:N {id: 2}) RETURN path.combine([p, 'x']) AS p"))
+        .isInstanceOf(CommandExecutionException.class).hasMessageContaining("expects paths");
+  }
+
+  @Test
   void theListFormJoinsEveryPathInOrder() {
     assertThat(single("""
         MATCH p1 = (:N {id: 1})-[:R]->(b:N {id: 2}), p2 = (b)-[:R]->(:N {id: 3})

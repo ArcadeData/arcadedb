@@ -82,9 +82,20 @@ public class PathCombine extends AbstractPathFunction {
     return asPathValue(arg);
   }
 
+  /**
+   * The path {@code value} is: a real path when its elements are graph elements, the value itself when it is a path
+   * of other elements (a node/relationship map, an alternating list). Anything else is not a path and is refused, so a
+   * value that is not one never comes back out as a "combined path".
+   */
   private static Object asPathValue(final Object value) {
     final TraversalPath path = asTraversalPath(value);
-    return path != null ? path : value;
+    if (path != null)
+      return path;
+    if (value instanceof Map<?, ?> map && map.get("nodes") instanceof List<?>)
+      return value;
+    if (value instanceof List<?> list && list.size() % 2 == 1)
+      return value;
+    throw new CommandExecutionException("path.combine() expects paths, got " + describe(value));
   }
 
   private static Object combine(final Object first, final Object second) {
@@ -92,12 +103,12 @@ public class PathCombine extends AbstractPathFunction {
       return second == null ? null : asPathValue(second);
     if (second == null)
       return asPathValue(first);
-    final TraversalPath firstPath = asTraversalPath(first);
-    final TraversalPath secondPath = asTraversalPath(second);
+    final TraversalPath firstPath = asTraversalPath(asPathValue(first));
+    final TraversalPath secondPath = asTraversalPath(asPathValue(second));
     if (firstPath != null && secondPath != null) {
       final Object end = firstPath.getEndVertex().getIdentity();
       final Object start = secondPath.getStartVertex().getIdentity();
-      if (!end.equals(start))
+      if (!Objects.equals(end, start))
         throw notConnected(end, start);
       return new TraversalPath(firstPath, secondPath);
     }
