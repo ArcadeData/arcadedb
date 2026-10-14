@@ -208,8 +208,12 @@ public class LightEdgeRID extends DatabaseRID {
   /**
    * A key for hash-based duplicate elimination ({@code DISTINCT}, grouping, {@code UNION}) that is equal for the same
    * relationship and different for twins (issue #10008). It hashes like the RID, so only edges with the same triple
-   * ever compare, and comparing them is {@link #isSameEdge}: the occurrence of an edge is resolved only when a second
-   * edge with its triple turns up, never per row.
+   * ever compare: the occurrence of an edge is resolved only when a second edge with its triple turns up, never per row.
+   * <p>
+   * Two keys compare by occurrence alone, not through the shortcuts of {@link #isSameEdge}: a shortcut answers from
+   * whatever one side has already resolved, so its answer could depend on the order the keys met, and a hash set needs
+   * an equality that is stable and transitive. An occurrence, once resolved, is cached on the RID, so every comparison
+   * of a key answers the same.
    */
   public Object distinctKey() {
     return new DistinctKey(this);
@@ -218,7 +222,9 @@ public class LightEdgeRID extends DatabaseRID {
   private record DistinctKey(LightEdgeRID edge) {
     @Override
     public boolean equals(final Object obj) {
-      return obj instanceof DistinctKey other && isSameEdge(edge, other.edge);
+      if (!(obj instanceof DistinctKey other))
+        return false;
+      return edge == other.edge || (edge.equals(other.edge) && edge.getOccurrence() == other.edge.getOccurrence());
     }
 
     @Override

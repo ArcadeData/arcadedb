@@ -55,7 +55,8 @@ import java.util.logging.Level;
  * relationship whatever position it was read at.
  * <p>
  * Memory is one int per distinct (edge type, neighbour) of the list's lightweight entries, in primitive maps, plus one
- * small entry per entry of a twinned triple (none at all for a list without twins, whose second pass is skipped). It
+ * small entry per entry of a TWINNED triple - O(entries) only for a list made mostly of twins, an application mistake
+ * the {@code UNIQUE} flag exists to prevent; none at all for a list without twins, whose second pass is skipped. It
  * lives as long as an edge read by the iteration does: a query that keeps such edges (a {@code collect}, the keys of a
  * {@code DISTINCT}, an {@code ORDER BY} buffer) keeps the census of every list they came from, which for a super-node
  * is O(distinct neighbours) - the same order as the edges the query keeps.
@@ -66,12 +67,20 @@ final class LightEdgeCensus {
   private final DatabaseInternal                 database;
   private final RID                              owner;
   private final Vertex.DIRECTION                 direction;
-  private       int                              requests;
-  private       boolean                          built;
-  // EDGE TYPE BUCKET -> NEIGHBOUR -> HOW MANY ENTRIES OF THE TRIPLE THE LIST HOLDS
-  private       LongObjectHashMap<RidIntHashMap> twinsByType;
-  // CHUNK -> BYTE POSITION -> THE ENTRY, FOR THE ENTRIES OF A TRIPLE WITH TWINS ONLY; NULL FOR A LIST WITHOUT TWINS
-  private       Map<RID, LongObjectHashMap<Twin>> twinEntries;
+  // GUARDED BY THIS: QUESTIONS ASKED BEFORE THE BUILD, AND WHETHER THE BUILD FAILED (THE LIST COULD NOT BE READ: EVERY
+  // EDGE THEN WALKS ALONE, RATHER THAN EACH OF THEM FAILING THE SAME WALK OF THE WHOLE LIST AGAIN)
+  private          int     requests;
+  private          boolean failed;
+  // THE COUNTS, PUBLISHED ONCE BUILT AND NEVER CHANGED AFTER: READ WITHOUT THE MONITOR
+  private volatile Counts  counts;
+
+  /**
+   * What the census counted. {@code twinsByType}: edge type bucket -> neighbour -> how many entries of the triple the
+   * list holds. {@code twinEntries}: chunk -> byte position -> the entry, for the entries of a triple with twins only;
+   * null for a list without twins.
+   */
+  private record Counts(LongObjectHashMap<RidIntHashMap> twinsByType, Map<RID, LongObjectHashMap<Twin>> twinEntries) {
+  }
 
   /** An entry of a twinned triple: the triple it holds, so an answer can be checked, and which of its twins it is. */
   private record Twin(int edgeBucketId, RID neighbor, int occurrence) {
@@ -86,22 +95,22 @@ final class LightEdgeCensus {
   /**
    * Numbers {@code edge} from the census, building it on the second question of the iteration.
    * <p>
-   * Synchronized, the build included: the rows of one iteration can be resolved by more than one thread (a parallel
-   * aggregation), and without the monitor each of them would walk the whole list to build the same census. The walk
-   * runs once per list read, so the threads that wait on it wait for what they would otherwise each have done; every
-   * later call is a lookup.
+   * Once built, the counts are read without any lock. The build itself is synchronized: the rows of one iteration can be
+   * resolved by more than one thread (a parallel aggregation), and without the monitor each of them would walk the whole
+   * list to build the same census. The walk runs once per list read, so a thread that waits on it waits for what it would
+   * otherwise have done itself.
    *
    * @return false when the census declines and the edge has to walk its list alone
    */
-  synchronized boolean resolve(final LightEdgeRID edge, final RID segment, final int position) {
-    if (!built) {
-      if (++requests < 2)
-        return false;
-      if (!build())
+  boolean resolve(final LightEdgeRID edge, final RID segment, final int position) {
+    Counts c = counts;
+    if (c == null) {
+      c = buildOnSecondQuestion();
+      if (c == null)
         return false;
     }
 
-    final RidIntHashMap byNeighbor = twinsByType.get(edge.getBucketId());
+    final RidIntHashMap byNeighbor = c.twinsByType.get(edge.getBucketId());
     final RID neighbor = direction == Vertex.DIRECTION.OUT ? edge.getInRID() : edge.getOutRID();
     final int twins = byNeighbor != null ? byNeighbor.get(neighbor, 0) : 0;
     if (twins == 0)
@@ -112,7 +121,7 @@ final class LightEdgeCensus {
       return true;
     }
 
-    final LongObjectHashMap<Twin> inChunk = twinEntries.get(segment);
+    final LongObjectHashMap<Twin> inChunk = c.twinEntries != null ? c.twinEntries.get(segment) : null;
     final Twin twin = inChunk != null ? inChunk.get(position) : null;
     if (twin == null || twin.edgeBucketId != edge.getBucketId() || !twin.neighbor.equals(neighbor))
       // THE ORIGIN HELD ANOTHER ENTRY WHEN THE LIST WAS COUNTED: THE EDGE WAS READ AFTER THE LIST CHANGED
@@ -122,27 +131,47 @@ final class LightEdgeCensus {
   }
 
   /** Whether the census numbered twins, i.e. made its second pass. For tests. */
-  synchronized boolean hasTwins() {
-    return twinEntries != null;
+  boolean hasTwins() {
+    final Counts c = counts;
+    return c != null && c.twinEntries != null;
   }
 
   /** Whether the census was counted. For tests. */
-  synchronized boolean isBuilt() {
+  boolean isBuilt() {
+    return counts != null;
+  }
+
+  /** Whether counting the list failed, so that every edge walks alone. For tests. */
+  synchronized boolean hasFailed() {
+    return failed;
+  }
+
+  /** @return the counts, built now if this is the second question; null while the census declines */
+  private synchronized Counts buildOnSecondQuestion() {
+    if (counts != null)
+      return counts;
+    if (failed || ++requests < 2)
+      return null;
+    final Counts built = build();
+    if (built == null)
+      failed = true;
+    else
+      counts = built;
     return built;
   }
 
-  private boolean build() {
-    final LongObjectHashMap<RidIntHashMap> counts = new LongObjectHashMap<>();
+  private Counts build() {
+    final LongObjectHashMap<RidIntHashMap> perType = new LongObjectHashMap<>();
     final ListCounts listCounts = new ListCounts();
     try {
       final VertexInternal vertex = (VertexInternal) database.lookupByRID(owner, false);
       LightEdgeRID.walkList(database, vertex, direction, null, (segment, position, edgeRID, neighbor) -> {
         if (edgeRID.getPosition() >= 0)
           return;
-        RidIntHashMap byNeighbor = counts.get(edgeRID.getBucketId());
+        RidIntHashMap byNeighbor = perType.get(edgeRID.getBucketId());
         if (byNeighbor == null) {
           byNeighbor = new RidIntHashMap();
-          counts.put(edgeRID.getBucketId(), byNeighbor);
+          perType.put(edgeRID.getBucketId(), byNeighbor);
         }
         final int before = byNeighbor.get(neighbor, 0);
         byNeighbor.put(neighbor, before + 1);
@@ -155,7 +184,7 @@ final class LightEdgeCensus {
         final LongObjectHashMap<RidIntHashMap> seen = new LongObjectHashMap<>();
         final Map<RID, LongObjectHashMap<Twin>> entries = new HashMap<>();
         LightEdgeRID.walkList(database, vertex, direction, null, (segment, position, edgeRID, neighbor) -> {
-          if (edgeRID.getPosition() >= 0 || counts.get(edgeRID.getBucketId()).get(neighbor, 0) <= 1)
+          if (edgeRID.getPosition() >= 0 || perType.get(edgeRID.getBucketId()).get(neighbor, 0) <= 1)
             return;
           RidIntHashMap seenOfType = seen.get(edgeRID.getBucketId());
           if (seenOfType == null) {
@@ -167,16 +196,14 @@ final class LightEdgeCensus {
           entries.computeIfAbsent(segment, k -> new LongObjectHashMap<>())
               .put(position, new Twin(edgeRID.getBucketId(), neighbor, occurrence));
         });
-        twinEntries = entries;
+        return new Counts(perType, entries);
       }
+      return new Counts(perType, null);
     } catch (final RecordNotFoundException e) {
       LogManager.instance().log(this, Level.FINE, "Cannot count the lightweight edges of %s (%s): %s", owner, direction,
           e.getMessage());
-      return false;
+      return null;
     }
-    twinsByType = counts;
-    built = true;
-    return true;
   }
 
   /** What the first pass learns about the list as a whole. */

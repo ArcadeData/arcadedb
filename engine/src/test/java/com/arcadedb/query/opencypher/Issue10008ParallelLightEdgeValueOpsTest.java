@@ -36,6 +36,7 @@ import java.util.List;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression tests for #10008: #9573 and #9983 taught the pattern matcher that two lightweight edges of one type over
@@ -173,6 +174,25 @@ class Issue10008ParallelLightEdgeValueOpsTest extends TestHelper {
     assertThat(edgesLeft()).isEqualTo(2L);
     database.transaction(() -> database.command("opencypher", "MATCH (:P)-[r:K]->(:P) WITH r LIMIT 1 DELETE r, r").close());
     assertThat(edgesLeft()).isEqualTo(1L);
+  }
+
+  /**
+   * The first twin reads the remaining rows in before it is deleted, under the per-operation heap limit. A limit too
+   * small for them fails the statement, which rolls back whole: nothing is deleted, rather than the rows that fit.
+   */
+  @Test
+  void aDeleteOfTwinsOverTheHeapLimitFailsWithoutDeletingAnything() {
+    build(Fixture.THREE_PARALLEL, true);
+    database.getConfiguration().setValue(GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP, 2);
+    assertThatThrownBy(() -> database.transaction(() -> {
+      try (final ResultSet rs = database.command("opencypher", "MATCH (:P)-[r:K]-(:P) DELETE r")) {
+        while (rs.hasNext())
+          rs.next();
+      }
+    })).hasStackTraceContaining(GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP.getKey());
+    database.getConfiguration().setValue(GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP,
+        GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP.getDefValue());
+    assertThat(edgesLeft()).isEqualTo(3L);
   }
 
   /**

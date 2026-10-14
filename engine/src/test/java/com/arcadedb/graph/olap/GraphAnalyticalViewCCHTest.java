@@ -23,6 +23,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.GraphBatch;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
@@ -709,6 +710,20 @@ class GraphAnalyticalViewCCHTest {
     assertThat(rebuilt.coversEveryEdge()).isTrue();
     database.transaction(() -> junctions[2].asVertex().modify().newLightEdge("RAIL", junctions[20].asVertex()));
     assertThat(rebuilt.coversEveryEdge()).isFalse();
+    assertThat(ContractionHierarchy.find(database, "distance")).isNull();
+  }
+
+  /** A bulk load reports the edge types it wrote, the ones the view does not hold included (#9915). */
+  @Test
+  void aBulkLoadOfAnotherEdgeTypeIsHeardToo() {
+    grid(5, new Random(6), false);
+    final GraphAnalyticalView view = syncView("roads");
+    assertThat(view.getContractionHierarchy("distance", "ROAD").awaitReady(false, 60, TimeUnit.SECONDS)).isTrue();
+    assertThat(view.coversEveryEdge()).isTrue();
+    try (final GraphBatch batch = database.batch().build()) {
+      batch.newEdge(junctions[0], "RAIL", junctions[24]);
+    }
+    assertThat(view.coversEveryEdge()).isFalse();
     assertThat(ContractionHierarchy.find(database, "distance")).isNull();
   }
 

@@ -19,12 +19,15 @@
 package com.arcadedb.graph;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Random;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -140,6 +143,48 @@ class LightEdgeCensusTest extends TestHelper {
         after.add(edge.getOccurrence());
       }
     assertThat(after).containsExactlyInAnyOrder(0, 1);
+  }
+
+  /**
+   * The keys of a DISTINCT compare by occurrence, so a hash set of them holds one key per relationship whatever order the
+   * keys arrive in and whatever each edge had resolved before: edges read off the source's list and off the target's,
+   * and one rebuilt from its endpoints (no list, the first twin).
+   */
+  @Test
+  void distinctKeysAreStableInEveryInsertionOrder() {
+    buildTwins();
+    for (long seed = 0; seed < 12; seed++) {
+      final List<LightEdgeRID> edges = new ArrayList<>(read());
+      for (final Edge edge : database.lookupByRID(twinTarget, true).asVertex().getEdges(Vertex.DIRECTION.IN))
+        edges.add((LightEdgeRID) edge.getIdentity());
+      final LightEdgeRID first = edges.getFirst();
+      edges.add(new LightEdgeRID(database, first.getBucketId(), hub, twinTarget));
+      // some resolved before they meet, some not
+      for (int i = 0; i < edges.size(); i += 3)
+        edges.get(i).getOccurrence();
+      Collections.shuffle(edges, new Random(seed));
+
+      final Set<Object> keys = new HashSet<>();
+      for (final LightEdgeRID edge : edges)
+        keys.add(edge.distinctKey());
+      // 4 + 3 single edges, and 3 twins: the IN side and the rebuilt edge add none
+      assertThat(keys).as("seed %d", seed).hasSize(10);
+    }
+  }
+
+  /** A list that cannot be read is given up on once: every later edge walks alone instead of failing the same walk. */
+  @Test
+  void aCensusThatCannotCountTheListGivesUpOnce() {
+    buildTwins();
+    final LightEdgeRID edge = read().getFirst();
+    final RID missing = database.newRID(hub.getBucketId(), 1_000_000L);
+    final LightEdgeCensus census = new LightEdgeCensus((DatabaseInternal) database, missing, Vertex.DIRECTION.OUT);
+    assertThat(census.resolve(edge, edge.getOriginSegment(), edge.getOriginPosition())).isFalse();
+    assertThat(census.resolve(edge, edge.getOriginSegment(), edge.getOriginPosition())).isFalse();
+    assertThat(census.hasFailed()).isTrue();
+    assertThat(census.isBuilt()).isFalse();
+    assertThat(census.resolve(edge, edge.getOriginSegment(), edge.getOriginPosition())).isFalse();
+    assertThat(census.hasFailed()).isTrue();
   }
 
   @SuppressWarnings("deprecation")
