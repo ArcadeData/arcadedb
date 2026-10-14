@@ -25,17 +25,23 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
+import java.util.List;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Regression test for issue #5225. Creating a Cypher index on an initially-untyped property infers and
  * declares the property's type from the existing data ({@code INTEGER} here, see issue #4222). A later
- * {@code SET n.val = "1"} is therefore coerced to the integer {@code 1}, so a strict-typed Cypher lookup
- * {@code WHERE n.val = "1"} correctly returns no rows (matching Neo4j: {@code 1 = "1"} is false). The bug
- * was that a <em>range</em> predicate against a String bound (e.g. {@code WHERE n.val < "zzz"}) crashed
- * the index path with an internal {@code ClassCastException} / {@code NumberFormatException}, while the
- * same predicate without an index completed. Cross-type comparisons are undefined (null) in Cypher, so
- * the range must complete and return the same result as the full-scan path, never throw.
+ * {@code SET n.val = "1"} is therefore coerced to the integer {@code 1}. The bug was that a <em>range</em> predicate
+ * against a String bound (e.g. {@code WHERE n.val < "zzz"}) crashed the index path with an internal
+ * {@code ClassCastException} / {@code NumberFormatException}, while the same predicate without an index completed.
+ * Cross-type comparisons are undefined (null) in Cypher, so the range must complete and return the same result as the
+ * full-scan path, never throw.
+ * <p>
+ * Equality is different: since #9794 a declaration defines the text form of its values in both directions, so
+ * {@code WHERE n.val = "1"} finds the node the same text was written into, on the index path and on the scan path alike
+ * (#9935).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -64,6 +70,15 @@ class CypherMixedTypeIndexIssue5225Test {
     return ((Number) rs.next().getProperty("c")).longValue();
   }
 
+  private List<Integer> ids(final String query) {
+    final List<Integer> ids = new ArrayList<>();
+    try (final ResultSet rs = database.command("cypher", query)) {
+      while (rs.hasNext())
+        ids.add(((Number) rs.next().getProperty("id")).intValue());
+    }
+    return ids;
+  }
+
   private long rows(final String query) {
     long n = 0;
     final ResultSet rs = database.command("cypher", query);
@@ -76,10 +91,17 @@ class CypherMixedTypeIndexIssue5225Test {
 
   @Test
   void equalityLookupIsCypherConsistent() {
-    // val was coerced to the integer 1, so a String-typed equality returns no rows (Neo4j: 1 = "1" is false).
-    assertThat(rows("MATCH (n:BugIdx) WHERE n.val = \"1\" RETURN n.id, n.val")).isZero();
-    // The correctly-typed lookup still finds the node through the index.
-    assertThat(rows("MATCH (n:BugIdx) WHERE n.val = 1 RETURN n.id, n.val")).isEqualTo(1);
+    // The write was coerced: val holds the integer 1, not the text "1"
+    try (final ResultSet rs = database.query("cypher", "MATCH (n:BugIdx) WHERE n.id = 1 RETURN n.val AS v")) {
+      assertThat(rs.next().<Object>getProperty("v")).isInstanceOf(Integer.class).isEqualTo(1);
+    }
+    // val is declared INTEGER, so the text it was written with reads back as the same integer (#9794, #9935)
+    assertThat(ids("MATCH (n:BugIdx) WHERE n.val = \"1\" RETURN n.id AS id")).containsExactly(1);
+    assertThat(ids("MATCH (n:BugIdx) WHERE n.val IN [\"1\"] RETURN n.id AS id")).containsExactly(1);
+    assertThat(ids("MATCH (n:BugIdx {val: \"1\"}) RETURN n.id AS id")).containsExactly(1);
+    // A text with no integer form matches nothing, and the correctly-typed lookup still finds the node through the index
+    assertThat(rows("MATCH (n:BugIdx) WHERE n.val = \"one\" RETURN n.id")).isZero();
+    assertThat(ids("MATCH (n:BugIdx) WHERE n.val = 1 RETURN n.id AS id")).containsExactly(1);
   }
 
   @Test
@@ -97,6 +119,8 @@ class CypherMixedTypeIndexIssue5225Test {
     // path, never a semantic change. Capture results with the index, then after dropping it.
     final long eqIndexed = rows("MATCH (n:BugIdx) WHERE n.val = \"1\" RETURN n.id");
     final long rangeIndexed = count("MATCH (n:BugIdx) WHERE n.val < \"zzz\" RETURN count(n) AS c");
+    // Both paths must agree on a non-empty answer, or the comparison below proves nothing
+    assertThat(eqIndexed).isEqualTo(1);
 
     database.getSchema().dropIndex(database.getSchema().getType("BugIdx").getIndexByProperties("val").getName());
 
