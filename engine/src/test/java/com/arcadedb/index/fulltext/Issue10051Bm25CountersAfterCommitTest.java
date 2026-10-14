@@ -19,12 +19,18 @@
 package com.arcadedb.index.fulltext;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.RID;
+import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.FullTextIndexMetadata;
 import org.junit.jupiter.api.Test;
 
+import java.util.concurrent.atomic.AtomicReference;
+
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #10051 (#10018): the BM25 corpus counters of a FULL_TEXT index were bumped at index time, before the transaction
@@ -207,5 +213,70 @@ class Issue10051Bm25CountersAfterCommitTest extends TestHelper {
     assertThat(metadata().getTotalDocs()).isEqualTo(DOCS);
     assertThat(metadata().getSumDocLength()).isEqualTo(DOCS * 3L);
     assertThat(metadata().getScans()).isZero();
+  }
+
+  /**
+   * Serializing the counters for something that is not a write of the schema file (an export, a replication payload) must not
+   * make the close believe they were saved.
+   */
+  @Test
+  void serializingTheSchemaWithoutWritingItDoesNotLoseTheCountersAtClose() {
+    createAndFill();
+    assertThat(metadata().isCountersDirty()).isTrue();
+
+    database.getSchema().getEmbedded().toJSON();
+    database.getSchema().getEmbedded().toJSON();
+
+    assertThat(metadata().isCountersDirty()).as("an export saved nothing").isTrue();
+    reopenDatabase();
+    assertThat(metadata().getTotalDocs()).isEqualTo(DOCS);
+    assertThat(metadata().getScans()).isZero();
+  }
+
+  @Test
+  void aCompletedSchemaWriteMarksTheCountersSavedUnlessTheyMovedMeanwhile() {
+    createAndFill();
+    assertThat(metadata().isCountersDirty()).isTrue();
+
+    database.getSchema().getEmbedded().saveConfiguration();
+    assertThat(metadata().isCountersDirty()).isFalse();
+
+    metadata().applyCorpusDelta(1, 3);
+    assertThat(metadata().isCountersDirty()).isTrue();
+  }
+
+  /**
+   * A commit that the cluster-wide check refuses with a ConcurrentModificationException counts nothing, and the transaction that
+   * won counts exactly its own effect: the commit-time index replay never goes through the counting code.
+   */
+  @Test
+  void aCommitRefusedWithAConcurrentModificationNeverCountsItsDocuments() throws Exception {
+    createAndFill();
+    final long lengthBefore = metadata().getSumDocLength();
+
+    database.begin();
+    final MutableDocument doc = database.iterateType("Doc", false).next().asDocument().modify();
+    doc.set("content", "alpha beta gamma delta epsilon zeta eta theta").save();
+    final RID rid = doc.getIdentity();
+
+    final AtomicReference<Throwable> failure = new AtomicReference<>();
+    final Thread other = new Thread(() -> {
+      try {
+        database.transaction(() -> database.lookupByRID(rid, true).asDocument().modify().set("content", "alpha").save());
+      } catch (final Throwable t) {
+        failure.set(t);
+      }
+    });
+    other.start();
+    other.join();
+    assertThat(failure.get()).isNull();
+
+    assertThatThrownBy(database::commit).isInstanceOf(ConcurrentModificationException.class);
+    if (database.isTransactionActive())
+      database.rollback();
+
+    // The winner shortened one document from 3 tokens to 1; the refused transaction (8 tokens) is nowhere in the counters
+    assertThat(metadata().getTotalDocs()).isEqualTo(DOCS);
+    assertThat(metadata().getSumDocLength()).isEqualTo(lengthBefore - 2);
   }
 }

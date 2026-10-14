@@ -132,18 +132,35 @@ class Issue10051Bm25CounterAdoptionTest extends TestHelper {
     assertThat(metadata().getTotalDocs()).isEqualTo(DOCS + 2L);
   }
 
-  /** The adopted counters are the leader's exact result: the follower owes no drift check this session. */
+  /**
+   * The adoption is not atomic with a commit applying its delta on another thread, so the once-per-session drift check stays
+   * armed: it is only a live count against the adopted counters, and it finds nothing to repair when they agree.
+   */
   @Test
-  void adoptedCountersConsumeTheDriftCheck() throws IOException {
+  void adoptedCountersLeaveTheCheapDriftCheckArmedAndItRepairsNothing() throws IOException {
     createAndFill();
     assertThat(metadata().isStaleCheckDone()).isFalse();
 
     leaderSavesCounters(DOCS, DOCS * 3L, 1L);
     followerReloadsTheSchema();
 
-    assertThat(metadata().isStaleCheckDone()).isTrue();
+    assertThat(metadata().isStaleCheckDone()).isFalse();
     database.query("sql", "SELECT FROM Doc WHERE SEARCH_INDEX('Doc[content]', 'alpha') = true").close();
+    assertThat(metadata().isStaleCheckDone()).isTrue();
     assertThat(metadata().getScans()).isZero();
+  }
+
+  /** A node that skipped a delta arms the drift check, which then repairs it. */
+  @Test
+  void aSkippedDeltaArmsTheDriftCheck() {
+    createAndFill();
+    database.query("sql", "SELECT FROM Doc WHERE SEARCH_INDEX('Doc[content]', 'alpha') = true").close();
+    assertThat(metadata().isStaleCheckDone()).isTrue();
+
+    metadata().requireRescan();
+    database.query("sql", "SELECT FROM Doc WHERE SEARCH_INDEX('Doc[content]', 'alpha') = true").close();
+
+    assertThat(metadata().getScans()).as("the check rescans even though the counts agree").isEqualTo(1L);
   }
 
   @Test
