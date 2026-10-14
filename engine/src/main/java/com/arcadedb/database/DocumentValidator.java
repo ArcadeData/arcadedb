@@ -433,6 +433,21 @@ public class DocumentValidator {
     return text;
   }
 
+  /**
+   * The compiled REGEXP of {@code p}, refusing the write with the remedy when the pattern does not compile: only a schema
+   * written before invalid patterns were refused at declaration can carry one, and it loads with a warning.
+   */
+  private static Pattern regexpPatternOrRefuse(final Document document, final Property p) {
+    try {
+      return p.getRegexpPattern();
+    } catch (final PatternSyntaxException e) {
+      throwValidationException(document.getType(), p,
+          "has the REGEXP '" + p.getRegexp() + "', which is not a valid regular expression: " + e.getDescription()
+              + ". Remove it with ALTER PROPERTY `" + document.getType().getName() + "`.`" + p.getName() + "` REGEXP null");
+      return null; // unreachable: throwValidationException always throws
+    }
+  }
+
   /** The class a value of {@code type} is held as in {@code database}, which is what its text form depends on. */
   private static Class<?> heldClass(final Database database, final Type type) {
     return type == Type.LINK ? RID.class : type.getJavaImplementation(database);
@@ -454,6 +469,8 @@ public class DocumentValidator {
    * held as the property's type by then. A LINK is matched as the RID of the record it points to, whatever the object the
    * link arrived as: a selected record writes itself as {@code #1:0[n=0]}, a RID as {@code #1:0}, and the same link used to
    * pass or fail depending on which of the two it was.
+   *
+   * @param value the value, never null: a null value is not matched against any pattern
    *
    * @return the text, or null for a type whose values have none ({@link #noTextForm}), which no pattern can be matched
    * against
@@ -694,7 +711,7 @@ public class DocumentValidator {
     final Object fieldValue = document.get(p.getName());
 
     if (fieldValue != null) {
-      final Pattern regexp = p.getRegexpPattern();
+      final Pattern regexp = regexpPatternOrRefuse(document, p);
       if (regexp != null)
         // REGEXP - bounded against catastrophic backtracking (issue #5886): this runs on every insert/update of
         // a validated property, reachable through any write path (REST, any wire protocol) with no query
