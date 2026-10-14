@@ -452,6 +452,25 @@ class PromQLHttpHandlerIT extends BaseGraphServerTest {
   }
 
   @Test
+  void rangeQueryOverARangeVectorOrAStringIsRefused() throws Exception {
+    testEachServer(serverIndex -> {
+      ingestTestData(serverIndex);
+      // issue #9922: both used to answer 200 with an empty matrix
+      final JSONObject rangeVector = getPromQL(serverIndex, "query_range",
+          "query=" + encode("prom_cpu[5m]") + "&start=1&end=5&step=1");
+      assertThat(rangeVector.getString("status")).isEqualTo("error");
+      assertThat(rangeVector.getString("errorType")).isEqualTo("bad_data");
+      assertThat(rangeVector.getString("error"))
+          .isEqualTo("invalid expression type \"range vector\" for range query, must be Scalar or instant Vector");
+
+      final JSONObject string = getPromQL(serverIndex, "query_range", "query=" + encode("\"a\"") + "&start=1&end=5&step=1");
+      assertThat(string.getString("status")).isEqualTo("error");
+      assertThat(string.getString("error"))
+          .isEqualTo("invalid expression type \"string\" for range query, must be Scalar or instant Vector");
+    });
+  }
+
+  @Test
   void lookbackDeltaParameter() throws Exception {
     testEachServer(serverIndex -> {
       ingestTestData(serverIndex);
