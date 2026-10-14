@@ -82,7 +82,9 @@ class QueryHelperLikeRegexTimeoutTest extends TestHelper {
     final String input = "a".repeat(1_000_000);
 
     final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
-    assertThatThrownBy(() -> QueryHelper.like(input, LONG_LIKE_PATTERN, 200)).isInstanceOf(TimeoutException.class);
+    assertThatThrownBy(() -> QueryHelper.like(input, LONG_LIKE_PATTERN, 200)).isInstanceOf(TimeoutException.class)
+        // THE 10,002-CHARACTER PATTERN IS QUOTED BY ITS START ONLY
+        .hasMessageContaining("of length " + LONG_LIKE_PATTERN.length()).message().hasSizeLessThan(300);
 
     stopwatch.assertGaveUpWithin(5000, "the configured 200ms deadline from an unbounded LIKE match");
   }
