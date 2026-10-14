@@ -62,7 +62,8 @@ class RegexAutomatonTest {
     assertThat(intersects("[0-9]^[0-9]", "[0-9]+", DIGITS)).isEqualTo(Verdict.UNSATISFIABLE);
     assertThat(intersects("[0-9]$[0-9]", "[0-9]+", DIGITS)).isEqualTo(Verdict.UNSATISFIABLE);
     assertThat(intersects("\\A[0-9]\\z", "[0-9]+", DIGITS)).isEqualTo(Verdict.SATISFIABLE);
-    assertThat(intersects("(^1|2)+", "[0-9]+", DIGITS)).isEqualTo(Verdict.SATISFIABLE);
+    // an anchor inside a repetition is left to the fallback
+    assertThat(RegexAutomaton.compile("(^1|2)+", DIGITS)).isNull();
   }
 
   @Test
@@ -111,27 +112,27 @@ class RegexAutomatonTest {
   }
 
   /**
-   * An anchor inside a repeated group is where {@link Pattern} stops being a complete backtracker: {@code (?:^b*){2}} does not
+   * An anchor inside a repetition is where {@link Pattern} stops being a complete backtracker: {@code (?:^b*){2}} does not
    * match {@code b}, which the first turn reading {@code b} and the second nothing, or the first nothing and the second
-   * {@code b}, would both match, because a turn that matched nothing ends the loop. So the automaton accepts a SUPERSET of
-   * what {@link Pattern} accepts there, never a subset: a pattern it refutes matches nothing for {@link Pattern} either,
-   * which is the direction a refusal at declaration time rests on.
+   * {@code b}, would both match, because a turn that matched nothing ends the loop. Such a pattern is left to the fallback,
+   * which asks Pattern itself, and every pattern with anchors that IS compiled agrees with Pattern exactly.
    */
   @Test
-  void neverRejectsWhatJavaAcceptsWithAnchorsInsideRepetitions() {
-    assertThat(RegexAutomaton.compile("(?:^b*){2}", "ab").matches("b")).isTrue();
+  void agreesWithJavaWithAnchorsAndLeavesAnchorsInsideRepetitionsToTheFallback() {
     assertThat(Pattern.compile("(?:^b*){2}").matcher("b").matches()).isFalse();
+    for (final String repeatedAnchor : List.of("(?:^b*){2}", "(?:a$)*", "(?:(?:^)?a)+", "(?:a|b\\z)?"))
+      assertThat(RegexAutomaton.compile(repeatedAnchor, "ab")).as(repeatedAnchor).isNull();
 
     final Random random = new Random(9976);
     final String alphabet = "ab1-.";
     int compiled = 0;
     for (int i = 0; i < 2_500; i++) {
       final String regex = generate(random, 3, true);
-      if (isValid(regex) && assertAgreesWithJava(regex, alphabet, 4, false))
+      if (isValid(regex) && assertAgreesWithJava(regex, alphabet, 4, true))
         ++compiled;
     }
-    // a quantified anchor is left to the fallback, so fewer of these compile than without anchors
-    assertThat(compiled).isGreaterThan(600);
+    // an anchor inside a repetition is left to the fallback, so fewer of these compile than without anchors
+    assertThat(compiled).isGreaterThan(300);
   }
 
   @Test
@@ -160,20 +161,18 @@ class RegexAutomatonTest {
       // a common string up to 5 long proves the answer is SATISFIABLE
       if (common)
         assertThat(verdict).as("'%s' and '%s'", left, right).isEqualTo(Verdict.SATISFIABLE);
-      // and a SATISFIABLE answer comes with a string both patterns match, a shortest one (see the test above for anchors)
+      // and a SATISFIABLE answer comes with a string both patterns match, a shortest one
       if (verdict == Verdict.SATISFIABLE) {
         final String witness = RegexAutomaton.search(a, b, Long.MAX_VALUE).common();
         assertThat(witness).isNotEmpty();
-        if (!anchors) {
-          assertThat(witness.length() <= 5).isEqualTo(common);
-          // bounded: a long witness can make a nested quantifier backtrack catastrophically in Pattern
-          try {
-            final long deadline = TimeBoundRegex.newDeadline(500);
-            assertThat(TimeBoundRegex.matchesUntil(pa, witness, deadline) && TimeBoundRegex.matchesUntil(pb, witness, deadline))
-                .as("'%s' and '%s' on '%s'", left, right, witness).isTrue();
-          } catch (final TimeoutException e) {
-            // Pattern could not say in time: nothing to compare with
-          }
+        assertThat(witness.length() <= 5).isEqualTo(common);
+        // bounded: a long witness can make a nested quantifier backtrack catastrophically in Pattern
+        try {
+          final long deadline = TimeBoundRegex.newDeadline(500);
+          assertThat(TimeBoundRegex.matchesUntil(pa, witness, deadline) && TimeBoundRegex.matchesUntil(pb, witness, deadline))
+              .as("'%s' and '%s' on '%s'", left, right, witness).isTrue();
+        } catch (final TimeoutException e) {
+          // Pattern could not say in time: nothing to compare with
         }
       }
     }
