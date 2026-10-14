@@ -79,7 +79,8 @@ class RegexAutomatonTest {
     assertAgreesWithJava("(?U)\\w+", "a1\u00e0-", 3);
     // flags reach quoted text, quantifiers apply to anchors, and \p and \N work inside intersected classes
     assertAgreesWithJava("(?i)\\Qa.\\E+", "aA.", 4);
-    assertAgreesWithJava("^*1$+", "12", 3);
+    assertThat(RegexAutomaton.compile("^*1$+", "12")).isNull();
+    assertAgreesWithJava("(?:)*1()+2?", "12", 3);
     assertAgreesWithJava("[\\p{Digit}&&[^0]]+[\\N{LATIN SMALL LETTER A}b]", "01ab", 4);
     // a supplementary character in the pattern matches no character of an alphabet of chars, as it matches none for Pattern
     assertAgreesWithJava("1\uD83D\uDE00?", "1a", 3);
@@ -129,7 +130,8 @@ class RegexAutomatonTest {
       if (isValid(regex) && assertAgreesWithJava(regex, alphabet, 4, false))
         ++compiled;
     }
-    assertThat(compiled).isGreaterThan(1_200);
+    // a quantified anchor is left to the fallback, so fewer of these compile than without anchors
+    assertThat(compiled).isGreaterThan(600);
   }
 
   @Test
