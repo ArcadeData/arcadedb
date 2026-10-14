@@ -34,8 +34,11 @@ final class WindowRows {
   /**
    * Natural order, except that two numbers of different classes (an Integer and a Double, or an Integer and a Long, in a
    * schemaless property) compare by value instead of failing the cast. Anything else that is not mutually comparable still
-   * throws, so rows over genuinely unrelated keys are refused rather than ordered by a class-name tiebreak.
+   * throws, so rows over genuinely unrelated keys are refused rather than ordered by a class-name tiebreak: a Number against
+   * a non-Number, or two unrelated classes, fails the {@code Comparable} cast with the ClassCastException the callers
+   * translate into a typed argument error.
    */
+  @SuppressWarnings("unchecked")
   private static final Comparator<Object> KEY_NULLS_LAST = Comparator.nullsLast(
       (a, b) -> a instanceof Number && b instanceof Number ? BinaryComparator.compareTo(a, b) : ((Comparable<Object>) a).compareTo(b));
 

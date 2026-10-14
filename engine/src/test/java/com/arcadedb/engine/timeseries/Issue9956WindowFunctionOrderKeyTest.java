@@ -22,7 +22,6 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.Result;
 import org.junit.jupiter.api.Test;
 
-import java.util.Arrays;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -120,6 +119,34 @@ class Issue9956WindowFunctionOrderKeyTest extends TestHelper {
   }
 
   @Test
+  void rankOrdersNaNAboveEveryNumber() {
+    // Double.compare puts NaN above +Infinity; the comparator must stay a total order or the sort can throw
+    database.command("sql", "CREATE DOCUMENT TYPE RankNaN9956");
+    database.transaction(() -> {
+      database.command("sql", "INSERT INTO RankNaN9956 SET ts = 1000, v = ?", Double.NaN);
+      database.command("sql", "INSERT INTO RankNaN9956 SET ts = 2000, v = 3");
+      database.command("sql", "INSERT INTO RankNaN9956 SET ts = 3000, v = ?", Double.NaN);
+      database.command("sql", "INSERT INTO RankNaN9956 SET ts = 4000, v = 1.5");
+    });
+
+    final List<Integer> rank = database.query("sql", "SELECT ts.rank(v, ts) AS rnk FROM RankNaN9956").next().getProperty("rnk");
+    assertThat(rank).containsExactly(3, 2, 3, 1);
+  }
+
+  @Test
+  void lagKeepsArrivalOrderAmongEqualTimestamps() {
+    database.command("sql", "CREATE DOCUMENT TYPE LagTie9956");
+    database.transaction(() -> {
+      database.command("sql", "INSERT INTO LagTie9956 SET ts = 2000, v = 'c'");
+      database.command("sql", "INSERT INTO LagTie9956 SET ts = 1000, v = 'a'");
+      database.command("sql", "INSERT INTO LagTie9956 SET ts = 1000, v = 'b'");
+    });
+
+    final List<Object> lag = database.query("sql", "SELECT ts.lag(v, 1, ts) AS lg FROM LagTie9956").next().getProperty("lg");
+    assertThat(lag).containsExactly(null, "a", "b");
+  }
+
+  @Test
   void rankPutsNullValuesLast() {
     database.command("sql", "CREATE DOCUMENT TYPE RankNull9956");
     database.transaction(() -> {
@@ -207,7 +234,41 @@ class Issue9956WindowFunctionOrderKeyTest extends TestHelper {
     assertThat(toDoubles(filled)).containsExactly(4.0, 2.0, 0.0);
   }
 
+  @Test
+  void linearInterpolationWithSomeRowsUntimestamped() {
+    // timestamped rows come first in time order; the untimestamped ones follow in arrival order, and a gap that touches
+    // one of them is filled by position
+    database.command("sql", "CREATE DOCUMENT TYPE InterpPartial9956");
+    database.transaction(() -> {
+      database.command("sql", "INSERT INTO InterpPartial9956 SET v = 12.0");
+      database.command("sql", "INSERT INTO InterpPartial9956 SET ts = 3000, v = 6.0");
+      database.command("sql", "INSERT INTO InterpPartial9956 SET n = 1");
+      database.command("sql", "INSERT INTO InterpPartial9956 SET ts = 2000");
+      database.command("sql", "INSERT INTO InterpPartial9956 SET ts = 1000, v = 0.0");
+    });
+
+    final List<Object> filled = database.query("sql", "SELECT ts.interpolate(v, 'linear', ts) AS f FROM InterpPartial9956").next()
+        .getProperty("f");
+    // time order: 1000 -> 0.0, 2000 -> null, 3000 -> 6.0, then arrival order: 12.0, null
+    assertThat(toDoubles(filled)).containsExactly(0.0, 3.0, 6.0, 12.0, null);
+  }
+
+  @Test
+  void linearInterpolationPositionalFallbackAcrossAnUntimestampedGap() {
+    database.command("sql", "CREATE DOCUMENT TYPE InterpPartialGap9956");
+    database.transaction(() -> {
+      database.command("sql", "INSERT INTO InterpPartialGap9956 SET n = 1");
+      database.command("sql", "INSERT INTO InterpPartialGap9956 SET v = 9.0");
+      database.command("sql", "INSERT INTO InterpPartialGap9956 SET ts = 1000, v = 3.0");
+    });
+
+    final List<Object> filled = database.query("sql", "SELECT ts.interpolate(v, 'linear', ts) AS f FROM InterpPartialGap9956").next()
+        .getProperty("f");
+    // time order: 1000 -> 3.0, then arrival order: null, 9.0. The gap's middle row has no timestamp: filled by position
+    assertThat(toDoubles(filled)).containsExactly(3.0, 6.0, 9.0);
+  }
+
   private static List<Double> toDoubles(final List<Object> values) {
-    return Arrays.stream(values.toArray()).map(v -> v == null ? null : ((Number) v).doubleValue()).toList();
+    return values.stream().map(v -> v == null ? null : ((Number) v).doubleValue()).toList();
   }
 }
