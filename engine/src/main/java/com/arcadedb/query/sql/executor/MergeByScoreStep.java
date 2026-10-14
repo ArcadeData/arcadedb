@@ -96,10 +96,11 @@ public class MergeByScoreStep extends AbstractExecutionStep {
         if (!hasNext())
           throw new NoSuchElementException();
         final Result result = nextValue;
+        final float score = nextScore;
         nextValue = null;
         localCount++;
         // Pulling the other branches overwrote it: the steps after this one read the score of the row they receive
-        context.setVariable(SCORE_VARIABLE, nextScore);
+        context.setVariable(SCORE_VARIABLE, score);
         return result;
       }
     };

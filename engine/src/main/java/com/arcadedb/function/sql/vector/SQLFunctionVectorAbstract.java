@@ -395,6 +395,10 @@ public abstract class SQLFunctionVectorAbstract extends SQLFunctionAbstract {
    * never filled, and the answer came back short with no stale candidate counted. The emit counts it as stale instead,
    * which is what it is: the searches ranked a record that no longer exists in that form.
    * <p>
+   * A record the first lookup of the pass could not read stays {@link GroupAdmissionState#UNRESOLVED} for the rest of the
+   * pass, even once its commit publishes it: every search of the pass skips it, so none of them ranks it and the emit never
+   * sees it. The next pass, if the answer needs one, reads it afresh.
+   * <p>
    * Thread-safe: the sparse function runs the searches of a pass on pool workers. Bounded by the candidates the pass
    * resolves, which the searches' own budgets cap (a grouped walk's candidate budget, {@code MAX_FETCH_CANDIDATES} on the
    * SQL side), and dropped with the pass.

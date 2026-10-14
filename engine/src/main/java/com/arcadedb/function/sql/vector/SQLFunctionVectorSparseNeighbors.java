@@ -220,6 +220,7 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
     //
     // The grouped path has the same hole one level up (issue #9697), where `k` is a group budget: each pass re-runs the
     // per-bucket grouped search and the #8002 second phase - see searchGroupedWithStaleTopUp.
+    // The grouped top-up reads the stale RIDs of a pass, not their count, so the pass's counter is a scratch one
     if (groupBy != null)
       return searchGroupedWithStaleTopUp(k, groupSize, MAX_FETCH_CANDIDATES,
           (fetchGroups, fetchGroupSize, staleRids) -> searchAndEmit(indexes, queryIndices, queryValues, k, fetchGroups,
