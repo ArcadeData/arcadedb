@@ -23,6 +23,8 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
 
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.Map;
 
 /**
@@ -132,11 +134,11 @@ public class RemoteProperty extends AbstractProperty {
     if (entry.containsKey("regexp"))
       regexp = Regexp.of((String) entry.get("regexp"));
     if (entry.containsKey("custom") && entry.get("custom") instanceof Map<?, ?> received) {
-      custom.clear();
-      // a concurrent map holds no null, which is what a custom value set to null is anyway: not set
+      // built aside and published whole, like every change of the map
+      final Map<String, Object> built = new HashMap<>(received.size());
       for (final Map.Entry<?, ?> e : received.entrySet())
-        if (e.getKey() != null && e.getValue() != null)
-          custom.put(e.getKey().toString(), e.getValue());
+        built.put(String.valueOf(e.getKey()), e.getValue());
+      custom = Collections.unmodifiableMap(built);
     }
   }
 }

@@ -179,6 +179,13 @@ class RegexAutomatonTest {
     assertThat(RegexAutomaton.compile("[0-9]{1000000}", DIGITS)).isNull();
     assertThat(RegexAutomaton.compile("([0-9]{1000}){1000}", DIGITS)).isNull();
     assertThat(RegexAutomaton.compile("[0-9]{1000}", DIGITS)).isNotNull();
+    // nesting deeper than the parser recurses on: left to the caller, never a StackOverflowError
+    final String deep = "(".repeat(10_000) + "0" + ")".repeat(10_000);
+    assertThat(RegexAutomaton.compile(deep, DIGITS)).isNull();
+    assertThat(RegexAutomaton.compile("(".repeat(150) + "0" + ")".repeat(150), DIGITS)).isNotNull();
+    // a quantifier on a quantifier, however written, is not compiled
+    assertThat(RegexAutomaton.compile("0{1000}{1000}", DIGITS)).isNull();
+    assertThat(RegexAutomaton.compile("(0{100}){100}{100}", DIGITS)).isNull();
     // refused from its size alone, before a state is built: this one would be 10^12 copies
     assertThat(RegexAutomaton.compile("(((0{1,10000}){1,10000}){1,10000})", DIGITS)).isNull();
   }

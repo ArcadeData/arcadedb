@@ -3384,12 +3384,10 @@ public class LocalSchema implements Schema {
         }
         type.restoreExternalBuckets(primaryToExternal);
 
-        type.custom.clear();
-        if (schemaType.has("custom"))
-          // a concurrent map holds no null, which is what a custom value set to null is anyway: not set
-          for (final Map.Entry<String, Object> entry : schemaType.getJSONObject("custom").toMap().entrySet())
-            if (entry.getValue() != null)
-              type.custom.put(entry.getKey(), entry.getValue());
+        // built aside and published whole, so a reader of a type reloaded in place never sees its custom values cleared
+        type.custom = schemaType.has("custom") ?
+            Collections.unmodifiableMap(new HashMap<>(schemaType.getJSONObject("custom").toMap())) :
+            Collections.emptyMap();
       }
 
       // CREATE THE PROPERTIES AFTER ALL THE TYPES HAVE BEEN CREATED TO FIND ALL THE REFERENCES LINKED WITH `TO`

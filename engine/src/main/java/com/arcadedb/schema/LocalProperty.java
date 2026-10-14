@@ -428,7 +428,7 @@ public class LocalProperty extends AbstractProperty {
     if (Objects.equals(current, value))
       return current;
 
-    return owner.getSchema().getEmbedded().recordFileChanges(() -> value == null ? custom.remove(key) : custom.put(key, value));
+    return owner.getSchema().getEmbedded().recordFileChanges(() -> replaceCustomValue(key, value));
   }
 
   @Override
@@ -447,7 +447,8 @@ public class LocalProperty extends AbstractProperty {
    */
   LocalProperty copyWithName(final String newName) {
     final LocalProperty copy = new LocalProperty((LocalDocumentType) owner, newName, type);
-    copy.custom.putAll(custom);
+    // unmodifiable, so the two properties can share it
+    copy.custom = custom;
     copy.readonly = readonly;
     copy.mandatory = mandatory;
     copy.notNull = notNull;

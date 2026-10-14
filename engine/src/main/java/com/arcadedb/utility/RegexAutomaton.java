@@ -63,6 +63,8 @@ public final class RegexAutomaton {
   private static final long   MAX_WORK                = 50_000_000L;
   /** how many steps of the product walk run between two looks at the clock */
   private static final int    DEADLINE_CHECK_INTERVAL = 4096;
+  /** the deepest nesting of groups compiled; the parser, the size estimate and the builder all recurse on it */
+  private static final int    MAX_DEPTH               = 200;
   /** the most entries the memoized epsilon closures may hold in all */
   private static final long   MAX_CLOSURE_SIZE        = 8_000_000L;
   private static final String LINE_TERMINATORS        = "\n\r\u0085\u2028\u2029";
@@ -140,6 +142,9 @@ public final class RegexAutomaton {
       builder.link(fragment[1], accept);
       return new RegexAutomaton(alphabet, builder, fragment[0]);
     } catch (final Unsupported | PatternSyntaxException e) {
+      return null;
+    } catch (final StackOverflowError e) {
+      // MAX_DEPTH keeps the recursion shallow; a thread started with a tiny stack is still answered, not crashed
       return null;
     }
   }
@@ -491,6 +496,7 @@ public final class RegexAutomaton {
     private final Map<String, Symbols> atoms = new HashMap<>();
     private       int                 position;
     private       int                 flags;
+    private       int                 depth;
 
     private Parser(final String source, final String alphabet) {
       this.source = source;
@@ -621,6 +627,8 @@ public final class RegexAutomaton {
       final char c = source.charAt(position);
       switch (c) {
       case '(' -> {
+        if (++depth > MAX_DEPTH)
+          throw Unsupported.INSTANCE;
         ++position;
         if (position < source.length() && source.charAt(position) == '?') {
           if (source.startsWith("?:", position))
@@ -640,6 +648,7 @@ public final class RegexAutomaton {
         if (position >= source.length() || source.charAt(position) != ')')
           throw Unsupported.INSTANCE;
         ++position;
+        --depth;
         return inner;
       }
       case '[' -> {
