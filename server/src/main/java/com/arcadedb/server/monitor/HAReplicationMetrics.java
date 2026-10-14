@@ -19,18 +19,21 @@
 package com.arcadedb.server.monitor;
 
 import com.arcadedb.log.LogManager;
+import com.arcadedb.schema.FullSchemaLoadReason;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerPlugin;
 import com.arcadedb.server.monitor.HAReplicationStatsProvider.FollowerSample;
 import com.arcadedb.server.monitor.HAReplicationStatsProvider.HAReplicationStats;
 import com.arcadedb.server.monitor.HAReplicationStatsProvider.InPlaceRestartStats;
 import com.arcadedb.server.monitor.HAReplicationStatsProvider.PendingPhase2Stats;
+import com.arcadedb.server.monitor.HAReplicationStatsProvider.SchemaFullLoadStats;
 import com.arcadedb.server.monitor.HAReplicationStatsProvider.SchemaInstalmentSample;
 import com.arcadedb.server.monitor.HAReplicationStatsProvider.UnreferencedFilesSample;
 import com.arcadedb.server.security.PermissionRefreshMetrics;
 import com.arcadedb.server.security.ServerSecurity;
 
 import io.micrometer.core.instrument.FunctionCounter;
+import io.micrometer.core.instrument.FunctionTimer;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.MultiGauge;
@@ -108,6 +111,7 @@ public final class HAReplicationMetrics implements MeterBinder, Closeable {
     bindPendingPhase2Gauges(registry);
     bindSecurityRefreshGauges(registry);
     bindInPlaceRestartCounters(registry);
+    bindSchemaFullLoadMeters(registry);
 
     // One scheduler for every re-registering MultiGauge on this binder, rather than one each: they all refresh at
     // the same cadence and none of them blocks, so a second thread would buy nothing.
@@ -138,6 +142,42 @@ public final class HAReplicationMetrics implements MeterBinder, Closeable {
             + "process started: the divergence reformat, after which the node is refilled from a leader snapshot. Any "
             + "increase() outside a known divergence is worth investigating. Restarts from 0 with the process.")
         .register(registry);
+  }
+
+  /**
+   * Registers the full schema loads this replica's apply thread ran in place of the incremental refresh (issue #10020), one
+   * meter per {@link FullSchemaLoadReason} so the {@code reason} tag is bounded and every series exists from the first
+   * scrape - a dashboard can then alert on {@code increase()} without waiting for the first fallback to create the series.
+   * <p>
+   * {@code arcadedb.ha.schema.full_load.fallbacks} counts loads started, so one that threw still shows; the timer
+   * {@code arcadedb.ha.schema.full_load} carries the loads that finished with their total time, which is what turns "the
+   * replica lagged after that DDL" into "because it re-instantiated every component for 4 s". Function meters, reading
+   * the plugin on each scrape like the restart counters above, so nothing is registered per event.
+   */
+  private void bindSchemaFullLoadMeters(final MeterRegistry registry) {
+    for (final FullSchemaLoadReason reason : FullSchemaLoadReason.values()) {
+      FunctionCounter.builder("arcadedb.ha.schema.full_load.fallbacks", server, s -> schemaFullLoads().fallbacks(reason))
+          .tag("reason", reason.getTag())
+          .description("Schema entries this replica applied with a full LocalSchema.load() on its apply thread instead of "
+              + "the incremental refresh, since the process started: " + reason.getDescription() + ". A full load "
+              + "re-instantiates every component of the database, so a count that keeps climbing explains apply lag and "
+              + "cold vector searches after DDL. Restarts from 0 with the process: alert on increase().")
+          .register(registry);
+
+      FunctionTimer.builder("arcadedb.ha.schema.full_load", server, s -> schemaFullLoads().completed(reason),
+              s -> schemaFullLoads().totalNanos(reason), TimeUnit.NANOSECONDS)
+          .tag("reason", reason.getTag())
+          .description("Duration of the full schema loads this replica ran on its apply thread: " + reason.getDescription())
+          .register(registry);
+    }
+  }
+
+  /** Full-schema-load counts from the started HA plugin, or none when HA is disabled. */
+  private SchemaFullLoadStats schemaFullLoads() {
+    for (final ServerPlugin plugin : server.getPlugins())
+      if (plugin instanceof HAReplicationStatsProvider provider)
+        return provider.getSchemaFullLoadStats();
+    return SchemaFullLoadStats.NONE;
   }
 
   /** In-place restart counts from the started HA plugin, or none when HA is disabled. */

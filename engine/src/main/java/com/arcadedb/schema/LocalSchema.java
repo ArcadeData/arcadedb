@@ -468,12 +468,17 @@ public class LocalSchema implements Schema {
    */
   private final       Set<String>                            reportedUpgradeWarnings       = ConcurrentHashMap.newKeySet();
   private              MaterializedViewScheduler              materializedViewScheduler;
+  /**
+   * Warms, in the background, the indexes a reload re-created cold (issue #10021). Holds no thread until it is asked to.
+   */
+  private final           IndexWarmUpScheduler                   indexWarmUp;
   private              TimeSeriesMaintenanceScheduler         timeSeriesMaintenanceScheduler;
 
   public LocalSchema(final DatabaseInternal database, final String databasePath, final SecurityManager security) {
     this.database = database;
     this.databasePath = databasePath;
     this.security = security;
+    this.indexWarmUp = new IndexWarmUpScheduler(database.getName());
 
     componentFactory = new ComponentFactory(database);
     componentFactory.registerComponent(Dictionary.DICT_EXT, new Dictionary.PaginatedComponentFactoryHandler());
@@ -800,11 +805,18 @@ public class LocalSchema implements Schema {
     // What the maps serve right now, taken before they change, so the instances this publication retires can be
     // released once it is done (issue #8310). Skipped when nothing is staged, which leaves nothing to replace.
     final Set<IndexInternal> previousIndexes;
+    // The names of the indexes whose successor has to be warmed once published (issue #10021): the replaced instances that
+    // had something resident, plus the ones a previous reload already asked to warm and has not got to yet - re-created
+    // twice before warm, they must not fall out of the chain. Read here, while the instances are still the published ones.
+    final Set<String> namesToWarm;
     if (rebuildingEverything || !stagedIndexMap.isEmpty()) {
       previousIndexes = Collections.newSetFromMap(new IdentityHashMap<>(indexMap.size()));
       previousIndexes.addAll(indexMap.values());
-    } else
+      namesToWarm = indexesToWarm(previousIndexes);
+    } else {
       previousIndexes = null;
+      namesToWarm = null;
+    }
 
     // Buckets first, and the order is not arbitrary: a published index names the bucket it is associated with, so
     // publishing indexes first would let a reader resolve an index by name a few instructions before the bucket it
@@ -907,6 +919,70 @@ public class LocalSchema implements Schema {
       retireIndexesNoLongerPublished(previousIndexes);
 
     endStagedPublication();
+
+    // After the staging window closes, not before: the warm-up thread resolves components through the schema, and must not
+    // do it while this publication still holds the window open
+    if (namesToWarm != null)
+      requestWarmUpOf(namesToWarm);
+  }
+
+  /**
+   * The names, among {@code previousIndexes}, whose successor has to be warmed in the background (issue #10021): the
+   * instances that are {@link IndexInternal#isWarm() warm}, and those a previous reload asked to warm and the warm-up has
+   * not finished with. Empty when the warm-up is disabled, which is also what makes the reload of a database that is being
+   * opened - where nothing was published before it - ask for nothing.
+   */
+  private Set<String> indexesToWarm(final Collection<IndexInternal> previousIndexes) {
+    if (warmUpDelayMs() < 0)
+      return Collections.emptySet();
+
+    Set<String> names = null;
+    for (final IndexInternal index : previousIndexes)
+      if (index.isWarm()) {
+        if (names == null)
+          names = new HashSet<>();
+        names.add(index.getName());
+      }
+
+    final Set<String> unfinished = indexWarmUp.unfinishedNames();
+    if (names == null)
+      return unfinished;
+    names.addAll(unfinished);
+    return names;
+  }
+
+  /** Schedules the warm-up of whatever {@link #indexMap} now serves under {@code names}. */
+  private void requestWarmUpOf(final Set<String> names) {
+    final long delayMs = warmUpDelayMs();
+    if (delayMs < 0)
+      return;
+
+    final List<IndexWarmUpScheduler.Task> tasks = new ArrayList<>(names.size());
+    for (final String name : names) {
+      final IndexInternal successor = indexMap.get(name);
+      // A name the new generation does not carry is an index the reload dropped; one that cannot answer is not worth a load
+      if (successor != null && successor.isValid())
+        tasks.add(new IndexWarmUpScheduler.Task(name, successor::warmUp));
+    }
+
+    // Sorted, so the order the indexes are loaded in does not depend on a hash: the same schema warms the same way every time
+    tasks.sort(Comparator.comparing(IndexWarmUpScheduler.Task::name));
+    indexWarmUp.request(tasks, delayMs);
+  }
+
+  private long warmUpDelayMs() {
+    return database.getConfiguration().getValueAsInteger(GlobalConfiguration.VECTOR_INDEX_WARM_UP_AFTER_SCHEMA_RELOAD_DELAY_MS);
+  }
+
+  /**
+   * Waits until the background warm-up of the indexes the last schema reload re-created has finished (issue #10021). The
+   * warm-up exists so that nothing has to wait for it; this is for a caller that wants the indexes warm before it carries on,
+   * such as a test, or a readiness check after a restart sequence.
+   *
+   * @return {@code false} when the timeout elapsed first
+   */
+  public boolean awaitIndexWarmUp(final long timeoutMs) {
+    return indexWarmUp.awaitIdle(timeoutMs);
   }
 
   /**
@@ -1177,20 +1253,35 @@ public class LocalSchema implements Schema {
    *                       full rebuild instead. May be {@code null}
    *
    * @return {@code true} when the schema was refreshed incrementally, {@code false} when the caller must fall back
-   * to {@link #load(ComponentFile.MODE, boolean)}. When {@code false} is returned nothing has been modified.
+   * to {@link #load(ComponentFile.MODE, boolean)}. When {@code false} is returned nothing has been modified. A caller
+   * that wants to say WHY it fell back calls {@link #tryLoadIncremental} instead.
    */
   public boolean loadIncremental(final ComponentFile.MODE mode, final Collection<Integer> removedFileIds,
+      final Collection<Integer> touchedFileIds) throws IOException {
+    return tryLoadIncremental(mode, removedFileIds, touchedFileIds) == null;
+  }
+
+  /**
+   * {@link #loadIncremental} that says why it declined (issue #10020): a replica falling back to the full load on its
+   * apply thread is the event an operator has to be able to tie an apply-lag spike, or a vector search rebuilding after a
+   * DDL, back to.
+   *
+   * @return {@code null} when the schema was refreshed incrementally, otherwise the reason the caller must fall back to
+   * {@link #load(ComponentFile.MODE, boolean)}, and what triggered it. When a refusal is returned nothing has been
+   * modified.
+   */
+  public IncrementalLoadRefusal tryLoadIncremental(final ComponentFile.MODE mode, final Collection<Integer> removedFileIds,
       final Collection<Integer> touchedFileIds) throws IOException {
 
     // Nothing was ever loaded in this lifecycle, so there is no baseline to add to.
     if (dictionary == null || !loadInRamCompleted)
-      return false;
+      return IncrementalLoadRefusal.of(FullSchemaLoadReason.NOT_LOADED, "");
 
     // A retired file leaves a stale entry behind in bucketMap/indexMap (removeFile() only clears the file-id array),
     // and the mutable index that superseded it has to re-read its page 0 anyway. Both are what the full rebuild is
     // for, and both are the ordering the comments on issues #4743 and #5443 in applySchemaEntry pin down.
     if (removedFileIds != null && !removedFileIds.isEmpty())
-      return false;
+      return IncrementalLoadRefusal.of(FullSchemaLoadReason.FILE_RETIRED, "file ids " + removedFileIds);
 
     // FIRST PASS decides, without modifying anything, so a refusal leaves the caller's fallback a consistent state.
 
@@ -1201,7 +1292,8 @@ public class LocalSchema implements Schema {
         continue;
 
       if (NON_INCREMENTAL_COMPONENT_EXTENSIONS.contains(file.getFileExtension()))
-        return false;
+        return IncrementalLoadRefusal.of(FullSchemaLoadReason.NON_INCREMENTAL_NEW_FILE,
+            "file '" + file.getFileName() + "' (id " + file.getFileId() + ", extension '" + file.getFileExtension() + "')");
 
       toInstantiate.add(file);
     }
@@ -1221,7 +1313,7 @@ public class LocalSchema implements Schema {
           continue;
 
         if (!database.getFileManager().existsFile(fileId))
-          return false;
+          return IncrementalLoadRefusal.of(FullSchemaLoadReason.TOUCHED_FILE_MISSING, "file id " + fileId);
 
         final ComponentFile file = database.getFileManager().getFile(fileId);
 
@@ -1232,7 +1324,8 @@ public class LocalSchema implements Schema {
         // narrowing dropped a touched bloom filter out of the loop before the guard could refuse the entry, and
         // left the compacted index refusing by accident rather than by rule.
         if (NON_INCREMENTAL_TOUCHED_COMPONENT_EXTENSIONS.contains(file.getFileExtension()))
-          return false;
+          return IncrementalLoadRefusal.of(FullSchemaLoadReason.NON_INCREMENTAL_TOUCHED_FILE,
+              "file '" + file.getFileName() + "' (id " + fileId + ", extension '" + file.getFileExtension() + "')");
 
         if (!(current.getMainComponent() instanceof IndexInternal))
           continue;
@@ -1304,7 +1397,7 @@ public class LocalSchema implements Schema {
 
       updateSecurity();
 
-      return true;
+      return null;
     } finally {
       // No file-id rollback to do: every slot this load took is in the staged overlay, and endStagedPublication()
       // drops it (issue #7962). Before the overlay existed the slots were taken immediately and had to be put back
@@ -2628,6 +2721,8 @@ public class LocalSchema implements Schema {
   }
 
   public void close() {
+    // Before anything is torn down: a warm-up still loading an index would read files this method is about to close
+    indexWarmUp.close();
     // An open that failed before the replay finished leaves the engines it deferred behind
     timeSeriesEnginesAwaitingReplay = null;
     // Save dirty configuration before clearing everything
