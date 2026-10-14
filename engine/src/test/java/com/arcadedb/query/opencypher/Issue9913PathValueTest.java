@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
@@ -273,6 +274,11 @@ class Issue9913PathValueTest extends TestHelper {
     assertThat(TraversalPath.of(List.of(path.getVertices().get(0), path.getVertices().get(1)))).isNull();
     assertThat(TraversalPath.of(Map.of("_type", "path", "nodes", nodeRids.subList(0, 2), "relationships", relRids))).isNull();
     assertThat(TraversalPath.of(null)).isNull();
+
+    // a RID that points to no record is not a path element: null, not a RecordNotFoundException
+    final List<Object> missing = new ArrayList<>(nodeRids);
+    missing.set(1, new RID(database, path.getVertices().get(1).getIdentity().getBucketId(), 999_999));
+    assertThat(TraversalPath.of(Map.of("_type", "path", "nodes", missing, "relationships", relRids))).isNull();
 
     // the right counts, but A-[r0]->B listed between A and C: r0 does not join them
     final List<Object> swapped = List.of(nodeRids.get(0), nodeRids.get(2), nodeRids.get(1));
