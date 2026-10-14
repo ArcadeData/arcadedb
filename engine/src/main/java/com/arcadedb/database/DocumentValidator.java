@@ -502,7 +502,6 @@ public class DocumentValidator {
   public static void requireDateConstraintsSatisfiableUnder(final Database database, final String setting,
       final Class<?> dateImplementation, final Class<?> dateTimeImplementation, final String dateTimeFormat,
       final String dateFormat) {
-    final DatabaseInternal internal = (DatabaseInternal) database;
     final Schema schema = database.getSchema();
     // one walk for both kinds of change: ALTER DATABASE on an implementation passes the formats in force, so only the
     // patterns are checked, and the schema's format setters pass the implementations in force, so only the bounds are
@@ -524,7 +523,7 @@ public class DocumentValidator {
           continue;
         final String named = type.getName() + "." + p.getName();
 
-        if (p.getRegexp() != null && held != p.getType().getJavaImplementation(internal)) {
+        if (p.getRegexp() != null && held != p.getType().getJavaImplementation(database)) {
           final RegexpUsability usability = regexpUsability(p.getType(), held, p.getRegexp(), true);
           if (usability.refusal() != null) {
             // a pattern the class in force refuses too predates the declaration-time check, and is not this change's doing
@@ -537,16 +536,8 @@ public class DocumentValidator {
         }
 
         if (formatsChanged) {
-          for (final String side : new String[] { "MIN", "MAX" }) {
-            final String bound = side.equals("MIN") ? p.getMin() : p.getMax();
-            if (bound == null)
-              continue;
-            // a bound the formats in force cannot read either predates the declaration-time check
-            if (!readableDate(database, bound, dateTimeFormat, dateFormat) && readableDate(database, bound,
-                schema.getDateTimeFormat(), schema.getDateFormat()))
-              broken.add(named + ": the " + side + " '" + bound + "' cannot be read as a date with the date format '" + dateFormat
-                  + "' and the datetime format '" + dateTimeFormat + "'");
-          }
+          checkDateBound(database, named, "MIN", p.getMin(), dateTimeFormat, dateFormat, broken);
+          checkDateBound(database, named, "MAX", p.getMax(), dateTimeFormat, dateFormat, broken);
         }
       }
 
@@ -554,6 +545,16 @@ public class DocumentValidator {
       throw new CommandExecutionException("Cannot set " + setting + ": " + (broken.size() == 1 ? "a property" : broken.size()
           + " properties") + " would be left with a constraint no value can satisfy, and every write of it would fail. "
           + String.join("; ", broken) + ". Change or remove the constraint first (ALTER PROPERTY ... REGEXP null, MIN null, MAX null)");
+  }
+
+  /** Adds to {@code broken} a bound the formats in force read and the new ones would not. */
+  private static void checkDateBound(final Database database, final String named, final String side, final String bound,
+      final String dateTimeFormat, final String dateFormat, final List<String> broken) {
+    // a bound the formats in force cannot read either predates the declaration-time check
+    if (bound != null && !readableDate(database, bound, dateTimeFormat, dateFormat) && readableDate(database, bound,
+        database.getSchema().getDateTimeFormat(), database.getSchema().getDateFormat()))
+      broken.add(named + ": the " + side + " '" + bound + "' cannot be read as a date with the date format '" + dateFormat
+          + "' and the datetime format '" + dateTimeFormat + "'");
   }
 
   private static boolean readableDate(final Database database, final String text, final String dateTimeFormat,

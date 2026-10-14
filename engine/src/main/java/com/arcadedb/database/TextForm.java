@@ -56,6 +56,8 @@ import java.util.regex.Pattern;
  * @param samples    values of the class
  */
 record TextForm(String characters, Pattern shape, List<Object> samples) {
+  // the samples are a handful of values per form, held for the life of the JVM on purpose: the declaration-time check and
+  // the test that pins every form read the same ones
   private static final String DIGITS          = "0123456789";
   private static final String LETTERS         = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
   private static final String PRINTABLE_ASCII = printableAscii();
