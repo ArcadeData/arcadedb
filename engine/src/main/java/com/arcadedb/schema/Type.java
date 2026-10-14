@@ -2503,6 +2503,14 @@ public enum Type {
     return this == LIST || this == MAP;
   }
 
+  /**
+   * Whether a String stored under a property of this type is converted to it when read: the value as it was written before
+   * the property was declared, or before the type existed (issue #8572).
+   */
+  public boolean isConvertedFromStoredString() {
+    return this == OFFSET_TIME || this == LOCAL_TIME || this == ZONED_DATETIME || this == DURATION;
+  }
+
   public Class<?> getDefaultJavaType() {
     return javaDefaultType;
   }
