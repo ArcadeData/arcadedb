@@ -177,6 +177,30 @@ class Issue10008ParallelLightEdgeValueOpsTest extends TestHelper {
   }
 
   /**
+   * A query that creates a twin of the edges it is reading: the new one is no row of the MATCH, and the edges that are
+   * keep their identities, so DISTINCT counts the relationships the MATCH read, twins apart.
+   */
+  @Test
+  void creatingATwinWhileReadingKeepsTheRowsApart() {
+    database.command("sql", "CREATE EDGE TYPE L LIGHTWEIGHT");
+    database.transaction(() -> {
+      final MutableVertex a = database.newVertex("P").set("name", "a").save();
+      final MutableVertex b = database.newVertex("P").set("name", "b").save();
+      for (int i = 0; i < 3; i++)
+        a.newEdge("L", b);
+    });
+    database.transaction(() -> {
+      try (final ResultSet rs = database.command("opencypher",
+          "MATCH (x:P)-[r:L]-(y:P) CREATE (x)-[:L]->(y) WITH DISTINCT r RETURN count(r) AS n")) {
+        assertThat(((Number) rs.next().getProperty("n")).longValue()).isEqualTo(3L);
+      }
+    });
+    // 3 edges read from both ends, one created per row
+    assertThat(single("MATCH ()-[r:L]->() RETURN count(r) AS n")).isEqualTo(9L);
+    assertThat(single("MATCH (:P)-[r:L]-(:P) RETURN count(DISTINCT r) AS n")).isEqualTo(9L);
+  }
+
+  /**
    * The first twin reads the remaining rows in before it is deleted, under the per-operation heap limit. A limit too
    * small for them fails the statement, which rolls back whole: nothing is deleted, rather than the rows that fit.
    */

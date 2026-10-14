@@ -20,7 +20,6 @@ package com.arcadedb.graph;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
-import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.LongObjectHashMap;
 import com.arcadedb.utility.RidIntHashMap;
@@ -199,9 +198,11 @@ final class LightEdgeCensus {
         return new Counts(perType, entries);
       }
       return new Counts(perType, null);
-    } catch (final RecordNotFoundException e) {
+    } catch (final RuntimeException e) {
+      // NOT ONLY A RECORD GONE: ANY FAILURE TO READ THE LIST. THE CENSUS IS GIVEN UP ON, AND EACH EDGE WALKS ITS LIST ALONE,
+      // WHERE A FAILURE THAT IS NOT TRANSIENT SURFACES AS IT DID BEFORE THE CENSUS EXISTED
       LogManager.instance().log(this, Level.FINE, "Cannot count the lightweight edges of %s (%s): %s", owner, direction,
-          e.getMessage());
+          e.toString());
       return null;
     }
   }
