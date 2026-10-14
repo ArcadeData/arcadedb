@@ -19,9 +19,11 @@
 package com.arcadedb.mongo;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.ProtocolContext;
 import com.arcadedb.database.RID;
+import com.arcadedb.engine.OwnTransaction;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.ErrorCategory;
 import com.arcadedb.exception.RecordNotFoundException;
@@ -77,6 +79,9 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
    * exhaust the heap with one request.
    */
   private static final int MAX_ARRAY_PADDING = 100_000;
+
+  /** What {@code executeUpsert} answers for a document a listener refused: {@code null} is a legal {@code _id}, so it cannot. */
+  private static final Object UPSERT_VETOED = new Object();
 
   protected final Database                           database;
   protected final MongoDBProtocolPlugin              plugin;
@@ -542,11 +547,10 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
         if (collectionName.startsWith("system.")) {
           throw new MongoServerError(16459, "attempt to insert in system namespace");
         } else {
-          final MongoCollection<Long> collection = getOrCreateCollection(collectionName);
+          final MongoDBCollectionWrapper collection = getOrCreateCollection(collectionName);
           try {
-            // FAST PATH: the whole batch in one transaction
-            collection.insertDocuments(documents);
-            n = documents.size();
+            // FAST PATH: the whole batch in one transaction. n is what the engine stored, not what it was given (issue #9974)
+            n = collection.insertDocumentsCountingStored(documents);
           } catch (final RuntimeException e) {
             if (ErrorCategory.of(e) != ErrorCategory.DUPLICATED_KEY)
               throw e;
@@ -556,8 +560,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
             for (int i = 0; i < documents.size(); i++) {
               final Document doc = documents.get(i);
               try {
-                collection.insertDocuments(List.of(doc));
-                ++n;
+                n += collection.insertDocumentsCountingStored(List.of(doc));
               } catch (final RuntimeException duplicate) {
                 if (ErrorCategory.of(duplicate) != ErrorCategory.DUPLICATED_KEY)
                   throw duplicate;
@@ -612,15 +615,15 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     return "E11000 duplicate key error collection: " + getFullCollectionNamespace(collectionName);
   }
 
-  private MongoCollection<Long> getOrCreateCollection(final String collectionName) {
-    MongoCollection<Long> collection = collections.get(collectionName);
-    if (collection == null || !database.getSchema().existsType(collectionName)) {
-      // like MongoDB, the first insert creates the collection, with the unique index on _id every collection has
-      if (!database.getSchema().existsType(collectionName))
-        database.getSchema().buildDocumentType().withName(collectionName).withTotalBuckets(1).withIgnoreIfExists(true).create();
-      collection = new MongoDBCollectionWrapper(database, collectionName);
-      collections.put(collectionName, collection);
-    }
+  private MongoDBCollectionWrapper getOrCreateCollection(final String collectionName) {
+    if (collections.get(collectionName) instanceof MongoDBCollectionWrapper cached && database.getSchema().existsType(collectionName))
+      return cached;
+
+    // like MongoDB, the first insert creates the collection, with the unique index on _id every collection has
+    if (!database.getSchema().existsType(collectionName))
+      database.getSchema().buildDocumentType().withName(collectionName).withTotalBuckets(1).withIgnoreIfExists(true).create();
+    final MongoDBCollectionWrapper collection = new MongoDBCollectionWrapper(database, collectionName);
+    collections.put(collectionName, collection);
     return collection;
   }
 
@@ -638,7 +641,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     if (database.getSchema().existsType(collectionName) && deletes != null) {
       final Lock indexLock = MongoDBCollectionWrapper.idIndexLock(database, collectionName).readLock();
       indexLock.lock();
-      database.begin();
+      // the command's OWN transaction: a failure rolls back this one, never one the caller holds (issue #9977)
+      final OwnTransaction tx = OwnTransaction.begin((DatabaseInternal) database);
       try {
         // one regex budget for the whole command, whatever the number of entries
         final MongoFilter.RegexBudget budget = MongoFilter.RegexBudget.of(database);
@@ -658,11 +662,9 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
           } else
             n += deleteMatching(collectionName, filter, single);
         }
-        database.commit();
-      } catch (final RuntimeException e) {
-        database.rollback();
-        throw e;
+        tx.commit();
       } finally {
+        tx.rollbackIfMine();
         indexLock.unlock();
       }
     } else if (deletes != null) {
@@ -702,7 +704,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       // the transaction maintains the unique _id index, which must not be dropped and rebuilt under it
       final Lock indexLock = MongoDBCollectionWrapper.idIndexLock(database, collectionName).readLock();
       indexLock.lock();
-      database.begin();
+      // the command's OWN transaction: a failure rolls back this one, never one the caller holds (issue #9977)
+      final OwnTransaction tx = OwnTransaction.begin((DatabaseInternal) database);
       try {
         int index = 0;
         for (final Document upd : updates) {
@@ -711,23 +714,26 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
           final boolean multi = Utils.isTrue(upd.get("multi"));
           final boolean upsert = Utils.isTrue(upd.get("upsert"));
 
-          final int updated = executeUpdate(collectionName, q, u, multi, budget);
-          n += updated;
-          nModified += updated;
+          final UpdateCount updated = executeUpdate(collectionName, q, u, multi, budget);
+          n += updated.matched();
+          nModified += updated.modified();
 
-          if (updated == 0 && upsert) {
+          // only a filter that matched nothing upserts: a match whose update a listener vetoed is not "no match", or the upsert
+          // would insert a second document for it (issue #9974)
+          if (updated.matched() == 0 && upsert) {
             final Object id = executeUpsert(collectionName, q, u);
-            final Document upDoc = new Document("index", index);
-            upDoc.put("_id", id);
-            upserted.add(upDoc);
+            // a create a BeforeRecordCreateListener vetoed upserted nothing (issue #9974)
+            if (id != UPSERT_VETOED) {
+              final Document upDoc = new Document("index", index);
+              upDoc.put("_id", id);
+              upserted.add(upDoc);
+            }
           }
           ++index;
         }
-        database.commit();
-      } catch (final RuntimeException e) {
-        database.rollback();
-        throw e;
+        tx.commit();
       } finally {
+        tx.rollbackIfMine();
         indexLock.unlock();
       }
     }
@@ -793,12 +799,20 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     return !new MongoFilter(database, q, budget).select(database, collectionName, 1).isEmpty();
   }
 
-  private int executeUpdate(final String collectionName, final Document q, final Document u, final boolean multi,
+  /**
+   * What an update did, as MongoDB replies it: {@code n} the documents the filter matched, {@code nModified} the ones the engine
+   * changed. They differ when a {@code BeforeRecordUpdateListener} vetoes a write (issue #9974).
+   */
+  private record UpdateCount(int matched, int modified) {
+    private static final UpdateCount NONE = new UpdateCount(0, 0);
+  }
+
+  private UpdateCount executeUpdate(final String collectionName, final Document q, final Document u, final boolean multi,
       final MongoFilter.RegexBudget budget) {
     // built first: an invalid filter is an error whether or not the collection exists
     final MongoFilter filter = new MongoFilter(database, q, budget);
     if (!database.getSchema().existsType(collectionName) || u == null)
-      return 0;
+      return UpdateCount.NONE;
 
     // Every filtered update is applied to each record the filter selects (the matcher verifies the candidates, so the answer is exact
     // for any shape of data). Only an update without a filter stays one SQL UPDATE.
@@ -812,7 +826,15 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     if (!multi)
       sql.append(" LIMIT 1");
 
-    return executeCount(sql.toString(), params);
+    final int modified = executeCount(sql.toString(), params);
+    if (!multi && modified == 1)
+      return new UpdateCount(1, 1);
+    // The SQL count is what the engine changed. Without a filter every record matches, so the matched count is the type's own (an
+    // O(1) counter), and differs from the changed one only by the updates a listener vetoed
+    // Read after the update, so a concurrent insert or delete can move it: never below what was modified, never past an int
+    final long total = database.countType(collectionName, true);
+    final int matched = (int) Math.min(Integer.MAX_VALUE, multi ? total : Math.min(1, total));
+    return new UpdateCount(Math.max(matched, modified), modified);
   }
 
   /**
@@ -852,23 +874,25 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     return false;
   }
 
-  private int executeUpdateOnRecords(final String collectionName, final MongoFilter filter, final Document u, final boolean multi) {
+  private UpdateCount executeUpdateOnRecords(final String collectionName, final MongoFilter filter, final Document u, final boolean multi) {
     // collect the RIDs first (the records are modified while the result set would still be open on them), and load each record
     // in turn: only identities are held on the heap, not every matching document. An update of one record selects again, a few times,
-    // when its candidate stopped matching since the selection while another record still matches
-    int applied = 0;
+    // when its candidate stopped matching since the selection while another record still matches. A candidate that still matched
+    // but whose update a listener vetoed is not retried: selecting again would find it again and ask the listener again
+    UpdateCount count = UpdateCount.NONE;
     for (int attempt = 0; attempt < (multi ? 1 : SINGLE_RECORD_ATTEMPTS); attempt++) {
       final List<RID> rids = filter.select(database, collectionName, multi ? 0 : 1);
-      applied = updateRecords(rids, filter, u);
-      if (applied > 0 || rids.isEmpty())
+      count = updateRecords(rids, filter, u);
+      if (count.matched() > 0 || rids.isEmpty())
         break;
     }
-    return applied;
+    return count;
   }
 
-  private int updateRecords(final List<RID> rids, final MongoFilter filter, final Document u) {
+  private UpdateCount updateRecords(final List<RID> rids, final MongoFilter filter, final Document u) {
     final boolean replacement = isReplacement(u);
     int vanished = 0;
+    int vetoed = 0;
     for (final RID rid : rids) {
       final MutableDocument record;
       try {
@@ -889,9 +913,12 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
         checkIdUntouched(record, u);
         applyOperatorsToDocument(record, u);
       }
-      record.save();
+      // matched, but changed only if the engine applied it: an update a BeforeRecordUpdateListener vetoed is not (issue #9974)
+      if (!record.saveReportingVeto())
+        ++vetoed;
     }
-    return rids.size() - vanished;
+    final int matched = rids.size() - vanished;
+    return new UpdateCount(matched, matched - vetoed);
   }
 
   /**
@@ -915,6 +942,10 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
         record.set(entry.getKey(), toMapValue(entry.getValue()));
   }
 
+  /**
+   * @return the {@code _id} of the document inserted, which may legitimately be {@code null}, or {@link #UPSERT_VETOED} when a
+   * {@code BeforeRecordCreateListener} refused it
+   */
   private Object executeUpsert(final String collectionName, final Document q, final Document u) {
     final MutableDocument record = database.newDocument(database.getSchema().getOrCreateDocumentType(collectionName).getName());
 
@@ -972,7 +1003,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       idIsObjectId = true;
     }
 
-    record.save();
+    if (!record.saveReportingVeto())
+      return UPSERT_VETOED;
 
     final Object id = record.get("_id");
     return idIsObjectId && id instanceof String hex ? new ObjectId(hex) : id;
@@ -1094,8 +1126,9 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     }
 
     requireEmbedded(container, head);
-    final Map<String, Object> copy = copyOfEmbedded(container);
-    copy.put(head, dot < 0 ? value : setNested(copy.get(head), path.substring(dot + 1), value));
+    final Map<Object, Object> copy = copyOfEmbedded(container);
+    final Object key = keyNamed(copy, head);
+    copy.put(key, dot < 0 ? value : setNested(copy.get(key), path.substring(dot + 1), value));
     return copy;
   }
 
@@ -1130,11 +1163,12 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     if (!isEmbedded(container))
       return container;
 
-    final Map<String, Object> copy = copyOfEmbedded(container);
+    final Map<Object, Object> copy = copyOfEmbedded(container);
+    final Object key = keyNamed(copy, head);
     if (dot < 0)
-      copy.remove(head);
-    else if (copy.get(head) != null)
-      copy.put(head, unsetNested(copy.get(head), path.substring(dot + 1)));
+      copy.remove(key);
+    else if (copy.get(key) != null)
+      copy.put(key, unsetNested(copy.get(key), path.substring(dot + 1)));
     return copy;
   }
 
@@ -1146,7 +1180,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     Object current = record.get(path.substring(0, dot));
     for (final String segment : path.substring(dot + 1).split("\\.")) {
       if (current instanceof Map<?, ?> map)
-        current = map.get(segment);
+        current = map.get(keyNamed(map, segment));
       else if (current instanceof List<?> list && isArrayIndex(segment) && Integer.parseInt(segment) < list.size())
         current = list.get(Integer.parseInt(segment));
       else if (current instanceof com.arcadedb.database.Document embedded)
@@ -1157,16 +1191,31 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     return current;
   }
 
-  @SuppressWarnings("unchecked")
-  private static Map<String, Object> copyOfEmbedded(final Object container) {
+  private static Map<Object, Object> copyOfEmbedded(final Object container) {
     if (container instanceof Map<?, ?> map)
-      return new LinkedHashMap<>((Map<String, Object>) map);
+      return new LinkedHashMap<>(map);
     if (container instanceof com.arcadedb.database.Document embedded) {
-      final Map<String, Object> copy = new LinkedHashMap<>(embedded.toMap());
-      copy.keySet().removeIf(MongoDBToSqlTranslator::isRecordMetadata);
+      final Map<Object, Object> copy = new LinkedHashMap<>(embedded.toMap());
+      copy.keySet().removeIf(key -> MongoDBToSqlTranslator.isRecordMetadata(String.valueOf(key)));
       return copy;
     }
     return new LinkedHashMap<>();
+  }
+
+  /**
+   * The key of {@code map} a path segment names. A {@code MAP} property keeps its keys with their own class (an Integer, a Long, a
+   * {@code null}), while a MongoDB path names a field by its text, the text {@code find} shows it under (issue #9973): the stored
+   * key whose text is {@code name} is the one updated, keeping its class, and a name no key has is a new String key. A String key
+   * equal to the name wins over another key with the same text, the same member {@code find} shows for it. The scan only runs
+   * when the name is not itself a key, which is never the case for a map whose keys are all Strings and that holds it.
+   */
+  private static Object keyNamed(final Map<?, ?> map, final String name) {
+    if (map.containsKey(name))
+      return name;
+    for (final Object key : map.keySet())
+      if (name.equals(String.valueOf(key)))
+        return key;
+    return name;
   }
 
   /**
@@ -1256,10 +1305,9 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       try {
         final com.arcadedb.database.Document record = rid.asDocument();
         // the filter is tested again on the record as it is now: one that stopped matching since the selection is left alone
-        if (filter.matches(record)) {
-          record.delete();
+        // counted by what the engine answered: a delete a BeforeRecordDeleteListener vetoed is not one (issue #9974)
+        if (filter.matches(record) && ((DatabaseInternal) database).deleteRecordReportingVeto(record))
           deleted++;
-        }
       } catch (final RecordNotFoundException e) {
         // deleted since the selection: it is not this command's to count
       }

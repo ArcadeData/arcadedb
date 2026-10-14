@@ -92,10 +92,16 @@ public class SaveElementStep extends AbstractExecutionStep {
     this.skipDuplicateKey = skipDuplicateKey;
   }
 
+  /**
+   * Only the rows the engine actually wrote are passed on: a create or an update a {@code BeforeRecordCreateListener} /
+   * {@code BeforeRecordUpdateListener} vetoed is dropped here, so the {@link CountStep} of an {@code UPDATE} counts the records it
+   * changed rather than the ones it matched, and an {@code INSERT} does not return a record that was never created (issue #9974).
+   */
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
-    final ResultSet upstream = getPrev().syncPull(context, nRecords);
-    return new ResultSet() {
+    final ExecutionStepInternal prevStep = checkForPrevious();
+    // saves one row ahead of what it returns: only valid under a plan that drains every pull (see SkippingResultSet)
+    return new SkippingResultSet(prevStep, context, nRecords) {
       // the undeclared-key policy, read once per execution instead of once per inserted row (issue #9365)
       private final boolean   rejectUndeclared = TimeSeriesGateway.rejectsUndeclaredKeys(context.getDatabase());
 
@@ -104,14 +110,11 @@ public class SaveElementStep extends AbstractExecutionStep {
       private String          cachedTypeName;
       private List<TypeIndex> cachedUniqueIndexes;
 
+      /**
+       * @return the row to pass on, {@code null} when a listener vetoed the write
+       */
       @Override
-      public boolean hasNext() {
-        return upstream.hasNext();
-      }
-
-      @Override
-      public Result next() {
-        final Result result = upstream.next();
+      protected Result process(final Result result) {
         if (result != null && result.isElement()) {
           final Document doc = result.getElement().orElse(null);
 
@@ -150,17 +153,11 @@ public class SaveElementStep extends AbstractExecutionStep {
               return skippedResult(modifiableDoc, conflict);
           }
 
-          if (bucket == null)
-            modifiableDoc.save();
-          else
-            modifiableDoc.save(bucket.getStringValue());
+          final boolean saved = bucket == null ? modifiableDoc.saveReportingVeto() : modifiableDoc.saveReportingVeto(bucket.getStringValue());
+          if (!saved)
+            return null;
         }
         return result;
-      }
-
-      @Override
-      public void close() {
-        upstream.close();
       }
     };
   }

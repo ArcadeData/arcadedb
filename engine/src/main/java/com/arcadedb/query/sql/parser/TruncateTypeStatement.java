@@ -433,7 +433,7 @@ public class TruncateTypeStatement extends DDLStatement {
 
     final RuntimeException failure = TruncateRecordDeleter.deleteAllInOwnTransaction(db, batchSize,
         callback -> db.scanType(typeName.getStringValue(), polymorphic, callback::test),
-        deletionFailure -> rebuildIndexes(db, schema, indexDefs, deletionFailure),
+        deletionFailure -> rebuildIndexes(schema, indexDefs, deletionFailure),
         "TYPE '" + typeName.getStringValue() + "'");
 
     // Report the failure rather than a partial truncate masquerading as success (issue #4817).
@@ -442,8 +442,8 @@ public class TruncateTypeStatement extends DDLStatement {
   }
 
   /**
-   * Recreates the indexes dropped at the start of {@link #truncateInOwnTransaction}, inside that method's
-   * transaction and before it is closed.
+   * Recreates the indexes dropped at the start of {@link #truncateInOwnTransaction}, once that method's deletion
+   * transaction is closed.
    * <p>
    * They are rebuilt in <b>every</b> case: on success they start empty since all records are gone; on failure they
    * are rebuilt over whatever records remain, so the schema is never left without the indexes it had - the
@@ -456,34 +456,17 @@ public class TruncateTypeStatement extends DDLStatement {
    *
    * @return the failure to carry on with: the one passed in, or the first rebuild failure when there was none.
    */
-  private RuntimeException rebuildIndexes(final Database db, final Schema schema, final List<IndexDefinition> indexDefs,
+  private RuntimeException rebuildIndexes(final Schema schema, final List<IndexDefinition> indexDefs,
       RuntimeException deletionFailure) {
     if (indexDefs.isEmpty())
-      // Nothing to rebuild, so the deletion transaction is left exactly as it was for the caller to decide.
       return deletionFailure;
 
-    // CLOSE OUT THE DELETION TRANSACTION FIRST, in whichever direction the outcome calls for: commit when the deletes
-    // are good, so the build sees the empty buckets instead of repopulating the index with records that are logically
-    // deleted but not yet flushed; roll back when they are not, so it sees the state that is going to survive.
-    //
-    // Either way the rebuild must not run INSIDE a transaction whose fate somebody else is about to decide, because a
-    // build's entries now commit with the transaction it runs in (issue #6324, item 1): a rebuild left in the failing
-    // one would be built and then thrown away with it, leaving the type with the empty index the committed drop had
-    // already reduced it to. Deciding it here is also what leaves TruncateRecordDeleter with no transaction of its
-    // own to close, which is the point.
-    if (db.isTransactionActive()) {
-      try {
-        if (deletionFailure == null)
-          db.commit();
-        else
-          db.rollback();
-      } catch (final RuntimeException e) {
-        if (deletionFailure == null)
-          deletionFailure = e;
-        else
-          deletionFailure.addSuppressed(e);
-      }
-    }
+    // The deletion transaction is already closed, in whichever direction the outcome called for, by
+    // TruncateRecordDeleter: committed when the deletes are good, so the build sees the empty buckets instead of
+    // repopulating the index with records that are logically deleted but not yet flushed; rolled back when they are
+    // not, so it sees the state that is going to survive. Either way the rebuild must not run INSIDE a transaction whose
+    // fate somebody else is about to decide, because a build's entries commit with the transaction it runs in (issue
+    // #6324, item 1): a rebuild left in the failing one would be built and then thrown away with it.
 
     // Every definition is attempted, and one that cannot be recreated does not take the others with it. Each
     // create() opens and commits its own transaction, so abandoning the loop at the first failure would leave the

@@ -19,7 +19,9 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Record;
+import com.arcadedb.engine.OwnTransaction;
 import com.arcadedb.log.LogManager;
 
 import java.util.function.Predicate;
@@ -55,8 +57,10 @@ final class TruncateRecordDeleter {
   }
 
   /**
-   * Work a statement needs to do inside its own transaction after the last record is deleted and before that
-   * transaction is closed - for {@code TRUNCATE TYPE}, rebuilding the indexes it dropped.
+   * Work a statement needs to do after the last record is deleted and the deletion transaction is closed, committed on
+   * success and rolled back on failure - for {@code TRUNCATE TYPE}, rebuilding the indexes it dropped. It runs outside
+   * any transaction of the statement, so a rebuild sees the state that is going to survive and its own commits cannot
+   * be thrown away with a failed deletion (issue #6324, item 1).
    * <p>
    * It is handed the failure so far ({@code null} when the deletion succeeded) and returns the failure to carry on
    * with, so a hook can both react to one and report one of its own. Throwing works too and is treated identically;
@@ -74,12 +78,20 @@ final class TruncateRecordDeleter {
    * Deletes every record the scan yields.
    *
    * @param batchSize when positive, commit the current transaction and begin a new one every {@code batchSize}
-   *                  records. Only ever passed by a {@code TRUNCATE} that owns its transaction; {@code 0} keeps every
-   *                  delete in the caller's transaction so a {@code ROLLBACK} undoes all of them.
+   *                  records. Only honoured by {@link #deleteAllInOwnTransaction}, the one path that owns its transaction;
+   *                  here, in the caller's transaction, every delete stays in it so a {@code ROLLBACK} undoes all of them.
    *
    * @return the failure that stopped the scan, or {@code null} when every record was deleted.
    */
   static RuntimeException deleteAll(final Database db, final int batchSize, final RecordScan scan) {
+    return deleteAll(db, batchSize, scan, null);
+  }
+
+  /**
+   * @param own the transaction the statement owns, swapped for the next one at every batch commit; {@code null} when the deletes
+   *            run in the caller's transaction, which is never committed here.
+   */
+  private static RuntimeException deleteAll(final Database db, final int batchSize, final RecordScan scan, final OwnTransaction[] own) {
     // LocalBucket.scan wraps every callback in a try/catch that logs any exception as a per-record "Error on loading
     // record" and keeps scanning - so a failure here (an HA leader change interrupting a mid-scan commit, a
     // BeforeRecordDelete listener refusing) used to be silently turned into a partial truncate reported as success,
@@ -90,9 +102,13 @@ final class TruncateRecordDeleter {
     scan.run(record -> {
       try {
         record.delete();
-        if (batchSize > 0 && ++count[0] % batchSize == 0 && db.isTransactionActive()) {
-          db.commit();
-          db.begin();
+        if (own != null && batchSize > 0 && ++count[0] % batchSize == 0) {
+          // ownership is dropped BEFORE the commit and taken back after it, as RepairTransaction does: a commit that throws has
+          // already disposed of its context, and what is left on the thread then belongs to the caller (issue #9977)
+          final OwnTransaction inFlight = own[0];
+          own[0] = null;
+          inFlight.commit();
+          own[0] = OwnTransaction.begin((DatabaseInternal) db);
         }
         return true;
       } catch (final RuntimeException e) {
@@ -109,7 +125,7 @@ final class TruncateRecordDeleter {
    * bookkeeping and only one of them has an {@code afterDeletion} hook: duplicating it left the two copies free to
    * drift, and a metric or a new failure mode added to one would silently miss the other.
    *
-   * @param afterDeletion work to run inside the transaction before it is closed, or {@code null} for none.
+   * @param afterDeletion work to run once the transaction is closed, or {@code null} for none.
    * @param what          how to name this statement in the last-resort rollback warning.
    *
    * @return the failure to report, or {@code null} when everything succeeded.
@@ -119,12 +135,16 @@ final class TruncateRecordDeleter {
     // Without this every delete below would fail with "Transaction not begun" unless the database happens to run
     // with autoTransaction on, which is what made this whole path unreachable before issue #6220 - the batching and
     // the index drop/rebuild only ever ran on a caller's transaction, which is precisely where they must not.
-    db.begin();
+    //
+    // Tracked as an OwnTransaction rather than asked of db.isTransactionActive() (issue #9977): that question answers for
+    // whatever transaction is on top of the thread, which after a commit that pops this statement's own is the CALLER's.
+    // Both callers route a caller with a transaction elsewhere today, but this must not depend on it.
+    final OwnTransaction[] own = { OwnTransaction.begin((DatabaseInternal) db) };
 
     RuntimeException failure = null;
     try {
       try {
-        failure = deleteAll(db, batchSize, scan);
+        failure = deleteAll(db, batchSize, scan, own);
       } catch (final RuntimeException e) {
         // Not a duplicate of deleteAll's own handling: that one catches what the per-record callback raises and
         // hands it back as a value, this one catches what the SCAN raises around the callback - resolving buckets,
@@ -133,24 +153,16 @@ final class TruncateRecordDeleter {
         failure = e;
       }
 
-      try {
-        if (afterDeletion != null)
-          failure = afterDeletion.run(failure);
-      } catch (final RuntimeException e) {
-        // A hook that throws goes through the same bookkeeping as everything else rather than skipping the
-        // close-out below and landing in the finally: its transaction gets a decision, not just a safety net.
-        if (failure == null)
-          failure = e;
-        else
-          failure.addSuppressed(e);
-      }
-
-      if (db.isTransactionActive()) {
+      // Closed HERE, before the hook, in whichever direction the outcome calls for: the hook then never has to guess
+      // which transaction is on the thread, which is the question isTransactionActive() cannot answer (issue #9977).
+      final OwnTransaction held = own[0];
+      own[0] = null;
+      if (held != null) {
         try {
           if (failure == null)
-            db.commit();
+            held.commit();
           else
-            db.rollback();
+            held.rollbackIfMine();
         } catch (final RuntimeException e) {
           // A commit that fails IS the failure to report. A rollback that fails while a failure is already on its
           // way out must not replace it - the original is the one that says what went wrong.
@@ -160,12 +172,24 @@ final class TruncateRecordDeleter {
             failure.addSuppressed(e);
         }
       }
+
+      try {
+        if (afterDeletion != null)
+          failure = afterDeletion.run(failure);
+      } catch (final RuntimeException e) {
+        // A hook that throws goes through the same bookkeeping as everything else: its failure is reported, never
+        // lost behind the deletion's.
+        if (failure == null)
+          failure = e;
+        else
+          failure.addSuppressed(e);
+      }
     } finally {
       // Whatever escaped the block above, this statement's own transaction must not be left on the caller's thread
       // for somebody else's next command to inherit. Reported rather than thrown, for the same reason as above.
-      if (db.isTransactionActive())
+      if (own[0] != null)
         try {
-          db.rollback();
+          own[0].rollbackIfMine();
         } catch (final RuntimeException e) {
           LogManager.instance().log(TruncateRecordDeleter.class, Level.WARNING,
               "Error on rolling back the transaction opened by TRUNCATE %s", e, what);

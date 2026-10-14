@@ -76,6 +76,22 @@ public class RemoteMutableEdge extends MutableEdge {
     return this;
   }
 
+  /**
+   * The remote protocol does not carry a listener's veto back to the client, and this edge does not learn the identity a create
+   * assigned, so the write is reported as applied whenever the server did not refuse it with an error.
+   */
+  @Override
+  public boolean saveReportingVeto() {
+    save();
+    return true;
+  }
+
+  @Override
+  public boolean saveReportingVeto(final String bucketName) {
+    save(bucketName);
+    return true;
+  }
+
   @Override
   public void delete() {
     remoteDatabase.deleteRecord(this);

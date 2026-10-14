@@ -444,8 +444,13 @@ public class ServerDatabase implements DatabaseInternal {
     current().createRecord(record, bucketName);
   }
 
-  public void createRecordNoLock(final Record record, final String bucketName, final boolean discardRecordAfter) {
-    current().createRecordNoLock(record, bucketName, discardRecordAfter);
+  public boolean createRecordNoLock(final Record record, final String bucketName, final boolean discardRecordAfter) {
+    return current().createRecordNoLock(record, bucketName, discardRecordAfter);
+  }
+
+  @Override
+  public boolean createRecordReportingVeto(final Record record, final String bucketName) {
+    return current().createRecordReportingVeto(record, bucketName);
   }
 
   @Override
@@ -455,6 +460,11 @@ public class ServerDatabase implements DatabaseInternal {
 
   public void updateRecord(final Record record) {
     current().updateRecord(record);
+  }
+
+  @Override
+  public boolean updateRecordReportingVeto(final Record record) {
+    return current().updateRecordReportingVeto(record);
   }
 
   public void updateRecordNoLock(final Record record, final boolean discardRecordAfter) {

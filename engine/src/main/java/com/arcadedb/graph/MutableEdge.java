@@ -204,8 +204,7 @@ public class MutableEdge extends MutableDocument implements Edge {
 
   @Override
   public MutableEdge save() {
-    if (getIdentity() != null && getIdentity().getPosition() < 0)
-      // LIGHTWEIGHT
+    if (isLightweight())
       return this;
 
     return (MutableEdge) super.save();
@@ -213,11 +212,26 @@ public class MutableEdge extends MutableDocument implements Edge {
 
   @Override
   public MutableEdge save(final String bucketName) {
-    if (getIdentity() != null && getIdentity().getPosition() < 0)
-      // LIGHTWEIGHT
+    if (isLightweight())
       return this;
 
     return (MutableEdge) super.save(bucketName);
+  }
+
+  /** A lightweight edge has nothing to write, and so nothing a listener could have refused. */
+  @Override
+  public boolean saveReportingVeto() {
+    return isLightweight() || super.saveReportingVeto();
+  }
+
+  @Override
+  public boolean saveReportingVeto(final String bucketName) {
+    return isLightweight() || super.saveReportingVeto(bucketName);
+  }
+
+  /** A lightweight edge owns no record: its identity is a negative position. */
+  private boolean isLightweight() {
+    return getIdentity() != null && getIdentity().getPosition() < 0;
   }
 
   @Override
