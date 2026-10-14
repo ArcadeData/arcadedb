@@ -100,6 +100,8 @@ public class SQLFunctionBridge implements StatelessFunction, HeapBufferingFuncti
     // SQL functions expect (self, currentRecord, currentResult, params, context)
     // For now, we pass nulls for self, currentRecord, currentResult
     final Object result = sqlFunction.execute(null, null, null, args, context);
+    // CHARGED AFTER THE FUNCTION TOOK THE VALUE: WHAT IT HOLDS NOW IS WHAT IT REPORTS, AND A CAP TRIPPED HERE FAILS THE
+    // QUERY WITH ONE VALUE OVER IT, AS FunctionAggregationContext DOES
     if (heldValuesFunction != null) {
       if (limit == null) {
         limit = OperationHeapLimit.of(context, cypherFunctionName + "()");

@@ -259,10 +259,21 @@ class Issue9979HeapLimitCoverageTest extends TestHelper {
   void everyBufferingAggregateIsCovered() {
     final DefaultSQLFunctionFactory factory = DefaultSQLFunctionFactory.getInstance();
     final Set<String> buffering = new TreeSet<>();
+    // the cap counts what such a function holds: one that does not say counts every value it is given, which over-counts
+    // a function that keeps distinct values only
+    final Set<String> notReportingHeld = new TreeSet<>();
     for (final String name : factory.getFunctionNames())
-      if (factory.getFunctionInstance(name) instanceof SQLAggregatedFunction function && function.holdsEveryValue())
+      if (factory.getFunctionInstance(name) instanceof SQLAggregatedFunction function && function.holdsEveryValue()) {
         buffering.add(name.toLowerCase(Locale.ENGLISH));
+        try {
+          if (function.getClass().getMethod("getHeldValues").getDeclaringClass() == SQLAggregatedFunction.class)
+            notReportingHeld.add(name);
+        } catch (final NoSuchMethodException e) {
+          throw new AssertionError(e);
+        }
+      }
     assertThat(COVERED_AGGREGATES).containsAll(buffering);
+    assertThat(notReportingHeld).isEmpty();
   }
 
   private void createData(final boolean withPayload) {
