@@ -114,7 +114,7 @@ class Issue10005LikeEmptyStringTest extends TestHelper {
    */
   @Test
   void agreesWithTheRegularExpressionTranslationItReplaced() {
-    final char[] patternAlphabet = { '%', '?', '\\', 'a', 'b', '.', '*', '[', ']', '(', ')', '|', '+', '$', '^', '{', '}', '\n' };
+    final String[] patternAlphabet = { "%", "?", "\\", "a", "b", ".", "*", "[", "]", "(", ")", "|", "+", "$", "^", "{", "}", "\n", "😀", "é" };
     final String[] valueAlphabet = { "a", "b", "%", "?", "\\", ".", "*", "[", "\n", "😀", "é" };
     final Random random = new Random(10005);
     for (int i = 0; i < 200_000; i++) {
@@ -177,6 +177,8 @@ class Issue10005LikeEmptyStringTest extends TestHelper {
         sb.append('.');
       else if (c == '%')
         sb.append(".*");
+      else if (Character.isSurrogate(c))
+        sb.append(c); // UNQUOTED, AS THE TRANSLATION DID: THE TWO HALVES OF A PAIR STAY ONE CODE POINT TO THE REGEX
       else
         sb.append(Pattern.quote(String.valueOf(c)));
     }
