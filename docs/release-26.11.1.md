@@ -111,7 +111,7 @@ path per repetition (#4531). It now binds one `PATH` running through every repet
 and as Neo4j Cypher 25 does (`valueType(p)` is `PATH NOT NULL`, `length(p)` is 2). Group variables declared inside the
 group (`m`, `r`, `n` here) are still lists. A query that read `p` as a list, for example `size(p)` or `p[0]`, must now
 use `length(p)`, `nodes(p)` and `relationships(p)`. The path a `shortestPath()` / `allShortestPaths()` binds is typed
-`PATH` too: `valueType(p)` answers `PATH NOT NULL` instead of `LIST<ANY> NOT NULL`, and `p IS TYPED PATH` is true.
+`PATH` too: `valueType(p)` answers `PATH NOT NULL` instead of a LIST type, and `p IS TYPED PATH` is true.
 
 Several GQL / Cypher 25 constructs that the parser accepted and the engine silently ignored are now refused with a
 `FeatureNotImplemented` error naming the construct. A query that used them returned rows the construct did not ask for,
