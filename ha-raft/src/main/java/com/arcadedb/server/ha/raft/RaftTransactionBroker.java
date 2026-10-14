@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.index.fulltext.FullTextCorpusDeltas;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ReplicatedEntryTooLargeException;
 import org.apache.ratis.client.RaftClient;
@@ -99,7 +100,17 @@ public class RaftTransactionBroker {
    */
   public long replicateTransaction(final String dbName, final byte[] walData,
       final Map<Integer, Integer> bucketDeltas, final long preparedAtIndex) {
-    final ByteString entry = RaftLogEntryCodec.encodeTxEntry(dbName, walData, bucketDeltas, preparedAtIndex);
+    return replicateTransaction(dbName, walData, bucketDeltas, preparedAtIndex, Collections.emptyList());
+  }
+
+  /**
+   * As {@link #replicateTransaction(String, byte[], Map, long)}, also carrying what the transaction did to the BM25 corpus
+   * counters of the full-text indexes it wrote (issue #10018), so every node moves them together.
+   */
+  public long replicateTransaction(final String dbName, final byte[] walData,
+      final Map<Integer, Integer> bucketDeltas, final long preparedAtIndex,
+      final List<FullTextCorpusDeltas.CorpusDelta> corpusDeltas) {
+    final ByteString entry = RaftLogEntryCodec.encodeTxEntry(dbName, walData, bucketDeltas, preparedAtIndex, corpusDeltas);
     return groupCommitter.submitAndWait(entry.toByteArray());
   }
 

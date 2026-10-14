@@ -2684,6 +2684,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
     final RaftHAServer membershipHolder = raftHAServer;
     if (membershipHolder != null) {
       membershipHolder.invalidateTxPreparedAtCapability();
+      membershipHolder.invalidateFullTextCorpusDeltaCapability();
       // A consistent read waiting here asks again whether this node is still a member (issue #9606)
       membershipHolder.notifyMembershipChanged();
     }
@@ -3744,7 +3745,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
         // the rest recorded the entry as held while part of it was not, so the reconcile fails instead and the entry
         // takes the doubly-failed path below (issue #7602), which quarantines the database for a resync.
         databaseFor(decoded.databaseName()).getTransactionManager()
-            .applyChanges(deserializeWalTransaction(decoded.walData()), decoded.bucketRecordDelta(), false);
+            .applyChanges(deserializeWalTransaction(decoded.walData()), decoded.bucketRecordDelta(), decoded.corpusDeltas(),
+                false);
         reconciled = true;
       } catch (final Error reconcileError) {
         throw reconcileError;
@@ -3804,7 +3806,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
         walTx.txId, decoded.databaseName(), walTx.pages.length);
 
     try {
-      db.getTransactionManager().applyChanges(walTx, decoded.bucketRecordDelta(), false);
+      db.getTransactionManager().applyChanges(walTx, decoded.bucketRecordDelta(), decoded.corpusDeltas(), false);
     } catch (final WALVersionGapException e) {
       throw divergedOnWalVersionGap(decoded.databaseName(), walTx.txId, entryIndex, e);
     }

@@ -20,6 +20,7 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.compression.CompressionFactory;
+import com.arcadedb.index.fulltext.FullTextCorpusDeltas;
 import com.arcadedb.network.binary.ReplicatedEntryTooLargeException;
 import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
 
@@ -147,6 +148,12 @@ public final class RaftLogEntryCodec {
    * prepared the transaction (issue #8686).
    */
   static final String TX_PREPARED_AT_SECTION = "tx-prepared-at-index";
+
+  /**
+   * Name of the extension section of a {@code TX_ENTRY} that carries what the transaction did to the BM25 corpus counters of the
+   * full-text indexes it wrote (issue #10018).
+   */
+  static final String TX_FULLTEXT_CORPUS_SECTION = "tx-fulltext-corpus-deltas";
 
   /**
    * Appends one self-describing extension section to an entry being encoded. Call this AFTER the type's own
@@ -362,8 +369,28 @@ public final class RaftLogEntryCodec {
        * predates the section. The receiver moves these files before it loads the schema the entry publishes, which names
        * them by their new names.
        */
-      Map<Integer, String> filesToRename
+      Map<Integer, String> filesToRename,
+      /**
+       * What a {@code TX_ENTRY} did to the BM25 corpus counters of the full-text indexes it wrote, per logical index (issue
+       * #10018). Applied by every node that did not run the transaction itself, so all of them move the counters together.
+       * Empty on every other entry type, on a transaction that wrote no full-text index, and on one written by a node that
+       * predates the section.
+       */
+      List<FullTextCorpusDeltas.CorpusDelta> corpusDeltas
   ) {
+
+    /** Every entry but a {@code TX_ENTRY} carrying corpus deltas: nothing to apply to the counters. */
+    public DecodedEntry(final RaftLogEntryType type, final String databaseName, final byte[] walData,
+        final Map<Integer, Integer> bucketRecordDelta, final String schemaJson, final Map<Integer, String> filesToAdd,
+        final Map<Integer, String> filesToRemove, final List<byte[]> walEntries,
+        final List<Map<Integer, Integer>> bucketDeltas, final String usersJson, final boolean forceSnapshot,
+        final String bootstrapFingerprint, final long bootstrapLastTxId, final List<TsSealedBlob> sealedFileBlobs,
+        final boolean moreChunksFollow, final List<TsSealedChunk> sealedFileChunks, final SchemaDelta.Payload schemaDelta,
+        final String securityPrecondition, final long txPreparedAtIndex, final Map<Integer, String> filesToRename) {
+      this(type, databaseName, walData, bucketRecordDelta, schemaJson, filesToAdd, filesToRemove, walEntries, bucketDeltas,
+          usersJson, forceSnapshot, bootstrapFingerprint, bootstrapLastTxId, sealedFileBlobs, moreChunksFollow,
+          sealedFileChunks, schemaDelta, securityPrecondition, txPreparedAtIndex, filesToRename, Collections.emptyList());
+    }
 
     /** Every entry but a {@code SCHEMA_ENTRY} carrying renames: no file is renamed. */
     public DecodedEntry(final RaftLogEntryType type, final String databaseName, final byte[] walData,
@@ -386,7 +413,7 @@ public final class RaftLogEntryCodec {
           new DecodedEntry(type, databaseName, walData, bucketRecordDelta, schemaJson, filesToAdd, filesToRemove,
               walEntries, bucketDeltas, usersJson, forceSnapshot, bootstrapFingerprint, bootstrapLastTxId,
               sealedFileBlobs, moreChunksFollow, sealedFileChunks, schemaDelta, sections.securityPrecondition(),
-              sections.txPreparedAtIndex(), filesToRename);
+              sections.txPreparedAtIndex(), filesToRename, sections.corpusDeltas());
     }
   }
 
@@ -398,11 +425,12 @@ public final class RaftLogEntryCodec {
   static final long NO_SCHEMA_DELTA_BASE_VERSION = Long.MIN_VALUE;
 
   /** What the framed extension sections of one entry carried; a field an entry did not carry stays at its "absent" value. */
-  record TrailingSections(String securityPrecondition, long txPreparedAtIndex) {
-    static final TrailingSections NONE = new TrailingSections(null, -1L);
+  record TrailingSections(String securityPrecondition, long txPreparedAtIndex,
+                          List<FullTextCorpusDeltas.CorpusDelta> corpusDeltas) {
+    static final TrailingSections NONE = new TrailingSections(null, -1L, Collections.emptyList());
 
     boolean isEmpty() {
-      return securityPrecondition == null && txPreparedAtIndex < 0;
+      return securityPrecondition == null && txPreparedAtIndex < 0 && corpusDeltas.isEmpty();
     }
   }
 
@@ -475,6 +503,19 @@ public final class RaftLogEntryCodec {
    */
   public static ByteString encodeTxEntry(final String databaseName, final byte[] walData,
       final Map<Integer, Integer> bucketRecordDelta, final long preparedAtIndex) {
+    return encodeTxEntry(databaseName, walData, bucketRecordDelta, preparedAtIndex, Collections.emptyList());
+  }
+
+  /**
+   * As {@link #encodeTxEntry(String, byte[], Map, long)}, also stating what the transaction did to the BM25 corpus counters of
+   * the full-text indexes it wrote (issue #10018), as a second framed extension section. An empty list writes no section.
+   * <p>
+   * Only to be written once every peer advertises {@link PeerCapabilities#TX_FULLTEXT_CORPUS_DELTA}, for the reason
+   * {@link #writeExtensionSection} gives.
+   */
+  public static ByteString encodeTxEntry(final String databaseName, final byte[] walData,
+      final Map<Integer, Integer> bucketRecordDelta, final long preparedAtIndex,
+      final List<FullTextCorpusDeltas.CorpusDelta> corpusDeltas) {
     try {
       final ByteArrayOutputStream baos = new ByteArrayOutputStream();
       final DataOutputStream dos = new DataOutputStream(baos);
@@ -500,6 +541,21 @@ public final class RaftLogEntryCodec {
         final DataOutputStream sectionOut = new DataOutputStream(section);
         sectionOut.writeUTF(TX_PREPARED_AT_SECTION);
         sectionOut.writeLong(preparedAtIndex);
+        sectionOut.flush();
+        writeExtensionSection(dos, section.toByteArray());
+      }
+
+      if (!corpusDeltas.isEmpty()) {
+        final ByteArrayOutputStream section = new ByteArrayOutputStream(
+            TX_FULLTEXT_CORPUS_SECTION.length() + 8 + 40 * corpusDeltas.size());
+        final DataOutputStream sectionOut = new DataOutputStream(section);
+        sectionOut.writeUTF(TX_FULLTEXT_CORPUS_SECTION);
+        sectionOut.writeInt(corpusDeltas.size());
+        for (final FullTextCorpusDeltas.CorpusDelta delta : corpusDeltas) {
+          sectionOut.writeUTF(delta.indexName());
+          sectionOut.writeLong(delta.docs());
+          sectionOut.writeLong(delta.length());
+        }
         sectionOut.flush();
         writeExtensionSection(dos, section.toByteArray());
       }
@@ -1058,6 +1114,7 @@ public final class RaftLogEntryCodec {
 
     String securityPrecondition = null;
     long txPreparedAtIndex = -1L;
+    List<FullTextCorpusDeltas.CorpusDelta> corpusDeltas = Collections.emptyList();
     while (dis.available() > 0) {
       if (dis.available() < EXTENSION_HEADER_BYTES)
         throw new IllegalStateException("Corrupted Raft log entry: " + dis.available()
@@ -1081,8 +1138,41 @@ public final class RaftLogEntryCodec {
       final long preparedAt = readTxPreparedAtIndex(section);
       if (preparedAt >= 0)
         txPreparedAtIndex = preparedAt;
+
+      final List<FullTextCorpusDeltas.CorpusDelta> deltas = readFullTextCorpusDeltas(section);
+      if (deltas != null)
+        corpusDeltas = deltas;
     }
-    return new TrailingSections(securityPrecondition, txPreparedAtIndex);
+    return new TrailingSections(securityPrecondition, txPreparedAtIndex, corpusDeltas);
+  }
+
+  /**
+   * Reads the BM25 corpus deltas out of one extension section, or returns null when the section is something else (issue
+   * #10018). Same two-step shape as {@link #readTxPreparedAtIndex}: a section that is not ours is skipped, one that IS ours and
+   * cannot be read is corruption, because applying the entry without it would silently leave this node's counters behind.
+   */
+  private static List<FullTextCorpusDeltas.CorpusDelta> readFullTextCorpusDeltas(final byte[] section) {
+    final DataInputStream dis = new DataInputStream(new ByteArrayInputStream(section));
+    try {
+      if (!TX_FULLTEXT_CORPUS_SECTION.equals(dis.readUTF()))
+        return null;
+    } catch (final IOException e) {
+      return null;
+    }
+
+    try {
+      final int count = dis.readInt();
+      checkCollectionSize(count, "TX_ENTRY full-text corpus deltas");
+      final List<FullTextCorpusDeltas.CorpusDelta> deltas = new ArrayList<>(count);
+      for (int i = 0; i < count; i++)
+        deltas.add(new FullTextCorpusDeltas.CorpusDelta(dis.readUTF(), dis.readLong(), dis.readLong()));
+      return deltas;
+    } catch (final IOException e) {
+      throw new IllegalStateException(
+          "Corrupted Raft log entry: the '" + TX_FULLTEXT_CORPUS_SECTION + "' extension section carries no readable deltas. "
+              + "Refusing the entry rather than applying it without them, which would leave the BM25 counters of this node "
+              + "behind the rest of the cluster", e);
+    }
   }
 
   /**

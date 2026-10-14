@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.index.fulltext.FullTextCorpusDeltas;
 import com.arcadedb.server.CallLog;
 
 import java.util.List;
@@ -105,8 +106,8 @@ public class FakeRaftTransactionBroker extends RaftTransactionBroker {
 
   @Override
   public long replicateTransaction(final String dbName, final byte[] walData, final Map<Integer, Integer> bucketDeltas,
-      final long preparedAtIndex) {
-    return (Long) call("replicateTransaction", () -> 0L, dbName, walData, bucketDeltas, preparedAtIndex);
+      final long preparedAtIndex, final List<FullTextCorpusDeltas.CorpusDelta> corpusDeltas) {
+    return (Long) call("replicateTransaction", () -> 0L, dbName, walData, bucketDeltas, preparedAtIndex, corpusDeltas);
   }
 
   @Override

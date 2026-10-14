@@ -91,6 +91,7 @@ public class FakeRaftHAServer extends RaftHAServer {
   private final Setting<Boolean>                          shutdownRequested    = new Setting<>();
   private final Setting<Boolean>                          removedFromConfig    = new Setting<>();
   private final Setting<Boolean>                          txPreparedAtCapable  = new Setting<>();
+  private final Setting<Boolean>                          corpusDeltaCapable   = new Setting<>();
   private final Setting<TrustedHttpClientCache>           httpsClients         = new Setting<>();
   private final Setting<Long>                             lastAppliedIndex     = new Setting<>();
   private final Setting<RaftTransactionBroker>            transactionBroker    = new Setting<>();
@@ -300,6 +301,15 @@ public class FakeRaftHAServer extends RaftHAServer {
    */
   public FakeRaftHAServer txPreparedAtCapable(final boolean capable) {
     this.txPreparedAtCapable.set(capable);
+    return this;
+  }
+
+  /**
+   * Whether every peer can read the {@code tx-fulltext-corpus-deltas} section, so a commit may carry the BM25 corpus deltas.
+   * Unset, the real answer, which on a detached server asks a registry that has heard from no peer.
+   */
+  public FakeRaftHAServer fullTextCorpusDeltaCapable(final boolean capable) {
+    this.corpusDeltaCapable.set(capable);
     return this;
   }
 
@@ -587,6 +597,11 @@ public class FakeRaftHAServer extends RaftHAServer {
   @Override
   public boolean canStateTxPreparedAt() {
     return txPreparedAtCapable.orElse(super::canStateTxPreparedAt);
+  }
+
+  @Override
+  public boolean canStateFullTextCorpusDeltas() {
+    return corpusDeltaCapable.orElse(super::canStateFullTextCorpusDeltas);
   }
 
   @Override

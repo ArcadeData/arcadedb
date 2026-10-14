@@ -3558,6 +3558,14 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       }
     }
 
+    if (!drop)
+      try {
+        // WHILE THE DATABASE IS STILL OPEN: THE SCHEMA CANNOT BE SERIALIZED ONCE THE CLOSE HAS BEGUN
+        schema.saveUnsavedFullTextCounters();
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.WARNING, "Error on saving the full-text corpus counters of database '%s'", e, name);
+      }
+
     for (final Index idx : schema.getIndexes()) {
       final IndexInternal index = (IndexInternal) idx;
 

@@ -108,7 +108,7 @@ class Issue8483QuarantinedLeaderHandsOffLeadershipTest {
   void aWalVersionGapOnTheLeaderHandsLeadershipOff() {
     final FakeRaftHAServer raft = raftMock(true);
     final TransactionManager txManager = mock(TransactionManager.class);
-    when(txManager.applyChanges(any(), anyMap(), anyBoolean())).thenThrow(new WALVersionGapException("gap"));
+    when(txManager.applyChanges(any(), anyMap(), any(), anyBoolean())).thenThrow(new WALVersionGapException("gap"));
     final DatabaseInternal db = mock(DatabaseInternal.class);
     when(db.getTransactionManager()).thenReturn(txManager);
     final ArcadeStateMachine sm = new ArcadeStateMachine() {

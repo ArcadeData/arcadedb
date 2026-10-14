@@ -28,6 +28,7 @@ import com.arcadedb.exception.LockTimeoutException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.exception.WALVersionGapException;
+import com.arcadedb.index.fulltext.FullTextCorpusDeltas;
 import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.index.vector.LSMVectorIndexCompacted;
 import com.arcadedb.index.vector.LSMVectorIndexMutable;
@@ -857,6 +858,18 @@ public class TransactionManager {
    */
   public boolean applyChanges(final WALFile.WALTransaction tx, final Map<Integer, Integer> bucketRecordDelta,
       final boolean ignoreErrors) {
+    return applyChanges(tx, bucketRecordDelta, null, ignoreErrors);
+  }
+
+  /**
+   * Same as {@link #applyChanges(WALFile.WALTransaction, Map, boolean)}, for a transaction that also carries what it did to
+   * the BM25 corpus counters of the full-text indexes it wrote (issue #10018). They are folded exactly like the bucket record
+   * counters: only when the entry advanced a page, so a replay of an entry already applied does not count it twice.
+   *
+   * @param corpusDeltas the net effect per logical full-text index, or null when the entry carries none
+   */
+  public boolean applyChanges(final WALFile.WALTransaction tx, final Map<Integer, Integer> bucketRecordDelta,
+      final List<FullTextCorpusDeltas.CorpusDelta> corpusDeltas, final boolean ignoreErrors) {
     applyLock.readLock().lock();
     final Object requester = Thread.currentThread();
     BucketLocks bucketLocks = null;
@@ -864,7 +877,7 @@ public class TransactionManager {
       // Null on the steady-state path (every counter known), which then allocates nothing. Inside the try: a throw
       // from the lock phase must still release the shared apply lock, or the snapshot t0 barrier waits forever
       bucketLocks = lockBucketsWithUnknownCount(bucketRecordDelta, requester);
-      return applyChangesInternal(tx, bucketRecordDelta, ignoreErrors);
+      return applyChangesInternal(tx, bucketRecordDelta, corpusDeltas, ignoreErrors);
     } finally {
       if (bucketLocks != null) {
         // After the fold: a recompute that published while the pages were being written is discarded (#8640)
@@ -1071,7 +1084,7 @@ public class TransactionManager {
   }
 
   private boolean applyChangesInternal(final WALFile.WALTransaction tx, final Map<Integer, Integer> bucketRecordDelta,
-      final boolean ignoreErrors) {
+      final List<FullTextCorpusDeltas.CorpusDelta> corpusDeltas, final boolean ignoreErrors) {
     final boolean recovery = Thread.currentThread().equals(ownWALReplayThread);
     boolean changed = false;
     // Whether at least one page was written at a version STRICTLY GREATER than the one on disk, i.e. this
@@ -1310,6 +1323,9 @@ public class TransactionManager {
           // UPDATE THE CACHE COUNTER ONLY IF ALREADY COMPUTED
           bucket.setCachedRecordCount(bucket.getCachedRecordCount() + entry.getValue());
       }
+      // The same idempotency signal guards the BM25 corpus counters: they are relative increments too (issue #10018)
+      if (corpusDeltas != null && !corpusDeltas.isEmpty())
+        FullTextCorpusDeltas.applyReplicated(database.getSchema(), corpusDeltas);
     }
 
     if (involveDictionary) {

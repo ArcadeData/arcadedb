@@ -116,6 +116,17 @@ public class FullTextIndexMetadata extends IndexMetadata {
   private final AtomicLong sumDocLength  = new AtomicLong(0L);
   // Bumped by every addDocument()/removeDocument(): lets a scan tell "no writer touched the counters" from "writers cancelled out"
   private final AtomicLong mutations     = new AtomicLong(0L);
+  // Bumped by every explicit recompute (REBUILD INDEX ... WITH statsOnly = true) and persisted with the counters: a node that
+  // already holds a live copy of this metadata (an HA follower reloading the schema its leader shipped) adopts the persisted
+  // counters only when their epoch is newer, so a rebuild on the leader reaches it while the counters it keeps current from
+  // the replicated transactions are never overwritten by a stale save
+  private final AtomicLong countersEpoch = new AtomicLong(0L);
+  // Full-type scans whose result was published here: lets a test, or an operator reading schema:index, tell a drift check that
+  // found nothing to repair from one that scanned the whole type
+  private final AtomicLong scans         = new AtomicLong(0L);
+  // Set by every change of the counters, cleared when they are serialized into the schema: a commit moves the counters but must
+  // not dirty the schema (that would rewrite schema.json after every commit), so the schema asks this at close instead
+  private volatile boolean countersDirty = false;
   // Set when a scan result could not be proven exact: the next drift check must rescan even if the document counts agree
   private final AtomicBoolean rescanRequired = new AtomicBoolean(false);
   private volatile boolean countersValid = false;
@@ -124,8 +135,8 @@ public class FullTextIndexMetadata extends IndexMetadata {
   // first BM25 query validates them once (cheap live count) and rebuilds only if they disagree. AtomicBoolean (with CAS) so that
   // concurrent first-queries across the type's shared bucket indexes do not all run the validation/rescan.
   // Intentionally never reset to false after being claimed: the check is a once-per-session guard, not a continuous monitor. The
-  // recovery path for counters that are badly stale within a running session (e.g. a heavy rollback burst) is an explicit
-  // recomputeBM25Counters() / index rebuild, which also re-marks them consistent.
+  // recovery path for counters that are badly stale within a running session (e.g. after a crash replayed the log over them) is
+  // an explicit recomputeBM25Counters() / index rebuild, which also re-marks them consistent.
   private final AtomicBoolean staleChecked = new AtomicBoolean(false);
 
   /**
@@ -211,6 +222,7 @@ public class FullTextIndexMetadata extends IndexMetadata {
     this.totalDocs.set(metadata.getLong("ft_totalDocs", 0L));
     this.sumDocLength.set(metadata.getLong("ft_sumDocLength", 0L));
     this.countersValid = metadata.getBoolean("ft_countersValid", false);
+    this.countersEpoch.set(metadata.getLong("ft_countersEpoch", 0L));
 
     // Parse per-field analyzers (pattern: *_analyzer) and per-field boosts (pattern: *_boost). Clear first so a fromJSON() on an
     // already-populated instance replaces the per-field config rather than merging stale entries into it (these maps are now
@@ -387,6 +399,8 @@ public class FullTextIndexMetadata extends IndexMetadata {
       metadata.put("ft_totalDocs", totalDocs.get());
       metadata.put("ft_sumDocLength", sumDocLength.get());
       metadata.put("ft_countersValid", true);
+      metadata.put("ft_countersEpoch", countersEpoch.get());
+      countersDirty = false;
     }
     return metadata;
   }
@@ -673,10 +687,10 @@ public class FullTextIndexMetadata extends IndexMetadata {
    * <p>
    * Also marks the once-per-session staleness check as consumed: the counters have just been recomputed from the live data, so
    * they are exact and there is no point re-validating them later in this session. After this, subsequent maintenance
-   * ({@link #addDocument}/{@link #removeDocument}) keeps them current incrementally; the only un-tracked drift source is
-   * rollbacks, which the next session's stale check (or another explicit recompute) corrects. Practical implication: if you run a
-   * stats recompute and then bulk-import in the same JVM session, no automatic re-validation fires - but the import's incremental
-   * updates keep the counters accurate, so that is fine.
+   * ({@link #applyCorpusDelta}, at every commit) keeps them current incrementally; a rolled-back transaction never touches
+   * them. The drift left is what a crash or a changed analyzer leaves behind, which the next session's stale check (or another
+   * explicit recompute) corrects. Practical implication: if you run a stats recompute and then bulk-import in the same JVM
+   * session, no automatic re-validation fires - but the import's incremental updates keep the counters accurate, so that is fine.
    *
    * @param totalDocs    live document count
    * @param sumDocLength sum of document lengths
@@ -717,6 +731,8 @@ public class FullTextIndexMetadata extends IndexMetadata {
     final long newLen = this.sumDocLength.updateAndGet(v -> Math.max(0L, v + lenDelta));
     final long newDocs = this.totalDocs.updateAndGet(v -> Math.max(0L, v + docsDelta));
     this.countersValid = true;
+    scans.incrementAndGet();
+    countersDirty = true;
     // Exact only when no writer touched the counters at all: equal net values can hide an add and a remove that cancelled out
     final boolean exact = mutations.get() == mutationsAtStart && newDocs == totalDocs && newLen == sumDocLength;
     this.rescanRequired.set(!exact);
@@ -728,10 +744,10 @@ public class FullTextIndexMetadata extends IndexMetadata {
    * Records a newly indexed document in the corpus counters. Thread-safe: concurrent indexing transactions may call this on the
    * shared metadata.
    * <p>
-   * These counters feed only the average document length (a BM25 length normalizer, robust to small inaccuracies). They are
-   * adjusted at index put/remove time, BEFORE the transaction commits, and are NOT reversed on rollback - so a rolled-back batch
-   * (or a {@link #removeDocument} whose recomputed length differs from the original, e.g. after an analyzer change) can let the
-   * counters drift. The full-text index's {@code recomputeBM25Counters()} rebuilds them exactly when needed.
+   * These counters feed only the average document length (a BM25 length normalizer, robust to small inaccuracies). A document
+   * indexed inside a transaction does not come through here: its effect is accumulated in the transaction and applied by
+   * {@link #applyCorpusDelta} once the transaction commits, so a rollback never touches the counters. This is for an index
+   * write that has no transaction to wait for.
    *
    * @param docLength number of analyzed tokens of the document
    */
@@ -743,6 +759,7 @@ public class FullTextIndexMetadata extends IndexMetadata {
     // counted before the counters move: a scan can at worst see a mutation whose bump is not visible yet, i.e. a spurious
     // "inexact", which is the safe direction
     mutations.incrementAndGet();
+    countersDirty = true;
     sumDocLength.addAndGet(docLength);
     totalDocs.incrementAndGet();
   }
@@ -757,8 +774,101 @@ public class FullTextIndexMetadata extends IndexMetadata {
     // sumDocLength-not-yet, which inflates avgdl slightly (under-penalizes) rather than deflating it - the safe side, matching
     // addDocument's bias.
     mutations.incrementAndGet();
+    countersDirty = true;
     totalDocs.updateAndGet(v -> v > 0 ? v - 1 : v);
     sumDocLength.updateAndGet(v -> Math.max(0L, v - docLength));
+  }
+
+  /**
+   * Applies the net effect of one committed transaction on the corpus counters: the documents it indexed minus the ones it
+   * removed, and the same for their lengths. Called after the commit on the node that ran the transaction, and by the state
+   * machine on every other node of an HA cluster, from the delta the replicated transaction carries, so every node moves the
+   * counters by the same amount at the same point of the log.
+   * <p>
+   * Counted as one mutation even when both deltas are zero: a transaction that removed one document and added another of the
+   * same length changes nothing a total can show, yet a scan running at that moment may have read either.
+   *
+   * @param docsDelta   documents added minus documents removed
+   * @param lengthDelta tokens added minus tokens removed
+   */
+  public void applyCorpusDelta(final long docsDelta, final long lengthDelta) {
+    mutations.incrementAndGet();
+    countersDirty = true;
+    // Same publication order as addDocument()/removeDocument(): the counter avgDocLength reads first moves last when the
+    // corpus grows and first when it shrinks, so a concurrent reader's torn pair is always biased towards a HIGH average
+    if (docsDelta >= 0) {
+      sumDocLength.updateAndGet(v -> Math.max(0L, v + lengthDelta));
+      totalDocs.updateAndGet(v -> Math.max(0L, v + docsDelta));
+    } else {
+      totalDocs.updateAndGet(v -> Math.max(0L, v + docsDelta));
+      sumDocLength.updateAndGet(v -> Math.max(0L, v + lengthDelta));
+    }
+  }
+
+  /**
+   * Epoch of the last explicit recompute, persisted with the counters. See {@link #adoptPersistedCounters}.
+   */
+  public long getCountersEpoch() {
+    return countersEpoch.get();
+  }
+
+  /**
+   * Marks the counters just published as the result of an explicit recompute, so a node that holds its own live copy of this
+   * metadata adopts them from the schema (see {@link #adoptPersistedCounters}). A query-path repair does not call it: it
+   * repairs this node's copy only.
+   */
+  public void advanceCountersEpoch() {
+    countersEpoch.incrementAndGet();
+  }
+
+  /**
+   * Number of full-type scans whose result was published into these counters since this metadata was created.
+   */
+  public long getScans() {
+    return scans.get();
+  }
+
+  /**
+   * Whether the counters changed since they were last serialized into the schema.
+   */
+  public boolean isCountersDirty() {
+    return countersDirty;
+  }
+
+  /**
+   * Whether the once-per-session drift check has already run.
+   */
+  public boolean isStaleCheckDone() {
+    return staleChecked.get();
+  }
+
+  /**
+   * Takes the counters of a persisted index definition over the live ones when the definition carries a newer epoch. This is the
+   * one way a recompute done on the leader reaches the followers: an HA follower keeps its metadata through an incremental
+   * schema load (its counters are kept current by the deltas of the replicated transactions, which a stale persisted copy must
+   * never overwrite), and only a definition whose epoch moved past the live one is newer than what the follower holds.
+   *
+   * @return true when the live counters were replaced
+   */
+  public boolean adoptPersistedCounters(final JSONObject definition) {
+    if (!definition.getBoolean("ft_countersValid", false))
+      return false;
+    final long epoch = definition.getLong("ft_countersEpoch", 0L);
+    synchronized (countersEpoch) {
+      if (epoch <= countersEpoch.get())
+        return false;
+      // Absolute values, not a delta: the persisted pair is the leader's recompute result and replaces whatever drifted here.
+      // Counted as a mutation so a scan racing this adoption does not call its own result exact
+      mutations.incrementAndGet();
+      countersDirty = true;
+      sumDocLength.set(definition.getLong("ft_sumDocLength", 0L));
+      totalDocs.set(definition.getLong("ft_totalDocs", 0L));
+      countersEpoch.set(epoch);
+      this.countersValid = true;
+      // The adopted counters are the leader's exact result: no drift check is owed this session
+      this.staleChecked.set(true);
+    }
+    return true;
   }
 
   /**
