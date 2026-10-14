@@ -123,6 +123,12 @@ class Issue9959PerSettingConfigurationEntryTest {
     assertThat(entry.getJSONArray("removed").getString(0)).isEqualTo("typeDefaultBuckets");
   }
 
+  @Test
+  void theFileNameOfASettingKeepsAKeyWithoutThePrefixWhole() {
+    assertThat(ContextConfiguration.jsonKey("arcadedb.typeDefaultBuckets")).isEqualTo("typeDefaultBuckets");
+    assertThat(ContextConfiguration.jsonKey("custom")).isEqualTo("custom");
+  }
+
   /** The writer: ALTER DATABASE saves its own setting by key, so the entry it submits names that setting alone. */
   @Test
   void alterDatabaseSubmitsItsOwnSettingOnly() {

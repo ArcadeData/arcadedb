@@ -148,10 +148,12 @@ public class ContextConfiguration implements Serializable {
 
   /**
    * The name {@link #toJSON()} writes a setting under: its key without the {@code arcadedb.} prefix. The one place that
-   * derives it, so a reader looking a single setting up in that document (issue #9959) finds what the writer wrote.
+   * derives it, so a reader looking a single setting up in that document (issue #9959) finds what the writer wrote. A
+   * key stored without the prefix (a setting nothing declares, stored as the caller spelled it) is written as it is,
+   * rather than with its first characters cut off.
    */
   public static String jsonKey(final String key) {
-    return key.substring(GlobalConfiguration.PREFIX.length());
+    return key.startsWith(GlobalConfiguration.PREFIX) ? key.substring(GlobalConfiguration.PREFIX.length()) : key;
   }
 
   public Object setValue(final GlobalConfiguration iConfig, final Object iValue) {

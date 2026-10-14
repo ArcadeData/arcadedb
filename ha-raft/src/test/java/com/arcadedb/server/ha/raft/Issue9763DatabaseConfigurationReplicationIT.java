@@ -246,8 +246,11 @@ class Issue9763DatabaseConfigurationReplicationIT extends BaseRaftHATest {
         assertThat(file.has("txWalFlush")).as("server %d: no entry carried the pending setting", index).isFalse();
       });
     } finally {
-      leaderLocal.getConfiguration().setValue(walFlushKey, null);
-      followerLocal.getConfiguration().setValue(walFlushKey, null);
+      try {
+        leaderLocal.getConfiguration().setValue(walFlushKey, null);
+      } finally {
+        followerLocal.getConfiguration().setValue(walFlushKey, null);
+      }
     }
   }
 
