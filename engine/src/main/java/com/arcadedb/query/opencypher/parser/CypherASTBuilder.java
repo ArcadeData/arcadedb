@@ -710,7 +710,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       final List<ReturnClause.ReturnItem> items = new ArrayList<>(2);
       items.add(ReturnClause.ReturnItem.star());
       items.add(letItem);
-      clauses.add(new WithClause(items, false, null, null, null, null).asLetBinding());
+      clauses.add(WithClause.letBinding(items));
     }
     return clauses;
   }
