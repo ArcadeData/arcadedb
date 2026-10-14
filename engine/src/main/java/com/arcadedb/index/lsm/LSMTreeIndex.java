@@ -115,6 +115,10 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
    * index it failed every lookup and range scan with an {@code ArrayIndexOutOfBoundsException}. Left out, the index it
    * would have stood for is reported missing by the schema, which keeps answering through a scan, and a
    * {@code REBUILD INDEX} restores it. Never dropped from here: a load must not delete what it cannot read (#4743).
+   * <p>
+   * A compacted file needs no such guard: it never reads its own header - the mutable that points at it hands it its key
+   * types - and only a mutable whose header names it ever attaches it. A compacted file left behind by the same cut-short
+   * sequence is therefore claimed by no mutable, and the load's orphan sweep reclaims it.
    */
   private static PaginatedComponent loadMutable(final DatabaseInternal database, final String name, final boolean unique,
       final String filePath, final int id, final ComponentFile.MODE mode, final int pageSize, final int version)

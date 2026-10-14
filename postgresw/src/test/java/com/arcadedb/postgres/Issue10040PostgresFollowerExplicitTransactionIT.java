@@ -93,7 +93,7 @@ class Issue10040PostgresFollowerExplicitTransactionIT extends BaseRaftHATest {
       statement.execute("INSERT INTO " + TYPE + " SET name = 'block'");
       statement.execute("INSERT INTO " + TYPE + " SET name = 'block'");
       // inside the block, the follower already sees its own writes: they are in its transaction, not on the leader
-      try (final java.sql.ResultSet rs = statement.executeQuery("SELECT count(*) AS c FROM " + TYPE + " WHERE name = 'block'")) {
+      try (final java.sql.ResultSet rs = statement.executeQuery("SELECT count(@rid) AS c FROM " + TYPE + " WHERE name = 'block'")) {
         assertThat(rs.next()).isTrue();
         assertThat(rs.getLong(1)).isEqualTo(2L);
       }
@@ -124,7 +124,7 @@ class Issue10040PostgresFollowerExplicitTransactionIT extends BaseRaftHATest {
 
   private long count(final int serverIndex, final String name) {
     final Database db = getServerDatabase(serverIndex, getDatabaseName());
-    try (final ResultSet rs = db.query("sql", "SELECT count(*) AS c FROM " + TYPE + " WHERE name = ?", name)) {
+    try (final ResultSet rs = db.query("sql", "SELECT count(@rid) AS c FROM " + TYPE + " WHERE name = ?", name)) {
       return rs.next().<Number>getProperty("c").longValue();
     }
   }

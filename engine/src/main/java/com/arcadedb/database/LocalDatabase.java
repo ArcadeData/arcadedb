@@ -244,7 +244,10 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   protected final    Lock                                      asyncLock                 = new ReentrantLock();
   protected          boolean                                   autoTransaction           = false;
   protected volatile boolean                                   open                      = false;
-  /** Set by {@link #closeForReopen()}: this instance was closed so that the same database could be reopened (#8199). */
+  /**
+   * Set by {@link #closeForReopen()}: this instance was closed so that the same database could be reopened (#8199). Never
+   * reset, because an instance is single-use: it is opened once, by the factory that builds it, and a reopen is a new one.
+   */
   private volatile boolean                                     closedForReopen           = false;
   private            boolean                                   readYourWrites            = true;
   // Database-wide durability settings (issue #8352): null until set, so every thread follows the configuration its

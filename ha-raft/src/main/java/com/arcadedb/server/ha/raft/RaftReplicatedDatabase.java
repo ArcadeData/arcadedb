@@ -1552,6 +1552,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * wrapper and the gRPC auto-wrap open one around a single request too, and those keep forwarding, which is what gives a
    * retried request its exactly-once execution on the leader (#8323, #8347).
    * <p>
+   * A script (an engine the leader executes) that writes nothing keeps being forwarded, as before this rule existed.
+   * <p>
    * DDL keeps being forwarded: a schema change is not transactional anywhere - a ROLLBACK does not undo one on the
    * leader either - and a follower cannot write the schema at all. A script carrying DDL is refused, because it cannot
    * be honoured either way: forwarded, its writes would escape the transaction; run here, its DDL could not.
@@ -1559,6 +1561,10 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   private boolean runsInTheClientTransaction(final QueryEngine queryEngine, final QueryEngine.AnalyzedQuery analyzed) {
     final TransactionContext tx = proxied.getTransactionIfExists();
     if (tx == null || !tx.isActive() || !tx.isClientManaged())
+      return false;
+    if (queryEngine.isExecutedByTheLeader() && analyzed.isIdempotent())
+      // A script that writes nothing has nothing to keep in the transaction, and may hold an operation that belongs on the
+      // leader: BACKUP DATABASE, which rolls back a transaction holding changes before it archives. Forwarded, as always.
       return false;
     if (!analyzed.isDDL())
       return true;

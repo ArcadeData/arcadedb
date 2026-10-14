@@ -66,6 +66,7 @@ import com.arcadedb.index.geospatial.LSMTreeGeoIndex;
 import com.arcadedb.index.lsm.LSMTreeIndex;
 import com.arcadedb.index.sparsevector.LSMSparseVectorIndex;
 import com.arcadedb.index.sparsevector.SparseSegmentComponent;
+import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract.NULL_STRATEGY;
 import com.arcadedb.index.lsm.LSMTreeIndexBloomFilter;
 import com.arcadedb.index.lsm.LSMTreeIndexCompacted;
@@ -1329,12 +1330,20 @@ public class LocalSchema implements Schema {
    * forever. Every legitimate compacted component gets its mainIndex set by the owning mutable index while
    * reading its header (SUB-INDEX FILE ID), so a compacted component still unclaimed after the whole schema
    * load is provably an orphan.
+   * <p>
+   * With one exception: a compacted file of the same index as a mutable file the load left out because its header page
+   * has not arrived yet (issue #10046). That mutable is the one that would claim it, so the compacted file is kept - with
+   * its bloom filter - until a later load finds the header, or the index is rebuilt.
    */
   private void sweepOrphanCompactedIndexFiles(final List<Component> snapshot) {
+    final Set<String> awaitingHeader = headerlessMutableIndexBaseNames();
     for (final Component component : snapshot) {
       if (component instanceof LSMTreeIndexBloomFilter filter) {
         // A filter is owned by exactly one compacted index; without it nothing can ever read the file again.
         final Component owner = filter.getOwnerName() != null ? getFileByName(filter.getOwnerName()) : null;
+        if (owner instanceof LSMTreeIndexCompacted compactedOwner && awaitingHeader.contains(
+            LSMTreeIndexAbstract.compactionBaseName(compactedOwner.getName())))
+          continue;
         if (!(owner instanceof LSMTreeIndexCompacted compactedOwner) || compactedOwner.getMainIndex() == null) {
           LogManager.instance().log(this, Level.INFO,
               "Dropping orphan index bloom filter file '%s' (fileId=%d)", null, filter.getName(), filter.getFileId());
@@ -1345,6 +1354,13 @@ public class LocalSchema implements Schema {
 
       if (!(component instanceof LSMTreeIndexCompacted compacted) || compacted.getMainIndex() != null)
         continue;
+
+      if (awaitingHeader.contains(LSMTreeIndexAbstract.compactionBaseName(compacted.getName()))) {
+        LogManager.instance().log(this, Level.WARNING,
+            "Keeping unclaimed compacted index file '%s' (fileId=%d): a mutable file of the same index has no header page yet",
+            null, compacted.getName(), compacted.getFileId());
+        continue;
+      }
 
       LogManager.instance().log(this, Level.INFO,
           "Dropping orphan compacted index file '%s' (fileId=%d) left behind by an interrupted compaction", null,
@@ -1358,6 +1374,26 @@ public class LocalSchema implements Schema {
             .log(this, Level.WARNING, "Error on dropping orphan compacted index file '%s'", e, compacted.getName());
       }
     }
+  }
+
+  /**
+   * The compaction base names ({@link LSMTreeIndexAbstract#compactionBaseName}) of the mutable LSM index files the file
+   * manager holds and this load did not turn into a component: the ones refused for a missing header (issue #10046).
+   */
+  private Set<String> headerlessMutableIndexBaseNames() {
+    Set<String> names = null;
+    for (final ComponentFile file : database.getFileManager().getFiles()) {
+      if (file == null)
+        continue;
+      final String ext = file.getFileExtension();
+      if ((LSMTreeIndexMutable.UNIQUE_INDEX_EXT.equals(ext) || LSMTreeIndexMutable.NOTUNIQUE_INDEX_EXT.equals(ext))
+          && lookupFile(file.getFileId()) == null) {
+        if (names == null)
+          names = new HashSet<>();
+        names.add(LSMTreeIndexAbstract.compactionBaseName(file.getComponentName()));
+      }
+    }
+    return names != null ? names : Collections.emptySet();
   }
 
   // KEY PREFIX IN reportedUpgradeWarnings: A TYPE LEFT BEHIND BY AN OLDER VERSION (#8169) IS AN UPGRADE LEFTOVER TOO
