@@ -2541,6 +2541,10 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         if (byPackedIndex != null)
           byPackedIndex.clear();
         final int rowCount = rowFieldFilter ? selectedCount : rangeEnd - rangeStart;
+        // The bucket of the last row routed, as [windowStart, windowEnd): the rows of a block are in time order, so the next
+        // one is in it far more often than not and the division that finds a bucket is skipped. Empty at first.
+        long windowStart = 0;
+        long windowEnd = 0;
         for (int k = 0; k < rowCount; k++) {
           final int i = rowFieldFilter ? selected[k] : rangeStart + k;
           if (needRowTagFilter && !matchesTagConditions(filterCols, filterConditions, i))
@@ -2578,8 +2582,14 @@ public class TimeSeriesSealedStore implements AutoCloseable {
             } else
               rowValues[r] = decompressedCols[schemaColIndices[r]][i];
           }
-          group.accumulateRow(bucketIntervalMs > 0 ? TimeBucketGrid.bucketStart(reusableTsBuf[i], bucketIntervalMs, bucketOffsetMs) : singleBucketTs,
-              rowValues, rowLongs);
+          final long rowTs = reusableTsBuf[i];
+          if (bucketIntervalMs > 0 && (rowTs < windowStart || rowTs >= windowEnd)) {
+            windowStart = TimeBucketGrid.bucketStart(rowTs, bucketIntervalMs, bucketOffsetMs);
+            final long end = windowStart + bucketIntervalMs;
+            // a bucket that ends past Long.MAX_VALUE leaves the window empty, so its rows find their bucket one by one
+            windowEnd = end > windowStart ? end : windowStart;
+          }
+          group.accumulateRow(bucketIntervalMs > 0 ? windowStart : singleBucketTs, rowValues, rowLongs);
         }
         if (metrics != null)
           metrics.addAccum(System.nanoTime() - t0);
