@@ -19,6 +19,7 @@
 package com.arcadedb.mcp;
 
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.RunningQuery;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
@@ -89,7 +90,7 @@ public class MCPHttpHandler extends AbstractServerHttpHandler {
     // A top-level array is a JSON-RPC batch, parsed once by the shared request pipeline (issue #5415).
     final JSONArray batch = getPayloadAsArray(exchange);
     if (batch != null)
-      return executeBatch(batch, user);
+      return executeBatch(batch, user, RunningQuery.Client.of(null, exchange.getSourceAddress()));
 
     // Neither an object nor an array came back from the shared parsing while the client did send a body: the
     // body is not valid JSON. JSON-RPC answers that with -32700 over HTTP 200, never with a transport error.
@@ -100,7 +101,7 @@ public class MCPHttpHandler extends AbstractServerHttpHandler {
             MCPDispatcher.errorObject(null, -32700, "Parse error: the request body is not valid JSON").toString());
     }
 
-    final MCPResponse response = dispatcher.dispatch(payload, user);
+    final MCPResponse response = dispatcher.dispatch(payload, user, RunningQuery.Client.of(null, exchange.getSourceAddress()));
 
     // A null body is a one-way notification or response: 202 Accepted, no content.
     if (response.json() == null)
@@ -109,11 +110,11 @@ public class MCPHttpHandler extends AbstractServerHttpHandler {
     return new ExecutionResponse(response.httpStatus(), response.json().toString());
   }
 
-  private ExecutionResponse executeBatch(final JSONArray batch, final ServerSecurityUser user) {
+  private ExecutionResponse executeBatch(final JSONArray batch, final ServerSecurityUser user, final RunningQuery.Client client) {
     if (batch.isEmpty())
       return new ExecutionResponse(200, MCPDispatcher.errorObject(null, -32600, "Invalid Request: empty batch").toString());
 
-    final JSONArray responses = dispatcher.dispatchBatch(batch, user);
+    final JSONArray responses = dispatcher.dispatchBatch(batch, user, client);
 
     // Nothing to correlate means the batch held only notifications and/or responses: accepted, with no body.
     if (responses.isEmpty())

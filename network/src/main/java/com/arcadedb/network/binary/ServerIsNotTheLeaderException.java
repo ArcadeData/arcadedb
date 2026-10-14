@@ -68,7 +68,22 @@ public class ServerIsNotTheLeaderException extends NeedRetryException {
    * either early.
    */
   public String leaderSentence() {
-    return "The leader is server '" + wireSafe(leaderURL) + "'";
+    return leaderSentence(leaderURL);
+  }
+
+  /** {@link #leaderSentence()} for a leader {@code address} a transport resolved without the refusal at hand. */
+  public static String leaderSentence(final String address) {
+    return "The leader is server '" + wireSafe(address) + "'";
+  }
+
+  /**
+   * {@code text}, followed by {@link #leaderSentence()} when {@code error} is a refusal {@link #redirectIn} finds: the one
+   * arm every transport that words its own error text needs (issue #9960). A transport appends it AFTER concealment: the
+   * address is one the cluster put there, not engine detail, and it is the only thing that makes the refusal actionable.
+   */
+  public static String withLeaderSentence(final String text, final Throwable error) {
+    final ServerIsNotTheLeaderException refusal = redirectIn(error);
+    return refusal != null ? text + ". " + refusal.leaderSentence() : text;
   }
 
   /**

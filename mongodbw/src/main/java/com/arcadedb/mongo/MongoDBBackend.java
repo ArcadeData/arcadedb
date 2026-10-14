@@ -161,11 +161,11 @@ public class MongoDBBackend extends AbstractMongoBackend {
 
   private RunningQuery registerRunningQuery(final Channel channel, final String databaseName, final String command,
       final Document query, final ServerSecurityUser user) {
-    final RunningQuery runningQuery = server.getRunningQueries().register(databaseName, user.getName(), "mongodb", null, null);
+    final RunningQuery runningQuery = server.getRunningQueries().register(databaseName, user.getName(), "mongodb", null, null,
+        RunningQuery.Client.of(channel.id().asShortText(), channel.remoteAddress()));
     // Read on the listing thread while the command runs: a document the backend changes meanwhile can at worst fail the
     // read, which RunningQuery.getText() turns into an entry listed without its text
     runningQuery.setStatement("mongo", () -> command + " " + query.toString());
-    runningQuery.setConnection(channel.id().asShortText(), String.valueOf(channel.remoteAddress()));
     return runningQuery;
   }
 

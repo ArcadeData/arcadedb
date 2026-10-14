@@ -21,6 +21,7 @@ package com.arcadedb.server.gremlin;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.ProtocolContext;
+import com.arcadedb.query.RunningQuery;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 
@@ -64,6 +65,8 @@ public class GremlinPrincipalPropagatingExecutorService extends AbstractExecutor
   public void execute(final Runnable command) {
     // Captured on the Netty request thread, where ArcadeGremlinAuthorizer has just published the user.
     final ServerSecurityUser user = GremlinAuthContext.get();
+    // The connection, published on the same thread by the channelizer for the request being read (issue #9962)
+    final RunningQuery.Client client = GremlinAuthContext.getClient();
     delegate.execute(() -> {
       final List<DatabaseInternal> bound = user != null ? bindPrincipal(user) : Collections.emptyList();
       // Tagged as the client request it is (issue #8363): under HA, RaftReplicatedDatabase refuses a CLIENT request
@@ -73,10 +76,15 @@ public class GremlinPrincipalPropagatingExecutorService extends AbstractExecutor
       ProtocolContext.set(GREMLIN_PROTOCOL);
       // Who the registry entry of the request belongs to, for its listing and its visibility (issue #9689)
       ArcadeGraphManager.setRequestUser(user != null ? user.getName() : null);
+      // The one holder of the client on both threads: what was there before is put back, so a pool that ever ran the task on
+      // the submitting Netty thread would not take the client away from the rest of that read
+      final RunningQuery.Client previousClient = GremlinAuthContext.getClient();
+      GremlinAuthContext.setClient(client);
       try {
         command.run();
       } finally {
         ArcadeGraphManager.setRequestUser(null);
+        GremlinAuthContext.setClient(previousClient);
         // A request whose evaluation ended without reporting its end to ArcadeGraphManager must not keep its admission
         // slot (issue #9518): the pool's threads are reused, and a slot left on one would also be taken for the slot of an
         // enclosing query by the next request it runs

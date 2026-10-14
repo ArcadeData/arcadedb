@@ -144,6 +144,9 @@ class Issue9838WsInsertSessionListedInEveryModeTest extends BaseGraphServerTest 
       assertThat(entry.getUser()).isEqualTo("root");
       assertThat(entry.getDatabase()).isEqualTo(getDatabaseName());
       assertThat(entry.getSessionId()).as("a server-managed session has no HTTP transaction to be listed under").isNull();
+      // Issue #9962: the session and the socket it was opened on identify the client in every mode, sessionId or not
+      assertThat(entry.getConnectionId()).isEqualTo(sessionId);
+      assertThat(entry.getClientAddress()).as("the peer of the WebSocket").isNotBlank().isNotEqualTo("null");
       assertThat(entry.getText()).contains("chunk 2").contains(expectedModeName);
 
       // Listed by "list queries" for the administrator

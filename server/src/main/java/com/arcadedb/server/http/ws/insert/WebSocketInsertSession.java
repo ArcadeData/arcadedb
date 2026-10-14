@@ -467,13 +467,16 @@ public class WebSocketInsertSession {
   /**
    * Opens and publishes the registry entry of one chunk, or answers {@code null} when the server keeps no registry. Its
    * statement names the session and the mode, since a server-managed session has no {@code transactionId} to be listed
-   * under (issue #9838).
+   * under (issue #9838). Listed with the session as its connection and the peer of the socket the session was opened on
+   * as its client, in every mode (issue #9962).
    */
   private RunningQuery openChunkEntry(final long chunkSeq) {
     if (runningQueries == null)
       return null;
+    final WebSocketChannel current = channel;
     final RunningQuery entry = runningQueries.register(databaseName, user.getName(), "ws", externalTransactionId,
-        externalSession != null ? externalSession.getTag() : null);
+        externalSession != null ? externalSession.getTag() : null,
+        RunningQuery.Client.of(id, current != null ? current.getPeerAddress() : null));
     entry.setStatement("ws", () -> "insert chunk " + chunkSeq + " of session " + id + " (" + options.transactionModeName() + ")");
     return entry;
   }

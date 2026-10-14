@@ -101,6 +101,11 @@ class Issue9689GremlinTerminateTest extends AbstractGremlinServerIT {
       final RunningQuery entry = awaitRunning("gremlin");
       assertThat(entry.getUser()).isEqualTo("root");
       assertThat(entry.getLanguage()).isEqualTo("gremlin");
+      // Issue #9962: listed with the connection it arrived on, which the user name alone does not identify on a Gremlin
+      // Server with one configured credential
+      assertThat(entry.getConnectionId()).as("the Netty channel of the request").isNotBlank();
+      assertThat(entry.getClientAddress()).as("the peer of that channel").isNotBlank().isNotEqualTo("null");
+      assertThat(entry.toJSON().getString("clientAddress")).isEqualTo(entry.getClientAddress());
 
       entry.terminate("root");
       assertThatThrownBy(() -> running.get(60, TimeUnit.SECONDS)).hasStackTraceContaining("terminated");
@@ -121,7 +126,8 @@ class Issue9689GremlinTerminateTest extends AbstractGremlinServerIT {
     final AtomicReference<Throwable> failure = new AtomicReference<>();
     final AtomicReference<RunningQuery> entry = new AtomicReference<>();
     final Thread runner = new Thread(() -> {
-      try (final RunningQuery q = getServer(0).getRunningQueries().register(getDatabaseName(), "root", "http", null, null)) {
+      try (final RunningQuery q = getServer(0).getRunningQueries()
+          .register(getDatabaseName(), "root", "http", null, null, RunningQuery.Client.NONE)) {
         q.setStatement("gremlin", LONG_TRAVERSAL);
         entry.set(q);
         try (final ResultSet rs = database.command("gremlin", LONG_TRAVERSAL)) {

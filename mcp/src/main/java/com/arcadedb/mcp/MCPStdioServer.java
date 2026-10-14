@@ -21,6 +21,7 @@ package com.arcadedb.mcp;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.RunningQuery;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
@@ -40,6 +41,9 @@ import java.util.logging.Level;
  * Owns the stdio envelope only; all protocol routing lives in {@link MCPDispatcher}.
  */
 public class MCPStdioServer {
+  // What "list queries" names as the client of a tool call: the process at the other end of the pipe has no address (issue #9962)
+  static final RunningQuery.Client STDIO_CLIENT = new RunningQuery.Client(null, "stdio");
+
   private final MCPDispatcher      dispatcher;
   private final ServerSecurityUser user;
   private final InputStream        input;
@@ -156,12 +160,12 @@ public class MCPStdioServer {
       if (batch.isEmpty())
         return jsonRpcError(null, -32600, "Invalid Request: empty batch");
 
-      final JSONArray responses = dispatcher.dispatchBatch(batch, user);
+      final JSONArray responses = dispatcher.dispatchBatch(batch, user, STDIO_CLIENT);
       // A batch containing only notifications and/or responses produces no output.
       return responses.isEmpty() ? null : responses.toString();
     }
 
-    final MCPResponse response = dispatcher.dispatch(new JSONObject(line), user);
+    final MCPResponse response = dispatcher.dispatch(new JSONObject(line), user, STDIO_CLIENT);
 
     // A null body is a one-way notification or response, which is written back as nothing at all.
     return response.json() == null ? null : response.json().toString();

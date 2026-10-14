@@ -18,6 +18,8 @@
  */
 package com.arcadedb.network.binary;
 
+import com.arcadedb.exception.ConcurrentModificationException;
+import com.arcadedb.exception.TransactionException;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -80,5 +82,21 @@ class ExceptionTest {
     assertThat(exception.getLeaderAddress()).isEqualTo("192.168.1.100:2480");
     assertThat(exception.toString()).contains("Server is not the leader");
     assertThat(exception.toString()).contains("192.168.1.100:2480");
+  }
+
+  /** Issue #9960: the one sentence every transport appends to its own error text for a refusal that names a leader. */
+  @Test
+  void withLeaderSentenceNamesTheLeaderOnlyForARedirect() {
+    final ServerIsNotTheLeaderException refusal = new ServerIsNotTheLeaderException("refused", "192.168.1.100:2480");
+
+    assertThat(ServerIsNotTheLeaderException.withLeaderSentence("text", refusal))
+        .isEqualTo("text. The leader is server '192.168.1.100:2480'");
+    assertThat(ServerIsNotTheLeaderException.withLeaderSentence("text", new TransactionException("commit", refusal)))
+        .as("found along the cause chain").isEqualTo("text. The leader is server '192.168.1.100:2480'");
+    assertThat(ServerIsNotTheLeaderException.withLeaderSentence("text", new ServerIsNotTheLeaderException("refused", "")))
+        .as("no leader to name mid-election").isEqualTo("text");
+    assertThat(ServerIsNotTheLeaderException.withLeaderSentence("text", new ConcurrentModificationException("conflict")))
+        .isEqualTo("text");
+    assertThat(ServerIsNotTheLeaderException.leaderSentence("host\r\nforged")).doesNotContain("\r").doesNotContain("\n");
   }
 }

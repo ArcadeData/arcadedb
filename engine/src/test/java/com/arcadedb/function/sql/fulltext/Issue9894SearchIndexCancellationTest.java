@@ -64,7 +64,7 @@ class Issue9894SearchIndexCancellationTest extends TestHelper {
 
     for (final String query : new String[] { "common", "common OR word*", "+common +word1*" }) {
       final Throwable failure;
-      try (final RunningQuery q = registry.register(database.getName(), "admin", "test", null, null)) {
+      try (final RunningQuery q = registry.register(database.getName(), "admin", "test", null, null, RunningQuery.Client.NONE)) {
         q.terminate("root");
         failure = catchThrowable(() -> {
           try (final ResultSet rs = database.query("sql",

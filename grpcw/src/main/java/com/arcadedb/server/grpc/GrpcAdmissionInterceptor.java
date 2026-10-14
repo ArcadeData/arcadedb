@@ -25,7 +25,9 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.google.protobuf.Descriptors;
 import com.google.protobuf.Message;
 import io.grpc.Context;
+import io.grpc.Contexts;
 import io.grpc.ForwardingServerCallListener;
+import io.grpc.Grpc;
 import io.grpc.Metadata;
 import io.grpc.MethodDescriptor;
 import io.grpc.ServerCall;
@@ -60,6 +62,8 @@ import java.util.Set;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class GrpcAdmissionInterceptor implements ServerInterceptor {
+  /** The peer of a client-streaming load, for the entry its handler opens ({@link StreamingLoadEntry}, issue #9962). */
+  static final Context.Key<RunningQuery.Client> CLIENT_KEY = Context.key("arcadedb-client");
   private static final Metadata.Key<String> DATABASE_HEADER = Metadata.Key.of("x-arcade-database", Metadata.ASCII_STRING_MARSHALLER);
   private static final Set<String>          NOT_GATED       = Set.of(//
       ArcadeDbServiceGrpc.getBeginTransactionMethod().getFullMethodName(),//
@@ -75,8 +79,13 @@ class GrpcAdmissionInterceptor implements ServerInterceptor {
   public <ReqT, RespT> ServerCall.Listener<ReqT> interceptCall(final ServerCall<ReqT, RespT> call, final Metadata headers,
       final ServerCallHandler<ReqT, RespT> next) {
     final MethodDescriptor<ReqT, RespT> method = call.getMethodDescriptor();
-    if (!isGated(method))
+    if (!isGated(method)) {
+      // A client-streaming load opens its entry itself, from the handler, where the call is out of reach: it reads its
+      // client from the Context (issue #9962)
+      if (isStreamingLoad(method))
+        return Contexts.interceptCall(Context.current().withValue(CLIENT_KEY, client(call)), call, headers, next);
       return next.startCall(call, headers);
+    }
 
     return new ForwardingServerCallListener.SimpleForwardingServerCallListener<>(next.startCall(call, headers)) {
       // The request, which says what the statement is: a gated RPC sends exactly one
@@ -98,7 +107,7 @@ class GrpcAdmissionInterceptor implements ServerInterceptor {
           call.close(refusal.getStatus(), refusal.getTrailers() != null ? refusal.getTrailers() : new Metadata());
           return;
         }
-        final RunningQuery runningQuery = register(method, headers, request);
+        final RunningQuery runningQuery = register(method, headers, request, client(call));
         // A cancelled call cancels its Context at once, on a thread of its own, while the handler still runs here
         final Context context = Context.current();
         final Context.CancellationListener onCancel = cancelled -> runningQuery.terminate("client (call cancelled)");
@@ -122,7 +131,8 @@ class GrpcAdmissionInterceptor implements ServerInterceptor {
    * Opens the registry entry of an admitted RPC on the calling thread, described by its request when it carries a
    * statement (issue #9689). A transaction's statements run on the transaction's own thread, where the service binds it.
    */
-  private RunningQuery register(final MethodDescriptor<?, ?> method, final Metadata headers, final Object request) {
+  private RunningQuery register(final MethodDescriptor<?, ?> method, final Metadata headers, final Object request,
+      final RunningQuery.Client client) {
     // Who the call was authenticated as, by its headers or its session: never a name the payload carries
     final String user = GrpcAuthInterceptor.USER_CONTEXT_KEY.get();
     String database = requestDatabase(request);
@@ -144,7 +154,7 @@ class GrpcAdmissionInterceptor implements ServerInterceptor {
       language = "sql";
 
     final RunningQuery runningQuery = server.getRunningQueries()
-        .register(database != null && !database.isEmpty() ? database : null, user, "grpc", null, null);
+        .register(database != null && !database.isEmpty() ? database : null, user, "grpc", null, null, client);
     runningQuery.setStatement(language, text);
     return runningQuery;
   }
@@ -171,5 +181,18 @@ class GrpcAdmissionInterceptor implements ServerInterceptor {
     return ArcadeDbServiceGrpc.SERVICE_NAME.equals(method.getServiceName())//
         && method.getType().clientSendsOneMessage()//
         && !NOT_GATED.contains(method.getFullMethodName());
+  }
+
+  /** The client-streaming loads of the service, which are not gated but open their own entry ({@link StreamingLoadEntry}). */
+  static boolean isStreamingLoad(final MethodDescriptor<?, ?> method) {
+    return ArcadeDbServiceGrpc.SERVICE_NAME.equals(method.getServiceName()) && !method.getType().clientSendsOneMessage();
+  }
+
+  /**
+   * The client of {@code call}, as {@code list queries} names it beside the user (issue #9962): its peer, when the
+   * transport reports one.
+   */
+  static RunningQuery.Client client(final ServerCall<?, ?> call) {
+    return RunningQuery.Client.of(null, call.getAttributes().get(Grpc.TRANSPORT_ATTR_REMOTE_ADDR));
   }
 }

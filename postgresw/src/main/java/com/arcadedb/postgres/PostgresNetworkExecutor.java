@@ -92,6 +92,7 @@ import java.io.EOFException;
 import java.io.IOException;
 import java.math.BigDecimal;
 import java.net.Socket;
+import java.net.SocketAddress;
 import java.net.SocketException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -387,17 +388,16 @@ public class PostgresNetworkExecutor extends Thread {
    */
   private RunningStatement startStatement(final String language, final String text) {
     final RunningQuery entry = server.getRunningQueries()
-        .register(database != null ? database.getName() : databaseName, userName, "postgres", null, null);
+        .register(database != null ? database.getName() : databaseName, userName, "postgres", null, null,
+            RunningQuery.Client.of(String.valueOf(processId), clientSocketAddress()));
     entry.setStatement(language, text);
-    entry.setConnection(String.valueOf(processId), clientAddress());
     runningStatement = entry;
     return new RunningStatement(entry);
   }
 
-  private String clientAddress() {
+  private SocketAddress clientSocketAddress() {
     final ChannelBinaryServer current = channel;
-    return current != null && current.socket != null && current.socket.getRemoteSocketAddress() != null ?
-        current.socket.getRemoteSocketAddress().toString() : null;
+    return current != null && current.socket != null ? current.socket.getRemoteSocketAddress() : null;
   }
 
   /** The entry of the statement running on this connection, closed once its work is over. Closing twice is harmless. */
@@ -4178,8 +4178,7 @@ public class PostgresNetworkExecutor extends Thread {
    * cluster put there, not engine detail.
    */
   static String withLeaderRedirect(final String text, final Throwable error) {
-    final ServerIsNotTheLeaderException refusal = ServerIsNotTheLeaderException.redirectIn(error);
-    return refusal != null ? text + ". " + refusal.leaderSentence() : text;
+    return ServerIsNotTheLeaderException.withLeaderSentence(text, error);
   }
 
   /** {@link #clientMessage} without the leader redirect: the message, or the placeholder in production mode. */
