@@ -149,6 +149,45 @@ public class Issue7299SchemaCopyOnWritePublicationTest {
             + "#7866, #9989).").isEmpty();
   }
 
+  /**
+   * Issue #9989: the custom values of a type and of a property are published as a whole map, so a reader holding the map
+   * keeps seeing what it read, and null keeps meaning "not set" on both.
+   */
+  @Test
+  public void customValuesArePublishedAsAWholeMap() {
+    database.command("sql", "CREATE DOCUMENT TYPE Custom9989");
+    database.command("sql", "CREATE PROPERTY Custom9989.p STRING");
+    final DocumentType type = database.getSchema().getType("Custom9989");
+    final Property property = type.getProperty("p");
+
+    type.setCustomValue("a", "1");
+    property.setCustomValue("a", "1");
+    final Set<String> typeKeys = type.getCustomKeys();
+    final Set<String> propertyKeys = property.getCustomKeys();
+
+    type.setCustomValue("b", "2");
+    property.setCustomValue("b", "2");
+    assertThat(typeKeys).containsExactly("a");
+    assertThat(propertyKeys).containsExactly("a");
+    assertThat(type.getCustomKeys()).containsExactlyInAnyOrder("a", "b");
+    assertThat(property.getCustomKeys()).containsExactlyInAnyOrder("a", "b");
+
+    // null removes, and asking for a null key answers null
+    type.setCustomValue("a", null);
+    property.setCustomValue("a", null);
+    assertThat(type.getCustomValue("a")).isNull();
+    assertThat(property.getCustomValue("a")).isNull();
+    assertThat(type.getCustomValue(null)).isNull();
+    assertThat(property.getCustomValue(null)).isNull();
+
+    // and the values survive a reopen, which reloads the type's map as a whole
+    database.close();
+    database = new DatabaseFactory("./target/databases/test-issue-7299").open();
+    assertThat(database.getSchema().getType("Custom9989").getCustomValue("b")).isEqualTo("2");
+    assertThat(database.getSchema().getType("Custom9989").getProperty("p").getCustomValue("b")).isEqualTo("2");
+    assertThat(database.getSchema().getType("Custom9989").getCustomKeys()).containsExactly("b");
+  }
+
   private static boolean isConcurrentOrUnmodifiable(final Object value) {
     final Class<?> type = value.getClass();
     final String name = type.getName();

@@ -116,8 +116,9 @@ public class LocalDocumentType implements DocumentType {
   // Counted in the database's BEFORE READ listener total, so a read of a database nobody listens to skips finding the
   // registry of every record's type (issue #9997)
   protected final RecordEventsRegistry              events;
-  // mutated in place by ALTER TYPE ... CUSTOM and read by toJSON() after the schema lock is released, like properties (#9989)
-  protected final Map<String, Object>               custom                       = new ConcurrentHashMap<>();
+  // changed by ALTER TYPE ... CUSTOM and read by toJSON() after the schema lock is released: copy-on-write, an unmodifiable
+  // map replaced as a whole, so neither a reader nor a schema reload ever sees it half changed (#9989)
+  protected volatile Map<String, Object>            custom                       = Collections.emptyMap();
   // The four bucket lists are copy-on-write: reassigned under the schema mutation lock and read lock-free by query
   // planning through getBuckets(polymorphic)/getBucketIds(polymorphic), both branches of the ternary - the
   // non-polymorphic pair feeds SelectExecutionPlanner's partition pruning and FetchFromSchemaTypesStep exactly as the
@@ -2529,17 +2530,17 @@ public class LocalDocumentType implements DocumentType {
 
   @Override
   public Object getCustomValue(final String key) {
-    // a concurrent map refuses a null key, which a plain one answered null for
-    return key != null ? custom.get(key) : null;
+    return custom.get(key);
   }
 
   @Override
   public Object setCustomValue(final String key, final Object value) {
     checkForSchemaMutation();
     return recordFileChanges(() -> {
-      if (value == null)
-        return custom.remove(key);
-      return custom.put(key, value);
+      final Map<String, Object> copy = new HashMap<>(custom);
+      final Object previous = value == null ? copy.remove(key) : copy.put(key, value);
+      custom = Collections.unmodifiableMap(copy);
+      return previous;
     });
   }
 

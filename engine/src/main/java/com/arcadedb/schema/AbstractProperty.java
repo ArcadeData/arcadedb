@@ -29,7 +29,6 @@ import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
@@ -42,9 +41,9 @@ public abstract class AbstractProperty implements Property {
   // Issue #9989: every constraint below is reassigned by ALTER PROPERTY under the schema lock and read LOCK FREE by
   // DocumentValidator on every write, so each is volatile, as `external` and `defaultValue` already were for the same reason:
   // without the happens-before edge a write could be validated against a constraint that was altered or dropped. The custom
-  // map is mutated in place and read by toJSON() after the lock is released, so it is concurrent, as #6799 made its
-  // neighbour in LocalDocumentType. Issue7299SchemaCopyOnWritePublicationTest sweeps the class for both rules.
-  protected final        Map<String, Object> custom          = new ConcurrentHashMap<>();
+  // map is read by toJSON() after the lock is released, so it is copy-on-write: an unmodifiable map replaced as a whole.
+  // Issue7299SchemaCopyOnWritePublicationTest sweeps the class for both rules.
+  protected volatile     Map<String, Object> custom          = Collections.emptyMap();
   protected volatile     boolean             readonly        = false;
   protected volatile     boolean             mandatory       = false;
   protected volatile     boolean             notNull         = false;
@@ -344,8 +343,20 @@ public abstract class AbstractProperty implements Property {
 
   @Override
   public Object getCustomValue(final String key) {
-    // a concurrent map refuses a null key, which a plain one answered null for
-    return key != null ? custom.get(key) : null;
+    return custom.get(key);
+  }
+
+  /**
+   * Sets or, with a null value, removes one custom value by publishing a new map: the map a reader holds never changes under
+   * it, and a reload never shows it empty half way (#9989).
+   *
+   * @return the previous value
+   */
+  protected Object replaceCustomValue(final String key, final Object value) {
+    final Map<String, Object> copy = new HashMap<>(custom);
+    final Object previous = value == null ? copy.remove(key) : copy.put(key, value);
+    custom = Collections.unmodifiableMap(copy);
+    return previous;
   }
 
   @Override

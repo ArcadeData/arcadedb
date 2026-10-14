@@ -26,6 +26,7 @@ import com.arcadedb.utility.RegexOverAlphabet.Verdict;
 import com.arcadedb.utility.TimeBoundRegex;
 
 import java.math.BigDecimal;
+import java.time.DateTimeException;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -35,6 +36,7 @@ import java.time.OffsetTime;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
+import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.Date;
 import java.util.GregorianCalendar;
@@ -98,12 +100,7 @@ record TextForm(String characters, Pattern shape, List<Object> samples) {
   // shape only says where the id goes
   private static final TextForm ZONED_DT_FORM    = new TextForm(DIGITS + "-+:T.Z[]/_" + LETTERS,
       LOCAL_DATE_SHAPE + "T" + LOCAL_TIME_SHAPE + OFFSET_SHAPE + "(\\[[^\\]]+\\])?",
-      List.of(ZonedDateTime.of(2024, 1, 15, 10, 30, 0, 0, ZoneId.of("Europe/Rome")),
-          ZonedDateTime.of(2024, 1, 15, 10, 30, 0, 0, ZoneId.of("Etc/GMT+5")),
-          ZonedDateTime.of(2024, 1, 15, 10, 30, 0, 0, ZoneId.of("America/Port-au-Prince")),
-          ZonedDateTime.of(2024, 1, 15, 10, 30, 0, 0, ZoneId.of("America/Argentina/Buenos_Aires")),
-          ZonedDateTime.of(2024, 1, 15, 10, 30, 0, 0, ZoneOffset.UTC),
-          ZonedDateTime.of(2024, 1, 15, 10, 30, 0, 0, ZoneId.of("UTC"))));
+      zonedSamples("Europe/Rome", "Etc/GMT+5", "America/Port-au-Prince", "America/Argentina/Buenos_Aires", "UTC"));
   private static final TextForm LOCAL_TIME_FORM  = new TextForm(DIGITS + ":.", LOCAL_TIME_SHAPE,
       List.of(LocalTime.MIDNIGHT, LocalTime.MAX, LocalTime.of(10, 30, 5)));
   private static final TextForm OFFSET_TIME_FORM = new TextForm(DIGITS + "-+:.Z", LOCAL_TIME_SHAPE + OFFSET_SHAPE,
@@ -134,6 +131,22 @@ record TextForm(String characters, Pattern shape, List<Object> samples) {
     for (char c = ' '; c <= '~'; c++)
       printable.append(c);
     return printable.toString();
+  }
+
+  /**
+   * A value per zone id the JVM knows, and one at UTC whatever it knows: a runtime image built with a trimmed time-zone
+   * database must not fail the initialization of this class, and with it every REGEXP declaration.
+   */
+  private static List<Object> zonedSamples(final String... zoneIds) {
+    final List<Object> samples = new ArrayList<>(zoneIds.length + 1);
+    samples.add(ZonedDateTime.of(2024, 1, 15, 10, 30, 0, 0, ZoneOffset.UTC));
+    for (final String zoneId : zoneIds)
+      try {
+        samples.add(ZonedDateTime.of(2024, 1, 15, 10, 30, 0, 0, ZoneId.of(zoneId)));
+      } catch (final DateTimeException e) {
+        // not in this runtime's time-zone database
+      }
+    return List.copyOf(samples);
   }
 
   private static Calendar calendar(final long time) {
