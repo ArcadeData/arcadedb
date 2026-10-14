@@ -750,7 +750,12 @@ public class RedisNetworkExecutor extends Thread {
         throw RedisCommandArity.wrongArity((String) list.get(0));
       final String typeName = secondArg;
       final Database database = getAuthorizedDatabase(databaseName);
+      // Counted into a local inside the block and published only once it has returned, so a retried attempt does not carry the
+      // rolled-back one's count (issue #8037). The reply is the number of records stored: a create a BeforeRecordCreateListener
+      // vetoed is not one (issue #9974)
+      final int[] count = { 0 };
       database.transaction(() -> {
+        int created = 0;
         for (int i = 3; i < list.size(); i++) {
           final JSONObject v = new JSONObject((String) list.get(i));
 
@@ -766,11 +771,13 @@ public class RedisNetworkExecutor extends Thread {
             document = database.newDocument(typeName);
 
           document.fromJSON(v);
-          document.save();
+          if (document.saveReportingVeto())
+            created++;
         }
+        count[0] = created;
       });
       value.append(":");
-      value.append(list.size() - 3);
+      value.append(count[0]);
     }
   }
 

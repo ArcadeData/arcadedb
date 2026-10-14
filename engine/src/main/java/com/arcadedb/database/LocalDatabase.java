@@ -1282,10 +1282,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   @Override
   public void createRecord(final MutableDocument record) {
-    executeInReadLock(() -> {
-      createRecordNoLock(record, null, false);
-      return null;
-    });
+    // the same path as the caller that counts: createRecordReportingVeto(), so the two cannot drift (issue #9974)
+    createRecordReportingVeto(record, null);
   }
 
   @Override
@@ -1295,14 +1293,11 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   @Override
   public void createRecord(final Record record, final String bucketName) {
-    executeInReadLock(() -> {
-      createRecordNoLock(record, bucketName, false);
-      return null;
-    });
+    createRecordReportingVeto(record, bucketName);
   }
 
   @Override
-  public void createRecordNoLock(final Record record, final String bucketName, final boolean discardRecordAfter) {
+  public boolean createRecordNoLock(final Record record, final String bucketName, final boolean discardRecordAfter) {
     markModified();
     if (record.getIdentity() != null)
       throw new IllegalArgumentException("Cannot create record " + record.getIdentity() + " because it is already " +
@@ -1318,10 +1313,10 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
     // INVOKE EVENT CALLBACKS
     if (!events.onBeforeCreate(record))
-      return;
+      return false;
     if (record instanceof Document doc)
       if (!((RecordEventsRegistry) doc.getType().getEvents()).onBeforeCreate(record))
-        return;
+        return false;
 
     boolean success = false;
     final boolean implicitTransaction = checkTransactionIsActive(autoTransaction);
@@ -1403,6 +1398,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
           wrappedDatabaseInstance.rollback();
       }
     }
+    return true;
   }
 
   /**
@@ -1611,6 +1607,12 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   @Override
   public void updateRecord(final Record record) {
+    // the same path as the caller that counts: updateRecordReportingVeto(), so the two cannot drift (issue #9974)
+    updateRecordReportingVeto(record);
+  }
+
+  @Override
+  public boolean updateRecordReportingVeto(final Record record) {
     if (record.getIdentity() == null)
       throw new IllegalArgumentException("Cannot update the record because it is not persistent");
 
@@ -1622,12 +1624,12 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
     // INVOKE EVENT CALLBACKS
     if (!events.onBeforeUpdate(record))
-      return;
+      return false;
     if (record instanceof Document document)
       if (!((RecordEventsRegistry) document.getType().getEvents()).onBeforeUpdate(record))
-        return;
+        return false;
 
-    executeInReadLock(() -> {
+    return executeInReadLock(() -> {
       if (isTransactionActive()) {
         // MARK THE RECORD FOR UPDATE IN TX AND DEFER THE SERIALIZATION AT COMMIT TIME. THIS SPEEDS UP CASES WHEN THE
         // SAME RECORDS ARE UPDATE MULTIPLE TIME INSIDE
@@ -1643,7 +1645,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
           // #8066: remembered before queueing, so a refused update takes back only what THIS call queued
           final boolean alreadyQueued = tx.isUpdateQueued(record.getIdentity());
           if (!tx.addUpdatedRecord(record))
-            return null;
+            return false;
 
           if (record instanceof Document document) {
             // UPDATE THE INDEX IN MEMORY BEFORE UPDATING THE PAGE
@@ -1708,7 +1710,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       if (record instanceof Document document)
         ((RecordEventsRegistry) document.getType().getEvents()).onAfterUpdate(record);
 
-      return null;
+      return true;
     });
   }
 

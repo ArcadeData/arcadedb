@@ -62,6 +62,22 @@ public class RemoteMutableDocument extends MutableDocument {
     return this;
   }
 
+  /**
+   * The remote protocol does not carry a listener's veto of an update back to the client, so only a create can be answered: a
+   * vetoed create is left without an identity.
+   */
+  @Override
+  public boolean saveReportingVeto() {
+    save();
+    return rid != null;
+  }
+
+  @Override
+  public boolean saveReportingVeto(final String bucketName) {
+    save(bucketName);
+    return rid != null;
+  }
+
   @Override
   public void delete() {
     remoteDatabase.deleteRecord(this);

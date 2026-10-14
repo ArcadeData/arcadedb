@@ -42,7 +42,9 @@ public class DatabaseAsyncCreateRecord implements DatabaseAsyncTask {
   @Override
   public void execute(final DatabaseAsyncExecutorImpl.AsyncThread async, final DatabaseInternal database) {
     try {
-      database.createRecordNoLock(record, bucket.getName(), onOkCallback == null);
+      if (!database.createRecordNoLock(record, bucket.getName(), onOkCallback == null))
+        // VETOED BY A BEFORE-CREATE LISTENER: NOTHING WAS CREATED, SO THERE IS NO SUCCESS TO REPORT (issue #9974)
+        return;
 
       if (onOkCallback != null)
         onOkCallback.call(record);

@@ -221,6 +221,24 @@ public class MutableEdge extends MutableDocument implements Edge {
   }
 
   @Override
+  public boolean saveReportingVeto() {
+    if (getIdentity() != null && getIdentity().getPosition() < 0)
+      // LIGHTWEIGHT: NOTHING TO WRITE, AND NOTHING A LISTENER COULD HAVE REFUSED
+      return true;
+
+    return super.saveReportingVeto();
+  }
+
+  @Override
+  public boolean saveReportingVeto(final String bucketName) {
+    if (getIdentity() != null && getIdentity().getPosition() < 0)
+      // LIGHTWEIGHT
+      return true;
+
+    return super.saveReportingVeto(bucketName);
+  }
+
+  @Override
   public Edge asEdge() {
     return this;
   }
