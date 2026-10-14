@@ -18,20 +18,29 @@
  */
 package com.arcadedb.function.cypher;
 
+import com.arcadedb.function.HeapBufferingFunction;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.function.sql.SQLAggregatedFunction;
 import com.arcadedb.function.sql.math.SQLFunctionSum;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.OperationHeapLimit;
 import com.arcadedb.query.sql.executor.SQLFunction;
 
 /**
  * Bridge from Cypher function to SQL function.
  * For aggregation functions, we configure them to enable proper state accumulation.
  */
-public class SQLFunctionBridge implements StatelessFunction {
+public class SQLFunctionBridge implements StatelessFunction, HeapBufferingFunction {
   private final SQLFunction sqlFunction;
   private final String cypherFunctionName;
   private final boolean isAggregation;
+  // AN SQL AGGREGATE THAT KEEPS EVERY VALUE (list(), percentile(), mode()...) IS CHARGED THE SAME FROM CYPHER AS FROM SQL
+  // (ISSUE #9793). FALSE FOR ANY OTHER FUNCTION, WHOSE STATE DOES NOT GROW WITH ITS INPUT
+  private final boolean holdsEveryValue;
+  private OperationHeapLimit limit;
+  // TRUE WHEN NO STEP HANDED AN OPERATION: THE CHARGE IS THEN THIS FUNCTION'S TO GIVE BACK
+  private boolean ownLimit;
+  private long held;
 
   public SQLFunctionBridge(final SQLFunction sqlFunction, final String cypherFunctionName) {
     this.sqlFunction = sqlFunction;
@@ -44,6 +53,15 @@ public class SQLFunctionBridge implements StatelessFunction {
 
     // Cache whether this is an aggregation function
     this.isAggregation = sqlFunction.aggregateResults();
+    this.holdsEveryValue = isAggregation && sqlFunction instanceof SQLAggregatedFunction function && function.holdsEveryValue();
+  }
+
+  @Override
+  public void setHeapLimit(final OperationHeapLimit owner) {
+    if (holdsEveryValue) {
+      limit = owner.child(cypherFunctionName + "()");
+      ownLimit = false;
+    }
   }
 
   @Override
@@ -80,7 +98,15 @@ public class SQLFunctionBridge implements StatelessFunction {
     checkArity(args);
     // SQL functions expect (self, currentRecord, currentResult, params, context)
     // For now, we pass nulls for self, currentRecord, currentResult
-    return sqlFunction.execute(null, null, null, args, context);
+    final Object result = sqlFunction.execute(null, null, null, args, context);
+    if (holdsEveryValue) {
+      if (limit == null) {
+        limit = OperationHeapLimit.of(context, cypherFunctionName + "()");
+        ownLimit = true;
+      }
+      held = ((SQLAggregatedFunction) sqlFunction).chargeHeld(limit, held, args.length == 1 ? args[0] : args);
+    }
+    return result;
   }
 
   @Override
@@ -90,6 +116,9 @@ public class SQLFunctionBridge implements StatelessFunction {
 
   @Override
   public Object getAggregatedResult() {
+    if (ownLimit)
+      // THE VALUES GO TO THE CALLER, WHICH HOLDS THEM FROM NOW ON
+      limit.release();
     final Object result = sqlFunction.getResult();
     // Cypher's sum() over no value is 0 (Neo4j), while the SQL function answers NULL since issue #9351. An explicit
     // sql.sum() keeps the SQL answer.

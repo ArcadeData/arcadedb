@@ -19,9 +19,7 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.exception.TimeoutException;
-
-import java.util.ArrayList;
-import java.util.List;
+import com.arcadedb.query.sql.parser.LocalResultSet;
 
 /**
  * Created by luigidellaquila on 20/09/16.
@@ -34,6 +32,8 @@ public class MatchPrefetchStep extends AbstractExecutionStep {
   private final InternalExecutionPlan prefetchExecutionPlan;
 
   boolean executed = false;
+  // WHAT THE PREFETCHED ROWS HOLD, UNDER BOTH HEAP LIMITS, FOR AS LONG AS THE MATCH CAN READ THEM (ISSUE #9792)
+  private OperationHeapLimit prefetchLimit;
 
   public MatchPrefetchStep(final CommandContext context, final InternalExecutionPlan prefetchExecPlan, final String alias) {
     super(context);
@@ -44,6 +44,7 @@ public class MatchPrefetchStep extends AbstractExecutionStep {
   @Override
   public void reset() {
     executed = false;
+    releasePrefetched();
     prefetchExecutionPlan.reset(context);
   }
 
@@ -52,19 +53,22 @@ public class MatchPrefetchStep extends AbstractExecutionStep {
     if (!executed) {
       pullPrevious(context, nRecords);
 
-      ResultSet nextBlock = prefetchExecutionPlan.fetchNext(nRecords);
-      final List<Result> prefetched = new ArrayList<>();
-      while (nextBlock.hasNext()) {
-        while (nextBlock.hasNext()) {
-          prefetched.add(nextBlock.next());
-        }
-        nextBlock = prefetchExecutionPlan.fetchNext(nRecords);
-      }
-      prefetchExecutionPlan.close();
-      context.setVariable(PREFETCHED_MATCH_ALIAS_PREFIX + alias, prefetched);
+      prefetchLimit = OperationHeapLimit.of(context, "MATCH prefetch of " + alias);
+      context.setVariable(PREFETCHED_MATCH_ALIAS_PREFIX + alias, prefetchLimit.materialize(new LocalResultSet(prefetchExecutionPlan)));
       executed = true;
     }
     return new InternalResultSet();
+  }
+
+  @Override
+  public void close() {
+    releasePrefetched();
+    super.close();
+  }
+
+  private void releasePrefetched() {
+    if (prefetchLimit != null)
+      prefetchLimit.release();
   }
 
   @Override

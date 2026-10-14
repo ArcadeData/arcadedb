@@ -111,4 +111,9 @@ public class SQLFunctionMovingAvg extends SQLAggregatedFunction {
   public boolean holdsEveryValue() {
     return true;
   }
+
+  @Override
+  public long getHeldValues() {
+    return values.size();
+  }
 }

@@ -47,6 +47,8 @@ public class FunctionAggregationContext implements AggregationContext, HeapBuffe
   private       OperationHeapLimit heapLimit;
   // THE DISTINCT VALUES ALREADY GIVEN TO THE FUNCTION - count(DISTINCT x) - OR NULL WHEN IT SEES EVERY VALUE (ISSUE #8889)
   private final Set<Object>      seen;
+  // WHAT A FUNCTION THAT KEEPS EVERY VALUE HOLDS, COUNTED AGAINST THE ELEMENT CAP (ISSUE #9793)
+  private       long             held;
 
   public FunctionAggregationContext(final SQLFunction function, final List<Expression> params, final boolean distinct) {
     this.seen = distinct ? new HashSet<>() : null;
@@ -93,10 +95,11 @@ public class FunctionAggregationContext implements AggregationContext, HeapBuffe
       return;
     }
 
-    final Object[] paramValues = new Object[params.size()];
-    for (int i = 0; i < paramValues.length; i++)
-      paramValues[i] = params.get(i).execute(next, context);
-    applyValues(paramValues, next, context);
+    applyArguments(next, paramValues, context);
+    // a DISTINCT call is charged through the set of distinct values it remembers, which share the function's own items
+    if (heapLimit != null && seen == null)
+      held = aggregatedFunction.chargeHeld(heapLimit, held,
+          paramValues.length == 1 ? paramValues[0] : new ArrayList<>(Arrays.asList(paramValues)));
   }
 
   /** The arguments of this aggregation, which {@link #apply} evaluates on every row. */

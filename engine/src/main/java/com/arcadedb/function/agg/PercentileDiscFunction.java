@@ -78,7 +78,7 @@ public class PercentileDiscFunction implements StatelessFunction, HeapBufferingF
         limit = OperationHeapLimit.of(context, "percentileDisc()");
         ownLimit = true;
       }
-      limit.chargeElement(number, 0);
+      limit.add(values.size(), number);
     }
     return null;
   }

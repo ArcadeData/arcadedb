@@ -23,7 +23,6 @@ import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.query.sql.parser.LocalResultSet;
 import com.arcadedb.query.sql.parser.Statement;
 
-import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -33,6 +32,8 @@ public class GlobalLetQueryStep extends AbstractExecutionStep {
   private final Identifier            varName;
   private final InternalExecutionPlan subExecutionPlan;
   boolean executed = false;
+  // WHAT THE VALUE HOLDS, UNDER BOTH HEAP LIMITS, FOR AS LONG AS THE EXECUTION CAN READ IT (ISSUE #9792)
+  private       OperationHeapLimit    valueLimit;
 
   public GlobalLetQueryStep(final Identifier varName, final Statement query, final CommandContext context,
       final List<String> scriptVars) {
@@ -64,17 +65,16 @@ public class GlobalLetQueryStep extends AbstractExecutionStep {
     if (executed)
       return;
 
-    context.setVariable(varName.getStringValue(), toList(new LocalResultSet(subExecutionPlan)));
+    valueLimit = OperationHeapLimit.of(context, "LET " + varName.getStringValue() + " subquery");
+    context.setVariable(varName.getStringValue(), valueLimit.materialize(new LocalResultSet(subExecutionPlan)));
     executed = true;
   }
 
-  private List<Result> toList(final LocalResultSet oLocalResultSet) {
-    final List<Result> result = new ArrayList<>();
-    while (oLocalResultSet.hasNext())
-      result.add(oLocalResultSet.next());
-
-    oLocalResultSet.close();
-    return result;
+  @Override
+  public void close() {
+    if (valueLimit != null)
+      valueLimit.release();
+    super.close();
   }
 
   @Override

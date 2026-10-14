@@ -23,7 +23,9 @@ import com.arcadedb.database.Database;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.HeapLimitExceededException;
 
+import java.util.ArrayList;
 import java.util.Collection;
+import java.util.List;
 
 /**
  * The limits on the heap one operation of a query holds in its buffer: the rows a sort or a join buffers, the keys a
@@ -156,12 +158,37 @@ public final class OperationHeapLimit {
   }
 
   /**
-   * Charges the estimated size of one more element held, with {@code overheadBytes} of structure around it, for an
-   * operation that enforces its element cap on its own.
+   * Charges the estimated size of one more element held, with {@code overheadBytes} of structure around it, WITHOUT the
+   * element cap. Only for an operation that enforces the cap on its own, on a count this operation cannot see: the groups
+   * of a parallel GROUP BY, which every worker charges for itself and whose cap is checked on the count of all of them.
+   * Anything that knows how many elements it holds calls {@link #add(long, Object, int)} instead (issue #9793).
    */
   public void chargeElement(final Object element, final int overheadBytes) {
     if (tracker != null)
       charge(estimate(element) + overheadBytes);
+  }
+
+  /**
+   * Pulls {@code source} to exhaustion into a list, each row accounted with {@link #add(long, Object)}, and closes it: the
+   * one way a step materialises a sub-plan, so none can hold one on the heap without the limits seeing it (issue #9792).
+   * When a limit fails the query, what was charged is given back and the source is closed before the exception leaves.
+   * The caller owns the charge of the list returned, and gives it back with {@link #release()} when it lets go of it.
+   */
+  public List<Result> materialize(final ResultSet source) {
+    final List<Result> rows = new ArrayList<>();
+    try {
+      while (source.hasNext()) {
+        final Result row = source.next();
+        rows.add(row);
+        add(rows.size(), row);
+      }
+    } catch (final RuntimeException e) {
+      release();
+      throw e;
+    } finally {
+      source.close();
+    }
+    return rows;
   }
 
   /**
