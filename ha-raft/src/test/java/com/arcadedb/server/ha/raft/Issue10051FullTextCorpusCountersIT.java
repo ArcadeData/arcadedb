@@ -146,5 +146,19 @@ class Issue10051FullTextCorpusCountersIT extends BaseRaftHATest {
           assertThat(metadata(serverIndex).getSumDocLength()).as("sumDocLength on server %d after the recompute", serverIndex)
               .isEqualTo(leaderLength);
         }));
+
+    // The same recompute run inside a transaction the caller opened: the schema save waits for the end of that transaction
+    final long epochBefore = metadata(follower).getCountersEpoch();
+    metadata(follower).applyCorpusDelta(2, 20);
+    leader.transaction(() -> leader.command("sql", "REBUILD INDEX `" + INDEX + "` WITH statsOnly = true"));
+    for (int i = 0; i < getServerCount(); i++)
+      waitForReplicationIsCompleted(i);
+
+    final int driftedFollower = follower;
+    Awaitility.await().atMost(30, TimeUnit.SECONDS).pollInterval(200, TimeUnit.MILLISECONDS).untilAsserted(() -> {
+      assertThat(metadata(driftedFollower).getCountersEpoch()).isGreaterThan(epochBefore);
+      assertThat(metadata(driftedFollower).getTotalDocs()).isEqualTo(leaderDocs);
+      assertThat(metadata(driftedFollower).getSumDocLength()).isEqualTo(leaderLength);
+    });
   }
 }

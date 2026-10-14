@@ -131,6 +131,28 @@ class Issue10051ReplicatedCorpusDeltaTest extends TestHelper {
     assertThat(metadata().getSumDocLength()).isEqualTo(DOCS * 3L + 20);
   }
 
+  /**
+   * A follower that restarts replays the Raft log from its snapshot marker, so it meets again entries it had applied before the
+   * restart, whose effect the counters it persisted at close already include. The pages are at the entry's version, so nothing
+   * advances and the counters are not moved a second time.
+   */
+  @Test
+  void replayingAnEntryAfterARestartDoesNotCountItAgainWhenThePersistedCountersHoldIt() throws Exception {
+    final WALFile.WALTransaction entry = entryAdvancingTheBucketPage();
+    final List<CorpusDelta> deltas = List.of(new CorpusDelta("Doc[content]", 4, 20));
+    ((DatabaseInternal) database).getTransactionManager().applyChanges(entry, Collections.emptyMap(), deltas, false);
+    assertThat(metadata().getTotalDocs()).isEqualTo(DOCS + 4L);
+
+    reopenDatabase();
+    assertThat(metadata().getTotalDocs()).as("the close persisted the counters with the entry in them").isEqualTo(DOCS + 4L);
+    assertThat(metadata().getSumDocLength()).isEqualTo(DOCS * 3L + 20);
+
+    ((DatabaseInternal) database).getTransactionManager().applyChanges(entry, Collections.emptyMap(), deltas, false);
+
+    assertThat(metadata().getTotalDocs()).isEqualTo(DOCS + 4L);
+    assertThat(metadata().getSumDocLength()).isEqualTo(DOCS * 3L + 20);
+  }
+
   @Test
   void anIndexThisNodeNoLongerHasIsIgnored() throws Exception {
     final WALFile.WALTransaction entry = entryAdvancingTheBucketPage();

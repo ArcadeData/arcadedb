@@ -866,7 +866,10 @@ public class TransactionManager {
    * the BM25 corpus counters of the full-text indexes it wrote (issue #10018). They are folded exactly like the bucket record
    * counters: only when the entry advanced a page, so a replay of an entry already applied does not count it twice.
    *
-   * @param corpusDeltas the net effect per logical full-text index, or null when the entry carries none
+   * @param corpusDeltas the net effect per logical full-text index, or null when the entry carries none. The WAL of the node
+   *                     itself carries none: after a crash the pages are restored by the recovery replay (which passes null)
+   *                     and the counters can lag them until the first search's drift check runs, which is how they already
+   *                     behaved. The persisted counters are a close-time estimate, not part of the log
    */
   public boolean applyChanges(final WALFile.WALTransaction tx, final Map<Integer, Integer> bucketRecordDelta,
       final List<FullTextCorpusDeltas.CorpusDelta> corpusDeltas, final boolean ignoreErrors) {

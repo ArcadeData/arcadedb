@@ -4494,7 +4494,8 @@ public class LocalSchema implements Schema {
   }
 
   private boolean hasUnsavedFullTextCounters() {
-    // Every bucket index of a logical index shares one metadata, so any of them answers for the lot
+    // getIndexes() holds the bucket-level indexes (the LSMTreeFullTextIndex wrappers) next to the logical TypeIndex objects, and
+    // every bucket index of a logical index shares one metadata, so any of them answers for the lot
     for (final Index index : getIndexes())
       if (index instanceof LSMTreeFullTextIndex ftIndex && ftIndex.getFullTextMetadata() != null
           && ftIndex.getFullTextMetadata().isCountersDirty())

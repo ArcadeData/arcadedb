@@ -305,6 +305,25 @@ class Issue10051Bm25CounterAdoptionTest extends TestHelper {
     });
   }
 
+  /** The rebuild of the statistics run inside a transaction the caller opened: the schema save waits for its end, not the change. */
+  @Test
+  void aStatsOnlyRebuildInsideAnOpenTransactionAdvancesAndPersistsTheEpoch() throws IOException {
+    createAndFill();
+    metadata().applyCorpusDelta(5, 20);
+
+    database.transaction(() -> database.command("sql", "REBUILD INDEX `Doc[content]` WITH statsOnly = true"));
+
+    assertThat(metadata().getCountersEpoch()).isEqualTo(1L);
+    assertThat(metadata().getTotalDocs()).isEqualTo(DOCS);
+    assertThat(metadata().getSumDocLength()).isEqualTo(DOCS * 3L);
+    final JSONObject schema = new JSONObject(Files.readString(schemaFile()));
+    final JSONObject indexes = schema.getJSONObject("types").getJSONObject("Doc").getJSONObject("indexes");
+    assertThat(indexes.keySet()).isNotEmpty().allSatisfy(name -> {
+      assertThat(indexes.getJSONObject(name).getLong("ft_countersEpoch")).isEqualTo(1L);
+      assertThat(indexes.getJSONObject(name).getLong("ft_totalDocs")).isEqualTo(DOCS);
+    });
+  }
+
   /** A repair made by a query repairs this node's copy only: nobody else is meant to adopt it. */
   @Test
   void aRepairMadeByASearchDoesNotAdvanceTheEpoch() {
