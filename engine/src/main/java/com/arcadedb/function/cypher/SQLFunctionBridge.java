@@ -116,9 +116,14 @@ public class SQLFunctionBridge implements StatelessFunction, HeapBufferingFuncti
 
   @Override
   public Object getAggregatedResult() {
-    if (ownLimit)
+    if (ownLimit) {
       // THE VALUES GO TO THE CALLER, WHICH HOLDS THEM FROM NOW ON
       limit.release();
+      limit = null;
+      ownLimit = false;
+    }
+    // THE FUNCTION STARTS OVER FROM NOTHING HELD IF IT IS FED AGAIN
+    held = 0L;
     final Object result = sqlFunction.getResult();
     // Cypher's sum() over no value is 0 (Neo4j), while the SQL function answers NULL since issue #9351. An explicit
     // sql.sum() keeps the SQL answer.

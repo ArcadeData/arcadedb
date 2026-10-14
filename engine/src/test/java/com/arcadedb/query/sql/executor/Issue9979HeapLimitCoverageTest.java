@@ -41,8 +41,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /**
  * Issue #9979 (#9830: #9792, #9793): every buffer that grows with the input is under both heap limits, the per-operation
  * element cap ({@code arcadedb.queryMaxHeapElementsAllowedPerOp}) and the heap budget all queries share
- * ({@code arcadedb.queryMaxHeapRAM}). A LET subquery, the visited set of a TRAVERSE, the MATCH prefetch and the SQL
- * aggregates that keep every value were invisible to the cap.
+ * ({@code arcadedb.queryMaxHeapRAM}). A LET subquery, the MATCH prefetch and the SQL aggregates that keep every value were
+ * invisible to the cap. The visited set of a TRAVERSE, a couple of primitives per record, is charged to the budget alone.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -59,8 +59,6 @@ class Issue9979HeapLimitCoverageTest extends TestHelper {
       // #9792
       "SELECT $x.size() AS s FROM D LET $x = (SELECT k FROM D) LIMIT 1",//
       "SELECT $x.size() AS s FROM D LET $x = (SELECT k FROM D WHERE k >= $parent.$current.k) WHERE k = 0",//
-      "SELECT count(*) AS c FROM (TRAVERSE out('R') FROM (SELECT FROM D WHERE k = 0) WHILE $depth < 5000)",//
-      "SELECT count(*) AS c FROM (TRAVERSE out('R') FROM (SELECT FROM D WHERE k = 0) WHILE $depth < 5000 STRATEGY BREADTH_FIRST)",//
       // #9793
       "SELECT list(k) FROM D",//
       "SELECT set(k) FROM D",//
@@ -92,6 +90,7 @@ class Issue9979HeapLimitCoverageTest extends TestHelper {
       "MATCH (d:D) RETURN count(DISTINCT d.k)",//
       // the same SQL aggregates, reached from openCypher
       "MATCH (d:D) RETURN sql.list(d.k)",//
+      "MATCH (d:D) RETURN d.g AS g, sql.list(d.k) AS l",//
       "MATCH (d:D) RETURN sql.mode(d.k)");
 
   /** The aggregates the statements above cover; a newly registered one that keeps every value must be added there. */
@@ -142,6 +141,15 @@ class Issue9979HeapLimitCoverageTest extends TestHelper {
     assertThat(single("SELECT count(*) AS c FROM (TRAVERSE out('R') FROM (SELECT FROM D WHERE k = 0) WHILE $depth < 5000)")
         .<Number>getProperty("c").intValue()).isEqualTo(RECORDS);
     assertThat(single("SELECT list(k) AS l FROM D").<List<?>>getProperty("l")).hasSize(RECORDS);
+    // one bridge per group, each counting its own values from zero
+    try (final ResultSet rs = database.query("opencypher", "MATCH (d:D) RETURN d.g AS g, sql.list(d.k) AS l")) {
+      int groups = 0;
+      while (rs.hasNext()) {
+        assertThat(rs.next().<List<?>>getProperty("l")).hasSize(RECORDS / 2);
+        ++groups;
+      }
+      assertThat(groups).isEqualTo(2);
+    }
   }
 
   /** The cap counts what a function holds, not what it is given: a set() of two distinct values over 4000 rows is fine. */
@@ -163,8 +171,7 @@ class Issue9979HeapLimitCoverageTest extends TestHelper {
     setCap(CAP);
     GlobalConfiguration.QUERY_MAX_HEAP_RAM.setValue(0L);
     for (final String sql : List.of("SELECT list(k) FROM D", "SELECT percentile(k, 0.5) FROM D",
-        "SELECT $x.size() AS s FROM D LET $x = (SELECT k FROM D) LIMIT 1",
-        "SELECT count(*) AS c FROM (TRAVERSE out('R') FROM (SELECT FROM D WHERE k = 0) WHILE $depth < 5000)"))
+        "SELECT $x.size() AS s FROM D LET $x = (SELECT k FROM D) LIMIT 1"))
       assertThatThrownBy(() -> drain("sql", sql)).as(sql).isInstanceOf(HeapLimitExceededException.class);
   }
 
@@ -189,6 +196,42 @@ class Issue9979HeapLimitCoverageTest extends TestHelper {
       assertThat(QueryHeapBudget.getReservedBytes()).isGreaterThan(baseline + RECORDS * 1_000L);
     }
     assertThat(QueryHeapBudget.getReservedBytes()).isLessThanOrEqualTo(baseline);
+  }
+
+  /**
+   * The visited set of a TRAVERSE is charged to the shared budget, not capped in number: a traversal reaching more records
+   * than the element cap runs, one that would take the budget past its limit fails, and gives back what it took.
+   */
+  @Test
+  void aTraverseVisitedSetIsChargedToTheBudgetNotCapped() {
+    createData(false);
+    setCap(CAP);
+    for (final String strategy : List.of("DEPTH_FIRST", "BREADTH_FIRST"))
+      assertThat(single("SELECT count(*) AS c FROM (TRAVERSE out('R') FROM (SELECT FROM D WHERE k = 0) WHILE $depth < 5000 STRATEGY "
+          + strategy + ")").<Number>getProperty("c").intValue()).as(strategy).isEqualTo(RECORDS);
+
+    // a hub with 80,000 leaves: about 2MB of visited entries breadth first, 11MB depth first, past a 1MB budget
+    final int leaves = 80_000;
+    database.command("sql", "CREATE VERTEX TYPE Hub");
+    database.command("sql", "CREATE VERTEX TYPE Leaf");
+    database.command("sql", "CREATE EDGE TYPE Spoke");
+    database.transaction(() -> {
+      final MutableVertex hub = database.newVertex("Hub").save();
+      for (int i = 0; i < leaves; i++)
+        hub.newEdge("Spoke", database.newVertex("Leaf").save());
+    });
+    final long baseline = QueryHeapBudget.getReservedBytes();
+    GlobalConfiguration.QUERY_MAX_HEAP_RAM.setValue(1L);
+    for (final String strategy : List.of("DEPTH_FIRST", "BREADTH_FIRST")) {
+      assertThatThrownBy(() -> drain("sql", "SELECT count(*) AS c FROM (TRAVERSE out('Spoke') FROM Hub STRATEGY " + strategy + ")"))
+          .as(strategy).hasMessageContaining(GlobalConfiguration.QUERY_MAX_HEAP_RAM.getKey());
+      assertThat(QueryHeapBudget.getReservedBytes()).as(strategy).isLessThanOrEqualTo(baseline);
+    }
+
+    GlobalConfiguration.QUERY_MAX_HEAP_RAM.setValue(256L);
+    for (final String strategy : List.of("DEPTH_FIRST", "BREADTH_FIRST"))
+      assertThat(single("SELECT count(*) AS c FROM (TRAVERSE out('Spoke') FROM Hub STRATEGY " + strategy + ")")
+          .<Number>getProperty("c").intValue()).as(strategy).isEqualTo(leaves + 1);
   }
 
   /** The prefetch a MATCH runs on a small root holds that root's records for the whole statement. */

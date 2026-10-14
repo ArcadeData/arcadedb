@@ -115,8 +115,29 @@ public class MaterializeRecordsStep extends AbstractExecutionStep {
     final PhysicalOrderRidBuffer buffer = new PhysicalOrderRidBuffer();
     // With a limit the count must be of distinct records, or a multi-value index returning one RID per key under-delivers
     final Set<RID> seen = limit > 0 ? new HashSet<>() : null;
+    if (heapLimit != null)
+      heapLimit.release();
     heapLimit = OperationHeapLimit.of(context, "record addresses", "MATERIALIZE RECORD ADDRESSES");
     final int entryBytes = seen != null ? ADDRESS_BYTES + SEEN_ENTRY_BYTES : ADDRESS_BYTES;
+    try {
+      drainInto(context, prevStep, guard, buffer, seen, entryBytes);
+    } catch (final RuntimeException e) {
+      // THE STATEMENT FAILS, POSSIBLY BEFORE ITS CALLER HOLDS A RESULT SET TO CLOSE: GIVE THE HEAP BACK NOW
+      heapLimit.release();
+      throw e;
+    }
+
+    // The upstream steps are done: free the index cursors now, before the first record is touched
+    prevStep.close();
+
+    buffer.sort();
+    slices = new ArrayList<>();
+    // The slices share the buffer's arrays, which stay reachable from them: one long per record, no copy
+    buffer.slices(Integer.MAX_VALUE, (bucketId, positions, from, to) -> slices.add(new Slice(bucketId, positions, from, to)));
+  }
+
+  private void drainInto(final CommandContext context, final ExecutionStepInternal prevStep, final WorkGuard guard,
+      final PhysicalOrderRidBuffer buffer, final Set<RID> seen, final int entryBytes) {
     while (limit <= 0 || buffer.size() < limit) {
       final ResultSet upstream = prevStep.syncPull(context, DEFAULT_FETCH_RECORDS_PER_PULL);
       if (!upstream.hasNext())
@@ -138,14 +159,6 @@ public class MaterializeRecordsStep extends AbstractExecutionStep {
         }
       }
     }
-
-    // The upstream steps are done: free the index cursors now, before the first record is touched
-    prevStep.close();
-
-    buffer.sort();
-    slices = new ArrayList<>();
-    // The slices share the buffer's arrays, which stay reachable from them: one long per record, no copy
-    buffer.slices(Integer.MAX_VALUE, (bucketId, positions, from, to) -> slices.add(new Slice(bucketId, positions, from, to)));
   }
 
   private static RID ridOf(final Result item) {
