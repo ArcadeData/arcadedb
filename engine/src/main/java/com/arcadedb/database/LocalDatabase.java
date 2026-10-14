@@ -3084,11 +3084,23 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    * as {@link #restoreSetting(String, Object)} already does under the same lock. Nothing that replicates or waits on
    * the replication. That keeps the lock order acyclic: the Raft state machine takes this lock holding no database lock,
    * and under it only {@code configurationFileLock}.
+   * <p>
+   * The per-database state derived from the configuration is re-derived here once {@code change} has stored the value,
+   * so a writer that only stores it - {@code set database setting} over HTTP and gRPC - leaves the open database running
+   * with it too, not only once reopened (issue #9949). If that fails, the previous value goes back before the error is
+   * rethrown, so the configuration never names a value the database is not running with.
    */
   public SettingChange changeSetting(final String key, final Runnable change) {
     synchronized (configurationApplyLock) {
       final Object previousValue = settingValue(key);
       change.run();
+      try {
+        configurationChanged();
+      } catch (final RuntimeException | Error e) {
+        configuration.setValue(key, previousValue);
+        configurationChanged();
+        throw e;
+      }
       return new SettingChange(key, previousValue, settingValue(key));
     }
   }

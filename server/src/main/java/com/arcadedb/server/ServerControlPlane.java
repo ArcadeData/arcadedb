@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.DocumentValidator;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.MaintenanceCoordinator;
@@ -1204,7 +1205,26 @@ public class ServerControlPlane {
     final String storedKey = storedKey(key);
     final LocalDatabase local = database.getEmbedded() instanceof LocalDatabase l ? l : null;
     final LocalDatabase.SettingChange change;
-    if (local != null)
+    final GlobalConfiguration setting = GlobalConfiguration.findByKey(storedKey);
+    if (local != null && (setting == GlobalConfiguration.DATE_IMPLEMENTATION
+        || setting == GlobalConfiguration.DATE_TIME_IMPLEMENTATION)) {
+      // The check ALTER DATABASE runs on the same setting (issue #9976), so this path cannot bypass it (issue #9949): a
+      // REGEXP on a DATE or DATETIME property that would match no value of the new class refuses the change before
+      // anything is stored. Checked and stored under the write lock, taken before the apply lock changeSetting takes
+      final Object coerced = coerceSetting(setting, value);
+      final Class<?> resolvedClass = coerced instanceof Class<?> c ? c : null;
+      final String described = "'" + storedKey + "' to '" + GlobalConfiguration.externalizeValue(coerced) + "'";
+      change = database.executeInWriteLock(() -> {
+        if (resolvedClass != null)
+          DocumentValidator.requireDateConstraintsSatisfiableUnder(database, described,
+              setting == GlobalConfiguration.DATE_IMPLEMENTATION ? resolvedClass : database.getSerializer().getDateImplementation(),
+              setting == GlobalConfiguration.DATE_TIME_IMPLEMENTATION ?
+                  resolvedClass :
+                  database.getSerializer().getDateTimeImplementation(), database.getSchema().getDateTimeFormat(),
+              database.getSchema().getDateFormat());
+        return local.changeSetting(storedKey, () -> applySetting(database.getConfiguration(), key, value));
+      });
+    } else if (local != null)
       change = local.changeSetting(storedKey, () -> applySetting(database.getConfiguration(), key, value));
     else {
       applySetting(database.getConfiguration(), key, value);
