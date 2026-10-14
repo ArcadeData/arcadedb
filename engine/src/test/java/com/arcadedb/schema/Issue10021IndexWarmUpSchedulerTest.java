@@ -135,6 +135,54 @@ class Issue10021IndexWarmUpSchedulerTest {
   }
 
   @Test
+  void closeInterruptsALoadInFlightAndWaitsForItToEnd() throws Exception {
+    final CountDownLatch started = new CountDownLatch(1);
+    final CountDownLatch interrupted = new CountDownLatch(1);
+    scheduler.request(List.of(new Task("loading", () -> {
+      started.countDown();
+      try {
+        new CountDownLatch(1).await(AWAIT_MS, TimeUnit.MILLISECONDS);
+      } catch (final InterruptedException e) {
+        interrupted.countDown();
+        Thread.currentThread().interrupt();
+        throw new IllegalStateException("interrupted by the close", e);
+      }
+    }), task("after")), 0);
+    assertThat(started.await(AWAIT_MS, TimeUnit.MILLISECONDS)).isTrue();
+
+    // The worker has ended when close returns, which is what lets the caller close the files it was reading
+    assertThat(scheduler.close(AWAIT_MS)).isTrue();
+
+    assertThat(interrupted.getCount()).as("the load was interrupted").isZero();
+    assertThat(ran).as("the rest of the batch never ran").isEmpty();
+    assertThat(scheduler.awaitIdle(AWAIT_MS)).isTrue();
+  }
+
+  @Test
+  void closeDoesNotHangOnALoadThatIgnoresTheInterrupt() throws Exception {
+    final CountDownLatch started = new CountDownLatch(1);
+    final CountDownLatch release = new CountDownLatch(1);
+    scheduler.request(List.of(new Task("stubborn", () -> {
+      started.countDown();
+      // A graph build inside JVector does not honour an interrupt: keep going until released
+      boolean released = false;
+      while (!released)
+        try {
+          released = release.await(AWAIT_MS, TimeUnit.MILLISECONDS);
+        } catch (final InterruptedException e) {
+          // ignored on purpose
+        }
+    })), 0);
+    assertThat(started.await(AWAIT_MS, TimeUnit.MILLISECONDS)).isTrue();
+
+    // Returns, reporting that the worker is still running: the bound, and not the load, decides when close gives up
+    assertThat(scheduler.close(1)).isFalse();
+
+    release.countDown();
+    assertThat(scheduler.awaitIdle(AWAIT_MS)).isTrue();
+  }
+
+  @Test
   void anEmptyRequestCancelsWhatWasWaiting() {
     scheduler.request(List.of(task("waiting")), NEVER);
     scheduler.request(List.of(), 0);

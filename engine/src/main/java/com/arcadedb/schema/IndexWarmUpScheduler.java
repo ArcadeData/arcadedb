@@ -60,6 +60,9 @@ final class IndexWarmUpScheduler {
   record Task(String name, Runnable warmUp) {
   }
 
+  /** How long {@link #close()} waits for a load in flight to end after interrupting it. */
+  static final long CLOSE_JOIN_MS = 5_000L;
+
   private final String databaseName;
   private final Object monitor = new Object();
 
@@ -145,8 +148,22 @@ final class IndexWarmUpScheduler {
     }
   }
 
-  /** Drops what is waiting, refuses further requests, and interrupts the thread so a load in flight ends early. */
+  /**
+   * Drops what is waiting, refuses further requests, interrupts the thread so a load in flight ends early, and waits for it to
+   * end for at most {@link #CLOSE_JOIN_MS}.
+   * <p>
+   * The wait is what lets the caller go on to close the files the warm-up reads. It is bounded because a load is not obliged to
+   * honour an interrupt (a graph build inside JVector does not): a thread that outlives the bound is left to finish on its own,
+   * and the index load path it is in is the same one a search thread racing a close is in, which already tolerates it.
+   */
   void close() {
+    close(CLOSE_JOIN_MS);
+  }
+
+  /**
+   * @return {@code true} when no worker is left running, {@code false} when it outlived {@code joinMs}
+   */
+  boolean close(final long joinMs) {
     final Thread toInterrupt;
     synchronized (monitor) {
       closed = true;
@@ -156,8 +173,19 @@ final class IndexWarmUpScheduler {
       toInterrupt = worker;
       monitor.notifyAll();
     }
-    if (toInterrupt != null)
-      toInterrupt.interrupt();
+    if (toInterrupt == null)
+      return true;
+
+    toInterrupt.interrupt();
+    // Never join the thread we are on: a task closing the schema it is warming would wait for itself
+    if (toInterrupt.equals(Thread.currentThread()))
+      return false;
+    try {
+      toInterrupt.join(Math.max(1L, joinMs));
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+    }
+    return !toInterrupt.isAlive();
   }
 
   private void runWorker() {
@@ -199,7 +227,7 @@ final class IndexWarmUpScheduler {
       Thread.currentThread().interrupt();
     } finally {
       synchronized (monitor) {
-        if (worker == Thread.currentThread())
+        if (Thread.currentThread().equals(worker))
           worker = null;
         running = false;
         monitor.notifyAll();
@@ -228,6 +256,13 @@ final class IndexWarmUpScheduler {
             task.name(), databaseName, e.toString());
         if (quiet)
           break;
+      } catch (final Error e) {
+        // An OutOfMemoryError from a graph load that does not fit ends the worker (the loop above is left, and the outer
+        // finally clears it), so say so: the next search loads the index instead, and nothing else would tell an operator why
+        LogManager.instance().log(this, Level.SEVERE,
+            "Warming up index '%s' of database '%s' after a schema reload failed with %s, the warm-up of the remaining indexes is "
+                + "abandoned and their first search will load them instead", task.name(), databaseName, e.toString());
+        throw e;
       }
     }
 

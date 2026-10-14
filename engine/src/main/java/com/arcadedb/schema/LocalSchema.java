@@ -809,10 +809,13 @@ public class LocalSchema implements Schema {
     // had something resident, plus the ones a previous reload already asked to warm and has not got to yet - re-created
     // twice before warm, they must not fall out of the chain. Read here, while the instances are still the published ones.
     final Set<String> namesToWarm;
+    // Read ONCE for the whole publication: the two decisions below (who to warm, and after how long) must agree, and the setting
+    // can be changed at any moment
+    final long warmUpDelayMs = warmUpDelayMs();
     if (rebuildingEverything || !stagedIndexMap.isEmpty()) {
       previousIndexes = Collections.newSetFromMap(new IdentityHashMap<>(indexMap.size()));
       previousIndexes.addAll(indexMap.values());
-      namesToWarm = indexesToWarm(previousIndexes);
+      namesToWarm = indexesToWarm(previousIndexes, warmUpDelayMs);
     } else {
       previousIndexes = null;
       namesToWarm = null;
@@ -923,7 +926,7 @@ public class LocalSchema implements Schema {
     // After the staging window closes, not before: the warm-up thread resolves components through the schema, and must not
     // do it while this publication still holds the window open
     if (namesToWarm != null)
-      requestWarmUpOf(namesToWarm);
+      requestWarmUpOf(namesToWarm, warmUpDelayMs);
   }
 
   /**
@@ -932,8 +935,8 @@ public class LocalSchema implements Schema {
    * not finished with. Empty when the warm-up is disabled, which is also what makes the reload of a database that is being
    * opened - where nothing was published before it - ask for nothing.
    */
-  private Set<String> indexesToWarm(final Collection<IndexInternal> previousIndexes) {
-    if (warmUpDelayMs() < 0)
+  private Set<String> indexesToWarm(final Collection<IndexInternal> previousIndexes, final long warmUpDelayMs) {
+    if (warmUpDelayMs < 0)
       return Collections.emptySet();
 
     Set<String> names = null;
@@ -944,6 +947,10 @@ public class LocalSchema implements Schema {
         names.add(index.getName());
       }
 
+    // Also asked of the scheduler even when nothing was warm: a reload that re-creates an index a previous reload had already queued
+    // finds an instance that is not warm (the queue has not run), and returning only the warm names would drop it from the chain.
+    // The empty set this can return is not a no-op either: requestWarmUpOf() hands the scheduler an empty list, which CANCELS
+    // whatever was waiting, and that is right when none of the queued names exists any more.
     final Set<String> unfinished = indexWarmUp.unfinishedNames();
     if (names == null)
       return unfinished;
@@ -952,8 +959,7 @@ public class LocalSchema implements Schema {
   }
 
   /** Schedules the warm-up of whatever {@link #indexMap} now serves under {@code names}. */
-  private void requestWarmUpOf(final Set<String> names) {
-    final long delayMs = warmUpDelayMs();
+  private void requestWarmUpOf(final Set<String> names, final long delayMs) {
     if (delayMs < 0)
       return;
 
@@ -2721,7 +2727,7 @@ public class LocalSchema implements Schema {
   }
 
   public void close() {
-    // Before anything is torn down: a warm-up still loading an index would read files this method is about to close
+    // First, and waiting (bounded) for a load in flight: it reads the index files, which the database closes right after this
     indexWarmUp.close();
     // An open that failed before the replay finished leaves the engines it deferred behind
     timeSeriesEnginesAwaitingReplay = null;
