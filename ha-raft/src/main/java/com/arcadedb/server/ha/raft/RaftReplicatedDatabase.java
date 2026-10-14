@@ -657,7 +657,15 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
           requireReplicationBuffer(tx);
           final TransactionContext.TransactionPhase1 phase1 = tx.commit1stPhase(true);
           if (phase1 != null) {
+            // Read before the commit concludes: the accumulator is released with the transaction
+            final FullTextCorpusDeltas corpusDeltas = FullTextCorpusDeltas.peek(tx);
             tx.commit2ndPhase(phase1);
+            // This WAL ships inside the SCHEMA_ENTRY, which carries no corpus deltas (a TX_ENTRY would): a follower would keep
+            // the token-length total of a document this transaction rewrote, and a document count cannot tell. The entry does
+            // carry the schema, and with it the leader's counters, which hold the deltas now: a newer epoch makes a follower
+            // adopt them (see FullTextIndexMetadata.adoptPersistedCounters). The session serializes the schema after this
+            if (corpusDeltas != null)
+              corpusDeltas.advanceEpochs();
             final byte[] wal = phase1.result.toByteArray();
             schemaWalBuffer.get().add(wal);
             schemaBucketDeltaBuffer.get().add(new HashMap<>(tx.getBucketRecordDelta()));

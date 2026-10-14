@@ -155,6 +155,18 @@ public final class FullTextCorpusDeltas {
   }
 
   /**
+   * Marks the counters of every index this transaction wrote as recomputed, so a node that already holds them adopts the
+   * persisted pair of the schema that follows (see {@link FullTextIndexMetadata#adoptPersistedCounters}). For a transaction whose
+   * WAL does not travel in a {@code TX_ENTRY}: one committed inside a schema session ships inside the {@code SCHEMA_ENTRY}, which
+   * carries no corpus deltas but does carry the schema, and with it the leader's counters. Called once the commit has applied
+   * the deltas, so the pair that is serialized already holds them.
+   */
+  public void advanceEpochs() {
+    for (final Entry e : entries)
+      e.metadata.advanceCountersEpoch();
+  }
+
+  /**
    * Applies what the transaction did, once its pages are published: called by the commit, on the node that ran it.
    * <p>
    * The pages are visible before the counters move, so a BM25 search running at that instant can score the new postings with the

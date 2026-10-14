@@ -19,6 +19,7 @@
 package com.arcadedb.index.fulltext;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.ConcurrentModificationException;
@@ -222,6 +223,26 @@ class Issue10051Bm25CountersAfterCommitTest extends TestHelper {
 
     assertThat(metadata().getTotalDocs()).isEqualTo(DOCS - 4L);
     assertThat(metadata().getSumDocLength()).isEqualTo((DOCS - 4L) * 3L);
+  }
+
+  /**
+   * A transaction whose WAL ships inside a schema entry carries no corpus deltas: it marks the counters of the indexes it wrote
+   * as recomputed instead, and the schema entry's counters then reach the followers.
+   */
+  @Test
+  void advancingTheEpochsMarksExactlyTheIndexesTheTransactionWrote() {
+    createAndFill();
+    assertThat(metadata().getCountersEpoch()).isZero();
+
+    database.begin();
+    database.command("sql", "INSERT INTO Doc SET content = 'alpha beta'");
+    final FullTextCorpusDeltas deltas = FullTextCorpusDeltas.peek(((DatabaseInternal) database).getTransaction());
+    assertThat(deltas).isNotNull();
+    deltas.advanceEpochs();
+    database.commit();
+
+    assertThat(metadata().getCountersEpoch()).isEqualTo(1L);
+    assertThat(metadata().getTotalDocs()).isEqualTo(DOCS + 1L);
   }
 
   /** The same scan, but the transaction is then rolled back: the scan result must describe the committed data only. */
