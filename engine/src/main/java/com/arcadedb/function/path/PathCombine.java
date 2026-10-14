@@ -30,7 +30,7 @@ import java.util.Collection;
  * <p>
  * The end node of {@code path1} must be the start node of {@code path2}; a {@code null} path leaves the other one as
  * the result. Every path is read in any shape {@link TraversalPath#of(Object)} reads - the path a {@code MATCH} binds, the
- * one a path procedure yields, the map or alternating list a client sends back - and the result is a
+ * one a path procedure yields, the map a client sends back - and the result is a
  * {@link TraversalPath}, which {@code nodes()}, {@code relationships()}, {@code length()} and the drivers read as one
  * (issues #9913, #10017). The single-argument form {@code path.combine([p1, p2, ...])} joins a list of paths in order.
  *
@@ -67,7 +67,6 @@ public class PathCombine extends AbstractPathFunction {
     if (arg == null)
       return null;
 
-    // one path given as the alternating list is a path, not a list of paths
     final TraversalPath single = TraversalPath.of(arg);
     if (single != null)
       return single;

@@ -93,19 +93,19 @@ public class TraversalPath {
   }
 
   /**
-   * Returns the path a value holds, whatever shape it holds it in, or {@code null} when the value is not a path.
+   * Returns the path a value holds, or {@code null} when the value is not a path.
    * <p>
    * {@code TraversalPath} is the one runtime path value: every Cypher path - a MATCH pattern, {@code shortestPath()}, a
-   * procedure's {@code path}, an {@code apoc.path.*} function - is one (issue #9913). Two other shapes still reach the
-   * path functions from outside the engine and are read the same way: the {@code {_type: "path", nodes, relationships}}
-   * map {@link #toMap()} writes, which is what a client that received a path and sends it back as a parameter holds,
-   * and the flat {@code [v0, e0, v1, ...]} list {@link #toAlternatingList()} writes. Their elements may be the records or
-   * their RIDs.
+   * procedure's {@code path}, an {@code apoc.path.*} function - is one (issue #9913). One other shape reaches the path
+   * functions from outside the engine and is read the same way: the {@code {_type: "path", nodes, relationships}} map
+   * {@link #toMap()} writes, which is what a client that received a path and sends it back as a parameter holds. Its
+   * elements may be the records or their RIDs. A list is never a path, even one that alternates nodes and relationships,
+   * exactly as {@code IS :: PATH} answers: it carries no marker that says it is one, and reading a one-element list of a
+   * node as a zero-length path would make {@code length([n])} answer instead of failing.
    * <p>
-   * A shape is a path only when it is one: {@code n} vertices and {@code n - 1} edges, each edge joining the two vertices
-   * beside it, in either direction. Anything else - a map without the marker, a list that does not alternate, a
-   * relationship that does not continue the path - answers {@code null}, so a caller can tell a path from a value that
-   * merely looks like one.
+   * The map is a path only when it is one: {@code n} nodes and {@code n - 1} relationships, each relationship joining the
+   * two nodes beside it, in either direction. Anything else answers {@code null}, so a caller can tell a path from a
+   * value that merely looks like one.
    */
   public static TraversalPath of(final Object value) {
     if (value instanceof TraversalPath path)
@@ -118,45 +118,36 @@ public class TraversalPath {
       return of(nodes, relationships);
     }
 
-    if (value instanceof List<?> list) {
-      // [v0, e0, v1, ..., vn]: an odd number of elements, the vertices at the even positions
-      if (list.size() % 2 == 0)
-        return null;
-      // one pass into the path's own lists: this is the shape every walk hands over, so it costs no intermediate copy
-      final ArrayList<Vertex> pathVertices = new ArrayList<>(list.size() / 2 + 1);
-      final ArrayList<Edge> pathEdges = new ArrayList<>(list.size() / 2);
-      for (int i = 0; i < list.size(); i++) {
-        if (i % 2 == 0) {
-          final Vertex vertex = asVertex(list.get(i));
-          if (vertex == null)
-            return null;
-          pathVertices.add(vertex);
-        } else {
-          final Edge edge = asEdge(list.get(i));
-          if (edge == null)
-            return null;
-          pathEdges.add(edge);
-        }
-      }
-      return joined(pathVertices, pathEdges) ? new TraversalPath(pathVertices, pathEdges) : null;
-    }
-
     return null;
   }
 
   /**
-   * Returns the path of the {@code [v0, e0, v1, ...]} elements a traversal walked. Unlike {@link #of(Object)}, the caller
-   * vouches for the elements being a path, so elements that are not one are a bug in the walk and raise rather than
-   * answer {@code null}.
+   * Returns the path of the {@code [v0, e0, v1, ...]} elements a traversal walked. The caller vouches for the elements
+   * being a path, so elements that are not one are a bug in the walk and raise rather than answer {@code null}.
    *
    * @throws IllegalStateException when the elements do not form a path
    */
   public static TraversalPath ofWalk(final List<?> elements) {
-    final TraversalPath path = of(elements);
-    if (path == null)
-      throw new IllegalStateException("The " + elements.size() + " elements walked do not form a path of alternating "
-          + "vertices and the edges joining them");
-    return path;
+    // [v0, e0, v1, ..., vn]: an odd number of elements, the vertices at the even positions. One pass into the path's own
+    // lists: this is the shape every walk hands over, so it costs no intermediate copy
+    if (elements.size() % 2 == 1) {
+      final ArrayList<Vertex> pathVertices = new ArrayList<>(elements.size() / 2 + 1);
+      final ArrayList<Edge> pathEdges = new ArrayList<>(elements.size() / 2);
+      boolean shaped = true;
+      for (int i = 0; i < elements.size() && shaped; i++) {
+        if (i % 2 == 0) {
+          final Vertex vertex = asVertex(elements.get(i));
+          shaped = vertex != null && pathVertices.add(vertex);
+        } else {
+          final Edge edge = asEdge(elements.get(i));
+          shaped = edge != null && pathEdges.add(edge);
+        }
+      }
+      if (shaped && joined(pathVertices, pathEdges))
+        return new TraversalPath(pathVertices, pathEdges);
+    }
+    throw new IllegalStateException("The " + elements.size() + " elements walked do not form a path of alternating "
+        + "vertices and the edges joining them");
   }
 
   /**
