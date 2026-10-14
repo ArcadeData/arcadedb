@@ -371,6 +371,11 @@ public interface DatabaseInternal extends Database {
 
   long getOpenedOn();
 
+  /**
+   * Saves the configuration. Under Raft HA this replicates EVERY setting this node holds in memory and its
+   * {@code configuration.json} does not, including one a concurrent statement put in force and has not submitted yet:
+   * a caller that changed one setting saves it with {@link #saveConfiguration(String)} instead (issue #9959).
+   */
   void saveConfiguration() throws IOException;
 
   /**

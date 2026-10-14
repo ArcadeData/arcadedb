@@ -59,6 +59,7 @@ class Issue9959PerSettingConfigurationEntryTest {
     @Override
     public void saveConfiguration(final String key) throws IOException {
       savedKey = key;
+      // Before the save, as the HA wrapper computes it: the save writes the file, after which nothing is pending
       submittedEntry = pendingConfigurationChange(key);
       super.saveConfiguration(key);
     }
@@ -119,8 +120,7 @@ class Issue9959PerSettingConfigurationEntryTest {
 
     final JSONObject entry = new JSONObject(database.pendingConfigurationChange(GlobalConfiguration.TYPE_DEFAULT_BUCKETS.getKey()));
     assertThat(entry.getJSONObject("configuration").keySet()).isEmpty();
-    assertThat(entry.getJSONArray("removed").length()).isEqualTo(1);
-    assertThat(entry.getJSONArray("removed").getString(0)).isEqualTo("typeDefaultBuckets");
+    assertThat(entry.getJSONArray("removed").toList()).containsExactly("typeDefaultBuckets");
   }
 
   @Test
