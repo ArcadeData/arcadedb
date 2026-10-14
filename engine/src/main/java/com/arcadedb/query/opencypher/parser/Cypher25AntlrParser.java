@@ -193,6 +193,8 @@ public class Cypher25AntlrParser {
       // USE can only name the database this parser belongs to (issue #9940). Checked here, where the database is known, and
       // on the tree, so a USE anywhere - a leading clause, before a braced query, inside a subquery - is reached. The walk
       // runs only for a query holding the USE keyword at all.
+      // No database only on DoWhen's read-only probe (new Cypher25AntlrParser().parse(q).isReadOnly()), which never executes
+      // the statement: every query that runs is parsed by CypherStatementCache, with its database, and is checked here
       if (database != null && containsToken(tokens, Cypher25Lexer.USE))
         checkUseClauses(statementContext, database.getName());
 
@@ -236,7 +238,7 @@ public class Cypher25AntlrParser {
       if (node instanceof Cypher25Parser.UseClauseContext use) {
         final String graph = CypherASTBuilder.useGraphName(use);
         if (!graph.equals(databaseName))
-          throw new CommandParsingException("FeatureNotImplemented: USE " + graph + " is not supported; a query can only USE "
+          throw new FeatureNotImplementedException("USE " + graph + " is not supported; a query can only USE "
               + "the database it runs against ('" + databaseName + "')");
         continue;
       }

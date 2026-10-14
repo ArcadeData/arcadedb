@@ -527,7 +527,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
    */
   static void rejectDirectedPredicate(final Cypher25Parser.LabelExpressionContext ctx) {
     if (ctx != null && ctx.IS() != null && "DIRECTED".equalsIgnoreCase(ctx.labelExpression4().getText()))
-      throw new CommandParsingException("FeatureNotImplemented: the directed predicate 'IS DIRECTED' is not supported (every "
+      throw new FeatureNotImplementedException("the directed predicate 'IS DIRECTED' is not supported (every "
           + "relationship is directed); to test a label named DIRECTED write ':DIRECTED' or 'IS `DIRECTED`'");
   }
 
@@ -666,7 +666,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
   @Override
   public CypherStatement visitWhen(final Cypher25Parser.WhenContext ctx) {
     if (!isWholeStatement(ctx))
-      throw new CommandParsingException("FeatureNotImplemented: a conditional query (WHEN ... THEN ... ELSE ...) is only "
+      throw new FeatureNotImplementedException("a conditional query (WHEN ... THEN ... ELSE ...) is only "
           + "supported as a whole statement, not inside a subquery");
 
     final List<Expression> conditions = new ArrayList<>(ctx.whenBranch().size());
@@ -677,7 +677,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       // Fail closed: a condition whose variables cannot all be listed (a subquery body, a pattern) would otherwise be
       // evaluated against a row that does not exist and quietly read as null
       if (!referenced.isComplete())
-        throw new CommandParsingException("FeatureNotImplemented: the condition of a conditional query must be an expression "
+        throw new FeatureNotImplementedException("the condition of a conditional query must be an expression "
             + "over parameters; a subquery or a pattern is not supported there");
       if (!referenced.getNames().isEmpty())
         throw new CommandParsingException("UndefinedVariable: the condition of a conditional query can read parameters only, not '"
@@ -725,7 +725,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     while (reference.graphReference() != null)
       reference = reference.graphReference();
     if (reference.symbolicAliasName() == null)
-      throw new CommandParsingException("FeatureNotImplemented: USE " + getOriginalText(reference)
+      throw new FeatureNotImplementedException("USE " + getOriginalText(reference)
           + " is not supported; a query can only USE the current database, by its name");
 
     final StringBuilder name = new StringBuilder();
@@ -791,7 +791,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
    */
   static void checkMatchMode(final Cypher25Parser.MatchModeContext ctx) {
     if (ctx != null && ctx.REPEATABLE() != null)
-      throw new CommandParsingException("FeatureNotImplemented: the " + spaced(ctx)
+      throw new FeatureNotImplementedException("the " + spaced(ctx)
           + " match mode is not supported; relationships are always matched with DIFFERENT RELATIONSHIPS semantics");
   }
 
@@ -1911,7 +1911,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       // selective prefix (ANY SHORTEST, ALL SHORTEST, SHORTEST k [GROUPS], ANY [k]) is refused: dropping it, as the
       // parser used to, returned every path instead of the ones it selects (issue #9940).
       if (!(ctx.pathPatternPrefix() instanceof Cypher25Parser.AllPathContext))
-        throw new CommandParsingException("FeatureNotImplemented: the " + spaced(ctx.pathPatternPrefix())
+        throw new FeatureNotImplementedException("the " + spaced(ctx.pathPatternPrefix())
             + " path search prefix is not supported; use shortestPath() or allShortestPaths() to select shortest paths");
       final Cypher25Parser.PathModeContext pm = ctx.pathPatternPrefix().getRuleContext(
           Cypher25Parser.PathModeContext.class, 0);
@@ -2126,12 +2126,12 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       final List<RelationshipPattern> outerRels) {
     final PathPattern inner = visitPattern(pCtx.pattern());
     if (inner instanceof ShortestPathPattern)
-      throw new CommandParsingException(
-          "FeatureNotImplemented: shortestPath() / allShortestPaths() inside a parenthesized path pattern is not supported");
+      throw new FeatureNotImplementedException(
+          "shortestPath() / allShortestPaths() inside a parenthesized path pattern is not supported");
     if (inner.hasPathVariable())
-      throw new CommandParsingException("FeatureNotImplemented: a path variable inside a parenthesized path pattern is not supported");
+      throw new FeatureNotImplementedException("a path variable inside a parenthesized path pattern is not supported");
     if (inner.getPathMode() != null)
-      throw new CommandParsingException("FeatureNotImplemented: a path mode inside a parenthesized path pattern is not supported");
+      throw new FeatureNotImplementedException("a path mode inside a parenthesized path pattern is not supported");
 
     final List<NodePattern> innerNodes = new ArrayList<>(inner.getNodes());
     if (pCtx.WHERE() != null) {
@@ -2164,12 +2164,12 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
 
     final String variable = left.getVariable() != null ? left.getVariable() : right.getVariable();
     if (left.getVariable() != null && right.getVariable() != null && !left.getVariable().equals(right.getVariable()))
-      throw new CommandParsingException("FeatureNotImplemented: the node patterns (" + left.getVariable() + ") and ("
+      throw new FeatureNotImplementedException("the node patterns (" + left.getVariable() + ") and ("
           + right.getVariable() + ") written next to each other around a parenthesized path are the same node under two "
           + "variables, which is not supported; use one variable for both");
     if (left.hasDynamicLabels() || right.hasDynamicLabels() || left.getPropertiesParameterName() != null
         || right.getPropertiesParameterName() != null || left.isLabelDisjunction() || right.isLabelDisjunction())
-      throw new CommandParsingException("FeatureNotImplemented: combining a dynamic label, a property-map parameter or a "
+      throw new FeatureNotImplementedException("combining a dynamic label, a property-map parameter or a "
           + "label disjunction with the constraints of the adjacent node of a parenthesized path is not supported");
 
     final List<String> labels = new ArrayList<>(left.getLabels());
@@ -2180,7 +2180,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     final Map<String, Object> properties = new LinkedHashMap<>(left.getProperties());
     for (final Map.Entry<String, Object> entry : right.getProperties().entrySet())
       if (properties.putIfAbsent(entry.getKey(), entry.getValue()) != null)
-        throw new CommandParsingException("FeatureNotImplemented: the property '" + entry.getKey()
+        throw new FeatureNotImplementedException("the property '" + entry.getKey()
             + "' is constrained by both node patterns written next to each other around a parenthesized path, which is not "
             + "supported; constrain it once");
 
@@ -2254,31 +2254,31 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     for (int i = 0; i < inner.getRelationshipCount(); i++) {
       final RelationshipPattern rel = inner.getRelationship(i);
       if (rel instanceof QuantifiedPathPattern)
-        throw new CommandParsingException(
-            "FeatureNotImplemented: nesting a quantified path pattern inside another one is not supported (issue #4531)");
+        throw new FeatureNotImplementedException(
+            "nesting a quantified path pattern inside another one is not supported (issue #4531)");
       if (rel.isVariableLength())
-        throw new CommandParsingException(
-            "FeatureNotImplemented: a variable-length relationship inside a quantified path pattern is not supported (issue #4531)");
+        throw new FeatureNotImplementedException(
+            "a variable-length relationship inside a quantified path pattern is not supported (issue #4531)");
     }
     if (inner.hasPathVariable())
-      throw new CommandParsingException(
-          "FeatureNotImplemented: a path variable inside a quantified path pattern is not supported (issue #4531)");
+      throw new FeatureNotImplementedException(
+          "a path variable inside a quantified path pattern is not supported (issue #4531)");
     // A whole-map parameter, (n $props), is not a set of equality predicates the per-repetition matcher
     // can check, and a dynamic $(expression) label resolves per row rather than per repetition. Both
     // would be silently dropped rather than applied, so name them instead.
     for (int i = 0; i < inner.getNodeCount(); i++) {
       final NodePattern node = inner.getNode(i);
       if (node.getPropertiesParameterName() != null)
-        throw new CommandParsingException(
-            "FeatureNotImplemented: a parameterised property map on a node inside a quantified path pattern is not supported (issue #4531)");
+        throw new FeatureNotImplementedException(
+            "a parameterised property map on a node inside a quantified path pattern is not supported (issue #4531)");
       if (node.hasDynamicLabels())
-        throw new CommandParsingException(
-            "FeatureNotImplemented: dynamic labels on a node inside a quantified path pattern are not supported (issue #4531)");
+        throw new FeatureNotImplementedException(
+            "dynamic labels on a node inside a quantified path pattern are not supported (issue #4531)");
     }
     for (int i = 0; i < inner.getRelationshipCount(); i++)
       if (inner.getRelationship(i).getPropertiesParameterName() != null)
-        throw new CommandParsingException(
-            "FeatureNotImplemented: a parameterised property map on a relationship inside a quantified path pattern is not supported (issue #4531)");
+        throw new FeatureNotImplementedException(
+            "a parameterised property map on a relationship inside a quantified path pattern is not supported (issue #4531)");
   }
 
   /**

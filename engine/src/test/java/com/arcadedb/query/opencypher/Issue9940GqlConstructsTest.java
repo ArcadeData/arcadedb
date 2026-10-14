@@ -516,6 +516,28 @@ class Issue9940GqlConstructsTest extends TestHelper {
   // 12. Top-level parenthesized path with a WHERE and no quantifier
 
   @Test
+  void juxtaposedNodesOfAParenthesizedPathThatCannotBeMergedAreRefused() {
+    // a node written next to a parenthesized path is the path's first node: it merges with it, or is refused by name
+    for (final String[] refused : new String[][] {
+        { "MATCH (a)((b)-[:KNOWS]->(c)) RETURN c.name AS n", "same node under two variables" },
+        { "MATCH (a:Person|Admin)((a)-[:KNOWS]->(c)) RETURN c.name AS n", "label disjunction" },
+        { "MATCH (a $props)((a)-[:KNOWS]->(c)) RETURN c.name AS n", "property-map parameter" },
+        { "MATCH (a {name:'A'})((a {name:'B'})-[:KNOWS]->(c)) RETURN c.name AS n", "constrained by both node patterns" } })
+      assertThatThrownBy(() -> rows(refused[0], Map.of("props", Map.of("name", "A")))).as(refused[0])
+          .isInstanceOf(Exception.class).hasMessageContaining(refused[1]);
+    // the constraints of both sides combine when they do not conflict
+    assertThat(column("MATCH (a:Person)((a {name:'A'})-[:KNOWS]->(c)) RETURN c.name AS n ORDER BY n", "n")).containsExactly("B", "D");
+  }
+
+  @Test
+  void aShortestPathIsNotTypedList() {
+    final Map<String, Object> row = rows("MATCH p = shortestPath((:Person {name:'A'})-[:KNOWS*]->(:Person {name:'C'})) "
+        + "RETURN p IS TYPED LIST<ANY> AS list, p IS TYPED PATH AS path").getFirst();
+    assertThat(row.get("list")).isEqualTo(false);
+    assertThat(row.get("path")).isEqualTo(true);
+  }
+
+  @Test
   void unquantifiedParenthesizedPathBindsSingleElements() {
     assertThat(column("MATCH ((a)-[:KNOWS]->(b) WHERE a.name = 'A') RETURN b.name AS n ORDER BY n", "n"))
         .containsExactly("B", "D");

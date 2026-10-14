@@ -18,7 +18,6 @@
  */
 package com.arcadedb.query.opencypher.parser;
 
-import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.OrderByClause;
 import com.arcadedb.query.opencypher.ast.ReturnClause;
@@ -68,7 +67,8 @@ class ClauseDispatcher {
     // USE names the graph to run against. Only the current database can be named: Cypher25AntlrParser refuses any other
     // name (it knows the database, this dispatcher does not), so a USE that reaches here selects what is selected already.
     // The graph reference is still resolved, so a form that names no graph by name is refused here too.
-    register(Cypher25Parser.ClauseContext::useClause, (ctx, builder, astBuilder) -> CypherASTBuilder.useGraphName(ctx.useClause()));
+    register(Cypher25Parser.ClauseContext::useClause,
+        (ctx, builder, astBuilder) -> CypherASTBuilder.useGraphName(ctx.useClause()));
   }
 
   /**
@@ -88,7 +88,7 @@ class ClauseDispatcher {
     }
     // A clause the grammar accepts and nothing executes must not vanish from the query: dropping it is how LET and USE used
     // to run as if they had not been written (issue #9940)
-    throw new CommandParsingException("FeatureNotImplemented: the clause '" + CypherASTBuilder.getOriginalText(ctx) + "' is not supported");
+    throw new FeatureNotImplementedException("the clause '" + CypherASTBuilder.getOriginalText(ctx) + "' is not supported");
   }
 
   /** How many clause alternatives have a handler, for the test that keeps it in step with the grammar. */

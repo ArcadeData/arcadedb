@@ -1882,7 +1882,7 @@ class CypherExpressionBuilder {
       // A construct the engine refuses by name is refused in a body too. Falling back to the text deferred it to the first
       // row, where the body is rewritten before it is parsed again, and the refusal came out as an unrelated syntax error
       // (issue #9940)
-      if (e.getMessage() != null && e.getMessage().startsWith("FeatureNotImplemented"))
+      if (e instanceof FeatureNotImplementedException)
         throw e;
       // The builder refusing a body it does not support is the case this fallback is for, and it is not news.
       LogManager.instance().log(CypherExpressionBuilder.class, Level.FINE,
