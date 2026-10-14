@@ -4579,6 +4579,16 @@ public class LSMVectorIndex implements Index, IndexInternal {
     return graphFile;
   }
 
+  /**
+   * @return where this index keeps its product quantization, or {@code null} when it is not PRODUCT-quantized - the
+   * same condition {@code loadPersistedGraphOrDecidePrefix()} uses to decide that a graph without usable PQ data must
+   * be rebuilt. For {@link LSMVectorIndexGraphSideFiles}, which has to archive the file with the graph it belongs to.
+   */
+  Path getProductQuantizationFilePath() {
+    final LSMVectorIndexPQFile pq = pqFile;
+    return metadata.quantizationType == VectorQuantizationType.PRODUCT && pq != null ? pq.getFilePath() : null;
+  }
+
   /** Test hook: behave as if the resident graph's persist never certified (issue #7260). */
   void forgetPersistedGraphSourceForTest() {
     persistedGraphSource = null;
