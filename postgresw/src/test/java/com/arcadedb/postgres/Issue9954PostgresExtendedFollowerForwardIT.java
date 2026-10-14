@@ -80,6 +80,15 @@ class Issue9954PostgresExtendedFollowerForwardIT extends BaseRaftHATest {
       assertThat(refused).as("the write must reach the forward, which refuses it").isInstanceOf(SQLException.class);
       assertThat(((SQLException) refused).getSQLState()).isEqualTo("40001");
       assertThat(refused.getMessage()).contains("The leader is server '" + getRaftPlugin(follower).getRaftHAServer().getLeaderName() + "'");
+
+      // The refusal leaves the connection usable: the next statement on it is answered
+      try (final PreparedStatement read = connection.prepareStatement("SELECT count(*) AS c FROM " + TYPE + " WHERE name = ?")) {
+        read.setString(1, "refused");
+        try (final java.sql.ResultSet rs = read.executeQuery()) {
+          assertThat(rs.next()).isTrue();
+          assertThat(rs.getLong("c")).isZero();
+        }
+      }
     } finally {
       restore.run();
     }
@@ -124,12 +133,21 @@ class Issue9954PostgresExtendedFollowerForwardIT extends BaseRaftHATest {
       statement.setString(1, "forwarded");
       statement.setInt(2, 42);
       statement.execute();
+      // A second forwarded write on the same connection: the first left no implicit transaction behind to trip it
+      statement.setString(1, "forwardedAgain");
+      statement.setInt(2, 43);
+      statement.execute();
     }
 
     try (final ResultSet rs = getServerDatabase(leader, getDatabaseName()).query("sql",
         "SELECT n FROM " + TYPE + " WHERE name = 'forwarded'")) {
       assertThat(rs.hasNext()).as("the forwarded write must be on the leader").isTrue();
       assertThat(rs.next().<Number>getProperty("n").intValue()).isEqualTo(42);
+    }
+    try (final ResultSet rs = getServerDatabase(leader, getDatabaseName()).query("sql",
+        "SELECT n FROM " + TYPE + " WHERE name = 'forwardedAgain'")) {
+      assertThat(rs.hasNext()).as("the second forwarded write must be on the leader").isTrue();
+      assertThat(rs.next().<Number>getProperty("n").intValue()).isEqualTo(43);
     }
   }
 
