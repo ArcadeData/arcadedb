@@ -122,11 +122,23 @@ public class TraversalPath {
       // [v0, e0, v1, ..., vn]: an odd number of elements, the vertices at the even positions
       if (list.size() % 2 == 0)
         return null;
-      final List<Object> nodes = new ArrayList<>(list.size() / 2 + 1);
-      final List<Object> relationships = new ArrayList<>(list.size() / 2);
-      for (int i = 0; i < list.size(); i++)
-        (i % 2 == 0 ? nodes : relationships).add(list.get(i));
-      return of(nodes, relationships);
+      // one pass into the path's own lists: this is the shape every walk hands over, so it costs no intermediate copy
+      final ArrayList<Vertex> pathVertices = new ArrayList<>(list.size() / 2 + 1);
+      final ArrayList<Edge> pathEdges = new ArrayList<>(list.size() / 2);
+      for (int i = 0; i < list.size(); i++) {
+        if (i % 2 == 0) {
+          final Vertex vertex = asVertex(list.get(i));
+          if (vertex == null)
+            return null;
+          pathVertices.add(vertex);
+        } else {
+          final Edge edge = asEdge(list.get(i));
+          if (edge == null)
+            return null;
+          pathEdges.add(edge);
+        }
+      }
+      return joined(pathVertices, pathEdges) ? new TraversalPath(pathVertices, pathEdges) : null;
     }
 
     return null;

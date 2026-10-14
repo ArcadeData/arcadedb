@@ -245,6 +245,36 @@ class Issue9913PathValueTest extends TestHelper {
     assertThat(TraversalPath.of(List.of(path.getVertices().get(0), path.getVertices().get(1)))).isNull();
     assertThat(TraversalPath.of(Map.of("_type", "path", "nodes", nodeRids.subList(0, 2), "relationships", relRids))).isNull();
     assertThat(TraversalPath.of(null)).isNull();
+
+    // the right counts, but A-[r0]->B listed between A and C: r0 does not join them
+    final List<Object> swapped = List.of(nodeRids.get(0), nodeRids.get(2), nodeRids.get(1));
+    assertThat(TraversalPath.of(Map.of("_type", "path", "nodes", swapped, "relationships", relRids))).isNull();
+    assertThat(TraversalPath.of(List.of(path.getVertices().get(0), path.getEdges().get(1), path.getVertices().get(1)))).isNull();
+  }
+
+  @Test
+  void yieldedPathMemberReadsAndMatchPathPropertyAccess() {
+    // a name the old map did not have answers null, as the map did
+    final Result row = single(ENDS + "CALL algo.dijkstra(a, c, 'ROAD', 'km') YIELD path RETURN path.weight AS w, path['other'] AS o");
+    assertThat(row.<Object>getProperty("w")).isNull();
+    assertThat(row.<Object>getProperty("o")).isNull();
+
+    // a path a MATCH pattern binds still refuses property access, as in Neo4j
+    assertThatThrownBy(() -> single("MATCH p = (:City {name: 'A'})-[:ROAD]->() RETURN p.nodes AS n"))
+        .hasMessageContaining("Property access on a path variable is not allowed");
+  }
+
+  @Test
+  void anAlternatingListIsNotAPathAndAZeroLengthShortestPathIs() {
+    final Result list = single("MATCH p = (a:City {name: 'A'})-[r:ROAD]->(b) RETURN [a, r, b] IS :: PATH AS isPath, p IS :: PATH AS p");
+    assertThat(list.<Boolean>getProperty("isPath")).isFalse();
+    assertThat(list.<Boolean>getProperty("p")).isTrue();
+
+    final Result self = single("MATCH path = shortestPath((a:City {name: 'A'})-[:ROAD*0..]->(b:City {name: 'A'})) "
+        + "RETURN length(path) AS len, size(nodes(path)) AS n, path");
+    assertThat(self.<Long>getProperty("len")).isEqualTo(0L);
+    assertThat(self.<Long>getProperty("n")).isEqualTo(1L);
+    assertThat(self.<Object>getProperty("path")).isInstanceOf(TraversalPath.class);
   }
 
   private void assertRoute(final Result row) {
