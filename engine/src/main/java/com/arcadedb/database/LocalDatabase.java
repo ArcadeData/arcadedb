@@ -1613,6 +1613,25 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   @Override
   public boolean updateRecordReportingVeto(final Record record) {
+    return updateRecord(record, false, false);
+  }
+
+  @Override
+  public boolean updateRecordWithEventsNoLock(final Record record, final boolean discardRecordAfter) {
+    return updateRecord(record, true, discardRecordAfter);
+  }
+
+  /**
+   * The one owner of an update's contract - preconditions, validation, the before/after-update events and the
+   * {@code updateRecord} statistic - shared by the synchronous update and the asynchronous one, the shape the delete
+   * already has in {@link #deleteRecordNoLock(Record)}. The asynchronous task used to re-implement the validation and
+   * the events around the bare page write and miss the statistic, so the metrics endpoint undercounted every
+   * asynchronous update (issue #9987).
+   *
+   * @param writeNow true for the asynchronous worker: no database read lock, and the record is written to its page
+   *                 now, inside the caller's transaction, rather than queued for the commit
+   */
+  private boolean updateRecord(final Record record, final boolean writeNow, final boolean discardRecordAfter) {
     if (record.getIdentity() == null)
       throw new IllegalArgumentException("Cannot update the record because it is not persistent");
 
@@ -1629,89 +1648,97 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       if (!((RecordEventsRegistry) document.getType().getEvents()).onBeforeUpdate(record))
         return false;
 
-    return executeInReadLock(() -> {
-      if (isTransactionActive()) {
-        // MARK THE RECORD FOR UPDATE IN TX AND DEFER THE SERIALIZATION AT COMMIT TIME. THIS SPEEDS UP CASES WHEN THE
-        // SAME RECORDS ARE UPDATE MULTIPLE TIME INSIDE
-        // THE SAME TX. THE MOST CLASSIC EXAMPLE IS INSERTING EDGES: THE RECORD CHUNK IS UPDATED EVERYTIME A NEW EDGE
-        // IS CREATED IN THE SAME CHUNK.
-        // THE PAGE IS EARLY LOADED IN TX CACHE TO USE THE PAGE MVCC IN CASE OF CONCURRENT OPERATIONS ON THE MODIFIED
-        // RECORD
-        try {
-          final TransactionContext tx = getTransaction();
-          // #7149: false means this transaction has already deleted the record, so there is nothing to write and
-          // nothing to index - the delete wins, and the index entries went with it. Returning here also keeps the
-          // after-update events from firing for a write that never happened.
-          // #8066: remembered before queueing, so a refused update takes back only what THIS call queued
-          final boolean alreadyQueued = tx.isUpdateQueued(record.getIdentity());
-          if (!tx.addUpdatedRecord(record))
-            return false;
+    if (writeNow)
+      return applyUpdate(record, true, discardRecordAfter);
+    return executeInReadLock(() -> applyUpdate(record, false, false));
+  }
 
-          if (record instanceof Document document) {
-            // UPDATE THE INDEX IN MEMORY BEFORE UPDATING THE PAGE
-            final List<IndexInternal> indexes = indexer.getInvolvedIndexes(document);
-            if (!indexes.isEmpty()) {
-              // UPDATE THE INDEXES TOO.
-              // #4935: when the same record is updated more than once in this tx, diff against the previous
-              // in-tx indexed state (snapshot below), not the committed buffer returned by
-              // getOriginalDocument() - the buffer stays frozen until commit because serialization is
-              // deferred, so diffing against it leaks a phantom index entry for every intermediate value.
-              // The snapshot holds ONLY the indexed property values (not a full detach of the document) to
-              // stay light on allocations for wide documents and bulk updates.
-              final RID rid = record.getIdentity();
-              final Document previous = tx.getLastIndexedSnapshot(rid);
-              final Document originalRecord = previous != null ? previous : getOriginalDocument(record);
-              // updateDocument returns a refreshed snapshot (built from the key values it already extracted
-              // for the diff) ONLY when an index actually changed: otherwise the previous diff source
-              // (committed buffer or an earlier snapshot) still describes the indexed state, and updates
-              // that touch only non-indexed properties pay no snapshot cost at all.
-              // #8066: same invariant as the create path (#7467) - a refused row leaves no trace. Without the undo the
-              // new key stays queued in the transaction's index changes and the chunk's commit dies naming the row
-              // the caller was already told was refused, discarding every row that was accepted.
-              final TransactionIndexContext indexChanges = tx.getIndexChanges();
-              indexChanges.armRecordUndo();
-              final Document refreshedSnapshot;
-              try {
-                refreshedSnapshot = indexer.updateDocument(originalRecord, document, indexes);
-              } catch (final RuntimeException | Error e) {
-                indexChanges.undoRecordChanges();
-                // The deferred write must not reach the commit either: it would store the refused values in a body
-                // no index entry describes. A record already queued by an earlier update keeps its queue entry,
-                // because the earlier update's indexed state is still what the index holds.
-                // (The page pinned and the off-page fingerprint recorded by addUpdatedRecord stay: the next update of
-                // the record overwrites them, so they are harmless.)
-                if (!alreadyQueued)
-                  tx.removeRecordFromCache(rid);
-                throw e;
-              } finally {
-                indexChanges.disarmRecordUndo();
-              }
-              if (refreshedSnapshot != null)
-                tx.setLastIndexedSnapshot(rid, refreshedSnapshot);
+  /**
+   * The write half of {@link #updateRecord(Record, boolean, boolean)}, after the before-update listeners let it through.
+   */
+  private boolean applyUpdate(final Record record, final boolean writeNow, final boolean discardRecordAfter) {
+    if (!writeNow && isTransactionActive()) {
+      // MARK THE RECORD FOR UPDATE IN TX AND DEFER THE SERIALIZATION AT COMMIT TIME. THIS SPEEDS UP CASES WHEN THE
+      // SAME RECORDS ARE UPDATE MULTIPLE TIME INSIDE
+      // THE SAME TX. THE MOST CLASSIC EXAMPLE IS INSERTING EDGES: THE RECORD CHUNK IS UPDATED EVERYTIME A NEW EDGE
+      // IS CREATED IN THE SAME CHUNK.
+      // THE PAGE IS EARLY LOADED IN TX CACHE TO USE THE PAGE MVCC IN CASE OF CONCURRENT OPERATIONS ON THE MODIFIED
+      // RECORD
+      try {
+        final TransactionContext tx = getTransaction();
+        // #7149: false means this transaction has already deleted the record, so there is nothing to write and
+        // nothing to index - the delete wins, and the index entries went with it. Returning here also keeps the
+        // after-update events from firing for a write that never happened.
+        // #8066: remembered before queueing, so a refused update takes back only what THIS call queued
+        final boolean alreadyQueued = tx.isUpdateQueued(record.getIdentity());
+        if (!tx.addUpdatedRecord(record))
+          return false;
+
+        if (record instanceof Document document) {
+          // UPDATE THE INDEX IN MEMORY BEFORE UPDATING THE PAGE
+          final List<IndexInternal> indexes = indexer.getInvolvedIndexes(document);
+          if (!indexes.isEmpty()) {
+            // UPDATE THE INDEXES TOO.
+            // #4935: when the same record is updated more than once in this tx, diff against the previous
+            // in-tx indexed state (snapshot below), not the committed buffer returned by
+            // getOriginalDocument() - the buffer stays frozen until commit because serialization is
+            // deferred, so diffing against it leaks a phantom index entry for every intermediate value.
+            // The snapshot holds ONLY the indexed property values (not a full detach of the document) to
+            // stay light on allocations for wide documents and bulk updates.
+            final RID rid = record.getIdentity();
+            final Document previous = tx.getLastIndexedSnapshot(rid);
+            final Document originalRecord = previous != null ? previous : getOriginalDocument(record);
+            // updateDocument returns a refreshed snapshot (built from the key values it already extracted
+            // for the diff) ONLY when an index actually changed: otherwise the previous diff source
+            // (committed buffer or an earlier snapshot) still describes the indexed state, and updates
+            // that touch only non-indexed properties pay no snapshot cost at all.
+            // #8066: same invariant as the create path (#7467) - a refused row leaves no trace. Without the undo the
+            // new key stays queued in the transaction's index changes and the chunk's commit dies naming the row
+            // the caller was already told was refused, discarding every row that was accepted.
+            final TransactionIndexContext indexChanges = tx.getIndexChanges();
+            indexChanges.armRecordUndo();
+            final Document refreshedSnapshot;
+            try {
+              refreshedSnapshot = indexer.updateDocument(originalRecord, document, indexes);
+            } catch (final RuntimeException | Error e) {
+              indexChanges.undoRecordChanges();
+              // The deferred write must not reach the commit either: it would store the refused values in a body
+              // no index entry describes. A record already queued by an earlier update keeps its queue entry,
+              // because the earlier update's indexed state is still what the index holds.
+              // (The page pinned and the off-page fingerprint recorded by addUpdatedRecord stay: the next update of
+              // the record overwrites them, so they are harmless.)
+              if (!alreadyQueued)
+                tx.removeRecordFromCache(rid);
+              throw e;
+            } finally {
+              indexChanges.disarmRecordUndo();
             }
+            if (refreshedSnapshot != null)
+              tx.setLastIndexedSnapshot(rid, refreshedSnapshot);
           }
-        } catch (final IOException e) {
-          throw new DatabaseOperationException("Error on update the record " + record.getIdentity() + " in " +
-              "transaction", e);
         }
-      } else
-        updateRecordNoLock(record, false);
+      } catch (final IOException e) {
+        throw new DatabaseOperationException("Error on update the record " + record.getIdentity() + " in " +
+            "transaction", e);
+      }
+    } else
+      updateRecordNoLock(record, discardRecordAfter);
 
-      // Counted HERE rather than before the branch (#7149): the statistic reports records this database actually
-      // updated, and the two ways out above that are not an update - a listener vetoing the write, and a write to a
-      // record this transaction already deleted - both leave without reaching it. Both also skip the after-update
-      // events right below, so the two stay in step.
-      stats.updateRecord.incrementAndGet();
-      // THE IN-TRANSACTION BRANCH DEFERS THE WRITE TO COMMIT AND NEVER REACHES updateRecordNoLock()
-      markModified();
+    // Counted HERE rather than before the branch (#7149): the statistic reports records this database actually
+    // updated, and the two ways out above that are not an update - a listener vetoing the write, and a write to a
+    // record this transaction already deleted - both leave without reaching it. Both also skip the after-update
+    // events right below, so the two stay in step. NOT in updateRecordNoLock(): the commit flushes every deferred
+    // update through it, so an update made in a transaction would be counted twice (#9987).
+    stats.updateRecord.incrementAndGet();
+    // THE IN-TRANSACTION BRANCH DEFERS THE WRITE TO COMMIT AND NEVER REACHES updateRecordNoLock()
+    markModified();
 
-      // INVOKE EVENT CALLBACKS
-      events.onAfterUpdate(record);
-      if (record instanceof Document document)
-        ((RecordEventsRegistry) document.getType().getEvents()).onAfterUpdate(record);
+    // INVOKE EVENT CALLBACKS
+    events.onAfterUpdate(record);
+    if (record instanceof Document document)
+      ((RecordEventsRegistry) document.getType().getEvents()).onAfterUpdate(record);
 
-      return true;
-    });
+    return true;
   }
 
   public Document getOriginalDocument(final Record record) {

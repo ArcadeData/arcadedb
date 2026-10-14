@@ -494,7 +494,9 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
         setCount(currentPage, count + 1);
         setValuesFreePosition(currentPage, keyValueFreePosition);
 
-        if (LogManager.instance().isDebugEnabled())
+        // GUARDED ON THE REAL LOG LEVEL, NOT ON isDebugEnabled() - A FLAG NOTHING IN THE ENGINE TURNS ON (#9967): THE
+        // Arrays.toString() ARGUMENTS ARE BUILT PER INDEX ENTRY
+        if (LogManager.instance().isLoggable(this, Level.FINE))
           LogManager.instance().log(this, Level.FINE, "Put entry %s=%s in index '%s' (page=%s countInPage=%d newPage=%s thread=%d)",
               Arrays.toString(keys), Arrays.toString(rids), componentName, currentPage.getPageId(), count + 1, newPage,
               Thread.currentThread().getId());

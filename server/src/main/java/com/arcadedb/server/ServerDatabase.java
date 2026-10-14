@@ -472,6 +472,11 @@ public class ServerDatabase implements DatabaseInternal {
   }
 
   @Override
+  public boolean updateRecordWithEventsNoLock(final Record record, final boolean discardRecordAfter) {
+    return current().updateRecordWithEventsNoLock(record, discardRecordAfter);
+  }
+
+  @Override
   public boolean deleteRecordNoLock(final Record record) {
     return current().deleteRecordNoLock(record);
   }

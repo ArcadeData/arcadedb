@@ -106,12 +106,19 @@ public class SQLStaticReflectiveFunction extends SQLFunctionAbstract {
   public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
       final CommandContext context) {
 
-    final Supplier<String> paramsPrettyPrint = () -> Arrays.stream(params).map(p -> p + " [ " + p.getClass().getName() + " ]")
+    // NULL-SAFE: THE DIAGNOSTIC IS EXACTLY THE PATH A NULL ARGUMENT REACHES, AND IT USED TO RAISE AN NPE OF ITS OWN (#9986)
+    final Supplier<String> paramsPrettyPrint = () -> Arrays.stream(params)
+        .map(p -> p + " [ " + (p == null ? "null" : p.getClass().getName()) + " ]")
         .collect(Collectors.joining(", ", "(", ")"));
 
     final Method method = pickMethod(params);
 
     if (method == null) {
+      // A null where every overload of this arity wants a primitive is SQL's NULL in, NULL out - math_abs(null) is
+      // null - not a missing function. It used to be invoked anyway and fail in Method.invoke, logging a SEVERE line
+      // per row on its way to the same null.
+      if (hasOverloadOfArity(params.length) && containsNull(params))
+        return null;
       throw new CommandParsingException("Unable to find a function for " + name + paramsPrettyPrint.get());
     }
 
@@ -138,7 +145,8 @@ public class SQLStaticReflectiveFunction extends SQLFunctionAbstract {
       if (params.length == parameterTypes.length) {
         boolean match = true;
         for (int i = 0; i < parameterTypes.length; i++) {
-          if (params[i] != null && !isAssignable(params[i].getClass(), parameterTypes[i])) {
+          // A NULL FITS ONLY A REFERENCE PARAMETER: Method.invoke CANNOT UNBOX IT INTO A PRIMITIVE
+          if (params[i] == null ? parameterTypes[i].isPrimitive() : !isAssignable(params[i].getClass(), parameterTypes[i])) {
             match = false;
             break;
           }
@@ -151,6 +159,20 @@ public class SQLStaticReflectiveFunction extends SQLFunctionAbstract {
     }
 
     return null;
+  }
+
+  private boolean hasOverloadOfArity(final int arity) {
+    for (final Method m : methods)
+      if (m.getParameterCount() == arity)
+        return true;
+    return false;
+  }
+
+  private static boolean containsNull(final Object[] params) {
+    for (final Object p : params)
+      if (p == null)
+        return true;
+    return false;
   }
 
   private static boolean isAssignable(final Class<?> iFromClass, final Class<?> iToClass) {
