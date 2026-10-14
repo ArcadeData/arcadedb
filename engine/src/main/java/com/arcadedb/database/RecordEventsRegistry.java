@@ -76,7 +76,8 @@ public class RecordEventsRegistry implements RecordEvents {
 
   /**
    * Called when the type owning this registry leaves the schema (dropped, or replaced by a schema reload): no read reaches
-   * its listeners any more, so they stop counting in the database's total. The listeners themselves are left in place.
+   * its listeners any more, so they stop counting in the database's total. The listeners themselves are left in place, and
+   * a listener registered afterwards through a reference to the retired type is not counted either: no read reaches it.
    */
   public void detachFromDatabase() {
     synchronized (changeLock) {
