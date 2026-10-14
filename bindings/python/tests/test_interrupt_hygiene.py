@@ -161,6 +161,36 @@ class TestRunInTransactionBeginHygiene:
         db.commit()
         assert _count(db) == 2
 
+    def test_a_failing_rollback_does_not_skip_the_levels_below_it(
+        self, db, monkeypatch
+    ):
+        db.begin()
+        db.new_document("R").set("k", "caller").save()
+
+        def opens_another_level_then_fails():
+            db.begin()
+            raise ValueError("boom")
+
+        real_rollback = Database.rollback
+        calls = []
+
+        def first_rollback_fails_after_popping(self):
+            real_rollback(self)
+            calls.append(1)
+            if len(calls) == 1:
+                raise ArcadeDBError("Failed to rollback transaction: boom")
+
+        monkeypatch.setattr(Database, "rollback", first_rollback_fails_after_popping)
+        with pytest.raises(ValueError):
+            db.run_in_transaction(opens_another_level_then_fails)
+        monkeypatch.undo()
+
+        assert len(calls) == 2
+        assert _depth(db) == 1
+        assert db.is_transaction_active() is True
+        db.commit()
+        assert _count(db) == 1
+
     def test_the_normal_path_still_commits_and_rolls_back(self, db):
         assert db.run_in_transaction(lambda: db.new_document("R").set("k", 1).save())
         assert db.is_transaction_active() is False

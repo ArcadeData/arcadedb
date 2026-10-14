@@ -514,14 +514,21 @@ class Database:
         refused (#9813) or pushed and was interrupted before it returned (#9970).
         """
         was_active, depth_before = mark
+        first_error = None
         # bounded by the levels found now, so a rollback that pops nothing
-        # cannot loop
+        # cannot loop; one that fails does not skip the levels below it
+        # (LocalDatabase.rollback() pops the level before rolling it back)
         for _ in range(self._java_db.getNestedTransactions() - depth_before):
             if not self.is_transaction_active():
                 break
-            self.rollback()
+            try:
+                self.rollback()
+            except Exception as e:
+                first_error = first_error or e
         if not was_active and self.is_transaction_active():
             self.rollback()
+        if first_error is not None:
+            raise first_error
 
     def _transaction_commit_mark(self):
         """The current transaction and its commit count, for _partially_committed."""
