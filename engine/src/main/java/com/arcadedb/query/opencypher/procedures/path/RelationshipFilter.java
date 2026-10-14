@@ -22,7 +22,13 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.procedures.ProcedureSchemaTypes;
 import com.arcadedb.schema.Schema;
 
-import java.util.*;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.StringJoiner;
 
 /**
  * The {@code relationshipFilter} of the {@code path.*} procedures, in APOC's syntax (issue #10025):

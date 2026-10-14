@@ -125,6 +125,8 @@ class PathFilterParsingTest {
         .hasMessage("path.test(): label filter entry 'City:*' uses '*' inside a compound label: '*' stands alone");
     assertThatThrownBy(() -> parseLabels(Map.of("a", 1)))
         .hasMessage("path.test(): labelFilter must be a string or a list of strings, got a map");
+    assertThatThrownBy(() -> parseLabels("City>"))
+        .hasMessageContaining("ends with a direction marker: a label filter's operator ('+', '-', '/' or '>') goes before the label");
     assertThatThrownBy(() -> parseLabels("Town"))
         .hasMessage("path.test(): node label 'Town' does not exist");
     assertThatThrownBy(() -> parseLabels("ROAD"))
