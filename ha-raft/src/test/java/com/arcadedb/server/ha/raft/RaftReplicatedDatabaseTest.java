@@ -19,6 +19,7 @@
 package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.CommandSQLParsingException;
@@ -33,6 +34,7 @@ import com.arcadedb.exception.TransactionException;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.server.ServerDatabase;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -45,6 +47,17 @@ class RaftReplicatedDatabaseTest {
   @Test
   void implementsDatabaseInternal() {
     assertThat(DatabaseInternal.class.isAssignableFrom(RaftReplicatedDatabase.class)).isTrue();
+  }
+
+  /**
+   * Issue #9959: {@code DatabaseInternal.saveConfiguration(String)} falls back to the whole-difference save, so a
+   * database class that saves the configuration and does not forward the keyed save would ship, under Raft HA, a change
+   * another statement has not submitted yet. Every one of them declares it.
+   */
+  @Test
+  void everyDatabaseThatSavesTheConfigurationDeclaresTheKeyedSave() throws NoSuchMethodException {
+    for (final Class<?> database : List.of(LocalDatabase.class, ServerDatabase.class, RaftReplicatedDatabase.class))
+      assertThat(database.getDeclaredMethod("saveConfiguration", String.class).getDeclaringClass()).isEqualTo(database);
   }
 
   @Test

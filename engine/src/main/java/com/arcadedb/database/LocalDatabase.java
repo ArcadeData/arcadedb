@@ -2996,6 +2996,16 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   }
 
   /**
+   * Saves the configuration after {@code key} changed (issue #9959). A database of its own writes the whole
+   * configuration to its file, as {@link #saveConfiguration()} does: there is nothing to replicate. The key matters to
+   * the Raft HA wrapper, which replicates the change to that setting alone.
+   */
+  @Override
+  public void saveConfiguration(final String key) throws IOException {
+    saveConfiguration();
+  }
+
+  /**
    * The settings this database holds in memory that its {@code configuration.json} does not hold yet, as a document
    * {@link #applyConfigurationChanges(String)} takes: {@code {"configuration": {changed settings}, "removed": [keys]}},
    * keys without the {@code arcadedb.} prefix as in the file. {@code null} when memory and file agree.
@@ -3006,18 +3016,41 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    * on every other change.
    */
   public String pendingConfigurationChanges() throws IOException {
+    return pendingConfigurationChanges(null);
+  }
+
+  /**
+   * The change to ONE setting this database holds in memory that its {@code configuration.json} does not hold yet, in
+   * the document {@link #pendingConfigurationChanges()} produces, {@code null} when memory and file agree on it.
+   * {@code key} is the setting's key as the configuration stores it ({@code arcadedb.} prefix included).
+   * <p>
+   * Issue #9959: what {@code ALTER DATABASE} and the "set database setting" command replicate under Raft HA. The whole
+   * difference between memory and file also holds what ANOTHER statement on this node has put in force and not
+   * submitted yet: shipped with this statement's entry, it was in force cluster-wide even when that statement's own save
+   * was then refused and the caller told nothing had changed.
+   */
+  public String pendingConfigurationChange(final String key) throws IOException {
+    // A declared setting under its declared key, the one the configuration stores it under, however the caller spelled it
+    final GlobalConfiguration setting = GlobalConfiguration.findByKey(key);
+    return pendingConfigurationChanges(ContextConfiguration.jsonKey(setting != null ? setting.getKey() : key));
+  }
+
+  /** The difference between memory and {@code configuration.json}, restricted to {@code onlyFileKey} when not null. */
+  private String pendingConfigurationChanges(final String onlyFileKey) throws IOException {
     final JSONObject saved = readSavedConfiguration().getJSONObject("configuration", new JSONObject());
     final JSONObject current = new JSONObject(configuration.toJSON()).getJSONObject("configuration", new JSONObject());
 
     final JSONObject changed = new JSONObject();
     for (final String key : current.keySet()) {
+      if (onlyFileKey != null && !onlyFileKey.equals(key))
+        continue;
       final Object value = current.get(key);
       if (!saved.has(key) || !String.valueOf(saved.get(key)).equals(String.valueOf(value)))
         changed.put(key, value);
     }
     final JSONArray removed = new JSONArray();
     for (final String key : saved.keySet())
-      if (!current.has(key))
+      if ((onlyFileKey == null || onlyFileKey.equals(key)) && !current.has(key))
         removed.put(key);
 
     if (changed.keySet().isEmpty() && removed.length() == 0)
