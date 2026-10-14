@@ -19,6 +19,7 @@
 package com.arcadedb.server.ha.raft.ratis;
 
 import com.arcadedb.log.LogManager;
+import org.apache.ratis.conf.Parameters;
 import org.apache.ratis.proto.RaftProtos.AppendEntriesRequestProto;
 import org.apache.ratis.proto.RaftProtos.InstallSnapshotRequestProto;
 import org.apache.ratis.proto.RaftProtos.RaftRpcRequestProto;
@@ -29,9 +30,9 @@ import org.apache.ratis.protocol.RaftPeerId;
 import org.apache.ratis.server.RaftServer;
 import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
 
+import java.io.IOException;
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.util.logging.Level;
 
@@ -63,7 +64,7 @@ public final class GuardedRaftServer {
 
   /**
    * Key under which {@code RaftHAServer} puts its {@link MisdirectedRequestListener} into the Ratis
-   * {@link org.apache.ratis.conf.Parameters}, where {@link FixedGrpcFactory} finds it.
+   * {@link Parameters}, where {@link FixedGrpcFactory} finds it.
    */
   public static final String MISDIRECTED_REQUEST_LISTENER_KEY = "arcadedb.raft.misdirectedRequestListener";
 
@@ -93,22 +94,21 @@ public final class GuardedRaftServer {
    * @param listener told about each refusal; {@code null} for none
    */
   public static RaftServer wrap(final RaftServer server, final MisdirectedRequestListener listener) {
-    final InvocationHandler handler = new InvocationHandler() {
-      @Override
-      public Object invoke(final Object proxy, final Method method, final Object[] args) throws Throwable {
-        if (args != null && args.length == 1) {
-          final RaftRpcRequestProto header = serverRequestOf(args[0]);
-          if (header != null) {
-            refuseIfMisdirected(server, method.getName(), header, listener);
-            if (args[0] instanceof StartLeaderElectionRequestProto request)
-              TransfereeCatchUp.beforeStartLeaderElection(server, request);
-          }
+    final InvocationHandler handler = (proxy, method, args) -> {
+      // Every server RPC takes its request as the one argument, and nothing else a RaftServer exposes takes a request
+      // proto, so the argument's type is what identifies the call - no method-name lookup on the hot path.
+      if (args != null && args.length == 1) {
+        final RaftRpcRequestProto header = serverRequestOf(args[0]);
+        if (header != null) {
+          refuseIfMisdirected(server, method.getName(), header, listener);
+          if (args[0] instanceof StartLeaderElectionRequestProto request)
+            TransfereeCatchUp.beforeStartLeaderElection(server, request);
         }
-        try {
-          return method.invoke(server, args);
-        } catch (final InvocationTargetException e) {
-          throw e.getCause();
-        }
+      }
+      try {
+        return method.invoke(server, args);
+      } catch (final InvocationTargetException e) {
+        throw e.getCause();
       }
     };
     return (RaftServer) Proxy.newProxyInstance(RaftServer.class.getClassLoader(), new Class<?>[] { RaftServer.class },
@@ -117,7 +117,7 @@ public final class GuardedRaftServer {
 
   /**
    * Throws {@link MisdirectedRaftRequestException} when {@code header} names a target peer other than
-   * {@code server}. Every Ratis server RPC declares an {@link java.io.IOException}, so throwing it straight out of the
+   * {@code server}. Every Ratis server RPC declares an {@link IOException}, so throwing it straight out of the
    * proxy reaches the gRPC service as itself, which sends it back to the sender - on the {@code appendEntries} stream
    * too, where a failed future would leave an out-of-order heartbeat with no reply at all.
    */

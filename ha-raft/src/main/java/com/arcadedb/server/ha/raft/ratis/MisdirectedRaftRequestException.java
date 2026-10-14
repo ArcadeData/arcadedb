@@ -41,7 +41,8 @@ public class MisdirectedRaftRequestException extends IOException {
 
   MisdirectedRaftRequestException(final String rpc, final RaftPeerId addressedTo, final RaftPeerId requestor,
       final RaftPeerId receiver) {
-    this("Raft " + rpc + " addressed to " + addressedTo + " (sent by " + requestor + ") reached " + receiver
+    this("Raft " + rpc + " addressed to " + addressedTo + " (sent by " + (requestor != null ? requestor : "<unknown>")
+        + ") reached " + receiver
         + " instead, and was refused: a node never answers for another peer. The address the sender holds for "
         + addressedTo + " leads to " + receiver + ", typically a host name that now resolves elsewhere (issue #10016)");
   }

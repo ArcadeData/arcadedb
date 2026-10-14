@@ -81,6 +81,7 @@ class Issue10016MisdirectedRaftRequestIT extends BaseRaftHATest {
     final RaftPeerId candidateId = candidateRaft.getLocalPeerId();
     final RaftPeerId addressedToId = getRaftPlugin(addressedTo).getRaftHAServer().getLocalPeerId();
     final long refusedBefore = candidateRaft.getMisdirectedRaftRequestsRefused();
+    final long resetsBefore = candidateRaft.getMisdirectedChannelResets();
 
     // A pre-vote, so a request that does get through cannot move any term and disturb the cluster.
     final RequestVoteRequestProto request = RequestVoteRequestProto.newBuilder()
@@ -103,6 +104,50 @@ class Issue10016MisdirectedRaftRequestIT extends BaseRaftHATest {
     }
 
     assertThat(candidateRaft.getMisdirectedRaftRequestsRefused()).isGreaterThan(refusedBefore);
+
+    // The candidate sent it to itself, so its own channel to that peer is the one pointing the wrong way: it is reset,
+    // off the gRPC thread, so the next request resolves the peer's name again.
+    Awaitility.await("the self-dialled channel is reset").atMost(10, TimeUnit.SECONDS)
+        .pollInterval(50, TimeUnit.MILLISECONDS).until(() -> candidateRaft.getMisdirectedChannelResets() > resetsBefore);
+  }
+
+  /**
+   * An id that is not a peer of this cluster is refused all the same, and repairs nothing: there is no channel to it.
+   * Ids from the wire share one throttling slot, so no sender can grow the node's bookkeeping.
+   */
+  @Test
+  void aRequestAddressedToAnUnknownPeerIsRefused() throws Exception {
+    final int leader = requireLeaderIndex();
+    final int receiver = firstFollowerOf(leader);
+    final RaftHAServer receiverRaft = getRaftPlugin(receiver).getRaftHAServer();
+    final RaftPeerId receiverId = receiverRaft.getLocalPeerId();
+    final long resetsBefore = receiverRaft.getMisdirectedChannelResets();
+
+    final ManagedChannel channel = channelTo(receiver);
+    try {
+      for (int i = 0; i < 20; i++) {
+        final RaftPeerId stranger = RaftPeerId.valueOf("stranger_" + i);
+        final RequestVoteRequestProto request = RequestVoteRequestProto.newBuilder()
+            .setServerRequest(header(receiverRaft, receiverId, stranger))
+            .setCandidateTerm(receiverRaft.getCurrentTerm() + 1)
+            .setCandidateLastEntry(TermIndexProto.getDefaultInstance())
+            .setPreVote(true)
+            .build();
+        try {
+          RaftServerProtocolServiceGrpc.newBlockingStub(channel).withDeadlineAfter(10, TimeUnit.SECONDS)
+              .requestVote(request);
+          fail("A vote request addressed to " + stranger + " was answered instead of being refused");
+        } catch (final StatusRuntimeException e) {
+          assertThat(e.getStatus().getDescription()).contains("addressed to " + stranger);
+        }
+      }
+    } finally {
+      channel.shutdownNow();
+    }
+
+    // Held for a moment: a reset would be queued on another thread.
+    Awaitility.await().during(1, TimeUnit.SECONDS).atMost(3, TimeUnit.SECONDS)
+        .until(() -> receiverRaft.getMisdirectedChannelResets() == resetsBefore);
   }
 
   /**
