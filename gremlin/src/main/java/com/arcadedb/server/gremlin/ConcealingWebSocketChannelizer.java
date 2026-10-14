@@ -196,8 +196,7 @@ public class ConcealingWebSocketChannelizer extends WebSocketChannelizer {
     else
       LogManager.instance().log(ConcealingWebSocketChannelizer.class, Level.WARNING, "Gremlin: %s %s", null,
           response.getStatus().getMessage(), response.getStatus().getAttributes().getOrDefault("stackTrace", ""));
-    return ResponseMessage.build(response.getRequestId()).code(response.getStatus().getCode())
-        .statusMessage(redirect != null ? ArcadeDBServer.CONCEALED_ERROR_MESSAGE + redirect : ArcadeDBServer.CONCEALED_ERROR_MESSAGE)
-        .create();
+    final String concealed = redirect != null ? ArcadeDBServer.CONCEALED_ERROR_MESSAGE + redirect : ArcadeDBServer.CONCEALED_ERROR_MESSAGE;
+    return ResponseMessage.build(response.getRequestId()).code(code).statusMessage(concealed).create();
   }
 }
