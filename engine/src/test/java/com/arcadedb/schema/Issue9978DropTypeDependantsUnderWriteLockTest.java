@@ -122,6 +122,21 @@ class Issue9978DropTypeDependantsUnderWriteLockTest extends TestHelper {
     assertThat(database.getSchema().existsType(DOC_SOURCE)).isFalse();
   }
 
+  /** A view defined through an alias stores the alias as its source: the type is still protected under both names. */
+  @Test
+  void aViewDefinedThroughAnAliasStillProtectsItsSourceType() {
+    database.command("sql", "ALTER TYPE " + DOC_SOURCE + " ALIASES Issue9978ViaAlias");
+    database.getSchema().buildMaterializedView().withName("Issue9978AliasView").withQuery("SELECT FROM Issue9978ViaAlias").create();
+
+    assertThat(dropOutcome(DOC_SOURCE)).isInstanceOf(SchemaException.class).hasMessageContaining("Issue9978AliasView");
+    assertThat(dropOutcome("Issue9978ViaAlias")).isInstanceOf(SchemaException.class).hasMessageContaining("Issue9978AliasView");
+    assertThat(database.getSchema().existsType(DOC_SOURCE)).isTrue();
+
+    database.getSchema().dropMaterializedView("Issue9978AliasView");
+    database.getSchema().dropType(DOC_SOURCE);
+    assertThat(database.getSchema().existsType(DOC_SOURCE)).isFalse();
+  }
+
   private Throwable dropOutcome(final String typeName) {
     try {
       database.getSchema().dropType(typeName);

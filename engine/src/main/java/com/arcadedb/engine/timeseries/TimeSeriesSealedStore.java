@@ -1612,6 +1612,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         if (entry.maxTimestamp < fromTs || entry.minTimestamp > toTs)
           continue;
 
+        // The per-block twin of the break above: this block alone cannot contribute, but the running maximum says an
+        // earlier one still can, so it is skipped rather than ending the walk
         if (results.size() >= need && entry.maxTimestamp < cutoffTs)
           continue;
 
