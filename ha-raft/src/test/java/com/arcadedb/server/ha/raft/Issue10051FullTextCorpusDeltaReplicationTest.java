@@ -172,6 +172,19 @@ class Issue10051FullTextCorpusDeltaReplicationTest {
     assertThat(RaftLogEntryCodec.decode(entry).corpusDeltas()).isEmpty();
   }
 
+  /** A section a later build adds after ours is skipped, and ours is still read. */
+  @Test
+  void anUnknownSectionAfterTheDeltasIsSkippedAndTheDeltasAreStillRead() {
+    final List<CorpusDelta> deltas = List.of(new CorpusDelta(INDEX, 3, 12));
+    final ByteString entry = RaftLogEntryCodec.appendExtensionSection(
+        RaftLogEntryCodec.encodeTxEntry("db", WAL, Collections.emptyMap(), 4711L, deltas), new byte[] { 0, 3, 'x', 'y', 'z' });
+
+    final RaftLogEntryCodec.DecodedEntry decoded = RaftLogEntryCodec.decode(entry);
+
+    assertThat(decoded.corpusDeltas()).containsExactlyElementsOf(deltas);
+    assertThat(decoded.txPreparedAtIndex()).isEqualTo(4711L);
+  }
+
   @Test
   void aTruncatedSectionIsRefusedAsCorruptionRatherThanAppliedWithoutDeltas() {
     // Named like ours but cut short after the count: applying the entry without them would leave this node's counters behind

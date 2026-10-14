@@ -1273,9 +1273,11 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
    * a transaction the index write is immediate, and so is the count.
    */
   private void countDocuments(final int numDocs, final int docLen) {
-    // Only an index write that has no open transaction to wait for is counted at once, which is exactly when LSMTreeIndex.put()
-    // writes the postings at once too. The postings a commit applies reach the underlying index through putReplay() and never
-    // come through here, so a commit that fails while applying them has counted nothing
+    // Counted at once only when the transaction is not in BEGUN, which is exactly when LSMTreeIndex.put() writes the postings at
+    // once too (see its status test). A record write is always BEGUN, and the postings a commit applies reach the underlying index
+    // through putReplay(), never through here, so a commit that fails while applying them has counted nothing. With no
+    // transaction at all the underlying put throws before this is reached. What is left is an index write issued while a commit is
+    // in its phases, which is applied immediately like the postings it goes with, and so is its count
     if (ftMetadata == null)
       return;
     final TransactionContext tx = underlyingIndex.getMutableIndex().getDatabase().getTransaction();

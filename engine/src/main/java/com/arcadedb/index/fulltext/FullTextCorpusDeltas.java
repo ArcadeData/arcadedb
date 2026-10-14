@@ -169,15 +169,17 @@ public final class FullTextCorpusDeltas {
    */
   public static void applyReplicated(final Schema schema, final List<CorpusDelta> deltas) {
     for (final CorpusDelta delta : deltas) {
-      final FullTextIndexMetadata metadata = metadataOf(schema, delta.indexName());
-      if (metadata == null)
-        continue;
+      FullTextIndexMetadata metadata = null;
       try {
-        metadata.applyCorpusDelta(delta.docs(), delta.length());
+        metadata = metadataOf(schema, delta.indexName());
+        if (metadata != null)
+          metadata.applyCorpusDelta(delta.docs(), delta.length());
       } catch (final RuntimeException e) {
-        // A replicated transaction is not worth failing over the counters, but a node that skipped a delta has drifted from the
-        // rest of the cluster: the next search checks them against the live data
-        metadata.requireRescan();
+        // A replicated transaction is not worth failing over the counters, whatever the lookup or the application raised. A node
+        // that skipped a delta has drifted from the rest of the cluster, though: the next search checks its counters against the
+        // live data (when the lookup itself failed there is no metadata to arm, and the schema reload that follows repairs it)
+        if (metadata != null)
+          metadata.requireRescan();
         LogManager.instance().log(FullTextCorpusDeltas.class, Level.WARNING,
             "Cannot apply the BM25 corpus counters of full-text index '%s' carried by a replicated transaction", e,
             delta.indexName());
