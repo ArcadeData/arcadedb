@@ -211,6 +211,11 @@ public class LSMVectorIndexGraphManifest {
     return path;
   }
 
+  /** Where the ordinal map this manifest owns lives, whether or not it exists. */
+  Path getOrdinalMapFilePath() {
+    return ordinalMap.getFilePath();
+  }
+
   public boolean exists() {
     return Files.exists(path);
   }
