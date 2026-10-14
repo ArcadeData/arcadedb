@@ -124,6 +124,17 @@ class Issue9965InsertFromSelectHonoursProjectionTest extends TestHelper {
   }
 
   @Test
+  void aQueryVariableIsNotStoredAsAProperty() {
+    try (final ResultSet rs = database.query("sql", "SELECT *, $a FROM S LET $a = 5")) {
+      assertThat(rs.next().getPropertyNames()).contains("$a");
+    }
+    database.transaction(() -> database.command("sql", "INSERT INTO T FROM SELECT *, $a, $a AS a FROM S LET $a = 5"));
+    final Document copy = single("SELECT FROM T");
+    assertThat(copy.getPropertyNames()).containsExactlyInAnyOrder("pub", "secret", "n", "a");
+    assertThat(copy.getInteger("a")).isEqualTo(5);
+  }
+
+  @Test
   void aContentOnlyRowIsCopiedAsBefore() {
     database.transaction(() -> database.command("sql", "INSERT INTO T FROM SELECT pub FROM S"));
     assertThat(single("SELECT FROM T").toMap(false)).containsOnly(Map.entry("pub", "p"));
