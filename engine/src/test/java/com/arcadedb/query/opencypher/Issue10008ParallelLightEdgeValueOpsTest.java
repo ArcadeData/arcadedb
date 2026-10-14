@@ -233,6 +233,10 @@ class Issue10008ParallelLightEdgeValueOpsTest extends TestHelper {
           cases.add(Arguments.of(fixture, lightweight, "MATCH (a:P {name: 'a'})-[r:K]->(b:P) DETACH DELETE r, b", 1L));
         cases.add(Arguments.of(fixture, lightweight,
             "MATCH (a:P {name: 'a'})-[r:K]->(:P) WITH a, collect(r) AS rs FOREACH (x IN rs | DETACH DELETE x, a)", 1L));
+        // both endpoints of the twins detached by one row: the second DETACH finds the twins gone with the first
+        cases.add(Arguments.of(fixture, lightweight, "MATCH (a:P {name: 'a'}), (b:P {name: 'b'}) DETACH DELETE a, b", 2L));
+        cases.add(Arguments.of(fixture, lightweight, "MATCH (a:P {name: 'a'})-[r:K]-(b:P) DETACH DELETE r, a, b",
+            fixture == Fixture.TWO_LOOPS ? 1L : 2L));
       }
     return cases.stream();
   }

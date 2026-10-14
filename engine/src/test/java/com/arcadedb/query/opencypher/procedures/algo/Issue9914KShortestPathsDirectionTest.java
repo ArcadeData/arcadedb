@@ -126,6 +126,21 @@ class Issue9914KShortestPathsDirectionTest extends TestHelper {
   }
 
   @Test
+  void edgeCases() {
+    reporterGraph();
+    // the start is the end: one path, no relationship, weight 0
+    final List<Result> self = kShortest("A", "A", 3, "");
+    assertThat(self).hasSize(1);
+    assertThat(self.get(0).<Number>getProperty("weight").doubleValue()).isZero();
+    // more paths asked than exist: as many as exist
+    assertThat(kShortest("A", "C", 50, "")).hasSize(1);
+    // a direction and a type filter together
+    assertThat(kShortest("B", "A", 3, ", 'IN'")).hasSize(1);
+    assertThat(kShortest("B", "C", 3, ", 'IN'")).hasSize(1);
+    assertThat(kShortest("C", "B", 3, ", 'IN'")).isEmpty();
+  }
+
+  @Test
   @SuppressWarnings("unchecked")
   void lightweightEdgesAreWalkedAndReported() {
     database.transaction(() -> {
