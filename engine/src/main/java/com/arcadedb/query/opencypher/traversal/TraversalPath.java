@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher.traversal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.LightEdgeRID;
 import com.arcadedb.graph.Vertex;
@@ -202,17 +203,27 @@ public class TraversalPath {
   private static Vertex asVertex(final Object value) {
     if (value instanceof Vertex vertex)
       return vertex;
-    if (value instanceof Identifiable identifiable && !(value instanceof Document))
-      return identifiable.getRecord() instanceof Vertex vertex ? vertex : null;
-    return null;
+    return value instanceof Identifiable identifiable && !(value instanceof Document)
+        && load(identifiable) instanceof Vertex vertex ? vertex : null;
   }
 
   private static Edge asEdge(final Object value) {
     if (value instanceof Edge edge)
       return edge;
-    if (value instanceof Identifiable identifiable && !(value instanceof Document))
-      return identifiable.getRecord() instanceof Edge edge ? edge : null;
-    return null;
+    return value instanceof Identifiable identifiable && !(value instanceof Document)
+        && load(identifiable) instanceof Edge edge ? edge : null;
+  }
+
+  /**
+   * The record a RID a client sent points to, or null when there is none: a path map naming a record that was deleted,
+   * or never existed, is not a path, which the caller reports as a type error rather than a RecordNotFoundException.
+   */
+  private static Object load(final Identifiable identifiable) {
+    try {
+      return identifiable.getRecord();
+    } catch (final RecordNotFoundException e) {
+      return null;
+    }
   }
 
   /**
