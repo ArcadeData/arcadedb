@@ -52,6 +52,16 @@ public class MutableEmbeddedDocument extends MutableDocument implements Embedded
   }
 
   @Override
+  public boolean saveReportingVeto() {
+    return ((MutableDocument) modifier.getOwner()).saveReportingVeto();
+  }
+
+  @Override
+  public boolean saveReportingVeto(final String bucketName) {
+    return ((MutableDocument) modifier.getOwner()).saveReportingVeto(bucketName);
+  }
+
+  @Override
   public void reload() {
     modifier.getOwner().reload();
   }

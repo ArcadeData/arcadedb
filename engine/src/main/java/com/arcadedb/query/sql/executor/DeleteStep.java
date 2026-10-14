@@ -18,10 +18,16 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.TimeoutException;
 
+import java.util.NoSuchElementException;
+
 /**
- * Deletes records coming from upstream steps
+ * Deletes records coming from upstream steps. Only the rows the engine actually deleted are passed on: a delete a
+ * {@code BeforeRecordDeleteListener} vetoed is dropped here, so the {@link CountStep} after this step - the count SQL, the Postgres
+ * wire and the HTTP API reply - counts deletions rather than candidates, and {@code RETURN BEFORE} returns only the records that are
+ * gone (issue #9974). A row that is not a record (nothing to delete) is passed on as it always was.
  *
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */
@@ -33,27 +39,60 @@ public class DeleteStep extends AbstractExecutionStep {
 
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
-    final ResultSet upstream = getPrev().syncPull(context, nRecords);
+    final ExecutionStepInternal prevStep = checkForPrevious();
+    final DatabaseInternal database = context.getDatabase();
     return new ResultSet() {
+      private ResultSet upstream = prevStep.syncPull(context, nRecords);
+      private Result    nextItem;
+      private boolean   finished;
+      private int       fetched;
+
+      /**
+       * A batch whose every row was vetoed must not end the stream: the consumers stop at the first empty pull, so the next batch
+       * is pulled here instead, as {@link FilterStep} does.
+       */
+      private void fetchNextItem() {
+        while (nextItem == null && !finished) {
+          while (!upstream.hasNext()) {
+            if (fetched > 0) {
+              // this pull already returned rows: an empty batch here is a regular end of batch, the consumer pulls again
+              finished = true;
+              return;
+            }
+            upstream = prevStep.syncPull(context, nRecords);
+            if (!upstream.hasNext()) {
+              finished = true;
+              return;
+            }
+          }
+
+          final Result result = upstream.next();
+          final long begin = context.isProfiling() ? System.nanoTime() : 0;
+          try {
+            if (!result.isElement() || database.deleteRecordReportingVeto(result.getElement().get()))
+              nextItem = result;
+          } finally {
+            if (context.isProfiling())
+              cost += System.nanoTime() - begin;
+          }
+        }
+      }
+
       @Override
       public boolean hasNext() {
-        return upstream.hasNext();
+        if (nextItem == null)
+          fetchNextItem();
+        return nextItem != null;
       }
 
       @Override
       public Result next() {
-        final Result result = upstream.next();
-        final long begin = context.isProfiling() ? System.nanoTime() : 0;
-        try {
-          if (result.isElement()) {
-            context.getDatabase().deleteRecord(result.getElement().get());
-          }
-          return result;
-        } finally {
-          if (context.isProfiling()) {
-            cost += System.nanoTime() - begin;
-          }
-        }
+        if (!hasNext())
+          throw new NoSuchElementException();
+        final Result result = nextItem;
+        nextItem = null;
+        fetched++;
+        return result;
       }
 
       @Override

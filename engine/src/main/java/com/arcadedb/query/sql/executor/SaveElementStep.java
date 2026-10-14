@@ -51,6 +51,7 @@ import java.time.ZoneId;
 import java.util.Arrays;
 import java.util.Date;
 import java.util.List;
+import java.util.NoSuchElementException;
 import java.util.logging.Level;
 
 /**
@@ -92,9 +93,14 @@ public class SaveElementStep extends AbstractExecutionStep {
     this.skipDuplicateKey = skipDuplicateKey;
   }
 
+  /**
+   * Only the rows the engine actually wrote are passed on: a create or an update a {@code BeforeRecordCreateListener} /
+   * {@code BeforeRecordUpdateListener} vetoed is dropped here, so the {@link CountStep} of an {@code UPDATE} counts the records it
+   * changed rather than the ones it matched, and an {@code INSERT} does not return a record that was never created (issue #9974).
+   */
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
-    final ResultSet upstream = getPrev().syncPull(context, nRecords);
+    final ExecutionStepInternal prevStep = checkForPrevious();
     return new ResultSet() {
       // the undeclared-key policy, read once per execution instead of once per inserted row (issue #9365)
       private final boolean   rejectUndeclared = TimeSeriesGateway.rejectsUndeclaredKeys(context.getDatabase());
@@ -104,14 +110,54 @@ public class SaveElementStep extends AbstractExecutionStep {
       private String          cachedTypeName;
       private List<TypeIndex> cachedUniqueIndexes;
 
+      private ResultSet upstream = prevStep.syncPull(context, nRecords);
+      private Result    nextItem;
+      private boolean   finished;
+      private int       fetched;
+
+      /**
+       * A batch whose every row was vetoed must not end the stream: the consumers stop at the first empty pull, so the next batch
+       * is pulled here instead, as {@link FilterStep} does.
+       */
+      private void fetchNextItem() {
+        while (nextItem == null && !finished) {
+          while (!upstream.hasNext()) {
+            if (fetched > 0) {
+              // this pull already returned rows: an empty batch here is a regular end of batch, the consumer pulls again
+              finished = true;
+              return;
+            }
+            upstream = prevStep.syncPull(context, nRecords);
+            if (!upstream.hasNext()) {
+              finished = true;
+              return;
+            }
+          }
+          nextItem = save(upstream.next());
+        }
+      }
+
       @Override
       public boolean hasNext() {
-        return upstream.hasNext();
+        if (nextItem == null)
+          fetchNextItem();
+        return nextItem != null;
       }
 
       @Override
       public Result next() {
-        final Result result = upstream.next();
+        if (!hasNext())
+          throw new NoSuchElementException();
+        final Result result = nextItem;
+        nextItem = null;
+        fetched++;
+        return result;
+      }
+
+      /**
+       * @return the row to pass on, {@code null} when a listener vetoed the write
+       */
+      private Result save(final Result result) {
         if (result != null && result.isElement()) {
           final Document doc = result.getElement().orElse(null);
 
@@ -150,10 +196,9 @@ public class SaveElementStep extends AbstractExecutionStep {
               return skippedResult(modifiableDoc, conflict);
           }
 
-          if (bucket == null)
-            modifiableDoc.save();
-          else
-            modifiableDoc.save(bucket.getStringValue());
+          final boolean saved = bucket == null ? modifiableDoc.saveReportingVeto() : modifiableDoc.saveReportingVeto(bucket.getStringValue());
+          if (!saved)
+            return null;
         }
         return result;
       }

@@ -1742,8 +1742,13 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   }
 
   @Override
-  public void createRecordNoLock(final Record record, final String bucketName, final boolean discardRecordAfter) {
-    proxied.createRecordNoLock(record, bucketName, discardRecordAfter);
+  public boolean createRecordNoLock(final Record record, final String bucketName, final boolean discardRecordAfter) {
+    return proxied.createRecordNoLock(record, bucketName, discardRecordAfter);
+  }
+
+  @Override
+  public boolean createRecordReportingVeto(final Record record, final String bucketName) {
+    return proxied.createRecordReportingVeto(record, bucketName);
   }
 
   @Override
@@ -1754,6 +1759,11 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   @Override
   public void updateRecord(final Record record) {
     proxied.updateRecord(record);
+  }
+
+  @Override
+  public boolean updateRecordReportingVeto(final Record record) {
+    return proxied.updateRecordReportingVeto(record);
   }
 
   @Override

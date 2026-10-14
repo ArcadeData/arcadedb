@@ -521,26 +521,45 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
   }
 
   public MutableDocument save() {
-    dirty = true;
-    if (rid != null)
-      database.updateRecord(this);
-    else
-      database.createRecord(this);
+    saveReportingVeto();
     return this;
   }
 
   public MutableDocument save(final String bucketName) {
+    saveReportingVeto(bucketName);
+    return this;
+  }
+
+  /**
+   * Saves the document exactly as {@link #save()} does, but answers whether the engine applied the write, which {@link #save()}
+   * throws away. A caller that COUNTS the records it wrote - the integer a protocol or a statement replies - must use this one, or a
+   * write a {@code BeforeRecordCreateListener} / {@code BeforeRecordUpdateListener} vetoed is counted as done (issue #9974).
+   *
+   * @return {@code true} when the record was created or updated (in a transaction: queued for the commit), {@code false} when a
+   * before-create or before-update listener vetoed it, or the record was already deleted by this transaction. Every other refusal is
+   * thrown, as by {@link #save()}.
+   */
+  public boolean saveReportingVeto() {
+    dirty = true;
+    if (rid != null)
+      return database.updateRecordReportingVeto(this);
+    return database.createRecordReportingVeto(this, null);
+  }
+
+  /**
+   * {@link #saveReportingVeto()} into a specific bucket, as {@link #save(String)}.
+   */
+  public boolean saveReportingVeto(final String bucketName) {
     dirty = true;
     if (rid != null) {
       // UPDATE
       if (rid.bucketId != database.getSchema().getBucketByName(bucketName).getFileId())
         throw new IllegalStateException("Cannot update a record in a custom bucket");
 
-      database.updateRecord(this);
-    } else
-      // CREATE
-      database.createRecord(this, bucketName);
-    return this;
+      return database.updateRecordReportingVeto(this);
+    }
+    // CREATE
+    return database.createRecordReportingVeto(this, bucketName);
   }
 
   @Override
