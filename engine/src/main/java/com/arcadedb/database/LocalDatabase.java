@@ -264,6 +264,13 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    * interleave with (issue #9904).
    */
   private final      Object                                    configurationApplyLock    = new Object();
+  /**
+   * The {@link #changeSetting(String, Runnable) change} whose value each setting holds, by key, when that value was
+   * stored by one: what tells an undo whether its change is still the latest, and whether the value it would put back
+   * belongs to a change that was itself refused (issue #9951). A setting written since by anything else (the apply of a
+   * replicated change, a restore from {@code configuration.json}) has no entry. Guarded by {@link #configurationApplyLock}.
+   */
+  private final      Map<String, SettingToken>                 settingTokens             = new HashMap<>();
   // VOLATILE: the HA wrap installs the wrapper from the plugin's thread, and handles resolved before it
   // (ServerDatabase.commit(), issue #8282) read it from connection threads with no lock in common
   private volatile   DatabaseInternal                          wrappedDatabaseInstance   = this;
@@ -3021,6 +3028,11 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     for (int i = 0; i < removed.length(); i++)
       configuration.setValue(GlobalConfiguration.PREFIX + removed.getString(i), null);
     configurationChanged();
+    // The values just installed belong to no change made on this node: an undo of one finds it superseded (issue #9951)
+    for (final String key : changed.keySet())
+      settingTokens.remove(tokenKey(GlobalConfiguration.PREFIX + key));
+    for (int i = 0; i < removed.length(); i++)
+      settingTokens.remove(tokenKey(GlobalConfiguration.PREFIX + removed.getString(i)));
 
     // Read-modify-write, so under the lock every writer of the file takes
     synchronized (configurationFileLock) {
@@ -3067,9 +3079,26 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   /**
    * One change to one setting, as {@link #changeSetting(String, Runnable)} made it: the value the setting held before
    * ({@code null}: not set) and the value the change stored. What {@link #undoSettingChange(SettingChange)} needs to put
-   * the previous value back only while nothing else changed the setting since (issue #9919).
+   * the previous value back only while nothing else changed the setting since (issue #9919). {@code token} identifies
+   * this change, {@code previousToken} the change whose value it replaced ({@code null}: a value no change on this node
+   * stored), so an undo can tell whether that value belongs to a change that was itself refused (issue #9951).
    */
-  public record SettingChange(String key, Object previousValue, Object valueSet) {
+  public record SettingChange(String key, Object previousValue, Object valueSet, SettingToken previousToken,
+                              SettingToken token) {
+    /** A change made without {@link #changeSetting(String, Runnable)}: no token, so nothing to undo it against. */
+    public SettingChange(final String key, final Object previousValue, final Object valueSet) {
+      this(key, previousValue, valueSet, null, null);
+    }
+  }
+
+  /**
+   * Identifies one {@link #changeSetting(String, Runnable) change} to a setting (issue #9951). Compared by identity, so
+   * a change storing the same value as another is still told apart from it. Its state is guarded by
+   * {@link #configurationApplyLock}.
+   */
+  public static final class SettingToken {
+    /** The change was refused while another change to the setting had already replaced its value. */
+    private boolean refusedWhileSuperseded;
   }
 
   /**
@@ -3087,29 +3116,63 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    */
   public SettingChange changeSetting(final String key, final Runnable change) {
     synchronized (configurationApplyLock) {
+      final String tokenKey = tokenKey(key);
       final Object previousValue = settingValue(key);
-      change.run();
-      return new SettingChange(key, previousValue, settingValue(key));
+      final SettingToken previousToken = settingTokens.get(tokenKey);
+      try {
+        change.run();
+      } catch (final RuntimeException | Error e) {
+        // A change that fails puts the previous value back (restoreSetting(), which forgets the token): that value is
+        // the previous change's again, so an undo of that change must still find it the latest (issue #9951)
+        if (previousToken != null)
+          settingTokens.put(tokenKey, previousToken);
+        throw e;
+      }
+      final SettingToken token = new SettingToken();
+      settingTokens.put(tokenKey, token);
+      return new SettingChange(key, previousValue, settingValue(key), previousToken, token);
     }
   }
 
   /**
    * Undoes a {@link #changeSetting(String, Runnable) change} whose save was refused outright: the previous value goes
-   * back, side effects included, unless the setting no longer holds the value the change stored (issue #9919). Then
-   * another writer changed it since - under Raft HA the apply of a change to the same setting another node committed,
-   * or another change to it on this node whose save is still under way - and that value stands: putting the previous
-   * one back would leave this node on a value no other node holds, and that its own {@code configuration.json} does
-   * not hold. The check and the put run under the lock the apply holds, so an apply cannot land between them.
+   * back, side effects included, unless another writer changed the setting since (issue #9919) - under Raft HA the
+   * apply of a change to the same setting another node committed, or another change to it on this node whose save is
+   * still under way - and that value stands: putting the previous one back would leave this node on a value no other
+   * node holds, and that its own {@code configuration.json} does not hold. "Changed since" is told by the change's
+   * token, not by comparing values, so another writer that stored the SAME value is not mistaken for no writer at all
+   * (issue #9951); a value that differs from the one the change stored counts as changed too, for a writer that
+   * bypassed {@link #changeSetting(String, Runnable)}.
+   * <p>
+   * The previous value is itself not put back when it was stored by a change that was refused meanwhile, while this
+   * one had already replaced it (issue #9951): it is held by no other node and not by {@code configuration.json}. The
+   * setting then takes what {@code configuration.json} holds, as {@link #restoreSettingFromSavedConfiguration(String)}
+   * does. The checks and the put run under the lock the apply holds, so an apply cannot land between them.
    * {@link #restoreSetting(String, Object)} does the rest, a value already saved included.
    */
   public void undoSettingChange(final SettingChange change) {
     synchronized (configurationApplyLock) {
-      // Equal values cannot tell "untouched" from "another writer stored the same value": both undo, and the second
-      // case is then caught by restoreSetting() once that value is saved, or reverts a value that is not saved anywhere
-      if (!Objects.equals(settingValue(change.key()), change.valueSet()))
-        // Changed since by another writer: its value stands
+      final String tokenKey = tokenKey(change.key());
+      if (change.token() != null && settingTokens.get(tokenKey) != change.token()
+          || !Objects.equals(settingValue(change.key()), change.valueSet())) {
+        // Changed since by another writer: its value stands. Should this change's value come back through the undo of
+        // the change that replaced it, that undo must know it was refused
+        if (change.token() != null)
+          change.token().refusedWhileSuperseded = true;
         return;
-      restoreSetting(change.key(), change.previousValue());
+      }
+      if (change.previousToken() != null && change.previousToken().refusedWhileSuperseded) {
+        // The value this change replaced belongs to a refused change: settle on what the file holds
+        restoreSettingFromSavedConfigurationLocked(change.key());
+        return;
+      }
+      if (restoreSettingLocked(change.key(), change.previousValue()) && change.token() != null) {
+        // The value back in force is the previous change's again, so an undo of that change still finds it the latest
+        if (change.previousToken() != null)
+          settingTokens.put(tokenKey, change.previousToken());
+        else
+          settingTokens.remove(tokenKey);
+      }
     }
   }
 
@@ -3124,12 +3187,20 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    */
   public void restoreSetting(final String key, final Object previousValue) {
     synchronized (configurationApplyLock) {
-      if (isSaved(key))
-        // The value in force already reached configuration.json: another save shipped it, so it is committed and stays
-        return;
-      configuration.setValue(key, previousValue);
-      configurationChanged();
+      if (restoreSettingLocked(key, previousValue))
+        // A value no change made on this node stored (issue #9951)
+        settingTokens.remove(tokenKey(key));
     }
+  }
+
+  /** {@link #restoreSetting(String, Object)} without the token bookkeeping. Whether the value was put back. */
+  private boolean restoreSettingLocked(final String key, final Object previousValue) {
+    if (isSaved(key))
+      // The value in force already reached configuration.json: another save shipped it, so it is committed and stays
+      return false;
+    configuration.setValue(key, previousValue);
+    configurationChanged();
+    return true;
   }
 
   /**
@@ -3151,30 +3222,42 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    */
   public void restoreSettingFromSavedConfiguration(final String key) {
     synchronized (configurationApplyLock) {
-      final JSONObject savedSettings;
-      try {
-        savedSettings = readSavedConfiguration().getJSONObject("configuration", new JSONObject());
-      } catch (final IOException | RuntimeException e) {
-        LogManager.instance().log(this, Level.WARNING,
-            "Cannot read '%s' to settle setting '%s' after a change whose replication outcome is unknown: it keeps the value just set",
-            e, configurationFile, key);
-        return;
-      }
-      final String fileKey = key.startsWith(GlobalConfiguration.PREFIX) ? key.substring(GlobalConfiguration.PREFIX.length()) : key;
-
-      Object savedValue = null;
-      if (savedSettings.has(fileKey) && GlobalConfiguration.findByKey(key) == null)
-        // A setting nothing declares is stored as given, and fromJSON() skips it: take the file's value as it is
-        savedValue = savedSettings.get(fileKey);
-      else if (savedSettings.has(fileKey)) {
-        // Read back the way open() and the apply read the file, so the value is coerced and stored the same way
-        final ContextConfiguration saved = new ContextConfiguration();
-        saved.fromJSON(new JSONObject().put("configuration", new JSONObject().put(fileKey, savedSettings.get(fileKey))).toString());
-        savedValue = saved.hasValue(key) ? saved.getValue(key, null) : null;
-      }
-      configuration.setValue(key, savedValue);
-      configurationChanged();
+      restoreSettingFromSavedConfigurationLocked(key);
     }
+  }
+
+  private void restoreSettingFromSavedConfigurationLocked(final String key) {
+    final JSONObject savedSettings;
+    try {
+      savedSettings = readSavedConfiguration().getJSONObject("configuration", new JSONObject());
+    } catch (final IOException | RuntimeException e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Cannot read '%s' to settle setting '%s' after a change whose replication outcome is unknown: it keeps the value just set",
+          e, configurationFile, key);
+      return;
+    }
+    final String fileKey = key.startsWith(GlobalConfiguration.PREFIX) ? key.substring(GlobalConfiguration.PREFIX.length()) : key;
+
+    Object savedValue = null;
+    if (savedSettings.has(fileKey) && GlobalConfiguration.findByKey(key) == null)
+      // A setting nothing declares is stored as given, and fromJSON() skips it: take the file's value as it is
+      savedValue = savedSettings.get(fileKey);
+    else if (savedSettings.has(fileKey)) {
+      // Read back the way open() and the apply read the file, so the value is coerced and stored the same way
+      final ContextConfiguration saved = new ContextConfiguration();
+      saved.fromJSON(new JSONObject().put("configuration", new JSONObject().put(fileKey, savedSettings.get(fileKey))).toString());
+      savedValue = saved.hasValue(key) ? saved.getValue(key, null) : null;
+    }
+    configuration.setValue(key, savedValue);
+    configurationChanged();
+    // The value the file holds belongs to no change made on this node (issue #9951)
+    settingTokens.remove(tokenKey(key));
+  }
+
+  /** The key {@link #settingTokens} holds {@code key}'s token under: the declared spelling, as the configuration stores it. */
+  private static String tokenKey(final String key) {
+    final GlobalConfiguration cfg = GlobalConfiguration.findByKey(key);
+    return cfg != null ? cfg.getKey() : key;
   }
 
   /** The value this database's configuration stores for {@code key}, {@code null} when it stores none. */
