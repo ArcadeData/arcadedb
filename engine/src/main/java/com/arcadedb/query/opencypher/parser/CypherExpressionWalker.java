@@ -40,6 +40,7 @@ import com.arcadedb.query.opencypher.ast.ForeachClause;
 import com.arcadedb.query.opencypher.ast.FunctionCallExpression;
 import com.arcadedb.query.opencypher.ast.InExpression;
 import com.arcadedb.query.opencypher.ast.IsNullExpression;
+import com.arcadedb.query.opencypher.ast.IsNormalizedExpression;
 import com.arcadedb.query.opencypher.ast.IsTypedExpression;
 import com.arcadedb.query.opencypher.ast.LabelCheckExpression;
 import com.arcadedb.query.opencypher.ast.ListComprehensionExpression;
@@ -527,6 +528,7 @@ public final class CypherExpressionWalker {
     }
     case LabelCheckExpression labelCheck -> walk(labelCheck.getVariableExpression(), visitor);
     case IsTypedExpression typed -> walk(typed.getValueExpression(), visitor);
+    case IsNormalizedExpression normalized -> walk(normalized.getValueExpression(), visitor);
     case BooleanCoercionExpression coercion -> walk(coercion.getExpression(), visitor);
     case PatternPredicateExpression pattern -> walk(pattern.getPathPattern(), visitor);
     default -> {

@@ -422,6 +422,8 @@ class CypherExpressionBuilder {
         return parseLabelComparisonExpression(expr7);
       if (comp instanceof Cypher25Parser.TypeComparisonContext)
         return parseIsTypedExpression((Cypher25Parser.TypeComparisonContext) comp);
+      if (comp instanceof Cypher25Parser.NormalFormComparisonContext normalForm)
+        return parseIsNormalizedExpression(normalForm);
       // No comparison, delegate to expression6
       return parseExpressionFromText(expr7.expression6(), noBlocksBelow);
     }
@@ -1790,6 +1792,7 @@ class CypherExpressionBuilder {
     else
       subquery = originalText.substring(7, originalText.length() - 1).trim(); // fallback
 
+    CypherASTBuilder.checkMatchMode(ctx.matchMode());
     final CypherStatement parsedBody = parseSubqueryBody(ctx.queryWithLocalDefinitions(), ctx.patternList(),
         ctx.whereClause());
 
@@ -1875,6 +1878,11 @@ class CypherExpressionBuilder {
       builder.addMatch(CypherASTBuilder.newMatchClause(astBuilder.visitPatternList(patternCtx), false,
           whereCtx != null ? astBuilder.visitWhereClause(whereCtx) : null));
       return builder.build();
+    } catch (final FeatureNotImplementedException e) {
+      // A construct the engine refuses by name is refused in a body too. Falling back to the text deferred it to the first
+      // row, where the body is rewritten before it is parsed again, and the refusal came out as an unrelated syntax error
+      // (issue #9940)
+      throw e;
     } catch (final CommandParsingException e) {
       // The builder refusing a body it does not support is the case this fallback is for, and it is not news.
       LogManager.instance().log(CypherExpressionBuilder.class, Level.FINE,
@@ -1941,6 +1949,7 @@ class CypherExpressionBuilder {
     else
       subquery = originalText.substring(6, originalText.length() - 1).trim(); // fallback "COUNT{" prefix
 
+    CypherASTBuilder.checkMatchMode(ctx.matchMode());
     final CypherStatement parsedBody = parseSubqueryBody(ctx.queryWithLocalDefinitions(), ctx.patternList(),
         ctx.whereClause());
 
@@ -2140,6 +2149,16 @@ class CypherExpressionBuilder {
   }
 
   /**
+   * Parse {@code IS [NOT] [form] NORMALIZED} and wrap it for use in Expression contexts (issue #9940). The predicate itself is
+   * built by {@link CypherASTBuilder#buildIsNormalizedExpression}, shared with the boolean path.
+   */
+  Expression parseIsNormalizedExpression(final Cypher25Parser.NormalFormComparisonContext ctx) {
+    final Cypher25Parser.Expression7Context expr7 = (Cypher25Parser.Expression7Context) ctx.getParent();
+    return new BooleanWrapperExpression(
+        CypherASTBuilder.buildIsNormalizedExpression(parseExpressionFromText(expr7.expression6()), ctx));
+  }
+
+  /**
    * Parse string/list comparison from Expression7Context that has a comparisonExpression6.
    * Handles STARTS WITH, ENDS WITH, CONTAINS, =~ (regex), and IN operators
    * when they appear in expression positions (e.g., RETURN expressions).
@@ -2194,6 +2213,7 @@ class CypherExpressionBuilder {
     final Expression leftExpr = parseExpressionFromText(ctx.expression6());
     final Cypher25Parser.LabelComparisonContext labelCtx = (Cypher25Parser.LabelComparisonContext) ctx.comparisonExpression6();
     final Cypher25Parser.LabelExpressionContext labelExprCtx = labelCtx.labelExpression();
+    CypherASTBuilder.rejectDirectedPredicate(labelExprCtx);
 
     // A negation, the wildcard or a mix of '&' and '|' is evaluated as the tree it is (issue #8992).
     final LabelPredicate predicate = ParserUtils.buildLabelPredicate(labelExprCtx);

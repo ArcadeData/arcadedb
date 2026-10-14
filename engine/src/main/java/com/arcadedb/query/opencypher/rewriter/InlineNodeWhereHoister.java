@@ -83,7 +83,7 @@ public final class InlineNodeWhereHoister {
         continue;
       if (newPaths == null)
         newPaths = new ArrayList<>(paths);
-      newPaths.set(p, new PathPattern(newNodes, path.getRelationships(), path.getPathVariable(), path.getPathMode()));
+      newPaths.set(p, path.withNodes(newNodes));
     }
 
     if (hoisted == null)
