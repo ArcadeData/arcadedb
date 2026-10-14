@@ -85,8 +85,10 @@ class DeltaCollector
 
   @Override
   public void onAfterCreate(final Record record) {
-    if (!isRelevant(record))
+    if (!isRelevant(record)) {
+      noteUncoveredEdge(record);
       return;
+    }
 
     if (perThreadDeltas != null) {
       // SYNCHRONOUS: collect detailed changes
@@ -156,8 +158,10 @@ class DeltaCollector
    */
   @Override
   public void onLightEdgeCreated(final Edge edge) {
-    if (!isRelevant(edge))
+    if (!isRelevant(edge)) {
+      noteUncoveredEdge(edge);
       return;
+    }
 
     if (perThreadDeltas != null) {
       final TxDelta delta = getOrCreateDelta();
@@ -177,11 +181,25 @@ class DeltaCollector
   public void onEdgesWrittenInBulk(final Set<String> edgeTypeNames) {
     if (!view.isTrackingChanges())
       return;
+    boolean covered = false;
     for (final String edgeTypeName : edgeTypeNames)
-      if (view.coversEdgeType(edgeTypeName)) {
-        view.onEdgesWrittenInBulk();
-        return;
-      }
+      if (view.coversEdgeType(edgeTypeName))
+        covered = true;
+      else
+        view.onUncoveredEdgeWritten();
+    if (covered)
+      view.onEdgesWrittenInBulk();
+  }
+
+  /**
+   * An edge of a type the view does not materialize was created: the view no longer holds every edge of the database,
+   * if it did (issue #9915, see {@link GraphAnalyticalView#coversEveryEdge()}). Told on the creation, inside the
+   * transaction: one that rolls back only costs the view the claim until its next build.
+   */
+  private void noteUncoveredEdge(final Record record) {
+    // NOT RELEVANT AND TRACKING: AN EDGE THE VIEW DOES NOT COVER
+    if (record instanceof Edge && view.isTrackingChanges())
+      view.onUncoveredEdgeWritten();
   }
 
   /** The identity a change of {@code edge} is tracked by: its own RID, or a key of the change's own for a lightweight edge. */

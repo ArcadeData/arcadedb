@@ -20,6 +20,7 @@ package com.arcadedb.function;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
+import com.arcadedb.graph.LightEdgeRID;
 import com.arcadedb.utility.LongRangeList;
 
 import java.util.ArrayList;
@@ -54,7 +55,9 @@ import java.util.function.Function;
  * {@code #1:0[?]}) instead of the actual property values, so two references to the very same record
  * can render two different strings depending on load state alone, even though they represent one
  * value. Canonicalizing to the identity ({@link RID}) up front, whose own {@code toString()} is just
- * the RID text, sidesteps that instability. See issue #6488.
+ * the RID text, sidesteps that instability. See issue #6488. A lightweight edge canonicalizes to
+ * {@link LightEdgeRID#distinctKey()} instead: parallel lightweight edges of one type over the same
+ * ordered pair share their RID, and are still two relationships (issue #10008).
  * <p>
  * <p>
  * <b>Collections:</b> a list or map canonicalizes to a copy whose elements (map values) are canonicalized, so {@code [1]} and
@@ -89,6 +92,10 @@ public final class DistinctNumericKey {
 
     if (value instanceof Identifiable identifiable) {
       final RID rid = identifiable.getIdentity();
+      // Two parallel lightweight edges of one type over the same ordered pair share their RID but are two
+      // relationships: their key tells them apart, resolving which twin is which only when two of them meet (#10008)
+      if (rid instanceof LightEdgeRID light)
+        return light.distinctKey();
       if (rid != null)
         return rid;
     }

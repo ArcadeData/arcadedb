@@ -240,18 +240,19 @@ class Issue6263AlgoWorkingMemoryBudgetTest {
   }
 
   @Test
-  void kShortestPathsRejectsTheWeightMatrixLargerThanTheBudget() {
-    database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 500L);
+  void kShortestPathsRejectsTheSearchStateLargerThanTheBudget() {
+    // 400 bytes admit the loaded graph (4 x OLTP_VERTEX_BYTES = 384) and refuse what Yen's holds beside it.
+    database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 400L);
 
     assertThatThrownBy(() -> drain("""
         MATCH (a:Node {name: 'A'}), (c:Node {name: 'C'}) \
         CALL algo.kShortestPaths(a, c, 2) YIELD weight \
         RETURN weight"""))
-        // 328 rather than the 400 this reservation quoted before #6289: the removed-edge mask used to be
-        // priced as a square matrix, because it was allocated as one - once per spur node. It is now two
-        // node-sized masks allocated once for the whole call.
-        .hasStackTraceContaining("the weight matrix and the spur masks would need 328 bytes "
-            + "(a double matrix of 4 x 4 nodes and two boolean masks of 4 nodes)")
+        // 72 bytes: before #9914 this was a 4 x 4 weight matrix beside the masks (328 bytes, and 400 before #6289,
+        // when the removed-edge mask was a square matrix too). Yen's now runs on the adjacency lists, and what it
+        // holds beside them is node-sized: a distance, a predecessor and a visit slot per node, and the two masks.
+        .hasStackTraceContaining("the path search state would need 72 bytes "
+            + "(distances, predecessors, a visit stack and two boolean masks of 4 nodes)")
         .hasStackTraceContaining(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY.getKey());
   }
 

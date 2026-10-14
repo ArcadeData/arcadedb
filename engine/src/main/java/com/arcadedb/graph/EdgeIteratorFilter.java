@@ -70,10 +70,10 @@ public class EdgeIteratorFilter extends IteratorFilterBase<Edge> {
 
         if (direction == Vertex.DIRECTION.OUT)
           return new ImmutableLightEdge(currentContainer.getDatabase(), edgeType, nextEdge.getBucketId(), vertex.getIdentity(),
-              nextVertex, currentContainer.getIdentity(), getEntryPosition(), direction);
+              nextVertex, currentContainer.getIdentity(), getEntryPosition(), direction, lightEdgeCensus());
         else
           return new ImmutableLightEdge(currentContainer.getDatabase(), edgeType, nextEdge.getBucketId(), nextVertex,
-              vertex.getIdentity(), currentContainer.getIdentity(), getEntryPosition(), direction);
+              vertex.getIdentity(), currentContainer.getIdentity(), getEntryPosition(), direction, lightEdgeCensus());
       }
 
       // LAZY LOAD THE CONTENT TO IMPROVE PERFORMANCE WITH TRAVERSAL. NOTE: THE RECORD NOT FOUND WILL NEVER BE TRIGGERED HERE ANYMORE

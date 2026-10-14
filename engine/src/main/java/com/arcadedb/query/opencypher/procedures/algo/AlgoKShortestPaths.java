@@ -29,16 +29,18 @@ import com.arcadedb.query.sql.executor.WorkGuard;
 
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Comparator;
 import java.util.List;
-import java.util.PriorityQueue;
 import java.util.stream.Stream;
 
 /**
- * Procedure: algo.kShortestPaths(startNode, endNode, k, relTypes?, weightProperty?)
+ * Procedure: algo.kShortestPaths(startNode, endNode, k, relTypes?, weightProperty?, direction?)
  * <p>
- * Finds the k shortest paths between two nodes using Yen's algorithm. Returns up to k
- * paths in ascending order of total weight.
+ * Finds the k shortest loopless paths between two nodes using Yen's algorithm. Returns up to k
+ * paths in ascending order of total weight, each with the relationships it walks.
+ * </p>
+ * <p>
+ * {@code direction} is {@code 'BOTH'} (the default), {@code 'OUT'} or {@code 'IN'}, as for {@code algo.dijkstra},
+ * so that the first path is the one {@code algo.dijkstra} returns for the same arguments (issue #9914).
  * </p>
  * <p>
  * Example:
@@ -67,7 +69,7 @@ public class AlgoKShortestPaths extends AbstractAlgoProcedure {
 
   @Override
   public int getMaxArgs() {
-    return 5;
+    return 6;
   }
 
   @Override
@@ -84,11 +86,13 @@ public class AlgoKShortestPaths extends AbstractAlgoProcedure {
   public Stream<Result> execute(final Object[] args, final Result inputRow, final CommandContext context) {
     validateArgs(args);
 
-    final Vertex startNode        = extractVertex(args[0], "startNode");
-    final Vertex endNode          = extractVertex(args[1], "endNode");
-    final int k                   = extractCount((Number) args[2], "k");
-    final String[] relTypes       = args.length > 3 ? extractRelTypes(args[3], context) : null;
-    final String weightProperty   = args.length > 4 ? extractString(args[4], "weightProperty") : null;
+    final Vertex startNode = extractVertex(args[0], "startNode");
+    final Vertex endNode = extractVertex(args[1], "endNode");
+    final int k = extractCount((Number) args[2], "k");
+    final String[] relTypes = args.length > 3 ? extractRelTypes(args[3], context) : null;
+    final String weightProperty = args.length > 4 ? extractWeightProperty(args[4], context) : null;
+    final String directionArg = args.length > 5 ? extractString(args[5], "direction") : null;
+    final Vertex.DIRECTION direction = directionArg != null && !directionArg.isEmpty() ? parseDirection(directionArg) : Vertex.DIRECTION.BOTH;
 
     final Database db = context.getDatabase();
     final WorkGuard guard = newWorkGuard(context);
@@ -99,115 +103,70 @@ public class AlgoKShortestPaths extends AbstractAlgoProcedure {
       return Stream.empty();
 
     final int startIdx = graph.indexOf(startNode.getIdentity());
-    final int endIdx   = graph.indexOf(endNode.getIdentity());
+    final int endIdx = graph.indexOf(endNode.getIdentity());
     if (startIdx < 0 || endIdx < 0)
       return Stream.empty();
 
-    // Yen's algorithm is dense here: a nodeCount x nodeCount weight matrix for the whole run - 800 MB at
-    // 10 000 nodes, with no knob involved. Reserved before it is allocated so that a graph too large for the
-    // dense formulation is a client error naming the node count and the budget, rather than an
-    // OutOfMemoryError. The two spur masks beside it are nodeCount-sized and allocated once for the whole call
-    // (see below), so they are a rounding error next to the matrix and are priced with it rather than apart.
+    // Yen's runs on the adjacency lists, not on a nodeCount x nodeCount weight matrix: the matrix this replaced was
+    // 800 MB at 10 000 nodes and made the procedure unusable on a road network, whose degree is a handful. What Yen's
+    // needs beside the lists is node-sized: the distances, predecessors and visit stack of the spur Dijkstra, allocated
+    // once and cleared entry by entry between runs, and the two spur masks (issue #6289).
     final MemoryBudget memory = graph.memory();
-    memory.reserve(saturatingSum(matrixBytes(n, n, DOUBLE_BYTES), matrixBytes(2, n, BOOLEAN_BYTES)),
-        "the weight matrix and the spur masks",
-        "a double matrix of " + n + " x " + n + " nodes and two boolean masks of " + n + " nodes");
-
-    // Build weighted adjacency matrix (OUT direction). Edge collection and weight extraction go through
-    // GraphData.weightedAdjacency (issue #6316), the same shared helper algo.steinerTree and algo.mst read
-    // weights through, rather than a hand-rolled getEdges() walk. Parallel edges collapse to the cheapest one,
-    // same as before.
-    final double[][] weightMatrix = new double[n][n];
-    for (double[] row : weightMatrix)
-      Arrays.fill(row, Double.MAX_VALUE);
+    memory.reserve(saturatingProduct(n, DOUBLE_BYTES + 2 * INT_BYTES + 2 * BOOLEAN_BYTES), "the path search state",
+        "distances, predecessors, a visit stack and two boolean masks of " + n + " nodes");
 
     final String weightProp = weightProperty != null && !weightProperty.isEmpty() ? weightProperty : null;
-    final GraphData.WeightedAdjacency weighted = graph.weightedAdjacency(guard, Vertex.DIRECTION.OUT, weightProp, relTypes);
+    final GraphData.WeightedAdjacency weighted = graph.weightedAdjacency(guard, direction, weightProp, relTypes);
     final int[][] neighbors = weighted.neighbors();
-    final double[][] edgeWeights = weighted.weights();
+    final double[][] weights = weighted.weights();
 
-    for (int i = 0; i < n; i++) {
-      // One row of the matrix is O(n) and one vertex's edges are O(degree); either is more than a flag test.
-      guard.check();
-      weightMatrix[i][i] = 0.0;
-      final int[] row = neighbors[i];
-      final double[] rowWeights = edgeWeights[i];
-      for (int e = 0; e < row.length; e++) {
-        final int j = row[e];
-        final double w = rowWeights[e];
-        // Yen runs Dijkstra on this matrix: an edge whose weight is negative, NaN or infinite is not walked (issue #9443)
-        if (EdgeWeight.isWalkable(w) && w < weightMatrix[i][j])
-          weightMatrix[i][j] = w;
-      }
-    }
+    final Search search = new Search(n, neighbors, weights, guard);
 
     // Yen's k-shortest paths. The loop below (`for (int ki = 1; ki < k; ki++)`) terminates as soon
     // as no more candidate paths exist, so k itself is safe to leave unbounded (saturating a huge k
     // to "as many k-shortest-paths as exist" is the right reading here) - but it must not be used
     // directly as an eager ArrayList capacity, since that risks a multi-GB allocation attempt for a
     // huge k (e.g. algo.kShortestPaths(a, b, 2147483648)) that will never be filled.
-    final List<int[]> kPaths     = new ArrayList<>(Math.min(k, n));
-    final List<Double> kWeights  = new ArrayList<>(Math.min(k, n));
+    final List<int[]> kPaths = new ArrayList<>(Math.min(k, n));
+    final List<Double> kWeights = new ArrayList<>(Math.min(k, n));
 
-    // Find first shortest path with Dijkstra
-    final int[] firstPath = dijkstra(weightMatrix, n, startIdx, endIdx, null, guard);
+    final int[] firstPath = search.shortestPath(startIdx, endIdx, -1);
     if (firstPath == null)
       return Stream.empty();
 
     kPaths.add(firstPath);
-    kWeights.add(pathWeight(firstPath, weightMatrix));
+    kWeights.add(search.pathWeight(firstPath));
 
     // Candidate paths, as parallel lists of the path and its cost.
     final List<int[]> candidatePaths = new ArrayList<>();
     final List<Double> candidateCosts = new ArrayList<>();
 
-    // The two masks Yen's spur loop needs, allocated once for the whole call and cleared entry by entry
-    // between spur nodes (issue #6289).
-    //
-    // `removedSpurTargets` used to be a nodeCount x nodeCount boolean matrix allocated fresh per spur node -
-    // ~1 MB per allocation at 1000 nodes, ~200 MB through the young generation for a single k=10 call over a
-    // 20-hop path. It never needed a row per source: every edge it removes leaves the SAME node. The removal
-    // loop below keeps an edge (p[i], p[i+1]) of a previously-found path only when that path shares the root
-    // p[0..i] with prevPath, and prevPath[i] IS the spur node - so p[i] == spurNode for every entry it ever
-    // set, and the other n-1 rows were allocated, zeroed and read only to prove they were empty. One row
-    // indexed by target says exactly as much, in O(nodeCount) rather than O(nodeCount²).
-    //
-    // Cleared rather than reallocated because the entries set are the few the two loops below can name: at
-    // most one per previously-found path, and one per root-path node. Clearing exactly those is O(paths + i),
-    // where an Arrays.fill would be O(nodeCount) and a fresh allocation O(nodeCount) plus the zeroing.
-    final boolean[] removedSpurTargets = new boolean[n];
-    final boolean[] removedNodes = new boolean[n];
-
     for (int ki = 1; ki < k; ki++) {
-      // Yen's is O(k x pathLength x V²) over a dense matrix, and `k` is deliberately left unbounded above
-      // because the loop stops as soon as no candidate remains. "Unbounded but self-terminating" still needs a
-      // way out: nothing here could observe a thread interrupt or arcadedb.command.timeout before issue #6302,
-      // so a k that ran for minutes ran for minutes. The two checkpoints below cost one flag test per spur node
-      // and per matrix row respectively, both already O(V) bodies.
+      // Yen's is O(k x pathLength) Dijkstra runs, and `k` is deliberately left unbounded above because the loop
+      // stops as soon as no candidate remains. "Unbounded but self-terminating" still needs a way out (#6302): one
+      // flag test per spur node, and one per settled node inside each run.
       guard.check();
       final int[] prevPath = kPaths.get(ki - 1);
 
       for (int i = 0; i < prevPath.length - 1; i++) {
-        // One spur node is a whole Dijkstra over the dense matrix, i.e. O(V²).
         guard.check();
         final int spurNode = prevPath[i];
         final int[] rootPath = Arrays.copyOf(prevPath, i + 1);
 
         // Remove the edges leaving the spur node that are part of previously-found paths sharing this root
-        markRemovedSpurTargets(kPaths, prevPath, i, removedSpurTargets, true);
+        markRemovedSpurTargets(kPaths, prevPath, i, search.removedSpurTargets, true);
 
         // Remove root path nodes (except spurNode) from the graph
         for (int r = 0; r < i; r++)
-          removedNodes[rootPath[r]] = true;
+          search.removedNodes[rootPath[r]] = true;
 
         // Find spur path from spurNode to endIdx
-        final int[] spurPath = dijkstra(weightMatrix, n, spurNode, endIdx,
-            (u, v) -> (u == spurNode && removedSpurTargets[v]) || removedNodes[u] || removedNodes[v], guard);
+        final int[] spurPath = search.shortestPath(spurNode, endIdx, spurNode);
 
         // Both masks are shared across spur nodes, so they are handed back empty for the next one.
-        markRemovedSpurTargets(kPaths, prevPath, i, removedSpurTargets, false);
+        markRemovedSpurTargets(kPaths, prevPath, i, search.removedSpurTargets, false);
         for (int r = 0; r < i; r++)
-          removedNodes[rootPath[r]] = false;
+          search.removedNodes[rootPath[r]] = false;
 
         if (spurPath != null) {
           // Build total path = rootPath + spurPath (skip duplicate spurNode)
@@ -215,29 +174,9 @@ public class AlgoKShortestPaths extends AbstractAlgoProcedure {
           System.arraycopy(rootPath, 0, totalPath, 0, rootPath.length - 1);
           System.arraycopy(spurPath, 0, totalPath, rootPath.length - 1, spurPath.length);
 
-          // The cost of the concatenated path, walked once. The incremental form this replaced - root cost
-          // plus spur cost, corrected for the prefixes counted twice - computed the same number four ways and
-          // then threw it away in favour of this line, at the price of two Arrays.copyOf and four pathWeight
-          // walks per spur node.
-          final double fullCost = pathWeight(totalPath, weightMatrix);
-
-          // Check if already in candidates or kPaths
-          boolean duplicate = false;
-          for (final int[] cp : candidatePaths) {
-            if (Arrays.equals(cp, totalPath)) {
-              duplicate = true;
-              break;
-            }
-          }
-          for (final int[] kp : kPaths) {
-            if (Arrays.equals(kp, totalPath)) {
-              duplicate = true;
-              break;
-            }
-          }
-          if (!duplicate) {
+          if (!contains(candidatePaths, totalPath) && !contains(kPaths, totalPath)) {
             candidatePaths.add(totalPath);
-            candidateCosts.add(fullCost);
+            candidateCosts.add(search.pathWeight(totalPath));
           }
         }
       }
@@ -266,8 +205,12 @@ public class AlgoKShortestPaths extends AbstractAlgoProcedure {
       for (final int idx : path)
         pathRids.add(graph.getRID(idx));
 
+      // Yen's works on node sequences; the relationships are the lightest walkable edge between consecutive nodes in
+      // the walked direction, the one the weight was computed from (parallel edges collapse to the cheapest)
+      final WeightedPath walked = attachEdges(pathRids, relTypes, direction, weightProp);
+
       final ResultInternal r = new ResultInternal();
-      r.setProperty("path", buildPath(pathRids, db));
+      r.setProperty("path", buildPath(walked.ridsWithEdges(), db));
       r.setProperty("weight", kWeights.get(i));
       r.setProperty("rank", i + 1);
       results.add(r);
@@ -275,9 +218,11 @@ public class AlgoKShortestPaths extends AbstractAlgoProcedure {
     return results.stream();
   }
 
-  @FunctionalInterface
-  private interface EdgeFilter {
-    boolean isRemoved(int u, int v);
+  private static boolean contains(final List<int[]> paths, final int[] path) {
+    for (final int[] p : paths)
+      if (Arrays.equals(p, path))
+        return true;
+    return false;
   }
 
   /**
@@ -287,6 +232,7 @@ public class AlgoKShortestPaths extends AbstractAlgoProcedure {
    * <p>
    * The same traversal both sets and clears, so the mask handed to the next spur node is empty without an
    * {@code Arrays.fill} over the node count or a fresh allocation - it touches only the entries it can name.
+   * Every edge it removes leaves the spur node, which is why one row indexed by target is enough (issue #6289).
    */
   private static void markRemovedSpurTargets(final List<int[]> kPaths, final int[] prevPath, final int spurIndex,
       final boolean[] removedSpurTargets, final boolean marked) {
@@ -306,72 +252,162 @@ public class AlgoKShortestPaths extends AbstractAlgoProcedure {
     }
   }
 
-  private static int[] dijkstra(final double[][] w, final int n, final int src, final int dst,
-      final EdgeFilter removed, final WorkGuard guard) {
-    final double[] dist = new double[n];
-    final int[] prev    = new int[n];
-    Arrays.fill(dist, Double.MAX_VALUE);
-    Arrays.fill(prev, -1);
-    dist[src] = 0.0;
+  /**
+   * Dijkstra over the adjacency lists, with its state allocated once for the whole call and reset entry by entry: a
+   * spur search settles a few nodes around the spur, and clearing node-sized arrays per search would make every one of
+   * them O(nodeCount) however little it explored. The queue is a binary heap of primitive (distance, node) pairs with
+   * lazy deletion. An edge whose weight is negative, NaN or infinite is not walked (issue #9443).
+   */
+  private static final class Search {
+    private final int[][]    neighbors;
+    private final double[][] weights;
+    private final WorkGuard  guard;
+    private final double[]   dist;
+    private final int[]      prev;
+    private final boolean[]  removedSpurTargets;
+    private final boolean[]  removedNodes;
+    // NODES WHOSE dist/prev THE LAST SEARCH WROTE, SO THE NEXT ONE STARTS FROM A CLEAN STATE WITHOUT AN O(N) FILL
+    private       int[]      touched     = new int[64];
+    private       int        touchedSize;
+    private       double[]   heapKeys    = new double[64];
+    private       int[]      heapNodes   = new int[64];
+    private       int        heapSize;
 
-    // PriorityQueue of {cost, nodeIdx}
-    final PriorityQueue<double[]> pq = new PriorityQueue<>(Comparator.comparingDouble(a -> a[0]));
-    pq.offer(new double[] { 0.0, src });
+    private Search(final int n, final int[][] neighbors, final double[][] weights, final WorkGuard guard) {
+      this.neighbors = neighbors;
+      this.weights = weights;
+      this.guard = guard;
+      this.dist = new double[n];
+      this.prev = new int[n];
+      this.removedSpurTargets = new boolean[n];
+      this.removedNodes = new boolean[n];
+      Arrays.fill(dist, Double.POSITIVE_INFINITY);
+      Arrays.fill(prev, -1);
+    }
 
-    while (!pq.isEmpty()) {
-      // Relaxing one settled node scans the whole matrix row, so a single Dijkstra here is O(V²) and has to be
-      // abortable from inside rather than only between spur nodes.
-      guard.check();
-      final double[] top  = pq.poll();
-      final double cost   = top[0];
-      final int u         = (int) top[1];
-      if (cost > dist[u])
-        continue;
-      if (u == dst)
-        break;
-      for (int v = 0; v < n; v++) {
-        if (w[u][v] == Double.MAX_VALUE)
-          continue;
-        if (removed != null && removed.isRemoved(u, v))
-          continue;
-        final double newDist = dist[u] + w[u][v];
-        if (newDist < dist[v]) {
-          dist[v] = newDist;
-          prev[v] = u;
-          pq.offer(new double[] { newDist, v });
+    /**
+     * @param spurNode the node whose edges towards {@link #removedSpurTargets} are not walked, or -1
+     *
+     * @return the node sequence of the shortest path from {@code src} to {@code dst}, or null when there is none
+     */
+    private int[] shortestPath(final int src, final int dst, final int spurNode) {
+      try {
+        touch(src);
+        dist[src] = 0.0;
+        push(0.0, src);
+        while (heapSize > 0) {
+          final double cost = heapKeys[0];
+          final int u = pop();
+          if (cost > dist[u])
+            continue;
+          if (u == dst)
+            break;
+          // ONE SETTLED NODE RELAXES ITS WHOLE ROW: THE CHECKPOINT KEEPS A LARGE SEARCH ABORTABLE FROM INSIDE (#6302)
+          guard.check();
+          final int[] row = neighbors[u];
+          final double[] rowWeights = weights[u];
+          for (int e = 0; e < row.length; e++) {
+            final int v = row[e];
+            final double w = rowWeights[e];
+            if (!EdgeWeight.isWalkable(w) || removedNodes[v] || (u == spurNode && removedSpurTargets[v]))
+              continue;
+            final double candidate = cost + w;
+            if (candidate < dist[v]) {
+              if (dist[v] == Double.POSITIVE_INFINITY)
+                touch(v);
+              dist[v] = candidate;
+              prev[v] = u;
+              push(candidate, v);
+            }
+          }
         }
+
+        if (dist[dst] == Double.POSITIVE_INFINITY)
+          return null;
+
+        int length = 1;
+        for (int cur = dst; cur != src; cur = prev[cur])
+          ++length;
+        final int[] path = new int[length];
+        for (int cur = dst, i = length - 1; i >= 0; cur = prev[cur], --i)
+          path[i] = cur;
+        return path;
+      } finally {
+        reset();
       }
     }
 
-    if (dist[dst] == Double.MAX_VALUE)
-      return null;
-
-    // Reconstruct path
-    final int[] tmp = new int[n];
-    int len = 0;
-    int cur = dst;
-    while (cur != -1) {
-      tmp[len++] = cur;
-      if (cur == src)
-        break;
-      cur = prev[cur];
-      if (len > n)
-        return null; // cycle guard
+    /** The weight of a node sequence: the lightest walkable edge between each consecutive pair. */
+    private double pathWeight(final int[] path) {
+      double total = 0.0;
+      for (int i = 0; i < path.length - 1; i++) {
+        final int[] row = neighbors[path[i]];
+        final double[] rowWeights = weights[path[i]];
+        double best = Double.POSITIVE_INFINITY;
+        for (int e = 0; e < row.length; e++)
+          if (row[e] == path[i + 1] && EdgeWeight.isWalkable(rowWeights[e]) && rowWeights[e] < best)
+            best = rowWeights[e];
+        total += best;
+      }
+      return total;
     }
-    final int[] path = new int[len];
-    for (int i = 0; i < len; i++)
-      path[i] = tmp[len - 1 - i];
-    return path;
-  }
 
-  private static double pathWeight(final int[] path, final double[][] w) {
-    double total = 0.0;
-    for (int i = 0; i < path.length - 1; i++) {
-      final double edge = w[path[i]][path[i + 1]];
-      if (edge == Double.MAX_VALUE)
-        return Double.MAX_VALUE;
-      total += edge;
+    private void touch(final int node) {
+      if (touchedSize == touched.length)
+        touched = Arrays.copyOf(touched, touchedSize * 2);
+      touched[touchedSize++] = node;
     }
-    return total;
+
+    private void reset() {
+      for (int i = 0; i < touchedSize; i++) {
+        dist[touched[i]] = Double.POSITIVE_INFINITY;
+        prev[touched[i]] = -1;
+      }
+      touchedSize = 0;
+      heapSize = 0;
+    }
+
+    private void push(final double key, final int node) {
+      if (heapSize == heapKeys.length) {
+        heapKeys = Arrays.copyOf(heapKeys, heapSize * 2);
+        heapNodes = Arrays.copyOf(heapNodes, heapSize * 2);
+      }
+      int i = heapSize++;
+      while (i > 0) {
+        final int parent = (i - 1) >>> 1;
+        if (heapKeys[parent] <= key)
+          break;
+        heapKeys[i] = heapKeys[parent];
+        heapNodes[i] = heapNodes[parent];
+        i = parent;
+      }
+      heapKeys[i] = key;
+      heapNodes[i] = node;
+    }
+
+    private int pop() {
+      final int top = heapNodes[0];
+      final int last = --heapSize;
+      if (last > 0) {
+        final double key = heapKeys[last];
+        final int node = heapNodes[last];
+        int i = 0;
+        while (true) {
+          int child = 2 * i + 1;
+          if (child >= last)
+            break;
+          if (child + 1 < last && heapKeys[child + 1] < heapKeys[child])
+            ++child;
+          if (heapKeys[child] >= key)
+            break;
+          heapKeys[i] = heapKeys[child];
+          heapNodes[i] = heapNodes[child];
+          i = child;
+        }
+        heapKeys[i] = key;
+        heapNodes[i] = node;
+      }
+      return top;
+    }
   }
 }

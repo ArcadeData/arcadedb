@@ -48,6 +48,8 @@ public abstract class ResettableIteratorBase<T> implements ResettableIterator<T>
   private         RID              returnedVertex;
   // SET WHEN THE WALKED LIST WAS CHANGED BY SOMETHING ELSE DURING A remove(): THE ITERATOR'S VIEW OF IT IS STALE
   private         boolean          invalidated;
+  // THE LIST THIS ITERATION READS, WHICH COUNTS THE TWINS OF ITS LIGHTWEIGHT EDGES WHEN ASKED (ISSUE #10008)
+  private         EdgeLinkedList   censusSource;
 
   protected ResettableIteratorBase(final DatabaseInternal database, final EdgeSegment current) {
     if (current == null)
@@ -69,6 +71,15 @@ public abstract class ResettableIteratorBase<T> implements ResettableIterator<T>
    *
    * @param neighbor the only neighbour vertex to accept, or {@code null} to iterate everything
    */
+  final void setCensusSource(final EdgeLinkedList list) {
+    this.censusSource = list;
+  }
+
+  /** The census the lightweight edges handed out by this iteration share, or null when the iteration has none. */
+  protected final LightEdgeCensus lightEdgeCensus() {
+    return censusSource != null ? censusSource.lightEdgeCensus() : null;
+  }
+
   public void setNeighborVertexFilter(final RID neighbor) {
     this.neighborFiltered = neighbor != null;
     this.neighborBucketId = neighbor != null ? neighbor.getBucketId() : -1;

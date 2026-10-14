@@ -26,7 +26,9 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.EdgeIdentitySet;
 import com.arcadedb.graph.IncomingEdgeLookup;
+import com.arcadedb.graph.LightEdgeRID;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.ast.DeleteClause;
 import com.arcadedb.query.opencypher.ast.Expression;
@@ -69,9 +71,28 @@ public class DeleteStep extends AbstractExecutionStep {
    * statement. A single DeleteStep is built per statement execution, so this de-dups an element
    * bound by more than one row - e.g. an undirected relationship matched from both endpoints
    * ({@code MATCH (u)-[r]-() DELETE r}) - so it is removed once and counted once, matching Neo4j.
-   * Records equal by RID (see BaseRecord.equals), so different instances of the same edge collapse.
+   * Records equal by RID (see BaseRecord.equals), so different instances of the same vertex collapse. Relationships are
+   * kept apart, in {@link #deletedEdges}.
    */
   private final Set<Object> deleted = new HashSet<>();
+
+  /**
+   * The relationships already deleted (and counted) by this DELETE. An {@link EdgeIdentitySet} rather than a set of
+   * records: two parallel lightweight edges of one type over the same ordered pair share their RID and are still two
+   * relationships, so a RID-keyed set deleted one of them and skipped the others as "already deleted" (issue #10008).
+   * Telling them apart needs the occurrence of each, which is resolved by walking the edge list, so it must be resolved
+   * while the list still holds every twin: see {@link #pinOccurrences}.
+   */
+  private final EdgeIdentitySet deletedEdges = new EdgeIdentitySet();
+
+  /**
+   * True once the occurrences of every lightweight edge the rest of the statement will delete are resolved: the first
+   * row that deletes a lightweight edge with a twin reads the remaining rows in (when they are not already) and
+   * resolves them, before its own delete changes the list they were read from (issue #10008). The rows are otherwise
+   * pipelined, and a row read after the first twin is gone numbers the survivor as the first: a dedup keyed on the
+   * occurrence would skip it as already deleted.
+   */
+  private boolean twinsPinned = false;
 
   /**
    * Vertices of a non-DETACH DELETE that still had a relationship when their row was processed. Another row of the
@@ -232,7 +253,7 @@ public class DeleteStep extends AbstractExecutionStep {
 
             // Apply DELETE operations to this result
             final Set<String> deletedVars = new HashSet<>();
-            applyDeleteOperations(inputResult, deletedVars);
+            applyDeleteOperations(inputResult, deletedVars, this::pinRemainingRows);
 
             // Mark deleted variables in the result so subsequent access throws DeletedEntityAccess
             if (!deletedVars.isEmpty() && inputResult instanceof ResultInternal mutableResult) {
@@ -262,11 +283,55 @@ public class DeleteStep extends AbstractExecutionStep {
         }
       }
 
+      /**
+       * Reads every remaining row in, when the upstream is still streaming, and resolves the occurrence of every
+       * lightweight edge they delete, before the first twin is deleted (see {@link #twinsPinned}).
+       */
+      private void pinRemainingRows() {
+        if (twinsPinned)
+          return;
+        twinsPinned = true;
+        if (materializedInput == null) {
+          final List<Result> remaining = new ArrayList<>();
+          heapLimit = OperationHeapLimit.of(context, "DELETE of parallel lightweight edges");
+          try {
+            while (prevResults.hasNext()) {
+              final Result row = prevResults.next();
+              remaining.add(row);
+              heapLimit.add(remaining.size(), row);
+            }
+          } catch (final RuntimeException e) {
+            releaseHeap();
+            throw e;
+          }
+          materializedInput = remaining;
+          materializedIndex = 0;
+        }
+        for (int i = materializedIndex; i < materializedInput.size(); i++) {
+          final List<Object> edges = new ArrayList<>();
+          collectRowTargets(materializedInput.get(i), edges, new ArrayList<>(), null);
+          pinOccurrences(edges);
+        }
+      }
+
       @Override
       public void close() {
         DeleteStep.this.close();
       }
     };
+  }
+
+  /**
+   * Resolves which twin each lightweight edge of {@code edges} is, while the edge lists still hold every one of them.
+   *
+   * @return true when one of them has a twin, i.e. when deleting it changes how the others are numbered
+   */
+  private static boolean pinOccurrences(final List<?> edges) {
+    boolean twinned = false;
+    for (final Object edge : edges)
+      if (edge instanceof Edge e && e.getIdentity() instanceof LightEdgeRID light && light.getTwinCount() > 1)
+        twinned = true;
+    return twinned;
   }
 
   /** CommandContext variable holding the deferred-delete batch within a FOREACH iteration. */
@@ -281,7 +346,7 @@ public class DeleteStep extends AbstractExecutionStep {
    *
    * @param result the result containing variables to delete
    */
-  private void applyDeleteOperations(final Result result, final Set<String> deletedVars) {
+  private void applyDeleteOperations(final Result result, final Set<String> deletedVars, final Runnable pinRemainingRows) {
     if (deleteClause == null || deleteClause.isEmpty())
       return;
 
@@ -300,24 +365,7 @@ public class DeleteStep extends AbstractExecutionStep {
       // to avoid "DeleteConnectedNode" errors when multiple targets share nodes
       final List<Object> allEdges = new ArrayList<>();
       final List<Object> allOther = new ArrayList<>();
-
-      final List<String> variables = deleteClause.getVariables();
-      final List<Expression> expressions = deleteClause.getExpressions();
-      for (int i = 0; i < variables.size(); i++) {
-        final String variable = variables.get(i);
-        final Object obj;
-        if (expressions != null && i < expressions.size() && expressions.get(i) != null
-            && isFunctionLikeTarget(variable)) {
-          obj = expressions.get(i).evaluate(result, context);
-        } else {
-          obj = resolveDeleteTarget(variable, result);
-        }
-        if (obj == null)
-          continue;
-        collectDeleteTargets(obj, allEdges, allOther);
-        if (!variable.contains(".") && !variable.contains("[") && !variable.contains("("))
-          deletedVars.add(variable);
-      }
+      collectRowTargets(result, allEdges, allOther, deletedVars);
 
       if (deferredBatch != null) {
         final boolean detach = deleteClause.isDetach();
@@ -327,6 +375,11 @@ public class DeleteStep extends AbstractExecutionStep {
           deferredBatch.add(new DeferredDeleteTarget(other, detach));
         return;
       }
+
+      // The lightweight edges of the row are numbered before anything is deleted; the first one with a twin numbers
+      // the rest of the statement's too, while their lists still hold every twin (#10008)
+      if (pinOccurrences(allEdges) && pinRemainingRows != null)
+        pinRemainingRows.run();
 
       // Delete all edges first, then all other objects (vertices, documents). The `deleted` set is
       // a step-instance field shared across rows so an element bound by multiple rows is deleted once.
@@ -350,6 +403,31 @@ public class DeleteStep extends AbstractExecutionStep {
     }
   }
 
+  /**
+   * Evaluates the targets of the DELETE on {@code row}: relationships into {@code edges}, everything else into
+   * {@code other}, and the plain variables deleted into {@code deletedVars} when not null.
+   */
+  private void collectRowTargets(final Result row, final List<Object> edges, final List<Object> other,
+      final Set<String> deletedVars) {
+    final List<String> variables = deleteClause.getVariables();
+    final List<Expression> expressions = deleteClause.getExpressions();
+    for (int i = 0; i < variables.size(); i++) {
+      final String variable = variables.get(i);
+      final Object obj;
+      if (expressions != null && i < expressions.size() && expressions.get(i) != null
+          && isFunctionLikeTarget(variable)) {
+        obj = expressions.get(i).evaluate(row, context);
+      } else {
+        obj = resolveDeleteTarget(variable, row);
+      }
+      if (obj == null)
+        continue;
+      collectDeleteTargets(obj, edges, other);
+      if (deletedVars != null && !variable.contains(".") && !variable.contains("[") && !variable.contains("("))
+        deletedVars.add(variable);
+    }
+  }
+
   /** Flush deferred DELETE batch built up by a FOREACH iteration: edges first, then vertices. */
   public static void flushDeferredDeletes(final CommandContext context, final List<DeferredDeleteTarget> batch) {
     if (batch == null || batch.isEmpty())
@@ -364,17 +442,23 @@ public class DeleteStep extends AbstractExecutionStep {
     }
     final QueryStatistics stats = context.getStatistics();
     final Set<Object> deleted = new HashSet<>();
+    final EdgeIdentitySet deletedEdges = new EdgeIdentitySet();
+    // every twin is numbered before the first delete changes the lists (#10008)
+    pinOccurrences(edges);
     for (final Object edge : edges)
-      deleteObjectStatic(edge, deleted, stats);
+      deleteObjectStatic(edge, deleted, deletedEdges, stats);
     for (final DeferredDeleteTarget entry : others) {
       final Object target = entry.target();
       if (target instanceof Vertex v && !deleted.contains(v)) {
         if (entry.detach() || hasNoEdges(v)) {
-          if (entry.detach())
+          if (entry.detach()) {
             // DETACH removes connected relationships; count each one not already deleted so
-            // relationships-deleted matches Neo4j (deleteObjectStatic skips any already in `deleted`).
-            for (final Edge edge : collectConnectedEdges(v))
-              deleteObjectStatic(edge, deleted, stats);
+            // relationships-deleted matches Neo4j (deleteObjectStatic skips any already in `deletedEdges`).
+            final List<Edge> connected = collectConnectedEdges(v);
+            pinOccurrences(connected);
+            for (final Edge edge : connected)
+              deleteObjectStatic(edge, deleted, deletedEdges, stats);
+          }
           try {
             v.delete();
             stats.incNodesDeleted();
@@ -393,7 +477,7 @@ public class DeleteStep extends AbstractExecutionStep {
               + " its relationships, or use DETACH DELETE");
         }
       } else {
-        deleteObjectStatic(target, deleted, stats);
+        deleteObjectStatic(target, deleted, deletedEdges, stats);
       }
     }
     batch.clear();
@@ -427,14 +511,25 @@ public class DeleteStep extends AbstractExecutionStep {
     return edges;
   }
 
-  private static void deleteObjectStatic(final Object obj, final Set<Object> deleted, final QueryStatistics stats) {
-    if (obj == null || deleted.contains(obj))
+  private static void deleteObjectStatic(final Object obj, final Set<Object> deleted, final EdgeIdentitySet deletedEdges,
+      final QueryStatistics stats) {
+    if (obj == null)
       return;
-    try {
-      if (obj instanceof Edge e) {
+    if (obj instanceof Edge e) {
+      if (!deletedEdges.add(e.getIdentity()))
+        return;
+      try {
         e.delete();
         stats.incRelationshipsDeleted();
-      } else if (obj instanceof Vertex v) {
+      } catch (final RecordNotFoundException ignored) {
+        // already removed
+      }
+      return;
+    }
+    if (deleted.contains(obj))
+      return;
+    try {
+      if (obj instanceof Vertex v) {
         v.delete();
         stats.incNodesDeleted();
       } else if (obj instanceof Document)
@@ -559,7 +654,7 @@ public class DeleteStep extends AbstractExecutionStep {
   }
 
   private void deleteObject(final Object obj, final Set<Object> deleted) {
-    if (obj == null || deleted.contains(obj))
+    if (obj == null || (!(obj instanceof Edge) && deleted.contains(obj)))
       return;
 
     if (obj instanceof Vertex vertex) {
@@ -571,14 +666,15 @@ public class DeleteStep extends AbstractExecutionStep {
       deleted.add(obj);
       try {
         // the relationships were just looked up above: not asked again
-        deleteVertex(vertex, deleted, true);
+        deleteVertex(vertex, true);
       } catch (final RecordNotFoundException e) {
         // Already deleted - skip
       }
-    } else if (obj instanceof Edge) {
-      deleted.add(obj);
+    } else if (obj instanceof Edge edge) {
+      if (!deletedEdges.add(edge.getIdentity()))
+        return;
       try {
-        deleteEdge((Edge) obj, deleted);
+        deleteEdge(edge);
       } catch (final RecordNotFoundException e) {
         // Already deleted - skip
       }
@@ -644,7 +740,7 @@ public class DeleteStep extends AbstractExecutionStep {
         if (deleted.contains(current))
           continue;
         deleted.add(current);
-        deleteVertex(current, deleted, false);
+        deleteVertex(current, false);
       }
       if (!wasInTransaction)
         database.commit();
@@ -661,15 +757,16 @@ public class DeleteStep extends AbstractExecutionStep {
    * Deletes a vertex from the graph.
    * If detach is true, deletes all connected relationships first.
    *
-   * @param vertex  vertex to delete
-   * @param deleted shared set of already-deleted objects, so a relationship removed both by DETACH
-   *                and by an explicit edge delete in the same statement is counted only once
+   * A relationship removed both by DETACH and by an explicit edge delete in the same statement is counted only once,
+   * through {@link #deletedEdges}.
+   *
+   * @param vertex       vertex to delete
    * @param edgesChecked true when the caller just verified the vertex has no relationship (non-DETACH)
    */
-  private void deleteVertex(final Vertex vertex, final Set<Object> deleted, final boolean edgesChecked) {
+  private void deleteVertex(final Vertex vertex, final boolean edgesChecked) {
     if (deleteClause.isDetach()) {
       // DETACH DELETE: Remove all connected relationships first
-      deleteAllEdges(vertex, deleted);
+      deleteAllEdges(vertex);
     } else if (!edgesChecked) {
       // Non-DETACH DELETE: check for connected edges
       if (hasEdges(vertex))
@@ -684,16 +781,18 @@ public class DeleteStep extends AbstractExecutionStep {
   /**
    * Deletes all edges connected to a vertex.
    *
-   * @param vertex  vertex whose edges should be deleted
-   * @param deleted shared set of already-deleted objects; edges already removed and counted earlier
-   *                in the same statement (by an explicit DELETE or another vertex's DETACH pass) are
-   *                skipped here
+   * Edges already removed and counted earlier in the same statement (by an explicit DELETE or another vertex's DETACH
+   * pass, see {@link #deletedEdges}) are skipped here.
+   *
+   * @param vertex vertex whose edges should be deleted
    */
-  private void deleteAllEdges(final Vertex vertex, final Set<Object> deleted) {
+  private void deleteAllEdges(final Vertex vertex) {
     // Collect connected edges in both directions, de-duplicating self-loops (which appear in both
     // OUT and IN) so a self-loop relationship is deleted and counted exactly once.
+    // An EdgeIdentitySet, not a set of RIDs: parallel lightweight edges of one type over the same pair share their RID,
+    // and a self-loop's twins are as many relationships as there are twins (#10008)
     final List<Edge> edgesToDelete = new ArrayList<>();
-    final Set<RID> seen = new HashSet<>();
+    final EdgeIdentitySet seen = new EdgeIdentitySet();
     for (final Edge edge : vertex.getEdges(Vertex.DIRECTION.OUT))
       if (seen.add(edge.getIdentity()))
         edgesToDelete.add(edge);
@@ -703,19 +802,19 @@ public class DeleteStep extends AbstractExecutionStep {
     for (final Edge edge : incomingUnidirectionalEdges(vertex))
       if (seen.add(edge.getIdentity()))
         edgesToDelete.add(edge);
+    // numbered before the first of them is deleted, so the dedup below still tells the twins apart
+    pinOccurrences(edgesToDelete);
 
     final QueryStatistics stats = context.getStatistics();
     for (final Edge edge : edgesToDelete) {
       // Skip any relationship already removed and counted by an explicit DELETE in the same statement.
-      if (deleted.contains(edge))
+      if (!deletedEdges.add(edge.getIdentity()))
         continue;
       try {
         edge.delete();
         stats.incRelationshipsDeleted();
-        deleted.add(edge);
       } catch (final RecordNotFoundException ignored) {
         // already removed (e.g. a shared edge deleted when the other endpoint was detached) - do not count again
-        deleted.add(edge);
       }
     }
   }
@@ -723,14 +822,11 @@ public class DeleteStep extends AbstractExecutionStep {
   /**
    * Deletes an edge from the graph.
    *
-   * @param edge    edge to delete
-   * @param deleted shared set of already-deleted objects, updated so a later DETACH pass does not
-   *                recount this edge
+   * @param edge edge to delete, already added to {@link #deletedEdges} so a later DETACH pass does not recount it
    */
-  private void deleteEdge(final Edge edge, final Set<Object> deleted) {
+  private void deleteEdge(final Edge edge) {
     edge.delete();
     context.getStatistics().incRelationshipsDeleted();
-    deleted.add(edge);
   }
 
   /**
