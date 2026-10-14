@@ -43,6 +43,7 @@ import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.CollectionUtils;
 import com.arcadedb.utility.FileUtils;
@@ -2668,11 +2669,28 @@ public class LocalDocumentType implements DocumentType {
         indexesByFileName.put(entry.getMostRecentFileName(), indexJSON);
       }
     }
+
+    // An index the last load could not serve for a missing header page keeps its definition (issue #10046), until an index
+    // on the same bucket and properties replaces it - which is what REBUILD INDEX or CREATE INDEX leaves behind.
+    final Map<String, JSONObject> unavailable = schema.getUnavailableIndexDefinitions(name);
+    if (!unavailable.isEmpty()) {
+      final Set<String> served = new HashSet<>();
+      for (final JSONObject indexJSON : indexesByFileName.values())
+        served.add(bucketAndProperties(indexJSON));
+      for (final Map.Entry<String, JSONObject> entry : unavailable.entrySet())
+        if (!indexesByFileName.containsKey(entry.getKey()) && !served.contains(bucketAndProperties(entry.getValue())))
+          indexesByFileName.put(entry.getKey(), entry.getValue());
+    }
+
     for (final Map.Entry<String, JSONObject> entry : indexesByFileName.entrySet())
       indexes.put(entry.getKey(), entry.getValue());
 
     type.put("custom", new JSONObject(new TreeMap<>(custom)));
     return type;
+  }
+
+  private static String bucketAndProperties(final JSONObject indexJSON) {
+    return indexJSON.getString("bucket", "") + "|" + indexJSON.getJSONArray("properties", new JSONArray()).toString();
   }
 
   protected <RET> RET recordFileChanges(final Callable<Object> callback) {

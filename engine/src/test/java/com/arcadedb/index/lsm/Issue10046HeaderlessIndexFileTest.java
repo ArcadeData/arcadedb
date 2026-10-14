@@ -114,6 +114,28 @@ class Issue10046HeaderlessIndexFileTest extends TestHelper {
 
     assertLookupsAnswer();
     assertThat(headerless.exists()).as("the load must not delete what it cannot read (#4743)").isTrue();
+
+    // The definition survives a save and a reopen: dropping it would lose the user's index for good
+    database.getSchema().createDocumentType("Issue10046Unrelated");
+    reopenDatabase();
+    assertThat(Files.readString(schemaFile.toPath(), StandardCharsets.UTF_8))
+        .as("the definition of an index waiting for its header must stay in the schema file").contains(compactedName);
+    assertLookupsAnswer();
+
+    // Creating the index again replaces it, and only then does the old definition leave the schema file
+    database.getSchema().getType(TYPE).createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "id");
+    assertThat(Files.readString(schemaFile.toPath(), StandardCharsets.UTF_8)).doesNotContain(compactedName);
+    reopenDatabase();
+    assertThat(database.getSchema().getType(TYPE).getAllIndexes(false)).hasSize(1);
+    assertLookupsAnswer();
+  }
+
+  @Test
+  void aNegativeCompactionStampIsStrippedLikeAPositiveOne() {
+    assertThat(LSMTreeIndexAbstract.compactionBaseName("Type_0_-1234")).isEqualTo("Type_0");
+    assertThat(LSMTreeIndexAbstract.compactionBaseName("Type_0_1234")).isEqualTo("Type_0");
+    assertThat(LSMTreeIndexAbstract.compactionBaseName("Manual_-")).isEqualTo("Manual_-");
+    assertThat(LSMTreeIndexAbstract.compactionBaseName("Manual_Idx")).isEqualTo("Manual_Idx");
   }
 
   /**

@@ -288,6 +288,9 @@ public class LocalSchema implements Schema {
   // cannot be null - LocalDocumentType uses the TypeIndex's own name, and ManualIndexBuilder.create() rejects a null
   // one up front, it being the only route by which a caller-supplied name reaches this map unmediated.
   protected final     Map<String, IndexInternal>             indexMap                      = new ConcurrentHashMap<>();
+  // #10046: per type, the definitions of the bucket indexes whose file the last load refused for a missing header page,
+  // keyed by file name. Re-emitted by LocalDocumentType.toJSON() so a save does not lose them, see readConfiguration().
+  private volatile    Map<String, Map<String, JSONObject>>   unavailableIndexDefinitions   = Map.of();
 
   /**
    * The index and bucket components an in-flight schema load has instantiated but whose {@code onAfterSchemaLoad()}
@@ -1375,6 +1378,15 @@ public class LocalSchema implements Schema {
             .log(this, Level.WARNING, "Error on dropping orphan compacted index file '%s'", e, compacted.getName());
       }
     }
+  }
+
+  /**
+   * The definitions, keyed by file name, of the bucket indexes of {@code typeName} that the last load found bound to a file
+   * with no header page (issue #10046): not served, but kept in the schema file until they can be again.
+   */
+  Map<String, JSONObject> getUnavailableIndexDefinitions(final String typeName) {
+    final Map<String, JSONObject> definitions = unavailableIndexDefinitions.get(typeName);
+    return definitions != null ? definitions : Map.of();
   }
 
   /**
@@ -3500,6 +3512,7 @@ public class LocalSchema implements Schema {
       // "Cannot find index" warnings for cases that are then silently relinked, which masks
       // the genuine cases where the file is truly missing (issue #4063).
       final Map<String, List<String>> deferredMissingIndexWarnings = new LinkedHashMap<>();
+      final Map<String, Map<String, JSONObject>> unavailableIndexes = new HashMap<>();
       // The BM25 corpus counters of a full-text index are TYPE-wide, so every bucket sub-index of one logical index has to
       // share ONE FullTextIndexMetadata, as the creation path does. Building one per bucket sub-index here made each copy
       // count only its own bucket's inserts, ran the once-per-session stale check (a full type scan) once per bucket, and
@@ -3611,6 +3624,16 @@ public class LocalSchema implements Schema {
                 reportUpgradeWarning(index, typeName, properties);
               }
 
+            } else if (database.getFileManager().getFileByComponentName(indexName) != null) {
+              // The file is there, but its load was refused for a missing header page (issue #10046): the index cannot
+              // serve, and queries scan instead. Its definition is KEPT, unlike a missing file's below: dropping it from
+              // the schema would lose a user index for good (#4743), where the file may yet be completed - an HA entry
+              // still to apply writes its header - or the index rebuilt from this very definition.
+              unavailableIndexes.computeIfAbsent(typeName, k -> new TreeMap<>()).put(indexName, indexJSON.copy());
+              LogManager.instance().log(this, Level.SEVERE,
+                  "Index '%s' of type '%s' is unavailable: its file has no header page. Queries on the type scan instead of "
+                      + "using it. Its definition is kept until the file is complete or an index on the same properties is "
+                      + "created again with 'REBUILD INDEX' or 'CREATE INDEX'", null, indexName, typeName);
             } else {
               orphanIndexes.put(indexName, indexJSON);
               indexJSON.put("type", typeName);
@@ -3709,6 +3732,8 @@ public class LocalSchema implements Schema {
       // unrelinkable index reference would log "Cannot find indexes [...]" on every later
       // SCHEMA_ENTRY apply because applySchemaEntry calls load() each time and the persisted
       // schema.json kept the dangling reference).
+      unavailableIndexDefinitions = unavailableIndexes.isEmpty() ? Map.of() : unavailableIndexes;
+
       for (final Map.Entry<String, List<String>> entry : deferredMissingIndexWarnings.entrySet()) {
         final List<String> stillMissing = new ArrayList<>(entry.getValue().size());
         for (final String n : entry.getValue())
