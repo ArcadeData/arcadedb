@@ -68,11 +68,15 @@ class RegexAutomatonTest {
   @Test
   void whatIsNotRegularIsLeftToTheCaller() {
     for (final String notCompiled : List.of("(1)\\1", "1(?=2)2", "(?<=1)2", "(?>12)", "1*+1", "1{2}{3}", "\\b1", "(?x)1 2",
-        "1(?i)2", "\\k<n>", "[[]]1]"))
+        "1(?i)2", "\\k<n>", "[[]]1]", "1\\B2", "\\G1", "1\\R", "\\X", "(?s)1(?m)2", "(?-i)1", "(?i:1)"))
       assertThat(RegexAutomaton.compile(notCompiled, DIGITS)).as(notCompiled).isNull();
     // an alphabet holding a line terminator: '$' would also match before it
     assertThat(RegexAutomaton.compile("1$", "1\n")).isNull();
     assertThat(RegexAutomaton.compile("1", "1\n")).isNotNull();
+    // the classes Pattern itself answers for, the leading flags included
+    assertAgreesWithJava("\\h?\\p{Digit}+\\P{Alpha}", "1a -\u00a0", 4);
+    assertAgreesWithJava("(?iu)[a-z\\u00e0]+", "aA\u00e0\u00c01", 3);
+    assertAgreesWithJava("(?U)\\w+", "a1\u00e0-", 3);
   }
 
   @Test
@@ -186,6 +190,8 @@ class RegexAutomatonTest {
     // a quantifier on a quantifier, however written, is not compiled
     assertThat(RegexAutomaton.compile("0{1000}{1000}", DIGITS)).isNull();
     assertThat(RegexAutomaton.compile("(0{100}){100}{100}", DIGITS)).isNull();
+    assertThat(RegexAutomaton.compile(".{0,100000}", DIGITS)).isNull();
+    assertThat(RegexAutomaton.compile("(0{1000}){1000}", DIGITS)).isNull();
     // refused from its size alone, before a state is built: this one would be 10^12 copies
     assertThat(RegexAutomaton.compile("(((0{1,10000}){1,10000}){1,10000})", DIGITS)).isNull();
   }
