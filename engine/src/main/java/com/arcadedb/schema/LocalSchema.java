@@ -1357,7 +1357,8 @@ public class LocalSchema implements Schema {
 
       if (awaitingHeader.contains(LSMTreeIndexAbstract.compactionBaseName(compacted.getName()))) {
         LogManager.instance().log(this, Level.WARNING,
-            "Keeping unclaimed compacted index file '%s' (fileId=%d): a mutable file of the same index has no header page yet",
+            "Keeping unclaimed compacted index file '%s' (fileId=%d): a mutable file of the same index has no header page yet. "
+                + "If it never arrives, run 'REBUILD INDEX' on that index",
             null, compacted.getName(), compacted.getFileId());
         continue;
       }
