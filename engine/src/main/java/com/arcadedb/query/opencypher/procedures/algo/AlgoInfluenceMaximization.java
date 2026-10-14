@@ -92,9 +92,9 @@ public class AlgoInfluenceMaximization extends AbstractAlgoProcedure {
     // NegativeArraySizeException that never names the parameter. extractCount() is exactly those two halves,
     // added for algo.knn / algo.kShortestPaths by #6065.
     final int k = args[0] instanceof Number n ? extractCount(n, "k") : 1;
-    final String[] relTypes = args.length > 1 ? extractRelTypes(args[1], context) : null;
-    final int simulations = args.length > 2 && args[2] instanceof Number n ? extractInt(n, "simulations", 1) : 100;
-    final double propagationProbability = args.length > 3 && args[3] instanceof Number n ? n.doubleValue() : 0.1;
+    final String[] relTypes = extractRelTypes(argOrDefault(args, 1, null), context);
+    final int simulations = extractInt(optionalNumberArg(args, 2, "simulations", 100), "simulations", 1);
+    final double propagationProbability = optionalNumberArg(args, 3, "propagationProbability", 0.1).doubleValue();
 
     final Database db = context.getDatabase();
 

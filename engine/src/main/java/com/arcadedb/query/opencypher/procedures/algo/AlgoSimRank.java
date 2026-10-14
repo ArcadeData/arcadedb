@@ -85,9 +85,9 @@ public class AlgoSimRank extends AbstractAlgoProcedure {
 
     final Vertex nodeA       = extractVertex(args[0], "nodeA");
     final Vertex nodeB       = extractVertex(args[1], "nodeB");
-    final String[] relTypes  = args.length > 2 ? extractRelTypes(args[2], context) : null;
-    final double decayFactor = args.length > 3 ? ((Number) args[3]).doubleValue() : 0.8;
-    final int maxIterations  = args.length > 4 ? extractInt((Number) args[4], "maxIterations", 1) : 5;
+    final String[] relTypes  = extractRelTypes(argOrDefault(args, 2, null), context);
+    final double decayFactor = optionalNumberArg(args, 3, "decayFactor", 0.8).doubleValue();
+    final int maxIterations  = extractInt(optionalNumberArg(args, 4, "maxIterations", 5), "maxIterations", 1);
 
     final Database db = context.getDatabase();
     final WorkGuard guard = newWorkGuard(context);

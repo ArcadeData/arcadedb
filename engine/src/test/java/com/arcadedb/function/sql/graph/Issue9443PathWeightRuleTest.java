@@ -26,6 +26,7 @@ import com.arcadedb.graph.EdgeWeight;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.olap.GraphAnalyticalView;
+import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Type;
@@ -313,7 +314,7 @@ class Issue9443PathWeightRuleTest {
   }
 
   private static List<String> pathNames(final Object path) {
-    return namesOf((List<?>) ((Map<?, ?>) path).get("nodes"));
+    return namesOf(((TraversalPath) path).getVertices());
   }
 
   private static List<String> namesOf(final List<?> elements) {

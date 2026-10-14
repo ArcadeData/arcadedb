@@ -79,10 +79,10 @@ public class AlgoEigenvectorCentrality extends AbstractAlgoProcedure {
   public Stream<Result> execute(final Object[] args, final Result inputRow, final CommandContext context) {
     validateArgs(args);
 
-    final String[] relTypes    = args.length > 0 ? extractRelTypes(args[0], context) : null;
-    final Vertex.DIRECTION dir = args.length > 1 ? parseDirection(extractString(args[1], "direction")) : Vertex.DIRECTION.BOTH;
-    final int maxIterations    = args.length > 2 ? extractInt((Number) args[2], "maxIterations", 1) : 20;
-    final double tolerance     = args.length > 3 ? ((Number) args[3]).doubleValue() : 1e-6;
+    final String[] relTypes    = extractRelTypes(argOrDefault(args, 0, null), context);
+    final Vertex.DIRECTION dir = parseDirection(extractString(argOrDefault(args, 1, "BOTH"), "direction"));
+    final int maxIterations    = extractInt(optionalNumberArg(args, 2, "maxIterations", 20), "maxIterations", 1);
+    final double tolerance     = optionalNumberArg(args, 3, "tolerance", 1e-6).doubleValue();
 
     final Database db = context.getDatabase();
     final WorkGuard guard = newWorkGuard(context);

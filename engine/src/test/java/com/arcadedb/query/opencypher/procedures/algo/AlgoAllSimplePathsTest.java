@@ -23,6 +23,7 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
@@ -31,7 +32,6 @@ import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -127,8 +127,8 @@ class AlgoAllSimplePathsTest {
     assertThat(results).isNotEmpty();
 
     for (final Result r : results) {
-      final Map<String, Object> path = (Map<String, Object>) r.getProperty("path");
-      final List<Object> rels = (List<Object>) path.get("relationships");
+      final TraversalPath path = r.getProperty("path");
+      final List<?> rels = path.getEdges();
       for (final Object rel : rels) {
         final String typeName = rel instanceof Edge edge ? edge.getTypeName() : null;
         assertThat(typeName).isNotEqualTo("FRIEND");
@@ -153,8 +153,8 @@ class AlgoAllSimplePathsTest {
     assertThat(results).isNotEmpty();
 
     for (final Result r : results) {
-      final Map<String, Object> path = (Map<String, Object>) r.getProperty("path");
-      final List<Object> rels = (List<Object>) path.get("relationships");
+      final TraversalPath path = r.getProperty("path");
+      final List<?> rels = path.getEdges();
       for (final Object rel : rels) {
         final String typeName = rel instanceof Edge edge ? edge.getTypeName() : null;
         assertThat(typeName).isEqualTo("KNOWS");
@@ -223,8 +223,8 @@ class AlgoAllSimplePathsTest {
     assertThat(results).isNotEmpty();
 
     for (final Result r : results) {
-      final Map<String, Object> path = (Map<String, Object>) r.getProperty("path");
-      final List<Object> nodes = (List<Object>) path.get("nodes");
+      final TraversalPath path = r.getProperty("path");
+      final List<?> nodes = path.getVertices();
       for (final Object node : nodes) {
         final String typeName = node instanceof Vertex v ? v.getTypeName() : null;
         assertThat(typeName).isNotEqualTo("Gateway");
@@ -277,12 +277,12 @@ class AlgoAllSimplePathsTest {
     assertThat(results).isNotEmpty();
 
     for (final Result r : results) {
-      final Map<String, Object> path = (Map<String, Object>) r.getProperty("path");
-      final List<Object> rels = (List<Object>) path.get("relationships");
+      final TraversalPath path = r.getProperty("path");
+      final List<?> rels = path.getEdges();
       for (final Object rel : rels)
         assertThat(rel instanceof Edge edge ? edge.getTypeName() : null).isNotEqualTo("FRIEND");
 
-      final List<Object> nodes = (List<Object>) path.get("nodes");
+      final List<?> nodes = path.getVertices();
       for (final Object node : nodes)
         assertThat(node instanceof Vertex v ? v.getTypeName() : null).isNotEqualTo("Gateway");
     }

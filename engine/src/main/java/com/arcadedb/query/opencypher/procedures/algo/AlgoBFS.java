@@ -98,9 +98,9 @@ public class AlgoBFS extends AbstractAlgoProcedure {
     validateArgs(args);
 
     final Vertex startNode     = extractVertex(args[0], "startNode");
-    final String[] relTypes    = args.length > 1 ? extractRelTypes(args[1], context) : null;
-    final Vertex.DIRECTION dir = args.length > 2 ? parseDirection(extractString(args[2], "direction")) : Vertex.DIRECTION.BOTH;
-    final int maxDepth         = args.length > 3 ? NumberUtils.saturateToInt((Number) args[3]) : Integer.MAX_VALUE;
+    final String[] relTypes    = extractRelTypes(argOrDefault(args, 1, null), context);
+    final Vertex.DIRECTION dir = parseDirection(extractString(argOrDefault(args, 2, "BOTH"), "direction"));
+    final int maxDepth         = NumberUtils.saturateToInt(optionalNumberArg(args, 3, "maxDepth", Integer.MAX_VALUE));
 
     final Database db = context.getDatabase();
 

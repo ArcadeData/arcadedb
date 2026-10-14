@@ -23,6 +23,7 @@ import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -122,7 +123,7 @@ public class PathExpandConfig extends AbstractPathProcedure {
 
     // Convert paths to results (respect limit)
     return allPaths.stream().limit(limit).map(pathElements -> {
-      final Map<String, Object> path = buildPath(pathElements);
+      final TraversalPath path = buildPath(pathElements);
       final ResultInternal result = new ResultInternal();
       result.setProperty("path", path);
       return (Result) result;

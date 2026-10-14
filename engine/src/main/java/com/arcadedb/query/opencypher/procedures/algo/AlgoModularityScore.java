@@ -82,7 +82,7 @@ public class AlgoModularityScore extends AbstractAlgoProcedure {
     validateArgs(args);
 
     final String communityProperty = extractString(args[0], "communityProperty");
-    final String[] relTypes        = args.length > 1 ? extractRelTypes(args[1], context) : null;
+    final String[] relTypes        = extractRelTypes(argOrDefault(args, 1, null), context);
 
     final Database db = context.getDatabase();
 

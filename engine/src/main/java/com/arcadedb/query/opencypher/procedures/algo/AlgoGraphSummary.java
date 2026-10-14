@@ -80,8 +80,8 @@ public class AlgoGraphSummary extends AbstractAlgoProcedure {
   public Stream<Result> execute(final Object[] args, final Result inputRow, final CommandContext context) {
     validateArgs(args);
 
-    final String[] relTypes   = args.length > 0 ? extractRelTypes(args[0], context) : null;
-    final String[] nodeLabels = args.length > 1 ? extractNodeLabels(args[1], context) : null;
+    final String[] relTypes   = extractRelTypes(argOrDefault(args, 0, null), context);
+    final String[] nodeLabels = extractNodeLabels(argOrDefault(args, 1, null), context);
 
     final Database db = context.getDatabase();
     final GraphData graph = loadGraph(db, nodeLabels, relTypes, context);

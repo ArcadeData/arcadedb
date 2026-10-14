@@ -22,6 +22,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
@@ -211,7 +212,7 @@ class CypherAllShortestPathsParallelEdgesIssue8995Test extends TestHelper {
     try (final ResultSet rs = database.query("opencypher", "MATCH (a:N {id: 1}) RETURN allShortestPaths((a)-[*]-(a)) AS ps")) {
       final List<?> paths = rs.next().getProperty("ps");
       assertThat(paths).hasSize(1);
-      assertThat((List<?>) paths.get(0)).hasSize(1);
+      assertThat(((TraversalPath) paths.get(0)).getVertices()).hasSize(1);
     }
   }
 
@@ -300,9 +301,8 @@ class CypherAllShortestPathsParallelEdgesIssue8995Test extends TestHelper {
       final List<?> paths = rs.next().getProperty("ps");
       for (final Object path : paths) {
         final List<Object> eids = new ArrayList<>();
-        for (final Object element : (List<?>) path)
-          if (element instanceof Edge edge)
-            eids.add(edge.get("eid"));
+        for (final Edge edge : ((TraversalPath) path).getEdges())
+          eids.add(edge.get("eid"));
         out.add(eids);
       }
       assertThat(rs.hasNext()).isFalse();

@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Type;
@@ -218,7 +219,7 @@ class CypherShortestPathSelfPathBoundsIssue7017Test extends TestHelper {
     try (final ResultSet rs = database.query("opencypher",
         "MATCH (s:N {k:'a'}), (e:N {k:'a'}) RETURN shortestPath((s)-[:LINK*]-(e)) AS p")) {
       assertThat(rs.hasNext()).isTrue();
-      assertThat(rs.next().<List<?>>getProperty("p"))
+      assertThat(rs.next().<TraversalPath>getProperty("p").getVertices())
           .as("control: the unbounded spelling still yields the one-vertex, zero-length path")
           .hasSize(1);
     }

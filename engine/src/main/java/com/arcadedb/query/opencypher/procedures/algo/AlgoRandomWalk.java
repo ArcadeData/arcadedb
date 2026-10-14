@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher.procedures.algo;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.query.sql.executor.Result;
@@ -28,7 +29,6 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 import java.util.Random;
 import java.util.stream.Stream;
 
@@ -92,9 +92,9 @@ public class AlgoRandomWalk extends AbstractAlgoProcedure {
 
     final Vertex startVertex = extractVertex(args[0], "startNode");
     final int steps = extractInt((Number) args[1], "steps");
-    final String[] relTypes   = args.length > 2 ? extractRelTypes(args[2], context) : null;
-    final Vertex.DIRECTION dir = args.length > 3 ? parseDirection(extractString(args[3], "direction")) : Vertex.DIRECTION.BOTH;
-    final long seed = args.length > 4 ? ((Number) args[4]).longValue() : System.currentTimeMillis();
+    final String[] relTypes   = extractRelTypes(argOrDefault(args, 2, null), context);
+    final Vertex.DIRECTION dir = parseDirection(extractString(argOrDefault(args, 3, "BOTH"), "direction"));
+    final long seed = optionalNumberArg(args, 4, "seed", System.currentTimeMillis()).longValue();
 
     if (steps <= 0)
       return Stream.empty();
@@ -147,7 +147,8 @@ public class AlgoRandomWalk extends AbstractAlgoProcedure {
     for (int i = 0; i < walkLen; i++)
       rids.add(graph.getVertex(walk[i]).getIdentity());
 
-    final Map<String, Object> path = buildPath(rids, db);
+    // The walk knows the vertices it stepped on; the edges it stepped over are attached so the path is one (issue #9913)
+    final TraversalPath path = buildPath(attachEdges(rids, relTypes, dir, null).ridsWithEdges(), db);
     final ResultInternal result = new ResultInternal();
     result.setProperty("path", path);
     result.setProperty("steps", walkLen - 1);

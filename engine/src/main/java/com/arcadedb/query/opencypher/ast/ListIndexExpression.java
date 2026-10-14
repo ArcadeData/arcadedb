@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher.ast;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
 import com.arcadedb.query.opencypher.query.OpenCypherQueryEngine;
+import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
@@ -74,6 +75,9 @@ public class ListIndexExpression implements PropertyReadExpression {
         return ((Document) listValue).get(key);
       if (listValue instanceof Result)
         return ((Result) listValue).getProperty(key);
+      // path['nodes'] on a procedure's path, which used to be a map (issue #9913)
+      if (listValue instanceof TraversalPath path)
+        return path.getMember(key);
       // a persisted node-valued property is a LINK: read through it as a.link.v does, rather than answer null (#9701)
       if (listValue instanceof RID rid)
         return PropertyAccessExpression.readLinkedProperty(rid, key);

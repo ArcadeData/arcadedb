@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
@@ -29,7 +30,6 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
-import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -95,12 +95,11 @@ class AlgoDijkstraTest {
 
     assertThat(rs.hasNext()).isTrue();
     final Result result = rs.next();
-    @SuppressWarnings("unchecked")
-    final Map<String, Object> path = (Map<String, Object>) result.getProperty("path");
+    final TraversalPath path = result.getProperty("path");
     assertThat(path).isNotNull();
 
-    final List<?> nodes = (List<?>) path.get("nodes");
-    final List<?> relationships = (List<?>) path.get("relationships");
+    final List<?> nodes = path.getVertices();
+    final List<?> relationships = path.getEdges();
     assertThat(nodes).hasSize(3);
     assertThat(relationships).hasSize(2);
   }

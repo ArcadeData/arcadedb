@@ -24,6 +24,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.olap.GraphAnalyticalView;
+import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -348,8 +349,7 @@ class Issue6316AlgoLoadGraphAdoptionTest {
         new Object[] { named("A"), named("D"), 2, null, "w" }, null, context));
     return rows.stream()
         .map(row -> {
-          final Map<String, Object> path = (Map<String, Object>) row.getProperty("path");
-          final List<Vertex> nodes = (List<Vertex>) path.get("nodes");
+          final List<Vertex> nodes = ((TraversalPath) row.getProperty("path")).getVertices();
           final String names = nodes.stream().map(v -> v.getString("name")).collect(Collectors.joining(","));
           return names + ":" + row.<Number>getProperty("weight").doubleValue();
         })

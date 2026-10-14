@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -61,8 +62,8 @@ class Issue9123AllShortestPathsStreamingTest extends TestHelper {
     int n = 0;
     try (final ResultSet rs = database.query("opencypher", query)) {
       while (rs.hasNext()) {
-        final List<?> path = rs.next().getProperty("p");
-        assertThat(path).hasSize(HOPS * 2 + 1);
+        final TraversalPath path = rs.next().getProperty("p");
+        assertThat(path.length()).isEqualTo(HOPS);
         ++n;
       }
     }

@@ -95,8 +95,8 @@ public class AlgoMinSpanningArborescence extends AbstractAlgoProcedure {
     validateArgs(args);
 
     final Vertex root = extractVertex(args[0], "rootNode");
-    final String[] relTypes = args.length > 1 ? extractRelTypes(args[1], context) : null;
-    final String weightProperty = args.length > 2 ? extractString(args[2], "weightProperty") : null;
+    final String[] relTypes = extractRelTypes(argOrDefault(args, 1, null), context);
+    final String weightProperty = extractString(argOrDefault(args, 2, null), "weightProperty");
 
     final Database db = context.getDatabase();
     final WorkGuard guard = newWorkGuard(context);

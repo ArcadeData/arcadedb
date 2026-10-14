@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher.procedures.algo;
 
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -113,7 +114,7 @@ public class AlgoAStar extends AbstractAlgoProcedure {
 
     // The A* function returns vertex RIDs only: rebuild the edges between them for the weight and the relationships
     final WeightedPath weighted = attachEdges(pathRids, relType, Vertex.DIRECTION.BOTH, weightProperty);
-    final Map<String, Object> path = buildPath(weighted.ridsWithEdges(), context.getDatabase());
+    final TraversalPath path = buildPath(weighted.ridsWithEdges(), context.getDatabase());
     final double totalWeight = weighted.weight();
 
     final ResultInternal result = new ResultInternal();

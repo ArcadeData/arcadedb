@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.Document;
 import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.function.Function;
 import com.arcadedb.function.FunctionRegistry;
@@ -30,6 +31,7 @@ import com.arcadedb.function.agg.PercentileDiscFunction;
 import com.arcadedb.function.procedure.Procedure;
 import com.arcadedb.function.procedure.ProcedureRegistry;
 import com.arcadedb.function.vector.VectorCreateFunction;
+import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.function.CypherFunctionRegistry;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
@@ -38,6 +40,7 @@ import com.arcadedb.query.opencypher.temporal.CypherDate;
 import com.arcadedb.query.opencypher.temporal.CypherDuration;
 import com.arcadedb.query.opencypher.temporal.CypherLocalDateTime;
 import com.arcadedb.query.opencypher.temporal.CypherLocalTime;
+import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
@@ -1044,90 +1047,89 @@ class CypherBuiltInFunctionsTest extends TestHelper {
   }
 
   @Test
-  @SuppressWarnings("unchecked")
   void pathCreate() {
+    // Issue #9913: the path walks the relationships from the start node; it used to hold the start node alone
+    final TraversalPath chain = buildPath(2);
     final StatelessFunction fn = CypherFunctionRegistry.get("path.create");
-    final Map<String, Object> result = (Map<String, Object>) fn.execute(
-        new Object[] { "startNode", List.of("rel1", "rel2") }, null);
+    final TraversalPath result = (TraversalPath) fn.execute(new Object[] { chain.getStartVertex(), chain.getEdges() }, null);
 
-    assertThat(result).isNotNull();
-    assertThat(result.get("_type")).isEqualTo("path");
-    assertThat(result.get("length")).isEqualTo(2);
+    assertThat(result).isEqualTo(chain);
+    assertThat(result.length()).isEqualTo(2);
+    assertThat(names(result.getVertices())).containsExactly("n0", "n1", "n2");
   }
 
   @Test
   @SuppressWarnings("unchecked")
   void pathElements() {
-    final StatelessFunction createFn = CypherFunctionRegistry.get("path.create");
-    final Map<String, Object> path = (Map<String, Object>) createFn.execute(
-        new Object[] { "startNode", List.of("rel1") }, null);
-
     final StatelessFunction fn = CypherFunctionRegistry.get("path.elements");
-    final List<Object> elements = (List<Object>) fn.execute(new Object[] { path }, null);
+    final List<Object> elements = (List<Object>) fn.execute(new Object[] { buildPath(1) }, null);
 
-    assertThat(elements).isNotNull().isNotEmpty();
+    assertThat(names(elements)).containsExactly("n0", "r0", "n1");
   }
 
   /**
-   * Builds a well-formed path map with {@code relCount} relationships and {@code relCount + 1} nodes,
-   * matching the representation that real Cypher path matching produces.
+   * Builds a chain of {@code relCount} relationships over {@code relCount + 1} nodes and returns it as the path a MATCH
+   * pattern binds: node {@code i} is named {@code "n" + i} and relationship {@code i} {@code "r" + i}.
    */
-  private static Map<String, Object> buildPath(final int relCount) {
-    final List<Object> nodes = new ArrayList<>();
-    final List<Object> rels = new ArrayList<>();
-    for (int i = 0; i <= relCount; i++)
-      nodes.add("n" + i);
-    for (int i = 0; i < relCount; i++)
-      rels.add("r" + i);
-    final Map<String, Object> path = new LinkedHashMap<>();
-    path.put("_type", "path");
-    path.put("nodes", nodes);
-    path.put("relationships", rels);
-    path.put("length", relCount);
-    return path;
+  private TraversalPath buildPath(final int relCount) {
+    database.getSchema().getOrCreateVertexType("PathNode");
+    database.getSchema().getOrCreateEdgeType("PATH_REL");
+    database.transaction(() -> {
+      MutableVertex previous = database.newVertex("PathNode").set("name", "n0").save();
+      for (int i = 1; i <= relCount; i++) {
+        final MutableVertex next = database.newVertex("PathNode").set("name", "n" + i).save();
+        previous.newEdge("PATH_REL", next, "name", "r" + (i - 1));
+        previous = next;
+      }
+    });
+    try (final ResultSet rs = database.query("opencypher",
+        "MATCH p = (:PathNode {name: 'n0'})-[:PATH_REL*" + relCount + "]->() RETURN p")) {
+      return rs.next().getProperty("p");
+    }
+  }
+
+  private static List<String> names(final List<?> elements) {
+    final List<String> names = new ArrayList<>(elements.size());
+    for (final Object element : elements)
+      names.add(((Document) element).getString("name"));
+    return names;
   }
 
   @Test
-  @SuppressWarnings("unchecked")
   void pathSlice() {
     final StatelessFunction fn = CypherFunctionRegistry.get("path.slice");
 
     // slice [1, 2): one relationship, two nodes
-    final Map<String, Object> sliced = (Map<String, Object>) fn.execute(new Object[] { buildPath(3), 1, 2 }, null);
+    final TraversalPath sliced = (TraversalPath) fn.execute(new Object[] { buildPath(3), 1, 2 }, null);
     assertThat(sliced).isNotNull();
-    assertThat(sliced.get("_type")).isEqualTo("path");
-    assertThat((List<Object>) sliced.get("relationships")).containsExactly("r1");
-    assertThat((List<Object>) sliced.get("nodes")).containsExactly("n1", "n2");
-    assertThat(sliced.get("length")).isEqualTo(1);
+    assertThat(names(sliced.getEdges())).containsExactly("r1");
+    assertThat(names(sliced.getVertices())).containsExactly("n1", "n2");
+    assertThat(sliced.length()).isEqualTo(1);
   }
 
   @Test
-  @SuppressWarnings("unchecked")
   void pathSliceEmptyTailReturnsEmptyPath() {
     // Issue #4707: slicing exactly at the path end (from == relCount) must return an empty
     // (zero-relationship) path containing the boundary node, not null.
     final StatelessFunction fn = CypherFunctionRegistry.get("path.slice");
 
-    final Map<String, Object> emptyTail = (Map<String, Object>) fn.execute(new Object[] { buildPath(3), 3 }, null);
+    final TraversalPath emptyTail = (TraversalPath) fn.execute(new Object[] { buildPath(3), 3 }, null);
     assertThat(emptyTail).isNotNull();
-    assertThat(emptyTail.get("_type")).isEqualTo("path");
-    assertThat((List<Object>) emptyTail.get("relationships")).isEmpty();
-    assertThat((List<Object>) emptyTail.get("nodes")).containsExactly("n3");
-    assertThat(emptyTail.get("length")).isEqualTo(0);
+    assertThat(emptyTail.getEdges()).isEmpty();
+    assertThat(names(emptyTail.getVertices())).containsExactly("n3");
+    assertThat(emptyTail.length()).isEqualTo(0);
   }
 
   @Test
-  @SuppressWarnings("unchecked")
   void pathSliceEmptyRangeReturnsEmptyPath() {
     // Issue #4707: from == to is an empty slice and must return a no-edge path, not null.
     final StatelessFunction fn = CypherFunctionRegistry.get("path.slice");
 
-    final Map<String, Object> emptyRange = (Map<String, Object>) fn.execute(new Object[] { buildPath(3), 1, 1 }, null);
+    final TraversalPath emptyRange = (TraversalPath) fn.execute(new Object[] { buildPath(3), 1, 1 }, null);
     assertThat(emptyRange).isNotNull();
-    assertThat(emptyRange.get("_type")).isEqualTo("path");
-    assertThat((List<Object>) emptyRange.get("relationships")).isEmpty();
-    assertThat((List<Object>) emptyRange.get("nodes")).containsExactly("n1");
-    assertThat(emptyRange.get("length")).isEqualTo(0);
+    assertThat(emptyRange.getEdges()).isEmpty();
+    assertThat(names(emptyRange.getVertices())).containsExactly("n1");
+    assertThat(emptyRange.length()).isEqualTo(0);
   }
 
   // ===================== CREATE FUNCTION TESTS =====================
