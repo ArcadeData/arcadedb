@@ -167,6 +167,7 @@ public final class CypherFunctionHelper {
       case Boolean ignored -> "BOOLEAN";
       case Vertex ignored -> "NODE";
       case Edge ignored -> "RELATIONSHIP";
+      // before List: a ShortestPathList IS a List, and the first matching case wins
       case ShortestPathList ignored -> "PATH";
       case List ignored -> "LIST<ANY>";
       case TraversalPath ignored -> "PATH";

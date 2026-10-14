@@ -481,9 +481,9 @@ public class OpenCypherQueryEngine implements QueryEngine {
     // is planned and cached under a key of its own, since the same text runs different branches for different parameters.
     // The key carries a NUL inside it ("\0WHEN#i\0<query>"), and the lexer refuses a NUL outside a string literal, so no
     // query text that plans can equal a key.
-    // The conditions share one context: they read the same parameters
     if (statement instanceof ConditionalStatement conditional) {
       final List<CypherStatement> branches = conditional.getBranches();
+      // The conditions share one context: they read the same parameters
       final BasicCommandContext conditionContext = conditionContext(parameters);
       for (int i = 0; i < branches.size(); i++)
         if (isConditionTrue(conditional.getConditions().get(i), conditionContext))
