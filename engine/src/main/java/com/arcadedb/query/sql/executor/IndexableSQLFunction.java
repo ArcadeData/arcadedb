@@ -89,6 +89,16 @@ public interface IndexableSQLFunction {
   }
 
   /**
+   * Whether {@link #searchFromTarget(FromClause, BinaryCompareOperator, Object, CommandContext, Expression[],
+   * IndexedFunctionPushdown)} answers best first - by descending score, equal scores by ascending RID - and the condition,
+   * evaluated again on each record it answered, sets {@code $score} to that same score. The branches of an OR made of such
+   * conditions are then merged by score rather than run one after the other and sorted (issue #10022).
+   */
+  default boolean answersByScore() {
+    return false;
+  }
+
+  /**
    * Whether a condition {@code function(...) <operator> <right>} selects the records a boolean predicate function MATCHES,
    * which is all an index of matches can answer: {@code = true}. Any other comparison ({@code = false}, {@code <> true})
    * selects the records it does not match, and answering it with the matches returns the wrong rows, so a predicate

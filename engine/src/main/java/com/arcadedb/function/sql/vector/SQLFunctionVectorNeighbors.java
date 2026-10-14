@@ -47,7 +47,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.function.Function;
 
 /**
  * Returns the K neighbors from a vertex. This function requires a vector index has been created beforehand.
@@ -254,14 +253,15 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
     //
     // The grouped path has the same hole one level up (issue #9697), where `limit` is a group budget: each pass re-runs
     // the per-index grouped search and the #8002 second phase - see searchGroupedWithStaleTopUp.
+    // The grouped top-up reads the stale RIDs of a pass, not their count, so the pass's counter is a scratch one
     if (groupBy != null)
       return searchGroupedWithStaleTopUp(limit, groupSize, MAX_FETCH_CANDIDATES,
-          (fetchGroups, fetchGroupSize, staleSkipped) -> searchAndEmit(vectorIndexes, queryVector, limit, fetchGroups, efSearch,
-              allowedRIDs, groupBy, fetchGroupSize, groupSize, maxDistance, context, guard, staleSkipped, null));
+          (fetchGroups, fetchGroupSize, staleRids) -> searchAndEmit(vectorIndexes, queryVector, limit, fetchGroups, efSearch,
+              allowedRIDs, groupBy, fetchGroupSize, groupSize, maxDistance, context, guard, new int[1], staleRids, null));
 
     return VectorUtils.searchWithStaleTopUp(limit,
         (fetchK, staleSkipped, saturated) -> searchAndEmit(vectorIndexes, queryVector, limit, fetchK, efSearch, allowedRIDs,
-            null, groupSize, groupSize, maxDistance, context, guard, staleSkipped, saturated));
+            null, groupSize, groupSize, maxDistance, context, guard, staleSkipped, null, saturated));
   }
 
   /**
@@ -269,25 +269,19 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
    * on the plain path, the group budget and the per-group cap on the grouped one. The answer is always capped at the
    * caller's own {@code limit} rows, or {@code limit} groups of {@code groupSize}. {@code saturated} is only tracked,
    * and only non-null, on the plain path.
+   * {@code staleRids} is only non-null on the grouped path, where it receives every stale candidate the emit skips, so
+   * the top-up can tell a candidate deleted since the last pass from one it already met (issue #10002).
    */
   private ArrayList<Object> searchAndEmit(final List<LSMVectorIndex> vectorIndexes, final float[] queryVector, final int limit,
       final int fetchK, final int efSearch, final Set<RID> allowedRIDs, final String groupBy, final int fetchGroupSize,
       final int groupSize, final float maxDistance, final CommandContext context, final WorkGuard guard,
-      final int[] staleSkipped, final boolean[] saturated) {
+      final int[] staleSkipped, final Set<RID> staleRids, final boolean[] saturated) {
 
     final BasicDatabase db = context.getDatabase();
 
-    // Resolver for the integrated grouped path. Lookup misses (record not found - e.g. stale
-    // postings after a backup restore) map to a synthetic null group key so the candidate falls
-    // into the single null bucket, matching the SQL-layer post-filter's HashMap null-key handling.
-    final Function<RID, Object> groupKeyResolver = groupBy == null ? null : rid -> {
-      try {
-        final Document record = (Document) db.lookupByRID(rid, true);
-        return readNestedField(record, groupBy);
-      } catch (final RecordNotFoundException e) {
-        return null;
-      }
-    };
+    // One resolver for every search of this pass and for the emit below, so they all group a candidate the same way
+    // and a record that changed under the search is caught at emit (issue #10002) - see GroupKeyMemo.
+    final GroupKeyMemo groupKeyResolver = groupBy == null ? null : new GroupKeyMemo(db, groupBy);
 
     // Per-bucket fetch cap. The non-grouped path asks each bucket for {@code fetchK} candidates; the grouped path uses
     // {@code fetchK} as the distinct-group budget on each bucket (with {@code fetchGroupSize} members each) and relies on
@@ -377,11 +371,24 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
         // This can happen when the vector index has stale entries pointing to deleted records,
         // e.g., after crash recovery, backup restore, or index/storage inconsistencies.
         staleSkipped[0]++;
+        if (staleRids != null)
+          staleRids.add(rid);
         continue;
       }
 
-      if (groupBy != null && !groups.admit(readNestedField(record, groupBy)))
-        continue;
+      if (groupBy != null) {
+        final Object groupKey = readNestedField(record, groupBy);
+        // A commit since the search ranked it updated the field, or gave the RID to a record it inserted (issue
+        // #10002): the row would open a group the searches never filled, so it costs a candidate, as a deleted one does
+        if (!groupKeyResolver.rankedUnder(rid, groupKey)) {
+          staleSkipped[0]++;
+          if (staleRids != null)
+            staleRids.add(rid);
+          continue;
+        }
+        if (!groups.admit(groupKey))
+          continue;
+      }
 
       final float distance = neighbor.getSecond();
 

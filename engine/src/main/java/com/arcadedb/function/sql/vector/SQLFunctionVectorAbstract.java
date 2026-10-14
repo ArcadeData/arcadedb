@@ -23,7 +23,9 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
+import com.arcadedb.index.vector.GroupAdmissionState;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.parser.Identifier;
@@ -36,7 +38,10 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Function;
 
 /**
  * Abstract base class for vector SQL functions providing common utility methods.
@@ -379,13 +384,77 @@ public abstract class SQLFunctionVectorAbstract extends SQLFunctionAbstract {
   }
 
   /**
+   * The group-key resolver of one grouped search-and-emit pass (issue #10002). It reads the {@code groupBy} field of a
+   * candidate's record, answers {@link GroupAdmissionState#UNRESOLVED} when the record cannot be read, and remembers
+   * the key it gave each RID, so every search of the pass - the per-index searches, the #8002 planner and its second
+   * phase - groups a candidate the same way, and reads its record once rather than once per search.
+   * <p>
+   * The emit asks {@link #rankedUnder} whether the record it is about to return still has the key the searches ranked
+   * it under. A commit that lands in between can change it: it can update the field, or delete the record and hand its
+   * RID to a record it inserts, which then reads as found. Such a row opened, at the caller's cap, a group the searches
+   * never filled, and the answer came back short with no stale candidate counted. The emit counts it as stale instead,
+   * which is what it is: the searches ranked a record that no longer exists in that form.
+   * <p>
+   * A record the first lookup of the pass could not read stays {@link GroupAdmissionState#UNRESOLVED} for the rest of the
+   * pass, even once its commit publishes it: every search of the pass skips it, so none of them ranks it and the emit never
+   * sees it. The next pass, if the answer needs one, reads it afresh.
+   * <p>
+   * Thread-safe: the sparse function runs the searches of a pass on pool workers. Bounded by the candidates the pass
+   * resolves, which the searches' own budgets cap (a grouped walk's candidate budget, {@code MAX_FETCH_CANDIDATES} on the
+   * SQL side), and dropped with the pass.
+   */
+  protected static final class GroupKeyMemo implements Function<RID, Object> {
+    /** Stands for a {@code null} key, which a {@link ConcurrentHashMap} cannot hold. */
+    private static final Object                      NULL_KEY = new Object();
+    private final        BasicDatabase               database;
+    private final        String                      groupBy;
+    private final        ConcurrentHashMap<RID, Object> keys  = new ConcurrentHashMap<>();
+
+    protected GroupKeyMemo(final BasicDatabase database, final String groupBy) {
+      this.database = database;
+      this.groupBy = groupBy;
+    }
+
+    @Override
+    public Object apply(final RID rid) {
+      final Object known = keys.get(rid);
+      if (known != null)
+        return known == NULL_KEY ? null : known;
+      Object key;
+      try {
+        key = readNestedField((Document) database.lookupByRID(rid, true), groupBy);
+      } catch (final RecordNotFoundException e) {
+        // Deleted by an overlapping commit, not yet published by one whose index rows the search already sees, or a
+        // stale entry left by a restore: it belongs to no group, so no search lets it take a group slot
+        key = GroupAdmissionState.UNRESOLVED;
+      }
+      // The first answer wins, so two searches racing on the same RID still agree
+      final Object previous = keys.putIfAbsent(rid, key == null ? NULL_KEY : key);
+      if (previous != null)
+        return previous == NULL_KEY ? null : previous;
+      return key;
+    }
+
+    /**
+     * Whether a record about to be emitted with group key {@code key} still belongs to the group the searches ranked it
+     * under. A RID no search resolved has nothing to disagree with. Compared by content, arrays included: the emit reads the
+     * record again, so a {@code groupBy} on an array property hands it a new array equal to the one the search read, and an
+     * identity comparison would count every such row as stale.
+     */
+    protected boolean rankedUnder(final RID rid, final Object key) {
+      final Object known = keys.get(rid);
+      return known == null || Objects.deepEquals(known == NULL_KEY ? null : known, key);
+    }
+  }
+
+  /**
    * One grouped search-and-emit pass, asking each index for {@code fetchGroups} groups of {@code fetchGroupSize} members
-   * and capping the answer at the caller's own group budget. Adds to {@code staleSkipped[0]} every candidate whose
-   * record no longer resolved at emit time.
+   * and capping the answer at the caller's own group budget. Adds to {@code staleRids} every candidate the emit had to
+   * skip because its record no longer resolved, or no longer resolved to the group the search ranked it under.
    */
   @FunctionalInterface
   protected interface GroupedSearchPass {
-    ArrayList<Object> run(int fetchGroups, int fetchGroupSize, int[] staleSkipped);
+    ArrayList<Object> run(int fetchGroups, int fetchGroupSize, Set<RID> staleRids);
   }
 
   /**
@@ -399,35 +468,47 @@ public abstract class SQLFunctionVectorAbstract extends SQLFunctionAbstract {
   /**
    * Runs a grouped search, topping up an answer that a stale candidate left short (issue #9697, the grouped twin of
    * #9368 / #9692). A record deleted by a commit that overlaps the search can still be in an index's answer; the emit
-   * skips it, which can cost a group one member or a whole group its place - and the index files a record it can no
-   * longer resolve under the null group, where it takes a group slot of its own. Each stale record therefore needs at
-   * most one more group and one more member per group, so a short answer re-runs the pass with both budgets widened by
-   * the stale count.
+   * skips it, which can cost a group one member or a whole group its place. So can a record a commit changed since the
+   * index ranked it (issue #10002, see {@link GroupKeyMemo}). Each stale record therefore needs at most one more group
+   * and one more member per group, so a short answer re-runs the pass with both budgets widened by the stale count.
    * <p>
    * Stops when the answer is full ({@code groups * groupSize} rows), when no stale candidate was seen, when the next
-   * budget would exceed {@code maxFetchCandidates}, or when a wider pass answered no more rows than the one before:
-   * the corpus or allow-list has nothing more to give. In that last case the fresher answer is returned unless a delete
-   * landing between the passes made it the smaller one, so the older answer that wins can hold a record deleted since -
-   * the same best-effort contract as any answer read without a snapshot.
+   * budget would exceed {@code maxFetchCandidates}, or when a wider pass answered no more rows than the one before
+   * <em>and</em> met no stale candidate an earlier pass had not already met: the corpus or allow-list has nothing more to
+   * give. A wider pass that did meet new ones says nothing of the kind - under steady churn every pass meets the
+   * records deleted while it ran (issue #10002), and stopping there returned the short answer the top-up exists to
+   * prevent - so it widens again, at least doubling both budgets, which the budget still bounds. A stale entry that never goes away (a
+   * restore leftover) is met again by every pass and so stops the loop as soon as it stops yielding rows.
+   * <p>
+   * The answer returned is the largest one seen, the fresher on a tie, so when a delete landing between two passes made
+   * the later one smaller, the older answer that wins can hold a record deleted since - the same best-effort contract as
+   * any answer read without a snapshot.
    */
   protected static ArrayList<Object> searchGroupedWithStaleTopUp(final int groups, final int groupSize,
       final int maxFetchCandidates, final GroupedSearchPass pass) {
     final long fullAnswer = (long) groups * groupSize;
+    final Set<RID> staleSeen = new HashSet<>();
     int fetchGroups = groups;
     int fetchGroupSize = groupSize;
     ArrayList<Object> best = null;
     while (true) {
-      final int[] staleSkipped = new int[1];
-      final ArrayList<Object> result = pass.run(fetchGroups, fetchGroupSize, staleSkipped);
-      if (best != null && result.size() <= best.size())
-        return result.size() < best.size() ? best : result;
-      best = result;
-      if (result.size() >= fullAnswer || staleSkipped[0] == 0)
-        return result;
-      final int nextGroups = fetchGroups + staleSkipped[0];
-      final int nextGroupSize = fetchGroupSize + staleSkipped[0];
+      final Set<RID> stale = new HashSet<>();
+      final ArrayList<Object> result = pass.run(fetchGroups, fetchGroupSize, stale);
+      final boolean grew = best == null || result.size() > best.size();
+      if (best == null || result.size() >= best.size())
+        best = result;
+      if (best.size() >= fullAnswer || stale.isEmpty())
+        return best;
+      // addAll() is true when the pass met a stale candidate no earlier pass had met
+      if (!staleSeen.addAll(stale) && !grew)
+        return best;
+      // A pass that grew needs only room for what it met. One that did not grow while meeting new stale candidates is
+      // racing a writer that deletes what the searches rank: it at least doubles both budgets, so the passes such a race
+      // costs grow with the log of the budget rather than with it
+      final int nextGroups = fetchGroups + (grew ? stale.size() : Math.max(stale.size(), fetchGroups));
+      final int nextGroupSize = fetchGroupSize + (grew ? stale.size() : Math.max(stale.size(), fetchGroupSize));
       if (groupedFetchBudget(nextGroups, nextGroupSize) > maxFetchCandidates)
-        return result;
+        return best;
       fetchGroups = nextGroups;
       fetchGroupSize = nextGroupSize;
     }

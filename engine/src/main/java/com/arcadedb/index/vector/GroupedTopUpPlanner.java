@@ -77,7 +77,8 @@ public final class GroupedTopUpPlanner {
    *
    * @param rids   the rows it returned
    * @param values their values, parallel to {@code rids}, higher is better
-   * @param keys   their group keys, parallel to {@code rids}
+   * @param keys   their group keys, parallel to {@code rids}; a row keyed {@link GroupAdmissionState#UNRESOLVED} belongs
+   *               to no group and is ignored
    * @param capped whether the source applied the {@code limit} cap itself, and so may have left groups out. A source
    *               that returned every row it holds (a transaction's pending rows) passes {@code false}.
    *
@@ -89,6 +90,9 @@ public final class GroupedTopUpPlanner {
       final RID rid = rids.get(i);
       final float value = values[i];
       final Object key = keys.get(i);
+      // Its record could not be read (issue #10002): it can neither win a group nor fill one
+      if (key == GroupAdmissionState.UNRESOLVED)
+        continue;
       peaks.merge(key, value, Math::max);
       final Float previous = bestByRid.get(rid);
       if (previous == null || value > previous) {
