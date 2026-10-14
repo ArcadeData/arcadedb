@@ -1033,7 +1033,8 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     }
 
     // The scan reads this transaction's own uncommitted writes, whose effect the commit applies to the counters: leave them out
-    // of the result, or they are counted twice (and counted at all if the transaction rolls back)
+    // of the result, or they are counted twice (and counted at all if the transaction rolls back). Only while the transaction is
+    // BEGUN: from the publish of its pages the effect is already in the counters, and what the scan reads is counted
     final TransactionContext tx = db.getTransaction();
     final FullTextCorpusDeltas pending = tx.getStatus() == TransactionContext.STATUS.BEGUN ? FullTextCorpusDeltas.peek(tx) : null;
     if (pending != null) {

@@ -182,8 +182,11 @@ public final class FullTextCorpusDeltas {
       } catch (final RuntimeException e) {
         // A replicated transaction is not worth failing over the counters, whatever the lookup or the application raised. A node
         // that skipped a delta, or applied only part of it (the pair is two counters), has drifted from the rest of the cluster:
-        // the next search checks its counters against the live data and rescans (when the lookup itself failed there is no
-        // metadata to arm, and the schema reload that follows repairs it)
+        // the next search checks its counters against the live data and rescans. When the lookup itself failed there is no
+        // metadata to arm: this node cannot resolve an index the transaction names, so either it does not have it (a DROP applied
+        // meanwhile, and there are no counters to keep) or its schema is not the cluster's, which the schema machinery repairs
+        // and, with it, the counters of the index it loads: they come from the persisted definition, whose drift check runs on
+        // the first search
         if (metadata != null)
           metadata.requireRescan();
         LogManager.instance().log(FullTextCorpusDeltas.class, Level.WARNING,

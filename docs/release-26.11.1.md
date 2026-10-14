@@ -196,7 +196,9 @@ a map is refused.
   the leader logs a warning and the other nodes repair their counters with their own drift check), so replicas no longer
   score the same query with different corpus statistics, and a `REBUILD INDEX ... WITH statsOnly = true` run on the leader
   reaches the followers. The repair made by the first search is kept: it is written with the schema, at the next schema save
-  or when the database closes, so it is paid once and not after every restart. The drift warning names the logical index
+  or when the database closes, so it is paid once and not after every clean restart. After a crash, or a process that is
+  killed, the pages are restored from the log but the counters can lag them until the first search's drift check repairs them,
+  as before. The drift warning names the logical index
   and the exact `REBUILD INDEX` statement to run, and ``SELECT FROM schema:index:`<name>` `` now carries a `bm25` map
   (`totalDocs`, `sumDocLength`, `avgDocLength`, `countersValid`, `staleCheckDone`, `scans`, `epoch`) that reads the counters
   without running the drift check. A schema reload on a follower keeps its live counters unless the persisted ones carry a
