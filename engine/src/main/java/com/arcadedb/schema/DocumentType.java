@@ -110,7 +110,7 @@ public interface DocumentType {
    */
   default Property findPropertyAppliedToEmptyRecord() {
     for (final Property property : getPolymorphicProperties())
-      if (property.isMandatory() || property.getDefaultValueDefinition() != null)
+      if (property.isMandatory() || property.hasDefaultFillingInAValue())
         return property;
     return null;
   }

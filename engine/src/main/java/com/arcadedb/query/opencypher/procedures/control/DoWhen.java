@@ -206,7 +206,9 @@ public class DoWhen implements CypherProcedure {
       while (resultSet.hasNext()) {
         final Result row = resultSet.next();
         final ResultInternal wrapped = new ResultInternal();
-        wrapped.setProperty("value", row.toMap());
+        // The row's columns, as APOC answers them ({n: node} for `RETURN n`): toMap() answers the entity behind a row that
+        // returns one, flattening it into its properties (issue #9964)
+        wrapped.setProperty("value", row.toPropertyMap(false));
         rows.add(wrapped);
       }
     }

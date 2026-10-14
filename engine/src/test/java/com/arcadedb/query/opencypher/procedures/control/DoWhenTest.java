@@ -27,6 +27,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -113,6 +114,22 @@ class DoWhenTest {
 
     final ResultSet check = database.query("opencypher", "MATCH (p:Person {name: 'Bob'}) RETURN p");
     assertThat(check.hasNext()).isTrue();
+  }
+
+  /**
+   * Issue #9964: {@code value} is the map of the sub-query's columns, as APOC answers it - {@code {p: node}} for
+   * {@code RETURN p} - not the properties of the entity behind the row.
+   */
+  @Test
+  void anEntityColumnIsKeptUnderItsName() {
+    database.transaction(() -> database.command("opencypher", "CREATE (:Person {name: 'Ann'})"));
+    try (final ResultSet rs = database.query("opencypher",
+        "CALL apoc.do.when(true, 'MATCH (p:Person) RETURN p', '', {}) YIELD value RETURN value.p.name AS name, keys(value) AS k")) {
+      assertThat(rs.hasNext()).isTrue();
+      final var row = rs.next();
+      assertThat(row.<String>getProperty("name")).isEqualTo("Ann");
+      assertThat(row.<List<String>>getProperty("k")).containsExactly("p");
+    }
   }
 
   @Test

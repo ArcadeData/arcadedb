@@ -2918,7 +2918,8 @@ public class LocalDocumentType implements DocumentType {
     if (lightweight != null)
       throw new SchemaException("Cannot make the property '" + name + "." + property.getName() + "' " + constraint
           + " because edge type '" + lightweight.getName() + "' is declared LIGHTWEIGHT and inherits it: a lightweight edge has no "
-          + "record, so the constraint would never be applied to it. Declare the type without LIGHTWEIGHT, or keep the property optional");
+          + "record, so the constraint would never be applied to it. Declare the type without LIGHTWEIGHT, or keep the property "
+          + ("MANDATORY".equals(constraint) ? "optional" : "without a default"));
   }
 
   /**

@@ -78,8 +78,8 @@ public class CypherFunctionDefinition implements FunctionDefinition {
         if (propertyNames.size() == 1) {
           return result.getProperty(propertyNames.iterator().next());
         }
-        // Multiple properties → return as map
-        return result.toMap();
+        // Multiple properties → return as map, of the row's columns: toMap() answers the record behind the row (issue #9964)
+        return result.toPropertyMap(false);
       }
       return null;  // No results
     }
