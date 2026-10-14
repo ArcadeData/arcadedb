@@ -57,6 +57,11 @@ public final class RegexAutomaton {
   public static final  int    MAX_STATES              = 50_000;
   /** the most pairs of states the product walk may mark, one bit each */
   private static final long   MAX_PAIRS               = 1L << 26;
+  /**
+   * the most pairs the walk may queue: each costs a mark and four ints, so this keeps a declaration within a few tens of
+   * megabytes whatever the automata, well before MAX_PAIRS could be reached
+   */
+  private static final int    MAX_QUEUED_PAIRS        = 2_000_000;
   /** the pairs a dense bit set is allocated for up front; a larger product marks them in a set that grows as it is walked */
   private static final long   MAX_DENSE_PAIRS         = 1L << 20;
   /** the most steps the product walk may take, so the time it costs is bounded whatever the two automata */
@@ -72,8 +77,16 @@ public final class RegexAutomaton {
       Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE | Pattern.UNICODE_CHARACTER_CLASS | Pattern.DOTALL | Pattern.MULTILINE
           | Pattern.UNIX_LINES;
 
-  // what commonString() answers when it ran out of budget, told apart from any string by identity
-  private static final String UNDECIDED = new String("undecided");
+  /**
+   * The outcome of the product walk.
+   *
+   * @param verdict the answer
+   * @param common  a shortest non-empty string both automata accept when the answer is {@link Verdict#SATISFIABLE}, else null
+   */
+  record Search(Verdict verdict, String common) {
+    private static final Search UNSATISFIABLE = new Search(Verdict.UNSATISFIABLE, null);
+    private static final Search UNDECIDED     = new Search(Verdict.UNDECIDED, null);
+  }
 
   private static final byte KIND_EPSILON = 0;
   private static final byte KIND_SYMBOLS = 1;
@@ -130,6 +143,10 @@ public final class RegexAutomaton {
         .collect(StringBuilder::new, StringBuilder::appendCodePoint, StringBuilder::append).toString();
     if (alphabet.isEmpty() || alphabet.length() > 128)
       return null;
+    // Pattern reads a surrogate pair as one character, which an automaton over single chars cannot follow
+    for (int i = 0; i < alphabet.length(); i++)
+      if (Character.isSurrogate(alphabet.charAt(i)))
+        return null;
     try {
       final Parser parser = new Parser(rewriteQuotes(regex), alphabet);
       final Node root = parser.parse();
@@ -159,6 +176,8 @@ public final class RegexAutomaton {
    * outside the alphabet is never accepted.
    */
   public boolean matches(final CharSequence text) {
+    // a reference implementation the tests hold the automaton to Pattern with, not a fast one: the declaration-time check
+    // walks automata in product and never calls it
     final IntList current = new IntList();
     boolean accepts = closure(start, true, current);
     for (int i = 0; i < text.length(); i++) {
@@ -196,24 +215,18 @@ public final class RegexAutomaton {
    * the sizes of the two automata, and the deadline bounds the time that work can take on a slow or busy machine.
    */
   public static Verdict intersects(final RegexAutomaton a, final RegexAutomaton b, final long deadlineNanos) {
-    final String common = commonString(a, b, deadlineNanos);
-    return common == null ? Verdict.UNSATISFIABLE : common == UNDECIDED ? Verdict.UNDECIDED : Verdict.SATISFIABLE;
+    return search(a, b, deadlineNanos).verdict();
   }
 
   /**
-   * A shortest NON-EMPTY string both automata accept, null when there is none, or {@link #UNDECIDED} (compared by identity)
-   * when the walk ran out of budget first. The string is what lets a test check an answer of {@link #intersects} against
-   * {@link Pattern} itself.
+   * The verdict of {@link #intersects} with, when it is {@link Verdict#SATISFIABLE}, a shortest string both automata accept:
+   * what lets a test check the answer against {@link Pattern} itself.
    */
-  static String commonString(final RegexAutomaton a, final RegexAutomaton b) {
-    return commonString(a, b, Long.MAX_VALUE);
-  }
-
-  static String commonString(final RegexAutomaton a, final RegexAutomaton b, final long deadlineNanos) {
+  static Search search(final RegexAutomaton a, final RegexAutomaton b, final long deadlineNanos) {
     if (!a.alphabet.equals(b.alphabet))
       throw new IllegalArgumentException("The two automata read different alphabets");
     if ((long) a.size * b.size > MAX_PAIRS)
-      return UNDECIDED;
+      return Search.UNDECIDED;
 
     // a pair of states is the one each automaton is in right after reading the same character, marked once queued. Each
     // queued pair keeps the one it was reached from and the character read, to spell the string out at the end
@@ -237,7 +250,7 @@ public final class RegexAutomaton {
       for (final int p : statesA)
         for (final int q : statesB) {
           if (++work > MAX_WORK || (work & (DEADLINE_CHECK_INTERVAL - 1)) == 1 && System.nanoTime() - deadlineNanos >= 0)
-            return UNDECIDED;
+            return Search.UNDECIDED;
           final long low = a.symbolsLow[p] & b.symbolsLow[q];
           final long high = a.symbolsHigh[p] & b.symbolsHigh[q];
           if ((low | high) == 0)
@@ -246,18 +259,20 @@ public final class RegexAutomaton {
           final int targetB = b.next[q];
           if (!visited.add((long) targetA * b.size + targetB))
             continue;
+          if (queueA.size == MAX_QUEUED_PAIRS)
+            return Search.UNDECIDED;
           queueA.add(targetA);
           queueB.add(targetB);
           parent.add(expanded);
           symbol.add(low != 0 ? Long.numberOfTrailingZeros(low) : 64 + Long.numberOfTrailingZeros(high));
           if (a.closureAccepts(targetA) && b.closureAccepts(targetB))
-            return spell(a.alphabet, parent, symbol, queueA.size - 1);
+            return new Search(Verdict.SATISFIABLE, spell(a.alphabet, parent, symbol, queueA.size - 1));
         }
 
       if (a.closureSize > MAX_CLOSURE_SIZE || b.closureSize > MAX_CLOSURE_SIZE)
-        return UNDECIDED;
+        return Search.UNDECIDED;
       if (++expanded == queueA.size)
-        return null;
+        return Search.UNSATISFIABLE;
       statesA = a.closureStates(queueA.items[expanded]);
       statesB = b.closureStates(queueB.items[expanded]);
     }
