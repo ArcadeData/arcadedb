@@ -714,11 +714,13 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
           final boolean multi = Utils.isTrue(upd.get("multi"));
           final boolean upsert = Utils.isTrue(upd.get("upsert"));
 
-          final int updated = executeUpdate(collectionName, q, u, multi, budget);
-          n += updated;
-          nModified += updated;
+          final UpdateCount updated = executeUpdate(collectionName, q, u, multi, budget);
+          n += updated.matched();
+          nModified += updated.modified();
 
-          if (updated == 0 && upsert) {
+          // only a filter that matched nothing upserts: a match whose update a listener vetoed is not "no match", or the upsert
+          // would insert a second document for it (issue #9974)
+          if (updated.matched() == 0 && upsert) {
             final Object id = executeUpsert(collectionName, q, u);
             // a create a BeforeRecordCreateListener vetoed upserted nothing (issue #9974)
             if (id != UPSERT_VETOED) {
@@ -797,12 +799,20 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     return !new MongoFilter(database, q, budget).select(database, collectionName, 1).isEmpty();
   }
 
-  private int executeUpdate(final String collectionName, final Document q, final Document u, final boolean multi,
+  /**
+   * What an update did, as MongoDB replies it: {@code n} the documents the filter matched, {@code nModified} the ones the engine
+   * changed. They differ when a {@code BeforeRecordUpdateListener} vetoes a write (issue #9974).
+   */
+  private record UpdateCount(int matched, int modified) {
+    private static final UpdateCount NONE = new UpdateCount(0, 0);
+  }
+
+  private UpdateCount executeUpdate(final String collectionName, final Document q, final Document u, final boolean multi,
       final MongoFilter.RegexBudget budget) {
     // built first: an invalid filter is an error whether or not the collection exists
     final MongoFilter filter = new MongoFilter(database, q, budget);
     if (!database.getSchema().existsType(collectionName) || u == null)
-      return 0;
+      return UpdateCount.NONE;
 
     // Every filtered update is applied to each record the filter selects (the matcher verifies the candidates, so the answer is exact
     // for any shape of data). Only an update without a filter stays one SQL UPDATE.
@@ -816,7 +826,13 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     if (!multi)
       sql.append(" LIMIT 1");
 
-    return executeCount(sql.toString(), params);
+    final int modified = executeCount(sql.toString(), params);
+    if (!multi && modified == 1)
+      return new UpdateCount(1, 1);
+    // The SQL count is what the engine changed. Without a filter every record matches, so the matched count is the type's own (an
+    // O(1) counter), and differs from the changed one only by the updates a listener vetoed
+    final long total = database.countType(collectionName, true);
+    return new UpdateCount((int) (multi ? total : Math.min(1, total)), modified);
   }
 
   /**
@@ -856,23 +872,25 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     return false;
   }
 
-  private int executeUpdateOnRecords(final String collectionName, final MongoFilter filter, final Document u, final boolean multi) {
+  private UpdateCount executeUpdateOnRecords(final String collectionName, final MongoFilter filter, final Document u, final boolean multi) {
     // collect the RIDs first (the records are modified while the result set would still be open on them), and load each record
     // in turn: only identities are held on the heap, not every matching document. An update of one record selects again, a few times,
-    // when its candidate stopped matching since the selection while another record still matches
-    int applied = 0;
+    // when its candidate stopped matching since the selection while another record still matches. A candidate that still matched
+    // but whose update a listener vetoed is not retried: selecting again would find it again and ask the listener again
+    UpdateCount count = UpdateCount.NONE;
     for (int attempt = 0; attempt < (multi ? 1 : SINGLE_RECORD_ATTEMPTS); attempt++) {
       final List<RID> rids = filter.select(database, collectionName, multi ? 0 : 1);
-      applied = updateRecords(rids, filter, u);
-      if (applied > 0 || rids.isEmpty())
+      count = updateRecords(rids, filter, u);
+      if (count.matched() > 0 || rids.isEmpty())
         break;
     }
-    return applied;
+    return count;
   }
 
-  private int updateRecords(final List<RID> rids, final MongoFilter filter, final Document u) {
+  private UpdateCount updateRecords(final List<RID> rids, final MongoFilter filter, final Document u) {
     final boolean replacement = isReplacement(u);
     int vanished = 0;
+    int vetoed = 0;
     for (final RID rid : rids) {
       final MutableDocument record;
       try {
@@ -893,11 +911,12 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
         checkIdUntouched(record, u);
         applyOperatorsToDocument(record, u);
       }
-      // the reply counts what the engine applied: an update a BeforeRecordUpdateListener vetoed is not one (issue #9974)
+      // matched, but changed only if the engine applied it: an update a BeforeRecordUpdateListener vetoed is not (issue #9974)
       if (!record.saveReportingVeto())
-        ++vanished;
+        ++vetoed;
     }
-    return rids.size() - vanished;
+    final int matched = rids.size() - vanished;
+    return new UpdateCount(matched, matched - vetoed);
   }
 
   /**

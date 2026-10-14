@@ -37,6 +37,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static com.mongodb.client.model.Filters.eq;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -97,16 +98,51 @@ public class Issue9974MongoVetoCountTest extends BaseMongoServerTest {
     assertThat(collection.countDocuments()).isEqualTo(3L);
   }
 
+  /** A veto is where MongoDB's {@code n} (matched) and {@code nModified} (changed) part ways. */
   @Test
-  void updateManyCountsOnlyTheRecordsItChanged() {
-    serverDatabase().getSchema().getType("doc").getEvents()
-        .registerListener((BeforeRecordUpdateListener) record -> !"keep".equals(record.asDocument().getString("name")));
+  void updateManyCountsTheVetoedRecordAsMatchedButNotModified() {
+    vetoUpdateOf("keep");
 
     final UpdateResult result = collection.updateMany(new Document("name", new Document("$in", List.of("a", "keep", "b"))),
         new Document("$set", new Document("touched", true)));
-    assertThat(result.getMatchedCount()).isEqualTo(2L);
+    assertThat(result.getMatchedCount()).isEqualTo(3L);
     assertThat(result.getModifiedCount()).isEqualTo(2L);
     assertThat(collection.countDocuments(eq("touched", true))).isEqualTo(2L);
+  }
+
+  /** Without a filter the update runs as one SQL UPDATE: the same two counts must come out of it. */
+  @Test
+  void anUnfilteredUpdateManyCountsTheVetoedRecordAsMatchedButNotModified() {
+    vetoUpdateOf("keep");
+
+    final UpdateResult result = collection.updateMany(new Document(), new Document("$set", new Document("touched", true)));
+    assertThat(result.getMatchedCount()).isEqualTo(3L);
+    assertThat(result.getModifiedCount()).isEqualTo(2L);
+    assertThat(collection.countDocuments(eq("touched", true))).isEqualTo(2L);
+  }
+
+  /**
+   * A match whose update was vetoed is not "no match": an upsert must not insert a second document for it, and the single-record
+   * update must not select it again and ask the listener again.
+   */
+  @Test
+  void anUpsertWhoseMatchIsVetoedInsertsNothing() {
+    final AtomicInteger asked = new AtomicInteger();
+    serverDatabase().getSchema().getType("doc").getEvents().registerListener((BeforeRecordUpdateListener) record -> {
+      if (!"keep".equals(record.asDocument().getString("name")))
+        return true;
+      asked.incrementAndGet();
+      return false;
+    });
+
+    final UpdateResult result = collection.updateOne(eq("name", "keep"), new Document("$set", new Document("v", 1)),
+        new UpdateOptions().upsert(true));
+    assertThat(result.getUpsertedId()).isNull();
+    assertThat(result.getMatchedCount()).isEqualTo(1L);
+    assertThat(result.getModifiedCount()).isZero();
+    assertThat(collection.countDocuments()).isEqualTo(3L);
+    assertThat(collection.countDocuments(eq("name", "keep"))).isEqualTo(1L);
+    assertThat(asked.get()).isEqualTo(1);
   }
 
   @Test
@@ -134,6 +170,11 @@ public class Issue9974MongoVetoCountTest extends BaseMongoServerTest {
   private void vetoDeleteOf(final String name) {
     serverDatabase().getSchema().getType("doc").getEvents()
         .registerListener((BeforeRecordDeleteListener) record -> !name.equals(record.asDocument().getString("name")));
+  }
+
+  private void vetoUpdateOf(final String name) {
+    serverDatabase().getSchema().getType("doc").getEvents()
+        .registerListener((BeforeRecordUpdateListener) record -> !name.equals(record.asDocument().getString("name")));
   }
 
   private void vetoCreateOf(final String name) {
