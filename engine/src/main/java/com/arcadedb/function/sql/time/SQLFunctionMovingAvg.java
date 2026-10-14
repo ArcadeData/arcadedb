@@ -46,9 +46,9 @@ public class SQLFunctionMovingAvg extends SQLAggregatedFunction {
 
   private static final Set<String> OPTIONS = Set.of("window");
 
-  private double[]  values  = new double[16];
-  private boolean[] present = new boolean[16];
-  private int       size    = 0;
+  private double[]  values     = new double[16];
+  private boolean[] present    = new boolean[16];
+  private int       size       = 0;
   private int       windowSize = -1;
 
   public SQLFunctionMovingAvg() {
@@ -76,7 +76,8 @@ public class SQLFunctionMovingAvg extends SQLAggregatedFunction {
 
     // ONE SLOT PER ROW, A NULL INCLUDED: DROPPING IT WOULD SHIFT EVERY LATER AVERAGE INTO AN EARLIER ROW'S SLOT (#9958)
     if (size == values.length) {
-      final int newCapacity = size << 1;
+      // DOUBLE THE CAPACITY WITHOUT OVERFLOWING int NEAR THE ARRAY SIZE LIMIT
+      final int newCapacity = (int) Math.min(Integer.MAX_VALUE - 8L, Math.max(size + 1L, (long) size << 1));
       values = Arrays.copyOf(values, newCapacity);
       present = Arrays.copyOf(present, newCapacity);
     }
