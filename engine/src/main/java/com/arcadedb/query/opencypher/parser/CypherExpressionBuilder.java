@@ -1878,12 +1878,12 @@ class CypherExpressionBuilder {
       builder.addMatch(CypherASTBuilder.newMatchClause(astBuilder.visitPatternList(patternCtx), false,
           whereCtx != null ? astBuilder.visitWhereClause(whereCtx) : null));
       return builder.build();
-    } catch (final CommandParsingException e) {
+    } catch (final FeatureNotImplementedException e) {
       // A construct the engine refuses by name is refused in a body too. Falling back to the text deferred it to the first
       // row, where the body is rewritten before it is parsed again, and the refusal came out as an unrelated syntax error
       // (issue #9940)
-      if (e instanceof FeatureNotImplementedException)
-        throw e;
+      throw e;
+    } catch (final CommandParsingException e) {
       // The builder refusing a body it does not support is the case this fallback is for, and it is not news.
       LogManager.instance().log(CypherExpressionBuilder.class, Level.FINE,
           "Cannot build the AST of subquery body '%s': it keeps its text and escapes the parse-time checks", e,
