@@ -1448,13 +1448,15 @@ public class LocalSchema implements Schema {
   @Override
   public void setDateFormat(final String dateFormat) {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_DATABASE_SETTINGS);
-    if (!Objects.equals(this.dateFormat, dateFormat)) {
-      // the MIN and MAX of a date property are read through this pattern on every write (issue #9976 follow-up)
-      DocumentValidator.requireDateConstraintsSatisfiableUnder(database, "the date format to '" + dateFormat + "'",
-          database.getSerializer().getDateImplementation(), database.getSerializer().getDateTimeImplementation(),
-          this.dateTimeFormat, dateFormat);
-      recordChange(() -> this.dateFormat = dateFormat);
-    }
+    if (!Objects.equals(this.dateFormat, dateFormat))
+      recordChange(() -> {
+        // the MIN and MAX of a date property are read through this pattern on every write (issue #9976 follow-up). Checked
+        // under the write lock, which a concurrent ALTER PROPERTY ... MIN takes too
+        DocumentValidator.requireDateConstraintsSatisfiableUnder(database, "the date format to '" + dateFormat + "'",
+            database.getSerializer().getDateImplementation(), database.getSerializer().getDateTimeImplementation(),
+            this.dateTimeFormat, dateFormat);
+        this.dateFormat = dateFormat;
+      });
   }
 
   @Override
@@ -1465,12 +1467,13 @@ public class LocalSchema implements Schema {
   @Override
   public void setDateTimeFormat(final String dateTimeFormat) {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_DATABASE_SETTINGS);
-    if (!Objects.equals(this.dateTimeFormat, dateTimeFormat)) {
-      DocumentValidator.requireDateConstraintsSatisfiableUnder(database, "the datetime format to '" + dateTimeFormat + "'",
-          database.getSerializer().getDateImplementation(), database.getSerializer().getDateTimeImplementation(),
-          dateTimeFormat, this.dateFormat);
-      recordChange(() -> this.dateTimeFormat = dateTimeFormat);
-    }
+    if (!Objects.equals(this.dateTimeFormat, dateTimeFormat))
+      recordChange(() -> {
+        DocumentValidator.requireDateConstraintsSatisfiableUnder(database, "the datetime format to '" + dateTimeFormat + "'",
+            database.getSerializer().getDateImplementation(), database.getSerializer().getDateTimeImplementation(),
+            dateTimeFormat, this.dateFormat);
+        this.dateTimeFormat = dateTimeFormat;
+      });
   }
 
   /**

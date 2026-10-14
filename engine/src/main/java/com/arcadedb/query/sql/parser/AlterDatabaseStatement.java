@@ -131,15 +131,6 @@ public class AlterDatabaseStatement extends DDLStatement {
       final Class<?> resolvedClass = finalValue instanceof Class<?> clazz ? clazz : null;
       finalValue = GlobalConfiguration.externalizeValue(finalValue);
 
-      // A REGEXP on a DATE or DATETIME property is matched against the text of the class the value is held as, which this
-      // setting decides for the whole database: refused before anything changes when a pattern would match no value of the
-      // new class (issue #9976)
-      if (resolvedClass != null && (cfg == GlobalConfiguration.DATE_IMPLEMENTATION
-          || cfg == GlobalConfiguration.DATE_TIME_IMPLEMENTATION))
-        DocumentValidator.requireDateConstraintsSatisfiableUnder(db, "'" + settingNameAsString + "' to '" + finalValue + "'",
-            cfg == GlobalConfiguration.DATE_IMPLEMENTATION ? resolvedClass : db.getSerializer().getDateImplementation(),
-            cfg == GlobalConfiguration.DATE_TIME_IMPLEMENTATION ? resolvedClass : db.getSerializer().getDateTimeImplementation(),
-            db.getSchema().getDateTimeFormat(), db.getSchema().getDateFormat());
 
       // Kept to undo the change below when it cannot be saved (issue #9763). Under Raft HA the save is what replicates
       // the configuration, and it can be refused - a peer that cannot decode the entry yet - or fail to commit: the
@@ -149,14 +140,34 @@ public class AlterDatabaseStatement extends DDLStatement {
           db.getConfiguration().getValue(cfg.getKey(), null) :
           null;
 
-      db.getConfiguration().setValue(cfg, finalValue);
+      if (resolvedClass != null && (cfg == GlobalConfiguration.DATE_IMPLEMENTATION
+          || cfg == GlobalConfiguration.DATE_TIME_IMPLEMENTATION)) {
+        // A REGEXP on a DATE or DATETIME property is matched against the text of the class the value is held as, which this
+        // setting decides for the whole database: refused before anything changes when a pattern would match no value of
+        // the new class (issue #9976). Checked and put in force under the write lock, which ALTER PROPERTY takes too, so a
+        // pattern declared meanwhile is either checked here or checked against the new class
+        final String change = "'" + settingNameAsString + "' to '" + finalValue + "'";
+        final Object value = finalValue;
+        db.executeInWriteLock(() -> {
+          DocumentValidator.requireDateConstraintsSatisfiableUnder(db, change,
+              cfg == GlobalConfiguration.DATE_IMPLEMENTATION ? resolvedClass : db.getSerializer().getDateImplementation(),
+              cfg == GlobalConfiguration.DATE_TIME_IMPLEMENTATION ?
+                  resolvedClass :
+                  db.getSerializer().getDateTimeImplementation(), db.getSchema().getDateTimeFormat(),
+              db.getSchema().getDateFormat());
+          db.getConfiguration().setValue(cfg, value);
+          applyDatabaseSideEffect(db, cfg, resolvedClass);
+          return null;
+        });
+      } else {
+        db.getConfiguration().setValue(cfg, finalValue);
+        applyDatabaseSideEffect(db, cfg, resolvedClass);
+      }
 
       // The stored value is what the setting is now worth, which is not always what was asked for: a callback
       // reached through the overlay may normalise it (arcadedb.maxPageRAM clamps a page cache larger than 80%
       // of the heap), and the result row has to report the value that took effect (issue #7163).
       finalValue = GlobalConfiguration.externalizeValue(db.getConfiguration().getValue(cfg));
-
-      applyDatabaseSideEffect(db, cfg, resolvedClass);
 
       try {
         db.saveConfiguration();

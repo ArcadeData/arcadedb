@@ -22,6 +22,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.DocumentValidator;
 import com.arcadedb.database.DocumentValidator.RegexpUsability;
 import com.arcadedb.exception.ValidationException;
+import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.Test;
 
 import java.util.EnumMap;
@@ -129,6 +130,16 @@ class Issue9990RegexpDecidedOnEveryTypeTest extends TestHelper {
     final RegexpUsability satisfiable = DocumentValidator.regexpUsability(database, Type.LONG, "[0-9]{0,1000000}");
     assertThat(satisfiable.refusal()).isNull();
     assertThat(satisfiable.doubt()).isNull();
+  }
+
+  @Test
+  void aPathologicalPatternGivesUpInsteadOfHoldingTheDeclaration() {
+    // nested counted repetitions: far past the automaton's size cap, and a search the budget has to end
+    final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
+    final RegexpUsability usability = DocumentValidator.regexpUsability(database, Type.LONG, "((0{1,100}){1,100}){1,100}9{20}");
+    stopwatch.assertGaveUpWithin(10_000, "a declaration-time check bounded by its deadline, from one that is not");
+    assertThat(usability.refusal()).isNull();
+    assertThat(usability.doubt()).isNotNull();
   }
 
   @Test

@@ -59,6 +59,8 @@ public final class RegexAutomaton {
   private static final long   MAX_PAIRS         = 1L << 26;
   /** the most steps the product walk may take, so the time it costs is bounded whatever the two automata */
   private static final long   MAX_WORK          = 50_000_000L;
+  /** how many steps of the product walk run between two looks at the clock */
+  private static final int    DEADLINE_CHECK_INTERVAL = 4096;
   /** the most entries the memoized epsilon closures may hold in all */
   private static final long   MAX_CLOSURE_SIZE  = 8_000_000L;
   private static final String LINE_TERMINATORS  = "\n\r\u0085  ";
@@ -175,7 +177,16 @@ public final class RegexAutomaton {
    * Whether some NON-EMPTY string is accepted by both automata, which must have been compiled over the same alphabet.
    */
   public static Verdict intersects(final RegexAutomaton a, final RegexAutomaton b) {
-    final String common = commonString(a, b);
+    return intersects(a, b, Long.MAX_VALUE);
+  }
+
+  /**
+   * As {@link #intersects(RegexAutomaton, RegexAutomaton)}, giving up with {@link Verdict#UNDECIDED} once
+   * {@code deadlineNanos} ({@link System#nanoTime()}, see {@link TimeBoundRegex#newDeadline}) is past: the work is bounded by
+   * the sizes of the two automata, and the deadline bounds the time that work can take on a slow or busy machine.
+   */
+  public static Verdict intersects(final RegexAutomaton a, final RegexAutomaton b, final long deadlineNanos) {
+    final String common = commonString(a, b, deadlineNanos);
     return common == null ? Verdict.UNSATISFIABLE : common == UNDECIDED ? Verdict.UNDECIDED : Verdict.SATISFIABLE;
   }
 
@@ -185,6 +196,10 @@ public final class RegexAutomaton {
    * {@link Pattern} itself.
    */
   static String commonString(final RegexAutomaton a, final RegexAutomaton b) {
+    return commonString(a, b, Long.MAX_VALUE);
+  }
+
+  static String commonString(final RegexAutomaton a, final RegexAutomaton b, final long deadlineNanos) {
     if (!a.alphabet.equals(b.alphabet))
       throw new IllegalArgumentException("The two automata read different alphabets");
     if ((long) a.size * b.size > MAX_PAIRS)
@@ -211,7 +226,7 @@ public final class RegexAutomaton {
     while (true) {
       for (final int p : statesA)
         for (final int q : statesB) {
-          if (++work > MAX_WORK)
+          if (++work > MAX_WORK || (work & (DEADLINE_CHECK_INTERVAL - 1)) == 1 && System.nanoTime() - deadlineNanos >= 0)
             return UNDECIDED;
           final long low = a.symbolsLow[p] & b.symbolsLow[q];
           final long high = a.symbolsHigh[p] & b.symbolsHigh[q];

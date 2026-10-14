@@ -2529,7 +2529,8 @@ public class LocalDocumentType implements DocumentType {
 
   @Override
   public Object getCustomValue(final String key) {
-    return custom.get(key);
+    // a concurrent map refuses a null key, which a plain one answered null for
+    return key != null ? custom.get(key) : null;
   }
 
   @Override
