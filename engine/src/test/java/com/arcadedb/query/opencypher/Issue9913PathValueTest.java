@@ -277,7 +277,7 @@ class Issue9913PathValueTest extends TestHelper {
 
     // a RID that points to no record is not a path element: null, not a RecordNotFoundException
     final List<Object> missing = new ArrayList<>(nodeRids);
-    missing.set(1, new RID(database, path.getVertices().get(1).getIdentity().getBucketId(), 999_999));
+    missing.set(1, new RID(path.getVertices().get(1).getIdentity().getBucketId(), 999_999L));
     assertThat(TraversalPath.of(Map.of("_type", "path", "nodes", missing, "relationships", relRids))).isNull();
 
     // the right counts, but A-[r0]->B listed between A and C: r0 does not join them

@@ -278,7 +278,12 @@ public class TraversalPath {
    * @return true if path contains vertex
    */
   public boolean containsVertex(final Vertex vertex) {
-    return vertices.stream().anyMatch(v -> v.getIdentity().equals(vertex.getIdentity()));
+    // a plain loop, as containsEdge: this runs on every extension of a variable-length walk
+    final RID vertexRid = vertex.getIdentity();
+    for (int i = 0; i < vertices.size(); i++)
+      if (vertices.get(i).getIdentity().equals(vertexRid))
+        return true;
+    return false;
   }
 
   /**
