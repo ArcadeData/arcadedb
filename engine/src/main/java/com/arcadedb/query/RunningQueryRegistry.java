@@ -21,6 +21,7 @@ package com.arcadedb.query;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicLong;
@@ -72,8 +73,8 @@ public final class RunningQueryRegistry {
   public RunningQuery open(final String database, final String user, final String protocol, final String sessionId,
       final String tag, final RunningQuery.Client client) {
     final RunningQuery query = new RunningQuery(this, lastId.incrementAndGet(), database, user, protocol, sessionId, tag);
-    // Before the entry is listed, so no listing sees it without its client
-    query.setClient(client);
+    // Before the entry is listed, so no listing sees it without its client. Never null: a surface with no client says so
+    query.setClient(Objects.requireNonNull(client, "client: pass RunningQuery.Client.NONE for work that comes from no connection"));
     running.put(query.getNumericId(), query);
     return query;
   }
