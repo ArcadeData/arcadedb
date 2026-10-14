@@ -272,6 +272,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   private static final long                                              SCHEMA_DELTA_WITHHELD_LOG_THROTTLE_MS = 5 * 60_000L;
   private static final long                                              TX_PREPARED_AT_WITHHELD_LOG_THROTTLE_MS = 5 * 60_000L;
   private volatile long                                                  lastTxPreparedAtWithheldLog;
+  private static final long                                              CORPUS_DELTAS_WITHHELD_LOG_THROTTLE_MS = 5 * 60_000L;
+  private volatile long                                                  lastCorpusDeltasWithheldLog;
 
   /**
    * Throttle window for the "releasing entry unpublished" warning (issue #9411): during a prolonged in-place restart
@@ -1175,8 +1177,21 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * deltas one repair by their own drift check, which is the behavior before the section existed.
    */
   private List<FullTextCorpusDeltas.CorpusDelta> corpusDeltasToState(final RaftHAServer raft, final ReplicationPayload payload) {
-    if (payload.corpusDeltas().isEmpty() || !raft.canStateFullTextCorpusDeltas())
+    if (payload.corpusDeltas().isEmpty())
       return Collections.emptyList();
+    if (!raft.canStateFullTextCorpusDeltas()) {
+      // The followers will not count these transactions, which is silent drift between nodes: said out loud, but not once per commit
+      final long now = System.currentTimeMillis();
+      if (now - lastCorpusDeltasWithheldLog > CORPUS_DELTAS_WITHHELD_LOG_THROTTLE_MS) {
+        lastCorpusDeltasWithheldLog = now;
+        LogManager.instance().log(this, Level.WARNING,
+            "Database '%s': transactions do not carry their effect on the BM25 corpus counters, so the other nodes do not count "
+                + "them. Some peer does not advertise '%s' (older build, not probed yet, or offline). Once every peer does, run "
+                + "REBUILD INDEX <name> WITH statsOnly = true on the leader to bring the counters of every node back in line",
+            getName(), PeerCapabilities.TX_FULLTEXT_CORPUS_DELTA);
+      }
+      return Collections.emptyList();
+    }
     return payload.corpusDeltas();
   }
 
@@ -1453,6 +1468,10 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     // same page-level machinery recovery replay uses on reopen.
     try {
       final WALFile.WALTransaction walTx = ArcadeStateMachine.deserializeWalTransaction(payload.walData());
+      // The BM25 corpus deltas ride with the bucket record counts and obey the same rule: applyChanges folds them only when it
+      // advances a page. The local commit folds both as the LAST step of publishing its pages, so a failure before that leaves a
+      // page to advance here, and one after it finds every page published and folds nothing (a fold counted twice would be
+      // silent; Issue10051ReplicatedCorpusDeltaTest pins the replay of an entry already applied)
       proxied.getTransactionManager().applyChanges(walTx, payload.bucketDeltas(), payload.corpusDeltas(), true);
       LogManager.instance().log(this, Level.INFO,
           "Phase 2 failure: leader pages reconciled via WAL replay (db=%s, tx=%s)", getName(), payload.tx());

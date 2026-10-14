@@ -29,7 +29,15 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -133,21 +141,54 @@ class Issue10051Bm25CounterAdoptionTest extends TestHelper {
   }
 
   /**
-   * The adoption is not atomic with a commit applying its delta on another thread, so the once-per-session drift check stays
-   * armed: it is only a live count against the adopted counters, and it finds nothing to repair when they agree.
+   * The adoption is not atomic with a commit applying its delta on another thread, so it arms the once-per-session drift check
+   * again even when it already ran: that check is only a live count against the adopted counters, and it finds nothing to repair
+   * when they agree. It must not be the unconditional rescan, or every follower scans the type after every rebuild.
    */
   @Test
-  void adoptedCountersLeaveTheCheapDriftCheckArmedAndItRepairsNothing() throws IOException {
+  void adoptedCountersRearmTheCheapDriftCheckWhichRepairsNothing() throws IOException {
     createAndFill();
-    assertThat(metadata().isStaleCheckDone()).isFalse();
+    database.query("sql", "SELECT FROM Doc WHERE SEARCH_INDEX('Doc[content]', 'alpha') = true").close();
+    assertThat(metadata().isStaleCheckDone()).isTrue();
 
     leaderSavesCounters(DOCS, DOCS * 3L, 1L);
     followerReloadsTheSchema();
 
-    assertThat(metadata().isStaleCheckDone()).isFalse();
+    assertThat(metadata().isStaleCheckDone()).as("armed again by the adoption").isFalse();
     database.query("sql", "SELECT FROM Doc WHERE SEARCH_INDEX('Doc[content]', 'alpha') = true").close();
     assertThat(metadata().isStaleCheckDone()).isTrue();
-    assertThat(metadata().getScans()).isZero();
+    assertThat(metadata().getScans()).as("the counters agree with the live data: nothing to rescan").isZero();
+  }
+
+  /** The bucket indexes of one logical index all carry the same definition: exactly one reader of it adopts. */
+  @Test
+  void concurrentAdoptersOfTheSameDefinitionHaveOneWinner() throws Exception {
+    createAndFill();
+    final JSONObject definition = new JSONObject().put("ft_countersValid", true).put("ft_totalDocs", 5L)
+        .put("ft_sumDocLength", 15L).put("ft_countersEpoch", 4L);
+    final int threads = 8;
+    final AtomicInteger winners = new AtomicInteger();
+    final CountDownLatch start = new CountDownLatch(1);
+    final ExecutorService executor = Executors.newFixedThreadPool(threads);
+    try {
+      final List<Future<?>> futures = new ArrayList<>();
+      for (int i = 0; i < threads; i++)
+        futures.add(executor.submit(() -> {
+          start.await();
+          if (metadata().adoptPersistedCounters(definition))
+            winners.incrementAndGet();
+          return null;
+        }));
+      start.countDown();
+      for (final Future<?> future : futures)
+        future.get(30, TimeUnit.SECONDS);
+    } finally {
+      executor.shutdownNow();
+    }
+
+    assertThat(winners.get()).isEqualTo(1);
+    assertThat(metadata().getCountersEpoch()).isEqualTo(4L);
+    assertThat(metadata().getTotalDocs()).isEqualTo(5L);
   }
 
   /** A node that skipped a delta arms the drift check, which then repairs it. */

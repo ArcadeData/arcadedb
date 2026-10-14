@@ -899,8 +899,10 @@ public class FullTextIndexMetadata extends IndexMetadata {
     sumDocLength.set(definition.getLong("ft_sumDocLength", 0L));
     totalDocs.set(definition.getLong("ft_totalDocs", 0L));
     this.countersValid = true;
-    // The once-per-session check stays armed on purpose: it is only a live count against these counters, and it is what repairs
-    // the window above
+    // The once-per-session check is armed AGAIN, whether or not it already ran: it is only a live count against these counters,
+    // and it is what finds the window above. It must not be the unconditional rescan of requireRescan(): the adopted counters
+    // are the leader's exact result, and every follower rescanning the type after every statsOnly rebuild would defeat it
+    staleChecked.set(false);
     return true;
   }
 
