@@ -90,6 +90,14 @@ public final class LSMVectorIndexGraphSideFiles {
    * What a file was when it was observed. Two observations of the same path are equal only when no writer replaced
    * the file between them: every writer of a side file moves a NEW file into place, which changes the file key on any
    * file system that has one, and the modification and creation times on the ones that do not.
+   * <p>
+   * <b>The proof is weaker where there is no file key</b> (Windows: {@code fileKey()} is {@code null}). There a
+   * replacement is told apart only by its size and its two timestamps, so one of the same size whose temporary file was
+   * created and written within the file system's timestamp granularity of the original would pass for it. NTFS records
+   * both times at 100 ns, and a persist writes every page of a graph between deleting the manifest and writing the
+   * next one, so this is a theoretical gap rather than a race a real persist can win - but it is not the strict proof
+   * the file key gives. Comparing the manifest's bytes would not close it: a rebuild over the same vectors writes the
+   * same manifest.
    */
   record FileIdentity(Object fileKey, long size, long lastModifiedNanos, long createdNanos) {
     /** @return the identity of the file at {@code path}, or {@code null} when there is none */
