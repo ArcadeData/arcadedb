@@ -34,7 +34,10 @@ import java.util.NoSuchElementException;
  * <p>
  * A branch sets {@code $score} for each row it produces, as its filter evaluates the scoring condition again, and that
  * variable is the only place the score lives. The step therefore reads it right after it pulls a row from a branch, before
- * it pulls from another, and sets it back when it hands the row on, which is when the steps after it read it. A record
+ * it pulls from another, and sets it back when it hands the row on, which is when the steps after it read it. That relies
+ * on a branch evaluating its rows one at a time, whatever batch size it is asked for: its last step is a
+ * {@link FilterStep}, whose {@code next()} returns the row its condition was just evaluated on and evaluates the following
+ * one only on the next {@code hasNext()}. A step that evaluated rows ahead of the one it returns would break the merge. A record
  * matching several branches is served once, at the first of its positions in the merged order, which is its best score.
  * <p>
  * The planner chains this step only when every branch is such a fetch and nothing in a branch's filter can set
@@ -107,7 +110,9 @@ public class MergeByScoreStep extends AbstractExecutionStep {
       guard = WorkGuard.forCommandDeadline(context);
     final long begin = context.isProfiling() ? System.nanoTime() : 0;
     try {
-      while (true) {
+      Result candidate;
+      float score;
+      do {
         // Skipping duplicates consumes input without producing a row, as long as the duplicates last (issue #9680)
         guard.checkPeriodically(++consumed);
         int best = -1;
@@ -122,15 +127,12 @@ public class MergeByScoreStep extends AbstractExecutionStep {
           releaseBuffer();
           return;
         }
-        final Result candidate = heads[best];
-        final float score = headScores[best];
+        candidate = heads[best];
+        score = headScores[best];
         heads[best] = null;
-        if (alreadyEmitted(candidate))
-          continue;
-        nextValue = candidate;
-        nextScore = score;
-        return;
-      }
+      } while (alreadyEmitted(candidate));
+      nextValue = candidate;
+      nextScore = score;
     } finally {
       if (context.isProfiling())
         cost += System.nanoTime() - begin;
