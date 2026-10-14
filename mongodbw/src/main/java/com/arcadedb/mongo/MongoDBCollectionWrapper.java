@@ -19,7 +19,9 @@
 package com.arcadedb.mongo;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.engine.OwnTransaction;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.ErrorCategory;
 import com.arcadedb.index.TypeIndex;
@@ -199,6 +201,14 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
 
   @Override
   public void insertDocuments(final List<Document> list) {
+    insertDocumentsCountingStored(list);
+  }
+
+  /**
+   * {@link #insertDocuments(List)}, answering how many documents the engine stored: the {@code n} an {@code insert} replies. A
+   * document a {@code BeforeRecordCreateListener} vetoed is not stored and is not counted (issue #9974).
+   */
+  int insertDocumentsCountingStored(final List<Document> list) {
     final List<Object> ids = new ArrayList<>(list.size());
     for (final Document d : list)
       if (d.containsKey("_id"))
@@ -220,13 +230,13 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
           lock.writeLock().unlock();
         }
       }
-      insertInTransaction(list);
+      return insertInTransaction(list);
     } finally {
       lock.readLock().unlock();
     }
   }
 
-  private void insertInTransaction(final List<Document> list) {
+  private int insertInTransaction(final List<Document> list) {
     // a type without the unique index (made through SQL or Studio, or already holding duplicates) is checked by hand
     final boolean checkByHand = !hasUniqueIdIndex(database.getSchema().getType(collectionName));
     if (checkByHand && ID_INDEX_SLOW_PATH_LOGGED.add(idIndexKey(database, collectionName)))
@@ -234,8 +244,12 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
           "Collection '%s' has no unique index on _id: every insert checks the _id with a query, which is slow on a big collection", null,
           collectionName);
 
-    database.begin();
+    // The insert's OWN transaction, nested in whatever the caller holds: an ArcadeDB nested transaction is independent, not a
+    // savepoint, and the commit pops it. Asking database.isTransactionActive() afterwards answers for the CALLER's, which a
+    // rollback guarded by it used to discard on the successful path (issue #9977).
+    final OwnTransaction tx = OwnTransaction.begin((DatabaseInternal) database);
     try {
+      int stored = 0;
       for (final Document d : list) {
         if (checkByHand && d.containsKey("_id"))
           checkIdIsFree(d.get("_id"));
@@ -246,14 +260,15 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
           record.set(p.getKey(), MongoBsonValues.toStored(p.getKey(), p.getValue()));
         }
 
-        record.save();
+        if (record.saveReportingVeto())
+          ++stored;
       }
 
-      database.commit();
+      tx.commit();
+      return stored;
     } finally {
-      // a failed insert (a duplicated _id, a constraint) must not leave the transaction open on this thread
-      if (database.isTransactionActive())
-        database.rollback();
+      // a failed insert (a duplicated _id, a constraint) must not leave its transaction open on this thread
+      tx.rollbackIfMine();
     }
   }
 

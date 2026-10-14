@@ -21,6 +21,7 @@ package com.arcadedb.query;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicLong;
@@ -48,15 +49,18 @@ public final class RunningQueryRegistry {
    * Opens the entry of a statement about to run on the calling thread and publishes it there
    * ({@link RunningQuery#current()}). The caller closes it on the same thread, in a {@code finally} block.
    *
-   * @param database  name of the database the statement runs against, or {@code null}
-   * @param user      name of the user running it
-   * @param protocol  how it reached the server, e.g. {@code http}
-   * @param sessionId the transaction session it runs in, or {@code null}
-   * @param tag       the opaque label the client gave it, or {@code null}
+   * @param database      name of the database the statement runs against, or {@code null}
+   * @param user          name of the user running it
+   * @param protocol      how it reached the server, e.g. {@code http}
+   * @param sessionId     the transaction session it runs in, or {@code null}
+   * @param tag           the opaque label the client gave it, or {@code null}
+   * @param client        who asked for it, {@link RunningQuery.Client#NONE} for work that comes from no connection. Taken
+   *                      here rather than by a later call, so a surface cannot open an entry that lists work without
+   *                      saying whose it is (issue #9962)
    */
   public RunningQuery register(final String database, final String user, final String protocol, final String sessionId,
-      final String tag) {
-    final RunningQuery query = open(database, user, protocol, sessionId, tag);
+      final String tag, final RunningQuery.Client client) {
+    final RunningQuery query = open(database, user, protocol, sessionId, tag, client);
     query.publish();
     return query;
   }
@@ -67,8 +71,10 @@ public final class RunningQueryRegistry {
    * work runs and closes it once the statement is over. Same parameters as {@link #register}.
    */
   public RunningQuery open(final String database, final String user, final String protocol, final String sessionId,
-      final String tag) {
+      final String tag, final RunningQuery.Client client) {
     final RunningQuery query = new RunningQuery(this, lastId.incrementAndGet(), database, user, protocol, sessionId, tag);
+    // Before the entry is listed, so no listing sees it without its client. Never null: a surface with no client says so
+    query.setClient(Objects.requireNonNull(client, "client: pass RunningQuery.Client.NONE for work that comes from no connection"));
     running.put(query.getNumericId(), query);
     return query;
   }

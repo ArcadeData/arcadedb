@@ -108,6 +108,8 @@ public class Issue9689GrpcRunningQueryIT extends BaseGrpcServerTest {
     assertThat(entry.getUser()).isEqualTo("root");
     assertThat(entry.getDatabase()).isEqualTo(getDatabaseName());
     assertThat(entry.getLanguage()).isEqualTo("opencypher");
+    // Issue #9962: listed with the peer of the call
+    assertThat(entry.getClientAddress()).as("the peer of the call").isNotBlank().isNotEqualTo("null");
 
     entry.terminate("root");
     assertThatThrownBy(() -> running.get(30, TimeUnit.SECONDS)).satisfies(e -> {

@@ -341,9 +341,9 @@ public class RedisNetworkExecutor extends Thread {
           admission = QueryAdmissionGate.getInstance().admit();
           // Listed by "list queries" / SHOW TRANSACTIONS and stopped by a terminate, over the same window as the slot
           // (issue #9689). The command line is put together only if somebody lists it
-          runningQuery = server.getRunningQueries().register(selectedDatabaseName, authenticatedUser.getName(), "redis", null, null);
+          runningQuery = server.getRunningQueries().register(selectedDatabaseName, authenticatedUser.getName(), "redis", null, null,
+              RunningQuery.Client.of(getName(), channel.socket.getRemoteSocketAddress()));
           runningQuery.setStatement("redis", () -> describe(list));
-          runningQuery.setConnection(getName(), String.valueOf(channel.socket.getRemoteSocketAddress()));
         }
 
         switch (cmdString) {
@@ -507,9 +507,8 @@ public class RedisNetworkExecutor extends Thread {
    * refusal actionable.
    */
   static String withLeaderRedirect(final String text, final Throwable error) {
-    final ServerIsNotTheLeaderException refusal = ServerIsNotTheLeaderException.redirectIn(error);
     // A RESP simple error is one line: leaderSentence strips the address's control characters, line breaks included
-    return refusal != null ? text + ". " + refusal.leaderSentence() : text;
+    return ServerIsNotTheLeaderException.withLeaderSentence(text, error);
   }
 
   /**
@@ -751,7 +750,12 @@ public class RedisNetworkExecutor extends Thread {
         throw RedisCommandArity.wrongArity((String) list.get(0));
       final String typeName = secondArg;
       final Database database = getAuthorizedDatabase(databaseName);
+      // Counted into a local inside the block and published only once it has returned, so a retried attempt does not carry the
+      // rolled-back one's count (issue #8037). The reply is the number of records stored: a create a BeforeRecordCreateListener
+      // vetoed is not one (issue #9974)
+      final int[] count = { 0 };
       database.transaction(() -> {
+        int created = 0;
         for (int i = 3; i < list.size(); i++) {
           final JSONObject v = new JSONObject((String) list.get(i));
 
@@ -767,11 +771,13 @@ public class RedisNetworkExecutor extends Thread {
             document = database.newDocument(typeName);
 
           document.fromJSON(v);
-          document.save();
+          if (document.saveReportingVeto())
+            created++;
         }
+        count[0] = created;
       });
       value.append(":");
-      value.append(list.size() - 3);
+      value.append(count[0]);
     }
   }
 

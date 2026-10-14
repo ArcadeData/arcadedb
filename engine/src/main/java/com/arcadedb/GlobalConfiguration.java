@@ -921,8 +921,9 @@ public enum GlobalConfiguration {
 
   QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP("arcadedb.queryMaxHeapElementsAllowedPerOp", SCOPE.DATABASE, """
       Maximum number of elements (records/groups) allowed in a single query for memory-intensive operations (eg. ORDER BY, GROUP BY \
-      and DISTINCT in heap; in OpenCypher also the rows a Cartesian product or a hash join buffers, UNION, collect(), and the eager \
-      materialization ahead of a write). If exceeded, the query fails with a CommandExecutionException. Negative number means no limit. \
+      and DISTINCT in heap, the result of a LET subquery, the records a MATCH prefetches and the \
+      values an aggregate that keeps them holds, like list(), set(), percentile() or the ts.* windows; in OpenCypher also the rows \
+      a Cartesian product or a hash join buffers, UNION, collect(), and the eager materialization ahead of a write). If exceeded, the query fails with a CommandExecutionException. Negative number means no limit. \
       This setting is intended as a safety measure against excessive resource consumption from a single query (eg. prevent OutOfMemory). \
       When left at the default it auto-scales with the JVM max heap (roughly one element every 2KB of heap, never below 500000), so \
       large-cardinality analytical queries (eg. top-N-by-aggregate over millions of distinct keys) complete out of the box on servers \
@@ -941,8 +942,9 @@ public enum GlobalConfiguration {
 
   QUERY_MAX_HEAP_RAM("arcadedb.queryMaxHeapRAM", SCOPE.JVM, """
       Maximum heap (in MB) the in-memory buffers of all the queries running in the JVM may hold at once, across every \
-      database: the rows an ORDER BY sorts, the keys a DISTINCT or a UNION remembers, the groups a GROUP BY keeps, and in \
-      OpenCypher also the values collect() gathers, the rows a Cartesian product or a hash join buffers and the eager \
+      database: the rows an ORDER BY sorts, the keys a DISTINCT or a UNION remembers, the groups a GROUP BY keeps, the result \
+      of a LET subquery, the records a TRAVERSE has visited or a MATCH prefetches, the record addresses an UPDATE reads ahead \
+      of its writes, the values an aggregate like list() or percentile() holds, and in OpenCypher also the values collect() gathers, the rows a Cartesian product or a hash join buffers and the eager \
       materialization ahead of a write. Every buffer reserves its estimated size from this budget as it grows and gives it \
       back when it is released, so many large queries running together cannot exhaust the heap even when each one stays \
       below arcadedb.queryMaxHeapElementsAllowedPerOp. A query whose buffers would take the reservations past the budget \

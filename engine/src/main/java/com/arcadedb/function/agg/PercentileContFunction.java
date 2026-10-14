@@ -78,7 +78,7 @@ public class PercentileContFunction implements StatelessFunction, HeapBufferingF
         limit = OperationHeapLimit.of(context, "percentileCont()");
         ownLimit = true;
       }
-      limit.chargeElement(number, 0);
+      limit.add(values.size(), number);
     }
     return null;
   }

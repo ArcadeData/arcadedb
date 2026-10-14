@@ -4937,31 +4937,34 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     return Identifier.quote(name);
   }
 
-  // Match an existing row by key and merge onto it; false when none matched (caller then inserts).
+  /** What an upsert by key did: a veto is not "no match", or the caller would insert a second record for the key. */
+  private enum UpsertOutcome {NO_MATCH, UPDATED, VETOED}
+
+  // Match an existing row by key and merge onto it; NO_MATCH when none matched (caller then inserts).
   // MutableVertex and MutableEdge both extend MutableDocument, so asDocument().modify() returns the
-  // record's real mutable subtype; save() therefore persists a vertex/edge through its own path.
-  private boolean tryUpsertByRecord(final InsertContext ctx, final GrpcRecord r, final boolean isEdge) {
+  // record's real mutable subtype; saveReportingVeto() therefore persists a vertex/edge through its own path.
+  private UpsertOutcome tryUpsertByRecord(final InsertContext ctx, final GrpcRecord r, final boolean isEdge) {
     final List<String> keys = ctx.keyCols;
     if (keys.isEmpty())
-      return false;
+      return UpsertOutcome.NO_MATCH;
 
     final String where = String.join(" AND ", keys.stream().map(k -> quoteName(k) + " = ?").toList());
     final Object[] params = keys.stream().map(k -> recordValue(r, k)).toArray();
 
     try (final ResultSet rs = ctx.db.query("sql", "SELECT FROM " + quoteName(ctx.opts.getTargetClass()) + " WHERE " + where, params)) {
       if (!rs.hasNext())
-        return false;
+        return UpsertOutcome.NO_MATCH;
 
       final Result res = rs.next();
       if (!res.isElement())
-        return false;
+        return UpsertOutcome.NO_MATCH;
 
       final MutableDocument existing = res.getElement().get().asDocument().modify();
       // The upsert writes the request's values, not values computed from the record read: no stale-read refusal (#8610)
       existing.clearBasedOnStaleRead();
       applyConflictUpdates(ctx, r, isEdge, existing);
-      existing.save();
-      return true;
+      // an update a BeforeRecordUpdateListener vetoed is not counted as one (issue #9974)
+      return existing.saveReportingVeto() ? UpsertOutcome.UPDATED : UpsertOutcome.VETOED;
     }
   }
 
@@ -4990,6 +4993,29 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       ignored += o.ignored;
       failed += o.failed;
       errors.addAll(o.errors);
+    }
+
+    /**
+     * Counts the outcome of an upsert by key, answering whether a record matched (so nothing is to be inserted). A write a listener
+     * vetoed is counted as ignored: the row was refused on purpose, not applied and not failed (issue #9974).
+     */
+    boolean upserted(final UpsertOutcome outcome) {
+      switch (outcome) {
+      case UPDATED -> updated++;
+      case VETOED -> ignored++;
+      case NO_MATCH -> {
+        return false;
+      }
+      }
+      return true;
+    }
+
+    /** Counts a create, which a {@code BeforeRecordCreateListener} may have vetoed (issue #9974). */
+    void inserted(final boolean created) {
+      if (created)
+        inserted++;
+      else
+        ignored++;
     }
 
     /**
@@ -5087,22 +5113,21 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         final ConflictMode mode = ctx.opts.getConflictMode();
 
         if (isVertex) {
-          if (mode == ConflictMode.CONFLICT_UPDATE && tryUpsertByRecord(ctx, r, false)) {
-            c.updated++;
+          if (mode == ConflictMode.CONFLICT_UPDATE && c.upserted(tryUpsertByRecord(ctx, r, false))) {
+            // matched: counted as updated, or as ignored when a listener vetoed the update
           } else if (mode == ConflictMode.CONFLICT_IGNORE && keyExistsByRecord(ctx, r)) {
             c.ignored++;
           } else {
             final MutableVertex v = ctx.db.newVertex(ctx.opts.getTargetClass());
             applyGrpcRecord(v, r);
-            v.save();
-            c.inserted++;
+            c.inserted(v.saveReportingVeto());
           }
         } else if (isEdge) {
           // Edges must honor conflict_mode / key_columns like documents and vertices. newEdge()
           // persists and links the edge immediately, so the upsert/ignore check has to run before the
           // edge is created, otherwise a match would leave a dangling edge.
-          if (mode == ConflictMode.CONFLICT_UPDATE && tryUpsertByRecord(ctx, r, true)) {
-            c.updated++;
+          if (mode == ConflictMode.CONFLICT_UPDATE && c.upserted(tryUpsertByRecord(ctx, r, true))) {
+            // matched: counted as updated, or as ignored when a listener vetoed the update
           } else if (mode == ConflictMode.CONFLICT_IGNORE && keyExistsByRecord(ctx, r)) {
             c.ignored++;
           } else {
@@ -5121,20 +5146,18 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
               // Create edge from the OUT vertex. The `in` RID is stored in the edge record; use DatabaseRID so edge.getIn() resolves across threads.
               final MutableEdge e = outV.newEdge(ctx.opts.getTargetClass(), ctx.db.newRID(inRid));
               applyGrpcRecord(e, r); // sets edge properties
-              e.save();
-              c.inserted++;
+              c.inserted(e.saveReportingVeto());
             }
           }
         } else {
-          if (mode == ConflictMode.CONFLICT_UPDATE && tryUpsertByRecord(ctx, r, false)) {
-            c.updated++;
+          if (mode == ConflictMode.CONFLICT_UPDATE && c.upserted(tryUpsertByRecord(ctx, r, false))) {
+            // matched: counted as updated, or as ignored when a listener vetoed the update
           } else if (mode == ConflictMode.CONFLICT_IGNORE && keyExistsByRecord(ctx, r)) {
             c.ignored++;
           } else {
             final MutableDocument d = ctx.db.newDocument(ctx.opts.getTargetClass());
             applyGrpcRecord(d, r);
-            d.save();
-            c.inserted++;
+            c.inserted(d.saveReportingVeto());
           }
         }
 
@@ -5148,9 +5171,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           // same new key, which is not deterministically reproducible single-threaded.
           case CONFLICT_UPDATE -> {
             try {
-              if (tryUpsertByRecord(ctx, r, isEdge))
-                c.updated++;
-              else
+              if (!c.upserted(tryUpsertByRecord(ctx, r, isEdge)))
                 // The match vanished between the conflict and the retry (transient MVCC window): report
                 // it as a retriable CONFLICT rather than guessing.
                 c.err(c.received - 1, "CONFLICT", insertErrorMessage(dup), "");

@@ -871,8 +871,14 @@ public class LocalSchema implements Schema {
       final Set<LocalDocumentType> survivors = Collections.newSetFromMap(new IdentityHashMap<>(publishedTypes.size()));
       survivors.addAll(publishedTypes.values());
 
-      for (final LocalDocumentType type : superseded.values())
-        if (type instanceof final LocalTimeSeriesType tsType && !survivors.contains(tsType)) {
+      for (final LocalDocumentType type : superseded.values()) {
+        if (survivors.contains(type))
+          continue;
+
+        // ITS LISTENERS ARE NO LONGER REACHED BY ANY READ: THEY MUST NOT KEEP THE DATABASE ON THE DISPATCH PATH (#9997)
+        type.events.detachFromDatabase();
+
+        if (type instanceof final LocalTimeSeriesType tsType) {
           // Retired, not closed (issue #9886): the replacement engine is built on the same registered files
           try {
             tsType.closeSuperseded();
@@ -882,6 +888,7 @@ public class LocalSchema implements Schema {
                 e.getMessage());
           }
         }
+      }
     }
 
     // The same for the indexes, and for the same reason: nothing reaches them through the schema any more, and
@@ -2831,6 +2838,10 @@ public class LocalSchema implements Schema {
           for (final LocalDocumentType parent : superTypes)
             sub.addSuperType(parent, false);
         }
+        // THE SUB TYPES NO LONGER INHERIT THE PROPERTIES OF THE DROPPED TYPE: THE LINE ABOVE BYPASSES unlinkSuperType(), SO
+        // AN ANSWER DERIVED FROM THEIR INHERITED PROPERTIES IS RETIRED HERE, NOT LEFT TO THE SAVE AT THE END (#9997)
+        if (!type.subTypes.isEmpty())
+          typesChanged();
 
         // DELETE ALL ASSOCIATED INDEXES. typeBeingDropped (set above) makes dropIndexInternal() skip the
         // partition-suitability report it would otherwise trigger on this type - directly, and through the nested
@@ -2871,6 +2882,9 @@ public class LocalSchema implements Schema {
 
         if (!typeMap().remove(type.getName(), type))
           throw new SchemaException("Type '" + typeName + "' not found");
+
+        // NO READ REACHES ITS LISTENERS ANY MORE: THEY MUST NOT KEEP THE DATABASE ON THE DISPATCH PATH (#9997)
+        type.events.detachFromDatabase();
 
         // #8187: A TYPE CREATED LATER UNDER THIS NAME IS A DIFFERENT TYPE AND IS REPORTED ON ITS OWN MERITS
         reportedUpgradeWarnings.remove(BUCKETLESS_TYPE_WARNING_PREFIX + type.getName());
@@ -5176,9 +5190,24 @@ public class LocalSchema implements Schema {
     return typesChangeSerial.get();
   }
 
-  /** Moves the serial every answer derived from the types is stamped with, so none computed before is served again. */
-  private void typesChanged() {
+  /**
+   * Moves the serial every answer derived from the types is stamped with, so none computed before is served again. Called
+   * after the change is visible: by the schema when the type graph is replaced or its buckets move, and by a type when its
+   * own or its inherited properties change (issue #9997).
+   */
+  void typesChanged() {
     typesChangeSerial.incrementAndGet();
+  }
+
+  /**
+   * The events registry of a new type of this schema: its BEFORE READ listeners are counted in the database's total, which
+   * is what lets a read skip finding the registry of the record's type while nobody listens (issue #9997).
+   */
+  RecordEventsRegistry newTypeEventsRegistry() {
+    // A CAST, NOT A FALLBACK: LocalDatabase ALWAYS HOLDS A RecordEventsRegistry AND THE READ PATH CASTS ITS EVENTS TO ONE
+    // (LocalBucket.fireBeforeReadEvents). A REGISTRY OF ITS OWN WOULD COUNT ITS LISTENERS WHERE NO READ LOOKS, AND THE
+    // READS WOULD SKIP THEM
+    return ((RecordEventsRegistry) database.getEmbedded().getEvents()).newTypeRegistry();
   }
 
   private void rebuildBucketTypeMap() {

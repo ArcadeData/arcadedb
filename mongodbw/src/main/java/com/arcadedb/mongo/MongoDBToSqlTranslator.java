@@ -514,10 +514,16 @@ public class MongoDBToSqlTranslator {
     return convertMapToMongoDB(doc.toMap());
   }
 
-  private static Document convertMapToMongoDB(final Map<String, Object> map) {
+  /**
+   * A BSON field name is DERIVED from a map key, it is not the key: a {@code MAP} property stores and returns its keys with their
+   * own class (an Integer, a Long, a Date, a {@code null}), and a BSON document can only name a field by text. The key's text is
+   * taken exactly as the shared {@code JSONObject(Map)} constructor takes it, a {@code null} key named {@code "null"}, so the same
+   * record reads the same through every protocol (issue #9973).
+   */
+  private static Document convertMapToMongoDB(final Map<?, ?> map) {
     final Document result = new Document();
-    for (final Map.Entry<String, Object> entry : map.entrySet()) {
-      final String p = entry.getKey();
+    for (final Map.Entry<?, ?> entry : map.entrySet()) {
+      final String p = String.valueOf(entry.getKey());
       // the record's own metadata is not part of a MongoDB document: a client would see fields it never wrote
       if (isRecordMetadata(p))
         continue;
@@ -580,7 +586,6 @@ public class MongoDBToSqlTranslator {
    * the encoder handles exactly one of those, {@link Instant}, rejecting the rest outright and failing the whole response.
    * The engine anchors a stored date to UTC, so the conversion uses the same offset and is exact.
    */
-  @SuppressWarnings("unchecked")
   private static Object toBsonValue(final Object value) {
     if (value instanceof Instant)
       return value;
@@ -593,7 +598,7 @@ public class MongoDBToSqlTranslator {
       // a malformed tag stays a plain map and is converted like any other embedded document
       if (bson != value)
         return bson;
-      return convertMapToMongoDB((Map<String, Object>) value);
+      return convertMapToMongoDB((Map<?, ?>) value);
     } else if (value instanceof LocalDateTime dateTime)
       return dateTime.toInstant(ZoneOffset.UTC);
     else if (value instanceof LocalDate date)
@@ -602,9 +607,9 @@ public class MongoDBToSqlTranslator {
       return dateTime.toInstant();
     else if (value instanceof Date date)
       return date.toInstant();
-    else if (value instanceof Map)
+    else if (value instanceof Map<?, ?> map)
       // an embedded document can hold a temporal property of its own
-      return convertMapToMongoDB((Map<String, Object>) value);
+      return convertMapToMongoDB(map);
     else if (value instanceof List<?> list) {
       final List<Object> converted = new ArrayList<>(list.size());
       for (final Object item : list)

@@ -244,11 +244,15 @@ class Issue8537ExpandWithoutEdgeLoadTest {
 
   /**
    * The anchor predicate is still applied, with Cypher's equality semantics, when it is evaluated once per anchor row
-   * instead of once per expanded path: a STRING parameter the index would coerce to the LONG key must match nothing.
+   * instead of once per expanded path: a fraction matches no LONG key, a text with no LONG form matches nothing, and the
+   * text form of a key finds the same rows as the key itself, since Person.id is declared LONG (#9794, #9935).
    */
   @Test
   void anchorPredicateKeepsCypherEqualitySemantics() {
-    assertThat(count("MATCH (p:Person)-[:KNOWS]->(:Person)-[:KNOWS]->(x:Person) WHERE p.id = $id RETURN count(*) AS n", "1")).isZero();
+    // isPositive(): the anchor must reach some paths, or matching the brute force would hold for a predicate matching nothing
+    assertThat(count("MATCH (p:Person)-[:KNOWS]->(:Person)-[:KNOWS]->(x:Person) WHERE p.id = $id RETURN count(*) AS n", "1"))
+        .isEqualTo(bruteForce2(1)).isPositive();
+    assertThat(count("MATCH (p:Person)-[:KNOWS]->(:Person)-[:KNOWS]->(x:Person) WHERE p.id = $id RETURN count(*) AS n", "one")).isZero();
     assertThat(count("MATCH (p:Person)-[:KNOWS]->(:Person)-[:KNOWS]->(x:Person) WHERE p.id = $id RETURN count(*) AS n", 1.5d)).isZero();
     assertThat(count("MATCH (p:Person)-[:KNOWS]->(:Person)-[:KNOWS]->(x:Person) WHERE p.id = $id RETURN count(*) AS n", 1))
         .isEqualTo(bruteForce2(1));

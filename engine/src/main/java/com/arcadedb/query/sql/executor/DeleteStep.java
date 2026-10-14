@@ -18,10 +18,14 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.TimeoutException;
 
 /**
- * Deletes records coming from upstream steps
+ * Deletes records coming from upstream steps. Only the rows the engine actually deleted are passed on: a delete a
+ * {@code BeforeRecordDeleteListener} vetoed is dropped here, so the {@link CountStep} after this step - the count SQL, the Postgres
+ * wire and the HTTP API reply - counts deletions rather than candidates, and {@code RETURN BEFORE} returns only the records that are
+ * gone (issue #9974). A row that is not a record (nothing to delete) is passed on as it always was.
  *
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */
@@ -33,32 +37,19 @@ public class DeleteStep extends AbstractExecutionStep {
 
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
-    final ResultSet upstream = getPrev().syncPull(context, nRecords);
-    return new ResultSet() {
+    final ExecutionStepInternal prevStep = checkForPrevious();
+    final DatabaseInternal database = context.getDatabase();
+    // deletes one row ahead of what it returns: only valid under a plan that drains every pull (see SkippingResultSet)
+    return new SkippingResultSet(prevStep, context, nRecords) {
       @Override
-      public boolean hasNext() {
-        return upstream.hasNext();
-      }
-
-      @Override
-      public Result next() {
-        final Result result = upstream.next();
+      protected Result process(final Result result) {
         final long begin = context.isProfiling() ? System.nanoTime() : 0;
         try {
-          if (result.isElement()) {
-            context.getDatabase().deleteRecord(result.getElement().get());
-          }
-          return result;
+          return !result.isElement() || database.deleteRecordReportingVeto(result.getElement().get()) ? result : null;
         } finally {
-          if (context.isProfiling()) {
+          if (context.isProfiling())
             cost += System.nanoTime() - begin;
-          }
         }
-      }
-
-      @Override
-      public void close() {
-        upstream.close();
       }
     };
   }

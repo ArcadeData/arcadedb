@@ -36,7 +36,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * index whose key type was inferred as numeric (e.g. {@code WHERE n.val < "zzz"}) used to return HTTP 500
  * with an internal {@code ClassCastException} ("String cannot be cast to Integer") or a
  * {@code NumberFormatException}. Cross-type comparisons are undefined (null) in Cypher, so the query must
- * complete (HTTP 200) and return the same result as the un-indexed full-scan path.
+ * complete (HTTP 200) and return the same result as the un-indexed full-scan path. Equality against the text a value was
+ * written with finds it, since the index declared the property INTEGER and a declaration defines its text form (#9794, #9935).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -79,9 +80,14 @@ class Issue5225MixedTypeIndexIT extends BaseGraphServerTest {
     cypher("CREATE INDEX FOR (n:BugIdx) ON (n.val)", 200);
     cypher("MATCH (n:BugIdx) WHERE n.id = 1 SET n.val = \"1\" RETURN n.val", 200);
 
-    // Strict-typed equality on the coerced integer value returns no rows (Neo4j: 1 = "1" is false).
-    assertThat(cypher("MATCH (n:BugIdx) WHERE n.val = \"1\" RETURN n.id, n.val", 200).getJSONArray("result").length())
-        .isZero();
+    // CREATE INDEX declared val INTEGER from the data, so the SET stored the integer 1, and since #9794 the text it was
+    // written with reads back as that integer (#9935)
+    final JSONArray equal = cypher("MATCH (n:BugIdx) WHERE n.val = \"1\" RETURN n.id AS id, n.val AS val", 200).getJSONArray("result");
+    assertThat(equal.length()).isEqualTo(1);
+    assertThat(equal.getJSONObject(0).getInt("id")).isEqualTo(1);
+    assertThat(equal.getJSONObject(0).get("val")).isEqualTo(1);
+    // A text with no integer form still matches nothing
+    assertThat(cypher("MATCH (n:BugIdx) WHERE n.val = \"one\" RETURN n.id", 200).getJSONArray("result").length()).isZero();
 
     // Range predicates against a String bound must complete (no 500), matching the un-indexed result of 0.
     assertThat(count("MATCH (n:BugIdx) WHERE n.val < \"zzz\" RETURN count(n) AS c")).isZero();

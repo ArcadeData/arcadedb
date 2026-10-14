@@ -449,7 +449,11 @@ public class ArcadeGraphManager implements GraphManager {
     // scans and its adjacency steps check the entry. The script or bytecode is described only if somebody lists it
     final ArcadeDBServer server = serverInstance;
     if (server != null) {
-      final RunningQuery runningQuery = server.getRunningQueries().register(databaseOf(msg), USER.get(), "gremlin", null, null);
+      // The connection, carried to this thread with the user (issue #9962). None when the request did not come through the
+      // pipeline that publishes it: a custom channelizer, or a session, whose pool is not the one that carries it
+      final RunningQuery.Client client = GremlinAuthContext.getClient();
+      final RunningQuery runningQuery = server.getRunningQueries()
+          .register(databaseOf(msg), USER.get(), "gremlin", null, null, client != null ? client : RunningQuery.Client.NONE);
       runningQuery.setStatement("gremlin", () -> String.valueOf(msg.getArgs().get(Tokens.ARGS_GREMLIN)));
       RUNNING.set(runningQuery);
     }

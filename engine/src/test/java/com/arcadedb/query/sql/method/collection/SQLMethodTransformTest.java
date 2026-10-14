@@ -295,13 +295,18 @@ class SQLMethodTransformTest {
       }
 
       @Override
-      public void createRecordNoLock(Record record, String bucketName, boolean discardRecordAfter) {
-
+      public boolean createRecordNoLock(Record record, String bucketName, boolean discardRecordAfter) {
+        return true;
       }
 
       @Override
       public void updateRecord(Record record) {
 
+      }
+
+      @Override
+      public boolean updateRecordReportingVeto(Record record) {
+        return true;
       }
 
       @Override

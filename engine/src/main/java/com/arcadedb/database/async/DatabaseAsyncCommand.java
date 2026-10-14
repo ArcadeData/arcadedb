@@ -108,10 +108,12 @@ public class DatabaseAsyncCommand implements DatabaseAsyncTask {
     if (dbContext != null)
       dbContext.setCurrentUser(requestUser);
 
+    // A query takes no configuration: Database has no query(..., ContextConfiguration, ...) twin of command(), so
+    // passing it here bound the configuration as the first query parameter (issue #9941).
     try (final ResultSet resultset = idempotent ?
         parametersMap != null ?
-            database.query(language, command, configuration, parametersMap) :
-            database.query(language, command, configuration, parameters) :
+            database.query(language, command, parametersMap) :
+            database.query(language, command, parameters) :
         parametersMap != null ?
             database.command(language, command, configuration, parametersMap) :
             database.command(language, command, configuration, parameters)) {

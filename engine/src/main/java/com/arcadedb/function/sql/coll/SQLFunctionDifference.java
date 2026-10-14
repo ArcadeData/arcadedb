@@ -79,4 +79,10 @@ public class SQLFunctionDifference extends SQLAggregatedCollectionFunction<Set<O
   public String getSyntax() {
     return "difference(<field>, <field> [, <field]*)";
   }
+
+  /** Every call answers on its own arguments: nothing is kept from one row to the next, so nothing is charged (issue #9793). */
+  @Override
+  public boolean holdsEveryValue() {
+    return false;
+  }
 }

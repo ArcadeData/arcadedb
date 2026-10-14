@@ -714,8 +714,9 @@ public class RedisQueryEngine implements QueryEngine {
         }
 
         document.fromJSON(json);
-        document.save();
-        created++;
+        // the reply is the number of records stored: a create a BeforeRecordCreateListener vetoed is not one (issue #9974)
+        if (document.saveReportingVeto())
+          created++;
       }
       count[0] = created;
     });

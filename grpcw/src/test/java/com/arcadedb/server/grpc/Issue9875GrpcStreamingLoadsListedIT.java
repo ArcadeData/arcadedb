@@ -112,6 +112,8 @@ public class Issue9875GrpcStreamingLoadsListedIT extends BaseGrpcServerTest {
     assertThat(entry.getUser()).isEqualTo("root");
     assertThat(entry.getDatabase()).isEqualTo(getDatabaseName());
     assertThat(entry.getSessionId()).isNull();
+    // Issue #9962: the handler opens the entry where the call is out of reach, and still lists its peer
+    assertThat(entry.getClientAddress()).as("the peer of the stream").isNotBlank().isNotEqualTo("null");
 
     entry.terminate("root");
     outcome.assertTerminated();

@@ -198,7 +198,28 @@ public interface DatabaseInternal extends Database {
 
   void createRecord(Record record, String bucketName);
 
-  void createRecordNoLock(Record record, String bucketName, boolean discardRecordAfter);
+  /**
+   * Creates the record without taking the database read lock, dispatching the before/after-create listeners itself.
+   *
+   * @return {@code true} when the record was created, {@code false} when a before-create listener vetoed it (the record is then
+   * left without an identity)
+   */
+  boolean createRecordNoLock(Record record, String bucketName, boolean discardRecordAfter);
+
+  /**
+   * Creates the record exactly as {@link #createRecord(Record, String)} does, under the database read lock, but answers what the
+   * engine answered, which {@link #createRecord(Record, String)} and {@link MutableDocument#save()} throw away. A caller that COUNTS
+   * creations - the integer a protocol replies - must use this one (or {@link MutableDocument#saveReportingVeto()}), or a create a
+   * listener vetoed is counted as done (issue #9974). The create-side twin of {@link #deleteRecordReportingVeto(Record)}.
+   *
+   * @param bucketName the bucket to create the record in, {@code null} for the one the type selects
+   *
+   * @return {@code true} when the record was created, {@code false} when a before-create listener vetoed it. Every other refusal
+   * (a constraint, a permission, a duplicated key, a read-only database) is thrown, as by {@link #createRecord(Record, String)}.
+   */
+  default boolean createRecordReportingVeto(final Record record, final String bucketName) {
+    return executeInReadLock(() -> createRecordNoLock(record, bucketName, false));
+  }
 
   /**
    * Emergency repair: recreates {@code record} at {@code position} in {@code bucket}, i.e. at the exact RID a
@@ -236,6 +257,17 @@ public interface DatabaseInternal extends Database {
   RID restoreRecord(Record record, LocalBucket bucket, long position);
 
   void updateRecord(Record record);
+
+  /**
+   * Updates the record exactly as {@link #updateRecord(Record)} does, but answers what the engine answered, which
+   * {@link #updateRecord(Record)} and {@link MutableDocument#save()} throw away. A caller that COUNTS updates must use this one (or
+   * {@link MutableDocument#saveReportingVeto()}), or an update a listener vetoed is counted as done (issue #9974).
+   *
+   * @return {@code true} when the update was applied (in a transaction: queued for the commit), {@code false} when a before-update
+   * listener vetoed it or this transaction has already deleted the record (#7149). Every other refusal is thrown, as by
+   * {@link #updateRecord(Record)}.
+   */
+  boolean updateRecordReportingVeto(Record record);
 
   void updateRecordNoLock(Record record, boolean discardRecordAfter);
 

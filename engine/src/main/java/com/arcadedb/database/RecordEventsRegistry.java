@@ -29,6 +29,7 @@ import com.arcadedb.event.BeforeRecordUpdateListener;
 
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public class RecordEventsRegistry implements RecordEvents {
   private final List<BeforeRecordCreateListener> beforeCreateListeners = new CopyOnWriteArrayList<>();
@@ -40,6 +41,58 @@ public class RecordEventsRegistry implements RecordEvents {
   private final List<AfterRecordUpdateListener>  afterUpdateListeners  = new CopyOnWriteArrayList<>();
   private final List<AfterRecordDeleteListener>  afterDeleteListeners  = new CopyOnWriteArrayList<>();
   private final Object                           changeLock            = new Object();
+  /**
+   * The BEFORE READ listeners of a whole database: the ones of its own registry and of the registry of every type of its
+   * schema, which all share this one counter (issue #9997). A read asks it before finding the type of the record it is
+   * about to hand out, a checked {@code getSchema()} and a bucket-to-type lookup per record, and skips both while it is
+   * zero. Exact, not sticky: an unregistered listener, a dropped type and a type a schema reload replaced all give their
+   * count back, so a database returns to the fast path once its last listener is gone.
+   */
+  private final AtomicInteger                    databaseBeforeReadListeners;
+  // Guarded by changeLock. Set when this registry's type left the schema: its listeners are no longer counted
+  private       boolean                          detached;
+
+  /** The registry of a database: the root of the count its types' registries share. */
+  public RecordEventsRegistry() {
+    this(new AtomicInteger());
+  }
+
+  private RecordEventsRegistry(final AtomicInteger databaseBeforeReadListeners) {
+    this.databaseBeforeReadListeners = databaseBeforeReadListeners;
+  }
+
+  /**
+   * A registry for a type of this database, whose BEFORE READ listeners are counted in the database's total. The contract
+   * that keeps the total exact: whoever retires the type (a drop, a schema reload replacing it) calls
+   * {@link #detachFromDatabase()} on its registry. A registry discarded without it keeps its listeners counted, which can
+   * only keep the database on the dispatch path, never skip a listener.
+   */
+  public RecordEventsRegistry newTypeRegistry() {
+    return new RecordEventsRegistry(databaseBeforeReadListeners);
+  }
+
+  /**
+   * Whether a BEFORE READ listener is registered on the database this registry belongs to, or on any of its types: false
+   * means no read of the database has anyone to tell. One volatile read.
+   */
+  public boolean hasBeforeReadListenersInDatabase() {
+    return databaseBeforeReadListeners.get() > 0;
+  }
+
+  /**
+   * Called when the type owning this registry leaves the schema (dropped, or replaced by a schema reload): no read reaches
+   * its listeners any more, so they stop counting in the database's total. The listeners themselves are left in place, and
+   * a listener registered afterwards through a reference to the retired type is not counted either: no read reaches it.
+   */
+  public void detachFromDatabase() {
+    synchronized (changeLock) {
+      if (detached)
+        return;
+      detached = true;
+      if (!beforeReadListeners.isEmpty())
+        databaseBeforeReadListeners.addAndGet(-beforeReadListeners.size());
+    }
+  }
 
   @Override
   public RecordEventsRegistry registerListener(final BeforeRecordCreateListener listener) {
@@ -53,8 +106,12 @@ public class RecordEventsRegistry implements RecordEvents {
   @Override
   public RecordEventsRegistry registerListener(final BeforeRecordReadListener listener) {
     synchronized (changeLock) {
-      if (!beforeReadListeners.contains(listener))
+      if (!beforeReadListeners.contains(listener)) {
+        // COUNTED BEFORE IT IS VISIBLE: A READ THAT FINDS THE COUNT AT ZERO HAS NO LISTENER TO MISS
+        if (!detached)
+          databaseBeforeReadListeners.incrementAndGet();
         beforeReadListeners.add(listener);
+      }
     }
     return this;
   }
@@ -116,7 +173,8 @@ public class RecordEventsRegistry implements RecordEvents {
   @Override
   public RecordEventsRegistry unregisterListener(final BeforeRecordReadListener listener) {
     synchronized (changeLock) {
-      beforeReadListeners.remove(listener);
+      if (beforeReadListeners.remove(listener) && !detached)
+        databaseBeforeReadListeners.decrementAndGet();
     }
     return this;
   }
