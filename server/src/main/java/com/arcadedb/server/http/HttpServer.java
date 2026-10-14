@@ -590,6 +590,9 @@ public class HttpServer implements ServerPlugin {
         .setServerOption(UndertowOptions.MAX_ENTITY_SIZE, Long.MAX_VALUE)
         .setHandler(createBodySizeLimitHandler(routes, configuration))//
         .setSocketOption(Options.READ_TIMEOUT, configuration.getValueAsInteger(GlobalConfiguration.NETWORK_SOCKET_TIMEOUT))
+        // The read timeout is lifted while a statement runs (issue #9953): TCP keep-alive is what then lets the client-disconnect
+        // watch see a peer that vanished without closing its connection
+        .setSocketOption(Options.KEEP_ALIVE, true)
         .setIoThreads(configuration.getValueAsInteger(GlobalConfiguration.SERVER_HTTP_IO_THREADS))//
         .setWorkerThreads(configuration.getValueAsInteger(GlobalConfiguration.SERVER_HTTP_WORKER_THREADS))//
         .setServerOption(SHUTDOWN_TIMEOUT, 5000);

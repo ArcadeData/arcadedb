@@ -891,6 +891,11 @@ public class ServerControlPlane {
    * <li>{@code not found}: no such statement is running, or it is not one {@code user} may see - not told apart, so
    * the existence of another user's statement is not given away.</li>
    * </ul>
+   * A statement that ran in a transaction session also answers the session's {@code sessionId} and whether it is still
+   * open ({@code sessionOpen}): a terminated command ends its session, a terminated read leaves it to its client (issue
+   * #9798), and a caller waiting for the session to go must then end it with {@code terminate transaction} (issue #9953).
+   * With {@code terminating}, {@code sessionOpen} is only the state when the answer was built: a command still stopping
+   * ends its session as it stops.
    */
   public JSONObject terminateQuery(final ServerSecurityUser user, final String id, final long waitMs) {
     RunningQuery query = user != null ? server.getRunningQueries().get(id) : null;
@@ -1003,13 +1008,21 @@ public class ServerControlPlane {
     return null;
   }
 
-  private static JSONObject terminationStatus(final RunningQuery query, final long deadline) {
+  private JSONObject terminationStatus(final RunningQuery query, final long deadline) {
     final String status;
     if (!awaitEnd(query, deadline))
       status = "terminating";
     else
       status = query.getOutcome() == RunningQuery.Outcome.TERMINATED ? "terminated" : "completed";
-    return new JSONObject().put("id", query.getId()).put("status", status);
+    final JSONObject result = new JSONObject().put("id", query.getId()).put("status", status);
+    final String sessionId = query.getSessionId();
+    if (sessionId != null) {
+      // Whether the session outlived its statement, so a caller waiting for it to go knows to end it (issue #9953)
+      final HttpServer httpServer = server.getHttpServer();
+      result.put("sessionId", sessionId)
+          .put("sessionOpen", httpServer != null && findSession(httpServer.getSessionManager(), sessionId) != null);
+    }
+    return result;
   }
 
   private static boolean awaitEnd(final RunningQuery query, final long deadline) {

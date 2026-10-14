@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<!-- Page fixture of Issue9993StaticAssetCachingTest: which references a rendered page addresses by version (issue #9961) -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>stamp probe</title>
+  <link rel="stylesheet" href="css/cache-probe.css" />
+  <link rel="shortcut icon" href='images/cache-probe.png' type="image/png" />
+  <link href="https://fonts.googleapis.com/css2?family=Poppins&display=swap" rel="stylesheet">
+  <script src="js/cache-probe.js"></script>
+  <script src="/js/cache-probe.js"></script>
+  <script src="js/cache-probe.js?v=pinned"></script>
+  <script src="js/missing-asset.js"></script>
+  <script src="../js/cache-probe.js"></script>
+  <script src="//cdn.example.com/js/cache-probe.js"></script>
+</head>
+<body>
+  <a href="#top">top</a>
+  <a href="index.html">page</a>
+  <a data-href="js/cache-probe.js">not an attribute the browser loads</a>
+  <img src="images/cache-probe.png" />
+</body>
+</html>

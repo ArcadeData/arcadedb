@@ -1891,8 +1891,10 @@ public enum GlobalConfiguration {
       and the chart library set style attributes throughout. The default also allows three outside origins, Google \
       Fonts (fonts.googleapis.com, fonts.gstatic.com) for Studio's typeface and raw.githubusercontent.com for the list \
       of sample datasets; an air-gapped or stricter installation can drop them: Studio then falls back to a system font \
-      and its quick start reports that the sample datasets cannot be loaded. The Swagger UI page adds the hash of its own bootstrap script to script-src. Set to an \
-      empty string to send no policy""",
+      and its quick start reports that the sample datasets cannot be loaded. The Swagger UI page adds the hash of its own \
+      bootstrap script to the directive that governs it, the first one declared of script-src-elem, script-src and \
+      default-src, unless that directive refuses every script ('none'), which is left as configured. Set to an empty \
+      string to send no policy""",
       String.class,
       "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
           + "font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: blob:; "

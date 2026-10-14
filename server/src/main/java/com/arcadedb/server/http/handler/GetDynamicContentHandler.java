@@ -30,25 +30,104 @@ import com.arcadedb.utility.StringUtils;
 import io.micrometer.core.instrument.Metrics;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.util.Headers;
+import io.undertow.util.StatusCodes;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.Deque;
 import java.util.HashMap;
+import java.util.HexFormat;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
+import static java.util.Map.entry;
+
+/**
+ * Serves Studio: its pages, rendered by a small template engine, and its static assets.
+ * <p>
+ * <b>Content types (issue #9993).</b> The extension of the requested file selects its Content-Type and whether it is a
+ * template, from {@link #CONTENT_TYPES}: only {@code .html}/{@code .htm} pages are. An extension missing from the table is
+ * served as {@code text/plain}, so every extension Studio ships has an entry, which a test checks against the shipped tree.
+ * <p>
+ * <b>Browser caching (issue #9961).</b> A static asset is identified by a digest of its bytes, sent as its {@code ETag}.
+ * Every page the template engine renders addresses the local assets it references with that digest
+ * ({@code js/studio-table.js?v=<digest>}, see {@link #stampAssetVersions}), and only a request whose {@code v} names the
+ * bytes being served is told to keep them for good ({@code immutable}): an upgrade that changes an asset changes its URL,
+ * so a returning browser can never pair a fresh page with a stale script, while an unchanged asset - a vendor library
+ * across most upgrades - stays cached. Any other request for an asset is told to revalidate ({@code no-cache}) and is
+ * answered {@code 304 Not Modified} while its {@code If-None-Match} still names the bytes. Pages are never reused without
+ * revalidating: they embed per-request content.
+ */
 public class GetDynamicContentHandler extends AbstractServerHttpHandler {
 
-  // Non-templated Studio assets (js/css/svg/fonts/json/ico) are immutable classpath resources for the
-  // process lifetime. Cache their raw bytes so repeated requests skip the getResourceAsStream + full read
-  // + toByteArray copy on every hit. Bounded so a pathological set of distinct URIs cannot grow it without
-  // limit. Templated (.html) pages are intentionally NOT cached: they embed per-request dynamic content
-  // (now, uuid, role-gated protectBegin sections).
-  private static final int                     STATIC_CACHE_MAX_ENTRIES = 512;
-  private static final Map<String, byte[]>     STATIC_CONTENT_CACHE     = new ConcurrentHashMap<>();
+  /** How one extension is served: its Content-Type, and whether it is a page rendered by the template engine. */
+  record ContentTypeSpec(String contentType, boolean templated) {
+  }
+
+  /**
+   * The extensions served, lower case. A template is rendered on every request and interprets {@code ${...}} directives,
+   * so only pages may be one: a stylesheet or a script run through it would have any {@code ${} sequence eaten.
+   */
+  static final Map<String, ContentTypeSpec> CONTENT_TYPES = Map.ofEntries(//
+      entry("html", new ContentTypeSpec("text/html", true)),//
+      entry("htm", new ContentTypeSpec("text/html", true)),//
+      entry("js", new ContentTypeSpec("text/javascript", false)),//
+      entry("mjs", new ContentTypeSpec("text/javascript", false)),//
+      entry("json", new ContentTypeSpec("application/json", false)),//
+      entry("map", new ContentTypeSpec("application/json", false)),//
+      entry("css", new ContentTypeSpec("text/css", false)),//
+      entry("txt", new ContentTypeSpec("text/plain", false)),//
+      entry("svg", new ContentTypeSpec("image/svg+xml", false)),//
+      entry("ico", new ContentTypeSpec("image/x-icon", false)),//
+      entry("png", new ContentTypeSpec("image/png", false)),//
+      entry("jpg", new ContentTypeSpec("image/jpeg", false)),//
+      entry("jpeg", new ContentTypeSpec("image/jpeg", false)),//
+      entry("gif", new ContentTypeSpec("image/gif", false)),//
+      entry("webp", new ContentTypeSpec("image/webp", false)),//
+      entry("avif", new ContentTypeSpec("image/avif", false)),//
+      entry("woff", new ContentTypeSpec("font/woff", false)),//
+      entry("woff2", new ContentTypeSpec("font/woff2", false)),//
+      entry("ttf", new ContentTypeSpec("font/ttf", false)),//
+      entry("otf", new ContentTypeSpec("font/otf", false)),//
+      entry("wasm", new ContentTypeSpec("application/wasm", false)));
+
+  /** What an extension missing from {@link #CONTENT_TYPES} is served as. */
+  static final ContentTypeSpec UNKNOWN_CONTENT_TYPE = new ContentTypeSpec("text/plain", false);
+
+  /** A static asset as served: its bytes, the digest that versions them, and that digest as an entity tag. */
+  record StaticAsset(byte[] bytes, String version, String etag) {
+  }
+
+  /** The {@code Cache-Control} of an asset requested under the version of its bytes: that URL never names other bytes. */
+  static final String CACHE_VERSIONED   = "public, max-age=31536000, immutable";
+  /** The {@code Cache-Control} of everything else: stored, but revalidated before every use. */
+  static final String CACHE_REVALIDATE  = "no-cache";
+  /** The query parameter that carries an asset's version in the URLs {@link #stampAssetVersions} writes. */
+  static final String VERSION_PARAMETER = "v";
+
+  /**
+   * A {@code src} or {@code href} attribute whose value is a plain path: no query, fragment or scheme, the shape of a
+   * reference to a local asset. Group 1 is the opening quote, group 2 the value.
+   */
+  private static final Pattern ASSET_REFERENCE = Pattern.compile("(?<![\\w-])(?:src|href)\\s*=\\s*([\"'])([^\"'?#:\\s]+)\\1");
+
+  // Static assets are immutable classpath resources for the process lifetime. Cache them, with their digest, so repeated
+  // requests skip the getResourceAsStream + full read + toByteArray copy + hash on every hit. Bounded so a pathological set
+  // of distinct URIs cannot grow it without limit. Templated pages are intentionally NOT cached: they embed per-request
+  // dynamic content (now, uuid, role-gated protectBegin sections).
+  private static final int                      STATIC_CACHE_MAX_ENTRIES = 512;
+  private static final Map<String, StaticAsset> STATIC_CONTENT_CACHE     = new ConcurrentHashMap<>();
+  // The resource paths found missing, for the same reason and with the same bound: a page that references an asset not on
+  // the classpath would otherwise look it up again on every render
+  private static final Set<String>              MISSING_STATIC_CONTENT   = ConcurrentHashMap.newKeySet();
 
   // Shown at the server root when the Studio module is not on the classpath (e.g. the "base"/"headless"
   // distributions). Self-contained (no external assets) so it renders even without Studio installed.
@@ -114,36 +193,8 @@ public class GetDynamicContentHandler extends AbstractServerHttpHandler {
       // NO EXTENSION + HTML PAGES
       uri += ".html";
 
-    boolean processTemplate = true;
-    String contentType = "text/plain";
-    if (uri.endsWith(".html") || uri.endsWith(".htm"))
-      contentType = "text/html";
-    else if (uri.endsWith(".js")) {
-      contentType = "text/javascript";
-      processTemplate = false;
-    } else if (uri.endsWith(".json")) {
-      contentType = "application/json";
-      processTemplate = false;
-    } else if (uri.endsWith(".css"))
-      contentType = "text/css";
-    else if (uri.endsWith(".svg")) {
-      contentType = "image/svg+xml";
-      processTemplate = false;
-    } else if (uri.endsWith(".ico")) {
-      contentType = "image/x-icon";
-      processTemplate = false;
-    } else if (uri.endsWith(".woff")) {
-      contentType = "font/woff";
-      processTemplate = false;
-    } else if (uri.endsWith(".woff2")) {
-      contentType = "font/woff2";
-      processTemplate = false;
-    } else if (uri.endsWith(".ttf")) {
-      contentType = "font/ttf";
-      processTemplate = false;
-    } else
-      processTemplate = false;
-
+    final ContentTypeSpec spec = contentTypeOf(uri);
+    final String contentType = spec.contentType();
     exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, contentType);
     if ("text/html".equals(contentType))
       // A policy governs documents only: Studio's pages refuse inline script, so an HTML-injection bug cannot run any
@@ -155,8 +206,7 @@ public class GetDynamicContentHandler extends AbstractServerHttpHandler {
     final String resourcePath = "static" + uri;
     LogManager.instance().log(this, Level.FINE, "Loading file %s ", "/" + resourcePath);
 
-    final byte[] bytes;
-    if (processTemplate) {
+    if (spec.templated()) {
       // Templated pages are re-rendered per request (they embed now/uuid/role-gated sections) and are not cached.
       final InputStream file = getClass().getClassLoader().getResourceAsStream(resourcePath);
       if (file == null) {
@@ -167,33 +217,118 @@ public class GetDynamicContentHandler extends AbstractServerHttpHandler {
       }
       final Binary fileContent = FileUtils.readStreamAsBinary(file);
       file.close();
-      bytes = templating(exchange, new String(fileContent.toByteArray(), DatabaseFactory.getDefaultCharset()),
-          new HashMap<>()).getBytes(DatabaseFactory.getDefaultCharset());
-    } else {
-      // Immutable static asset: served from the in-process cache after the first read.
-      bytes = loadStaticResource(resourcePath);
-      if (bytes == null)
-        return new ExecutionResponse(404, "Not Found");
-      exchange.getResponseHeaders().put(Headers.CACHE_CONTROL, "max-age=86400");
+      final String page = templating(exchange, new String(fileContent.toByteArray(), DatabaseFactory.getDefaultCharset()),
+          new HashMap<>());
+      exchange.getResponseHeaders().put(Headers.CACHE_CONTROL, CACHE_REVALIDATE);
+      return new ExecutionResponse(200,
+          stampAssetVersions(page, uri.substring(1, uri.lastIndexOf('/') + 1)).getBytes(DatabaseFactory.getDefaultCharset()));
     }
 
-    return new ExecutionResponse(200, bytes);
+    // Immutable static asset: served from the in-process cache after the first read.
+    final StaticAsset asset = loadStaticResource(resourcePath);
+    if (asset == null)
+      return new ExecutionResponse(404, "Not Found");
+
+    exchange.getResponseHeaders().put(Headers.ETAG, asset.etag());
+    final Deque<String> version = exchange.getQueryParameters().get(VERSION_PARAMETER);
+    exchange.getResponseHeaders().put(Headers.CACHE_CONTROL,
+        version != null && asset.version().equals(version.peekFirst()) ? CACHE_VERSIONED : CACHE_REVALIDATE);
+
+    if (matchesEntityTag(exchange.getRequestHeaders().get(Headers.IF_NONE_MATCH), asset.etag()))
+      return new ExecutionResponse(StatusCodes.NOT_MODIFIED, "");
+
+    return new ExecutionResponse(200, asset.bytes());
+  }
+
+  /** How the file {@code uri} names is served, from its extension. */
+  static ContentTypeSpec contentTypeOf(final String uri) {
+    return CONTENT_TYPES.getOrDefault(extensionOf(uri), UNKNOWN_CONTENT_TYPE);
   }
 
   /**
-   * Loads an immutable classpath static asset, caching its raw bytes for the process lifetime so repeated
-   * requests avoid re-reading the stream and re-copying the bytes. Returns {@code null} when the resource
-   * does not exist. The cache is bounded; once full, further distinct resources are still served but not
+   * Whether an {@code If-None-Match} request header names {@code etag}: one of its entity tags does, compared weakly as
+   * the header requires, or it is {@code *}. Splitting on commas holds for the tags this handler issues, which are hex; an
+   * entity tag may contain a comma in general, so this is not a general-purpose If-None-Match parser.
+   */
+  static boolean matchesEntityTag(final Iterable<String> ifNoneMatch, final String etag) {
+    if (ifNoneMatch == null)
+      return false;
+    for (final String header : ifNoneMatch)
+      for (final String tag : header.split(",")) {
+        String candidate = tag.trim();
+        if ("*".equals(candidate))
+          return true;
+        if (candidate.startsWith("W/"))
+          candidate = candidate.substring(2);
+        if (candidate.equals(etag))
+          return true;
+      }
+    return false;
+  }
+
+  /**
+   * Appends the version of the referenced asset to every {@code src} and {@code href} of a rendered page that names a
+   * local static asset ({@code js/studio-table.js} becomes {@code js/studio-table.js?v=<digest>}), so the URL a browser
+   * caches an asset under changes exactly when the asset does (issue #9961). Done on the rendered page rather than written
+   * into each page by hand, so no page and no reference added later can miss it. A reference is left as written when it
+   * carries a query, a fragment or a scheme (an outside origin), leaves the static tree, names a page (templated, never
+   * cached) or an extension that is not served, or names no asset on the classpath.
+   *
+   * @param directory the directory of the page, relative to the static root, that relative references resolve against:
+   *                  {@code ""} for a page at the root, otherwise ending with {@code /}
+   */
+  static String stampAssetVersions(final String page, final String directory) throws IOException {
+    final Matcher matcher = ASSET_REFERENCE.matcher(page);
+    StringBuilder stamped = null;
+    int copied = 0;
+    while (matcher.find()) {
+      final String reference = matcher.group(2);
+      final ContentTypeSpec spec = CONTENT_TYPES.get(extensionOf(reference));
+      // A protocol-relative "//host/path" names another origin, like one with a scheme
+      if (spec == null || spec.templated() || reference.contains("..") || reference.startsWith("//"))
+        continue;
+
+      final StaticAsset asset = loadStaticResource(
+          "static/" + (reference.startsWith("/") ? reference.substring(1) : directory + reference));
+      if (asset == null)
+        continue;
+
+      if (stamped == null)
+        stamped = new StringBuilder(page.length() + 1024);
+      final int valueEnd = matcher.end(2);
+      stamped.append(page, copied, valueEnd).append('?').append(VERSION_PARAMETER).append('=').append(asset.version());
+      copied = valueEnd;
+    }
+    if (stamped == null)
+      return page;
+    return stamped.append(page, copied, page.length()).toString();
+  }
+
+  /** The extension of the file a path names, lower case, or an empty string when it has none. */
+  private static String extensionOf(final String path) {
+    final int dot = path.lastIndexOf('.');
+    return dot < 0 || dot < path.lastIndexOf('/') ? "" : path.substring(dot + 1).toLowerCase(Locale.ROOT);
+  }
+
+  /**
+   * Loads an immutable classpath static asset, caching its raw bytes and their digest for the process lifetime so
+   * repeated requests avoid re-reading the stream, re-copying the bytes and hashing them again. Returns {@code null} when
+   * the resource does not exist. The cache is bounded; once full, further distinct resources are still served but not
    * cached. Package-private for direct unit testing.
    */
-  static byte[] loadStaticResource(final String resourcePath) throws IOException {
-    final byte[] cached = STATIC_CONTENT_CACHE.get(resourcePath);
+  static StaticAsset loadStaticResource(final String resourcePath) throws IOException {
+    final StaticAsset cached = STATIC_CONTENT_CACHE.get(resourcePath);
     if (cached != null)
       return cached;
+    if (MISSING_STATIC_CONTENT.contains(resourcePath))
+      return null;
 
     final InputStream file = GetDynamicContentHandler.class.getClassLoader().getResourceAsStream(resourcePath);
-    if (file == null)
+    if (file == null) {
+      if (MISSING_STATIC_CONTENT.size() < STATIC_CACHE_MAX_ENTRIES)
+        MISSING_STATIC_CONTENT.add(resourcePath);
       return null;
+    }
 
     final byte[] bytes;
     try {
@@ -202,11 +337,23 @@ public class GetDynamicContentHandler extends AbstractServerHttpHandler {
       file.close();
     }
 
+    final String version = digest(bytes);
+    final StaticAsset asset = new StaticAsset(bytes, version, '"' + version + '"');
     if (STATIC_CONTENT_CACHE.size() < STATIC_CACHE_MAX_ENTRIES) {
-      final byte[] existing = STATIC_CONTENT_CACHE.putIfAbsent(resourcePath, bytes);
-      return existing != null ? existing : bytes;
+      final StaticAsset existing = STATIC_CONTENT_CACHE.putIfAbsent(resourcePath, asset);
+      return existing != null ? existing : asset;
     }
-    return bytes;
+    return asset;
+  }
+
+  /** The version of an asset: the first 64 bits of the SHA-256 of its bytes, in hex. Computed once per cached asset. */
+  private static String digest(final byte[] bytes) {
+    try {
+      return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes), 0, 8);
+    } catch (final NoSuchAlgorithmException e) {
+      // Every Java platform is required to provide SHA-256
+      throw new IllegalStateException(e);
+    }
   }
 
   /**

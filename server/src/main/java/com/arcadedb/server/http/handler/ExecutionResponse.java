@@ -23,6 +23,7 @@ import io.undertow.server.HttpServerExchange;
 import io.undertow.util.HeaderMap;
 import io.undertow.util.Headers;
 import io.undertow.util.HttpString;
+import io.undertow.util.StatusCodes;
 
 import java.nio.ByteBuffer;
 import java.util.logging.Level;
@@ -153,7 +154,10 @@ public class ExecutionResponse {
     }
     exchange.setStatusCode(code);
     applyHeaders(exchange.getResponseHeaders());
-    if (binary != null) {
+    if (code == StatusCodes.NOT_MODIFIED)
+      // No content and no Content-Length: a 304 may only declare the length of the representation it stands for (RFC 9110)
+      exchange.endExchange();
+    else if (binary != null) {
       exchange.getResponseHeaders().put(Headers.CONTENT_LENGTH, binary.length);
       exchange.getResponseSender().send(ByteBuffer.wrap(binary));
     } else

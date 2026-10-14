@@ -142,6 +142,13 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   private static final HttpString X_ACCEL_BUFFERING_HEADER  = HttpString.tryFromString("X-Accel-Buffering");
   private static final HttpString CSP_HEADER                = HttpString.tryFromString("Content-Security-Policy");
   private static final HttpString CSP_REPORT_ONLY_HEADER    = HttpString.tryFromString("Content-Security-Policy-Report-Only");
+  /**
+   * The directives that govern an inline {@code <script>} element, narrowest first: the first one a policy declares is the
+   * one the browser consults (issue #9966). {@code script-src-attr} governs inline event handlers, not elements.
+   */
+  private static final String[]   INLINE_SCRIPT_DIRECTIVES  = { "script-src-elem", "script-src", "default-src" };
+  /** The last policy reported as refusing every script, so the warning is logged once per configured policy. */
+  private static volatile String  lastRefusingPolicyReported;
   // Response header set by session-establishing routes (e.g. /begin). Its presence means the response
   // is session-scoped and must not be replayed from the idempotency cache (the session id would be lost).
   private static final HttpString SESSION_ID_HEADER = HttpString.tryFromString(HttpSessionManager.ARCADEDB_SESSION_ID);
@@ -280,31 +287,90 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   }
 
   /**
-   * Adds {@code source} to the directive that governs scripts in {@code policy}: to {@code script-src} when there is
-   * one; otherwise, when {@code default-src} governs scripts, to a new {@code script-src} carrying the
-   * {@code default-src} sources, since a {@code script-src} replaces {@code default-src} for scripts rather than adding
-   * to it. A policy with neither places no limit on scripts and is returned unchanged.
+   * Adds {@code source} to the directive the browser consults for an inline {@code <script>} element of a page served
+   * with {@code policy}: the first one the policy declares of {@link #INLINE_SCRIPT_DIRECTIVES}, each of which replaces
+   * the next for that element rather than adding to it (issue #9966). When only {@code default-src} is declared, a new
+   * {@code script-src} carrying its sources is added instead, so the other resource types {@code default-src} governs are
+   * left as they are. The policy is returned unchanged when:
+   * <ul>
+   * <li>it declares none of them: it places no limit on scripts;</li>
+   * <li>that directive refuses every script ({@code 'none'}, or no source at all): appending a source would turn the
+   * operator's refusal into a permission, since browsers ignore {@code 'none'} next to another source. The page's script
+   * then does not run, which is what the operator asked for, and the log says so once;</li>
+   * <li>it already lets the script run through {@code 'unsafe-inline'}, with no hash or nonce beside it: a hash added there
+   * would make browsers ignore {@code 'unsafe-inline'} and refuse every other inline script the operator allowed;</li>
+   * <li>it already carries {@code source}.</li>
+   * </ul>
    */
   static String allowInlineScript(final String policy, final String source) {
     final String[] directives = policy.split(";");
-    String defaultSources = null;
+    int governing = -1;
+    int precedence = INLINE_SCRIPT_DIRECTIVES.length;
     for (int i = 0; i < directives.length; i++) {
-      final String directive = directives[i].trim();
-      final String name = directiveName(directive);
-      if ("script-src".equals(name)) {
-        directives[i] = directive + " " + source;
-        return String.join("; ", trimAll(directives));
-      }
-      if ("default-src".equals(name))
-        defaultSources = directive.substring(name.length()).trim();
+      final String name = directiveName(directives[i].trim());
+      for (int p = 0; p < precedence; p++)
+        if (INLINE_SCRIPT_DIRECTIVES[p].equals(name)) {
+          governing = i;
+          precedence = p;
+          break;
+        }
     }
 
-    if (defaultSources == null)
+    if (governing < 0)
       return policy;
 
-    final String scriptSrc = "script-src " + (defaultSources.isEmpty() ? "" : defaultSources + " ") + source;
+    final String directive = directives[governing].trim();
+    final String name = INLINE_SCRIPT_DIRECTIVES[precedence];
+    final String sources = directive.substring(name.length()).trim();
+    if (refusesEveryScript(sources)) {
+      if (!policy.equals(lastRefusingPolicyReported)) {
+        lastRefusingPolicyReported = policy;
+        LogManager.instance().log(AbstractServerHttpHandler.class, Level.WARNING,
+            "The Content-Security-Policy refuses every script through '%s', so a page that needs its own inline script (the API "
+                + "documentation at /api/v1/docs) cannot run it. Policy left as configured: %s", name, policy);
+      }
+      return policy;
+    }
+    if (allowsEveryInlineScript(sources) || containsSource(sources, source))
+      return policy;
+
+    if (!"default-src".equals(name)) {
+      directives[governing] = directive + " " + source;
+      return String.join("; ", trimAll(directives));
+    }
+
+    final String scriptSrc = "script-src " + sources + " " + source;
     final String joined = String.join("; ", trimAll(directives));
-    return joined.isEmpty() ? scriptSrc : joined + "; " + scriptSrc;
+    return joined + "; " + scriptSrc;
+  }
+
+  /** Whether a source list allows no script at all: empty, or {@code 'none'} alone. */
+  private static boolean refusesEveryScript(final String sources) {
+    return sources.isEmpty() || "'none'".equalsIgnoreCase(sources);
+  }
+
+  /**
+   * Whether a source list lets every inline script run: {@code 'unsafe-inline'} with no hash, nonce or
+   * {@code 'strict-dynamic'} beside it, any of which makes browsers ignore it.
+   */
+  private static boolean allowsEveryInlineScript(final String sources) {
+    boolean unsafeInline = false;
+    for (final String token : sources.split("\\s+")) {
+      final String lower = token.toLowerCase(Locale.ROOT);
+      if ("'unsafe-inline'".equals(lower))
+        unsafeInline = true;
+      else if (lower.startsWith("'sha256-") || lower.startsWith("'sha384-") || lower.startsWith("'sha512-")
+          || lower.startsWith("'nonce-") || "'strict-dynamic'".equals(lower))
+        return false;
+    }
+    return unsafeInline;
+  }
+
+  private static boolean containsSource(final String sources, final String source) {
+    for (final String token : sources.split("\\s+"))
+      if (token.equals(source))
+        return true;
+    return false;
   }
 
   private static String directiveName(final String directive) {
