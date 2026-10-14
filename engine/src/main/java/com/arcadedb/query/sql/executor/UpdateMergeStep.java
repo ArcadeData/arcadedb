@@ -83,10 +83,11 @@ public class UpdateMergeStep extends AbstractExecutionStep {
   private void handleMerge(final Record record, final CommandContext context) {
     final MutableDocument doc = ((Document) record).modify();
     final Map<String, Object> map = json != null ? json.toMap(record, context) : resolveExpression(record, context);
-    // THROUGH THE MAP CONTRACT, LIKE UPDATE ... CONTENT AND INSERT ... CONTENT: A KEY STARTING WITH @ IS SKIPPED AS METADATA,
-    // EXCEPT THE ONES THE RECORD TYPE ASSIGNS (AN EDGE'S @in/@out RE-POINT IT). APPLIED KEY BY KEY THROUGH THE POSITIONAL
-    // SETTER, A RESERVED KEY WAS REFUSED, SO A DOCUMENT READ BACK AS JSON ({"@rid", "@type", "@cat", ...}) COULD NOT BE
-    // MERGED BACK (ISSUE #9971)
+    // Through the map contract, like UPDATE ... CONTENT and INSERT ... CONTENT: a key starting with @ is skipped as metadata,
+    // except the ones the record type assigns (an edge's @in/@out re-point it). Every other key takes the same path as the
+    // positional setter (putProperty: schema conversion, null stored as null). Applied key by key through the positional
+    // setter, a reserved key was refused, so a document read back as JSON ({"@rid", "@type", "@cat", ...}) could not be
+    // merged back (issue #9971)
     doc.merge(map);
   }
 
