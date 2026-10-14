@@ -30,7 +30,7 @@ def db(temp_db_path):
     # a failed assertion can leave levels open, and drop() refuses inside a transaction
     try:
         database._java_db.rollbackAllNested()
-    except Exception:  # a teardown failure must not hide the test's own
+    except Exception:  # nosec B110 - teardown must not hide the test failure
         pass
     database.drop()
 
