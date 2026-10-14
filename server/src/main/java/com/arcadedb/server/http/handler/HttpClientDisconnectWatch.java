@@ -69,7 +69,9 @@ import java.util.logging.Level;
  * still armed. The trade: a client that vanishes without closing its connection (no FIN or RST reaches the server) is
  * no longer cut off by the read timeout while its statement runs, as it was not before the watch existed. The HTTP
  * listener turns TCP keep-alive on for that case: once the operating system finds the peer dead, the watch's read fails
- * and the statement is terminated, rather than running to its end or to {@code arcadedb.command.timeout}.
+ * and the statement is terminated. The keep-alive timing is the operating system's (on Linux, two hours of silence by
+ * default), so in practice such a statement still runs to its end or to {@code arcadedb.command.timeout}, which is what
+ * bounds it; the keep-alive only stops it from holding the connection forever when no command timeout is set.
  * <p>
  * Costs one listener swap per request and nothing while the client is quiet: the selector wakes the watch only when the
  * client sends or closes.
