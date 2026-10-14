@@ -71,6 +71,14 @@ class Issue9986ReflectiveFunctionNullArgumentTest extends TestHelper {
   }
 
   @Test
+  void aWrongTypedArgumentBesideANullIsStillReported() {
+    // NO math_max OVERLOAD TAKES A STRING: THE NULL BESIDE IT DOES NOT TURN THAT INTO A SILENT NULL
+    assertThatThrownBy(() -> single("select math_max('text', null) as v"))
+        .isInstanceOf(CommandParsingException.class)
+        .hasMessageContaining("Unable to find a function for math_max(text [ java.lang.String ], null [ null ])");
+  }
+
+  @Test
   void everyReflectiveFunctionAnswersAllNullArgumentsWithAValueOrAParsingError() {
     final List<String> failures = new ArrayList<>();
     for (final Map.Entry<String, Object> entry : DefaultSQLFunctionFactory.getInstance().getFunctions().entrySet()) {
