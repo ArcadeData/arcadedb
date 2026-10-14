@@ -29,9 +29,11 @@ import com.arcadedb.graph.StripedEdgeList;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 public class LocalVertexType extends LocalDocumentType implements VertexType {
-  private final    List<Bucket> additionalBuckets = new ArrayList<>();
+  // grown in place when a bucket is added to the type and read lock-free by the bucket listings: copy-on-write (#9989)
+  private final    List<Bucket> additionalBuckets = new CopyOnWriteArrayList<>();
   // The name this type had while a rename is moving its super-node stripe pool, else null. The pool is found by name, and
   // the per-file maps are rebuilt in the middle of a rename, when the pool may still answer to the old name only: listing
   // both names' pools until the move is over keeps it in the permission map and the explicit lock throughout (issue #9780).

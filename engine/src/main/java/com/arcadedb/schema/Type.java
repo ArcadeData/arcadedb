@@ -2472,20 +2472,34 @@ public enum Type {
     else if (value instanceof LocalDate date)
       return new Date(date.toEpochDay() * DateUtils.MS_IN_A_DAY);
     else if (value instanceof String valueAsString) {
+      if (database != null)
+        return parseDate(database, valueAsString, database.getSchema().getDateTimeFormat(), database.getSchema().getDateFormat());
       if (FileUtils.isLong(valueAsString))
-        return new Date(Long.parseLong(value.toString()));
-      else if (database != null) {
-        final Date fromDateTimeFormat = parseFully(database.getSchema().getDateTimeFormat(), valueAsString);
-        if (fromDateTimeFormat != null)
-          return fromDateTimeFormat;
-        final Date fromDateFormat = parseFully(database.getSchema().getDateFormat(), valueAsString);
-        if (fromDateFormat != null)
-          return fromDateFormat;
-        return dateFromSharedChain(database, valueAsString);
-      } else
-        return dateFromSharedChain(null, valueAsString);
+        return new Date(Long.parseLong(valueAsString));
+      return dateFromSharedChain(null, valueAsString);
     }
     throw new IllegalArgumentException("Object of class " + value.getClass() + " cannot be converted to Date");
+  }
+
+  /**
+   * Reads {@code value} as a {@link Date} exactly the way {@link #convert} reads a String into one, with the two schema
+   * patterns given instead of the ones in force: how a change of {@code arcadedb.dateFormat} or
+   * {@code arcadedb.dateTimeFormat} asks whether the MIN and MAX of a date property, read through those patterns on every
+   * write, stay readable under the new one before it is put in force (issue #9976 follow-up).
+   *
+   * @throws IllegalArgumentException when the text cannot be read as a date
+   */
+  public static Date parseDate(final Database database, final String value, final String dateTimeFormat,
+      final String dateFormat) {
+    if (FileUtils.isLong(value))
+      return new Date(Long.parseLong(value));
+    final Date fromDateTimeFormat = parseFully(dateTimeFormat, value);
+    if (fromDateTimeFormat != null)
+      return fromDateTimeFormat;
+    final Date fromDateFormat = parseFully(dateFormat, value);
+    if (fromDateFormat != null)
+      return fromDateFormat;
+    return dateFromSharedChain(database, value);
   }
 
   /**

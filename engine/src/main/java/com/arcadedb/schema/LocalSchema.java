@@ -23,6 +23,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.DocumentValidator;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
@@ -1447,8 +1448,13 @@ public class LocalSchema implements Schema {
   @Override
   public void setDateFormat(final String dateFormat) {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_DATABASE_SETTINGS);
-    if (!Objects.equals(this.dateFormat, dateFormat))
+    if (!Objects.equals(this.dateFormat, dateFormat)) {
+      // the MIN and MAX of a date property are read through this pattern on every write (issue #9976 follow-up)
+      DocumentValidator.requireDateConstraintsSatisfiableUnder(database, "the date format to '" + dateFormat + "'",
+          database.getSerializer().getDateImplementation(), database.getSerializer().getDateTimeImplementation(),
+          this.dateTimeFormat, dateFormat);
       recordChange(() -> this.dateFormat = dateFormat);
+    }
   }
 
   @Override
@@ -1459,8 +1465,12 @@ public class LocalSchema implements Schema {
   @Override
   public void setDateTimeFormat(final String dateTimeFormat) {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_DATABASE_SETTINGS);
-    if (!Objects.equals(this.dateTimeFormat, dateTimeFormat))
+    if (!Objects.equals(this.dateTimeFormat, dateTimeFormat)) {
+      DocumentValidator.requireDateConstraintsSatisfiableUnder(database, "the datetime format to '" + dateTimeFormat + "'",
+          database.getSerializer().getDateImplementation(), database.getSerializer().getDateTimeImplementation(),
+          dateTimeFormat, this.dateFormat);
       recordChange(() -> this.dateTimeFormat = dateTimeFormat);
+    }
   }
 
   /**
@@ -3373,7 +3383,10 @@ public class LocalSchema implements Schema {
 
         type.custom.clear();
         if (schemaType.has("custom"))
-          type.custom.putAll(schemaType.getJSONObject("custom").toMap());
+          // a concurrent map holds no null, which is what a custom value set to null is anyway: not set
+          for (final Map.Entry<String, Object> entry : schemaType.getJSONObject("custom").toMap().entrySet())
+            if (entry.getValue() != null)
+              type.custom.put(entry.getKey(), entry.getValue());
       }
 
       // CREATE THE PROPERTIES AFTER ALL THE TYPES HAVE BEEN CREATED TO FIND ALL THE REFERENCES LINKED WITH `TO`

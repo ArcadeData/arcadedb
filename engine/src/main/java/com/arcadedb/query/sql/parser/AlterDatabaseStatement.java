@@ -22,6 +22,7 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.DocumentValidator;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.exception.CommandExecutionException;
@@ -129,6 +130,16 @@ public class AlterDatabaseStatement extends DDLStatement {
       // per-database side effect below, so nothing has to resolve the name a second time.
       final Class<?> resolvedClass = finalValue instanceof Class<?> clazz ? clazz : null;
       finalValue = GlobalConfiguration.externalizeValue(finalValue);
+
+      // A REGEXP on a DATE or DATETIME property is matched against the text of the class the value is held as, which this
+      // setting decides for the whole database: refused before anything changes when a pattern would match no value of the
+      // new class (issue #9976)
+      if (resolvedClass != null && (cfg == GlobalConfiguration.DATE_IMPLEMENTATION
+          || cfg == GlobalConfiguration.DATE_TIME_IMPLEMENTATION))
+        DocumentValidator.requireDateConstraintsSatisfiableUnder(db, "'" + settingNameAsString + "' to '" + finalValue + "'",
+            cfg == GlobalConfiguration.DATE_IMPLEMENTATION ? resolvedClass : db.getSerializer().getDateImplementation(),
+            cfg == GlobalConfiguration.DATE_TIME_IMPLEMENTATION ? resolvedClass : db.getSerializer().getDateTimeImplementation(),
+            db.getSchema().getDateTimeFormat(), db.getSchema().getDateFormat());
 
       // Kept to undo the change below when it cannot be saved (issue #9763). Under Raft HA the save is what replicates
       // the configuration, and it can be refused - a peer that cannot decode the entry yet - or fail to commit: the

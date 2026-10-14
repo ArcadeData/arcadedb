@@ -29,18 +29,26 @@ import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
+import java.util.regex.Pattern;
+import java.util.regex.PatternSyntaxException;
 
 public abstract class AbstractProperty implements Property {
   protected final        DocumentType        owner;
   protected final        String              name;
   protected final        Type                type;
   protected final        int                 id;
-  protected              Map<String, Object> custom          = new HashMap<>();
-  protected              boolean             readonly        = false;
-  protected              boolean             mandatory       = false;
-  protected              boolean             notNull         = false;
-  protected              boolean             hidden          = false;
+  // Issue #9989: every constraint below is reassigned by ALTER PROPERTY under the schema lock and read LOCK FREE by
+  // DocumentValidator on every write, so each is volatile, as `external` and `defaultValue` already were for the same reason:
+  // without the happens-before edge a write could be validated against a constraint that was altered or dropped. The custom
+  // map is mutated in place and read by toJSON() after the lock is released, so it is concurrent, as #6799 made its
+  // neighbour in LocalDocumentType. Issue7299SchemaCopyOnWritePublicationTest sweeps the class for both rules.
+  protected final        Map<String, Object> custom          = new ConcurrentHashMap<>();
+  protected volatile     boolean             readonly        = false;
+  protected volatile     boolean             mandatory       = false;
+  protected volatile     boolean             notNull         = false;
+  protected volatile     boolean             hidden          = false;
   // Volatile because BinarySerializer.serializeProperties reads isExternal() outside the schema write lock
   // on the per-record write hot path. The schema lock serialises mutations, but a reader that came in just
   // before setExternal() flipped the bit must observe the latest value to route the value through the
@@ -52,17 +60,40 @@ public abstract class AbstractProperty implements Property {
   // getCompression(), which materialises null as the literal string "none". LocalProperty.setCompression
   // normalises "none" / null / "" all to null on write. Direct field reads from outside this class would see
   // null when the user wrote "none"; always use the getter.
-  protected              String              compression     = null;
-  protected              String              max             = null;
-  protected              String              min             = null;
-  protected              String              regexp          = null;
-  protected              String              ofType          = null;
+  protected volatile     String              compression     = null;
+  protected volatile     String              max             = null;
+  protected volatile     String              min             = null;
+  // the pattern and its compiled form, published as one value so a reader never pairs one with the other's predecessor
+  protected volatile     Regexp              regexp          = null;
+  protected volatile     String              ofType          = null;
   protected final static Object              DEFAULT_NOT_SET = "<DEFAULT_NOT_SET>";
   // Issue #6134. volatile, and one field rather than two: a reader on the record-create hot path must never observe a
   // new default value paired with the expression compiled for the previous one (or with none at all, which would write
   // the expression's own source text into the record). Publishing the pair as one immutable value makes that
   // impossible; schema mutations themselves are serialised by the schema lock.
   protected volatile     DefaultValue        defaultValue    = DefaultValue.NOT_SET;
+
+  /**
+   * A REGEXP together with its compiled form, which the write path matches on every insert and update instead of compiling
+   * the pattern per write.
+   *
+   * @param source   the pattern as declared
+   * @param compiled the pattern compiled, or null when it does not compile (a schema written before invalid patterns were
+   *                 refused, which loads with a warning): the write path then compiles it, and reports why it fails
+   */
+  protected record Regexp(String source, Pattern compiled) {
+    public static Regexp of(final String source) {
+      if (source == null)
+        return null;
+      Pattern compiled;
+      try {
+        compiled = Pattern.compile(source);
+      } catch (final PatternSyntaxException e) {
+        compiled = null;
+      }
+      return new Regexp(source, compiled);
+    }
+  }
 
   /**
    * A property's default value together with the compiled form of the SQL expression it is written as (issue #6134).
@@ -294,7 +325,16 @@ public abstract class AbstractProperty implements Property {
 
   @Override
   public String getRegexp() {
-    return regexp;
+    final Regexp current = regexp;
+    return current != null ? current.source() : null;
+  }
+
+  @Override
+  public Pattern getRegexpPattern() {
+    final Regexp current = regexp;
+    if (current == null)
+      return null;
+    return current.compiled() != null ? current.compiled() : Pattern.compile(current.source());
   }
 
   @Override
@@ -336,8 +376,9 @@ public abstract class AbstractProperty implements Property {
       json.put("max", max);
     if (min != null)
       json.put("min", min);
-    if (regexp != null)
-      json.put("regexp", regexp);
+    final Regexp currentRegexp = regexp;
+    if (currentRegexp != null)
+      json.put("regexp", currentRegexp.source());
 
     json.put("custom", new JSONObject(new TreeMap<>(custom)));
 

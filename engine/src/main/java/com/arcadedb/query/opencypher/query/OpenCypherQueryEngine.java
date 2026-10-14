@@ -763,10 +763,13 @@ public class OpenCypherQueryEngine implements QueryEngine {
     if (existing.getOfType() != null && !(hasElementType(oldType) && hasElementType(newType)))
       notCarried.add("OF '" + existing.getOfType() + "' (" + newType + " has no element type)");
 
-    // a pattern describes text: on any other type it is matched against the value's string form, which is not what it
-    // was written for, and a pattern such as '[A-Z]+' refuses every value of a numeric type
-    if (existing.getRegexp() != null && newType != Type.STRING)
-      notCarried.add("REGEXP '" + existing.getRegexp() + "' (" + newType + " values are not text)");
+    // a pattern is matched against the text form of the value, so it carries over when some value of the new type can be
+    // written as a text it matches: '[0-9]+' moves between a LONG and a STRING, '[A-Z]+' refuses every value of a LONG. The
+    // same check the declaration itself is held to, so a declaration the schema accepted is always one DROP CONSTRAINT can
+    // put back (#9991)
+    final String regexpReason = DocumentValidator.unusableRegexp(database, newType, existing.getRegexp());
+    if (regexpReason != null)
+      notCarried.add("REGEXP '" + existing.getRegexp() + "' (on " + newType + " it " + regexpReason + ")");
 
     final String minReason = boundNotCarried(database, oldType, newType, existing.getMin());
     if (minReason != null)

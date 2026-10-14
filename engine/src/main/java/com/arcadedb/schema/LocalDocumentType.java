@@ -51,6 +51,7 @@ import java.io.IOException;
 import java.util.*;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -82,8 +83,10 @@ public class LocalDocumentType implements DocumentType {
   // (issues #6678, #7033, #7119, #7299).
   protected volatile String                         name;
   protected final LocalSchema                       schema;
-  protected final List<LocalDocumentType>           superTypes                   = new ArrayList<>();
-  protected final List<LocalDocumentType>           subTypes                     = new ArrayList<>();
+  // Mutated in place by linkSuperType/unlinkSuperType under the schema lock and walked lock-free by instanceOf() from query
+  // planning: copy-on-write, so a reader walks a consistent snapshot of a list that changes only on DDL (#9989)
+  protected final List<LocalDocumentType>           superTypes                   = new CopyOnWriteArrayList<>();
+  protected final List<LocalDocumentType>           subTypes                     = new CopyOnWriteArrayList<>();
   // Sixth member of the copy-on-write family: reassigned by setAliases under the schema mutation lock and read
   // lock-free by instanceOf(String) from openCypher label resolution during query planning. Volatile for the
   // publication edge, and always assigned an unmodifiable COPY: setAliases used to store the caller's set by
@@ -96,7 +99,9 @@ public class LocalDocumentType implements DocumentType {
   // ConcurrentModificationException straight out of a plain HashMap. Concurrent, so a reader crossing an in-flight
   // mutation sees a weakly consistent view of it rather than a corrupt one (#6799).
   protected final Map<String, Property>             properties                   = new ConcurrentHashMap<>();
-  protected final Map<Integer, List<IndexInternal>> bucketIndexesByBucket        = new HashMap<>();
+  // Read on every write of a record (getPolymorphicBucketIndexByBucketId) with no lock held, mutated in place by CREATE and
+  // DROP INDEX: concurrent, and so is each list it holds (#9989)
+  protected final Map<Integer, List<IndexInternal>> bucketIndexesByBucket        = new ConcurrentHashMap<>();
   protected final Map<List<String>, TypeIndex>      indexesByProperties          = new ConcurrentHashMap<>();
   /**
    * The property lists of the indexes {@link TypeIndexBuilder} is populating right now (issue #9331). The index is registered
@@ -111,7 +116,8 @@ public class LocalDocumentType implements DocumentType {
   // Counted in the database's BEFORE READ listener total, so a read of a database nobody listens to skips finding the
   // registry of every record's type (issue #9997)
   protected final RecordEventsRegistry              events;
-  protected final Map<String, Object>               custom                       = new HashMap<>();
+  // mutated in place by ALTER TYPE ... CUSTOM and read by toJSON() after the schema lock is released, like properties (#9989)
+  protected final Map<String, Object>               custom                       = new ConcurrentHashMap<>();
   // The four bucket lists are copy-on-write: reassigned under the schema mutation lock and read lock-free by query
   // planning through getBuckets(polymorphic)/getBucketIds(polymorphic), both branches of the ternary - the
   // non-polymorphic pair feeds SelectExecutionPlanner's partition pruning and FetchFromSchemaTypesStep exactly as the
@@ -2075,7 +2081,7 @@ public class LocalDocumentType implements DocumentType {
     index.getMetadata().propertyNames = List.of(propertyNames);
     index.getMetadata().associatedBucketId = bucketId;
 
-    final List<IndexInternal> list = bucketIndexesByBucket.computeIfAbsent(bucketId, k -> new ArrayList<>());
+    final List<IndexInternal> list = bucketIndexesByBucket.computeIfAbsent(bucketId, k -> new CopyOnWriteArrayList<>());
     list.add(index);
 
     if (propIndex == null) {
