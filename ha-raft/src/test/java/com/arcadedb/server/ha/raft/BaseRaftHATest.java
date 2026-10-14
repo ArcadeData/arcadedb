@@ -43,6 +43,7 @@ import java.net.Socket;
 import java.net.UnknownHostException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
@@ -733,6 +734,65 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
         return raftPlugin;
     }
     return null;
+  }
+
+  /** The index of the server {@code config} belongs to, read from its name ({@code "ArcadeDB_1"} is 1). */
+  protected static int serverIndexOf(final ContextConfiguration config) {
+    final String serverName = config.getValueAsString(GlobalConfiguration.SERVER_NAME);
+    try {
+      return Integer.parseInt(serverName.substring(serverName.lastIndexOf('_') + 1));
+    } catch (final NumberFormatException e) {
+      throw new IllegalStateException("Server name '" + serverName + "' does not end with '_<index>', as the fixture names its servers", e);
+    }
+  }
+
+  /** {@link #findLeaderIndex()}, failing the test when no leader is elected. */
+  protected int requireLeaderIndex() {
+    final int leader = findLeaderIndex();
+    if (leader < 0)
+      throw new AssertionError("a Raft leader must be elected");
+    return leader;
+  }
+
+  /** The lowest-indexed server that is not {@code leader}. */
+  protected int firstFollowerOf(final int leader) {
+    for (int i = 0; i < getServerCount(); i++)
+      if (i != leader)
+        return i;
+    throw new IllegalStateException("no follower in a " + getServerCount() + "-node cluster");
+  }
+
+  /**
+   * Makes follower {@code serverIndex} refuse every write it would forward to the leader, as a same-host cluster that
+   * declares no HTTP ports does: with nothing declared, every peer's HTTP address derives to this node's own endpoint,
+   * and {@code RaftReplicatedDatabase} refuses the forward with a
+   * {@link com.arcadedb.network.binary.ServerIsNotTheLeaderException} naming the leader rather than POSTing the write
+   * back to itself (issue #6191). It is the refusal an ordinary client write meets on a follower, which is what a test
+   * outside this package needs to drive one through a wire protocol (issue #9870).
+   * <p>
+   * The capability monitor is paused for the window, since it would learn the real addresses back (issue #9255). Run
+   * the returned action, in a {@code finally}, to restore both.
+   *
+   * @throws IllegalStateException when the leader address the node now resolves is not its own, so the forward would
+   *                               not be refused and a test relying on it would pass or fail for another reason
+   */
+  protected Runnable refuseForwardedWritesOn(final int serverIndex) {
+    final RaftHAServer raft = getRaftPlugin(serverIndex).getRaftHAServer();
+    // The live map, a ConcurrentHashMap: clearing and refilling it while forwarding threads resolve addresses is safe
+    final Map<RaftPeerId, String> httpAddresses = raft.getHttpAddresses();
+    final Map<RaftPeerId, String> declared = new HashMap<>(httpAddresses);
+    raft.stopCapabilityMonitor();
+    httpAddresses.clear();
+    final Runnable restore = () -> {
+      httpAddresses.putAll(declared);
+      raft.startCapabilityMonitor();
+    };
+    if (raft.isLeader() || !raft.isOwnHttpAddress(raft.getLeaderHttpAddress())) {
+      restore.run();
+      throw new IllegalStateException("Server " + serverIndex + " does not resolve the leader to its own HTTP address (leader="
+          + raft.getLeaderName() + ", resolved=" + raft.getLeaderHttpAddress() + "): its forwards would not be refused");
+    }
+    return restore;
   }
 
   /**
