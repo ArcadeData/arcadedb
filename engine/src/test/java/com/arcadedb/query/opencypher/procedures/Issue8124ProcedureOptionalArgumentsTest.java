@@ -73,6 +73,9 @@ class Issue8124ProcedureOptionalArgumentsTest extends TestHelper {
     assertThat(procedure.optionalNumberArg(new Object[] { "a" }, 1, "n", 7)).isEqualTo(7);
     assertThat(procedure.optionalNumberArg(new Object[] { "a", null }, 1, "n", 7)).isEqualTo(7);
     assertThat(procedure.optionalNumberArg(new Object[] { "a", 3L }, 1, "n", 7)).isEqualTo(3L);
+    // a null default stays null rather than failing on the absent value
+    assertThat(procedure.optionalNumberArg(new Object[] { "a" }, 1, "n", null)).isNull();
+    assertThat(procedure.optionalNumberArg(new Object[] { "a", null }, 1, "n", null)).isNull();
   }
 
   @Test
