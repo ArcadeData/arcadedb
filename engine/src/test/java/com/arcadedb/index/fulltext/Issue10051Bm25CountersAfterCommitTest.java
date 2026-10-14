@@ -27,6 +27,7 @@ import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.FullTextIndexMetadata;
 import org.junit.jupiter.api.Test;
 
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -243,6 +244,39 @@ class Issue10051Bm25CountersAfterCommitTest extends TestHelper {
 
     metadata().applyCorpusDelta(1, 3);
     assertThat(metadata().isCountersDirty()).isTrue();
+  }
+
+  /**
+   * The retry of a transaction that a ConcurrentModificationException refused runs its body again on the same context: what the
+   * refused attempt accumulated must be gone, or the counters move twice.
+   */
+  @Test
+  void aTransactionRetriedAfterAConcurrentModificationCountsOnlyTheAttemptThatCommits() {
+    createAndFill();
+    final RID rid = database.iterateType("Doc", false).next().getIdentity();
+    final AtomicInteger attempts = new AtomicInteger();
+
+    database.transaction(() -> {
+      final boolean firstAttempt = attempts.incrementAndGet() == 1;
+      database.lookupByRID(rid, true).asDocument().modify().set("content", "alpha beta gamma delta").save();
+      database.newDocument("Doc").set("content", "alpha beta").save();
+      if (firstAttempt) {
+        // another thread commits a change to the same record before this attempt does
+        final Thread other = new Thread(() -> database.transaction(
+            () -> database.lookupByRID(rid, true).asDocument().modify().set("content", "alpha").save()));
+        other.start();
+        try {
+          other.join();
+        } catch (final InterruptedException e) {
+          Thread.currentThread().interrupt();
+        }
+      }
+    }, false, 3);
+
+    assertThat(attempts.get()).as("the first attempt was refused").isEqualTo(2);
+    // 11 untouched documents of 3 tokens, the one that was rewritten to 4, and the one the committed attempt inserted (2)
+    assertThat(metadata().getTotalDocs()).isEqualTo(DOCS + 1L);
+    assertThat(metadata().getSumDocLength()).isEqualTo((DOCS - 1) * 3L + 4 + 2);
   }
 
   /**

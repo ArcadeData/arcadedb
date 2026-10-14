@@ -142,6 +142,19 @@ class Issue10051ReplicatedCorpusDeltaTest extends TestHelper {
     assertThat(metadata().getTotalDocs()).isEqualTo(DOCS);
   }
 
+  /** An index dropped between the proposal of the transaction and its apply is nobody's business: the entry still applies. */
+  @Test
+  void anIndexDroppedBeforeTheApplyIsTolerated() throws Exception {
+    final WALFile.WALTransaction entry = entryAdvancingTheBucketPage();
+    database.command("sql", "DROP INDEX `Doc[content]`");
+    assertThat(database.getSchema().existsIndex("Doc[content]")).isFalse();
+
+    final boolean applied = ((DatabaseInternal) database).getTransactionManager()
+        .applyChanges(entry, Collections.emptyMap(), List.of(new CorpusDelta("Doc[content]", 4, 20)), false);
+
+    assertThat(applied).isTrue();
+  }
+
   @Test
   void anEntryWithoutDeltasLeavesTheCountersAlone() throws Exception {
     final WALFile.WALTransaction entry = entryAdvancingTheBucketPage();

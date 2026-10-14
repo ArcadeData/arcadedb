@@ -121,6 +121,11 @@ public class FullTextIndexMetadata extends IndexMetadata {
   // counters only when their epoch is newer, so a rebuild on the leader reaches it while the counters it keeps current from
   // the replicated transactions are never overwritten by a stale save
   private final AtomicLong countersEpoch = new AtomicLong(0L);
+  // Held by the two writers that move BOTH counters as a pair and are not on the per-document path: a commit applying its delta, and
+  // the adoption of a persisted pair. Without it a commit landing between the two absolute writes of an adoption is half
+  // overwritten, and the pair drifts by more than one transaction when documents and lengths diverge. The per-document writers
+  // (addDocument/removeDocument, no transaction) and the readers stay lock-free
+  private final Object     countersLock  = new Object();
   // Full-type scans whose result was published here: lets a test, or an operator reading schema:index, tell a drift check that
   // found nothing to repair from one that scanned the whole type
   private final AtomicLong scans         = new AtomicLong(0L);
@@ -801,12 +806,14 @@ public class FullTextIndexMetadata extends IndexMetadata {
     // (a drift the check repairs), which is the one case the clamp exists for
     // Same publication order as addDocument()/removeDocument(): the counter avgDocLength reads first moves last when the
     // corpus grows and first when it shrinks, so a concurrent reader's torn pair is always biased towards a HIGH average
-    if (docsDelta >= 0) {
-      sumDocLength.updateAndGet(v -> Math.max(0L, v + lengthDelta));
-      totalDocs.updateAndGet(v -> Math.max(0L, v + docsDelta));
-    } else {
-      totalDocs.updateAndGet(v -> Math.max(0L, v + docsDelta));
-      sumDocLength.updateAndGet(v -> Math.max(0L, v + lengthDelta));
+    synchronized (countersLock) {
+      if (docsDelta >= 0) {
+        sumDocLength.updateAndGet(v -> Math.max(0L, v + lengthDelta));
+        totalDocs.updateAndGet(v -> Math.max(0L, v + docsDelta));
+      } else {
+        totalDocs.updateAndGet(v -> Math.max(0L, v + docsDelta));
+        sumDocLength.updateAndGet(v -> Math.max(0L, v + lengthDelta));
+      }
     }
   }
 
@@ -890,18 +897,20 @@ public class FullTextIndexMetadata extends IndexMetadata {
     // carries it) finds nothing newer
     if (epoch <= current || !countersEpoch.compareAndSet(current, epoch))
       return false;
-    // Absolute values, not a delta: the persisted pair is the leader's recompute result and replaces whatever drifted here. The
-    // two writes are NOT atomic with a commit applying its delta on another thread: one landing between them is half
-    // overwritten. That is a drift of one transaction at most, and the drift check below finds it. Counted as a mutation so a
-    // scan racing this adoption does not call its own result exact
+    // Absolute values, not a delta: the persisted pair is the leader's recompute result and replaces whatever drifted here. Counted
+    // as a mutation so a scan racing this adoption does not call its own result exact. Under the lock a commit's delta lands
+    // wholly before the pair is replaced (and is replaced with it) or wholly after
     mutations.incrementAndGet();
     countersGeneration.incrementAndGet();
-    sumDocLength.set(definition.getLong("ft_sumDocLength", 0L));
-    totalDocs.set(definition.getLong("ft_totalDocs", 0L));
+    synchronized (countersLock) {
+      sumDocLength.set(definition.getLong("ft_sumDocLength", 0L));
+      totalDocs.set(definition.getLong("ft_totalDocs", 0L));
+    }
     this.countersValid = true;
-    // The once-per-session check is armed AGAIN, whether or not it already ran: it is only a live count against these counters,
-    // and it is what finds the window above. It must not be the unconditional rescan of requireRescan(): the adopted counters
-    // are the leader's exact result, and every follower rescanning the type after every statsOnly rebuild would defeat it
+    // The once-per-session check is armed AGAIN, whether or not it already ran: it is only a live count against these counters.
+    // The pair is the leader's result at the moment it saved, and this node's data sits at the log position of the schema entry,
+    // so a transaction in flight on the leader at that moment can make the two differ; the check is what finds it. It must not be
+    // the unconditional rescan of requireRescan(): every follower rescanning the type after every statsOnly rebuild would defeat it
     staleChecked.set(false);
     return true;
   }

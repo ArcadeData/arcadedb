@@ -128,7 +128,7 @@ public final class PeerCapabilities {
    * trailing bytes, which is why a writer emits it only when every peer advertises this token. Withholding it is harmless: the
    * counters of a node that did not receive the deltas are repaired by its own drift check.
    */
-  public static final String TX_FULLTEXT_CORPUS_DELTA = "tx-fulltext-corpus-delta";
+  public static final String TX_FULLTEXT_CORPUS_DELTA = "tx-fulltext-corpus-deltas";
 
   /**
    * Everything this build can decode. Immutable, and deliberately a whitelist written out by hand rather than
