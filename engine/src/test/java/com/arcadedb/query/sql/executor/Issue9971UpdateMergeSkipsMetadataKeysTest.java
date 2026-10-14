@@ -26,6 +26,7 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableVertex;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -38,6 +39,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
+@SuppressWarnings("unchecked")
 class Issue9971UpdateMergeSkipsMetadataKeysTest extends TestHelper {
 
   @Override
@@ -104,12 +106,14 @@ class Issue9971UpdateMergeSkipsMetadataKeysTest extends TestHelper {
     database.transaction(() -> {
       database.command("sql", "CREATE PROPERTY D1.l LONG");
       database.command("sql", "UPDATE D1 SET gone = 'x'");
-      database.command("sql", "UPDATE D1 MERGE {\"l\": 5, \"gone\": null}");
+      database.command("sql", "UPDATE D1 MERGE {\"l\": 5, \"gone\": null, \"nested\": {\"a\": 1, \"b\": [1, 2]}}");
     });
     final Document doc = single();
     assertThat(doc.get("l")).isInstanceOf(Long.class).isEqualTo(5L);
     assertThat(doc.has("gone")).isTrue();
     assertThat(doc.get("gone")).isNull();
+    assertThat(doc.get("nested")).isInstanceOf(Map.class);
+    assertThat((Map<String, Object>) doc.get("nested")).containsEntry("a", 1).containsEntry("b", List.of(1, 2));
   }
 
   @Test

@@ -27,7 +27,6 @@ import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.Json;
 
 import java.util.Collection;
-import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
@@ -125,20 +124,11 @@ public class UpdateMergeStep extends AbstractExecutionStep {
   }
 
   /**
-   * Converts a result into the map of the properties to merge. Metadata ({@code @rid}, {@code @type}, ...) and computed
-   * pseudo-properties ({@code $score}, ...) are excluded so they never end up stored on the target record.
+   * Converts a result into the map of the properties to merge, by the rule every statement that writes a row follows: see
+   * {@link CopyDocumentStep#propertiesToWrite(Result)}.
    */
   private static Map<String, Object> toMergePayload(final Result result) {
-    final Map<String, Object> map = new LinkedHashMap<>();
-    for (final String name : result.getPropertyNames()) {
-      if (name.isEmpty())
-        continue;
-      final char prefix = name.charAt(0);
-      if (prefix == '@' || prefix == '$')
-        continue;
-      map.put(name, result.getProperty(name));
-    }
-    return map;
+    return CopyDocumentStep.propertiesToWrite(result);
   }
 
   @Override
