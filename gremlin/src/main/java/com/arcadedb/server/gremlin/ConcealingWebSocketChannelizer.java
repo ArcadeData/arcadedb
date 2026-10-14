@@ -20,6 +20,7 @@ package com.arcadedb.server.gremlin;
 
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
+import com.arcadedb.query.RunningQueryRegistry;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.HAServerPlugin;
 import io.netty.channel.ChannelHandler;
@@ -84,8 +85,11 @@ public class ConcealingWebSocketChannelizer extends WebSocketChannelizer {
     // Positioned after the response encoder: an outbound write travels towards the head, so everything written by the
     // handlers that follow in the pipeline reaches this one before it is serialised
     pipeline.addAfter("response-frame-encoder", HANDLER_NAME, new ErrorConcealer(server));
-    // LAST of configure(): the op selector and executor TinkerPop adds next submit the evaluation from inside the read
-    // that passes through here, on this thread
+    // LAST of configure(). Relies on TinkerPop 3.8's AbstractChannelizer.initChannel adding the op selector and the op
+    // executor right after configure() returns, with no executor group of their own, and on OpExecutorHandler submitting
+    // the evaluation to the Gremlin pool synchronously inside its channelRead: so the submit happens on this thread, inside
+    // the read below. Should a TinkerPop upgrade move it off this thread, the entry is listed without a client (the reads
+    // are null-safe) and Issue9689GremlinTerminateTest, which asserts the client end to end, fails
     pipeline.addLast(CLIENT_HANDLER_NAME, RequestClientPublisher.INSTANCE);
   }
 
@@ -105,7 +109,7 @@ public class ConcealingWebSocketChannelizer extends WebSocketChannelizer {
         return;
       }
       GremlinAuthContext.setClient(
-          new GremlinAuthContext.Client(ctx.channel().id().asShortText(), String.valueOf(ctx.channel().remoteAddress())));
+          new GremlinAuthContext.Client(ctx.channel().id().asShortText(), RunningQueryRegistry.clientAddress(ctx.channel().remoteAddress())));
       try {
         super.channelRead(ctx, msg);
       } finally {
@@ -156,6 +160,11 @@ public class ConcealingWebSocketChannelizer extends WebSocketChannelizer {
         && classes.contains(ServerIsNotTheLeaderException.class.getName());
   }
 
+  /** What follows the answer's text to send the client to {@code leaderAddress}. */
+  private static String redirectSentence(final String leaderAddress) {
+    return ". " + ServerIsNotTheLeaderException.leaderSentence(leaderAddress) + " (HTTP address; use its Gremlin Server port). Retry there";
+  }
+
   /**
    * The HTTP address of the leader in this server's cluster view, the one a refusal names (it is read from the same
    * view when the refusal is raised), or {@code null} when there is no cluster or no leader: a refusal raised mid-election
@@ -173,9 +182,7 @@ public class ConcealingWebSocketChannelizer extends WebSocketChannelizer {
    * peers by, so the sentence says which address it is.
    */
   static ResponseMessage conceal(final boolean productionMode, final String leaderAddress, final ResponseMessage response) {
-    final String redirect = leaderAddress != null ?
-        ". " + ServerIsNotTheLeaderException.leaderSentence(leaderAddress) + " (HTTP address; use its Gremlin Server port). Retry there" :
-        null;
+    final String redirect = leaderAddress != null ? redirectSentence(leaderAddress) : null;
     if (!productionMode) {
       if (redirect == null)
         return response;

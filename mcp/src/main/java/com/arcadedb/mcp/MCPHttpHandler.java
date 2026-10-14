@@ -19,6 +19,7 @@
 package com.arcadedb.mcp;
 
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.RunningQueryRegistry;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
@@ -89,7 +90,7 @@ public class MCPHttpHandler extends AbstractServerHttpHandler {
     // A top-level array is a JSON-RPC batch, parsed once by the shared request pipeline (issue #5415).
     final JSONArray batch = getPayloadAsArray(exchange);
     if (batch != null)
-      return executeBatch(batch, user, String.valueOf(exchange.getSourceAddress()));
+      return executeBatch(batch, user, RunningQueryRegistry.clientAddress(exchange.getSourceAddress()));
 
     // Neither an object nor an array came back from the shared parsing while the client did send a body: the
     // body is not valid JSON. JSON-RPC answers that with -32700 over HTTP 200, never with a transport error.
@@ -100,7 +101,7 @@ public class MCPHttpHandler extends AbstractServerHttpHandler {
             MCPDispatcher.errorObject(null, -32700, "Parse error: the request body is not valid JSON").toString());
     }
 
-    final MCPResponse response = dispatcher.dispatch(payload, user, String.valueOf(exchange.getSourceAddress()));
+    final MCPResponse response = dispatcher.dispatch(payload, user, RunningQueryRegistry.clientAddress(exchange.getSourceAddress()));
 
     // A null body is a one-way notification or response: 202 Accepted, no content.
     if (response.json() == null)

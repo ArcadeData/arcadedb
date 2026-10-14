@@ -42,6 +42,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ChannelBinaryServer;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.query.RunningQuery;
+import com.arcadedb.query.RunningQueryRegistry;
 import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -396,8 +397,7 @@ public class PostgresNetworkExecutor extends Thread {
 
   private String clientAddress() {
     final ChannelBinaryServer current = channel;
-    return current != null && current.socket != null && current.socket.getRemoteSocketAddress() != null ?
-        current.socket.getRemoteSocketAddress().toString() : null;
+    return current != null && current.socket != null ? RunningQueryRegistry.clientAddress(current.socket.getRemoteSocketAddress()) : null;
   }
 
   /** The entry of the statement running on this connection, closed once its work is over. Closing twice is harmless. */

@@ -20,6 +20,7 @@ package com.arcadedb.server.grpc;
 
 import com.arcadedb.exception.QueryAdmissionException;
 import com.arcadedb.query.RunningQuery;
+import com.arcadedb.query.RunningQueryRegistry;
 import com.arcadedb.query.sql.executor.QueryAdmissionGate;
 import com.arcadedb.server.ArcadeDBServer;
 import com.google.protobuf.Descriptors;
@@ -35,7 +36,6 @@ import io.grpc.ServerCallHandler;
 import io.grpc.ServerInterceptor;
 import io.grpc.StatusRuntimeException;
 
-import java.net.SocketAddress;
 import java.util.Set;
 
 /**
@@ -194,7 +194,6 @@ class GrpcAdmissionInterceptor implements ServerInterceptor {
    * when the transport reports none.
    */
   static String clientAddress(final ServerCall<?, ?> call) {
-    final SocketAddress address = call.getAttributes().get(Grpc.TRANSPORT_ATTR_REMOTE_ADDR);
-    return address != null ? String.valueOf(address) : null;
+    return RunningQueryRegistry.clientAddress(call.getAttributes().get(Grpc.TRANSPORT_ATTR_REMOTE_ADDR));
   }
 }

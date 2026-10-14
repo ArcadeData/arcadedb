@@ -30,6 +30,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ChannelBinaryServer;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.query.RunningQuery;
+import com.arcadedb.query.RunningQueryRegistry;
 import com.arcadedb.query.sql.executor.QueryAdmissionGate;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalEdgeType;
@@ -342,7 +343,7 @@ public class RedisNetworkExecutor extends Thread {
           // Listed by "list queries" / SHOW TRANSACTIONS and stopped by a terminate, over the same window as the slot
           // (issue #9689). The command line is put together only if somebody lists it
           runningQuery = server.getRunningQueries().register(selectedDatabaseName, authenticatedUser.getName(), "redis", null, null, getName(),
-              String.valueOf(channel.socket.getRemoteSocketAddress()));
+              RunningQueryRegistry.clientAddress(channel.socket.getRemoteSocketAddress()));
           runningQuery.setStatement("redis", () -> describe(list));
         }
 

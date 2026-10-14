@@ -55,6 +55,7 @@ import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.query.RunningQuery;
+import com.arcadedb.query.RunningQueryRegistry;
 import com.arcadedb.query.opencypher.query.CypherSchemaCommands;
 import com.arcadedb.query.opencypher.query.ShowCommandTail;
 import com.arcadedb.query.sql.executor.ExecutionPlan;
@@ -884,7 +885,7 @@ public class BoltNetworkExecutor extends Thread {
       // thread only while RUN, PULL or DISCARD do its work: between messages the thread serves the other streams of the
       // transaction, and what they run must not carry this entry
       stream.runningQuery = server.getRunningQueries().open(database.getName(), user != null ? user.getName() : null, "bolt",
-          null, null, connectionId, String.valueOf(socket.getRemoteSocketAddress()));
+          null, null, connectionId, RunningQueryRegistry.clientAddress(socket.getRemoteSocketAddress()));
       stream.runningQuery.setStatement("opencypher", query);
       binding = stream.runningQuery.bind();
 
