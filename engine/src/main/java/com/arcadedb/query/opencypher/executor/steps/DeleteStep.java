@@ -46,6 +46,7 @@ import com.arcadedb.utility.RidHashSet;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -83,6 +84,17 @@ public class DeleteStep extends AbstractExecutionStep {
    * occurrence would skip it as already deleted.
    */
   private boolean twinsPinned = false;
+
+  /**
+   * The targets of the rows {@link #twinsPinned} read in, evaluated once when their edges were numbered and taken back
+   * when the row is processed: a target computed by an expression is not evaluated twice, so the edge deleted is the edge
+   * that was numbered.
+   */
+  private Map<Result, RowTargets> pinnedTargets;
+
+  /** What a row deletes: its relationships, everything else, and the plain variables it names. */
+  private record RowTargets(List<Object> edges, List<Object> other, Set<String> variables) {
+  }
 
   /**
    * Vertices of a non-DETACH DELETE that still had a relationship when their row was processed. Another row of the
@@ -297,10 +309,13 @@ public class DeleteStep extends AbstractExecutionStep {
           materializedInput = remaining;
           materializedIndex = 0;
         }
+        pinnedTargets = new IdentityHashMap<>();
         for (int i = materializedIndex; i < materializedInput.size(); i++) {
-          final List<Object> edges = new ArrayList<>();
-          collectRowTargets(materializedInput.get(i), edges, new ArrayList<>(), null);
-          pinOccurrences(edges);
+          final Result row = materializedInput.get(i);
+          final RowTargets targets = new RowTargets(new ArrayList<>(), new ArrayList<>(), new HashSet<>());
+          collectRowTargets(row, targets.edges(), targets.other(), targets.variables());
+          pinOccurrences(targets.edges());
+          pinnedTargets.put(row, targets);
         }
       }
 
@@ -358,9 +373,18 @@ public class DeleteStep extends AbstractExecutionStep {
 
       // Collect all delete targets first, then delete edges before vertices
       // to avoid "DeleteConnectedNode" errors when multiple targets share nodes
-      final List<Object> allEdges = new ArrayList<>();
-      final List<Object> allOther = new ArrayList<>();
-      collectRowTargets(result, allEdges, allOther, deletedVars);
+      final List<Object> allEdges;
+      final List<Object> allOther;
+      final RowTargets pinned = pinnedTargets != null ? pinnedTargets.remove(result) : null;
+      if (pinned != null) {
+        allEdges = pinned.edges();
+        allOther = pinned.other();
+        deletedVars.addAll(pinned.variables());
+      } else {
+        allEdges = new ArrayList<>();
+        allOther = new ArrayList<>();
+        collectRowTargets(result, allEdges, allOther, deletedVars);
+      }
 
       if (deferredBatch != null) {
         final boolean detach = deleteClause.isDetach();
