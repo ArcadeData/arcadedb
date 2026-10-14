@@ -87,6 +87,10 @@ public final class MultiColumnAggregationResult {
   private double[] curValues;
   private long[]   curCounts;
   private long[]   curExact;
+  // The timestamp the cursor above stands for, meaningful once curValues is set. The arrays of a bucket are created once and
+  // never replaced, so while the next sample lands in the same bucket (the samples of a series arrive in time order, so for
+  // most of them it does) the cursor is still the answer and resolve() does not divide, probe or box again (issue #10003).
+  private long     curBucketTs;
 
   // --- Response ceiling (issue #7724) ---
   // The number of buckets the caller will accept, 0 for no ceiling, and the running count of the buckets
@@ -313,6 +317,14 @@ public final class MultiColumnAggregationResult {
    * use: a flat slot, an overflow entry for a flat result's out-of-window bucket (issue #6937), or a map entry.
    */
   private void resolve(final long bucketTs) {
+    if (curValues != null && bucketTs == curBucketTs)
+      return;
+    resolveBucket(bucketTs);
+    curBucketTs = bucketTs;
+  }
+
+  /** The lookup {@link #resolve} skips while the cursor still stands for {@code bucketTs}. */
+  private void resolveBucket(final long bucketTs) {
     if (flatMode) {
       final int idx = flatIndex(bucketTs);
       if (ensureFlatBucket(idx)) {

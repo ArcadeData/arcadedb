@@ -55,6 +55,11 @@ public final class TimeBucketGrid {
 
   /**
    * The start of the bucket holding {@code timestampMs}.
+   * <p>
+   * The offset is applied to the remainder, never to the timestamp: {@code timestampMs - offsetMs} wraps for a timestamp within
+   * the offset of {@link Long#MIN_VALUE}, and the {@code floorDiv} of the wrapped value put two timestamps of one bucket into two
+   * different buckets (code review on PR #10004). A bucket whose start lies below {@link Long#MIN_VALUE} has no representable
+   * start; it is answered modulo 2^64, which is still one value for every timestamp in it.
    *
    * @param intervalMs the bucket width, which must be positive
    * @param offsetMs   the grid offset as {@link #normalizeOffset} returns it; {@code 0} for the epoch-aligned grid
@@ -62,6 +67,11 @@ public final class TimeBucketGrid {
   public static long bucketStart(final long timestampMs, final long intervalMs, final long offsetMs) {
     if (offsetMs == 0)
       return Math.floorDiv(timestampMs, intervalMs) * intervalMs;
-    return Math.floorDiv(timestampMs - offsetMs, intervalMs) * intervalMs + offsetMs;
+    // an offset outside [0, interval) is the grid of its normalised form; the callers already pass that, at the price of a compare
+    final long offset = offsetMs > 0 && offsetMs < intervalMs ? offsetMs : Math.floorMod(offsetMs, intervalMs);
+    long intoBucket = Math.floorMod(timestampMs, intervalMs) - offset;
+    if (intoBucket < 0)
+      intoBucket += intervalMs;
+    return timestampMs - intoBucket;
   }
 }
