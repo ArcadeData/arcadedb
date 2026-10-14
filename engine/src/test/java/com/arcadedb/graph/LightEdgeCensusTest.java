@@ -152,6 +152,49 @@ class LightEdgeCensusTest extends TestHelper {
   }
 
   /**
+   * A twin added after the list was counted: an edge read off the list at a position the census recorded for another
+   * entry, or for none, is not answered from the census - it would be told it has no twin and taken for the entry the
+   * census counted. It walks the list as it is now.
+   */
+  @Test
+  @SuppressWarnings("deprecation")
+  void anEntryAddedAfterTheCountIsNotAnsweredFromIt() {
+    database.transaction(() -> {
+      final MutableVertex a = database.newVertex("P").save();
+      final MutableVertex b = database.newVertex("P").save();
+      a.newLightEdge("K", b);
+      for (int i = 0; i < 4; i++)
+        a.newLightEdge("K", database.newVertex("P").save());
+      hub = a.getIdentity();
+      twinTarget = b.getIdentity();
+    });
+    final List<LightEdgeRID> before = read();
+    for (final LightEdgeRID edge : before)
+      edge.getOccurrence();
+    final LightEdgeCensus census = before.getFirst().getCensus();
+    assertThat(census.isBuilt()).isTrue();
+    assertThat(census.hasTwins()).isFalse();
+
+    // a twin of the a->b edge, written after the count
+    database.transaction(() -> database.lookupByRID(hub, true).asVertex().modify().newLightEdge("K",
+        database.lookupByRID(twinTarget, true).asVertex()));
+
+    // every edge of the list as it is now, asked through the census of the old read
+    final List<LightEdgeRID> twins = new ArrayList<>();
+    for (final LightEdgeRID now : read())
+      if (now.getInRID().equals(twinTarget)) {
+        final LightEdgeRID throughOldCensus = new LightEdgeRID(database, now.getBucketId(), now.getOutRID(), now.getInRID());
+        throughOldCensus.readFrom(now.getOriginSegment(), now.getOriginPosition(), Vertex.DIRECTION.OUT, census);
+        twins.add(throughOldCensus);
+      }
+    assertThat(twins).hasSize(2);
+    for (final LightEdgeRID twin : twins)
+      assertThat(twin.getTwinCount()).isEqualTo(2);
+    assertThat(LightEdgeRID.isSameEdge(twins.get(0), twins.get(1))).isFalse();
+    assertThat(twins.get(0).getOccurrence()).isNotEqualTo(twins.get(1).getOccurrence());
+  }
+
+  /**
    * The keys of a DISTINCT compare by occurrence, so a hash set of them holds one key per relationship whatever order the
    * keys arrive in and whatever each edge had resolved before: edges read off the source's list and off the target's,
    * and one rebuilt from its endpoints (no list, the first twin).

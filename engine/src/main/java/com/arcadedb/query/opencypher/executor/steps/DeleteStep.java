@@ -76,66 +76,6 @@ public class DeleteStep extends AbstractExecutionStep {
   private final DeletedSoFar deleted = new DeletedSoFar();
 
   /**
-   * What one statement has deleted so far: shared by every row of a DELETE, and by every iteration of a FOREACH, so an
-   * element bound more than once is removed once and counted once.
-   * <p>
-   * Relationships are kept in an {@link EdgeIdentitySet} rather than a set of records: two parallel lightweight edges of
-   * one type over the same ordered pair share their RID and are still two relationships, so a RID-keyed set deleted one
-   * of them and skipped the others as "already deleted" (issue #10008). Telling them apart needs the occurrence of each,
-   * resolved by walking the edge list, so it is resolved while the list still holds every twin ({@link #pinOccurrences}).
-   * The edges a DETACH reads off a vertex are read after the deletes before it, so their lightweight twins are numbered
-   * anew and are never compared with the ones already deleted: they exist, so they are deleted. And an edge whose
-   * endpoint the statement already deleted went with it.
-   */
-  public static final class DeletedSoFar {
-    // VERTICES AND DOCUMENTS: RECORDS EQUAL BY RID (SEE BaseRecord.equals), SO INSTANCES OF ONE RECORD COLLAPSE
-    private final Set<Object>     records  = new HashSet<>();
-    private final EdgeIdentitySet edges    = new EdgeIdentitySet();
-    private final RidHashSet      vertices = new RidHashSet();
-
-    /**
-     * @return true when {@code edge} is still to delete, recording it as deleted: neither deleted already, nor taken
-     * away with an endpoint the statement deleted
-     */
-    boolean claim(final Edge edge) {
-      try {
-        if (vertices.contains(edge.getOut()) || vertices.contains(edge.getIn()))
-          return false;
-      } catch (final RecordNotFoundException e) {
-        // THE EDGE RECORD IS GONE ALREADY
-        return false;
-      }
-      return edges.add(edge.getIdentity());
-    }
-
-    /**
-     * {@link #claim} for an edge a DETACH has just read off its vertex: it exists now, so a lightweight one is deleted
-     * whatever an occurrence numbered before an earlier delete of the statement says. A record-backed one cannot be in
-     * the list once deleted, and is claimed as usual.
-     * <p>
-     * PRECONDITION: {@code edge} was read off the live edge list right before this call, with no delete in between. An
-     * edge read earlier (a row, a collected list) goes through {@link #claim}: this method would delete and count a
-     * lightweight one twice.
-     */
-    boolean claimJustRead(final Edge edge) {
-      return edges.add(edge.getIdentity()) || edge.getIdentity() instanceof LightEdgeRID;
-    }
-
-    boolean contains(final Object record) {
-      return records.contains(record);
-    }
-
-    void add(final Object record) {
-      records.add(record);
-    }
-
-    void vertexDeleted(final Vertex vertex) {
-      records.add(vertex);
-      vertices.add(vertex.getIdentity());
-    }
-  }
-
-  /**
    * True once the occurrences of every lightweight edge the rest of the statement will delete are resolved: the first
    * row that deletes a lightweight edge with a twin reads the remaining rows in (when they are not already) and
    * resolves them, before its own delete changes the list they were read from (issue #10008). The rows are otherwise
@@ -947,5 +887,65 @@ public class DeleteStep extends AbstractExecutionStep {
 
   private static String getIndent(final int depth, final int indent) {
     return "  ".repeat(Math.max(0, depth * indent));
+  }
+
+  /**
+   * What one statement has deleted so far: shared by every row of a DELETE, and by every iteration of a FOREACH, so an
+   * element bound more than once is removed once and counted once.
+   * <p>
+   * Relationships are kept in an {@link EdgeIdentitySet} rather than a set of records: two parallel lightweight edges of
+   * one type over the same ordered pair share their RID and are still two relationships, so a RID-keyed set deleted one
+   * of them and skipped the others as "already deleted" (issue #10008). Telling them apart needs the occurrence of each,
+   * resolved by walking the edge list, so it is resolved while the list still holds every twin ({@link #pinOccurrences}).
+   * The edges a DETACH reads off a vertex are read after the deletes before it, so their lightweight twins are numbered
+   * anew and are never compared with the ones already deleted: they exist, so they are deleted. And an edge whose
+   * endpoint the statement already deleted went with it.
+   */
+  public static final class DeletedSoFar {
+    // VERTICES AND DOCUMENTS: RECORDS EQUAL BY RID (SEE BaseRecord.equals), SO INSTANCES OF ONE RECORD COLLAPSE
+    private final Set<Object>     records  = new HashSet<>();
+    private final EdgeIdentitySet edges    = new EdgeIdentitySet();
+    private final RidHashSet      vertices = new RidHashSet();
+
+    /**
+     * @return true when {@code edge} is still to delete, recording it as deleted: neither deleted already, nor taken
+     * away with an endpoint the statement deleted
+     */
+    boolean claim(final Edge edge) {
+      try {
+        if (vertices.contains(edge.getOut()) || vertices.contains(edge.getIn()))
+          return false;
+      } catch (final RecordNotFoundException e) {
+        // THE EDGE RECORD IS GONE ALREADY
+        return false;
+      }
+      return edges.add(edge.getIdentity());
+    }
+
+    /**
+     * {@link #claim} for an edge a DETACH has just read off its vertex: it exists now, so a lightweight one is deleted
+     * whatever an occurrence numbered before an earlier delete of the statement says. A record-backed one cannot be in
+     * the list once deleted, and is claimed as usual.
+     * <p>
+     * PRECONDITION: {@code edge} was read off the live edge list right before this call, with no delete in between. An
+     * edge read earlier (a row, a collected list) goes through {@link #claim}: this method would delete and count a
+     * lightweight one twice.
+     */
+    boolean claimJustRead(final Edge edge) {
+      return edges.add(edge.getIdentity()) || edge.getIdentity() instanceof LightEdgeRID;
+    }
+
+    boolean contains(final Object record) {
+      return records.contains(record);
+    }
+
+    void add(final Object record) {
+      records.add(record);
+    }
+
+    void vertexDeleted(final Vertex vertex) {
+      records.add(vertex);
+      vertices.add(vertex.getIdentity());
+    }
   }
 }
