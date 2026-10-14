@@ -110,6 +110,10 @@ public class AlgoLabelPropagation extends AbstractAlgoProcedure {
 
     final Object tieBreakConfig = config != null ? config.get("tieBreakProperty") : null;
     final String tieBreakProperty = tieBreakConfig != null ? extractString(tieBreakConfig, "tieBreakProperty") : null;
+    // Every option is read before the dispatch below and handed to both paths: one read after it reached only the OLTP
+    // path, and a view covering the types silently answered BOTH for OUT and IN (issue #9767)
+    final String directionStr = config != null && config.get("direction") instanceof String s ? s : "BOTH";
+    final Vertex.DIRECTION direction = parseDirection(directionStr);
 
     final Database db = context.getDatabase();
     final WorkGuard guard = newWorkGuard(context);
@@ -121,17 +125,15 @@ public class AlgoLabelPropagation extends AbstractAlgoProcedure {
     // as wide as the id space the view now reports - see GraphTraversalProvider#hasPendingChanges (issue #6792).
     if (provider instanceof GraphAnalyticalView gav && !gav.hasPendingChanges()) {
       context.setVariable(CommandContext.CSR_ACCELERATED_VAR, true);
-      return executeWithCSR(context, gav, maxIterations, tieBreakProperty, guard);
+      return executeWithCSR(context, gav, maxIterations, direction, tieBreakProperty, guard);
     }
 
     // Fall back to OLTP path
-    final String directionStr = config != null && config.get("direction") instanceof String s ? s : "BOTH";
-    final Vertex.DIRECTION direction = parseDirection(directionStr);
     return executeWithOLTP(db, maxIterations, direction, tieBreakProperty, guard);
   }
 
   private Stream<Result> executeWithCSR(final CommandContext context, final GraphAnalyticalView gav,
-      final int maxIterations, final String tieBreakProperty, final WorkGuard guard) {
+      final int maxIterations, final Vertex.DIRECTION direction, final String tieBreakProperty, final WorkGuard guard) {
     final int n = gav.getNodeCount();
     if (n == 0)
       return Stream.empty();
@@ -141,7 +143,7 @@ public class AlgoLabelPropagation extends AbstractAlgoProcedure {
 
     // The kernel's "nothing moved" break only fires if the labelling settles - a graph that oscillates between two
     // labellings never converges - so maxIterations is what ends the run, and the guard is what can abort it.
-    final int[] labels = GraphAlgorithms.labelPropagation(gav, maxIterations, rank, guard::check);
+    final int[] labels = GraphAlgorithms.labelPropagation(gav, maxIterations, rank, direction, guard::check);
 
     return IntStream.range(0, n).mapToObj(i -> {
       final ResultInternal result = new ResultInternal();

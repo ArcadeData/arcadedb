@@ -18,6 +18,9 @@
  */
 package com.arcadedb.function.sql;
 
+import java.util.Collection;
+import java.util.Map;
+
 /**
  * Abstract base class for SQL aggregate functions that collect values into a collection.
  * <p>
@@ -58,5 +61,16 @@ public abstract class SQLAggregatedCollectionFunction<T> extends SQLAggregatedFu
   @Override
   public boolean holdsEveryValue() {
     return true;
+  }
+
+  /** The elements of the collection or the entries of the map accumulated so far (issue #9793). */
+  @Override
+  public long getHeldValues() {
+    if (context instanceof Collection<?> collection)
+      return collection.size();
+    if (context instanceof Map<?, ?> map)
+      return map.size();
+    // NOTHING YET, OR THE FIRST VALUE intersect() WAS GIVEN, WHICH IT READS IN PLACE RATHER THAN COPIES
+    return 0L;
   }
 }

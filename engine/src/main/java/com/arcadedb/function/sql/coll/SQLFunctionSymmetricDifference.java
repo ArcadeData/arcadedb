@@ -102,4 +102,10 @@ public class SQLFunctionSymmetricDifference extends SQLAggregatedCollectionFunct
   public String getSyntax() {
     return "difference(<field>*)";
   }
+
+  /** The values seen once so far and the ones seen more than once: both sets grow with the input (issue #9793). */
+  @Override
+  public long getHeldValues() {
+    return context == null ? 0L : context.size() + rejected.size();
+  }
 }

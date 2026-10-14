@@ -383,8 +383,9 @@ class Issue6264AlgoIterationKnobGuardTest {
     GraphAnalyticalView.builder(database).withVertexTypes("Node").withEdgeTypes("LINK").build();
     database.getConfiguration().setValue(GlobalConfiguration.COMMAND_TIMEOUT, 1L);
 
-    assertThatThrownBy(() -> drain("CALL algo.pagerank({maxIterations: 2000000000}) YIELD node RETURN node"))
-        .as("the CSR kernel has no convergence test, so only the checkpoint can end this run")
+    // tolerance 0 never converges: since #9791 the CSR kernel stops on the tolerance as the OLTP path does
+    assertThatThrownBy(() -> drain("CALL algo.pagerank({maxIterations: 2000000000, tolerance: 0.0}) YIELD node RETURN node"))
+        .as("with no tolerance to converge on, only the checkpoint can end this run")
         .hasStackTraceContaining("algo.pagerank() exceeded the " + GlobalConfiguration.COMMAND_TIMEOUT.getKey());
   }
 

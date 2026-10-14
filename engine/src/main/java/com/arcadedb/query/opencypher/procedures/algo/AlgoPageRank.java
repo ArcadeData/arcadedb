@@ -123,7 +123,7 @@ public class AlgoPageRank extends AbstractAlgoProcedure {
     // as wide as the id space the view now reports - see GraphTraversalProvider#hasPendingChanges (issue #6792).
     if (provider instanceof GraphAnalyticalView gav && !gav.hasPendingChanges()) {
       context.setVariable(CommandContext.CSR_ACCELERATED_VAR, true);
-      return executeWithCSR(gav, dampingFactor, maxIterations, direction, guard);
+      return executeWithCSR(gav, dampingFactor, maxIterations, tolerance, direction, guard);
     }
 
     // Fall back to OLTP path
@@ -165,14 +165,16 @@ public class AlgoPageRank extends AbstractAlgoProcedure {
   }
 
   private Stream<Result> executeWithCSR(final GraphAnalyticalView gav,
-      final double dampingFactor, final int maxIterations, final Vertex.DIRECTION direction, final WorkGuard guard) {
+      final double dampingFactor, final int maxIterations, final double tolerance, final Vertex.DIRECTION direction,
+      final WorkGuard guard) {
     final int n = gav.getNodeCount();
     if (n == 0)
       return Stream.empty();
 
-    // The CSR kernel has no convergence test at all, so maxIterations alone decides when it stops: the guard is
-    // the only thing that can end a run the caller no longer wants.
-    final double[] scores = GraphAlgorithms.pageRank(gav, dampingFactor, maxIterations, direction, guard::check);
+    // The kernel stops on the same convergence test as the OLTP path below, so the two answer the same scores whether a
+    // view serves the call or not (issue #9791). A graph may never converge below the tolerance, so maxIterations is
+    // what ends the run, and the guard is the only thing that can end one the caller no longer wants.
+    final double[] scores = GraphAlgorithms.pageRank(gav, dampingFactor, maxIterations, tolerance, direction, guard::check);
 
     return IntStream.range(0, n).mapToObj(i -> {
       final ResultInternal result = new ResultInternal();

@@ -120,4 +120,9 @@ public class SQLFunctionLag extends SQLAggregatedFunction {
   public boolean holdsEveryValue() {
     return true;
   }
+
+  @Override
+  public long getHeldValues() {
+    return pairs.size();
+  }
 }

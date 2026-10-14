@@ -50,12 +50,20 @@ public class MaterializeRecordsStep extends AbstractExecutionStep {
   private record Slice(int bucketId, long[] positions, int from, int to) {
   }
 
+  /** One address held: a {@code long}, in an array that grows by doubling. */
+  private static final int ADDRESS_BYTES   = 2 * Long.BYTES;
+  /** One record remembered to count distinct records against the limit: its entry in a hash set, and its RID. */
+  private static final int SEEN_ENTRY_BYTES = HeapEstimator.HASH_ENTRY_BYTES + 2 * HeapEstimator.OBJECT_BYTES;
+
   private final int         limit;
   private       List<Slice> slices = List.of();
   private       int         nextSlice;
   private       int         nextInSlice;
   private       long        previousPosition = -1L;
   private       boolean     drained;
+  // THE ADDRESSES ARE CHARGED TO THE HEAP BUDGET ALL QUERIES SHARE (ISSUE #9792), BUT NOT CAPPED IN NUMBER: THEY ARE ONE
+  // PRIMITIVE PER RECORD, AND THE BARRIER IS WHAT MAKES THE WRITE CORRECT, NOT A BUFFER THE STATEMENT COULD DO WITHOUT
+  private       OperationHeapLimit heapLimit;
 
   /**
    * @param limit the most records the statement can update, or 0 for no bound: once that many addresses are held the
@@ -107,6 +115,8 @@ public class MaterializeRecordsStep extends AbstractExecutionStep {
     final PhysicalOrderRidBuffer buffer = new PhysicalOrderRidBuffer();
     // With a limit the count must be of distinct records, or a multi-value index returning one RID per key under-delivers
     final Set<RID> seen = limit > 0 ? new HashSet<>() : null;
+    heapLimit = OperationHeapLimit.of(context, "record addresses", "MATERIALIZE RECORD ADDRESSES");
+    final int entryBytes = seen != null ? ADDRESS_BYTES + SEEN_ENTRY_BYTES : ADDRESS_BYTES;
     while (limit <= 0 || buffer.size() < limit) {
       final ResultSet upstream = prevStep.syncPull(context, DEFAULT_FETCH_RECORDS_PER_PULL);
       if (!upstream.hasNext())
@@ -118,8 +128,10 @@ public class MaterializeRecordsStep extends AbstractExecutionStep {
         final long begin = context.isProfiling() ? System.nanoTime() : 0;
         try {
           final RID rid = ridOf(item);
-          if (rid != null && rid.getBucketId() >= 0 && rid.getPosition() >= 0 && (seen == null || seen.add(rid)))
+          if (rid != null && rid.getBucketId() >= 0 && rid.getPosition() >= 0 && (seen == null || seen.add(rid))) {
+            heapLimit.charge(entryBytes);
             buffer.add(rid.getBucketId(), rid.getPosition());
+          }
         } finally {
           if (context.isProfiling())
             cost += System.nanoTime() - begin;
@@ -141,6 +153,13 @@ public class MaterializeRecordsStep extends AbstractExecutionStep {
       return item.getIdentity().orElse(null);
     final Object ridValue = item.getProperty("@rid");
     return ridValue instanceof Identifiable identifiable ? identifiable.getIdentity() : null;
+  }
+
+  @Override
+  public void close() {
+    if (heapLimit != null)
+      heapLimit.release();
+    super.close();
   }
 
   @Override

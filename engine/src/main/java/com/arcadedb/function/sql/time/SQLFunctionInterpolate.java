@@ -176,4 +176,9 @@ public class SQLFunctionInterpolate extends SQLAggregatedFunction {
   public boolean holdsEveryValue() {
     return true;
   }
+
+  @Override
+  public long getHeldValues() {
+    return values.size();
+  }
 }
