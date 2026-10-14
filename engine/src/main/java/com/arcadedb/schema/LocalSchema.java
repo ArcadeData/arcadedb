@@ -2795,37 +2795,16 @@ public class LocalSchema implements Schema {
   public void dropType(final String typeName) {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
-    // THE GUARDS BELOW COMPARE THE CANONICAL NAME, NOT THE STRING THE CALLER TYPED (#8169). getType() further down
-    // resolves aliases, so typeName can be an alias - and comparing the raw argument let DROP TYPE <alias> walk
-    // straight past these checks and drop a materialized view's backing or source type out from under it.
-    final LocalDocumentType resolvedType = getTypeOrNull(typeName);
-    final String canonicalTypeName = resolvedType != null ? resolvedType.getName() : typeName;
-
-    // Prevent dropping a type that is a backing type or source type for a materialized view or continuous aggregate
-    synchronized (this) {
-      for (final MaterializedViewImpl view : materializedViews.values()) {
-        if (view.getBackingTypeName().equals(canonicalTypeName))
-          throw new SchemaException(
-              "Cannot drop type '" + typeName + "' because it is the backing type for materialized view '" + view.getName() + "'. " +
-                  "Drop the materialized view first with: DROP MATERIALIZED VIEW " + view.getName());
-        if (view.getSourceTypeNames().contains(canonicalTypeName))
-          throw new SchemaException(
-              "Cannot drop type '" + typeName + "' because it is a source type for materialized view '" + view.getName() + "'. " +
-                  "Drop the materialized view first with: DROP MATERIALIZED VIEW " + view.getName());
-      }
-      for (final ContinuousAggregateImpl ca : continuousAggregates.values()) {
-        if (ca.getBackingTypeName().equals(canonicalTypeName))
-          throw new SchemaException(
-              "Cannot drop type '" + typeName + "' because it is the backing type for continuous aggregate '" + ca.getName() + "'. " +
-                  "Drop the continuous aggregate first with: DROP CONTINUOUS AGGREGATE " + ca.getName());
-        if (ca.getSourceTypeName().equals(canonicalTypeName))
-          throw new SchemaException(
-              "Cannot drop type '" + typeName + "' because it is the source type for continuous aggregate '" + ca.getName() + "'. " +
-                  "Drop the continuous aggregate first with: DROP CONTINUOUS AGGREGATE " + ca.getName());
-      }
-    }
+    // A CHEAP EARLY-OUT ONLY: THE DECISION THAT COUNTS IS THE ONE REPEATED INSIDE THE CALLBACK, UNDER THE WRITE LOCK
+    // (#9978). A view or an aggregate registered on this type after this check and before the lock below is taken would
+    // otherwise be left naming a type the drop then removes - the shape #7672 fixed on dropProperty
+    checkTypeHasNoDependants(typeName);
 
     recordFileChanges(() -> {
+      // UNDER THE WRITE LOCK EVERY VIEW AND AGGREGATE REGISTRATION TAKES TOO, SO NOTHING CAN COME TO DEPEND ON THE TYPE
+      // BETWEEN THIS VERDICT AND THE DROP (#9978). Before anything below changes, so a refusal leaves the type intact
+      final String canonicalTypeName = checkTypeHasNoDependants(typeName);
+
       boolean setMultipleUpdate = !multipleUpdate;
       if (!multipleUpdate)
         multipleUpdate = true;
@@ -2910,6 +2889,49 @@ public class LocalSchema implements Schema {
       }
       return null;
     });
+  }
+
+  /**
+   * Refuses to drop a type that is the backing or a source type of a materialized view or a continuous aggregate.
+   * <p>
+   * The guards compare the CANONICAL name, not the string the caller typed (#8169): {@link #getType} resolves aliases,
+   * so {@code typeName} can be an alias - and comparing the raw argument let {@code DROP TYPE <alias>} walk straight
+   * past these checks and drop a materialized view's backing or source type out from under it.
+   * <p>
+   * {@link #dropType} runs it twice: before the write lock as a cheap early-out, and again inside its
+   * {@code recordFileChanges} callback, which is the verdict that counts (#9978). The monitor orders the walk against
+   * the registries' synchronized accessors; it is taken under the write lock there, the order every schema save uses
+   * (#7457).
+   *
+   * @return the canonical name of the type
+   */
+  private String checkTypeHasNoDependants(final String typeName) {
+    final LocalDocumentType resolvedType = getTypeOrNull(typeName);
+    final String canonicalTypeName = resolvedType != null ? resolvedType.getName() : typeName;
+
+    synchronized (this) {
+      for (final MaterializedViewImpl view : materializedViews.values()) {
+        if (view.getBackingTypeName().equals(canonicalTypeName))
+          throw new SchemaException(
+              "Cannot drop type '" + typeName + "' because it is the backing type for materialized view '" + view.getName() + "'. " +
+                  "Drop the materialized view first with: DROP MATERIALIZED VIEW " + view.getName());
+        if (view.getSourceTypeNames().contains(canonicalTypeName))
+          throw new SchemaException(
+              "Cannot drop type '" + typeName + "' because it is a source type for materialized view '" + view.getName() + "'. " +
+                  "Drop the materialized view first with: DROP MATERIALIZED VIEW " + view.getName());
+      }
+      for (final ContinuousAggregateImpl ca : continuousAggregates.values()) {
+        if (ca.getBackingTypeName().equals(canonicalTypeName))
+          throw new SchemaException(
+              "Cannot drop type '" + typeName + "' because it is the backing type for continuous aggregate '" + ca.getName() + "'. " +
+                  "Drop the continuous aggregate first with: DROP CONTINUOUS AGGREGATE " + ca.getName());
+        if (ca.getSourceTypeName().equals(canonicalTypeName))
+          throw new SchemaException(
+              "Cannot drop type '" + typeName + "' because it is the source type for continuous aggregate '" + ca.getName() + "'. " +
+                  "Drop the continuous aggregate first with: DROP CONTINUOUS AGGREGATE " + ca.getName());
+      }
+    }
+    return canonicalTypeName;
   }
 
   @Override

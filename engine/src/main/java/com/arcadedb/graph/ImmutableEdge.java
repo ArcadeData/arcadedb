@@ -20,14 +20,17 @@ package com.arcadedb.graph;
 
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.ImmutableDocument;
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.SerializationException;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.serializer.BinaryTypes;
 import com.arcadedb.serializer.json.JSONObject;
 
+import java.nio.BufferUnderflowException;
 import java.util.Map;
 
 /**
@@ -38,6 +41,10 @@ import java.util.Map;
  * @see MutableEdge
  */
 public class ImmutableEdge extends ImmutableDocument implements Edge {
+  // Record type (1 byte) + two compressed RIDs of one single-byte varint for the bucket and one for the position each:
+  // the shortest prefix an edge can have, the only bound on it known before the RIDs are read
+  private static final int MIN_PREFIX_SIZE = Binary.BYTE_SERIALIZED_SIZE + 2 * 2;
+
   private RID     out;
   private RID     in;
   // The endpoints were handed over by the edge list the edge was read from, not by whoever built the edge: the record
@@ -57,14 +64,52 @@ public class ImmutableEdge extends ImmutableDocument implements Edge {
   }
 
   /**
-   * Reads the fixed edge prefix - the record-type byte followed by the out and in vertex RIDs, both compressed, so the
+   * Reads the edge prefix - the record-type byte followed by the out and in vertex RIDs, both compressed, so the
    * prefix has no fixed length - and leaves the buffer on the first byte of the properties.
    */
   private void parseVertexPointers(final Binary content) {
+    checkVertexPointersPrefix(content, rid);
     content.position(1); // SKIP RECORD TYPE
-    out = (RID) database.getSerializer().deserializeValue(database, content, BinaryTypes.TYPE_COMPRESSED_RID, null);
-    in = (RID) database.getSerializer().deserializeValue(database, content, BinaryTypes.TYPE_COMPRESSED_RID, null);
+    out = readVertexPointer(database, content, rid);
+    in = readVertexPointer(database, content, rid);
     propertiesStartingPosition = content.position();
+  }
+
+  /**
+   * The bounds check of the edge prefix that can be made before it is read, shared with {@link MutableEdge} like
+   * {@link #readVertexPointer} (issue #9985). The prefix has no fixed length, so only its shortest form bounds it here:
+   * the RIDs themselves are checked as they are read.
+   */
+  static void checkVertexPointersPrefix(final Binary content, final RID rid) {
+    if (content.size() < MIN_PREFIX_SIZE)
+      throw truncatedVertexPointers(content, rid, null);
+  }
+
+  /**
+   * Reads one compressed vertex RID of the edge prefix, shared with {@link MutableEdge} so every shape that parses it
+   * refuses a truncated buffer the same way (issue #9985). The prefix has no fixed length, so it cannot be validated
+   * up front the way {@link ImmutableVertex} validates its own: each RID is checked as it is read instead. A buffer
+   * that ends inside a RID underflows, and one whose backing array is longer than its declared size reads past that
+   * size without failing at all - both name the record instead of escaping as a bare
+   * {@link BufferUnderflowException}, or as a RID made of whatever followed. The guard on the normal path is one
+   * comparison, and the try block costs nothing until it throws.
+   */
+  static RID readVertexPointer(final DatabaseInternal database, final Binary content, final RID rid) {
+    final RID pointer;
+    try {
+      pointer = (RID) database.getSerializer().deserializeValue(database, content, BinaryTypes.TYPE_COMPRESSED_RID, null);
+    } catch (final BufferUnderflowException | IndexOutOfBoundsException e) {
+      throw truncatedVertexPointers(content, rid, e);
+    }
+    if (content.position() > content.size())
+      throw truncatedVertexPointers(content, rid, null);
+    return pointer;
+  }
+
+  private static SerializationException truncatedVertexPointers(final Binary content, final RID rid, final RuntimeException cause) {
+    return new SerializationException(
+        "Cannot read edge " + rid + " vertex pointers: record buffer is truncated or corrupted (size=" + content.size() + ")",
+        cause);
   }
 
   /**

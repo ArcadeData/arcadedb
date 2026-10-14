@@ -69,12 +69,6 @@ public class MutableVertex extends MutableDocument implements VertexInternal {
   }
 
   @Override
-  public void reload() {
-    super.reload();
-    init();
-  }
-
-  @Override
   public MutableVertex fromMap(final Map<String, Object> map) {
     return (MutableVertex) super.fromMap(map);
   }
@@ -114,6 +108,16 @@ public class MutableVertex extends MutableDocument implements VertexInternal {
   public void setBuffer(final Binary buffer) {
     super.setBuffer(buffer);
     init();
+  }
+
+  /**
+   * A reload installs a buffer the parsed prefix never described: the edge pointers and the offset of the properties are
+   * read out of it, the way {@link ImmutableVertex} does, instead of seeking it to the offset of the previous one
+   * (issue #9985). {@link #reload()} reaches this through the inherited one, so it needs no override of its own.
+   */
+  @Override
+  protected void parseRecordPrefix(final Binary content) {
+    parseEdgePointers(content);
   }
 
   @Override
@@ -258,16 +262,22 @@ public class MutableVertex extends MutableDocument implements VertexInternal {
   }
 
   private void init() {
-    if (buffer != null) {
-      buffer.position(1);
-      this.outEdges = new RID(buffer.getInt(), buffer.getLong());
-      if (this.outEdges.getBucketId() == -1)
-        this.outEdges = null;
-      this.inEdges = new RID(buffer.getInt(), buffer.getLong());
-      if (this.inEdges.getBucketId() == -1)
-        this.inEdges = null;
+    // READ THE FIELD ONCE, LIKE EVERY OTHER BUFFER DEREFERENCE
+    final Binary content = buffer;
+    if (content != null)
+      parseEdgePointers(content);
+  }
 
-      this.propertiesStartingPosition = buffer.position();
-    }
+  private void parseEdgePointers(final Binary content) {
+    ImmutableVertex.checkEdgePointersPrefix(content, rid);
+    content.position(1);
+    this.outEdges = new RID(content.getInt(), content.getLong());
+    if (this.outEdges.getBucketId() == -1)
+      this.outEdges = null;
+    this.inEdges = new RID(content.getInt(), content.getLong());
+    if (this.inEdges.getBucketId() == -1)
+      this.inEdges = null;
+
+    this.propertiesStartingPosition = content.position();
   }
 }

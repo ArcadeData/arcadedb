@@ -4401,17 +4401,17 @@ public class LSMVectorIndex implements Index, IndexInternal {
               dropReplacedComponent(gf);
             }
           }
+          // THE EXCEPTION IS THE THROWABLE OF THE CALL, NOT A SURPLUS FORMAT ARGUMENT: THE STACK TRACE GOES WHEREVER THE
+          // SEVERE LINE GOES, WHERE IT USED TO BE PRINTED ONLY BEHIND A DEBUG FLAG NOTHING EVER SET (#9984)
           LogManager.instance().log(this, Level.SEVERE,
               "PERSIST: Failed to persist graph for %s (nodes=%d, storeVectorsInGraph=%b, txStatus=%s): %s - %s",
+              e,
               indexName,
               totalNodes,
               metadata.storeVectorsInGraph,
               persistStatus,
               e.getClass().getSimpleName(),
-              e.getMessage(),
-              e);
-          if (LogManager.instance().isDebugEnabled())
-            e.printStackTrace();
+              e.getMessage());
           // Don't throw - allow the index to continue working, just won't have persisted graph
         }
       } else {

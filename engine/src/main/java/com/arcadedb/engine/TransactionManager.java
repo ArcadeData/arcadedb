@@ -1506,7 +1506,7 @@ public class TransactionManager {
     }
 
     // OK: ALL LOCKED
-    if (LogManager.instance().isDebugEnabled())
+    if (LogManager.instance().isLoggable(this, Level.FINE))
       LogManager.instance().log(this, Level.FINE, "Locked files %s (threadId=%d)", null, Arrays.toString(fileIds),
           Thread.currentThread().getId());
     return lockedFiles;

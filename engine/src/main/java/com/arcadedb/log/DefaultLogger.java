@@ -492,14 +492,39 @@ public class DefaultLogger implements Logger {
     }
 
     final java.util.logging.Logger log = resolveLogger(requester);
-    try {
-      if (exception != null)
-        log.log(level, msg, exception);
-      else
-        log.log(level, msg);
-    } catch (final Exception e) {
-      System.err.printf("Error on logging message '%s'. Exception: %s%n", msg, e);
-      System.err.flush();
+
+    if (log == null) {
+      if (context != null)
+        message = "<" + context + "> " + message;
+
+      try {
+        String msg = message;
+        if (args.length > 0)
+          msg = message.formatted(args);
+        System.err.println(msg);
+
+      } catch (final Exception e) {
+        System.err.printf("Error on formatting message '%s'. Exception: %s", message, e);
+      }
+    } else if (log.isLoggable(level)) {
+      // USE THE LOG. CHECKED BEFORE THE MESSAGE IS FORMATTED, AS THE FIXED-ARITY OVERLOAD DOES: A DROPPED MESSAGE COSTS NO
+      // FORMATTING. THE BRANCH THAT PRINTED A DROPPED MESSAGE TO STDOUT BEHIND LogManager.isDebugEnabled() IS GONE WITH
+      // THE FLAG, WHICH NOTHING EVER SET (#9984)
+      try {
+        if (context != null)
+          message = "<" + context + "> " + message;
+
+        String msg = message;
+        if (args.length > 0)
+          msg = message.formatted(args);
+
+        if (exception != null)
+          log.log(level, msg, exception);
+        else
+          log.log(level, msg);
+      } catch (final Exception e) {
+        System.err.printf("Error on formatting message '%s'. Exception: %s", message, e);
+      }
     }
 
     // A FATAL LINE MUST BE OUT BEFORE WHATEVER HAPPENS NEXT: FLUSH EVERY HANDLER THE RECORD WAS PUBLISHED TO

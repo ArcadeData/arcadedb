@@ -272,6 +272,12 @@ public class MaterializedViewBuilder {
     // MV metadata registration, and initial data population) are replicated atomically
     // to HA replicas as a single schema change
     return schema.recordFileChanges(() -> {
+      // AGAIN UNDER THE WRITE LOCK, WHICH DROP TYPE TAKES TOO (#9978): a source type dropped after the check above would
+      // otherwise be registered as one this view depends on
+      for (final String srcType : sourceTypeNames)
+        if (!schema.existsType(srcType))
+          throw new SchemaException("Source type '" + srcType + "' referenced in materialized view query does not exist");
+
       // Create the backing document type (schema-less)
       final TypeBuilder<?> typeBuilder = schema.buildDocumentType().withName(name);
       if (buckets > 0)

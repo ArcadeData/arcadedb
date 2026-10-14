@@ -604,7 +604,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
     final DeleteRecordRequest req = deleteBuilder.build();
 
     try {
-      if (LogManager.instance().isDebugEnabled()) {
+      if (LogManager.instance().isLoggable(this, Level.FINE)) {
         LogManager.instance().log(this, Level.FINE, "CLIENT deleteRecord: db=%s, tx=%s, rid=%s", getName(),
             transactionId != null,
             record.getIdentity());
@@ -638,7 +638,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
     final DeleteRecordRequest req = deleteBuilder.build();
 
     try {
-      if (LogManager.instance().isDebugEnabled()) {
+      if (LogManager.instance().isLoggable(this, Level.FINE)) {
         LogManager.instance()
             .log(this, Level.FINE, "CLIENT deleteRecord: db=%s, tx=%s, rid=%s, timeoutMs=%s", getName(),
                 transactionId != null,
@@ -714,7 +714,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
     try {
 
-      if (LogManager.instance().isDebugEnabled())
+      if (LogManager.instance().isLoggable(this, Level.FINE))
         LogManager.instance()
             .log(this, Level.FINE, "CLIENT executeCommand: db=%s, tx=%s, cmdLen=%s, params=%s", getName(),
                 transactionId != null,
@@ -723,7 +723,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
       final ExecuteCommandResponse response = callUnary("ExecuteCommand",
           () -> blockingStub().withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS).executeCommand(requestBuilder.build()));
 
-      if (LogManager.instance().isDebugEnabled())
+      if (LogManager.instance().isLoggable(this, Level.FINE))
         LogManager.instance().log(this, Level.FINE, "CLIENT executeCommand: success = %s", response.getSuccess());
 
       if (!response.getSuccess()) {
@@ -806,7 +806,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
     try {
 
-      if (LogManager.instance().isDebugEnabled()) {
+      if (LogManager.instance().isLoggable(this, Level.FINE)) {
         LogManager.instance()
             .log(this, Level.FINE, "CLIENT executeQuery: db=%s, tx=%s, queryLen=%s, params=%s", getName(),
                 transactionId != null,
@@ -819,7 +819,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
           () -> blockingStub().withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS) // or getTimeout(MODE_QUERY)
               .executeQuery(req));
 
-      if (LogManager.instance().isDebugEnabled()) {
+      if (LogManager.instance().isLoggable(this, Level.FINE)) {
         int _r = 0;
         for (var qr : response.getResultsList())
           _r += qr.getRecordsCount();
@@ -1299,7 +1299,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
             .setCredentials(buildCredentials()).build();
 
     try {
-      if (LogManager.instance().isDebugEnabled()) {
+      if (LogManager.instance().isLoggable(this, Level.FINE)) {
         LogManager.instance()
             .log(this, Level.FINE, "CLIENT createRecord: db=%s, txOpen=%s, type=%s, propCount=%s, timeoutMs=%s",
                 getName(),
@@ -1364,7 +1364,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
             .setTransaction(TransactionContext.newBuilder().setBegin(true).setCommit(true)).setCredentials(buildCredentials()).build();
 
     try {
-      if (LogManager.instance().isDebugEnabled()) {
+      if (LogManager.instance().isLoggable(this, Level.FINE)) {
         LogManager.instance()
             .log(this, Level.FINE, "CLIENT updateRecord(partial): db=%s, txOpen=%s, rid=%s, timeoutMs=%s", getName(),
                 transactionId != null,
@@ -1398,7 +1398,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
             .setTransaction(TransactionContext.newBuilder().setBegin(true).setCommit(true)).setCredentials(buildCredentials()).build();
 
     try {
-      if (LogManager.instance().isDebugEnabled()) {
+      if (LogManager.instance().isLoggable(this, Level.FINE)) {
         LogManager.instance().log(this, Level.FINE, """
                 CLIENT updateRecord(full): db=%s, txOpen=%s, rid=%s, \
                 timeoutMs=%s""", getName(),
@@ -1477,7 +1477,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
     final LookupByRidRequest req = reqBuilder.build();
 
     try {
-      if (LogManager.instance().isDebugEnabled()) {
+      if (LogManager.instance().isLoggable(this, Level.FINE)) {
         LogManager.instance()
             .log(this, Level.FINE, "CLIENT lookupByRID: db=%s, txOpen=%s, rid=%s, loadContent=%s, timeoutMs=%s",
                 getName(),
@@ -1548,7 +1548,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
     final BulkInsertRequest req = BulkInsertRequest.newBuilder().setOptions(newOptions).addAllRows(protoRows).build();
 
     try {
-      if (LogManager.instance().isDebugEnabled()) {
+      if (LogManager.instance().isLoggable(this, Level.FINE)) {
         LogManager.instance()
             .log(this, Level.FINE, "CLIENT insertBulk: rows=%s, timeoutMs=%s, tx=%s", req.getRowsCount(), timeoutMs,
                 transactionId != null);
@@ -1643,7 +1643,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
       }
     };
 
-    if (LogManager.instance().isDebugEnabled()) {
+    if (LogManager.instance().isLoggable(this, Level.FINE)) {
       LogManager.instance()
           .log(this, Level.FINE, "CLIENT ingestStream: db=%s, rows=%s, chunkSize=%s, timeoutMs=%s", getName(),
               protoRows.size(),
@@ -1703,7 +1703,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
       s = InsertSummary.newBuilder().setReceived(sent).build();
     }
 
-    if (LogManager.instance().isDebugEnabled()) {
+    if (LogManager.instance().isLoggable(this, Level.FINE)) {
       LogManager.instance().log(this, Level.FINE, "CLIENT ingestStream: completed; received=%s", s.getReceived());
     }
 
@@ -1774,7 +1774,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
     // Pre-map rows → proto
     final List<GrpcRecord> protoRows = rows.stream().map(mapper).collect(Collectors.toList());
 
-    if (LogManager.instance().isDebugEnabled()) {
+    if (LogManager.instance().isLoggable(this, Level.FINE)) {
       LogManager.instance()
           .log(this, Level.FINE, "CLIENT ingestBidi start: rows=%s, chunkSize=%s, maxInflight=%s, timeoutMs=%s",
               protoRows.size(),
@@ -1818,7 +1818,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
             }
           } catch (Throwable t) {
             // Best effort - stream may be closed
-            if (LogManager.instance().isDebugEnabled())
+            if (LogManager.instance().isLoggable(this, Level.FINE))
               LogManager.instance().log(this, Level.FINE, "CLIENT ingestBidi commit failed (best effort): %s",
                   t.getMessage());
           }
@@ -1986,7 +1986,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
         throw new RemoteException("gRPC bidi stream failed: " + err.getMessage(), err);
       }
 
-      if (LogManager.instance().isDebugEnabled()) {
+      if (LogManager.instance().isLoggable(this, Level.FINE)) {
         try {
           LogManager.instance().log(this, Level.FINE, "CLIENT ingestBidi finished: sent=%s, acked=%s", sent.get(),
               acked.get());
@@ -2018,7 +2018,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
     GrpcRecord.Builder b = GrpcRecord.newBuilder();
     row.forEach((k, v) -> b.putProperties(k, objectToGrpcValue(v)));
     GrpcRecord rec = b.build();
-    if (LogManager.instance().isDebugEnabled())
+    if (LogManager.instance().isLoggable(this, Level.FINE))
       LogManager.instance().log(this, Level.FINE, "CLIENT toProtoRecordFromMap: %s", summarize(rec));
     return rec;
   }
@@ -2027,7 +2027,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
   private GrpcRecord toProtoRecordFromDbRecord(Record rec) {
     // Use ProtoUtils for proper conversion
     GrpcRecord out = ProtoUtils.toProtoRecord(rec);
-    if (LogManager.instance().isDebugEnabled())
+    if (LogManager.instance().isLoggable(this, Level.FINE))
       LogManager.instance().log(this, Level.FINE, "CLIENT toProtoRecordFromDbRecord: %s", summarize(out));
     return out;
   }
@@ -2223,7 +2223,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
   private Object grpcValueToObject(final GrpcValue grpcValue) {
     Object out = ProtoUtils.fromGrpcValue(grpcValue);
-    if (LogManager.instance().isDebugEnabled())
+    if (LogManager.instance().isLoggable(this, Level.FINE))
       LogManager.instance()
           .log(this, Level.FINE, "CLIENT decode grpcValueToObject: %s -> %s", summarize(grpcValue), summarize(out));
     return out;
@@ -2351,7 +2351,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
   }
 
   private void logTx(String phase, String rpcOp) {
-    if (debugTx == null || !LogManager.instance().isDebugEnabled())
+    if (debugTx == null || !LogManager.instance().isLoggable(this, Level.FINE))
       return;
     TxDebug d = debugTx;
     LogManager.instance().log(this, Level.FINE,
