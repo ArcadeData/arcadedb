@@ -35,6 +35,7 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
+import java.net.InetSocketAddress;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -261,6 +262,27 @@ class Issue9689RunningQueryFollowUpsTest {
       // Registered after the termination: runs at once
       query.onTerminate(notified::incrementAndGet);
       assertThat(notified.get()).isEqualTo(2);
+    }
+  }
+
+  /**
+   * Issue #9962: the client is part of opening an entry, so the first listing that can see the entry already sees its
+   * client, from either entry point; and a transport that reports no peer lists no address rather than {@code "null"}.
+   */
+  @Test
+  void anEntryIsListedWithItsClientFromTheStart() {
+    final RunningQueryRegistry registry = newRegistry();
+    try (final RunningQuery published = registry.register("db", "alice", "test", null, null, "c-1", "10.0.0.1:5000");
+        final RunningQuery opened = registry.open("db", "alice", "test", null, null, "c-2", "10.0.0.2:5000")) {
+      assertThat(registry.getRunning()).extracting(RunningQuery::getConnectionId).containsExactly("c-1", "c-2");
+      assertThat(registry.getRunning()).extracting(RunningQuery::getClientAddress).containsExactly("10.0.0.1:5000", "10.0.0.2:5000");
+      assertThat(published.toJSON().getString("clientAddress")).isEqualTo("10.0.0.1:5000");
+    }
+
+    assertThat(RunningQueryRegistry.clientAddress(null)).isNull();
+    assertThat(RunningQueryRegistry.clientAddress(new InetSocketAddress("127.0.0.1", 5000))).isEqualTo("/127.0.0.1:5000");
+    try (final RunningQuery noPeer = registry.register("db", "alice", "test", null, null, null, RunningQueryRegistry.clientAddress(null))) {
+      assertThat(noPeer.toJSON().has("clientAddress")).as("omitted, not the text \"null\"").isFalse();
     }
   }
 

@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query;
 
+import java.net.SocketAddress;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
@@ -79,6 +80,14 @@ public final class RunningQueryRegistry {
     query.setConnection(connectionId, clientAddress);
     running.put(query.getNumericId(), query);
     return query;
+  }
+
+  /**
+   * The {@code clientAddress} of {@link #register} for a socket peer: its text, or {@code null} when the transport reports
+   * none (a closed channel, an in-process transport), so the listing omits the field instead of showing {@code "null"}.
+   */
+  public static String clientAddress(final SocketAddress address) {
+    return address != null ? address.toString() : null;
   }
 
   /** Who sees and stops every statement running here; anybody else sees and stops only their own. */

@@ -475,7 +475,7 @@ public class WebSocketInsertSession {
       return null;
     final WebSocketChannel current = channel;
     final RunningQuery entry = runningQueries.register(databaseName, user.getName(), "ws", externalTransactionId,
-        externalSession != null ? externalSession.getTag() : null, id, current != null ? String.valueOf(current.getPeerAddress()) : null);
+        externalSession != null ? externalSession.getTag() : null, id, current != null ? RunningQueryRegistry.clientAddress(current.getPeerAddress()) : null);
     entry.setStatement("ws", () -> "insert chunk " + chunkSeq + " of session " + id + " (" + options.transactionModeName() + ")");
     return entry;
   }
