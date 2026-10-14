@@ -76,7 +76,10 @@ final class LabelFilter {
     }
   }
 
-  /** No filter: every node is part of the answer and the walk goes on past it. */
+  /**
+   * No filter: every node is part of the answer and the walk goes on past it. The one instance shared across calls, which
+   * is safe only because it holds no steps and so no verdict cache: {@link #evaluate} returns before touching either.
+   */
   static final LabelFilter NONE = new LabelFilter(null, false, true, 0);
 
   // A zero-length conjunction is the '*' wildcard: a conjunction of no labels holds for every node
