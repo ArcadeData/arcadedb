@@ -301,6 +301,11 @@ final class PropertyCachingResult implements Result {
     return row.toMap();
   }
 
+  @Override
+  public Map<String, Object> toPropertyMap(final boolean includeMetadata) {
+    return row.toPropertyMap(includeMetadata);
+  }
+
   // NO equals()/hashCode() OF THE ROW'S: THE VIEW NEVER LEAVES ITS ROW, AND ONE THAT DID IS ITS OWN OBJECT, NOT THE ROW
 
   @Override

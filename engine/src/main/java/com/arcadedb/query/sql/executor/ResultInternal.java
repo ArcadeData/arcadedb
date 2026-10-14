@@ -30,6 +30,7 @@ import com.arcadedb.schema.VertexType;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.*;
+import java.util.function.BiConsumer;
 import java.util.stream.Collectors;
 
 import static com.arcadedb.schema.Property.RID_PROPERTY;
@@ -525,7 +526,7 @@ public class ResultInternal implements Result {
     final JSONObject result = new JSONObject();
 
     if (element != null)
-      putStructuralAttributes(result);
+      putStructuralAttributes(result::put);
 
     for (final String prop : getPropertyNames())
       result.put(prop, valueToJSON(getProperty(prop)));
@@ -534,8 +535,24 @@ public class ResultInternal implements Result {
   }
 
   /**
+   * The row's properties seeded, when asked, with the record attributes {@link #toJSON()} seeds - from the same method, so
+   * the map and the JSON of one row cannot disagree about which attributes it kept (issue #9964).
+   */
+  @Override
+  public Map<String, Object> toPropertyMap(final boolean includeMetadata) {
+    final Set<String> names = getPropertyNames();
+    final Map<String, Object> map = new LinkedHashMap<>(names.size() + (includeMetadata ? 5 : 0));
+    if (includeMetadata && element != null)
+      putStructuralAttributes(map::put);
+
+    for (final String name : names)
+      map.put(name, getProperty(name));
+    return map;
+  }
+
+  /**
    * Writes the backing record's structural attributes - {@code @cat}, {@code @type}, {@code @rid} and, for an edge,
-   * {@code @in} / {@code @out} - into {@code json}, in the same shape the record's own {@code toJSON(true)} emits
+   * {@code @in} / {@code @out} - into {@code sink}, in the same shape the record's own {@code toJSON(true)} emits
    * them, so a row that reshapes nothing serializes exactly as the record does (issue #7895).
    * <p>
    * The category is read from the instance first and from the schema type second: a {@link DetachedDocument} of a
@@ -546,32 +563,32 @@ public class ResultInternal implements Result {
    * {@code removeProperty()}'s {@link #tombstones}, and the {@code SELECT *, !@rid} exclusion the projection
    * records in {@link #projectionExcludes} - which is not a tombstone and has to be asked separately.
    */
-  private void putStructuralAttributes(final JSONObject json) {
+  private void putStructuralAttributes(final BiConsumer<String, Object> sink) {
     final DocumentType type = element.getType();
     final boolean isEdge = element instanceof Edge || type instanceof EdgeType;
     final boolean isVertex = !isEdge && (element instanceof Vertex || type instanceof VertexType);
 
-    putStructuralAttribute(json, Property.CAT_PROPERTY, isEdge ? "e" : isVertex ? "v" : "d");
-    putStructuralAttribute(json, Property.TYPE_PROPERTY, element.getTypeName());
+    putStructuralAttribute(sink, Property.CAT_PROPERTY, isEdge ? "e" : isVertex ? "v" : "d");
+    putStructuralAttribute(sink, Property.TYPE_PROPERTY, element.getTypeName());
 
     final RID rid = element.getIdentity();
     if (rid != null)
-      putStructuralAttribute(json, RID_PROPERTY, rid.toString());
+      putStructuralAttribute(sink, RID_PROPERTY, rid.toString());
 
     // Only a real Edge can name its endpoints: a DetachedDocument of an edge type carries none, which is also
     // why JsonSerializer.setMetadata() gives it the category alone.
     if (element instanceof Edge edge) {
-      putStructuralAttribute(json, Property.IN_PROPERTY, edge.getIn());
-      putStructuralAttribute(json, Property.OUT_PROPERTY, edge.getOut());
+      putStructuralAttribute(sink, Property.IN_PROPERTY, edge.getIn());
+      putStructuralAttribute(sink, Property.OUT_PROPERTY, edge.getOut());
     }
   }
 
-  private void putStructuralAttribute(final JSONObject json, final String name, final Object value) {
+  private void putStructuralAttribute(final BiConsumer<String, Object> sink, final String name, final Object value) {
     if (tombstones != null && tombstones.contains(name))
       return;
     if (projectionExcludes != null && projectionExcludes.contains(name))
       return;
-    json.put(name, value);
+    sink.accept(name, value);
   }
 
   public Optional<Document> getElement() {

@@ -260,5 +260,39 @@ public interface Result {
 
   boolean hasProperty(String varName);
 
+  /**
+   * The entity behind this row: deliberately element-first, so a row that carries a record answers the record's map, not
+   * what a projection made of it. To read the row itself - what {@link #getPropertyNames()} lists and
+   * {@link #getProperty(String)} answers - use {@link #toPropertyMap(boolean)}.
+   */
   Map<String, Object> toMap();
+
+  /**
+   * The properties of this ROW, as a new map: every name {@link #getPropertyNames()} lists, with the value
+   * {@link #getProperty(String)} answers for it. A projection that renamed, overrode or excluded a column has already decided
+   * what the row contains, so a consumer that wants "the row's properties" - {@code include()}, {@code exclude()},
+   * {@code INSERT ... FROM SELECT}, {@code UPDATE ... MERGE} - reads them here and not off {@link #toMap()}, which answers
+   * the record behind the row and so resurrected an excluded column and the stored value of an overridden one (issues #9964
+   * and #9965).
+   * <p>
+   * With {@code includeMetadata}, a row backed by a record is first seeded with the record's attributes ({@code @cat},
+   * {@code @type}, {@code @rid} and an edge's {@code @in}/{@code @out}), the shape {@link #toJSON()} gives the same row, and
+   * the row's properties are written over the seed. An attribute the row dropped stays dropped.
+   *
+   * @param includeMetadata whether a record-backed row also answers its record's attributes
+   *
+   * @return a new, mutable map the caller owns
+   */
+  default Map<String, Object> toPropertyMap(final boolean includeMetadata) {
+    final Set<String> names = getPropertyNames();
+    final Map<String, Object> map = new LinkedHashMap<>(names.size() + (includeMetadata ? 5 : 0));
+    if (includeMetadata && isElement())
+      for (final Map.Entry<String, Object> entry : toElement().toMap(true).entrySet())
+        if (entry.getKey().startsWith("@"))
+          map.put(entry.getKey(), entry.getValue());
+
+    for (final String name : names)
+      map.put(name, getProperty(name));
+    return map;
+  }
 }

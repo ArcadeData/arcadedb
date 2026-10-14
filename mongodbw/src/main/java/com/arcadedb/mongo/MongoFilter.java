@@ -163,7 +163,9 @@ final class MongoFilter {
   }
 
   boolean matchesRow(final Result result) {
-    return matches(result.toMap());
+    // THE ROW'S OWN PROPERTIES, AS matches(Document) READS A RECORD'S: toMap() ANSWERS THE RECORD BEHIND A ROW, METADATA
+    // INCLUDED (ISSUE #9964)
+    return matches(result.toPropertyMap(false));
   }
 
   /**

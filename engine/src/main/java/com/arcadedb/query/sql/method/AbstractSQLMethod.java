@@ -204,12 +204,15 @@ public abstract class AbstractSQLMethod implements SQLMethod {
 
   /**
    * Reads one value a projection method ({@code include()}, {@code exclude()}) filters, as a map of names to values: a
-   * record answers its properties (plus its metadata fields when {@code includeMetadata} is set), a {@link Result} its
-   * {@link Result#toMap()}, a map itself, anything else {@code null}. A projection is a value, never a record: a record
-   * stamped with the source RID turned {@code save()} on the projection into a partial overwrite (issue #9840).
+   * record answers its properties (plus its metadata fields when {@code includeMetadata} is set), a {@link Result} the
+   * properties of the ROW ({@link Result#toPropertyMap(boolean)}), a map itself, anything else {@code null}. A projection is
+   * a value, never a record: a record stamped with the source RID turned {@code save()} on the projection into a partial
+   * overwrite (issue #9840).
    * <p>
-   * The returned map may be the caller's own (a map receiver, a {@link Result}'s content): callers copy before they
-   * change it.
+   * A row is never read through {@link Result#toMap()}: that answers the record behind a projected row, so an overridden
+   * alias came back with its stored value, and an excluded column - {@code @rid} included - came back at all (issue #9964).
+   * <p>
+   * The returned map may be the caller's own (a map receiver): callers copy before they change it.
    *
    * @param value           the value the method was invoked on, or one element of it
    * @param includeMetadata whether a record's metadata fields are part of the answer, see {@link #referencesMetadata}
@@ -223,7 +226,7 @@ public abstract class AbstractSQLMethod implements SQLMethod {
       return record instanceof Document document ? document.toMap(includeMetadata) : null;
     }
     if (value instanceof Result result)
-      return result.toMap();
+      return result.toPropertyMap(includeMetadata);
     if (value instanceof Map)
       return (Map<String, Object>) value;
     return null;
