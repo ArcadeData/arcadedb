@@ -25,11 +25,8 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 
 import java.util.ArrayList;
-import java.util.Collection;
 import java.util.IdentityHashMap;
 import java.util.List;
-import java.util.Map;
-import java.util.StringJoiner;
 
 /**
  * The {@code labelFilter} of the {@code path.*} procedures, in APOC's syntax. Entries are separated by {@code |}, and each
@@ -121,32 +118,14 @@ final class LabelFilter {
    */
   static LabelFilter parse(final String procedureName, final Object filter, final Schema schema, final boolean filterStartNode,
       final boolean beginSequenceAtStart, final int minLevel) {
-    if (filter == null)
-      return NONE;
-    if (filter instanceof String s)
-      return ofSteps(procedureName, List.of(s.split(",", -1)), schema, filterStartNode, beginSequenceAtStart, minLevel);
-    if (filter instanceof Collection<?> collection) {
-      final StringJoiner joined = new StringJoiner("|");
-      for (final Object item : collection)
-        if (item != null)
-          joined.add(item.toString());
-      return ofSteps(procedureName, List.of(joined.toString()), schema, filterStartNode, beginSequenceAtStart, minLevel);
-    }
-    if (filter instanceof Map<?, ?>)
-      throw new IllegalArgumentException(procedureName + "(): labelFilter must be a string or a list of strings, got a map");
-    return ofSteps(procedureName, List.of(filter.toString()), schema, filterStartNode, beginSequenceAtStart, minLevel);
+    final List<String> steps = FilterSteps.split(procedureName, "labelFilter", filter);
+    return steps == null ? NONE : ofSteps(procedureName, steps, schema, filterStartNode, beginSequenceAtStart, minLevel);
   }
 
   /** Builds the filter from its steps, one string per step: the {@code sequence} configuration hands them over already split. */
   static LabelFilter ofSteps(final String procedureName, final List<String> steps, final Schema schema,
       final boolean filterStartNode, final boolean beginSequenceAtStart, final int minLevel) {
-    boolean blank = true;
-    for (final String step : steps)
-      if (!step.replace('|', ' ').isBlank()) {
-        blank = false;
-        break;
-      }
-    if (blank)
+    if (FilterSteps.isBlank(steps))
       return NONE;
 
     final Step[] parsed = new Step[steps.size()];

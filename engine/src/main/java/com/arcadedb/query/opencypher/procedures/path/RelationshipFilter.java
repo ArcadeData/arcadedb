@@ -23,12 +23,9 @@ import com.arcadedb.query.opencypher.procedures.ProcedureSchemaTypes;
 import com.arcadedb.schema.Schema;
 
 import java.util.Arrays;
-import java.util.Collection;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
-import java.util.StringJoiner;
 
 /**
  * The {@code relationshipFilter} of the {@code path.*} procedures, in APOC's syntax (issue #10025):
@@ -71,32 +68,14 @@ final class RelationshipFilter {
    * Neo4j, and naming the parent means the whole hierarchy.
    */
   static RelationshipFilter parse(final String procedureName, final Object filter, final Schema schema) {
-    if (filter == null)
-      return ANY;
-    if (filter instanceof String s)
-      return ofSteps(procedureName, List.of(s.split(",", -1)), schema);
-    if (filter instanceof Collection<?> collection) {
-      final StringJoiner joined = new StringJoiner("|");
-      for (final Object item : collection)
-        if (item != null)
-          joined.add(item.toString());
-      return ofSteps(procedureName, List.of(joined.toString()), schema);
-    }
-    if (filter instanceof Map<?, ?>)
-      throw new IllegalArgumentException(procedureName + "(): relationshipFilter must be a string or a list of strings, got a map");
-    return ofSteps(procedureName, List.of(filter.toString()), schema);
+    final List<String> steps = FilterSteps.split(procedureName, "relationshipFilter", filter);
+    return steps == null ? ANY : ofSteps(procedureName, steps, schema);
   }
 
   /** Builds the filter from its hops, one string per hop: the {@code sequence} configuration hands them over already split. */
   static RelationshipFilter ofSteps(final String procedureName, final List<String> steps, final Schema schema) {
     // A filter that is blank as a whole means "everything", as a missing one does
-    boolean blank = true;
-    for (final String step : steps)
-      if (!step.replace('|', ' ').isBlank()) {
-        blank = false;
-        break;
-      }
-    if (blank)
+    if (FilterSteps.isBlank(steps))
       return ANY;
 
     final String[][] out = new String[steps.size()][];
