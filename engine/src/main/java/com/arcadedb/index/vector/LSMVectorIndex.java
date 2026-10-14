@@ -1877,8 +1877,20 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * of a restart before the first user query arrives. A no-op when the graph is already resident. Safe to call
    * from any thread and concurrently with searches: it goes through the same one-owner protocol a search does.
    */
+  @Override
   public void warmUp() {
     ensureGraphAvailable(WorkGuard.forCommandDeadline(null));
+  }
+
+  /**
+   * Whether this instance has a graph resident: it has been searched, or built, in this process. A schema reload re-creates
+   * every index cold (issue #10021), and this is how it knows to warm this one's successor in the background instead of
+   * leaving the cost to the first search. An index never searched since the database opened has nothing to lose, and is
+   * not warmed: that would charge a replica for indexes nobody queries.
+   */
+  @Override
+  public boolean isWarm() {
+    return graphIndex != null;
   }
 
   /**
