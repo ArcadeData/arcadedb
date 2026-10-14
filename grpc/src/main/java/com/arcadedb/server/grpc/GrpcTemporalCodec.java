@@ -48,7 +48,10 @@ import java.util.logging.Level;
  *   compares by instant, then offset, then zone id, so a bare instant cannot be written back as a predicate that matches the
  *   stored value; the text is the shape the JSON and Bolt surfaces already carry.</li>
  * </ul>
- * A peer that ignores {@code logical_type} still reads the text as a plain string, so the change is additive.
+ * This is a wire change for {@link ZonedDateTime}: before issue #9969 it travelled as a {@code timestamp_value}, so a peer that
+ * decodes it by kind now sees a {@code string_value}. A peer that ignores {@code logical_type} reads the ISO text as a plain
+ * string. For {@link OffsetTime} and {@link LocalTime} the change is additive: they were already the same untagged text.
+ * Tags are matched case-insensitively, as {@code ProtoUtils} matches {@value #DATE} and {@value #DATETIME}.
  */
 public final class GrpcTemporalCodec {
 
@@ -93,16 +96,17 @@ public final class GrpcTemporalCodec {
     if (logicalType == null || logicalType.isEmpty())
       return text;
     try {
-      return switch (logicalType) {
-        case ZONED_DATETIME -> ZonedDateTime.parse(text, DateTimeFormatter.ISO_ZONED_DATE_TIME);
-        case OFFSET_TIME -> OffsetTime.parse(text, DateTimeFormatter.ISO_OFFSET_TIME);
-        case LOCAL_TIME -> LocalTime.parse(text, DateTimeFormatter.ISO_LOCAL_TIME);
-        default -> text;
-      };
+      if (ZONED_DATETIME.equalsIgnoreCase(logicalType))
+        return ZonedDateTime.parse(text, DateTimeFormatter.ISO_ZONED_DATE_TIME);
+      if (OFFSET_TIME.equalsIgnoreCase(logicalType))
+        return OffsetTime.parse(text, DateTimeFormatter.ISO_OFFSET_TIME);
+      if (LOCAL_TIME.equalsIgnoreCase(logicalType))
+        return LocalTime.parse(text, DateTimeFormatter.ISO_LOCAL_TIME);
+      return text;
     } catch (final DateTimeParseException e) {
       // Logged so that a typed column rejecting the string later can be traced back to the tag that did not parse
-      LogManager.instance().log(GrpcTemporalCodec.class, Level.FINE, "gRPC value tagged '%s' is not a valid %s, kept as text: %s",
-          logicalType, logicalType, e.getMessage());
+      LogManager.instance().log(GrpcTemporalCodec.class, Level.FINE, "gRPC string_value tagged '%s' does not parse as one, kept as text: '%s'",
+          logicalType, text.length() > 64 ? text.substring(0, 64) + "..." : text);
       return text;
     }
   }

@@ -117,6 +117,12 @@ class Issue9969GrpcZonedTemporalWireTest {
   }
 
   @Test
+  void tagsMatchCaseInsensitively() {
+    final GrpcValue upper = GrpcValue.newBuilder().setStringValue("00:30:00+02:00").setLogicalType("OFFSET_TIME").build();
+    assertThat(GrpcTypeConverter.fromGrpcValue(upper)).isEqualTo(OffsetTime.of(0, 30, 0, 0, ZoneOffset.ofHours(2)));
+  }
+
+  @Test
   void malformedTaggedTextDegradesToTheString() {
     // A hand-built message from a third-party client must not fail the whole row
     final GrpcValue bad = GrpcValue.newBuilder().setStringValue("not a time").setLogicalType(GrpcTemporalCodec.LOCAL_TIME).build();
