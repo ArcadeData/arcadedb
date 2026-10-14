@@ -316,7 +316,11 @@ public final class RegexAutomaton {
    */
   private boolean closure(final int from, final boolean atStart, final IntList reading) {
     // a state is visited once without and once with the end anchor crossed: past it, nothing can be read any more
-    ++stamp;
+    if (++stamp == 0) {
+      // wrapped around after 2^32 walks: forget every mark, so no state reads as seen in this one
+      Arrays.fill(seen, 0);
+      stamp = 1;
+    }
     stack.size = 0;
     stack.add(from << 1);
     boolean accepts = false;
@@ -579,6 +583,9 @@ public final class RegexAutomaton {
       final Node atom = parseAtom();
       if (position >= source.length())
         return atom;
+      // a quantified anchor is a loop over nothing, which Pattern ends after a turn that matched nothing: not compiled
+      if (atom instanceof Anchor && "*+?{".indexOf(source.charAt(position)) >= 0)
+        throw Unsupported.INSTANCE;
 
       final int min;
       final int max;
