@@ -75,6 +75,9 @@ public class LightEdgeRID extends DatabaseRID {
   private RID              originSegment;
   private int              originPosition;
   private Vertex.DIRECTION originDirection;
+  // THE USED BYTES OF THE CHUNK WHEN THE ENTRY WAS READ OFF IT, -1 WHEN NOT KNOWN: A CENSUS ANSWERS ONLY FOR THE CHUNK IT
+  // COUNTED, AND A CHUNK OF ANOTHER SIZE IS ANOTHER IMAGE OF IT (ISSUE #10008)
+  private int              originChunkUsed = -1;
   // THE TWINS OF THE WHOLE LIST, COUNTED ONCE FOR EVERY EDGE THE SAME ITERATION READ (ISSUE #10008). NULL WHEN THE
   // EDGE WAS NOT READ BY AN ITERATION THAT OFFERS ONE: IT THEN WALKS ITS LIST ALONE
   private LightEdgeCensus  census;
@@ -98,11 +101,12 @@ public class LightEdgeRID extends DatabaseRID {
    * Remembers the list entry this identity was read from, so that {@link #getOccurrence()} can tell it from a twin.
    * Called once, by the iterator that built it, before the edge is handed out.
    */
-  LightEdgeRID readFrom(final RID segment, final int position, final Vertex.DIRECTION direction,
+  LightEdgeRID readFrom(final RID segment, final int position, final Vertex.DIRECTION direction, final int chunkUsed,
       final LightEdgeCensus census) {
     this.originSegment = segment;
     this.originPosition = position;
     this.originDirection = direction;
+    this.originChunkUsed = chunkUsed;
     this.census = census;
     return this;
   }
@@ -115,6 +119,11 @@ public class LightEdgeRID extends DatabaseRID {
   /** The byte position of the list entry this edge was read from in its chunk. For tests. */
   int getOriginPosition() {
     return originPosition;
+  }
+
+  /** The used bytes of the chunk when this edge was read off it, -1 when not known. For tests. */
+  int getOriginChunkUsed() {
+    return originChunkUsed;
   }
 
   /** The census this edge shares with the iteration that read it, or null. For tests. */
@@ -297,7 +306,7 @@ public class LightEdgeRID extends DatabaseRID {
       numbered(0, 0);
       return;
     }
-    if (census != null && census.resolve(this, originSegment, originPosition))
+    if (census != null && census.resolve(this, originSegment, originPosition, originChunkUsed))
       return;
 
     final DatabaseInternal db = (DatabaseInternal) getBoundDatabase();
