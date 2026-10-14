@@ -179,6 +179,18 @@ class RegexAutomatonTest {
     assertThat(RegexAutomaton.compile("[0-9]{1000000}", DIGITS)).isNull();
     assertThat(RegexAutomaton.compile("([0-9]{1000}){1000}", DIGITS)).isNull();
     assertThat(RegexAutomaton.compile("[0-9]{1000}", DIGITS)).isNotNull();
+    // refused from its size alone, before a state is built: this one would be 10^12 copies
+    assertThat(RegexAutomaton.compile("(((0{1,10000}){1,10000}){1,10000})", DIGITS)).isNull();
+  }
+
+  @Test
+  void aLargeProductIsWalkedWithoutAllocatingEveryPair() {
+    // about 6,000 x 6,000 states: past the dense bit set, so the walk marks pairs in a set that grows with what it visits
+    final RegexAutomaton a = RegexAutomaton.compile("[0-9]{1,1500}", DIGITS);
+    final RegexAutomaton b = RegexAutomaton.compile("[0-9]{1499}5", DIGITS);
+    assertThat(RegexAutomaton.intersects(a, b)).isEqualTo(Verdict.SATISFIABLE);
+    assertThat(RegexAutomaton.intersects(RegexAutomaton.compile("[0-9]{1,1500}", DIGITS),
+        RegexAutomaton.compile("[0-9]{1501}", DIGITS))).isEqualTo(Verdict.UNSATISFIABLE);
   }
 
   private static Verdict intersects(final String pattern, final String shape, final String alphabet) {

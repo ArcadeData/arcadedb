@@ -65,6 +65,8 @@ class Issue9992LinkRegexpTextFormTest extends TestHelper {
     database.transaction(() -> database.newDocument("T9992").set("l", first).save());
     database.transaction(() -> database.newDocument("T9992").set("l", targets[0]).save());
     database.transaction(() -> database.newDocument("T9992").set("l", first.asVertex()).save());
+    // and as the text a JSON or HTTP client sends
+    database.transaction(() -> database.newDocument("T9992").set("l", first.toString()).save());
 
     // the other link, both ways: both fail
     assertThatThrownBy(() -> database.transaction(() -> database.newDocument("T9992").set("l", targets[1].getIdentity()).save()))
@@ -74,7 +76,7 @@ class Issue9992LinkRegexpTextFormTest extends TestHelper {
 
     // SQL writes the link as the record a subquery selects
     database.transaction(() -> database.command("sql", "INSERT INTO T9992 SET l = (SELECT FROM V9992 WHERE n = 0)").close());
-    assertThat(database.countType("T9992", false)).isEqualTo(4);
+    assertThat(database.countType("T9992", false)).isEqualTo(5);
   }
 
   @Test

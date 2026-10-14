@@ -54,17 +54,19 @@ import java.util.regex.PatternSyntaxException;
  */
 public final class RegexAutomaton {
   /** the most states one automaton may have: a counted repetition is expanded, so {@code (x{100}){100}} is 10,000 copies */
-  public static final  int    MAX_STATES        = 50_000;
+  public static final  int    MAX_STATES              = 50_000;
   /** the most pairs of states the product walk may mark, one bit each */
-  private static final long   MAX_PAIRS         = 1L << 26;
+  private static final long   MAX_PAIRS               = 1L << 26;
+  /** the pairs a dense bit set is allocated for up front; a larger product marks them in a set that grows as it is walked */
+  private static final long   MAX_DENSE_PAIRS         = 1L << 20;
   /** the most steps the product walk may take, so the time it costs is bounded whatever the two automata */
-  private static final long   MAX_WORK          = 50_000_000L;
+  private static final long   MAX_WORK                = 50_000_000L;
   /** how many steps of the product walk run between two looks at the clock */
   private static final int    DEADLINE_CHECK_INTERVAL = 4096;
   /** the most entries the memoized epsilon closures may hold in all */
-  private static final long   MAX_CLOSURE_SIZE  = 8_000_000L;
-  private static final String LINE_TERMINATORS  = "\n\r\u0085  ";
-  private static final int    ALLOWED_FLAGS     =
+  private static final long   MAX_CLOSURE_SIZE        = 8_000_000L;
+  private static final String LINE_TERMINATORS        = "\n\r\u0085\u2028\u2029";
+  private static final int    ALLOWED_FLAGS           =
       Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE | Pattern.UNICODE_CHARACTER_CLASS | Pattern.DOTALL | Pattern.MULTILINE
           | Pattern.UNIX_LINES;
 
@@ -129,6 +131,9 @@ public final class RegexAutomaton {
     try {
       final Parser parser = new Parser(rewriteQuotes(regex), alphabet);
       final Node root = parser.parse();
+      // refused from the size of the tree before a single state is built: '(x{100}){100}' is known to be 10,000 copies
+      if (statesOf(root) > MAX_STATES)
+        return null;
       final Builder builder = new Builder();
       final int[] fragment = builder.build(root);
       final int accept = builder.newState(KIND_ACCEPT);
@@ -207,7 +212,7 @@ public final class RegexAutomaton {
 
     // a pair of states is the one each automaton is in right after reading the same character, marked once queued. Each
     // queued pair keeps the one it was reached from and the character read, to spell the string out at the end
-    final long[] visited = new long[(int) (((long) a.size * b.size + 63) >>> 6)];
+    final VisitedPairs visited = new VisitedPairs((long) a.size * b.size);
     final IntList queueA = new IntList();
     final IntList queueB = new IntList();
     final IntList parent = new IntList();
@@ -234,12 +239,8 @@ public final class RegexAutomaton {
             continue;
           final int targetA = a.next[p];
           final int targetB = b.next[q];
-          final long pair = (long) targetA * b.size + targetB;
-          final int word = (int) (pair >>> 6);
-          final long bit = 1L << (pair & 63);
-          if ((visited[word] & bit) != 0)
+          if (!visited.add((long) targetA * b.size + targetB))
             continue;
-          visited[word] |= bit;
           queueA.add(targetA);
           queueB.add(targetB);
           parent.add(expanded);
@@ -361,6 +362,98 @@ public final class RegexAutomaton {
       ++i;
     }
     return result.toString();
+  }
+
+  /**
+   * An upper bound of the states {@link Builder#build} creates for {@code node}, saturating instead of overflowing, so a
+   * pattern too large to expand is refused before anything is allocated for it.
+   */
+  private static long statesOf(final Node node) {
+    return switch (node) {
+      case Symbols symbols -> 2;
+      case Anchor anchor -> 2;
+      case Sequence sequence -> {
+        long total = 1;
+        for (final Node item : sequence.items())
+          total = Math.min(total + statesOf(item), Long.MAX_VALUE / 4);
+        yield total;
+      }
+      case Alternation alternation -> {
+        long total = 1;
+        for (final Node option : alternation.options())
+          total = Math.min(total + statesOf(option) + 1, Long.MAX_VALUE / 4);
+        yield total;
+      }
+      case Repetition repetition -> {
+        final long copies = repetition.max() < 0 ? repetition.min() + 1L : repetition.max();
+        final long item = statesOf(repetition.item()) + 1;
+        yield item > (Long.MAX_VALUE / 4) / Math.max(1, copies) ? Long.MAX_VALUE / 4 : copies * item + 3;
+      }
+    };
+  }
+
+  /**
+   * The pairs of states the product walk has queued. A dense bit set for a product small enough, which is every text form
+   * against an ordinary pattern; an open-addressing set of longs that grows as pairs are marked for a larger one, so a large
+   * product costs what the walk visits rather than what it could visit.
+   */
+  private static final class VisitedPairs {
+    private final long[] bits;
+    private       long[] keys;
+    private       int    size;
+
+    private VisitedPairs(final long pairs) {
+      if (pairs <= MAX_DENSE_PAIRS)
+        bits = new long[(int) ((pairs + 63) >>> 6)];
+      else {
+        bits = null;
+        keys = new long[1024];
+        Arrays.fill(keys, -1L);
+      }
+    }
+
+    /** @return true when the pair was not marked yet */
+    private boolean add(final long pair) {
+      if (bits != null) {
+        final int word = (int) (pair >>> 6);
+        final long bit = 1L << (pair & 63);
+        if ((bits[word] & bit) != 0)
+          return false;
+        bits[word] |= bit;
+        return true;
+      }
+      if (size * 2 >= keys.length)
+        grow();
+      return insert(keys, pair);
+    }
+
+    private boolean insert(final long[] table, final long pair) {
+      final int mask = table.length - 1;
+      int slot = (int) (mix(pair) & mask);
+      while (table[slot] != -1L) {
+        if (table[slot] == pair)
+          return false;
+        slot = (slot + 1) & mask;
+      }
+      table[slot] = pair;
+      if (table == keys)
+        ++size;
+      return true;
+    }
+
+    private void grow() {
+      final long[] previous = keys;
+      keys = new long[previous.length * 2];
+      Arrays.fill(keys, -1L);
+      for (final long pair : previous)
+        if (pair != -1L)
+          insert(keys, pair);
+    }
+
+    private static long mix(final long value) {
+      long h = value * 0x9E3779B97F4A7C15L;
+      return h ^ (h >>> 32);
+    }
   }
 
   /** A construct this class does not compile: the caller falls back to a search. */
