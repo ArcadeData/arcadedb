@@ -25,6 +25,7 @@ import io.undertow.server.ServerConnection;
 import io.undertow.server.protocol.http.HttpServerConnection;
 import io.undertow.util.ImmediatePooledByteBuffer;
 import org.xnio.ChannelListener;
+import org.xnio.Options;
 import org.xnio.conduits.ConduitStreamSourceChannel;
 import org.xnio.conduits.StreamSourceConduit;
 
@@ -57,6 +58,14 @@ import java.util.logging.Level;
  * hands the connection to the next request. No read of the watch can therefore overlap Undertow's own, and bytes the
  * watch did read are back in the connection before Undertow looks for the next request.
  * <p>
+ * <b>The read timeout.</b> The connection carries {@code arcadedb.network.socketTimeout} as its read timeout, which
+ * Undertow enforces with a timer while reads are resumed: once that much time passes with no byte from the client, it fails
+ * the next read and closes the connection. A client waiting for its answer sends nothing, so a statement longer than the
+ * socket timeout lost its client to the timer (issue #9953). The watch lifts the read timeout while it is armed and puts it
+ * back when it is disarmed, before Undertow resumes reads for the next request: an idle keep-alive connection is still
+ * closed after the timeout, and a client waiting for a long statement is not. A connection whose read timeout cannot be
+ * lifted is not watched.
+ * <p>
  * Costs one listener swap per request and nothing while the client is quiet: the selector wakes the watch only when the
  * client sends or closes.
  *
@@ -71,6 +80,8 @@ final class HttpClientDisconnectWatch implements ChannelListener<ConduitStreamSo
   // One byte is all a probe reads: end-of-stream, or the first byte of a pipelined request, handed to Undertow whole
   private final ByteBuffer                                             probe = ByteBuffer.allocate(1);
   private       boolean                                              armed = true;
+  // The read timeout the connection had before the watch lifted it, put back on disarm(); null when there is none to restore
+  private       Integer                                              liftedReadTimeout;
 
   private HttpClientDisconnectWatch(final HttpServerConnection connection, final RunningQuery runningQuery) {
     this.connection = connection;
@@ -93,6 +104,9 @@ final class HttpClientDisconnectWatch implements ChannelListener<ConduitStreamSo
       return null;
 
     final HttpClientDisconnectWatch watch = new HttpClientDisconnectWatch(connection, runningQuery);
+    if (!watch.liftReadTimeout())
+      return null;
+
     // Disarmed when the exchange completes at the latest: Undertow runs these listeners before it resumes reads for the next
     // request. A streamed answer completes the exchange inside the handler, before the statement's entry is closed
     exchange.addExchangeCompleteListener((completed, next) -> {
@@ -103,6 +117,40 @@ final class HttpClientDisconnectWatch implements ChannelListener<ConduitStreamSo
     // On the socket itself: the request's own conduits are exhausted, and an empty body's one never reads the socket
     watch.socket.resumeReads();
     return watch;
+  }
+
+  /**
+   * Sets the connection's read timeout to none, keeping the value to put back on {@link #disarm()}. Answers {@code false}
+   * when it cannot be lifted: reads resumed under it would end every statement longer than it (issue #9953).
+   */
+  private boolean liftReadTimeout() {
+    try {
+      final Integer timeout = connection.getOption(Options.READ_TIMEOUT);
+      if (timeout != null && timeout > 0) {
+        connection.setOption(Options.READ_TIMEOUT, 0);
+        liftedReadTimeout = timeout;
+      }
+      return true;
+    } catch (final IOException | RuntimeException e) {
+      LogManager.instance()
+          .log(this, Level.FINE, "Cannot lift the read timeout of the connection of query %s, not watching it: %s",
+              runningQuery.getId(), e.getMessage());
+      return false;
+    }
+  }
+
+  /** Puts back the read timeout {@link #liftReadTimeout()} lifted: the connection is kept alive for the next request. */
+  private void restoreReadTimeout() {
+    if (liftedReadTimeout == null)
+      return;
+    final Integer timeout = liftedReadTimeout;
+    liftedReadTimeout = null;
+    try {
+      connection.setOption(Options.READ_TIMEOUT, timeout);
+    } catch (final IOException | RuntimeException e) {
+      LogManager.instance().log(this, Level.FINE, "Cannot restore the read timeout of the connection of query %s: %s",
+          runningQuery.getId(), e.getMessage());
+    }
   }
 
   /** Runs on the connection's I/O thread when the client sent something or closed the connection. */
@@ -146,6 +194,8 @@ final class HttpClientDisconnectWatch implements ChannelListener<ConduitStreamSo
         if (channel.getReadListener() == this)
           socket.suspendReads();
       }
+      // With reads suspended, and before Undertow resumes them for the next request: it reads the timeout as it resumes
+      restoreReadTimeout();
     }
     // Outside the monitor, and still exact: nothing but this watch and Undertow sets the listener, and Undertow sets it
     // only when the exchange completes, which disarms this watch first

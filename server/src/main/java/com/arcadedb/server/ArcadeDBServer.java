@@ -440,6 +440,16 @@ public class ArcadeDBServer {
   }
 
   /**
+   * The body of the server start event. Formatted with {@link Locale#ROOT} (issue #9968): the event log is served to any
+   * REST client by {@code GET /api/v1/server}, and under the JVM default locale the CPU count came out in the locale's own
+   * digits, so two nodes of one cluster reported a different string.
+   */
+  public static String startedMessage(final String mode, final int cpus, final long maxMemory) {
+    return String.format(Locale.ROOT, "ArcadeDB Server started in '%s' mode (CPUs=%d MAXRAM=%s)", mode, cpus,
+        FileUtils.getSizeAsString(maxMemory));
+  }
+
+  /**
    * Whether this server runs in {@code production} mode, where an error answered to a client CONCEALS the free-form
    * internal detail - a cause chain that can carry file paths, engine internals and schema names - and reports only
    * the bounded, structured parts a driver needs to act: the status/class, the leader address, the duplicated-key
@@ -718,8 +728,7 @@ public class ArcadeDBServer {
 
     final String mode = getMode();
 
-    final String msg = "ArcadeDB Server started in '%s' mode (CPUs=%d MAXRAM=%s)".formatted(mode,
-        Runtime.getRuntime().availableProcessors(), FileUtils.getSizeAsString(Runtime.getRuntime().maxMemory()));
+    final String msg = startedMessage(mode, Runtime.getRuntime().availableProcessors(), Runtime.getRuntime().maxMemory());
     LogManager.instance().log(this, Level.INFO, msg);
 
     getEventLog().reportEvent(ServerEventLog.EVENT_TYPE.INFO, "Server", null, msg);
