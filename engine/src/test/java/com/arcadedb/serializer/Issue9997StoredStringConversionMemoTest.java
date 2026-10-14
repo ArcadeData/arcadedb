@@ -19,14 +19,21 @@
 package com.arcadedb.serializer;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.Document;
+import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.RID;
 import com.arcadedb.query.opencypher.temporal.CypherDuration;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.Type;
+import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
 
 import java.time.LocalTime;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -197,6 +204,44 @@ class Issue9997StoredStringConversionMemoTest extends TestHelper {
     final Result r = first("SELECT slot.at AS at, slot.note AS note FROM Agenda");
     assertThat(r.<Object>getProperty("at")).isEqualTo(LocalTime.of(10, 15, 30));
     assertThat(r.<Object>getProperty("note")).isEqualTo("10:15:30");
+  }
+
+  /**
+   * deserializeProperties() now tells only a value that can hold an embedded document where it lives: an embedded
+   * document nested in a list and in a map, read through the whole-record path (toJSON() and a SELECT of the
+   * collections), must still find its owner, and its own temporal property must still be converted.
+   */
+  @Test
+  void embeddedDocumentsInsideAListAndAMapReadThroughTheWholeRecordPath() {
+    database.getSchema().createDocumentType("Slot");
+    database.getSchema().createDocumentType("Planner");
+    final RID[] rid = new RID[1];
+    database.transaction(() -> {
+      final MutableDocument planner = database.newDocument("Planner");
+      planner.set("title", "10:15:30");
+      planner.set("slots", new ArrayList<>());
+      planner.newEmbeddedDocument("Slot", "slots").set("at", "10:15:30");
+      planner.newEmbeddedDocument("Slot", "byName", "morning").set("at", "11:00");
+      rid[0] = planner.save().getIdentity();
+    });
+    // DECLARED AFTER THE VALUES WERE STORED AS Strings
+    database.getSchema().getType("Slot").createProperty("at", Type.LOCAL_TIME);
+
+    final Document reloaded = database.lookupByRID(rid[0], true).asDocument();
+    final JSONObject json = reloaded.toJSON();
+    assertThat(json.getString("title")).isEqualTo("10:15:30");
+    assertThat(json.getJSONArray("slots").getJSONObject(0).getString("@type")).isEqualTo("Slot");
+    assertThat(json.getJSONObject("byName").getJSONObject("morning").getString("@type")).isEqualTo("Slot");
+
+    final List<?> slots = reloaded.getList("slots");
+    assertThat(((Document) slots.getFirst()).get("at")).isEqualTo(LocalTime.of(10, 15, 30));
+    final Map<String, ?> byName = reloaded.getMap("byName");
+    assertThat(((Document) byName.get("morning")).get("at")).isEqualTo(LocalTime.of(11, 0));
+
+    final Result r = first("SELECT slots, byName, title FROM Planner");
+    assertThat(r.<Object>getProperty("title")).isEqualTo("10:15:30");
+    assertThat(((Document) r.<List<?>>getProperty("slots").getFirst()).get("at")).isEqualTo(LocalTime.of(10, 15, 30));
+    assertThat(((Document) r.<Map<String, ?>>getProperty("byName").get("morning")).get("at")).isEqualTo(LocalTime.of(11, 0));
   }
 
   private boolean converts(final String typeName) {
