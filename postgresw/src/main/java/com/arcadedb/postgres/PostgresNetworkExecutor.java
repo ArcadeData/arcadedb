@@ -79,6 +79,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.HAReplicatedDatabase;
 import com.arcadedb.server.monitor.QueryProfile;
 import com.arcadedb.server.monitor.ServerQueryProfiler;
 import com.arcadedb.server.network.PreAuthConnectionGate;
@@ -847,10 +848,48 @@ public class PostgresNetworkExecutor extends Thread {
     final Object[] parameters = portal.parameterValues != null ? portal.parameterValues.toArray() : new Object[0];
     final long metricsStart = QueryMetricsRecorder.Holder.startNanos();
     try {
-      return portal.sqlStatement.execute(database, parameters, createCommandContext());
+      return executeParsed(portal.sqlStatement, portal.language, portal.query, parameters);
     } finally {
       QueryMetricsRecorder.Holder.record(metricsStart, database.getName(), portal.language, "command");
     }
+  }
+
+  /**
+   * Runs a statement the extended protocol already parsed. Locally through the parsed statement, which saves parsing
+   * it again, except on an HA follower for a statement the leader must run: that one goes through
+   * {@code database.command(...)}, whose replicated implementation forwards it to the leader exactly as it does for
+   * the same text sent over the simple query protocol (issue #9954). Executed here instead, a write committed through
+   * Raft from the follower and a schema change was refused by the follower's schema layer, so the same statement
+   * succeeded or failed on a follower depending only on the driver's query mode.
+   */
+  private ResultSet executeParsed(final Statement statement, final String language, final String text, final Object[] parameters) {
+    if (mustForwardToTheLeader(statement))
+      // The text is parsed again there, out of the engine's statement cache, a cost only a follower's write pays. The
+      // replicated command() re-checks leadership itself, so a node that became the leader meanwhile runs it locally.
+      return database.command(language, text, server.getConfiguration(), parameters);
+    return statement.execute(database, parameters, createCommandContext());
+  }
+
+  /**
+   * A DDL statement is always forwarded from a follower: the schema is non-transactional and only the leader may change
+   * it. A non-idempotent statement is forwarded only outside an explicit transaction block. Inside one it runs in the
+   * follower's own transaction, which commits through Raft at COMMIT, because the forward commits it on the leader as a
+   * request of its own: a ROLLBACK would not undo it and the block would not be atomic (issue #10040, where the simple
+   * protocol still does that).
+   */
+  private boolean mustForwardToTheLeader(final Statement statement) {
+    if (!statement.isDDL() && (statement.isIdempotent() || explicitTransactionStarted))
+      return false;
+    return isHAFollower();
+  }
+
+  /** True when this connection's database is replicated and this server is not its leader. */
+  private boolean isHAFollower() {
+    if (database instanceof HAReplicatedDatabase replicated)
+      return !replicated.isLeader();
+    if (database instanceof DatabaseInternal internal && internal.getWrappedDatabaseInstance() instanceof HAReplicatedDatabase replicated)
+      return !replicated.isLeader();
+    return false;
   }
 
   /**
@@ -2820,7 +2859,7 @@ public class PostgresNetworkExecutor extends Thread {
     if (parsed != null) {
       final long metricsStart = QueryMetricsRecorder.Holder.startNanos();
       try {
-        resultSet = parsed.execute(database, parameters, createCommandContext());
+        resultSet = executeParsed(parsed, language, queryText, parameters);
       } finally {
         QueryMetricsRecorder.Holder.record(metricsStart, database.getName(), language, "command");
       }
