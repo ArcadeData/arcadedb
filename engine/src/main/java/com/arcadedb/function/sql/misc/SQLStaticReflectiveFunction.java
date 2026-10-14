@@ -114,10 +114,11 @@ public class SQLStaticReflectiveFunction extends SQLFunctionAbstract {
     final Method method = pickMethod(params);
 
     if (method == null) {
-      // A null where every overload of this arity wants a primitive is SQL's NULL in, NULL out - math_abs(null) is
-      // null - not a missing function. It used to be invoked anyway and fail in Method.invoke, logging a SEVERE line
-      // per row on its way to the same null.
-      if (hasOverloadOfArity(params.length) && containsNull(params))
+      // A null where the only overloads its other arguments fit want a primitive is SQL's NULL in, NULL out -
+      // math_abs(null) is null - not a missing function. It used to be invoked anyway and fail in Method.invoke,
+      // logging a SEVERE line per row on its way to the same null. A non-null argument no overload takes is still
+      // reported, null or no null beside it.
+      if (containsNull(params) && hasOverloadMatchingNonNullArguments(params))
         return null;
       throw new CommandParsingException("Unable to find a function for " + name + paramsPrettyPrint.get());
     }
@@ -161,10 +162,23 @@ public class SQLStaticReflectiveFunction extends SQLFunctionAbstract {
     return null;
   }
 
-  private boolean hasOverloadOfArity(final int arity) {
-    for (final Method m : methods)
-      if (m.getParameterCount() == arity)
+  /** Whether an overload of the right arity accepts every non-null argument, whatever its null positions want. */
+  private boolean hasOverloadMatchingNonNullArguments(final Object[] params) {
+    for (final Method m : methods) {
+      final Class<?>[] parameterTypes = m.getParameterTypes();
+      if (parameterTypes.length != params.length)
+        continue;
+
+      boolean match = true;
+      for (int i = 0; i < parameterTypes.length; i++)
+        if (params[i] != null && !isAssignable(params[i].getClass(), parameterTypes[i])) {
+          match = false;
+          break;
+        }
+
+      if (match)
         return true;
+    }
     return false;
   }
 
