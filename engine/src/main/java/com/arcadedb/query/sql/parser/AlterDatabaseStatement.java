@@ -154,14 +154,11 @@ public class AlterDatabaseStatement extends DDLStatement {
                   resolvedClass :
                   db.getSerializer().getDateTimeImplementation(), db.getSchema().getDateTimeFormat(),
               db.getSchema().getDateFormat());
-          db.getConfiguration().setValue(cfg, value);
-          applyDatabaseSideEffect(db, cfg, resolvedClass);
+          putInForce(db, cfg, value, resolvedClass, previousValue);
           return null;
         });
-      } else {
-        db.getConfiguration().setValue(cfg, finalValue);
-        applyDatabaseSideEffect(db, cfg, resolvedClass);
-      }
+      } else
+        putInForce(db, cfg, finalValue, resolvedClass, previousValue);
 
       // The stored value is what the setting is now worth, which is not always what was asked for: a callback
       // reached through the overlay may normalise it (arcadedb.maxPageRAM clamps a page cache larger than 80%
@@ -199,6 +196,21 @@ public class AlterDatabaseStatement extends DDLStatement {
     result.setProperty("oldValue", oldValue);
     result.setProperty("newValue", finalValue);
     return result;
+  }
+
+  /**
+   * Stores the setting and applies its effect on this database. A side effect that fails puts the previous value back, so
+   * the configuration never names a setting this database is not running with.
+   */
+  private void putInForce(final DatabaseInternal db, final GlobalConfiguration cfg, final Object value,
+      final Class<?> resolvedClass, final Object previousValue) {
+    db.getConfiguration().setValue(cfg, value);
+    try {
+      applyDatabaseSideEffect(db, cfg, resolvedClass);
+    } catch (final RuntimeException | Error e) {
+      restoreSetting(db, cfg.getKey(), previousValue);
+      throw e;
+    }
   }
 
   /**
