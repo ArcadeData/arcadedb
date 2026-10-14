@@ -160,5 +160,27 @@ class Issue10051FullTextCorpusCountersIT extends BaseRaftHATest {
       assertThat(metadata(driftedFollower).getTotalDocs()).isEqualTo(leaderDocs);
       assertThat(metadata(driftedFollower).getSumDocLength()).isEqualTo(leaderLength);
     });
+
+    // A rewrite committed inside a schema session travels in the SCHEMA_ENTRY, which carries no corpus deltas: it keeps the number of
+    // documents and changes only their token-length total, which a count cannot tell, so the followers must adopt the leader's counters
+    final long lengthBeforeRewrite = metadata(leaderIndex).getSumDocLength();
+    leader.getSchema().bulkChange(() -> leader.transaction(() -> {
+      try (final ResultSet rs = leader.query("sql", "SELECT FROM Doc LIMIT 1")) {
+        rs.next().getRecord().get().asDocument().modify().set("content", "alpha beta gamma delta epsilon zeta eta theta").save();
+      }
+    }));
+    for (int i = 0; i < getServerCount(); i++)
+      waitForReplicationIsCompleted(i);
+
+    final long leaderLengthAfter = metadata(leaderIndex).getSumDocLength();
+    assertThat(leaderLengthAfter).as("the leader counted the rewrite").isNotEqualTo(lengthBeforeRewrite);
+    assertThat(metadata(leaderIndex).getTotalDocs()).isEqualTo(leaderDocs);
+    testEachServer(serverIndex -> Awaitility.await().atMost(30, TimeUnit.SECONDS).pollInterval(200, TimeUnit.MILLISECONDS)
+        .untilAsserted(() -> {
+          assertThat(metadata(serverIndex).getTotalDocs()).as("totalDocs on server %d after the rewrite", serverIndex)
+              .isEqualTo(leaderDocs);
+          assertThat(metadata(serverIndex).getSumDocLength()).as("sumDocLength on server %d after the rewrite", serverIndex)
+              .isEqualTo(leaderLengthAfter);
+        }));
   }
 }
