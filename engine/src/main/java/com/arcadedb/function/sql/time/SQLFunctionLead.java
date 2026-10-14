@@ -23,7 +23,6 @@ import com.arcadedb.function.sql.SQLAggregatedFunction;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.List;
 
 /**
@@ -96,12 +95,7 @@ public class SQLFunctionLead extends SQLAggregatedFunction {
 
     // The timestamp is optional (getMinArgs() == 1), so rows without one must not NPE the comparator: the sort is
     // stable, so they keep their arrival order at the end, which is the only order they have (issue #6388).
-    try {
-      pairs.sort(Comparator.comparing(p -> (Comparable) p[1], Comparator.nullsLast(Comparator.naturalOrder())));
-    } catch (final ClassCastException e) {
-      throw new IllegalArgumentException(
-          NAME + "() cannot order the rows: the <timestamp> values are not mutually comparable", e);
-    }
+    WindowRows.sortBy(NAME, pairs, 1, "<timestamp>");
 
     final int size = pairs.size();
     final List<Object> result = new ArrayList<>(size);
