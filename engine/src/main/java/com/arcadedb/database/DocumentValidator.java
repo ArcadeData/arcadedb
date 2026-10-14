@@ -36,7 +36,6 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Date;
-import java.util.EnumMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -516,13 +515,6 @@ public class DocumentValidator {
     // patterns are checked, and the schema's format setters pass the implementations in force, so only the bounds are
     final boolean formatsChanged = !dateTimeFormat.equals(schema.getDateTimeFormat()) || !dateFormat.equals(
         schema.getDateFormat());
-    final Map<Type, Class<?>> heldAfter = new EnumMap<>(Type.class);
-    heldAfter.put(Type.DATE, dateImplementation);
-    heldAfter.put(Type.DATETIME, dateTimeImplementation);
-    heldAfter.put(Type.DATETIME_SECOND, dateTimeImplementation);
-    final Class<?> subMillis = BinarySerializer.subMillisDateTimeImplementation(dateTimeImplementation);
-    heldAfter.put(Type.DATETIME_MICROS, subMillis);
-    heldAfter.put(Type.DATETIME_NANOS, subMillis);
 
     // one deadline for the whole walk, which runs under the write lock: however many properties carry a pattern, the lock
     // is held for one search budget at most, and a pattern the budget did not settle is only warned about
@@ -530,7 +522,7 @@ public class DocumentValidator {
     final List<String> broken = new ArrayList<>();
     for (final DocumentType type : schema.getTypes())
       for (final Property p : type.getProperties()) {
-        final Class<?> held = heldAfter.get(p.getType());
+        final Class<?> held = heldClassUnder(p.getType(), dateImplementation, dateTimeImplementation);
         if (held == null)
           continue;
         final String named = type.getName() + "." + p.getName();
@@ -558,6 +550,21 @@ public class DocumentValidator {
       throw new CommandExecutionException("Cannot set " + setting + ": " + (broken.size() == 1 ? "a property" : broken.size()
           + " properties") + " would be left with a constraint no value can satisfy, and every write of it would fail. "
           + String.join("; ", broken) + ". Change or remove the constraint first (ALTER PROPERTY ... REGEXP null, MIN null, MAX null)");
+  }
+
+  /**
+   * The class a value of {@code type} is held as when DATE is held as {@code dateImplementation} and DATETIME as
+   * {@code dateTimeImplementation}, or null for a type those two settings do not decide. The one place the mapping is
+   * written for the checks of a change of them, mirroring {@link Type#getJavaImplementation}; a test holds the two to
+   * agree on every type.
+   */
+  static Class<?> heldClassUnder(final Type type, final Class<?> dateImplementation, final Class<?> dateTimeImplementation) {
+    return switch (type) {
+      case DATE -> dateImplementation;
+      case DATETIME, DATETIME_SECOND -> dateTimeImplementation;
+      case DATETIME_MICROS, DATETIME_NANOS -> BinarySerializer.subMillisDateTimeImplementation(dateTimeImplementation);
+      default -> null;
+    };
   }
 
   /** Adds to {@code broken} a bound the formats in force read and the new ones would not. */
