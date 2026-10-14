@@ -217,6 +217,7 @@ public interface IndexInternal extends Index {
    * thread and concurrently with searches, and a no-op where there is nothing to load.
    */
   default void warmUp() {
+    // No-op: an index with nothing resident to load has nothing to warm.
   }
 
   /**
