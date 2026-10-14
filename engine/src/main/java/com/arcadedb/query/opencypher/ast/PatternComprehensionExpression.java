@@ -106,7 +106,8 @@ public class PatternComprehensionExpression implements Expression {
         final ResultInternal pathResult = new ResultInternal();
         for (final String prop : currentResult.getPropertyNames())
           pathResult.setProperty(prop, currentResult.getProperty(prop));
-        pathResult.setProperty(pathVariable, new ArrayList<>(pathElements));
+        // a TraversalPath, the value every other pattern binds, so the path functions read it (issue #9913)
+        pathResult.setProperty(pathVariable, TraversalPath.ofWalk(pathElements));
         evalResult = pathResult;
       }
       resultList.add(OpenCypherQueryEngine.getExpressionEvaluator().evaluate(mapExpression, evalResult, context));
