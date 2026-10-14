@@ -113,6 +113,42 @@ class Issue10040HttpSessionOnFollowerIT extends BaseRaftHATest {
     }
   }
 
+  /**
+   * A script that writes, and carries no DDL, joins the session's transaction like a single statement: the leader runs
+   * every script it is forwarded, so this is the path that changed most. Rolled back it leaves nothing; committed, every
+   * node holds all of its writes.
+   */
+  @Test
+  @Timeout(180)
+  void aWritingScriptInsideASessionOnAFollowerJoinsTheTransaction() throws Exception {
+    final int leader = requireLeaderIndex();
+    getServerDatabase(leader, getDatabaseName()).command("sql", "CREATE DOCUMENT TYPE " + TYPE + " IF NOT EXISTS");
+    waitForAllServers();
+    final int follower = firstFollowerOf(leader);
+
+    final String script = "INSERT INTO " + TYPE + " SET name = '%s'; INSERT INTO " + TYPE + " SET name = '%s';";
+
+    String session = begin(follower);
+    script(follower, session, script.formatted("srb", "srb"));
+    end(follower, session, "rollback");
+
+    session = begin(follower);
+    script(follower, session, script.formatted("sok", "sok"));
+    end(follower, session, "commit");
+
+    waitForAllServers();
+    for (int i = 0; i < getServerCount(); i++) {
+      assertThat(count(i, "srb")).as("server %d must hold nothing of the rolled back script", i).isZero();
+      assertThat(count(i, "sok")).as("server %d must hold every write of the committed script", i).isEqualTo(2L);
+    }
+  }
+
+  private void script(final int serverIndex, final String session, final String script) throws Exception {
+    final String body = new JSONObject().put("language", "sqlscript").put("command", script).toString();
+    final HttpResponse<String> response = post(serverIndex, "/api/v1/command/" + getDatabaseName(), body, session);
+    assertThat(response.statusCode()).as("script: %s", response.body()).isEqualTo(200);
+  }
+
   private long count(final int serverIndex, final String name) {
     final Database db = getServerDatabase(serverIndex, getDatabaseName());
     try (final ResultSet rs = db.query("sql", "SELECT count(@rid) AS c FROM " + TYPE + " WHERE name = ?", name)) {
