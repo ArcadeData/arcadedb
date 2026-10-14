@@ -28,7 +28,10 @@ def db(temp_db_path):
     database.command("sql", "CREATE DOCUMENT TYPE R")
     yield database
     # a failed assertion can leave levels open, and drop() refuses inside a transaction
-    database._java_db.rollbackAllNested()
+    try:
+        database._java_db.rollbackAllNested()
+    except Exception:  # a teardown failure must not hide the test's own
+        pass
     database.drop()
 
 
@@ -139,6 +142,25 @@ class TestRunInTransactionBeginHygiene:
         db.commit()
         assert _count(db) == 1
 
+    def test_a_failed_nested_commit_leaves_the_callers_transaction_open(self, db):
+        # LocalDatabase.commit() pops the nested level in its finally, failed
+        # commit or not; the level left on top is the caller's, not this call's
+        # to roll back (#9970)
+        db.command("sql", "CREATE PROPERTY R.k STRING")
+        db.command("sql", "CREATE INDEX ON R (k) UNIQUE")
+        db.run_in_transaction(lambda: db.new_document("R").set("k", "dup").save())
+
+        db.begin()
+        db.new_document("R").set("k", "caller").save()
+
+        with pytest.raises(ArcadeDBError):
+            db.run_in_transaction(lambda: db.new_document("R").set("k", "dup").save())
+
+        assert _depth(db) == 1
+        assert db.is_transaction_active() is True
+        db.commit()
+        assert _count(db) == 2
+
     def test_the_normal_path_still_commits_and_rolls_back(self, db):
         assert db.run_in_transaction(lambda: db.new_document("R").set("k", 1).save())
         assert db.is_transaction_active() is False
@@ -210,6 +232,23 @@ class TestTransactionContextBeginHygiene:
             with db.transaction():
                 pass
         monkeypatch.undo()
+
+        assert _depth(db) == 1
+        assert db.is_transaction_active() is True
+        db.commit()
+        assert _count(db) == 1
+
+    def test_a_failing_block_inside_a_callers_transaction_rolls_back_its_level(
+        self, db
+    ):
+        # __exit__ is unchanged: it rolls back the level __enter__ opened
+        db.begin()
+        db.new_document("R").set("k", "caller").save()
+
+        with pytest.raises(ValueError):
+            with db.transaction():
+                db.new_document("R").set("k", "nested").save()
+                raise ValueError("boom")
 
         assert _depth(db) == 1
         assert db.is_transaction_active() is True
