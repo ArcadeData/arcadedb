@@ -1997,7 +1997,9 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
       scheduler.shutdownNow();
     }
 
-    // Prefer COMMITTED summary; else aggregate ACKs
+    // Prefer COMMITTED summary; else aggregate ACKs. The fallback keeps only the acks' counters, not their errors (a
+    // NOT_LEADER error's leader_address among them, issue #9930); it is not expected to be reached, because the server
+    // answers a failed COMMIT with onError and completes the stream only after COMMITTED
     final InsertSummary finalSummary = committed.get();
     if (finalSummary != null)
       return finalSummary;
