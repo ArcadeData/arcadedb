@@ -444,16 +444,13 @@ class Database:
 
         duplicated_key_retried = False
         for attempt in range(retries + 1):
-            # A transaction the caller already holds is not this call's to roll
-            # back when begin() refuses; one opened here is (#9813). Once begin()
-            # has returned, the transaction at the top is this call's own (a
-            # nested level when the caller holds one), so a failure of fn rolls it
-            # back exactly as before. Accepted gap: with a caller transaction open,
-            # an interrupt landing after begin() pushed its nested level but before
-            # `begun` is set leaves that level open - a window of one statement,
-            # against the full call that the guard above closed.
-            was_active = self.is_transaction_active()
-            begun = False
+            # What this call owns is decided by the transaction stack as it was
+            # before begin(), not by whether begin() returned (#9970): inside a
+            # caller's transaction begin() pushes a NESTED level, and an
+            # interrupt after that push but before begin() returns must pop it,
+            # while a begin() that refused must leave the caller's level alone
+            # (#9813). See _end_transactions_opened_since.
+            mark = self._transaction_stack_mark()
             tx_at_start, commits_at_start = None, 0
             try:
                 # begin() and the commit mark inside the try (#9813): a ^C
@@ -461,7 +458,6 @@ class Database:
                 # returned used to leave it open for the next caller on this
                 # thread, because the handler below was not yet in place.
                 self.begin()
-                begun = True
                 tx_at_start, commits_at_start = self._transaction_commit_mark()
                 result = fn()
                 self.commit()
@@ -475,8 +471,7 @@ class Database:
                 # must KeyboardInterrupt/SystemExit, which `except Exception`
                 # does not catch (code review on #7108).
                 try:
-                    if (begun or not was_active) and self.is_transaction_active():
-                        self.rollback()
+                    self._end_transactions_opened_since(mark)
                 except Exception:  # nosec B110 - best-effort rollback before retry
                     pass
                 if attempt >= retries or not isinstance(e, Exception):
@@ -499,6 +494,34 @@ class Database:
                 if self._partially_committed(tx_at_start, commits_at_start):
                     raise
                 _time.sleep(max(backoff_s * (attempt + 1), retry_after_ms / 1000.0))
+
+    def _transaction_stack_mark(self):
+        """Whether a transaction is active, and the nesting depth, before a begin().
+
+        The pair is what _end_transactions_opened_since needs to tell the levels a
+        begin() pushed from the ones the caller already held.
+        """
+        return self.is_transaction_active(), self._java_db.getNestedTransactions()
+
+    def _end_transactions_opened_since(self, mark):
+        """Roll back every transaction level opened since ``mark``, and no other.
+
+        LocalDatabase.begin() reuses the base context when no transaction is
+        active, and PUSHES a nested level when one is. So a level above the
+        marked depth was pushed since the mark (a nested begin, interrupted or
+        not), and an active transaction where none was active was opened since
+        the mark. A level the caller held at the mark is theirs, whether begin()
+        refused (#9813) or pushed and was interrupted before it returned (#9970).
+        """
+        was_active, depth_before = mark
+        # bounded by the levels found now, so a rollback that pops nothing
+        # cannot loop
+        for _ in range(self._java_db.getNestedTransactions() - depth_before):
+            if not self.is_transaction_active():
+                break
+            self.rollback()
+        if not was_active and self.is_transaction_active():
+            self.rollback()
 
     def _transaction_commit_mark(self):
         """The current transaction and its commit count, for _partially_committed."""
