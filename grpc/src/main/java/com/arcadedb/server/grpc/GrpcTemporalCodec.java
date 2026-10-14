@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.grpc;
 
+import com.arcadedb.log.LogManager;
 import com.google.protobuf.Timestamp;
 
 import java.time.Instant;
@@ -30,6 +31,7 @@ import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.util.Date;
+import java.util.logging.Level;
 
 /**
  * The one encoder of {@code java.time} values onto a {@link GrpcValue}, shared by the server's two encoders
@@ -98,6 +100,9 @@ public final class GrpcTemporalCodec {
         default -> text;
       };
     } catch (final DateTimeParseException e) {
+      // Logged so that a typed column rejecting the string later can be traced back to the tag that did not parse
+      LogManager.instance().log(GrpcTemporalCodec.class, Level.FINE, "gRPC value tagged '%s' is not a valid %s, kept as text: %s",
+          logicalType, logicalType, e.getMessage());
       return text;
     }
   }

@@ -80,6 +80,19 @@ class Issue9969GrpcZonedTemporalWireTest {
   }
 
   @Test
+  void offsetTimeAtUtcAndAtANegativeOffsetRoundTrip() {
+    final OffsetTime utc = OffsetTime.of(12, 0, 0, 0, ZoneOffset.UTC);
+    final GrpcValue encodedUtc = GrpcTypeConverter.toGrpcValue(utc);
+    assertThat(encodedUtc.getStringValue()).isEqualTo("12:00:00Z");
+    assertThat(GrpcTypeConverter.fromGrpcValue(encodedUtc)).isEqualTo(utc);
+
+    final OffsetTime negative = OffsetTime.of(23, 59, 0, 1, ZoneOffset.ofHoursMinutes(-9, -30));
+    final GrpcValue encodedNegative = GrpcTypeConverter.toGrpcValue(negative);
+    assertThat(encodedNegative.getStringValue()).isEqualTo("23:59:00.000000001-09:30");
+    assertThat(GrpcTypeConverter.fromGrpcValue(encodedNegative)).isEqualTo(negative);
+  }
+
+  @Test
   void localTimeArrivesTyped() {
     final GrpcValue encoded = GrpcTypeConverter.toGrpcValue(LOCAL_TIME);
 
