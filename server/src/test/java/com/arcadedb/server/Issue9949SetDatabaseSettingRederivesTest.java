@@ -23,9 +23,11 @@ import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Type;
+import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
 
+import java.io.File;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.Date;
@@ -104,6 +106,9 @@ class Issue9949SetDatabaseSettingRederivesTest {
 
     assertThat(database.getSerializer().getDateImplementation()).isEqualTo(LocalDate.class);
     assertThat(database.getConfiguration().hasValue(GlobalConfiguration.DATE_IMPLEMENTATION.getKey())).isFalse();
+    final File configurationFile = new File(database.getDatabasePath(), "configuration.json");
+    assertThat(!configurationFile.exists() || !FileUtils.readFileAsString(configurationFile).contains("dateImplementation"))
+        .as("a refused change must not reach configuration.json").isTrue();
     database.transaction(() -> database.command("sql", "INSERT INTO R1 SET d = date('2024-02-20','yyyy-MM-dd')").close());
 
     // once the pattern is gone, the change goes through
