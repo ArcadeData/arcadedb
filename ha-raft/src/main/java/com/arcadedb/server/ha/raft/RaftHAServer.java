@@ -376,8 +376,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   // per MISDIRECTED_RECOVERY_INTERVAL_MS rather than one per refused RPC.
   private final    AtomicLong                misdirectedRaftRequestsRefused = new AtomicLong();
   private final    Map<RaftPeerId, Long>     misdirectedRecoveryQueuedAt    = new ConcurrentHashMap<>();
-  // Read and written by the single channel-recovery worker only; concurrent so that stays safe if the pool ever grows.
   private final    Map<RaftPeerId, Long>     misdirectedWarnedAt            = new ConcurrentHashMap<>();
+  private final    AtomicLong                misdirectedChannelResets       = new AtomicLong();
+  // The one throttling slot every id outside the cluster shares, so a sender cannot grow the maps above.
+  private static final RaftPeerId            UNKNOWN_MISDIRECTED_PEER       = RaftPeerId.valueOf("<not-a-peer>");
   // Short enough that the self-dial channel is rebuilt soon after the resolver changes its answer, long enough that the
   // single channel-recovery worker, whose channel close can block for seconds, is never kept busy by it.
   static final     long                      MISDIRECTED_RECOVERY_INTERVAL_MS = 5_000L;
@@ -960,42 +962,46 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     if (shutdownRequested)
       return;
 
-    final long now = System.currentTimeMillis();
-    final boolean[] claimed = { false };
-    misdirectedRecoveryQueuedAt.compute(addressedTo, (peer, last) -> {
-      if (last != null && now - last < MISDIRECTED_RECOVERY_INTERVAL_MS)
-        return last;
-      claimed[0] = true;
-      return now;
-    });
-    if (!claimed[0])
+    // The id comes off the wire, so only a member of this cluster gets a slot of its own: anything else shares one,
+    // which keeps both throttling maps bounded by the cluster size whatever a sender writes in the request.
+    final boolean member = isKnownPeer(addressedTo);
+    final RaftPeerId slot = member ? addressedTo : UNKNOWN_MISDIRECTED_PEER;
+    if (!claimThrottleSlot(misdirectedRecoveryQueuedAt, slot, System.currentTimeMillis(),
+        MISDIRECTED_RECOVERY_INTERVAL_MS))
       return;
 
-    final boolean selfDial = localPeerId.equals(requestor);
+    // Only a member has a channel to repair: this node never dials an id outside its own configuration.
+    final boolean selfDial = member && localPeerId.equals(requestor);
+    final String sender = requestor != null ? "'" + requestor + "'" : "<unknown>";
     try {
       channelRecoveryExecutor.execute(() -> {
-        final Long lastWarned = misdirectedWarnedAt.get(addressedTo);
-        final Level level;
-        if (lastWarned == null || now - lastWarned >= MISDIRECTED_WARNING_INTERVAL_MS) {
-          misdirectedWarnedAt.put(addressedTo, now);
-          level = Level.WARNING;
-        } else
-          level = Level.FINE;
+        // Read here rather than when the task was queued: the worker may have been busy closing another channel.
+        final Level level = claimThrottleSlot(misdirectedWarnedAt, slot, System.currentTimeMillis(),
+            MISDIRECTED_WARNING_INTERVAL_MS) ? Level.WARNING : Level.FINE;
+
+        if (!member) {
+          LogManager.instance().log(this, level,
+              "Refused a Raft %s from %s addressed to '%s', which is not a peer of this cluster (issue #10016). Check "
+                  + "that node's %s.", rpc, sender, addressedTo, GlobalConfiguration.HA_SERVER_LIST.getKey());
+          return;
+        }
 
         final String resolved = resolvePeerAddresses(addressedTo);
         if (!selfDial) {
           LogManager.instance().log(this, level,
-              "Refused a Raft %s from peer '%s' addressed to peer '%s' (issue #10016): the address '%s' holds for '%s' "
-                  + "leads to this node instead. A node never answers for another peer, so '%s' cannot reach '%s' "
-                  + "until that address is fixed on '%s' (here '%s' resolves to %s). Check the DNS and %s.",
-              rpc, requestor, addressedTo, requestor, addressedTo, requestor, addressedTo, requestor, addressedTo,
-              resolved, GlobalConfiguration.HA_SERVER_LIST.getKey());
+              "Refused a Raft %s from peer %s addressed to peer '%s' (issue #10016): the address %s holds for '%s' "
+                  + "leads to this node instead. A node never answers for another peer, so %s cannot reach '%s' "
+                  + "until that address is fixed on %s (here '%s' resolves to %s). Check the DNS and %s.",
+              rpc, sender, addressedTo, sender, addressedTo, sender, addressedTo, sender, addressedTo, resolved,
+              GlobalConfiguration.HA_SERVER_LIST.getKey());
           return;
         }
 
         final RaftServer server = raftServer;
         final boolean reset = server != null && !shutdownRequested
             && resetPeerAppenderChannel(server.getServerRpc(), addressedTo);
+        if (reset)
+          misdirectedChannelResets.incrementAndGet();
         LogManager.instance().log(this, level,
             "This node sent a Raft %s meant for peer '%s' to itself and refused it (issue #10016): the address of '%s' "
                 + "resolves to %s, which leads back to this node. %s Check the DNS and %s if this persists.",
@@ -1005,9 +1011,32 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
             GlobalConfiguration.HA_SERVER_LIST.getKey());
       });
     } catch (final RejectedExecutionException e) {
-      // Counted by the executor's policy. Free to drop: the next refused request after the interval queues it again.
-      misdirectedRecoveryQueuedAt.remove(addressedTo, now);
+      // Counted by the executor's policy. Free to drop: release the slot so the next refused request queues it again.
+      misdirectedRecoveryQueuedAt.remove(slot);
     }
+  }
+
+  /** Whether {@code peerId} is declared in the server list or a member of the live Raft configuration. */
+  private boolean isKnownPeer(final RaftPeerId peerId) {
+    return isPeerInConfig(raftGroup.getPeers(), peerId) || isPeerInConfig(getLivePeers(), peerId);
+  }
+
+  /**
+   * Claims {@code key}'s slot in a per-key throttle: true, and the slot stamped with {@code now}, when the slot was
+   * free or last stamped at least {@code intervalMs} ago; false while a claim inside the interval holds it. Lock-free,
+   * and exactly one of several concurrent callers wins a free slot.
+   */
+  static boolean claimThrottleSlot(final Map<RaftPeerId, Long> slots, final RaftPeerId key, final long now,
+      final long intervalMs) {
+    final Long last = slots.get(key);
+    if (last == null)
+      return slots.putIfAbsent(key, now) == null;
+    return now - last >= intervalMs && slots.replace(key, last, now);
+  }
+
+  /** How many channels a self-dialled Raft request has had reset (issue #10016). */
+  public long getMisdirectedChannelResets() {
+    return misdirectedChannelResets.get();
   }
 
   /**
