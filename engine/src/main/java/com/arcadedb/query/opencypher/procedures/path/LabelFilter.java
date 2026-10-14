@@ -24,7 +24,12 @@ import com.arcadedb.query.opencypher.procedures.ProcedureSchemaTypes;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.IdentityHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.StringJoiner;
 
 /**
  * The {@code labelFilter} of the {@code path.*} procedures, in APOC's syntax. Entries are separated by {@code |}, and each
@@ -170,6 +175,8 @@ final class LabelFilter {
 
     final DocumentType type = database.getSchema().getTypeByBucketId(vertexId.getBucketId());
     if (type == null)
+      // A RID naming a bucket no type owns: an edge left pointing into a bucket that was dropped. There is no node to
+      // report there, and the walk cannot go past it
       return Verdict.EXCLUDE_AND_PRUNE;
 
     final int stepIndex = (beginSequenceAtStart ? depth : depth - 1) % steps.length;
@@ -240,6 +247,10 @@ final class LabelFilter {
         if ("*".equals(names[i]))
           throw new IllegalArgumentException(
               procedureName + "(): label filter entry '" + labels + "' uses '*' inside a compound label: '*' stands alone");
+        final char last = names[i].charAt(names[i].length() - 1);
+        if ((last == '>' || last == '<') && schema.getTypeOrNull(names[i]) == null)
+          throw new IllegalArgumentException(procedureName + "(): label filter entry '" + labels
+              + "' ends with a direction marker: a label filter's operator ('+', '-', '/' or '>') goes before the label");
       }
       ProcedureSchemaTypes.requireVertexTypes(procedureName, schema, names);
       return names;
