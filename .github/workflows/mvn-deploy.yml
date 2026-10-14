@@ -53,8 +53,14 @@ jobs:
           server-username: MAVEN_USERNAME
           server-password: MAVEN_PASSWORD
 
+      # -Dmaven.repository.credentialScope=id (#10023): Maven 3.10 binds the credentials of server
+      # 'central' to Maven Central's own origin (https://repo.maven.apache.org) and refuses to send them
+      # anywhere else, so the snapshot upload to https://central.sonatype.com reached the server with
+      # no credentials and got HTTP 401 on every run since the runner image moved from Maven 3.9.16 to
+      # 3.10.0 (2026-10-08). The flag restores the id-only matching every earlier deploy relied on, and
+      # is ignored by Maven 3.9. .github/scripts/check-deploy-credential-scope.py keeps it here.
       - name: Publish to OSS and Docker hub
-        run: mvn deploy -Pdeploy -Pdocker -pl !e2e  --batch-mode  --errors --fail-at-end --show-version  --file pom.xml -DskipTests
+        run: mvn deploy -Pdeploy -Pdocker -pl !e2e  --batch-mode  --errors --fail-at-end --show-version  --file pom.xml -DskipTests -Dmaven.repository.credentialScope=id
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           MAVEN_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}

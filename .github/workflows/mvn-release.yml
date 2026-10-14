@@ -62,10 +62,15 @@ jobs:
           mv server.json.tmp server.json
           cat server.json
 
+      # -Dmaven.repository.credentialScope=id (#10023): Maven 3.10 lets a repository transfer use the
+      # credentials of server 'central' only against Maven Central's own origin, which is what broke the
+      # snapshot deploy in mvn-deploy.yml. A release bundle goes through the Central Portal API instead,
+      # which reads the server entry directly, but any transfer to a Sonatype URL under that id would
+      # fail with the same 401 - and this workflow only runs on a release, where that costs the release.
       - name: Publish package
         run: |
           export MAVEN_OPTS="--add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.text=ALL-UNNAMED --add-opens=java.desktop/java.awt.font=ALL-UNNAMED"
-          mvn -Pdeploy,deploy-central -Pdocker  --batch-mode  --errors --fail-at-end --show-version  --file pom.xml -DskipTests=true -pl !e2e deploy
+          mvn -Pdeploy,deploy-central -Pdocker  --batch-mode  --errors --fail-at-end --show-version  --file pom.xml -DskipTests=true -pl !e2e -Dmaven.repository.credentialScope=id deploy
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           MAVEN_GPG_PASSPHRASE: ${{ secrets.MAVEN_GPG_PASSPHRASE }}

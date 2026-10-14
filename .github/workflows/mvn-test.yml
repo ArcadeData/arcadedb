@@ -81,6 +81,10 @@ jobs:
       # losing the release's assets. Run 33796693420 did exactly that to every 26.9.1 native binary.
       - name: Check release upload assets
         run: ./.github/scripts/check-release-upload-assets.py
+      # mvn-deploy.yml and mvn-release.yml run only on main and on a release, so a deploy that
+      # Maven refuses to authenticate is discovered by losing the snapshots or the release (#10023).
+      - name: Check deploy credential scope
+        run: ./.github/scripts/check-deploy-credential-scope.py
       - name: Check CI scripts
         run: ./.github/scripts/tests/test-ci-scripts.sh
       # The issue-automation scripts act on what a model returned after reading untrusted issue
