@@ -91,6 +91,11 @@ class ClauseDispatcher {
     throw new CommandParsingException("FeatureNotImplemented: the clause '" + CypherASTBuilder.getOriginalText(ctx) + "' is not supported");
   }
 
+  /** How many clause alternatives have a handler, for the test that keeps it in step with the grammar. */
+  int handlerCount() {
+    return handlers.size();
+  }
+
   private <T> void register(final Function<Cypher25Parser.ClauseContext, T> accessor, final ClauseHandler handler) {
     handlers.put(accessor, handler);
   }

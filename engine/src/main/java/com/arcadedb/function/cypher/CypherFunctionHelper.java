@@ -139,6 +139,22 @@ public final class CypherFunctionHelper {
   }
 
   /**
+   * True for a path value: a {@link TraversalPath}, or the list {@code shortestPath()} / {@code allShortestPaths()} bind,
+   * which alternates vertex and edge, starts and ends on a vertex and holds at least one edge (issue #9940). A plain list
+   * is not a path, even a list of vertices.
+   */
+  public static boolean isPathValue(final Object value) {
+    if (value instanceof TraversalPath)
+      return true;
+    if (!(value instanceof List<?> list) || list.size() < 3 || list.size() % 2 == 0)
+      return false;
+    for (int i = 0; i < list.size(); i++)
+      if (i % 2 == 0 ? !(list.get(i) instanceof Vertex) : !(list.get(i) instanceof Edge))
+        return false;
+    return true;
+  }
+
+  /**
    * Returns the Cypher name of the runtime type of a value: INTEGER, FLOAT, STRING, BOOLEAN, LIST&lt;ANY&gt;, MAP,
    * NODE, RELATIONSHIP, DATE, LOCAL DATETIME, ZONED DATETIME, LOCAL TIME, ZONED TIME, DURATION, POINT or NULL. Used to
    * phrase type errors (and by valueType()) with the vocabulary of the language instead of Java class names. A map is
@@ -157,6 +173,7 @@ public final class CypherFunctionHelper {
       case Boolean ignored -> "BOOLEAN";
       case Vertex ignored -> "NODE";
       case Edge ignored -> "RELATIONSHIP";
+      case List<?> list when isPathValue(list) -> "PATH";
       case List ignored -> "LIST<ANY>";
       case TraversalPath ignored -> "PATH";
       // the temporal values by Neo4j's names, whether Cypher built them or the Java API stored them (#9709)

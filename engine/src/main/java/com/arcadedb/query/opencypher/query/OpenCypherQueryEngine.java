@@ -103,6 +103,13 @@ public class OpenCypherQueryEngine implements QueryEngine {
   private static final DefaultSQLFunctionFactory SQL_FUNCTION_FACTORY = DefaultSQLFunctionFactory.getInstance();
   private static final CypherFunctionFactory CYPHER_FUNCTION_FACTORY = new CypherFunctionFactory(SQL_FUNCTION_FACTORY);
   private static final ExpressionEvaluator EXPRESSION_EVALUATOR = new ExpressionEvaluator(CYPHER_FUNCTION_FACTORY);
+  /**
+   * Plan-cache key prefixes of the branches of a conditional query: {@code "\0WHEN#<i>\0<query>"} and
+   * {@code "\0ELSE\0<query>"}. The NUL inside the key is refused by the lexer outside a string literal, so no query text
+   * that plans can be equal to a key.
+   */
+  private static final String WHEN_BRANCH_KEY_PREFIX = "\u0000WHEN#";
+  private static final String ELSE_BRANCH_KEY_PREFIX = "\u0000ELSE\u0000";
 
   /** Columns of {@code SHOW USERS} and {@code SHOW CURRENT USER}. */
   private static final List<String> USER_COLUMNS = List.of("user", "databases");
@@ -477,10 +484,10 @@ public class OpenCypherQueryEngine implements QueryEngine {
       final BasicCommandContext conditionContext = conditionContext(parameters);
       for (int i = 0; i < branches.size(); i++)
         if (isConditionTrue(conditional.getConditions().get(i), conditionContext))
-          return execute("\u0000WHEN#" + i + "\u0000" + queryString, branches.get(i), configuration, parameters, explain,
+          return execute(WHEN_BRANCH_KEY_PREFIX + i + "\u0000" + queryString, branches.get(i), configuration, parameters, explain,
               profile, timeExecution);
       if (conditional.getElseBranch() != null)
-        return execute("\u0000ELSE\u0000" + queryString, conditional.getElseBranch(), configuration, parameters, explain,
+        return execute(ELSE_BRANCH_KEY_PREFIX + queryString, conditional.getElseBranch(), configuration, parameters, explain,
             profile, timeExecution);
       return new InternalResultSet();
     }

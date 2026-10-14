@@ -229,6 +229,17 @@ class Issue9940GqlConstructsTest extends TestHelper {
   }
 
   @Test
+  void conditionalQueryConditionWithASubquery() {
+    // a subquery that names a variable is refused conservatively: the condition is checked to read parameters only
+    assertThatThrownBy(() -> rows("WHEN EXISTS { MATCH (n:Person) } THEN RETURN 1 AS r ELSE RETURN 2 AS r"))
+        .hasMessageContaining("the condition of a conditional query");
+    // an uncorrelated subquery reads no row, so it runs: it is not ignored
+    assertThat(column("WHEN COUNT { MATCH (:Person) } > 0 THEN RETURN 1 AS r ELSE RETURN 2 AS r", "r")).containsExactly(1L);
+    assertThat(column("WHEN COUNT { MATCH (:NoSuchType9940) } > 0 THEN RETURN 1 AS r ELSE RETURN 2 AS r", "r")).containsExactly(2L);
+    assertThat(column("WHEN EXISTS { MATCH (:Person) } THEN RETURN 1 AS r ELSE RETURN 2 AS r", "r")).containsExactly(1L);
+  }
+
+  @Test
   void conditionalQueryWithAWriteBranchAndNoReturnRuns() {
     database.transaction(() -> database.command("opencypher",
         "WHEN true THEN CREATE (:Marker9940b {v:'then'}) ELSE CREATE (:Marker9940b {v:'else'})"));
@@ -349,6 +360,21 @@ class Issue9940GqlConstructsTest extends TestHelper {
     assertThat(row.get("list")).isEqualTo(false);
   }
 
+  @Test
+  void everyKindOfPathIsTypedPath() {
+    // every path producer yields a path value, through COLLECT / UNWIND too
+    for (final String query : new String[] {
+        "MATCH p = (:Person {name:'A'})-[:KNOWS*1..3]->(:Person {name:'D'}) RETURN p IS TYPED PATH AS typed",
+        "MATCH p = shortestPath((:Person {name:'A'})-[:KNOWS*]->(:Person {name:'D'})) RETURN p IS TYPED PATH AS typed",
+        "MATCH p = allShortestPaths((:Person {name:'A'})-[:KNOWS*]->(:Person {name:'D'})) RETURN p IS TYPED PATH AS typed",
+        "MATCH p = (:Person {name:'A'})((x)-[:KNOWS]->(y)){1,3}(:Person {name:'D'}) RETURN p IS TYPED PATH AS typed",
+        "MATCH p = (:Person {name:'A'})-[:KNOWS]->() WITH collect(p) AS ps UNWIND ps AS q RETURN q IS TYPED PATH AS typed" }) {
+      final List<Object> typed = column(query, "typed");
+      assertThat(typed).as(query).isNotEmpty();
+      assertThat(typed).as(query).allMatch(Boolean.TRUE::equals);
+    }
+  }
+
   // 11. OFFSET written after LIMIT
 
   @Test
@@ -377,6 +403,11 @@ class Issue9940GqlConstructsTest extends TestHelper {
     // aggregation, with the trailing ORDER BY naming the grouping key, SKIP and LIMIT applied after the sort
     assertThat(column("MATCH (n:Item9940b) RETURN n.g AS g, count(*) AS c LIMIT 2 ORDER BY g SKIP 1", "g"))
         .containsExactly("y", "z");
+    // inside UNION branches and a CALL subquery, each RETURN pages its own rows
+    assertThat(column("MATCH (n:Item9940b) RETURN n.v AS v LIMIT 1 ORDER BY v DESC UNION ALL "
+        + "MATCH (n:Item9940b) RETURN n.v AS v LIMIT 1 ORDER BY v", "v")).containsExactly(4, 1);
+    assertThat(column("CALL { MATCH (n:Item9940b) RETURN n.v AS v LIMIT 2 ORDER BY v DESC SKIP 1 } RETURN v", "v"))
+        .containsExactly(3, 2);
     // aggregation, with the trailing ORDER BY naming the pre-aggregation expression the RETURN groups by
     assertThat(column("MATCH (n:Item9940b) RETURN n.g, count(*) AS c LIMIT 2 ORDER BY n.g", "n.g")).containsExactly("x", "y");
   }
