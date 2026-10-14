@@ -77,6 +77,14 @@ class RegexAutomatonTest {
     assertAgreesWithJava("\\h?\\p{Digit}+\\P{Alpha}", "1a -\u00a0", 4);
     assertAgreesWithJava("(?iu)[a-z\\u00e0]+", "aA\u00e0\u00c01", 3);
     assertAgreesWithJava("(?U)\\w+", "a1\u00e0-", 3);
+    // flags reach quoted text, quantifiers apply to anchors, and \p and \N work inside intersected classes
+    assertAgreesWithJava("(?i)\\Qa.\\E+", "aA.", 4);
+    assertAgreesWithJava("^*1$+", "12", 3);
+    assertAgreesWithJava("[\\p{Digit}&&[^0]]+[\\N{LATIN SMALL LETTER A}b]", "01ab", 4);
+    // a supplementary character in the pattern matches no character of an alphabet of chars, as it matches none for Pattern
+    assertAgreesWithJava("1\uD83D\uDE00?", "1a", 3);
+    // and an alphabet holding surrogates is refused: Pattern reads a pair of them as one character, the automaton could not
+    assertThat(RegexAutomaton.compile("1\uD83D\uDE00?", "1\uD83D\uDE00")).isNull();
   }
 
   @Test
@@ -152,7 +160,7 @@ class RegexAutomatonTest {
         assertThat(verdict).as("'%s' and '%s'", left, right).isEqualTo(Verdict.SATISFIABLE);
       // and a SATISFIABLE answer comes with a string both patterns match, a shortest one (see the test above for anchors)
       if (verdict == Verdict.SATISFIABLE) {
-        final String witness = RegexAutomaton.commonString(a, b);
+        final String witness = RegexAutomaton.search(a, b, Long.MAX_VALUE).common();
         assertThat(witness).isNotEmpty();
         if (!anchors) {
           assertThat(witness.length() <= 5).isEqualTo(common);
