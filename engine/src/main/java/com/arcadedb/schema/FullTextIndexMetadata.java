@@ -404,10 +404,14 @@ public class FullTextIndexMetadata extends IndexMetadata {
     }
 
     if (countersValid) {
-      metadata.put("ft_totalDocs", totalDocs.get());
-      metadata.put("ft_sumDocLength", sumDocLength.get());
+      // The pair and its epoch are read together with the writers that move them as a unit (a commit's delta, an adoption), so a
+      // save never records a new epoch next to an old pair, nor half of a delta
+      synchronized (countersLock) {
+        metadata.put("ft_totalDocs", totalDocs.get());
+        metadata.put("ft_sumDocLength", sumDocLength.get());
+        metadata.put("ft_countersEpoch", countersEpoch.get());
+      }
       metadata.put("ft_countersValid", true);
-      metadata.put("ft_countersEpoch", countersEpoch.get());
     }
     return metadata;
   }
@@ -906,22 +910,21 @@ public class FullTextIndexMetadata extends IndexMetadata {
     if (!definition.getBoolean("ft_countersValid", false))
       return false;
     final long epoch = definition.getLong("ft_countersEpoch", 0L);
-    final long current = countersEpoch.get();
-    // One adopter wins; the epoch moves first, so a second reader of the same definition (every bucket index of the logical index
-    // carries it) finds nothing newer. A reader of the epoch can therefore see the new one for an instant while the pair is still
-    // the old one: harmless, since nothing acts on the epoch but the next adoption and the persisted definition, and the drift
-    // check is re-armed below
-    if (epoch <= current || !countersEpoch.compareAndSet(current, epoch))
-      return false;
-    // Absolute values, not a delta: the persisted pair is the leader's recompute result and replaces whatever drifted here. Counted
-    // as a mutation so a scan racing this adoption does not call its own result exact. Under the lock a commit's delta lands
-    // wholly before the pair is replaced (and is replaced with it) or wholly after
-    mutations.incrementAndGet();
-    countersGeneration.incrementAndGet();
+    // One adopter wins: the epoch is checked and moved together with the pair, under the lock, so a second reader of the same
+    // definition (every bucket index of the logical index carries it) finds nothing newer, and neither a save nor a commit's
+    // delta can observe the new epoch next to the old pair. Absolute values, not a delta: the persisted pair is the leader's
+    // recompute result and replaces whatever drifted here. A commit's delta lands wholly before the pair is replaced (and is
+    // replaced with it) or wholly after
     synchronized (countersLock) {
+      if (epoch <= countersEpoch.get())
+        return false;
       sumDocLength.set(definition.getLong("ft_sumDocLength", 0L));
       totalDocs.set(definition.getLong("ft_totalDocs", 0L));
+      countersEpoch.set(epoch);
     }
+    // Counted as a mutation so a scan racing this adoption does not call its own result exact
+    mutations.incrementAndGet();
+    countersGeneration.incrementAndGet();
     this.countersValid = true;
     // The once-per-session check is armed AGAIN, whether or not it already ran: it is only a live count against these counters.
     // The pair is the leader's result at the moment it saved, and this node's data sits at the log position of the schema entry,

@@ -201,6 +201,52 @@ class Issue10051Bm25CounterAdoptionTest extends TestHelper {
     }
   }
 
+  /**
+   * A save serializing the counters while a schema load adopts a newer pair must write the old epoch with the old pair or the new
+   * epoch with the new pair, never a mix: a mix would persist an epoch that claims counters this node does not hold.
+   */
+  @Test
+  void aSaveRacingAnAdoptionNeverRecordsTheNewEpochNextToTheOldPair() throws Exception {
+    final ExecutorService executor = Executors.newFixedThreadPool(4);
+    try {
+      for (int round = 0; round < 300; round++) {
+        final FullTextIndexMetadata m = new FullTextIndexMetadata("Doc", new String[] { "content" }, 0);
+        m.setCounters(1000L, 3000L);
+        final JSONObject definition = new JSONObject().put("ft_countersValid", true).put("ft_totalDocs", 50L)
+            .put("ft_sumDocLength", 157L).put("ft_countersEpoch", 1L);
+        final CountDownLatch start = new CountDownLatch(1);
+        final AtomicInteger adopted = new AtomicInteger();
+        final List<Future<?>> futures = new ArrayList<>();
+        for (int t = 0; t < 3; t++)
+          futures.add(executor.submit(() -> {
+            start.await();
+            do {
+              final JSONObject saved = m.writeToJSON(new JSONObject());
+              final long epoch = saved.getLong("ft_countersEpoch");
+              final long docs = saved.getLong("ft_totalDocs");
+              final long length = saved.getLong("ft_sumDocLength");
+              if (epoch == 0L)
+                assertThat(new long[] { docs, length }).containsExactly(1000L, 3000L);
+              else
+                assertThat(new long[] { docs, length }).as("epoch %d", epoch).containsExactly(50L, 157L);
+            } while (adopted.get() == 0);
+            return null;
+          }));
+        futures.add(executor.submit(() -> {
+          start.await();
+          m.adoptPersistedCounters(definition);
+          adopted.incrementAndGet();
+          return null;
+        }));
+        start.countDown();
+        for (final Future<?> future : futures)
+          future.get(30, TimeUnit.SECONDS);
+      }
+    } finally {
+      executor.shutdownNow();
+    }
+  }
+
   /** The bucket indexes of one logical index all carry the same definition: exactly one reader of it adopts. */
   @Test
   void concurrentAdoptersOfTheSameDefinitionHaveOneWinner() throws Exception {
