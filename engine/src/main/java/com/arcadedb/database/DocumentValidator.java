@@ -504,6 +504,8 @@ public class DocumentValidator {
       final String dateFormat) {
     final DatabaseInternal internal = (DatabaseInternal) database;
     final Schema schema = database.getSchema();
+    // one walk for both kinds of change: ALTER DATABASE on an implementation passes the formats in force, so only the
+    // patterns are checked, and the schema's format setters pass the implementations in force, so only the bounds are
     final boolean formatsChanged = !dateTimeFormat.equals(schema.getDateTimeFormat()) || !dateFormat.equals(
         schema.getDateFormat());
     final Map<Type, Class<?>> heldAfter = new EnumMap<>(Type.class);

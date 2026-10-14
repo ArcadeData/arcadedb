@@ -197,18 +197,19 @@ record TextForm(String characters, Pattern shape, List<Object> samples) {
    * gives up when its budget runs out ({@link RegexOverAlphabet}): the one case the answer can be {@link Verdict#UNDECIDED}.
    */
   Verdict admits(final Pattern pattern, final int maxLength, final int maxProbes, final long timeoutMs) {
+    // one deadline for the whole check, the automata and the fallbacks alike
+    final long deadline = TimeBoundRegex.newDeadline(timeoutMs);
     // compiled per check: an automaton memoizes its closures as it is walked, so it is not shared between threads
     final RegexAutomaton patternAutomaton = RegexAutomaton.compile(pattern.pattern(), characters);
     if (patternAutomaton != null) {
       final RegexAutomaton shapeAutomaton = RegexAutomaton.compile(shape.pattern(), characters);
       if (shapeAutomaton != null) {
-        final Verdict verdict = RegexAutomaton.intersects(patternAutomaton, shapeAutomaton);
+        final Verdict verdict = RegexAutomaton.intersects(patternAutomaton, shapeAutomaton, deadline);
         if (verdict != Verdict.UNDECIDED)
           return verdict;
       }
     }
 
-    final long deadline = TimeBoundRegex.newDeadline(timeoutMs);
     try {
       for (final Object sample : samples)
         if (TimeBoundRegex.matchesUntil(pattern, sample.toString(), deadline))

@@ -166,6 +166,15 @@ class RegexAutomatonTest {
   }
 
   @Test
+  void aDeadlineThatHasPassedLeavesTheAnswerUndecided() {
+    final RegexAutomaton a = RegexAutomaton.compile("[0-9]{1,3000}", DIGITS);
+    final RegexAutomaton b = RegexAutomaton.compile("[0-9]{3001}", DIGITS);
+    assertThat(RegexAutomaton.intersects(a, b, System.nanoTime())).isEqualTo(Verdict.UNDECIDED);
+    assertThat(RegexAutomaton.intersects(RegexAutomaton.compile("[0-9]{1,3000}", DIGITS),
+        RegexAutomaton.compile("[0-9]{3001}", DIGITS))).isEqualTo(Verdict.UNSATISFIABLE);
+  }
+
+  @Test
   void aRepetitionTooLargeToExpandIsLeftToTheCaller() {
     assertThat(RegexAutomaton.compile("[0-9]{1000000}", DIGITS)).isNull();
     assertThat(RegexAutomaton.compile("([0-9]{1000}){1000}", DIGITS)).isNull();
