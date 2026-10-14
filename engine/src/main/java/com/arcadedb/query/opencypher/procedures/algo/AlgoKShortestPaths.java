@@ -29,7 +29,9 @@ import com.arcadedb.query.sql.executor.WorkGuard;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.stream.Stream;
 
 /**
@@ -110,7 +112,8 @@ public class AlgoKShortestPaths extends AbstractAlgoProcedure {
     // Yen's runs on the adjacency lists, not on a nodeCount x nodeCount weight matrix: the matrix this replaced was
     // 800 MB at 10 000 nodes and made the procedure unusable on a road network, whose degree is a handful. What Yen's
     // needs beside the lists is node-sized: the distances, predecessors and visit stack of the spur Dijkstra, allocated
-    // once and cleared entry by entry between runs, and the two spur masks (issue #6289).
+    // once and cleared entry by entry between runs, and the two spur masks (issue #6289). The search queue is not priced:
+    // it grows with the entries pushed by one search, at most one per edge it relaxes, which the adjacency already holds.
     final MemoryBudget memory = graph.memory();
     memory.reserve(saturatingProduct(n, DOUBLE_BYTES + 2 * INT_BYTES + 2 * BOOLEAN_BYTES), "the path search state",
         "distances, predecessors, a visit stack and two boolean masks of " + n + " nodes");
@@ -137,9 +140,13 @@ public class AlgoKShortestPaths extends AbstractAlgoProcedure {
     kPaths.add(firstPath);
     kWeights.add(search.pathWeight(firstPath));
 
-    // Candidate paths, as parallel lists of the path and its cost.
+    // Candidate paths, as parallel lists of the path and its cost, and every path already found or proposed: a spur that
+    // rebuilds one of them is not proposed again (a hash lookup, where scanning both lists per spur node made the
+    // duplicate check the dominant cost once the dense matrix was gone)
     final List<int[]> candidatePaths = new ArrayList<>();
     final List<Double> candidateCosts = new ArrayList<>();
+    final Set<PathKey> known = new HashSet<>();
+    known.add(new PathKey(firstPath));
 
     for (int ki = 1; ki < k; ki++) {
       // Yen's is O(k x pathLength) Dijkstra runs, and `k` is deliberately left unbounded above because the loop
@@ -174,7 +181,7 @@ public class AlgoKShortestPaths extends AbstractAlgoProcedure {
           System.arraycopy(rootPath, 0, totalPath, 0, rootPath.length - 1);
           System.arraycopy(spurPath, 0, totalPath, rootPath.length - 1, spurPath.length);
 
-          if (!contains(candidatePaths, totalPath) && !contains(kPaths, totalPath)) {
+          if (known.add(new PathKey(totalPath))) {
             candidatePaths.add(totalPath);
             candidateCosts.add(search.pathWeight(totalPath));
           }
@@ -218,11 +225,17 @@ public class AlgoKShortestPaths extends AbstractAlgoProcedure {
     return results.stream();
   }
 
-  private static boolean contains(final List<int[]> paths, final int[] path) {
-    for (final int[] p : paths)
-      if (Arrays.equals(p, path))
-        return true;
-    return false;
+  /** A node sequence as a hash key. */
+  private record PathKey(int[] nodes) {
+    @Override
+    public boolean equals(final Object obj) {
+      return obj instanceof PathKey other && Arrays.equals(nodes, other.nodes);
+    }
+
+    @Override
+    public int hashCode() {
+      return Arrays.hashCode(nodes);
+    }
   }
 
   /**
