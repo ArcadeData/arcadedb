@@ -894,6 +894,8 @@ public class ServerControlPlane {
    * A statement that ran in a transaction session also answers the session's {@code sessionId} and whether it is still
    * open ({@code sessionOpen}): a terminated command ends its session, a terminated read leaves it to its client (issue
    * #9798), and a caller waiting for the session to go must then end it with {@code terminate transaction} (issue #9953).
+   * With {@code terminating}, {@code sessionOpen} is only the state when the answer was built: a command still stopping
+   * ends its session as it stops.
    */
   public JSONObject terminateQuery(final ServerSecurityUser user, final String id, final long waitMs) {
     RunningQuery query = user != null ? server.getRunningQueries().get(id) : null;

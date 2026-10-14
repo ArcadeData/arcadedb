@@ -64,7 +64,11 @@ import java.util.logging.Level;
  * socket timeout lost its client to the timer (issue #9953). The watch lifts the read timeout while it is armed and puts it
  * back when it is disarmed, before Undertow resumes reads for the next request: an idle keep-alive connection is still
  * closed after the timeout, and a client waiting for a long statement is not. A connection whose read timeout cannot be
- * lifted is not watched.
+ * lifted is not watched. The timeout is put back on every path that ends the watch, a client gone or a pipelined request
+ * included: both stop the reads, and {@link #disarm()} - which always runs - restores it whether or not the watch was
+ * still armed. The trade: a client that vanishes without closing its connection (no FIN or RST reaches the server) is
+ * no longer cut off by the read timeout while its statement runs, and the watch cannot see it either, so the statement
+ * runs to its end or to {@code arcadedb.command.timeout}, as it did before the watch existed.
  * <p>
  * Costs one listener swap per request and nothing while the client is quiet: the selector wakes the watch only when the
  * client sends or closes.

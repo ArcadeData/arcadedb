@@ -138,6 +138,8 @@ class Issue9993StaticAssetCachingTest extends BaseGraphServerTest {
     final HttpResponse<String> notModified = get("/css/cache-probe.css", etag);
     assertThat(notModified.statusCode()).isEqualTo(304);
     assertThat(notModified.body()).isEmpty();
+    // A 304 may only declare the length of the representation it stands for (RFC 9110): it declares none
+    assertThat(notModified.headers().firstValue("Content-Length")).isEmpty();
     assertThat(notModified.headers().firstValue("ETag")).contains(etag);
     assertThat(notModified.headers().firstValue("Cache-Control")).contains("no-cache");
 

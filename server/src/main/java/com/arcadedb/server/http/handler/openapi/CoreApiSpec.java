@@ -246,7 +246,8 @@ public class CoreApiSpec implements OpenApiContributor {
         noticed: what it did stands), 'terminating' (not stopped yet) or 'not found'; 'list transactions' lists the \
         open transaction sessions and 'terminate transaction <session id>' rolls one back and ends it. A command \
         terminated inside a session ends the session too, rolling it back, while a terminated read leaves the session to \
-        its client: the answer for a statement that ran in a session carries its 'sessionId' and 'sessionOpen'. A \
+        its client: the answer for a statement that ran in a session carries its 'sessionId' and 'sessionOpen' (for a \
+        'terminating' statement only the state at the time of the answer: a command ends its session as it stops). A \
         terminated request is answered 409 'Query terminated'. \
         These commands are never forwarded to the leader: each server lists and stops its own work""");
     postOp.setOperationId("executeServerCommand");

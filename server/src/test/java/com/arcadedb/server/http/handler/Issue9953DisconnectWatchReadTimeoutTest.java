@@ -118,6 +118,31 @@ class Issue9953DisconnectWatchReadTimeoutTest extends BaseGraphServerTest {
     }
   }
 
+  /**
+   * A request pipelined behind a running one ends the watch from its own read, before the statement does: the read
+   * timeout is put back on that path too, so the connection is still closed once it goes idle.
+   */
+  @Test
+  void theReadTimeoutIsRestoredAfterAPipelinedRequest() throws Exception {
+    try (final Socket socket = connect()) {
+      send(socket, sqlCommand(LONG_STATEMENT, null));
+      // Sent while the statement runs, so the watch reads it, rather than together with the first request, which would
+      // leave it in Undertow's buffer and the watch unarmed
+      Thread.sleep(500);
+      send(socket, sqlCommand("SELECT 2 AS answer", null));
+      final InputStream in = socket.getInputStream();
+      assertThat(readResponse(in)).startsWith("HTTP/1.1 200");
+      assertThat(readResponse(in)).startsWith("HTTP/1.1 200").contains("\"answer\":2");
+
+      socket.setSoTimeout(30_000);
+      try {
+        assertThat(in.read()).as("the server closes the idle connection after its read timeout").isEqualTo(-1);
+      } catch (final SocketTimeoutException e) {
+        fail("the idle connection was never closed: the read timeout was not restored after the pipelined request");
+      }
+    }
+  }
+
   /** The watch still does its job with the read timeout lifted: a client that leaves terminates its statement. */
   @Test
   void aClientThatLeavesIsStillSeen() throws Exception {
