@@ -71,7 +71,8 @@ public class PatternComprehensionExpression implements Expression {
     final List<Object> resultList = new ArrayList<>();
     final List<Object> pathElements = new ArrayList<>();
     // Relationship uniqueness spans the whole pattern, every hop and every relationship a variable-length hop walks. A
-    // single fixed-length hop cannot repeat a relationship, so the common [(a)-->(b) | b] tracks nothing
+    // single fixed-length hop cannot repeat a relationship, so the common [(a)-->(b) | b] tracks nothing. A pattern with a
+    // variable-length hop always gets the set: traverseVariableLength and traverseBoundRelationshipList rely on it
     final int hops = pathPattern.getRelationshipCount();
     final EdgeIdentityMultiset usedEdges =
         hops > 1 || (hops == 1 && pathPattern.getRelationship(0).isVariableLength()) ? new EdgeIdentityMultiset() : null;
