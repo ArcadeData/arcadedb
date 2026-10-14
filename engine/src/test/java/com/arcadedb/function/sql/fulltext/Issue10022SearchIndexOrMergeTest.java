@@ -21,8 +21,11 @@ package com.arcadedb.function.sql.fulltext;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
+import com.arcadedb.query.sql.executor.BasicCommandContext;
+import com.arcadedb.query.sql.executor.InternalExecutionPlan;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.parser.SelectStatement;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
@@ -198,6 +201,43 @@ class Issue10022SearchIndexOrMergeTest extends TestHelper {
 
     final String shadowed = "SELECT n AS $score FROM Doc WHERE " + A + " OR " + B + " ORDER BY $score DESC LIMIT 10";
     assertThat(plan(shadowed)).doesNotContain("MERGE BY").doesNotContain(" needed)");
+  }
+
+  /**
+   * The merge reads each branch's score right after it pulls the row, which holds whatever batch size the consumer asks
+   * for: a branch evaluates its rows one at a time. Pulled one row, a few rows or many rows per batch, the plan answers the
+   * same rows with the same scores.
+   */
+  @ParameterizedTest
+  @ValueSource(strings = { "BM25_1", "BM25_4" })
+  void anyBatchSizeAnswersTheSameRowsAndScores(final String variant) {
+    createCorpus(variant);
+    final List<Scored> abc = expected(n -> true, "a", "b", "c");
+    final String query = "SELECT @rid AS rid, $score AS score FROM Doc WHERE " + A + " OR " + B + " OR " + C + " ORDER BY $score DESC";
+
+    for (final int batch : new int[] { 1, 2, 3, 7, 64, 10_000 }) {
+      final BasicCommandContext context = new BasicCommandContext();
+      context.setDatabase((DatabaseInternal) database);
+      final SelectStatement statement = (SelectStatement) ((DatabaseInternal) database).getStatementCache().get(query);
+      final InternalExecutionPlan plan = statement.createExecutionPlanNoCache(context);
+      assertThat(plan.prettyPrint(0, 2)).contains("MERGE BY $score DESC");
+
+      final List<Scored> actual = new ArrayList<>();
+      try {
+        while (true) {
+          final ResultSet page = plan.fetchNext(batch);
+          if (!page.hasNext())
+            break;
+          while (page.hasNext()) {
+            final Result row = page.next();
+            actual.add(new Scored(row.getProperty("rid"), row.<Float>getProperty("score")));
+          }
+        }
+      } finally {
+        plan.close();
+      }
+      assertThat(actual).as("batch " + batch).containsExactlyElementsOf(abc);
+    }
   }
 
   // ---------- helpers ----------

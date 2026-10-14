@@ -213,6 +213,8 @@ public class MergeByScoreStep extends AbstractExecutionStep {
       exhausted[i] = false;
     }
     nextValue = null;
+    consumed = 0;
+    guard = null;
     for (final InternalExecutionPlan plan : subExecutionPlans)
       plan.reset(context);
   }
