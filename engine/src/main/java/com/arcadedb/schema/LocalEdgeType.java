@@ -104,12 +104,28 @@ public class LocalEdgeType extends LocalDocumentType implements EdgeType {
     final String how = type.getName().equals(edgeTypeName) ? "declares or inherits" : "would inherit from '" + type.getName() + "'";
     throw new SchemaException("Edge type '" + edgeTypeName + "' cannot be LIGHTWEIGHT because it " + how + " the "
         + constraintKind(constraint) + " property '" + constraint.getName() + "': a lightweight edge has no record, so the "
-        + "constraint would never be applied to it. Make the property optional, or declare the type without LIGHTWEIGHT");
+        + "constraint would never be applied to it. " + capitalize(remedy(constraint)) + ", or declare the type without LIGHTWEIGHT");
   }
 
   /** What makes a property apply to a record that does not carry it, for the messages. */
   static String constraintKind(final Property property) {
     return property.isMandatory() ? "MANDATORY" : "default-valued";
+  }
+
+  /**
+   * The change to {@code property} that stops it applying to a record that does not carry it: a MANDATORY one must become
+   * optional, a default-valued one must lose its default, and one that is both needs both (making a default-valued property
+   * optional leaves its default in place).
+   */
+  static String remedy(final Property property) {
+    final boolean defaulted = property.hasDefaultFillingInAValue();
+    if (property.isMandatory())
+      return defaulted ? "make the property optional and remove its default value (DEFAULT null)" : "make the property optional";
+    return "remove the property's default value (DEFAULT null)";
+  }
+
+  private static String capitalize(final String text) {
+    return Character.toUpperCase(text.charAt(0)) + text.substring(1);
   }
 
   /**
@@ -121,17 +137,25 @@ public class LocalEdgeType extends LocalDocumentType implements EdgeType {
    * @return the message, or {@code null}
    */
   public static String unenforcedConstraintWarning(final DocumentType type) {
-    if (!(type instanceof EdgeType edgeType) || !edgeType.isLightweight())
-      return null;
-    final Property constraint = type.findPropertyAppliedToEmptyRecord();
-    if (constraint == null)
+    if (!(type instanceof EdgeType edgeType) || !edgeType.isLightweight() || type.findPropertyAppliedToEmptyRecord() == null)
       return null;
 
-    final DocumentType declaring = constraint instanceof AbstractProperty property && property.owner != null ? property.owner : type;
-    return "Edge type '" + type.getName() + "' is LIGHTWEIGHT but " + (declaring == type ? "declares" : "inherits") + " the "
-        + constraintKind(constraint) + " property '" + declaring.getName() + "." + constraint.getName()
-        + "': a lightweight edge has no record, so the constraint is not enforced on its edges. Declare the type without "
-        + "LIGHTWEIGHT, or make the property optional";
+    // EVERY such property, each with its own way out, so one pass of fixes clears the finding rather than one per restart
+    final StringBuilder message = new StringBuilder("Edge type '").append(type.getName())
+        .append("' is LIGHTWEIGHT, and a lightweight edge has no record, so these constraints are not enforced on its edges: ");
+    boolean first = true;
+    for (final Property property : type.getPolymorphicProperties()) {
+      if (!property.isMandatory() && !property.hasDefaultFillingInAValue())
+        continue;
+      final DocumentType declaring = property instanceof AbstractProperty p && p.owner != null ? p.owner : type;
+      if (!first)
+        message.append("; ");
+      first = false;
+      message.append("the ").append(constraintKind(property)).append(" property '").append(declaring.getName()).append('.')
+          .append(property.getName()).append("' (").append(declaring == type ? "declared" : "inherited").append(": ")
+          .append(remedy(property)).append(')');
+    }
+    return message.append(". Or declare the type without LIGHTWEIGHT").toString();
   }
 
   public void setUnique(final boolean unique) {

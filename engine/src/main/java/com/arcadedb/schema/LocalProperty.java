@@ -124,8 +124,9 @@ public class LocalProperty extends AbstractProperty {
         checkStillDeclaredIn(ownerType);
 
         // A default applies to a record that does not carry the property, which no LIGHTWEIGHT edge type below this one can
-        // honour (issue #9846). A null default fills in nothing, so it is not one
-        if (convertedValue != null && convertedValue != DEFAULT_NOT_SET)
+        // honour (issue #9846). A null default fills in nothing, so it is not one - neither a Java null nor the SQL
+        // DEFAULT null, kept as its text, which is how a default is taken back under such a type (issue #9975)
+        if (convertedValue != DEFAULT_NOT_SET && Property.fillsInAValue(convertedValue))
           ownerType.checkNoLightweightEdgeTypeBelow(this, "default-valued");
 
         // One publication, so no reader can see the new value with the old (or no) compiled expression.

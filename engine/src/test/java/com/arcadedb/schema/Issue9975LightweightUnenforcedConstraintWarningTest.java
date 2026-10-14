@@ -91,6 +91,44 @@ class Issue9975LightweightUnenforcedConstraintWarningTest extends TestHelper {
   }
 
   @Test
+  void everyUnenforcedPropertyIsNamedWithItsOwnWayOut() throws IOException {
+    database.getSchema().createEdgeType(PARENT);
+    database.command("sql", "CREATE PROPERTY " + PARENT + ".since DATETIME (MANDATORY TRUE)").close();
+    database.command("sql", "CREATE PROPERTY " + PARENT + ".weight INTEGER (DEFAULT 5)").close();
+    database.getSchema().createEdgeType(CHILD).addSuperType(PARENT);
+    database.close();
+    markChildLightweight();
+    database = factory.open();
+
+    final String warning = LocalEdgeType.unenforcedConstraintWarning(database.getSchema().getType(CHILD));
+    assertThat(warning).contains("MANDATORY property '" + PARENT + ".since' (inherited: make the property optional)")
+        .contains("default-valued property '" + PARENT + ".weight' (inherited: remove the property's default value (DEFAULT null))")
+        .contains("declare the type without LIGHTWEIGHT");
+
+    // each named way out clears its own part of the finding
+    database.command("sql", "ALTER PROPERTY " + PARENT + ".since MANDATORY false").close();
+    assertThat(LocalEdgeType.unenforcedConstraintWarning(database.getSchema().getType(CHILD))).doesNotContain(".since")
+        .contains(".weight");
+    database.command("sql", "ALTER PROPERTY " + PARENT + ".weight DEFAULT null").close();
+    assertThat(LocalEdgeType.unenforcedConstraintWarning(database.getSchema().getType(CHILD))).isNull();
+  }
+
+  /**
+   * {@code DEFAULT null} is kept as the text "null" and fills in nothing, so it is not a default a lightweight edge fails to
+   * apply: it was refused as one, which left the SQL way out of the finding refused too.
+   */
+  @Test
+  void aSqlNullDefaultIsNotADefaultUnderALightweightType() {
+    database.getSchema().createEdgeType(PARENT);
+    database.command("sql", "CREATE PROPERTY " + PARENT + ".weight INTEGER (DEFAULT null)").close();
+    database.command("sql", "CREATE EDGE TYPE " + CHILD + " EXTENDS " + PARENT + " LIGHTWEIGHT").close();
+
+    database.command("sql", "ALTER PROPERTY " + PARENT + ".weight DEFAULT null").close();
+    database.command("sql", "CREATE PROPERTY " + PARENT + ".other STRING (DEFAULT null)").close();
+    assertThat(LocalEdgeType.unenforcedConstraintWarning(database.getSchema().getType(CHILD))).isNull();
+  }
+
+  @Test
   void aSchemaWithoutTheCombinationLogsNothing() {
     database.getSchema().createEdgeType(PARENT).createProperty("since", Type.DATETIME);
     database.getSchema().buildEdgeType().withName(CHILD).withSuperType(PARENT).withLightweight(true).create();
@@ -116,7 +154,10 @@ class Issue9975LightweightUnenforcedConstraintWarningTest extends TestHelper {
     parent.createProperty("since", Type.DATETIME).setMandatory(true);
     database.getSchema().createEdgeType(CHILD).addSuperType(PARENT);
     database.close();
+    markChildLightweight();
+  }
 
+  private void markChildLightweight() throws IOException {
     final Path schemaFile = Path.of(getDatabasePath(), "schema.json");
     final JSONObject schemaJson = new JSONObject(Files.readString(schemaFile));
     schemaJson.getJSONObject("types").getJSONObject(CHILD).put("lightweight", true);
