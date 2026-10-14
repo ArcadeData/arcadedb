@@ -114,8 +114,8 @@ public class MergeRelationship implements CypherProcedure {
     final Map<String, Object> matchProps = extractMap(args[2], "matchProps");
     final Map<String, Object> createProps = extractMap(args[3], "createProps");
     final Vertex endNode = extractVertex(args[4], "endNode");
-    // Absent whenever the caller used the five-argument form, which getMinArgs() still allows.
-    final Map<String, Object> onMatchProps = args.length < 6 ? null : extractMap(args[5], "onMatchProps");
+    // Absent whenever the caller used the five-argument form, which getMinArgs() still allows: APOC's default, {}
+    final Map<String, Object> onMatchProps = extractMap(argOrDefault(args, 5, Map.of()), "onMatchProps");
 
     final Database database = context.getDatabase();
 

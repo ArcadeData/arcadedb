@@ -82,15 +82,15 @@ public class PathSubgraphNodes extends AbstractPathProcedure {
     validateArgs(args);
 
     final Vertex startNode = extractVertex(args[0], "startNode");
-    final Map<String, Object> config = extractConfig(args.length > 1 ? args[1] : null);
+    final Map<String, Object> config = extractConfig(argOrDefault(args, 1, null));
 
-    final String[] relTypes = extractRelTypes(config.get("relationshipFilter"));
-    final String[] labelFilter = extractLabels(config.get("labelFilter"));
+    final int minLevel = extractComponentMinLevel(config);
     final int maxLevel = config.containsKey("maxLevel") ? NumberUtils.saturateToInt((Number) config.get("maxLevel")) : Integer.MAX_VALUE;
+    final Filters filters = extractFilters(config, startNode.getDatabase(), minLevel);
 
     // Only the nodes are ever yielded here, so the walk never materialises an edge (issue #7976)
     final List<Vertex> reachableNodes = new ArrayList<>();
-    collectReachableComponent(startNode, relTypes, labelFilter, maxLevel, reachableNodes, null, context);
+    collectReachableComponent(startNode, filters, minLevel, maxLevel, reachableNodes, null, context);
 
     return reachableNodes.stream().map(node -> {
       final ResultInternal result = new ResultInternal();

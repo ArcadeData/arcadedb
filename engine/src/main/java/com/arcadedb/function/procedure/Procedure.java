@@ -191,6 +191,32 @@ public interface Procedure {
   }
 
   /**
+   * The argument at {@code index}, or {@code defaultValue} when the call stopped short of it or passed {@code null}.
+   * <p>
+   * The reading half of the contract {@link #checkArity} enforces: a procedure that declares {@code getMinArgs()} below
+   * {@code getMaxArgs()} does so because APOC declares the trailing arguments with a default ({@code config = {}}), so
+   * Cypher migrated from Neo4j calls it without them, and the absent slot has to read as that default rather than index
+   * past the end of the array (issues #7427, #8102). Each procedure family used to carry a private helper of its own for
+   * this, and they disagreed on an explicit {@code null} (issue #8124).
+   * <p>
+   * The rule is the same for both: an explicit {@code null} resolves to the default exactly as an absent argument does,
+   * which is how APOC's own procedures treat a {@code null} config or parameter map. A procedure that has to tell the
+   * two apart reads {@code args.length} itself.
+   *
+   * @param args         the arguments the call carried, already checked by {@link #validateArgs}
+   * @param index        the position of the optional argument
+   * @param defaultValue the value APOC declares for it
+   *
+   * @return the argument, or {@code defaultValue} when it is absent or {@code null}
+   */
+  default Object argOrDefault(final Object[] args, final int index, final Object defaultValue) {
+    if (args == null || index >= args.length)
+      return defaultValue;
+    final Object value = args[index];
+    return value != null ? value : defaultValue;
+  }
+
+  /**
    * Returns whether this procedure modifies the database.
    * <p>
    * Write procedures (like merge.relationship) should return true.

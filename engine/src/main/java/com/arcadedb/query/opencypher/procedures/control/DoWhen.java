@@ -189,7 +189,7 @@ public class DoWhen implements CypherProcedure {
     final boolean condition = extractBoolean(args[0]);
     final String ifQuery = extractString(args[1], "ifQuery");
     final String elseQuery = args[2] == null ? "" : extractString(args[2], "elseQuery");
-    final Map<String, Object> params = extractMap(argAt(args, 3));
+    final Map<String, Object> params = extractMap(argOrDefault(args, 3, Map.of()));
 
     final String query = condition ? ifQuery : elseQuery;
     if (query == null || query.isBlank())
@@ -214,16 +214,6 @@ public class DoWhen implements CypherProcedure {
     }
 
     return rows.stream();
-  }
-
-  /**
-   * The argument at {@code index}, or {@code null} when the caller stopped short of it. {@code validateArgs} has
-   * already run, so a shorter array means the argument is one APOC declares with a default - here only
-   * {@code params}, whose absence {@link #extractMap} already resolves to the empty map, the same value APOC
-   * defaults it to (issue #8102).
-   */
-  private static Object argAt(final Object[] args, final int index) {
-    return index < args.length ? args[index] : null;
   }
 
   private boolean extractBoolean(final Object arg) {
