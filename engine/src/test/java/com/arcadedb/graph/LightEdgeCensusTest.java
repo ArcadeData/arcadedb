@@ -97,7 +97,7 @@ class LightEdgeCensusTest extends TestHelper {
     for (int i = 0; i < alone.size(); i++) {
       final LightEdgeRID single = alone.get(i);
       final LightEdgeRID walking = new LightEdgeRID(database, single.getBucketId(), single.getOutRID(), single.getInRID());
-      walking.readFrom(originSegment(single), originPosition(single), Vertex.DIRECTION.OUT, null);
+      walking.readFrom(originSegment(single), originPosition(single), Vertex.DIRECTION.OUT, -1, null);
       assertThat(walking.getOccurrence()).as("entry %d", i).isEqualTo(censused.get(i).getOccurrence());
       assertThat(walking.getTwinCount()).isEqualTo(censused.get(i).getTwinCount());
     }
@@ -184,7 +184,8 @@ class LightEdgeCensusTest extends TestHelper {
     for (final LightEdgeRID now : read())
       if (now.getInRID().equals(twinTarget)) {
         final LightEdgeRID throughOldCensus = new LightEdgeRID(database, now.getBucketId(), now.getOutRID(), now.getInRID());
-        throughOldCensus.readFrom(now.getOriginSegment(), now.getOriginPosition(), Vertex.DIRECTION.OUT, census);
+        throughOldCensus.readFrom(now.getOriginSegment(), now.getOriginPosition(), Vertex.DIRECTION.OUT,
+            now.getOriginChunkUsed(), census);
         twins.add(throughOldCensus);
       }
     assertThat(twins).hasSize(2);
@@ -192,6 +193,45 @@ class LightEdgeCensusTest extends TestHelper {
       assertThat(twin.getTwinCount()).isEqualTo(2);
     assertThat(LightEdgeRID.isSameEdge(twins.get(0), twins.get(1))).isFalse();
     assertThat(twins.get(0).getOccurrence()).isNotEqualTo(twins.get(1).getOccurrence());
+  }
+
+  /**
+   * A twin removed after the count shifts the entries after it back, so another twin of the same triple can sit at a
+   * position the census counted. An edge read off the chunk as it is now carries the chunk's new size and is not answered
+   * from the census: it walks the list, and the two twins left are told apart.
+   */
+  @Test
+  void aTwinShiftedOntoACountedPositionIsNotAnsweredFromTheCount() {
+    buildTwins();
+    final List<LightEdgeRID> before = read();
+    for (final LightEdgeRID edge : before)
+      edge.getOccurrence();
+    final LightEdgeCensus census = before.getFirst().getCensus();
+    assertThat(census.hasTwins()).isTrue();
+
+    database.transaction(() -> {
+      for (final Edge edge : database.lookupByRID(hub, true).asVertex().getEdges(Vertex.DIRECTION.OUT))
+        if (edge.getIn().equals(twinTarget)) {
+          edge.delete();
+          break;
+        }
+    });
+
+    final List<LightEdgeRID> twins = new ArrayList<>();
+    for (final LightEdgeRID now : read())
+      if (now.getInRID().equals(twinTarget)) {
+        final LightEdgeRID throughOldCensus = new LightEdgeRID(database, now.getBucketId(), now.getOutRID(), now.getInRID());
+        throughOldCensus.readFrom(now.getOriginSegment(), now.getOriginPosition(), Vertex.DIRECTION.OUT,
+            now.getOriginChunkUsed(), census);
+        twins.add(throughOldCensus);
+      }
+    assertThat(twins).hasSize(2);
+    final Set<Integer> occurrences = new HashSet<>();
+    for (final LightEdgeRID twin : twins) {
+      assertThat(twin.getTwinCount()).isEqualTo(2);
+      occurrences.add(twin.getOccurrence());
+    }
+    assertThat(occurrences).containsExactlyInAnyOrder(0, 1);
   }
 
   /**
@@ -228,11 +268,11 @@ class LightEdgeCensusTest extends TestHelper {
     final LightEdgeRID edge = read().getFirst();
     final RID missing = database.newRID(hub.getBucketId(), 1_000_000L);
     final LightEdgeCensus census = new LightEdgeCensus((DatabaseInternal) database, missing, Vertex.DIRECTION.OUT);
-    assertThat(census.resolve(edge, edge.getOriginSegment(), edge.getOriginPosition())).isFalse();
-    assertThat(census.resolve(edge, edge.getOriginSegment(), edge.getOriginPosition())).isFalse();
+    assertThat(census.resolve(edge, edge.getOriginSegment(), edge.getOriginPosition(), edge.getOriginChunkUsed())).isFalse();
+    assertThat(census.resolve(edge, edge.getOriginSegment(), edge.getOriginPosition(), edge.getOriginChunkUsed())).isFalse();
     assertThat(census.hasFailed()).isTrue();
     assertThat(census.isBuilt()).isFalse();
-    assertThat(census.resolve(edge, edge.getOriginSegment(), edge.getOriginPosition())).isFalse();
+    assertThat(census.resolve(edge, edge.getOriginSegment(), edge.getOriginPosition(), edge.getOriginChunkUsed())).isFalse();
     assertThat(census.hasFailed()).isTrue();
   }
 

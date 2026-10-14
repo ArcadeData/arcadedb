@@ -54,7 +54,7 @@ public class ImmutableLightEdge extends ImmutableDocument implements LightEdge {
    */
   public ImmutableLightEdge(final Database graph, final DocumentType type, final int edgeTypeBucketId, final RID out,
                             final RID in, final RID segment, final int position, final Vertex.DIRECTION direction) {
-    this(graph, type, edgeTypeBucketId, out, in, segment, position, direction, null);
+    this(graph, type, edgeTypeBucketId, out, in, segment, position, direction, -1, null);
   }
 
   /**
@@ -62,10 +62,11 @@ public class ImmutableLightEdge extends ImmutableDocument implements LightEdge {
    * resolving the occurrence of many of its edges walks the list once rather than once per edge.
    */
   ImmutableLightEdge(final Database graph, final DocumentType type, final int edgeTypeBucketId, final RID out,
-      final RID in, final RID segment, final int position, final Vertex.DIRECTION direction, final LightEdgeCensus census) {
+      final RID in, final RID segment, final int position, final Vertex.DIRECTION direction, final int chunkUsed,
+      final LightEdgeCensus census) {
     this(graph, type, edgeTypeBucketId, out, in);
     // THE PRIMARY CONSTRUCTOR ALWAYS BUILDS A LightEdgeRID
-    ((LightEdgeRID) getIdentity()).readFrom(segment, position, direction, census);
+    ((LightEdgeRID) getIdentity()).readFrom(segment, position, direction, chunkUsed, census);
   }
 
   @Override

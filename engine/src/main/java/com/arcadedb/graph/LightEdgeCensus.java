@@ -27,6 +27,7 @@ import com.arcadedb.utility.RidIntHashMap;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
 
 /**
@@ -63,6 +64,7 @@ import java.util.logging.Level;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 final class LightEdgeCensus {
+  private static final AtomicBoolean FAILURE_WARNED = new AtomicBoolean();
   private final DatabaseInternal                 database;
   private final RID                              owner;
   private final Vertex.DIRECTION                 direction;
@@ -87,6 +89,10 @@ final class LightEdgeCensus {
    * entries after it), and an edge read off it afterwards must not be taken for the entry that used to be at its position.
    */
   private static final class ChunkEntries {
+    // THE CHUNK'S USED BYTES WHEN IT WAS COUNTED. AN EDGE READ OFF IT AT ANOTHER SIZE (AN ENTRY REMOVED SHIFTS THE ONES
+    // AFTER IT, SO A TWIN OF THE SAME TRIPLE CAN LAND ON A COUNTED POSITION) IS NOT ANSWERED FROM IT; AN EDGE READ BEFORE A
+    // CHANGE THAT CAME AFTER THE COUNT STILL IS, BY THE NUMBERING OF THE LIST IT WAS READ FROM
+    private int    usedAtCount = -1;
     private int    size;
     private int[]  positions       = new int[8];
     private int[]  edgeBuckets     = new int[8];
@@ -137,7 +143,7 @@ final class LightEdgeCensus {
    *
    * @return false when the census declines and the edge has to walk its list alone
    */
-  boolean resolve(final LightEdgeRID edge, final RID segment, final int position) {
+  boolean resolve(final LightEdgeRID edge, final RID segment, final int position, final int chunkUsed) {
     Counts c = counts;
     if (c == null) {
       c = buildOnSecondQuestion();
@@ -147,7 +153,11 @@ final class LightEdgeCensus {
 
     final RID neighbor = direction == Vertex.DIRECTION.OUT ? edge.getInRID() : edge.getOutRID();
     final ChunkEntries chunk = c.chunks.get(segment);
-    final int occurrence = chunk != null ? chunk.occurrenceOf(position, edge.getBucketId(), neighbor) : -1;
+    if (chunk == null || chunk.usedAtCount != chunkUsed)
+      // THE CHUNK HOLDS NO ENTRY THE CENSUS COUNTED, OR THE EDGE WAS READ OFF ANOTHER IMAGE OF IT (AN ENTRY REMOVED OR
+      // ADDED BETWEEN THE COUNT AND THE READ): ONLY A WALK OF THE LIST AS IT IS NOW CAN SAY
+      return false;
+    final int occurrence = chunk.occurrenceOf(position, edge.getBucketId(), neighbor);
     if (occurrence < 0)
       // THE ORIGIN DID NOT HOLD THIS TRIPLE WHEN THE LIST WAS COUNTED: THE EDGE WAS READ AFTER THE LIST CHANGED, AND ONLY
       // A WALK OF THE LIST AS IT IS NOW CAN SAY
@@ -219,13 +229,17 @@ final class LightEdgeCensus {
         }
         listCounts.chunk.add(position, edgeRID.getBucketId(), neighbor, before);
       });
+      // EACH CHUNK'S SIZE, READ AFTER THE WALK THAT READ ITS ENTRIES (THE SAME TRANSACTION, THE SAME IMAGE)
+      for (final Map.Entry<RID, ChunkEntries> entry : chunks.entrySet())
+        entry.getValue().usedAtCount = ((EdgeSegment) database.lookupByRID(entry.getKey(), true)).getUsed();
       return new Counts(perType, chunks, listCounts.anyTwin);
     } catch (final RuntimeException e) {
       // NOT ONLY A RECORD GONE: ANY FAILURE TO READ THE LIST. THE CENSUS IS GIVEN UP ON, AND EACH EDGE WALKS ITS LIST ALONE,
       // WHERE A FAILURE THAT IS NOT TRANSIENT SURFACES AS IT DID BEFORE THE CENSUS EXISTED
-      // ONCE PER CENSUS (IT IS NOT TRIED AGAIN): A LIST THAT CANNOT BE READ IS WORTH SEEING, NOT ONLY AT FINE
-      LogManager.instance().log(this, Level.WARNING, "Cannot count the lightweight edges of %s (%s), each edge walks its list alone: %s",
-          owner, direction, e.toString());
+      // THE FIRST ONE OF THE PROCESS AT WARNING, THE OTHERS AT FINE: A LIST THAT CANNOT BE READ IS WORTH SEEING, BUT NOT
+      // ONCE PER VERTEX OF EVERY QUERY THAT MEETS IT
+      LogManager.instance().log(this, FAILURE_WARNED.compareAndSet(false, true) ? Level.WARNING : Level.FINE,
+          "Cannot count the lightweight edges of %s (%s), each edge walks its list alone: %s", owner, direction, e.toString());
       return null;
     }
   }
