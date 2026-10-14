@@ -388,6 +388,16 @@ public final class RegexAutomaton {
     return result.toString();
   }
 
+  private static boolean containsAnchor(final Node node) {
+    return switch (node) {
+      case Anchor anchor -> true;
+      case Symbols symbols -> false;
+      case Sequence sequence -> sequence.items().stream().anyMatch(RegexAutomaton::containsAnchor);
+      case Alternation alternation -> alternation.options().stream().anyMatch(RegexAutomaton::containsAnchor);
+      case Repetition repetition -> containsAnchor(repetition.item());
+    };
+  }
+
   /**
    * An upper bound of the states {@link Builder#build} creates for {@code node}, saturating instead of overflowing, so a
    * pattern too large to expand is refused before anything is allocated for it.
@@ -583,8 +593,10 @@ public final class RegexAutomaton {
       final Node atom = parseAtom();
       if (position >= source.length())
         return atom;
-      // a quantified anchor is a loop over nothing, which Pattern ends after a turn that matched nothing: not compiled
-      if (atom instanceof Anchor && "*+?{".indexOf(source.charAt(position)) >= 0)
+      // an anchor inside a repetition makes a turn that can match nothing, and Pattern ends the loop after such a turn:
+      // '(?:^0*){2}' does not match '0' for Pattern, which the regular language does. Not compiled, so the fallback answers
+      // what Pattern answers
+      if ("*+?{".indexOf(source.charAt(position)) >= 0 && containsAnchor(atom))
         throw Unsupported.INSTANCE;
 
       final int min;
