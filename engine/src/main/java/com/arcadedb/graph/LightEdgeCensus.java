@@ -24,6 +24,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.LongObjectHashMap;
 import com.arcadedb.utility.RidIntHashMap;
 
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.logging.Level;
@@ -48,17 +49,16 @@ import java.util.logging.Level;
  * <b>A census is the list as it was when it was counted.</b> That is what an edge read before a change of the list
  * needs: its origin (chunk, position) names the entry it was read from in THAT list, and a walk made after an entry
  * before it was removed (the entries shift back) would find another entry at that position. An answer is only given
- * when it can be checked against the census: an entry of a twinned triple is recorded with its triple, and an edge
- * whose origin holds another triple in the census, or whose triple the census never saw (written after it was counted),
- * is declined and walks its list alone, which answers for the list as it is now. A triple counted once has a single
- * relationship whatever position it was read at.
+ * when it can be checked against the census: every lightweight entry is recorded with its position and its triple,
+ * and an edge whose origin held another triple when the list was counted, or no entry at all (the list changed since:
+ * an entry was added before it, or it was written after the count), is declined and walks its list alone, which answers
+ * for the list as it is now.
  * <p>
- * Memory is one int per distinct (edge type, neighbour) of the list's lightweight entries, in primitive maps, plus one
- * small entry per entry of a TWINNED triple - O(entries) only for a list made mostly of twins, an application mistake
- * the {@code UNIQUE} flag exists to prevent; none at all for a list without twins, whose second pass is skipped. It
- * lives as long as an edge read by the iteration does: a query that keeps such edges (a {@code collect}, the keys of a
- * {@code DISTINCT}, an {@code ORDER BY} buffer) keeps the census of every list they came from, which for a super-node
- * is O(distinct neighbours) - the same order as the edges the query keeps.
+ * Memory is O(lightweight entries of the list) in primitive arrays and maps, built in one walk: about 24 bytes an entry
+ * for its position, triple and occurrence, and one int per distinct (edge type, neighbour) for the counts. It lives as
+ * long as an edge read by the iteration does: a query that keeps such edges (a {@code collect}, the keys of a
+ * {@code DISTINCT}, an {@code ORDER BY} buffer) keeps the census of every list they came from - for a super-node, the
+ * same order as the edges of it the query keeps.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -74,15 +74,51 @@ final class LightEdgeCensus {
   private volatile Counts  counts;
 
   /**
-   * What the census counted. {@code twinsByType}: edge type bucket -> neighbour -> how many entries of the triple the
-   * list holds. {@code twinEntries}: chunk -> byte position -> the entry, for the entries of a triple with twins only;
-   * null for a list without twins.
+   * What the census counted: {@code twinsByType}, edge type bucket -> neighbour -> how many entries of the triple the
+   * list holds; {@code chunks}, chunk -> its lightweight entries, the triple each holds and which of its twins it is.
    */
-  private record Counts(LongObjectHashMap<RidIntHashMap> twinsByType, Map<RID, LongObjectHashMap<Twin>> twinEntries) {
+  private record Counts(LongObjectHashMap<RidIntHashMap> twinsByType, Map<RID, ChunkEntries> chunks, boolean anyTwin) {
   }
 
-  /** An entry of a twinned triple: the triple it holds, so an answer can be checked, and which of its twins it is. */
-  private record Twin(int edgeBucketId, RID neighbor, int occurrence) {
+  /**
+   * The lightweight entries of one chunk as the census read them, in parallel primitive arrays ordered by byte position
+   * (the order a chunk is read in): where each entry is, the triple it holds and its occurrence. EVERY answer is checked
+   * against them, a triple counted once included: the list can change after it was counted (an entry added shifts the
+   * entries after it), and an edge read off it afterwards must not be taken for the entry that used to be at its position.
+   */
+  private static final class ChunkEntries {
+    private int    size;
+    private int[]  positions       = new int[8];
+    private int[]  edgeBuckets     = new int[8];
+    private int[]  neighborBuckets = new int[8];
+    private long[] neighborOffsets = new long[8];
+    private int[]  occurrences     = new int[8];
+
+    private void add(final int position, final int edgeBucket, final RID neighbor, final int occurrence) {
+      if (size == positions.length) {
+        final int capacity = size * 2;
+        positions = Arrays.copyOf(positions, capacity);
+        edgeBuckets = Arrays.copyOf(edgeBuckets, capacity);
+        neighborBuckets = Arrays.copyOf(neighborBuckets, capacity);
+        neighborOffsets = Arrays.copyOf(neighborOffsets, capacity);
+        occurrences = Arrays.copyOf(occurrences, capacity);
+      }
+      positions[size] = position;
+      edgeBuckets[size] = edgeBucket;
+      neighborBuckets[size] = neighbor.getBucketId();
+      neighborOffsets[size] = neighbor.getPosition();
+      occurrences[size] = occurrence;
+      ++size;
+    }
+
+    /** @return the occurrence of the entry at {@code position} when it holds the triple, -1 otherwise */
+    private int occurrenceOf(final int position, final int edgeBucket, final RID neighbor) {
+      final int i = Arrays.binarySearch(positions, 0, size, position);
+      if (i < 0 || edgeBuckets[i] != edgeBucket || neighborBuckets[i] != neighbor.getBucketId()
+          || neighborOffsets[i] != neighbor.getPosition())
+        return -1;
+      return occurrences[i];
+    }
   }
 
   LightEdgeCensus(final DatabaseInternal database, final RID owner, final Vertex.DIRECTION direction) {
@@ -109,30 +145,21 @@ final class LightEdgeCensus {
         return false;
     }
 
-    final RidIntHashMap byNeighbor = c.twinsByType.get(edge.getBucketId());
     final RID neighbor = direction == Vertex.DIRECTION.OUT ? edge.getInRID() : edge.getOutRID();
-    final int twins = byNeighbor != null ? byNeighbor.get(neighbor, 0) : 0;
-    if (twins == 0)
-      // A TRIPLE THE LIST DID NOT HOLD WHEN IT WAS COUNTED: ONLY A WALK OF THE LIST AS IT IS NOW CAN SAY
+    final ChunkEntries chunk = c.chunks.get(segment);
+    final int occurrence = chunk != null ? chunk.occurrenceOf(position, edge.getBucketId(), neighbor) : -1;
+    if (occurrence < 0)
+      // THE ORIGIN DID NOT HOLD THIS TRIPLE WHEN THE LIST WAS COUNTED: THE EDGE WAS READ AFTER THE LIST CHANGED, AND ONLY
+      // A WALK OF THE LIST AS IT IS NOW CAN SAY
       return false;
-    if (twins == 1) {
-      edge.numbered(0, 1);
-      return true;
-    }
-
-    final LongObjectHashMap<Twin> inChunk = c.twinEntries != null ? c.twinEntries.get(segment) : null;
-    final Twin twin = inChunk != null ? inChunk.get(position) : null;
-    if (twin == null || twin.edgeBucketId != edge.getBucketId() || !twin.neighbor.equals(neighbor))
-      // THE ORIGIN HELD ANOTHER ENTRY WHEN THE LIST WAS COUNTED: THE EDGE WAS READ AFTER THE LIST CHANGED
-      return false;
-    edge.numbered(twin.occurrence, twins);
+    edge.numbered(occurrence, c.twinsByType.get(edge.getBucketId()).get(neighbor, 0));
     return true;
   }
 
-  /** Whether the census numbered twins, i.e. made its second pass. For tests. */
+  /** Whether the list held twins when the census counted it. For tests. */
   boolean hasTwins() {
     final Counts c = counts;
-    return c != null && c.twinEntries != null;
+    return c != null && c.anyTwin;
   }
 
   /** Whether the census was counted. For tests. */
@@ -159,8 +186,13 @@ final class LightEdgeCensus {
     return built;
   }
 
+  /**
+   * One walk of the list: every lightweight entry is recorded with its triple and its occurrence, which is how many
+   * entries of the triple came before it in chain order - the numbering the edge's own walk gives.
+   */
   private Counts build() {
     final LongObjectHashMap<RidIntHashMap> perType = new LongObjectHashMap<>();
+    final Map<RID, ChunkEntries> chunks = new HashMap<>();
     final ListCounts listCounts = new ListCounts();
     try {
       final VertexInternal vertex = (VertexInternal) database.lookupByRID(owner, false);
@@ -176,28 +208,13 @@ final class LightEdgeCensus {
         byNeighbor.put(neighbor, before + 1);
         if (before > 0)
           listCounts.anyTwin = true;
+        if (listCounts.chunk == null || !segment.equals(listCounts.chunkRID)) {
+          listCounts.chunkRID = segment;
+          listCounts.chunk = chunks.computeIfAbsent(segment, k -> new ChunkEntries());
+        }
+        listCounts.chunk.add(position, edgeRID.getBucketId(), neighbor, before);
       });
-
-      if (listCounts.anyTwin) {
-        // SECOND PASS, ONLY FOR A LIST THAT HOLDS TWINS: NUMBER THE ENTRIES OF EVERY TWINNED TRIPLE IN CHAIN ORDER
-        final LongObjectHashMap<RidIntHashMap> seen = new LongObjectHashMap<>();
-        final Map<RID, LongObjectHashMap<Twin>> entries = new HashMap<>();
-        LightEdgeRID.walkList(database, vertex, direction, null, (segment, position, edgeRID, neighbor) -> {
-          if (edgeRID.getPosition() >= 0 || perType.get(edgeRID.getBucketId()).get(neighbor, 0) <= 1)
-            return;
-          RidIntHashMap seenOfType = seen.get(edgeRID.getBucketId());
-          if (seenOfType == null) {
-            seenOfType = new RidIntHashMap();
-            seen.put(edgeRID.getBucketId(), seenOfType);
-          }
-          final int occurrence = seenOfType.get(neighbor, 0);
-          seenOfType.put(neighbor, occurrence + 1);
-          entries.computeIfAbsent(segment, k -> new LongObjectHashMap<>())
-              .put(position, new Twin(edgeRID.getBucketId(), neighbor, occurrence));
-        });
-        return new Counts(perType, entries);
-      }
-      return new Counts(perType, null);
+      return new Counts(perType, chunks, listCounts.anyTwin);
     } catch (final RuntimeException e) {
       // NOT ONLY A RECORD GONE: ANY FAILURE TO READ THE LIST. THE CENSUS IS GIVEN UP ON, AND EACH EDGE WALKS ITS LIST ALONE,
       // WHERE A FAILURE THAT IS NOT TRANSIENT SURFACES AS IT DID BEFORE THE CENSUS EXISTED
@@ -208,8 +225,10 @@ final class LightEdgeCensus {
     }
   }
 
-  /** What the first pass learns about the list as a whole. */
+  /** What the walk carries from one entry to the next. */
   private static final class ListCounts {
-    private boolean anyTwin;
+    private boolean      anyTwin;
+    private RID          chunkRID;
+    private ChunkEntries chunk;
   }
 }
