@@ -85,6 +85,9 @@ final class LabelFilter {
   private final boolean                        beginSequenceAtStart;
   private final int                            minLevel;
   private final boolean                        endNodesOnly;
+  // Plain maps, no synchronization: a filter is parsed per call and walked by that call's thread only, so it must never
+  // be cached across calls or shared by a parallel walk. Keyed by the type instance, which a single call cannot see
+  // replaced: a schema change during the call would have to drop a type the walk is reading
   private final IdentityHashMap<DocumentType, Verdict>[] verdictsByType;
 
   @SuppressWarnings("unchecked")
@@ -104,7 +107,7 @@ final class LabelFilter {
 
   /**
    * Parses a filter given as a string (APOC's form) or as a list of strings, each of which is one entry of the single
-   * step.
+   * step: the list form never forms a sequence, a comma inside one of its elements is part of a label name.
    *
    * @param filterStartNode      whether the filter applies to the start node too (APOC's {@code filterStartNode})
    * @param beginSequenceAtStart whether the first step of a sequence applies to the start node, or to the node one hop
@@ -134,7 +137,7 @@ final class LabelFilter {
       final boolean filterStartNode, final boolean beginSequenceAtStart, final int minLevel) {
     boolean blank = true;
     for (final String step : steps)
-      if (!step.isBlank()) {
+      if (!step.replace('|', ' ').isBlank()) {
         blank = false;
         break;
       }
@@ -229,11 +232,14 @@ final class LabelFilter {
     private static String[] parseConjunction(final String procedureName, final String labels, final Schema schema) {
       if ("*".equals(labels))
         return WILDCARD;
-      final String[] names = labels.split(":");
+      final String[] names = labels.split(":", -1);
       for (int i = 0; i < names.length; i++) {
         names[i] = names[i].trim();
         if (names[i].isEmpty())
           throw new IllegalArgumentException(procedureName + "(): label filter entry '" + labels + "' has an empty label");
+        if ("*".equals(names[i]))
+          throw new IllegalArgumentException(
+              procedureName + "(): label filter entry '" + labels + "' uses '*' inside a compound label: '*' stands alone");
       }
       ProcedureSchemaTypes.requireVertexTypes(procedureName, schema, names);
       return names;
@@ -243,6 +249,10 @@ final class LabelFilter {
       return group.toArray(new String[0][]);
     }
 
+    /**
+     * The verdict of this step for a node of {@code type}. May answer {@link Verdict#TERMINATE}, which only
+     * {@link LabelFilter#evaluate} sees: it resolves it against the minimum level before returning to the walk.
+     */
     Verdict evaluate(final DocumentType type, final boolean endNodesOnly) {
       if (matches(type, denylist))
         return Verdict.EXCLUDE_AND_PRUNE;
