@@ -158,7 +158,10 @@ before, and the number grows quickly with `maxLevel`. To keep the old answer:
 The walk now produces its paths as the query reads them, so a `limit` (or a `LIMIT` after the call) ends it instead of trimming
 the answer of a walk that ran to the end, and the branches it holds are charged to the query's heap
 (`arcadedb.queryMaxHeapElementsAllowedPerOp` and `arcadedb.queryMaxHeapRAM`): a trail walk too wide for them fails the query
-rather than the server. Whatever the uniqueness, a walk never leaves a node by the relationship it arrived by, as in APOC.
+rather than the server. The same cap applies to a breadth-first walk of a very wide component, `path.spanningtree` included:
+a level with more branches than `arcadedb.queryMaxHeapElementsAllowedPerOp` (auto-scaled with the heap, never below 500000)
+fails the query with a heap-limit error that names the setting; raise it to walk such a component. Whatever the uniqueness,
+a walk never leaves a node by the relationship it arrived by, as in APOC.
 
 **New options (#10049).** `endNodes`, `terminatorNodes`, `allowlistNodes` (also `whitelistNodes`) and `denylistNodes` (also
 `blacklistNodes`) name nodes where the `>`, `/`, `+` and `-` operators of `labelFilter` name labels, and combine with it: a
