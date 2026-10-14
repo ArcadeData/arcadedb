@@ -61,7 +61,12 @@ public class RecordEventsRegistry implements RecordEvents {
     this.databaseBeforeReadListeners = databaseBeforeReadListeners;
   }
 
-  /** A registry for a type of this database, whose BEFORE READ listeners are counted in the database's total. */
+  /**
+   * A registry for a type of this database, whose BEFORE READ listeners are counted in the database's total. The contract
+   * that keeps the total exact: whoever retires the type (a drop, a schema reload replacing it) calls
+   * {@link #detachFromDatabase()} on its registry. A registry discarded without it keeps its listeners counted, which can
+   * only keep the database on the dispatch path, never skip a listener.
+   */
   public RecordEventsRegistry newTypeRegistry() {
     return new RecordEventsRegistry(databaseBeforeReadListeners);
   }
