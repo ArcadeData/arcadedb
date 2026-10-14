@@ -99,6 +99,18 @@ class Issue9958MovingAvgPositionalTest extends TestHelper {
   }
 
   @Test
+  void windowEqualToAndWiderThanTheSeries() {
+    insertSeries("Wide9958", 2.0, null, 4.0, 1e16, 6.0);
+
+    // w == n: the single block spans every row
+    assertThat(single("SELECT ts.movingAvg(v, 5) AS r FROM Wide9958")).containsExactly(2.0, 2.0, 3.0, (6.0 + 1e16) / 3,
+        (12.0 + 1e16) / 4);
+    // w > n: every window is a prefix of the series
+    assertThat(single("SELECT ts.movingAvg(v, 50) AS r FROM Wide9958")).containsExactly(2.0, 2.0, 3.0, (6.0 + 1e16) / 3,
+        (12.0 + 1e16) / 4);
+  }
+
+  @Test
   void controlSeriesUnchanged() {
     insertSeries("Ctl9958", 1.0, 2.0, 3.0, 4.0, 5.0, 6.0);
 
