@@ -6571,7 +6571,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             final String s = v.getStringValue();
             // Issue #9969: a ZonedDateTime travels as zoned text; its instant is exact, so it must not be re-read through the
             // string chain, which rebases an offset onto the database's zone
-            if (GrpcTemporalCodec.decodeString(s, v.getLogicalType()) instanceof ZonedDateTime zdt)
+            if (GrpcTemporalCodec.ZONED_DATETIME.equalsIgnoreCase(v.getLogicalType())
+                && GrpcTemporalCodec.decodeString(s, v.getLogicalType()) instanceof ZonedDateTime zdt)
               yield Date.from(zdt.toInstant());
             try {
               yield new Date(Long.parseLong(s));
@@ -6805,7 +6806,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             // to the column's declared precision.
             final String s = v.getStringValue();
             // Issue #9969: see the DATE/DATETIME branch
-            if (GrpcTemporalCodec.decodeString(s, v.getLogicalType()) instanceof ZonedDateTime zdt)
+            if (GrpcTemporalCodec.ZONED_DATETIME.equalsIgnoreCase(v.getLogicalType())
+                && GrpcTemporalCodec.decodeString(s, v.getLogicalType()) instanceof ZonedDateTime zdt)
               yield zdt.toInstant();
             try {
               yield Instant.ofEpochMilli(Long.parseLong(s));

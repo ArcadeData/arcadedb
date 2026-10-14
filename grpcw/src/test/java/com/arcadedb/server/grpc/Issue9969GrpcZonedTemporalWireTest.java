@@ -117,6 +117,15 @@ class Issue9969GrpcZonedTemporalWireTest {
   }
 
   @Test
+  void timesWithZeroSecondsRoundTrip() {
+    final LocalTime local = LocalTime.of(0, 30);
+    assertThat(GrpcTypeConverter.fromGrpcValue(GrpcTypeConverter.toGrpcValue(local))).isEqualTo(local);
+
+    final OffsetTime offset = OffsetTime.of(0, 30, 0, 0, ZoneOffset.ofHours(5));
+    assertThat(GrpcTypeConverter.fromGrpcValue(GrpcTypeConverter.toGrpcValue(offset))).isEqualTo(offset);
+  }
+
+  @Test
   void tagsMatchCaseInsensitively() {
     final GrpcValue upper = GrpcValue.newBuilder().setStringValue("00:30:00+02:00").setLogicalType("OFFSET_TIME").build();
     assertThat(GrpcTypeConverter.fromGrpcValue(upper)).isEqualTo(OffsetTime.of(0, 30, 0, 0, ZoneOffset.ofHours(2)));

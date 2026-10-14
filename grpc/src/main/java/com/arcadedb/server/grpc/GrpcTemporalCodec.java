@@ -71,7 +71,7 @@ public final class GrpcTemporalCodec {
    */
   public static GrpcValue encode(final Object o) {
     if (o instanceof Date v)
-      return timestamp(Math.floorDiv(v.getTime(), 1000L), (int) Math.floorMod(v.getTime(), 1000L) * 1_000_000, DATETIME);
+      return timestamp(Math.floorDiv(v.getTime(), 1000L), (int) (Math.floorMod(v.getTime(), 1000L) * 1_000_000L), DATETIME);
     if (o instanceof LocalDate ld)
       return timestamp(ld.toEpochDay() * 86_400L, 0, DATE);
     if (o instanceof LocalDateTime ldt)
