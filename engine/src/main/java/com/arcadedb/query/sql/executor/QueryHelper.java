@@ -18,23 +18,34 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.utility.TimeBoundRegex;
-
-import java.util.regex.Pattern;
 
 public class QueryHelper {
   protected static final char WILDCARD_ANYCHAR = '?';
   protected static final char WILDCARD_ANY     = '%';
+  // THE DEADLINE IS CHECKED EVERY 4096 STEPS OF A LIKE MATCH: System.nanoTime() IS NOT FREE, AND A MATCH THAT TAKES
+  // FEWER STEPS ENDS ESSENTIALLY AT ONCE
+  private static final int  DEADLINE_CHECK_INTERVAL_MASK = 4095;
+  // A PATTERN IS USER INPUT OF ANY LENGTH: THE TIMEOUT MESSAGE QUOTES ONLY ITS START
+  private static final int  MAX_PATTERN_IN_MESSAGE       = 100;
 
   /**
-   * A sequence of several {@code %}/{@code ?} wildcards (translated to {@code .*}/{@code .} by {@link
-   * #convertForRegExp(String)}) reproduces the same catastrophic-backtracking shape as the issue #5886
-   * reproducer even without grouping, alternation, or nested quantifiers - a pattern like {@code %a%a%a%a%a%}
-   * against input that does not fully match it hangs exactly like {@code (.*a){20}$} does. Bounded the same
-   * way as {@code MATCHES}/{@code =~}: see {@link TimeBoundRegex}.
+   * Answers {@code currentValue LIKE value}: {@code %} matches any sequence of characters, the empty one included,
+   * {@code ?} exactly one character (a code point, so a surrogate pair is one character), and {@code \%} and
+   * {@code \?} the literal characters. A backslash before anything else, or closing the pattern, is a literal backslash,
+   * and every other character of the pattern stands for itself. A {@code null} operand never matches.
+   * <p>
+   * The pattern is matched as it is, with no translation to a regular expression, so nothing is compiled per evaluated
+   * row, and a pattern made of many {@code %} segments, which made the {@code .*} translation backtrack
+   * exponentially (issue #5886), costs at most {@code currentValue.length() * value.length()} steps here, since the last
+   * {@code %} met is the only choice ever revisited. That bound is still honoured against the deadline, so a huge value
+   * matched against a long pattern cannot run unbounded either.
    *
    * @param timeoutMillis maximum time allowed for the match, in milliseconds; a value {@code <= 0} disables the
    *                      bound
+   *
+   * @throws TimeoutException if the match does not complete within {@code timeoutMillis}
    */
   public static boolean like(final String currentValue, final String value, final long timeoutMillis) {
     return likeUntil(currentValue, value, TimeBoundRegex.newDeadline(timeoutMillis));
@@ -43,67 +54,72 @@ public class QueryHelper {
   /**
    * Same as {@link #like(String, String, long)}, but against an absolute deadline shared across a series of
    * related matches (e.g. every item of a multi-value property matched against the same pattern) rather than
-   * each getting its own full timeout budget - see {@link TimeBoundRegex#matchesUntil(Pattern, CharSequence,
-   * long)}.
+   * each getting its own full timeout budget - see {@link TimeBoundRegex#newDeadline(long)}.
+   *
+   * @throws TimeoutException if the match does not complete before {@code deadlineNanos}
    */
-  public static boolean likeUntil(String currentValue, String value, final long deadlineNanos) {
-    if (currentValue == null || value == null || (currentValue.isEmpty() ^ value.isEmpty()))
-      // EMPTY/NULL PARAMETERS
+  public static boolean likeUntil(final String currentValue, final String value, final long deadlineNanos) {
+    if (currentValue == null || value == null)
       return false;
-    else if (currentValue.isEmpty() && value.isEmpty())
-      return true;
 
-    value = convertForRegExp(value);
-    return TimeBoundRegex.matchesUntil(Pattern.compile(value), currentValue, deadlineNanos);
-  }
+    final int valueLength = currentValue.length();
+    final int patternLength = value.length();
+    int v = 0;
+    int p = 0;
+    // WHERE THE LAST % MET RESUMES THE PATTERN, AND THE POSITION IN THE VALUE ITS MATCH ENDS AT: ON A MISMATCH THAT %
+    // TAKES ONE MORE CHARACTER, AND NO EARLIER % EVER NEEDS TO BE REVISITED
+    int afterAny = -1;
+    int anyEnd = 0;
+    int steps = 0;
 
-  public static String convertForRegExp(String value) {
+    while (v < valueLength) {
+      if ((++steps & DEADLINE_CHECK_INTERVAL_MASK) == 0 && deadlineNanos != Long.MAX_VALUE && System.nanoTime() - deadlineNanos > 0)
+        throw new TimeoutException("LIKE operation aborted (arcadedb.command.regexTimeout): pattern '" + (patternLength > MAX_PATTERN_IN_MESSAGE ?
+            value.substring(0, MAX_PATTERN_IN_MESSAGE) + "...' of length " + patternLength :
+            value + "'") + " against input of length " + valueLength);
 
-    final StringBuilder sb = new StringBuilder("(?s)");
-
-    for (int i = 0; i < value.length();++i) {
-
-      final char c = value.charAt(i);
-      switch (c) {
-      case '\\':
-        if (i + 1 < value.length()) {
-          final char next = value.charAt(i + 1);
-          if (next == WILDCARD_ANY) {
-            sb.append(next);
-            ++i;
-            break;
-          } else if (next == WILDCARD_ANYCHAR) {
-            sb.append("\\" + next);
-            ++i;
-            break;
+      if (p < patternLength) {
+        final char c = value.charAt(p);
+        if (c == WILDCARD_ANY) {
+          afterAny = ++p;
+          anyEnd = v;
+          continue;
+        }
+        if (c == WILDCARD_ANYCHAR) {
+          v += Character.charCount(currentValue.codePointAt(v));
+          ++p;
+          continue;
+        }
+        char literal = c;
+        int literalLength = 1;
+        if (c == '\\' && p + 1 < patternLength) {
+          final char next = value.charAt(p + 1);
+          if (next == WILDCARD_ANY || next == WILDCARD_ANYCHAR) {
+            literal = next;
+            literalLength = 2;
           }
         }
-      case '[':
-      case ']':
-      case '{':
-      case '}':
-      case '(':
-      case ')':
-      case '|':
-      case '*':
-      case '+':
-      case '$':
-      case '^':
-      case '.':
-        sb.append("\\" + c);
-        break;
-      case WILDCARD_ANYCHAR:
-        sb.append(".");
-        break;
-      case WILDCARD_ANY:
-        sb.append(".*");
-        break;
-      default:
-        sb.append(c);
-        break;
+        // A LITERAL IS COMPARED ONE UTF-16 UNIT AT A TIME: THE TWO HALVES OF A PAIR IN THE PATTERN MATCH THE PAIR IN THE VALUE,
+        // AND ONLY A PATTERN HOLDING HALF A PAIR, WHICH IS NO CHARACTER AT ALL, COULD MATCH HALF OF ONE
+        if (currentValue.charAt(v) == literal) {
+          ++v;
+          p += literalLength;
+          continue;
+        }
       }
+
+      if (afterAny < 0)
+        return false;
+
+      anyEnd += Character.charCount(currentValue.codePointAt(anyEnd));
+      v = anyEnd;
+      p = afterAny;
     }
-    return sb.toString();
+
+    // THE VALUE IS CONSUMED: WHAT IS LEFT OF THE PATTERN MATCHES IT ONLY IF IT IS MADE OF % ALONE
+    while (p < patternLength && value.charAt(p) == WILDCARD_ANY)
+      ++p;
+    return p == patternLength;
   }
 
   /**
@@ -133,7 +149,7 @@ public class QueryHelper {
 
   /**
    * The characters every match of a {@code LIKE} pattern starts with: those before the first wildcard, read the way
-   * {@link #convertForRegExp(String)} reads them ({@code \%} and {@code \?} are the literal characters, a backslash
+   * {@link #like(String, String, long)} reads them ({@code \%} and {@code \?} are the literal characters, a backslash
    * before anything else is a literal backslash). Empty when the pattern opens with a wildcard.
    */
   public static String likeLiteralPrefix(final String pattern) {

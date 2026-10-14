@@ -531,18 +531,14 @@ public class PromQLEvaluator {
     final String name = fn.name().toLowerCase(Locale.ROOT);
     checkArgumentCount(name, fn.args().size(), 1, "round".equals(name) ? 2 : 1);
     final PromQLResult argResult = evaluate(fn.args().getFirst(), evalTimeMs, queryStartMs, queryEndMs, stepMs, depth);
-    // A range vector used to come back unchanged and a string became a NaN scalar (issue #9883). A scalar argument stays
-    // accepted, as before: Prometheus refuses it, but existing queries rely on abs(-1) being a scalar.
-    if (!isScalarOrInstantVector(fn.args().getFirst(), argResult))
+    // Like Prometheus, only an instant vector is accepted: a range vector used to come back unchanged and a string became
+    // a NaN scalar (issue #9883), and a scalar answered a scalar (`abs(-1)` was 1, issue #9924). Checked on the evaluated
+    // argument, because whether it is a scalar is not always syntactic (`abs(1 + 1)`, `abs((1 > bool 0))`).
+    if (!(argResult instanceof InstantVector iv))
       throw new IllegalArgumentException("expected type instant vector in call to function \"" + name + "\", got "
           + valueTypeName(fn.args().getFirst(), argResult));
     final double param = extractSecondParam(fn, name, evalTimeMs, queryStartMs, queryEndMs, stepMs, depth);
 
-    if (argResult instanceof ScalarResult sr)
-      return new ScalarResult(applyScalarFn(name, sr.value(), param), evalTimeMs);
-
-    // the only other type the check above lets through
-    final InstantVector iv = (InstantVector) argResult;
     final List<VectorSample> samples = new ArrayList<>();
     final boolean keepName = functionKeepsMetricName(name);
     for (final VectorSample sample : iv.samples())
@@ -626,7 +622,7 @@ public class PromQLEvaluator {
     if (leftResult instanceof ScalarResult ls && rightResult instanceof ScalarResult rs) {
       // Prometheus refuses a scalar-scalar comparison without `bool`: there is no sample to keep or drop, so only the
       // 0/1 answer is meaningful and it must be asked for (issue #9723). Checked on the evaluated operands, not in the
-      // parser, because whether an operand is a scalar is not always syntactic (`abs(-1)`, `(1 > bool 0)`).
+      // parser, because whether an operand is a scalar is not always syntactic (`(1 + 1)`, `(1 > bool 0)`).
       if (bin.op().isComparison() && !bin.returnBool())
         throw new IllegalArgumentException(SCALAR_COMPARISON_WITHOUT_BOOL);
       return new ScalarResult(applyBinaryOp(bin.op(), ls.value(), rs.value()), evalTimeMs);

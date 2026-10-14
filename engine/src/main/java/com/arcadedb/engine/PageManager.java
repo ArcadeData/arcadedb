@@ -450,6 +450,13 @@ public class PageManager extends LockContext {
     }
   }
 
+  /** Test only: the number of lifecycle references currently held (one per open database). */
+  int getLifecycleRefCount() {
+    synchronized (LIFECYCLE_LOCK) {
+      return lifecycleRefCount;
+    }
+  }
+
   /**
    * Declares that the configuration changed (used by the GlobalConfiguration PROFILE setter). Always a
    * no-op at runtime: with no database open the next {@link #acquire()} reads the fresh settings anyway
@@ -545,8 +552,9 @@ public class PageManager extends LockContext {
 
   /** @return true when everything reached the disk; false when the bounded wait gave up (see #4928). */
   public boolean waitAllPagesOfDatabaseAreFlushed(final Database database) {
-    if (flushThread != null)
-      return flushThread.waitAllPagesOfDatabaseAreFlushed(database);
+    final PageManagerFlushThread thread = flushThread;
+    if (thread != null)
+      return thread.waitAllPagesOfDatabaseAreFlushed(database);
     return true;
   }
 
@@ -576,8 +584,9 @@ public class PageManager extends LockContext {
    *                {@link PageManagerFlushThread#removeAllPagesOfDatabase(Database, boolean)}).
    */
   public void removeModifiedPagesOfDatabase(final Database database, final boolean dropped) {
-    if (flushThread != null)
-      flushThread.removeAllPagesOfDatabase(database, dropped);
+    final PageManagerFlushThread thread = flushThread;
+    if (thread != null)
+      thread.removeAllPagesOfDatabase(database, dropped);
     // Forget the snapshot barrier monitor too, so a closed/dropped Database instance (and everything it pins) can be
     // garbage collected instead of being retained as a map key for the lifetime of the JVM-wide page manager.
     snapshotBarrierLocks.remove(database);
@@ -585,6 +594,15 @@ public class PageManager extends LockContext {
 
   public void suspendFlushAndExecute(final Database database, final CallableNoReturn callback)
       throws IOException, InterruptedException {
+    // #9927: read the flush thread ONCE and release on that instance. A callback that closes the last open database
+    // shuts the page manager down and nulls the field. The release on the dead thread is then a no-op: the close
+    // already cleared this database's suspension count (removeAllPagesOfDatabase), and setSuspended(db, false)
+    // returns at its null-count check before touching the deferred backlog or any signal.
+    final PageManagerFlushThread thread = flushThread;
+    if (thread == null)
+      throw new IllegalStateException(
+          "Cannot suspend the page flush of database '" + database.getName() + "': the page manager is not running");
+
     // FAST PATH (review on PR #8128, round 5): "joined, skip the drain" must never be decided from a peek
     // taken BEFORE the acquire - flushThread.isSuspended(database) followed by a separately-resolved
     // trySuspendUntil left a window in which the peek sees "suspended" (true at that instant) but the
@@ -600,7 +618,7 @@ public class PageManager extends LockContext {
     lock();
     final boolean joinedExisting;
     try {
-      joinedExisting = flushThread.tryJoinActiveSuspension(database);
+      joinedExisting = thread.tryJoinActiveSuspension(database);
     } finally {
       unlock();
     }
@@ -614,7 +632,7 @@ public class PageManager extends LockContext {
       // the #8111 drains. A database that is not suspended, or whose last suspender is still resuming, is
       // refused (not waited on) by tryJoinActiveSuspension and falls through to the drain-then-acquire
       // sequence below, which is correct for both of those cases.
-      runAlreadySuspended(database, callback);
+      runAlreadySuspended(thread, database, callback);
       return;
     }
 
@@ -663,7 +681,7 @@ public class PageManager extends LockContext {
         // suspension it observed finishes releasing before the wait resolves, turning this into a fresh
         // acquisition) applies exactly as much here as it did in the fast path, and this branch is reached
         // precisely when the fast path already declined to join once.
-        if (flushThread.tryJoinActiveSuspension(database)) {
+        if (thread.tryJoinActiveSuspension(database)) {
           nested = true;
         } else {
           final long deadline = System.currentTimeMillis() + SNAPSHOT_BARRIER_MAX_MILLIS;
@@ -676,13 +694,13 @@ public class PageManager extends LockContext {
           // callback is about to read stale - exactly the #8111 bug this whole barrier exists to close.
           // Proceeding anyway on a timeout would trade a rare, loud failure for the same silent one #8111
           // was.
-          if (!flushThread.waitPendingPagesOfDatabaseUntil(database, deadline))
+          if (!thread.waitPendingPagesOfDatabaseUntil(database, deadline))
             throw new IOException("Cannot freeze the files of database '" + database.getName()
                 + "': the flush pipeline did not settle within " + SNAPSHOT_BARRIER_MAX_MILLIS
                 + " ms under the publication lock, so the on-disk image would not reflect the last committed "
                 + "transaction(s)");
 
-          if (!flushThread.trySuspendUntil(database, deadline))
+          if (!thread.trySuspendUntil(database, deadline))
             // A CONCURRENT RESUME IS FLUSHING ITS DEFERRED BACKLOG AND WOULD KEEP EVERY COMMITTER IN THE JVM
             // WAITING BEHIND THIS LOCK - GIVE UP INSTEAD OF PROLONGING THAT (same tradeoff openSnapshot makes).
             throw new IOException("Cannot freeze the files of database '" + database.getName()
@@ -698,7 +716,7 @@ public class PageManager extends LockContext {
 
     if (nested) {
       // Discovered - and joined, via tryJoinActiveSuspension - under the lock above.
-      runAlreadySuspended(database, callback);
+      runAlreadySuspended(thread, database, callback);
       return;
     }
 
@@ -710,10 +728,10 @@ public class PageManager extends LockContext {
     // releases this caller's reference, and covers only the batch already in flight when trySuspendUntil
     // returned - the residual drain above is what guarantees there is nothing else left to catch.
     try {
-      flushThread.waitForCurrentFlushToComplete(database);
+      thread.waitForCurrentFlushToComplete(database);
       CodeUtils.executeIgnoringExceptions(callback, "Error during suspend flush", true);
     } finally {
-      flushThread.setSuspended(database, false);
+      thread.setSuspended(database, false);
     }
   }
 
@@ -724,17 +742,22 @@ public class PageManager extends LockContext {
    * reference this releases, via {@code tryJoinActiveSuspension} or {@code trySuspendUntil} - acquiring again in here would double-count that
    * reference and leak it forever, since nothing else would ever release the second one (a bug an earlier
    * version of this fix had, caught locally before push by the stress test below).
+   * <p>
+   * {@code thread} is the flush thread the reference was acquired on, never the field re-read: the callback may have
+   * closed the last open database and shut the page manager down (#9927).
    */
-  private void runAlreadySuspended(final Database database, final CallableNoReturn callback) {
+  private static void runAlreadySuspended(final PageManagerFlushThread thread, final Database database,
+      final CallableNoReturn callback) {
     try {
       CodeUtils.executeIgnoringExceptions(callback, "Error during suspend flush", true);
     } finally {
-      flushThread.setSuspended(database, false);
+      thread.setSuspended(database, false);
     }
   }
 
   public boolean isPageFlushingSuspended(final Database database) {
-    return flushThread.isSuspended(database);
+    final PageManagerFlushThread thread = flushThread;
+    return thread != null && thread.isSuspended(database);
   }
 
   // --------------------------------------------------------------------------------- POINT-IN-TIME SNAPSHOT (#6075)
@@ -1510,9 +1533,10 @@ public class PageManager extends LockContext {
    * per-database pending count and the suspension check long before it reached here. Do not introduce one.
    */
   private void awaitDeferredBacklogUnderCap(final List<MutablePage> pages) throws InterruptedException {
-    if (flushThread == null || pages == null || pages.isEmpty())
+    final PageManagerFlushThread thread = flushThread;
+    if (thread == null || pages == null || pages.isEmpty())
       return;
-    flushThread.awaitDeferredBacklogUnderCap(pages.getFirst().getPageId().getDatabase());
+    thread.awaitDeferredBacklogUnderCap(pages.getFirst().getPageId().getDatabase());
   }
 
   /**
@@ -1520,14 +1544,16 @@ public class PageManager extends LockContext {
    */
   public void simulateKillOfDatabase(final Database database) {
     removeAllReadPagesOfDatabase(database);
-    if (flushThread != null)
-      flushThread.removeAllPagesOfDatabase(database);
+    final PageManagerFlushThread thread = flushThread;
+    if (thread != null)
+      thread.removeAllPagesOfDatabase(database);
   }
 
   public void deleteFile(final Database database, final int fileId) {
     // Drain the async flush thread for this fileId first, otherwise its parked pages leak RAM and could be flushed to a dropped file.
-    if (flushThread != null)
-      flushThread.removeAllPagesOfFile(database, fileId);
+    final PageManagerFlushThread thread = flushThread;
+    if (thread != null)
+      thread.removeAllPagesOfFile(database, fileId);
 
     for (final CachedPage p : readCache.values()) {
       final PageId pageId = p.getPageId();
@@ -1951,8 +1977,9 @@ public class PageManager extends LockContext {
     stats.pagesReadSize = totalPagesReadSize.get();
     stats.pagesWritten = totalPagesWritten.get();
     stats.pagesWrittenSize = totalPagesWrittenSize.get();
-    stats.pageFlushQueueLength = flushThread != null ? flushThread.queue.size() : 0;
-    stats.pageFlushQueueMaxPerDatabase = flushThread != null ? flushThread.maxSlotsUsedByAnyDatabase() : 0;
+    final PageManagerFlushThread thread = flushThread;
+    stats.pageFlushQueueLength = thread != null ? thread.queue.size() : 0;
+    stats.pageFlushQueueMaxPerDatabase = thread != null ? thread.maxSlotsUsedByAnyDatabase() : 0;
     stats.cacheHits = cacheHits.sum();
     stats.cacheMiss = cacheMiss.sum();
     stats.concurrentModificationExceptions = totalConcurrentModificationExceptions.get();
@@ -1977,7 +2004,6 @@ public class PageManager extends LockContext {
     stats.snapshotBarriersFailedFlush = totalSnapshotBarriersFailedFlush.get();
     stats.deferredRAMBytes = getDeferredRAMBytes();
     stats.flushQueueWaits = getFlushQueueWaits();
-    final PageManagerFlushThread thread = flushThread;
     stats.pagesFailedToFlush = thread != null ? thread.getFailedFlushPageCount() : 0L;
     collectSnapshotGauges(stats);
     return stats;
@@ -2138,6 +2164,9 @@ public class PageManager extends LockContext {
         for (final MutablePage page : updatedPages)
           putPageInReadCache(new CachedPage(page, true));
         handedOver = true;
+        // Read once, without a null check: the caller writes pages of an OPEN database, whose lifecycle reference
+        // keeps the flush thread alive for the whole call (#9927 - only a dereference AFTER that reference can be
+        // released, as in suspendFlushAndExecute, needs the instance captured up front).
         flushThread.scheduleFlushOfPages(updatedPages,
             flushSlotReserved ? updatedPages.getFirst().getPageId().getDatabase() : null);
       } else {
@@ -2338,7 +2367,8 @@ public class PageManager extends LockContext {
       throws IOException {
     final DatabaseInternal database = (DatabaseInternal) pageId.getDatabase();
 
-    // ASSURE THE PAGE IS NOT IN THE FLUSHING QUEUE
+    // ASSURE THE PAGE IS NOT IN THE FLUSHING QUEUE. A single read with no null check: the page belongs to an OPEN
+    // database, whose lifecycle reference keeps the flush thread alive for the whole call (#9927).
     CachedPage page = flushThread.getCachedPageFromMutablePageInQueue(pageId);
     if (page == null) {
       final PaginatedComponentFile file = (PaginatedComponentFile) database.getFileManager().getFile(pageId.getFileId());

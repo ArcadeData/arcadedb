@@ -51,7 +51,8 @@ public class LocalVertexType extends LocalDocumentType implements VertexType {
   /**
    * The vertex type's renaming steps. Called by {@link LocalDocumentType#rename} with {@link #renameLock} held, so the
    * edge-bucket loop and both rollbacks never interleave with a second rename of this type (issue #7937), and published
-   * once with everything they moved (issue #9762). The document part goes through {@code super.rename()}, which nests.
+   * once with everything they moved (issue #9762). The document part goes through {@link #renameDocumentPart}, which
+   * publishes nothing of its own (issue #9891).
    */
   @Override
   protected void renameFiles(final String newName) {
@@ -74,7 +75,7 @@ public class LocalVertexType extends LocalDocumentType implements VertexType {
     // buckets were renamed, and all of it rolled back
     checkStripePoolRenameTargets(oldName, newName);
 
-    super.rename(newName);
+    renameDocumentPart(newName);
 
     final List<Bucket> removedBuckets = new ArrayList<>();
 
@@ -104,7 +105,7 @@ public class LocalVertexType extends LocalDocumentType implements VertexType {
       // Any RuntimeException too, SchemaException included: letting one past this catch would leave the edge buckets and
       // the stripe pool already renamed on disk with a schema.json that still names the old files.
     } catch (IOException | RuntimeException e) {
-      super.rename(oldName);
+      renameDocumentPart(oldName);
 
       boolean corrupted = false;
       for (Bucket bucket : removedBuckets) {

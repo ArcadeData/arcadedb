@@ -395,11 +395,10 @@ public class SelectExecutionTest extends TestHelper {
   }
 
   @Test
-  void catastrophicLikeIsAbortedByRegexTimeout() {
-    // Issue #5886 follow-up: SelectOperator.like/ilike is the native query engine's independent LIKE/ILIKE
-    // evaluation path (distinct from the SQL parser's LikeOperator/ILikeOperator), so it needed its own
-    // TimeBoundRegex wiring and deserves its own regression test proving the abort, same as every other
-    // modified entry point in this issue.
+  void catastrophicLikeIsAnsweredWithoutTimingOut() {
+    // Issue #5886 follow-up: SelectOperator.like/ilike is the native query engine's LIKE/ILIKE entry point. Since
+    // issue #10005 LIKE no longer translates to a regular expression, so the pattern that made the .* translation
+    // backtrack exponentially is answered at once instead of running into the deadline.
     database.getConfiguration().setValue(GlobalConfiguration.COMMAND_REGEX_TIMEOUT, 200L);
 
     database.getSchema().createVertexType("LikePathological");
@@ -409,11 +408,42 @@ public class SelectExecutionTest extends TestHelper {
         .where().property("name").like().value("%a".repeat(20) + "c").compile();
 
     final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
+    assertThat(select.vertices().toList()).isEmpty();
+
+    stopwatch.assertGaveUpWithin(5000, "a LIKE match linear in its pattern from the exponential regex backtracking it replaced");
+  }
+
+  @Test
+  void longLikeIsAbortedByRegexTimeout() {
+    // A legitimately long match - a huge value against a long pattern costs up to the product of their lengths - is
+    // still bounded by arcadedb.command.regexTimeout on the native query engine's path too.
+    database.getConfiguration().setValue(GlobalConfiguration.COMMAND_REGEX_TIMEOUT, 200L);
+
+    database.getSchema().createVertexType("LikeLong");
+    database.transaction(() -> database.newVertex("LikeLong").set("name", "a".repeat(200_000)).save());
+
+    final SelectCompiled select = database.select().fromType("LikeLong")//
+        .where().property("name").like().value("%" + "a".repeat(10_000) + "b").compile();
+
+    final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
     Assertions.assertThatThrownBy(() -> select.vertices().toList()).isInstanceOf(TimeoutException.class);
 
     // Generous upper bound: proves the query was aborted near the configured deadline rather than merely
-    // being slow (the unbounded match takes tens of seconds).
+    // being slow (the unbounded match takes seconds).
     stopwatch.assertGaveUpWithin(5000, "the configured 200ms deadline from an unbounded match");
+  }
+
+  @Test
+  void likePercentMatchesTheEmptyString() {
+    // Issue #10005: % matches any sequence of characters, the empty one included
+    database.getSchema().createVertexType("LikeEmpty");
+    database.transaction(() -> {
+      database.newVertex("LikeEmpty").set("name", "").save();
+      database.newVertex("LikeEmpty").set("name", "a").save();
+    });
+
+    assertThat(database.select().fromType("LikeEmpty").where().property("name").like().value("%").vertices().toList()).hasSize(2);
+    assertThat(database.select().fromType("LikeEmpty").where().property("name").ilike().value("%%").vertices().toList()).hasSize(2);
   }
 
   @Test

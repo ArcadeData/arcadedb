@@ -18,7 +18,6 @@
  */
 package com.arcadedb.query.sql.parser.operators;
 
-import com.arcadedb.query.sql.executor.QueryHelper;
 import com.arcadedb.query.sql.parser.ILikeOperator;
 import org.junit.jupiter.api.Test;
 
@@ -46,7 +45,14 @@ class ILikeOperatorTest {
   }
 
   @Test
-  void replaceSpecialCharacters() {
-    assertThat(QueryHelper.convertForRegExp("\\[]{}()|*+$^.?%")).isEqualTo("(?s)\\\\\\[\\]\\{\\}\\(\\)\\|\\*\\+\\$\\^\\...*");
+  void regularExpressionCharactersAreLiterals() {
+    final ILikeOperator op = new ILikeOperator();
+    assertThat(op.execute(null, "\\[]{}()|*+$^.x", "\\[]{}()|*+$^.?%")).isTrue();
+    assertThat(op.execute(null, "a.c", "a.c")).isTrue();
+    assertThat(op.execute(null, "abc", "a.c")).isFalse();
+    assertThat(op.execute(null, "aaa", "a*")).isFalse();
+    assertThat(op.execute(null, "a*", "a*")).isTrue();
+    assertThat(op.execute(null, "ab", "[ab]b")).isFalse();
+    assertThat(op.execute(null, "\\x", "\\x")).isTrue();
   }
 }
