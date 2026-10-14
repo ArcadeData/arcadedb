@@ -69,6 +69,22 @@ test("the server's content-type table is read", () => {
   for (const ext of ["html", "js", "css", "png", "svg", "woff2"]) assert.ok(table.has(ext), `table has .${ext}`);
 });
 
+// The server keeps the bytes and digest of at most STATIC_CACHE_MAX_ENTRIES assets (issue #9961): every page render looks
+// up each asset it references, so an asset past the cap would be read and hashed again on every render
+test("Studio ships fewer static assets than the server caches", () => {
+  const source = fs.readFileSync(HANDLER, "utf8");
+  const cap = Number(/STATIC_CACHE_MAX_ENTRIES\s*=\s*(\d+)/.exec(source)[1]);
+  let assets = 0;
+  const count = (dir) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (entry.isDirectory()) count(path.join(dir, entry.name));
+      else if (!/\.html?$/i.test(entry.name)) assets++;
+    }
+  };
+  count(STATIC_DIR);
+  assert.ok(assets > 0 && assets < cap, `${assets} static assets against a cache of ${cap}: raise STATIC_CACHE_MAX_ENTRIES`);
+});
+
 test("every extension Studio ships has a Content-Type, and only pages are templated", () => {
   const table = readContentTypeTable();
   const shipped = shippedExtensions(STATIC_DIR);
