@@ -147,7 +147,10 @@ public class ConcealingWebSocketChannelizer extends WebSocketChannelizer {
 
   /**
    * Whether {@code response} answers a follower's refusal of leader-only work. The exception itself is gone by the time
-   * the answer reaches the pipeline, but TinkerPop attaches the class name of every throwable along its cause chain.
+   * the answer reaches the pipeline, but TinkerPop attaches the class name of every throwable along its cause chain
+   * ({@code ResponseMessage.Builder.statusAttributeException}, under {@link Tokens#STATUS_ATTRIBUTE_EXCEPTIONS}, verified
+   * on TinkerPop 3.8.2): should an upgrade drop that attribute, the refusal is answered as before, without the leader,
+   * and {@code Issue9960GremlinLeaderRefusalTest} fails.
    */
   static boolean isLeaderRefusal(final ResponseMessage response) {
     return response.getStatus().getAttributes().get(Tokens.STATUS_ATTRIBUTE_EXCEPTIONS) instanceof Collection<?> classes
@@ -173,7 +176,9 @@ public class ConcealingWebSocketChannelizer extends WebSocketChannelizer {
    * The answer for a server failure: in production mode a copy that carries {@link ArcadeDBServer#CONCEALED_ERROR_MESSAGE}
    * and no status attributes, otherwise {@code response} itself; either way followed by the leader's address when
    * {@code leaderAddress} names one (issue #9960). The Gremlin Server's port is not the HTTP one the cluster knows its
-   * peers by, so the sentence says which address it is.
+   * peers by, so the sentence says which address it is. The address is the one deliberate exception to concealment, as
+   * on every other transport (HTTP, gRPC, Bolt, PostgreSQL, Redis, MongoDB): it is a cluster address, not engine detail,
+   * and the only thing that makes the refusal actionable.
    */
   static ResponseMessage conceal(final boolean productionMode, final String leaderAddress, final ResponseMessage response) {
     final String redirect = leaderAddress != null ? redirectSentence(leaderAddress) : null;
@@ -192,6 +197,7 @@ public class ConcealingWebSocketChannelizer extends WebSocketChannelizer {
       LogManager.instance().log(ConcealingWebSocketChannelizer.class, Level.WARNING, "Gremlin: %s %s", null,
           response.getStatus().getMessage(), response.getStatus().getAttributes().getOrDefault("stackTrace", ""));
     return ResponseMessage.build(response.getRequestId()).code(response.getStatus().getCode())
-        .statusMessage(redirect != null ? ArcadeDBServer.CONCEALED_ERROR_MESSAGE + redirect : ArcadeDBServer.CONCEALED_ERROR_MESSAGE).create();
+        .statusMessage(redirect != null ? ArcadeDBServer.CONCEALED_ERROR_MESSAGE + redirect : ArcadeDBServer.CONCEALED_ERROR_MESSAGE)
+        .create();
   }
 }

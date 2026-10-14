@@ -92,6 +92,7 @@ import java.io.EOFException;
 import java.io.IOException;
 import java.math.BigDecimal;
 import java.net.Socket;
+import java.net.SocketAddress;
 import java.net.SocketException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -388,16 +389,15 @@ public class PostgresNetworkExecutor extends Thread {
   private RunningStatement startStatement(final String language, final String text) {
     final RunningQuery entry = server.getRunningQueries()
         .register(database != null ? database.getName() : databaseName, userName, "postgres", null, null,
-            new RunningQuery.Client(String.valueOf(processId), clientAddress()));
+            RunningQuery.Client.of(String.valueOf(processId), clientSocketAddress()));
     entry.setStatement(language, text);
     runningStatement = entry;
     return new RunningStatement(entry);
   }
 
-  private String clientAddress() {
+  private SocketAddress clientSocketAddress() {
     final ChannelBinaryServer current = channel;
-    return current != null && current.socket != null && current.socket.getRemoteSocketAddress() != null ?
-        current.socket.getRemoteSocketAddress().toString() : null;
+    return current != null && current.socket != null ? current.socket.getRemoteSocketAddress() : null;
   }
 
   /** The entry of the statement running on this connection, closed once its work is over. Closing twice is harmless. */
