@@ -69,7 +69,7 @@ final class LightEdgeCensus {
   // GUARDED BY THIS: QUESTIONS ASKED BEFORE THE BUILD, AND WHETHER THE BUILD FAILED (THE LIST COULD NOT BE READ: EVERY
   // EDGE THEN WALKS ALONE, RATHER THAN EACH OF THEM FAILING THE SAME WALK OF THE WHOLE LIST AGAIN)
   private          int     requests;
-  private          boolean failed;
+  private volatile boolean failed;
   // THE COUNTS, PUBLISHED ONCE BUILT AND NEVER CHANGED AFTER: READ WITHOUT THE MONITOR
   private volatile Counts  counts;
 
@@ -141,7 +141,7 @@ final class LightEdgeCensus {
   }
 
   /** Whether counting the list failed, so that every edge walks alone. For tests. */
-  synchronized boolean hasFailed() {
+  boolean hasFailed() {
     return failed;
   }
 

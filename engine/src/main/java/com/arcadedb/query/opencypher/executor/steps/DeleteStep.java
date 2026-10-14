@@ -30,7 +30,6 @@ import com.arcadedb.graph.EdgeIdentitySet;
 import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.graph.LightEdgeRID;
 import com.arcadedb.graph.Vertex;
-import com.arcadedb.utility.RidHashSet;
 import com.arcadedb.query.opencypher.ast.DeleteClause;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.executor.DeletedEntityMarker;
@@ -42,6 +41,7 @@ import com.arcadedb.query.sql.executor.QueryStatistics;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.utility.RidHashSet;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -112,8 +112,12 @@ public class DeleteStep extends AbstractExecutionStep {
      * {@link #claim} for an edge a DETACH has just read off its vertex: it exists now, so a lightweight one is deleted
      * whatever an occurrence numbered before an earlier delete of the statement says. A record-backed one cannot be in
      * the list once deleted, and is claimed as usual.
+     * <p>
+     * PRECONDITION: {@code edge} was read off the live edge list right before this call, with no delete in between. An
+     * edge read earlier (a row, a collected list) goes through {@link #claim}: this method would delete and count a
+     * lightweight one twice.
      */
-    boolean claimLive(final Edge edge) {
+    boolean claimJustRead(final Edge edge) {
       return edges.add(edge.getIdentity()) || edge.getIdentity() instanceof LightEdgeRID;
     }
 
@@ -516,7 +520,7 @@ public class DeleteStep extends AbstractExecutionStep {
               if (seen.add(edge.getIdentity()))
                 connected.add(edge);
             for (final Edge edge : connected)
-              if (deleted.claimLive(edge))
+              if (deleted.claimJustRead(edge))
                 deleteEdgeStatic(edge, stats);
           }
           try {
@@ -870,7 +874,7 @@ public class DeleteStep extends AbstractExecutionStep {
     final QueryStatistics stats = context.getStatistics();
     for (final Edge edge : edgesToDelete) {
       // Skip any relationship already removed and counted by an explicit DELETE in the same statement.
-      if (!deleted.claimLive(edge))
+      if (!deleted.claimJustRead(edge))
         continue;
       try {
         edge.delete();
