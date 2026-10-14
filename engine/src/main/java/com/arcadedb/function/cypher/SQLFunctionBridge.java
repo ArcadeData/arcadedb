@@ -35,8 +35,8 @@ public class SQLFunctionBridge implements StatelessFunction, HeapBufferingFuncti
   private final String cypherFunctionName;
   private final boolean isAggregation;
   // AN SQL AGGREGATE THAT KEEPS EVERY VALUE (list(), percentile(), mode()...) IS CHARGED THE SAME FROM CYPHER AS FROM SQL
-  // (ISSUE #9793). FALSE FOR ANY OTHER FUNCTION, WHOSE STATE DOES NOT GROW WITH ITS INPUT
-  private final boolean holdsEveryValue;
+  // (ISSUE #9793). NULL FOR ANY OTHER FUNCTION, WHOSE STATE DOES NOT GROW WITH ITS INPUT
+  private final SQLAggregatedFunction heldValuesFunction;
   private OperationHeapLimit limit;
   // TRUE WHEN NO STEP HANDED AN OPERATION: THE CHARGE IS THEN THIS FUNCTION'S TO GIVE BACK
   private boolean ownLimit;
@@ -53,12 +53,13 @@ public class SQLFunctionBridge implements StatelessFunction, HeapBufferingFuncti
 
     // Cache whether this is an aggregation function
     this.isAggregation = sqlFunction.aggregateResults();
-    this.holdsEveryValue = isAggregation && sqlFunction instanceof SQLAggregatedFunction function && function.holdsEveryValue();
+    this.heldValuesFunction =
+        isAggregation && sqlFunction instanceof SQLAggregatedFunction function && function.holdsEveryValue() ? function : null;
   }
 
   @Override
   public void setHeapLimit(final OperationHeapLimit owner) {
-    if (holdsEveryValue) {
+    if (heldValuesFunction != null) {
       limit = owner.child(cypherFunctionName + "()");
       ownLimit = false;
     }
@@ -99,12 +100,12 @@ public class SQLFunctionBridge implements StatelessFunction, HeapBufferingFuncti
     // SQL functions expect (self, currentRecord, currentResult, params, context)
     // For now, we pass nulls for self, currentRecord, currentResult
     final Object result = sqlFunction.execute(null, null, null, args, context);
-    if (holdsEveryValue) {
+    if (heldValuesFunction != null) {
       if (limit == null) {
         limit = OperationHeapLimit.of(context, cypherFunctionName + "()");
         ownLimit = true;
       }
-      held = ((SQLAggregatedFunction) sqlFunction).chargeHeld(limit, held, args.length == 1 ? args[0] : args);
+      held = heldValuesFunction.chargeHeld(limit, held, args.length == 1 ? args[0] : args);
     }
     return result;
   }
