@@ -1207,24 +1207,9 @@ public class ServerControlPlane {
     final LocalDatabase.SettingChange change;
     final GlobalConfiguration setting = GlobalConfiguration.findByKey(storedKey);
     if (local != null && (setting == GlobalConfiguration.DATE_IMPLEMENTATION
-        || setting == GlobalConfiguration.DATE_TIME_IMPLEMENTATION)) {
-      // The check ALTER DATABASE runs on the same setting (issue #9976), so this path cannot bypass it (issue #9949): a
-      // REGEXP on a DATE or DATETIME property that would match no value of the new class refuses the change before
-      // anything is stored. Checked and stored under the write lock, taken before the apply lock changeSetting takes
-      final Object coerced = coerceSetting(setting, value);
-      final Class<?> resolvedClass = coerced instanceof Class<?> c ? c : null;
-      final String described = "'" + storedKey + "' to '" + GlobalConfiguration.externalizeValue(coerced) + "'";
-      change = database.executeInWriteLock(() -> {
-        if (resolvedClass != null)
-          DocumentValidator.requireDateConstraintsSatisfiableUnder(database, described,
-              setting == GlobalConfiguration.DATE_IMPLEMENTATION ? resolvedClass : database.getSerializer().getDateImplementation(),
-              setting == GlobalConfiguration.DATE_TIME_IMPLEMENTATION ?
-                  resolvedClass :
-                  database.getSerializer().getDateTimeImplementation(), database.getSchema().getDateTimeFormat(),
-              database.getSchema().getDateFormat());
-        return local.changeSetting(storedKey, () -> applySetting(database.getConfiguration(), key, value));
-      });
-    } else if (local != null)
+        || setting == GlobalConfiguration.DATE_TIME_IMPLEMENTATION))
+      change = changeDateImplementation(database, local, setting, storedKey, key, value);
+    else if (local != null)
       change = local.changeSetting(storedKey, () -> applySetting(database.getConfiguration(), key, value));
     else {
       applySetting(database.getConfiguration(), key, value);
@@ -1248,6 +1233,24 @@ public class ServerControlPlane {
         local.undoSettingChange(change);
       throw e;
     }
+  }
+
+  /**
+   * Stores a new {@code arcadedb.dateImplementation} or {@code arcadedb.dateTimeImplementation} after the check
+   * {@code ALTER DATABASE} runs on the same setting (issue #9976), so this path cannot bypass it (issue #9949): a REGEXP
+   * on a DATE or DATETIME property that would match no value of the new class refuses the change before anything is
+   * stored. Checked and stored under the write lock, taken before the apply lock {@code changeSetting} takes, never after.
+   */
+  private static LocalDatabase.SettingChange changeDateImplementation(final DatabaseInternal database,
+      final LocalDatabase local, final GlobalConfiguration setting, final String storedKey, final String key,
+      final String value) {
+    // A Class-typed setting coerces to a Class or throws, so the value is refused here before any lock is taken
+    final Class<?> implementation = (Class<?>) coerceSetting(setting, value);
+    final String described = "'" + storedKey + "' to '" + GlobalConfiguration.externalizeValue(implementation) + "'";
+    return database.executeInWriteLock(() -> {
+      DocumentValidator.requireDateImplementationChangeSatisfiable(database, setting, implementation, described);
+      return local.changeSetting(storedKey, () -> applySetting(database.getConfiguration(), key, value));
+    });
   }
 
   /**

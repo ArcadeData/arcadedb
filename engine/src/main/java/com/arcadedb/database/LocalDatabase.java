@@ -3097,8 +3097,14 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       try {
         configurationChanged();
       } catch (final RuntimeException | Error e) {
+        // null: the setting was not set, and setValue() then removes it rather than storing an explicit entry
         configuration.setValue(key, previousValue);
-        configurationChanged();
+        try {
+          configurationChanged();
+        } catch (final RuntimeException | Error restoreFailure) {
+          // the failure that caused the restore is the one to report
+          e.addSuppressed(restoreFailure);
+        }
         throw e;
       }
       return new SettingChange(key, previousValue, settingValue(key));

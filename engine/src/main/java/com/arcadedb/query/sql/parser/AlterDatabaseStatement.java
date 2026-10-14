@@ -149,12 +149,7 @@ public class AlterDatabaseStatement extends DDLStatement {
         // before the apply lock changeSetting takes, never after: the apply of a replicated change holds no database lock
         final String described = "'" + settingNameAsString + "' to '" + finalValue + "'";
         change = db.executeInWriteLock(() -> {
-          DocumentValidator.requireDateConstraintsSatisfiableUnder(db, described,
-              cfg == GlobalConfiguration.DATE_IMPLEMENTATION ? resolvedClass : db.getSerializer().getDateImplementation(),
-              cfg == GlobalConfiguration.DATE_TIME_IMPLEMENTATION ?
-                  resolvedClass :
-                  db.getSerializer().getDateTimeImplementation(), db.getSchema().getDateTimeFormat(),
-              db.getSchema().getDateFormat());
+          DocumentValidator.requireDateImplementationChangeSatisfiable(db, cfg, resolvedClass, described);
           return changeSetting(db, cfg.getKey(), store);
         });
       } else

@@ -112,6 +112,21 @@ class Issue9949SetDatabaseSettingRederivesTest {
     assertThat(database.getSerializer().getDateImplementation()).isEqualTo(Date.class);
   }
 
+  /** The DATETIME twin of the check above, against the datetime implementation. */
+  @Test
+  void aChangeThatWouldBreakADateTimeRegexpIsRefusedAndLeavesTheSettingAsItWas() throws Exception {
+    final ServerDatabase database = served.open(DB_NAME);
+    database.command("sql", "CREATE DOCUMENT TYPE R2");
+    database.command("sql", "CREATE PROPERTY R2.t DATETIME (regexp '[0-9]{4}-[0-9]{2}-[0-9]{2}T.*')");
+    final ServerControlPlane controlPlane = controlPlane(database);
+
+    assertThatThrownBy(() -> controlPlane.setDatabaseSetting(DB_NAME, "arcadedb.dateTimeImplementation", "java.util.Date"))
+        .hasMessageContaining("R2.t");
+
+    assertThat(database.getSerializer().getDateTimeImplementation()).isEqualTo(LocalDateTime.class);
+    assertThat(database.getConfiguration().hasValue(GlobalConfiguration.DATE_TIME_IMPLEMENTATION.getKey())).isFalse();
+  }
+
   private static ServerControlPlane controlPlane(final ServerDatabase database) {
     final FakeArcadeDBServer server = FakeArcadeDBServer.create();
     server.on("getDatabase", args -> Objects.equals(args[0], DB_NAME) ? database : null);
