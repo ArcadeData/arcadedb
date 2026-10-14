@@ -66,6 +66,12 @@ public class MergeByScoreStep extends AbstractExecutionStep {
 
   public MergeByScoreStep(final List<InternalExecutionPlan> subExecutionPlans, final CommandContext context) {
     super(context);
+    // The scores are read off the context right after each row: that needs every branch to end with the filter that
+    // evaluates its scoring condition one row at a time (see the class Javadoc). Refused here rather than misordered later
+    for (final InternalExecutionPlan plan : subExecutionPlans)
+      if (!(plan instanceof final SelectExecutionPlan select) || select.getSteps().isEmpty()
+          || !(select.getSteps().getLast() instanceof FilterStep))
+        throw new IllegalArgumentException("Every branch merged by $score must end with the filter that scores its rows");
     this.subExecutionPlans = subExecutionPlans;
     final int branches = subExecutionPlans.size();
     this.batches = new ResultSet[branches];

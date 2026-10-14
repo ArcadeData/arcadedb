@@ -72,8 +72,19 @@ class Issue10002UnresolvedGroupKeyTest extends TestHelper {
     database.command("sql",
         "CREATE INDEX ON Sparse (tokens, weights) LSM_SPARSE_VECTOR METADATA { dimensions: 16, rescoreOversample: 0 }");
 
+    // The same corpus with exact rescoring on (the default): the group-restricted search then re-resolves and caps the
+    // rescored rows itself, which is a second place an unreadable record has to be skipped
+    database.command("sql", "CREATE DOCUMENT TYPE Rescored BUCKETS 1");
+    database.command("sql", "CREATE PROPERTY Rescored.pid INTEGER");
+    database.command("sql", "CREATE PROPERTY Rescored.grp INTEGER");
+    database.command("sql", "CREATE PROPERTY Rescored.tokens ARRAY_OF_INTEGERS");
+    database.command("sql", "CREATE PROPERTY Rescored.weights ARRAY_OF_FLOATS");
+    database.command("sql", "CREATE INDEX ON Rescored (tokens, weights) LSM_SPARSE_VECTOR METADATA { dimensions: 16 }");
+
     database.transaction(() -> {
       for (int i = 0; i < COUNT; i++) {
+        database.newDocument("Rescored").set("pid", i, "grp", i / 2, "tokens", new int[] { 0 }, "weights",
+            new float[] { 1.0f - i * 0.01f }).save();
         database.newDocument("Dense").set("pid", i, "grp", i / 2, "vector", new float[] { i, 0f }).save();
         database.newDocument("Sparse").set("pid", i, "grp", i / 2, "tokens", new int[] { 0 }, "weights",
             new float[] { 1.0f - i * 0.01f }).save();
@@ -119,6 +130,15 @@ class Issue10002UnresolvedGroupKeyTest extends TestHelper {
   }
 
   @Test
+  void rescoredGroupRestrictedSearchSkipsUnresolvedCandidates() {
+    final LSMSparseVectorIndex index = (LSMSparseVectorIndex) ((TypeIndex) database.getSchema()
+        .getIndexByName("Rescored[tokens,weights]")).getIndexesOnBuckets()[0];
+    final List<RidScore> rows = index.topKForGroups(new int[] { 0 }, new float[] { 1.0f }, Set.of(0, 1, 2), GROUP_SIZE,
+        Float.NEGATIVE_INFINITY, null, resolver(), null);
+    assertThat(pids(rows.stream().map(RidScore::rid).toList())).containsExactlyInAnyOrder(3, 4, 5);
+  }
+
+  @Test
   void admissionNeverOpensAGroupForAnUnresolvedKey() {
     final GroupAdmissionState groups = new GroupAdmissionState(1, 1);
     assertThat(groups.admit(GroupAdmissionState.UNRESOLVED)).isFalse();
@@ -143,10 +163,10 @@ class Issue10002UnresolvedGroupKeyTest extends TestHelper {
   /** Reads the record's group, but reports the {@link #UNREADABLE} nearest records as unreadable. */
   private Function<RID, Object> resolver() {
     final Set<RID> unreadable = new HashSet<>();
-    for (final String type : new String[] { "Dense", "Sparse" })
+    for (final String type : new String[] { "Dense", "Sparse", "Rescored" })
       database.query("sql", "SELECT @rid AS rid FROM " + type + " WHERE pid < " + UNREADABLE)
           .forEachRemaining(r -> unreadable.add(r.getProperty("rid")));
-    assertThat(unreadable).hasSize(UNREADABLE * 2);
+    assertThat(unreadable).hasSize(UNREADABLE * 3);
     return rid -> unreadable.contains(rid) ?
         GroupAdmissionState.UNRESOLVED :
         ((Document) database.lookupByRID(rid, true)).get("grp");
