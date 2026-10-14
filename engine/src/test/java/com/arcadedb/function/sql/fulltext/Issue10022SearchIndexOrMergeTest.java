@@ -158,7 +158,14 @@ class Issue10022SearchIndexOrMergeTest extends TestHelper {
     for (final String query : new String[] { "SELECT FROM Doc WHERE " + A + " OR " + B + " ORDER BY $score ASC",
         "SELECT FROM Doc WHERE " + A + " OR " + B + " ORDER BY n",
         "SELECT count(*) FROM Doc WHERE " + A + " OR " + B,
-        "SELECT FROM Doc WHERE (" + A + " AND " + C + ") OR " + B + " ORDER BY $score DESC" })
+        "SELECT FROM Doc WHERE (" + A + " AND " + C + ") OR " + B + " ORDER BY $score DESC",
+        // every other exclusion of the planner: rows changed before the order, or a branch that may set $score again
+        "SELECT FROM Doc WHERE " + A + " OR " + B + " ORDER BY $score DESC UNWIND n",
+        "SELECT expand(a) FROM Doc WHERE " + A + " OR " + B + " ORDER BY $score DESC",
+        "SELECT DISTINCT n FROM Doc WHERE " + A + " OR " + B,
+        "SELECT n, count(*) FROM Doc WHERE " + A + " OR " + B + " GROUP BY n",
+        "SELECT FROM Doc WHERE (" + A + " AND n < sysdate().asLong()) OR " + B + " ORDER BY $score DESC",
+        "SELECT FROM Doc LET $even = n % 2 WHERE (" + A + " AND $even = 0) OR " + B + " ORDER BY $score DESC" })
       assertThat(plan(query)).as(query).doesNotContain("MERGE BY");
     assertThat(database.query("sql", "SELECT count(*) AS c FROM Doc WHERE " + A + " OR " + B).next().<Long>getProperty("c"))
         .isEqualTo(ab.size());
