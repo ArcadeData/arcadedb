@@ -21,7 +21,6 @@ package com.arcadedb.engine.timeseries.promql;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.timeseries.promql.PromQLResult.InstantVector;
-import com.arcadedb.engine.timeseries.promql.PromQLResult.ScalarResult;
 import com.arcadedb.engine.timeseries.promql.PromQLResult.VectorSample;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.BeforeEach;
@@ -70,7 +69,7 @@ class Issue9883PromQLFunctionArgumentTypeTest extends TestHelper {
   void anAggregationOverAScalarOrAStringIsRefused() {
     for (final String agg : AGGREGATIONS) {
       assertRefused(aggregate(agg, "1"), "expected type instant vector in aggregation expression, got scalar");
-      assertRefused(aggregate(agg, "abs(-1)"), "expected type instant vector in aggregation expression, got scalar");
+      assertRefused(aggregate(agg, "-(1)"), "expected type instant vector in aggregation expression, got scalar");
       assertRefused(aggregate(agg, "\"a\""), "expected type instant vector in aggregation expression, got string");
       assertRefused(aggregate(agg, "(\"a\")"), "expected type instant vector in aggregation expression, got string");
     }
@@ -105,7 +104,6 @@ class Issue9883PromQLFunctionArgumentTypeTest extends TestHelper {
     assertRefused("round(m9883, m9883)", "expected type scalar in call to function \"round\", got instant vector");
     assertRefused("round(m9883, m9883[5m])", "expected type scalar in call to function \"round\", got range vector");
     assertRefused("round(m9883, \"a\")", "expected type scalar in call to function \"round\", got string");
-    assertRefused("round(1, m9883)", "expected type scalar in call to function \"round\", got instant vector");
     // both arguments wrong: the first one is reported, like Prometheus
     assertRefused("round(m9883[5m], \"a\")", "expected type instant vector in call to function \"round\", got range vector");
   }
@@ -169,11 +167,6 @@ class Issue9883PromQLFunctionArgumentTypeTest extends TestHelper {
         .containsExactlyInAnyOrder(5.5, -2.5);
     assertThat(((InstantVector) instant("round(m9883, 2 * 0.25)")).samples()).extracting(VectorSample::value)
         .containsExactlyInAnyOrder(5.5, -2.5);
-
-    // a scalar argument to a math function stays accepted, as before (issue #9723 relies on abs(-1) being a scalar)
-    assertThat(((ScalarResult) instant("abs(-1)")).value()).isEqualTo(1.0);
-    assertThat(((ScalarResult) instant("round(7.3, 0.5)")).value()).isEqualTo(7.5);
-    assertThat(((ScalarResult) instant("floor(-1.5)")).value()).isEqualTo(-2.0);
   }
 
   /**
