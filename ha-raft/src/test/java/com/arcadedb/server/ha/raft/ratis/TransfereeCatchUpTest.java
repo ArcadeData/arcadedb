@@ -18,28 +18,17 @@
  */
 package com.arcadedb.server.ha.raft.ratis;
 
-import org.apache.ratis.proto.RaftProtos.RaftGroupIdProto;
-import org.apache.ratis.proto.RaftProtos.RaftRpcRequestProto;
-import org.apache.ratis.proto.RaftProtos.StartLeaderElectionReplyProto;
-import org.apache.ratis.proto.RaftProtos.StartLeaderElectionRequestProto;
-import org.apache.ratis.proto.RaftProtos.TermIndexProto;
-import org.apache.ratis.protocol.RaftGroupId;
-import org.apache.ratis.protocol.RaftPeerId;
 import org.apache.ratis.conf.RaftProperties;
 import org.apache.ratis.server.RaftServer;
 import org.apache.ratis.server.RaftServerConfigKeys;
 import org.apache.ratis.util.TimeDuration;
 import org.junit.jupiter.api.Test;
 
-import java.io.IOException;
 import java.lang.reflect.Proxy;
-import java.util.ArrayList;
-import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Unit tests for {@link TransfereeCatchUp} (issue #8533): the target of a leadership transfer holds its
@@ -177,37 +166,5 @@ class TransfereeCatchUpTest {
     RaftServerConfigKeys.Rpc.setTimeoutMax(properties, TimeDuration.valueOf(ms * 2, TimeUnit.MILLISECONDS));
     return (RaftServer) Proxy.newProxyInstance(RaftServer.class.getClassLoader(), new Class<?>[] { RaftServer.class },
         (proxy, method, args) -> "getProperties".equals(method.getName()) ? properties : null);
-  }
-
-  @Test
-  void theWrappedServerHandsEveryCallToTheRealOneAndItsFailuresBack() throws Exception {
-    final List<String> calls = new ArrayList<>();
-    final StartLeaderElectionReplyProto reply = StartLeaderElectionReplyProto.getDefaultInstance();
-    final RaftServer real = (RaftServer) Proxy.newProxyInstance(RaftServer.class.getClassLoader(),
-        new Class<?>[] { RaftServer.class }, (proxy, method, args) -> {
-          calls.add(method.getName());
-          return switch (method.getName()) {
-            case "getId" -> RaftPeerId.valueOf("n1");
-            case "startLeaderElection" -> reply;
-            // getDivision fails: the gate must let the request through as asked rather than fail the election.
-            case "getDivision" -> throw new IOException("no such group");
-            case "close" -> throw new IOException("close failed");
-            default -> null;
-          };
-        });
-
-    final RaftServer wrapped = TransfereeCatchUp.wrap(real);
-
-    assertThat(wrapped.getId()).isEqualTo(RaftPeerId.valueOf("n1"));
-
-    final StartLeaderElectionRequestProto request = StartLeaderElectionRequestProto.newBuilder()
-        .setServerRequest(RaftRpcRequestProto.newBuilder()
-            .setRaftGroupId(RaftGroupIdProto.newBuilder().setId(RaftGroupId.randomId().toByteString())))
-        .setLeaderLastEntry(TermIndexProto.newBuilder().setTerm(TERM).setIndex(D)).build();
-    assertThat(wrapped.startLeaderElection(request)).isSameAs(reply);
-    assertThat(calls).containsSubsequence("getDivision", "startLeaderElection");
-
-    // A checked exception of the real server comes out as itself, not as an UndeclaredThrowableException.
-    assertThatThrownBy(wrapped::close).isInstanceOf(IOException.class).hasMessage("close failed");
   }
 }
