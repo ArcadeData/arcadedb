@@ -201,6 +201,31 @@ class Issue9917BackupReusesVectorGraphTest {
     TestHelper.checkActiveDatabases();
   }
 
+  /**
+   * The frozen-files fallback has no t0 a backup can observe (see {@code backupFromFrozenFiles}), so it never attempts
+   * the proof: an idle graph still goes in empty, with nothing beside it.
+   */
+  @Test
+  void theFrozenFilesPathStillArchivesTheGraphEmptyWithNoSideFiles() throws Exception {
+    GlobalConfiguration.PAGE_SNAPSHOT_ENABLED.setValue(false);
+    try (final Database database = new DatabaseFactory(DATABASE_PATH).create()) {
+      createVectorIndex(database, "Doc", "NONE");
+      createVectorIndex(database, "PqDoc", "PRODUCT");
+      new Backup(database, BACKUP_FILE).setVerboseLevel(0).backupDatabase();
+    } finally {
+      TestHelper.checkActiveDatabases();
+    }
+
+    final Map<String, Long> entries = entrySizes();
+    final List<String> graphs = entries.keySet().stream().filter(n -> n.endsWith(GRAPH_EXT)).toList();
+    assertThat(graphs).hasSize(2);
+    for (final String graph : graphs)
+      assertThat(entries.get(graph)).as("'%s' is archived empty on the frozen-files path", graph).isZero();
+    assertThat(entries.keySet()).as("and with no side file")
+        .noneMatch(n -> n.endsWith("." + LSMVectorIndexGraphManifest.FILE_EXT) || n.endsWith(
+            "." + LSMVectorIndexOrdinalMapFile.FILE_EXT) || n.endsWith("." + LSMVectorIndexPQFile.FILE_EXT));
+  }
+
   // ------------------------------------------------------------------------------------------------------- HELPERS
 
   private static void createVectorIndex(final Database database, final String type, final String quantization) {
