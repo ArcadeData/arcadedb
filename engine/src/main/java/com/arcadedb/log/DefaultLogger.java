@@ -28,6 +28,7 @@ import java.io.FileInputStream;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
+import java.util.Enumeration;
 import java.util.Properties;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
@@ -36,7 +37,6 @@ import java.util.logging.Formatter;
 import java.util.logging.Handler;
 import java.util.logging.Level;
 import java.util.logging.LogManager;
-import java.util.logging.LogRecord;
 
 /**
  * Default Logger implementation that writes to the Java Logging Framework.
@@ -274,7 +274,7 @@ public class DefaultLogger implements Logger {
 
     try {
       // ASSURE TO HAVE THE LOG FORMATTER TO THE CONSOLE EVEN IF NO CONFIGURATION FILE IS TAKEN
-      final java.util.logging.Logger log = java.util.logging.Logger.getLogger("");
+      final java.util.logging.Logger log = rootLogger();
 
       final Formatter desired = selectConsoleFormatter();
 
@@ -334,7 +334,7 @@ public class DefaultLogger implements Logger {
       if (effective == null)
         effective = format;
 
-      applyConsoleFormatter(java.util.logging.Logger.getLogger(""),
+      applyConsoleFormatter(rootLogger(),
           effective != null ? formatterFor(effective) : selectConsoleFormatter());
     } catch (final Exception e) {
       System.err.println("Error while refreshing the console formatter. Cause: " + e);
@@ -383,14 +383,12 @@ public class DefaultLogger implements Logger {
 
     java.util.logging.Logger log = loggersCache.get(requesterName);
     if (log == null) {
+      // NEVER NULL: Logger.getLogger() CREATES THE LOGGER WHEN IT DOES NOT EXIST, SO CALLERS NEED NO NULL CHECK
       log = java.util.logging.Logger.getLogger(requesterName);
 
-      if (log != null) {
-        final java.util.logging.Logger oldLogger = loggersCache.putIfAbsent(requesterName, log);
-
-        if (oldLogger != null)
-          log = oldLogger;
-      }
+      final java.util.logging.Logger oldLogger = loggersCache.putIfAbsent(requesterName, log);
+      if (oldLogger != null)
+        log = oldLogger;
     }
     return log;
   }
@@ -402,170 +400,153 @@ public class DefaultLogger implements Logger {
 
     init();
 
-    final java.util.logging.Logger log = resolveLogger(requester);
-    return log == null || log.isLoggable(level);
+    return resolveLogger(requester).isLoggable(level);
   }
 
-  public void log(final Object requester, final Level level, String message, final Throwable exception,
+  /**
+   * Fixed-arity form, kept so the common no-argument call allocates no {@code Object[]}. Both overloads are the SAME
+   * operation and differ only in how the arguments arrive (issue #9967): which one a call site reaches is decided by its
+   * argument count alone, so every behaviour - the level gate ahead of any formatting, the shutdown filter, the flush
+   * after a SEVERE record, what a bad format string does - lives in {@link #isLoggable(Object, Level)},
+   * {@link #formatFailed(String, Exception)} and {@link #publish(Object, Level, String, Throwable)}, which both call.
+   */
+  @Override
+  public void log(final Object requester, final Level level, final String message, final Throwable exception,
                   final String context,
                   final Object arg1, final Object arg2, final Object arg3, final Object arg4, final Object arg5,
                   final Object arg6, final Object arg7, final Object arg8, final Object arg9, final Object arg10,
                   final Object arg11, final Object arg12, final Object arg13, final Object arg14, final Object arg15,
                   final Object arg16, final Object arg17) {
-    if (message == null)
+    // GATED BEFORE ANYTHING IS FORMATTED: A DISABLED LEVEL MUST NOT PAY FOR THE ARGUMENTS' toString()
+    if (message == null || !isLoggable(requester, level))
       return;
 
-    final boolean hasParams =
-        arg1 != null || arg2 != null || arg3 != null || arg4 != null || arg5 != null || arg6 != null || arg7 != null || arg8 != null
-            || arg9 != null || arg10 != null || arg11 != null || arg12 != null || arg13 != null || arg14 != null || arg15 != null
-            || arg16 != null || arg17 != null;
-
-    // During JVM shutdown, bypass the logging framework and use System.err directly
-    // to avoid NPE when handlers are closed (issue #2813)
-    if (shuttingDown) {
-      if (level.intValue() >= Level.INFO.intValue())
-        logToSystemErr(message, exception, context, hasParams, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9,
-            arg10, arg11, arg12, arg13, arg14, arg15, arg16, arg17);
-      return;
-    }
-
-    init();
-
-    final java.util.logging.Logger log = resolveLogger(requester);
-
-    if (log == null) {
-      if (context != null)
-        message = "<" + context + "> " + message;
-
-      // USE SYS ERR
+    String msg = withContext(context, message);
+    if (arg1 != null || arg2 != null || arg3 != null || arg4 != null || arg5 != null || arg6 != null || arg7 != null
+        || arg8 != null || arg9 != null || arg10 != null || arg11 != null || arg12 != null || arg13 != null
+        || arg14 != null || arg15 != null || arg16 != null || arg17 != null) {
       try {
-        String msg = message;
-        if (hasParams)
-          msg = message.formatted(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12, arg13,
-              arg14,
-              arg15, arg16, arg17);
-
-        System.err.println(msg);
-
+        msg = msg.formatted(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12, arg13, arg14,
+            arg15, arg16, arg17);
       } catch (final Exception e) {
-        System.err.print("Error on formatting message '%s'. Exception: %s".formatted(message, e));
-      } finally {
-        if (level == Level.SEVERE)
-          System.err.flush();
-      }
-    } else if (log.isLoggable(level)) {
-      // USE THE LOG
-      try {
-        if (context != null)
-          message = "<" + context + "> " + message;
-
-        String msg = message;
-        if (hasParams)
-          msg = message.formatted(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12, arg13,
-              arg14,
-              arg15, arg16, arg17);
-
-        if (exception != null)
-          log.log(level, msg, exception);
-        else
-          log.log(level, msg);
-
-        if (level == Level.SEVERE)
-          flush();
-
-      } catch (final Exception e) {
-        System.err.printf("Error on formatting message '%s'. Exception: %s", message, e);
-        System.err.flush();
+        msg = formatFailed(msg, e);
       }
     }
+
+    publish(requester, level, msg, exception);
   }
 
   /**
-   * Helper method to log directly to System.err during shutdown.
+   * Varargs form, reached by a call with more arguments than {@link com.arcadedb.log.LogManager}'s fixed-arity overloads
+   * take. The same operation as the fixed-arity form: see there.
    */
-  private void logToSystemErr(String message, final Throwable exception, final String context,
-                              final boolean hasParams, final Object... args) {
-    try {
-      if (context != null)
-        message = "<" + context + "> " + message;
+  @Override
+  public void log(final Object requester, final Level level, final String message, final Throwable exception,
+                  final String context, final Object... args) {
+    if (message == null || !isLoggable(requester, level))
+      return;
 
-      String msg = message;
-      if (hasParams && args.length > 0)
-        msg = message.formatted(args);
-
-      System.err.println(msg);
-      if (exception != null)
-        exception.printStackTrace(System.err);
-      System.err.flush();
-    } catch (final Exception e) {
-      // Silently ignore errors during shutdown logging
+    String msg = withContext(context, message);
+    if (args != null && args.length > 0) {
+      try {
+        msg = msg.formatted(args);
+      } catch (final Exception e) {
+        msg = formatFailed(msg, e);
+      }
     }
+
+    publish(requester, level, msg, exception);
   }
 
-  public void log(final Object requester, final Level level, String message, final Throwable exception,
-                  final String context, final Object... args) {
-    if (message == null)
-      return;
+  private static String withContext(final String context, final String message) {
+    return context != null ? "<" + context + "> " + message : message;
+  }
 
-    // During JVM shutdown, bypass the logging framework and use System.err directly
-    // to avoid NPE when handlers are closed (issue #2813)
+  /**
+   * A format string its arguments do not satisfy is a bug at the call site, not a reason to lose the record: the raw
+   * message is emitted at its own level with the failure appended, so a SEVERE line still reaches the log and the
+   * defect shows up where it happened.
+   */
+  private static String formatFailed(final String message, final Exception e) {
+    return message + " (log arguments not applied: " + e + ")";
+  }
+
+  /**
+   * Emits an already formatted message the level gate let through. During JVM shutdown it goes straight to
+   * {@code System.err}, because the logging framework's own shutdown hook may already have closed the handlers
+   * (issue #2813); the severity filter that applies then is {@link #isLoggable(Object, Level)}'s.
+   */
+  private void publish(final Object requester, final Level level, final String msg, final Throwable exception) {
     if (shuttingDown) {
-      logToSystemErr(message, exception, context, args.length > 0, args);
+      try {
+        System.err.println(msg);
+        if (exception != null)
+          exception.printStackTrace(System.err);
+        System.err.flush();
+      } catch (final Exception e) {
+        // SILENTLY IGNORE ERRORS DURING SHUTDOWN LOGGING
+      }
       return;
     }
-
-    init();
 
     final java.util.logging.Logger log = resolveLogger(requester);
-
-    if (log == null) {
-      if (context != null)
-        message = "<" + context + "> " + message;
-
-      try {
-        String msg = message;
-        if (args.length > 0)
-          msg = message.formatted(args);
-        System.err.println(msg);
-
-      } catch (final Exception e) {
-        System.err.printf("Error on formatting message '%s'. Exception: %s", message, e);
-      }
-    } else {
-      // USE THE LOG
-      try {
-        if (context != null)
-          message = "<" + context + "> " + message;
-
-        String msg = message;
-        if (args.length > 0)
-          msg = message.formatted(args);
-
-        if (log.isLoggable(level)) {
-          if (exception != null)
-            log.log(level, msg, exception);
-          else
-            log.log(level, msg);
-        } else if (com.arcadedb.log.LogManager.instance().isDebugEnabled()) {
-          if (exception != null) {
-            System.out.print(new LogFormatter().format(new LogRecord(level, msg)));
-            exception.printStackTrace();
-          } else
-            System.out.println(msg);
-        }
-      } catch (final Exception e) {
-        System.err.printf("Error on formatting message '%s'. Exception: %s", message, e);
-      }
+    try {
+      if (exception != null)
+        log.log(level, msg, exception);
+      else
+        log.log(level, msg);
+    } catch (final Exception e) {
+      System.err.printf("Error on logging message '%s'. Exception: %s%n", msg, e);
+      System.err.flush();
     }
+
+    // A FATAL LINE MUST BE OUT BEFORE WHATEVER HAPPENS NEXT: FLUSH EVERY HANDLER THE RECORD WAS PUBLISHED TO
+    if (level.intValue() >= Level.SEVERE.intValue())
+      flushHandlersOf(log);
   }
 
+  /**
+   * Flushes the handlers of every JUL logger. ArcadeDB installs its own on the root logger ({@link #rootLogger()}), but
+   * a configuration can attach one to any logger (a {@code com.arcadedb.handlers=} line), and a buffering handler - JUL's
+   * {@code MemoryHandler}, an async appender - is precisely the one an explicit flush exists for. This used to flush only
+   * the logger named {@code "global"}, a child of the root that never has a handler, so it did nothing (issue #9963).
+   */
   @Override
   public void flush() {
     if (!initialized)
       return;
 
-    for (final Handler h :
-        java.util.logging.Logger.getLogger(java.util.logging.Logger.GLOBAL_LOGGER_NAME).getHandlers())
-      h.flush();
+    final LogManager manager = LogManager.getLogManager();
+    final Enumeration<String> names = manager.getLoggerNames();
+    while (names.hasMoreElements()) {
+      final java.util.logging.Logger log = manager.getLogger(names.nextElement());
+      if (log != null)
+        for (final Handler h : log.getHandlers())
+          h.flush();
+    }
+  }
+
+  /**
+   * Flushes the handlers a record logged on {@code log} was published to: its own and, as long as it hands records to its
+   * parent, those of every ancestor up to the root logger. As complete as {@link #flush()} for one record, and it does
+   * not walk every logger of the JVM.
+   */
+  private static void flushHandlersOf(final java.util.logging.Logger log) {
+    for (java.util.logging.Logger current = log; current != null; current = current.getParent()) {
+      for (final Handler h : current.getHandlers())
+        h.flush();
+      if (!current.getUseParentHandlers())
+        break;
+    }
+  }
+
+  /**
+   * The JUL logger that owns ArcadeDB's handlers: the root logger. {@link #installCustomFormatter()} adds the console
+   * handler there, the {@code handlers=} line of {@code arcadedb-log.properties} installs the configured ones there, and
+   * the console formatter is swapped there. One accessor, so a new consumer cannot pick another logger by mistake as
+   * {@link #flush()} once did with {@code Logger.GLOBAL_LOGGER_NAME} (issue #9963).
+   */
+  private static java.util.logging.Logger rootLogger() {
+    return java.util.logging.Logger.getLogger("");
   }
 }

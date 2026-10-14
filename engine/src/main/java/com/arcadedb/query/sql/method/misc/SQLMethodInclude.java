@@ -83,7 +83,10 @@ public class SQLMethodInclude extends AbstractSQLMethod {
 
   @Override
   public Object execute(final Object current, final Identifiable currentRecord, final CommandContext context, final Object[] params) {
-    if (params[0] != null) {
+    // Gated on the RECEIVER, as exclude() is, and not on the first argument: a null field name is skipped wherever it
+    // appears (copy() below), so `include(null, 'a')` and `include('a', null)` are the same projection. Gating on
+    // params[0] threw the whole projection away for a leading null only (issue #9988, the shape of #7028 and #7889).
+    if (current != null) {
       final boolean includeMetadata = referencesMetadata(params);
       if (current instanceof Identifiable identifiable && identifiable.getRecord() instanceof Document document)
         return copy(document, params, includeMetadata);
