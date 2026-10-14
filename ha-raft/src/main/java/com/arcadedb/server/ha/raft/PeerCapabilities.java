@@ -102,6 +102,14 @@ public final class PeerCapabilities {
    * file renames would publish a schema naming bucket files the peer does not have, and the peer would drop the type's
    * buckets on its next reload. So {@code ALTER TYPE ... NAME} is refused, before a single file moves, while any peer
    * has not advertised this token.
+   * <p>
+   * Deliberately with no operator override (issue #9891), unlike the security entries'
+   * {@code arcadedb.ha.securityEntryCapabilityGate}. "Every unknown is a no" makes a DOWN peer refuse a type rename as
+   * much as an OLD one, and that is accepted rather than worked around: that override exists because a token revocation
+   * can be urgent in the middle of an incident, while a type rename is a refactoring that can wait for the peer to come
+   * back; and what an override would buy is a peer that, if it turns out to be old after all, refuses the entry and
+   * halts. The refusal says there is no override, so nobody reaches for the security setting instead. A cluster that must
+   * rename with a peer permanently gone removes that peer from the Raft configuration first.
    */
   public static final String SCHEMA_FILE_RENAMES = "schema-file-renames";
 

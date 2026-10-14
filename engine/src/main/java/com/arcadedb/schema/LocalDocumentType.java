@@ -64,11 +64,12 @@ public class LocalDocumentType implements DocumentType {
    * not the database write lock: every bucket rename waits for the whole database's page flush queue to drain, and
    * holding the schema write lock across N such drains is the stall the engine keeps outside every lock. Two
    * renames of DIFFERENT types do not contend. Reentrant because {@code LocalVertexType.renameFiles()} calls
-   * {@code super.rename()} - and again to roll back - inside its own critical section.
+   * {@link #renameDocumentPart} - and again to roll back - inside its own critical section.
    * <p>
-   * The hold count is also what tells {@link #rename} which call publishes (issue #9762): only the call that takes this
-   * lock first opens the schema recording session, every nested one only moves files. So nothing outside a rename may
-   * take this lock and then call {@code rename()}: that call would look nested and its rename would never be published.
+   * Which call publishes is said by the entry point, not read off this lock (issues #9762, #9891): {@link #rename} is the
+   * public, publishing one and refuses to run on a thread that already holds this lock, and {@link #renameDocumentPart}
+   * is the nested one that only moves files and refuses to run on a thread that does not. A hold count would have taken
+   * a future caller that locks this and then calls {@code rename()} for a nested call, and never published its rename.
    * <p>
    * Lock hierarchy: this lock is taken BEFORE the database write lock, never after. No path may hold the database
    * write lock and then call {@code rename()} (today only {@code ALTER TYPE} does, without holding it).
@@ -387,16 +388,19 @@ public class LocalDocumentType implements DocumentType {
   public void rename(final String newName) {
     checkForSchemaMutation();
 
+    // Refused rather than nested (issue #9891): this thread is already inside a rename of this type, which publishes once
+    // with what it moved, so a rename() from in there would either publish a second time from inside the first one's
+    // session or - had it been taken for a nested call - never publish at all. A subclass moves the document part
+    // through renameDocumentPart() instead.
+    if (renameLock.isHeldByCurrentThread())
+      throw new IllegalStateException("Type '" + name + "' is already being renamed by this thread: rename() publishes the "
+          + "rename and cannot be called from inside one");
+
     // A second rename of this same type waits here and then starts from whatever name the first one left, instead of
     // capturing a name the first is in the middle of replacing and racing it over the same bucket files (#7937).
     renameLock.lock();
     try {
-      if (renameLock.getHoldCount() > 1)
-        // Nested in this type's own rename: a subclass renaming the document part, or a rollback putting it back. The
-        // outermost call publishes the result once.
-        renameInternal(newName);
-      else
-        renameAndPublish(newName);
+      renameAndPublish(newName);
     } finally {
       renameLock.unlock();
     }
@@ -404,9 +408,23 @@ public class LocalDocumentType implements DocumentType {
 
   /**
    * Moves every file of the type under the new name. The document type's own steps; {@link LocalVertexType} adds its edge
-   * buckets and super-node stripe pool, calling {@link #rename} for this part. Runs with {@link #renameLock} held.
+   * buckets and super-node stripe pool, calling {@link #renameDocumentPart} for this part. Runs with {@link #renameLock}
+   * held.
    */
   protected void renameFiles(final String newName) {
+    renameInternal(newName);
+  }
+
+  /**
+   * The document part of a rename that is already running on this thread (issue #9891): moves the type's own buckets and
+   * index files and publishes nothing, the enclosing {@link #rename} publishing everything once. For a subclass's
+   * {@link #renameFiles}, both forward and to roll back. Refused on a thread that does not hold {@link #renameLock}: there
+   * is no enclosing rename there, so the files would move and nothing would ever publish them.
+   */
+  protected final void renameDocumentPart(final String newName) {
+    if (!renameLock.isHeldByCurrentThread())
+      throw new IllegalStateException("The document part of type '" + name + "' can only be renamed from inside a rename "
+          + "of the type: call rename(), which publishes it");
     renameInternal(newName);
   }
 
