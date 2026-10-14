@@ -102,7 +102,9 @@ final class PathExpansion implements Iterator<List<Object>> {
     }
   }
 
-  // What a branch waiting to be expanded holds on the heap: the branch, its cursor and its slot in the queue, estimated
+  // What a branch waiting to be expanded holds on the heap: the branch, its cursor and its slot in the queue. An estimate, and
+  // a low one on purpose: the vertex and edge records a branch points to are shared with the paths already built and with the
+  // record cache, so counting them per branch would charge the same record many times over
   private static final int CURSOR_BYTES = 128;
 
   private final Database                 database;
@@ -169,6 +171,11 @@ final class PathExpansion implements Iterator<List<Object>> {
       // Nothing more will be asked of the walk: what it holds is given back now, not when the query is collected
       heap.release();
     return pending != null && emitted < limit;
+  }
+
+  /** Gives back the heap the walk holds, for a consumer that stops before the walk does. Idempotent. */
+  void release() {
+    heap.release();
   }
 
   private void enqueue(final Branch branch) {
@@ -277,6 +284,9 @@ final class PathExpansion implements Iterator<List<Object>> {
         childVerdict = verdict;
         return new Branch(branch, edge, edgeId, neighbor, neighborId, depth);
       } catch (final RecordNotFoundException e) {
+        // Only the reads of the edge's endpoints and identity, which come before the admission, can land here: the admission,
+        // the filters and resolveNeighbor() (which keeps a missing vertex to itself) read no record that can be missing, so
+        // nothing has been spent that would have to be given back
         GhostEdgeReporter.reportSkipped(e);
       }
     }

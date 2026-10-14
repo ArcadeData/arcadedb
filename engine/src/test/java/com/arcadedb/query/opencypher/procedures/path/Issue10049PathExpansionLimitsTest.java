@@ -23,11 +23,18 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.sql.executor.BasicCommandContext;
+import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+
+import java.util.Iterator;
+import java.util.Map;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -119,6 +126,30 @@ class Issue10049PathExpansionLimitsTest {
     // The depth-first walk holds one branch per level of the path it is on, and the node-global one two nodes per level
     assertThat(count("{relationshipFilter: 'E>', uniqueness: 'NODE_GLOBAL'}")).isEqualTo(3 * DIAMONDS + 1);
     assertThat(count("{relationshipFilter: 'E>', limit: 10, bfs: false}")).isEqualTo(10);
+  }
+
+  @Test
+  @Timeout(120)
+  void closingTheStreamGivesBackTheHeapOfAWalkThatWasNotReadToTheEnd() {
+    final long previous = GlobalConfiguration.QUERY_MAX_HEAP_RAM.getValueAsLong();
+    GlobalConfiguration.QUERY_MAX_HEAP_RAM.setValue(1L << 30);
+    try {
+      final BasicCommandContext context = new BasicCommandContext();
+      context.setDatabase(database);
+      final Vertex start = database.query("sql", "SELECT FROM J WHERE name = 'j0'").next().getVertex().get();
+
+      try (final Stream<Result> rows = new PathExpandConfig().execute(new Object[] { start, Map.of("relationshipFilter", "E>") }, null,
+          context)) {
+        final Iterator<Result> iterator = rows.iterator();
+        // The frontier of the trail walk doubles with every diamond: a few hundred paths in, it holds a few hundred branches
+        for (int i = 0; i < 1000; i++)
+          iterator.next();
+        assertThat(context.getQueryHeapTracker().getUsedBytes()).as("the walk holds its frontier").isGreaterThan(0L);
+      }
+      assertThat(context.getQueryHeapTracker().getUsedBytes()).as("closing the stream gave it back").isZero();
+    } finally {
+      GlobalConfiguration.QUERY_MAX_HEAP_RAM.setValue(previous);
+    }
   }
 
   private long count(final String config) {
