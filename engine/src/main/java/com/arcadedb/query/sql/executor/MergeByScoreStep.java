@@ -164,6 +164,7 @@ public class MergeByScoreStep extends AbstractExecutionStep {
       return byScore < 0;
     final RID ridA = identityOf(heads[a]);
     final RID ridB = identityOf(heads[b]);
+    // A row with no RID - none of the fetches the planner merges produces one - goes after the records of its score
     if (ridA == null || ridB == null)
       return ridA != null;
     return ridA.compareTo(ridB) < 0;

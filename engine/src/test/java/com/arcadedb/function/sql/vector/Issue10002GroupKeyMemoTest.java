@@ -65,6 +65,22 @@ class Issue10002GroupKeyMemoTest extends TestHelper {
     assertThat(memo.rankedUnder(rids[1], null)).isTrue();
   }
 
+  /** A group key read twice is two arrays with the same content: the record did not change, so it is not stale. */
+  @Test
+  void anArrayGroupKeyReadAgainIsTheSameKey() {
+    database.command("sql", "CREATE DOCUMENT TYPE Doc");
+    database.command("sql", "CREATE PROPERTY Doc.tags ARRAY_OF_INTEGERS");
+    final RID[] rid = new RID[1];
+    database.transaction(() -> rid[0] = database.newDocument("Doc").set("tags", new int[] { 1, 2 }).save().getIdentity());
+
+    final SQLFunctionVectorAbstract.GroupKeyMemo memo = new SQLFunctionVectorAbstract.GroupKeyMemo(database, "tags");
+    final Object ranked = memo.apply(rid[0]);
+    final Object emitted = rid[0].asDocument(true).get("tags");
+    assertThat(emitted).isNotSameAs(ranked);
+    assertThat(memo.rankedUnder(rid[0], emitted)).isTrue();
+    assertThat(memo.rankedUnder(rid[0], new int[] { 1, 3 })).isFalse();
+  }
+
   @Test
   void anUnreadableRecordIsUnresolvedForTheWholePass() {
     database.command("sql", "CREATE DOCUMENT TYPE Doc");
