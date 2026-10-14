@@ -152,7 +152,12 @@ final class LightEdgeCensus {
       // THE ORIGIN DID NOT HOLD THIS TRIPLE WHEN THE LIST WAS COUNTED: THE EDGE WAS READ AFTER THE LIST CHANGED, AND ONLY
       // A WALK OF THE LIST AS IT IS NOW CAN SAY
       return false;
-    edge.numbered(occurrence, c.twinsByType.get(edge.getBucketId()).get(neighbor, 0));
+    // EVERY RECORDED ENTRY WAS COUNTED IN twinsByType: THE CHECKS BELOW ARE FOR AN INVARIANT, NOT FOR A CASE
+    final RidIntHashMap byNeighbor = c.twinsByType.get(edge.getBucketId());
+    final int twins = byNeighbor != null ? byNeighbor.get(neighbor, 0) : 0;
+    if (twins <= occurrence)
+      return false;
+    edge.numbered(occurrence, twins);
     return true;
   }
 
