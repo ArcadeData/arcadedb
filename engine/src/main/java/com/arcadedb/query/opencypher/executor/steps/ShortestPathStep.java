@@ -19,7 +19,6 @@
 package com.arcadedb.query.opencypher.executor.steps;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.query.opencypher.traversal.ShortestPathList;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
@@ -36,6 +35,7 @@ import com.arcadedb.query.opencypher.ast.RelationshipPattern;
 import com.arcadedb.query.opencypher.ast.ShortestPathPattern;
 import com.arcadedb.query.opencypher.InlineProperties;
 import com.arcadedb.query.opencypher.traversal.GraphTraverser;
+import com.arcadedb.query.opencypher.traversal.ShortestPathList;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;

@@ -18,8 +18,6 @@
  */
 package com.arcadedb.query.opencypher.ast;
 
-import com.arcadedb.exception.CommandSemanticException;
-import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 
@@ -51,11 +49,9 @@ public class IsNormalizedExpression implements BooleanExpression {
   @Override
   public Object evaluateTernary(final Result result, final CommandContext context) {
     final Object value = valueExpression.evaluate(result, context);
-    if (value == null)
-      return null;
+    // Only a string has a normal form: anything else, like null, is UNKNOWN, as in Neo4j Cypher 25
     if (!(value instanceof String string))
-      throw new CommandSemanticException(
-          "Type mismatch: IS NORMALIZED expects a STRING but got " + CypherFunctionHelper.cypherTypeName(value));
+      return null;
     return isNot != Normalizer.isNormalized(string, form);
   }
 
