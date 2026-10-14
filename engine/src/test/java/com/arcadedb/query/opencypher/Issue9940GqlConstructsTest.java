@@ -157,17 +157,23 @@ class Issue9940GqlConstructsTest extends TestHelper {
   }
 
   @Test
-  void aShortestPathSerializesToJsonAsTheListItHasAlwaysBeen() {
+  void aShortestPathSerializesToJsonAsAPath() {
+    // Every Cypher path is one value since issue #9913, serialized as {_type, nodes, relationships, length}: a
+    // shortestPath binding was an alternating list
     try (final ResultSet rs = database.query("opencypher",
         "MATCH p = shortestPath((:Person {name:'A'})-[:KNOWS*]->(:Person {name:'D'})) RETURN p")) {
       final Result row = rs.next();
       final JSONObject json = JsonSerializer.createJsonSerializer().serializeResult(database, row);
-      final JSONArray path = json.getJSONArray("p");
-      assertThat(path.length()).isEqualTo(3);
-      assertThat(path.getJSONObject(0).getString("name")).isEqualTo("A");
-      assertThat(path.getJSONObject(2).getString("name")).isEqualTo("D");
+      final JSONObject path = json.getJSONObject("p");
+      assertThat(path.getString("_type")).isEqualTo("path");
+      assertThat(path.getInt("length")).isEqualTo(1);
+      final JSONArray nodes = path.getJSONArray("nodes");
+      assertThat(nodes.length()).isEqualTo(2);
+      assertThat(nodes.getJSONObject(0).getString("name")).isEqualTo("A");
+      assertThat(nodes.getJSONObject(1).getString("name")).isEqualTo("D");
+      assertThat(path.getJSONArray("relationships").length()).isEqualTo(1);
       // and the JSON of the result itself
-      assertThat(row.toJSON().getJSONArray("p").length()).isEqualTo(3);
+      assertThat(row.toJSON().getJSONObject("p").getJSONArray("nodes").length()).isEqualTo(2);
     }
   }
 
