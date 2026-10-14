@@ -168,7 +168,9 @@ public class AlterDatabaseStatement extends DDLStatement {
       finalValue = GlobalConfiguration.externalizeValue(change.valueSet() != null ? change.valueSet() : cfg.getValue());
 
       try {
-        db.saveConfiguration();
+        // This setting only: under Raft HA the entry must not carry a change another statement on this node has put in
+        // force and not submitted yet, which would commit cluster-wide even if that statement's save is refused (issue #9959)
+        db.saveConfiguration(cfg.getKey());
       } catch (final TransactionCommittedRemotelyException e) {
         // Committed cluster-wide: every node, this one included, installs the change, so there is nothing to undo
         throw e;

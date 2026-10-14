@@ -4460,14 +4460,39 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       proxied.saveConfiguration();
       return;
     }
+    replicateConfiguration(raft, null);
+  }
 
+  /**
+   * Replicates the change to the setting {@code key} alone, which {@code ALTER DATABASE} and the "set database setting"
+   * command just put in force (issue #9959). {@link #saveConfiguration()} ships every setting memory holds that this
+   * node's {@code configuration.json} does not, and that includes a value ANOTHER statement on this node has put in
+   * force and not submitted yet, since the in-memory store and the submit are not one step. Carried in this entry, it
+   * committed cluster-wide even when that statement's own save was then refused, and its caller was told nothing had
+   * changed. The entry names one setting, so it cannot carry another statement's change, whatever the interleaving.
+   */
+  @Override
+  public void saveConfiguration(final String key) throws IOException {
+    final RaftHAServer raft = raftHAServer;
+    if (raft == null) {
+      proxied.saveConfiguration(key);
+      return;
+    }
+    replicateConfiguration(raft, key);
+  }
+
+  /**
+   * Submits the configuration change: the one to {@code key}, or every pending change when {@code key} is null, and
+   * waits for this node to apply it. See {@link #saveConfiguration()}.
+   */
+  private void replicateConfiguration(final RaftHAServer raft, final String key) throws IOException {
     refuseWhileRemovedFromConfiguration("change the database configuration");
     SecurityEntryCapabilityGate.requireEveryPeerCanDecode(server, raft, RaftLogEntryType.DATABASE_CONFIGURATION_ENTRY,
         "configuration of database '" + getName() + "'");
 
     final long committedLogIndex;
     synchronized (configurationReplicationLock) {
-      final String changes = proxied.pendingConfigurationChanges();
+      final String changes = key != null ? proxied.pendingConfigurationChange(key) : proxied.pendingConfigurationChanges();
       if (changes == null)
         // Nothing this node holds that its file does not: the value set was already the stored one
         return;
