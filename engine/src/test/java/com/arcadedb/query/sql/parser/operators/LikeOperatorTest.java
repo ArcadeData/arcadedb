@@ -54,5 +54,7 @@ class LikeOperatorTest {
     assertThat(op.execute(null, "a*", "a*")).isTrue();
     assertThat(op.execute(null, "ab", "[ab]b")).isFalse();
     assertThat(op.execute(null, "\\x", "\\x")).isTrue();
+    assertThat(op.execute(null, "a\\", "a\\")).isTrue();
+    assertThat(op.execute(null, "ab", "a\\")).isFalse();
   }
 }
