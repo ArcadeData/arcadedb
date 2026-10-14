@@ -98,7 +98,7 @@ public class PathExpand extends AbstractPathProcedure {
     }
 
     final Database database = startNode.getDatabase();
-    final Filters filters = extractFilters(args[1], args[2], database, minDepth);
+    final Filters filters = extractPositionalFilters(args[1], args[2], database, minDepth);
 
     // Expand paths using BFS/DFS
     final List<List<Object>> allPaths = new ArrayList<>();

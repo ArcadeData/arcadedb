@@ -33,7 +33,10 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.utility.RidHashSet;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 
 /**
  * Abstract base class for path expansion procedures.
@@ -120,7 +123,7 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
   }
 
   /** The filters of {@code path.expand}'s positional form, which has neither a sequence nor the start-node options. */
-  protected Filters extractFilters(final Object relationshipFilter, final Object labelFilter, final Database database,
+  protected Filters extractPositionalFilters(final Object relationshipFilter, final Object labelFilter, final Database database,
       final int minLevel) {
     final Schema schema = database.getSchema();
     return new Filters(RelationshipFilter.parse(getName(), relationshipFilter, schema),
