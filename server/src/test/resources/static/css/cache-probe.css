@@ -1,0 +1,2 @@
+/* cache probe stylesheet for Issue9993StaticAssetCachingTest: ${var:swVersion} must reach the browser as written */
+body { color: #123456; }

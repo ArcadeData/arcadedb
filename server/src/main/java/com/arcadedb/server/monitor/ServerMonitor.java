@@ -176,6 +176,16 @@ public class ServerMonitor {
 	}
 
 	/**
+	 * The body of the JVM safepoint warning, locale-pinned for the same reason as {@link #lowDiskMessage} (issue #9968): it
+	 * reaches the same event log through the same call.
+	 */
+	static String safepointSpikeMessage(final float deltaPerc, final float previousIntervalAvgMs, final float currentIntervalAvgMs) {
+		return String.format(Locale.ROOT,
+				"Server overloaded: JVM Safepoint spiked up %.1f%% from the last sampling (avg time: %.2fms -> %.2fms)", deltaPerc,
+				previousIntervalAvgMs, currentIntervalAvgMs);
+	}
+
+	/**
 	 * Returns the directory whose filesystem the low-disk warning must measure.
 	 * <p>
 	 * Issue #7124: this used to be the JVM working directory. When the databases live on a mounted volume - the
@@ -243,9 +253,8 @@ public class ServerMonitor {
 				final SafepointSpike spike = safepointSpikeDetector.sample(hotspotSafepointTime, hotspotSafepointCount);
 				if (spike != null && safepointWarnings.tryReport(System.currentTimeMillis()))
 					// REPORT THE SPIKE
-					server.getEventLog().reportEvent(ServerEventLog.EVENT_TYPE.WARNING, "JVM", null, String.format(
-							"Server overloaded: JVM Safepoint spiked up %.1f%% from the last sampling (avg time: %.2fms -> %.2fms)",
-							spike.deltaPerc(), spike.previousIntervalAvgMs(), spike.currentIntervalAvgMs()));
+					server.getEventLog().reportEvent(ServerEventLog.EVENT_TYPE.WARNING, "JVM", null,
+							safepointSpikeMessage(spike.deltaPerc(), spike.previousIntervalAvgMs(), spike.currentIntervalAvgMs()));
 			}
 		}
 		catch (Exception e) {

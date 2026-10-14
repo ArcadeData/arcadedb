@@ -35,15 +35,18 @@ class GetDynamicContentHandlerCacheTest {
 
   @Test
   void returnsResourceBytes() throws Exception {
-    final byte[] bytes = GetDynamicContentHandler.loadStaticResource(PROBE);
-    assertThat(bytes).isNotNull();
-    assertThat(new String(bytes, StandardCharsets.UTF_8)).contains("cache-probe");
+    final GetDynamicContentHandler.StaticAsset asset = GetDynamicContentHandler.loadStaticResource(PROBE);
+    assertThat(asset).isNotNull();
+    assertThat(new String(asset.bytes(), StandardCharsets.UTF_8)).contains("cache-probe");
+    // The version of the bytes, and the entity tag that carries it (issue #9961)
+    assertThat(asset.version()).matches("[0-9a-f]{16}");
+    assertThat(asset.etag()).isEqualTo("\"" + asset.version() + "\"");
   }
 
   @Test
   void secondCallReturnsSameCachedInstance() throws Exception {
-    final byte[] first = GetDynamicContentHandler.loadStaticResource(PROBE);
-    final byte[] second = GetDynamicContentHandler.loadStaticResource(PROBE);
+    final GetDynamicContentHandler.StaticAsset first = GetDynamicContentHandler.loadStaticResource(PROBE);
+    final GetDynamicContentHandler.StaticAsset second = GetDynamicContentHandler.loadStaticResource(PROBE);
     assertThat(first).isNotNull();
     // Cache hit: the exact same array is handed back rather than a fresh copy.
     assertThat(second).isSameAs(first);
