@@ -486,7 +486,7 @@ public class DocumentValidator {
   public static String regexpText(final Type type, final Object value) {
     if (type == Type.LINK && value instanceof Identifiable identifiable)
       return String.valueOf(identifiable.getIdentity());
-    if (type != null && noTextForm(type) != null)
+    if (noTextForm(type) != null)
       return null;
     return value.toString();
   }
@@ -742,8 +742,9 @@ public class DocumentValidator {
         // regexes are notorious for this) combined with an attacker-supplied field value is enough to hang a
         // worker thread indefinitely.
         if (!TimeBoundRegex.matchesUntil(regexp, regexpTextOrRefuse(document, p, fieldValue), regexDeadline))
+          // the pattern matched, not a second read of the property that a concurrent ALTER PROPERTY may have changed
           throwValidationException(document.getType(), p,
-              "does not match the regular expression '" + p.getRegexp() + "'. Field value is: " + fieldValue + ", record: "
+              "does not match the regular expression '" + regexp.pattern() + "'. Field value is: " + fieldValue + ", record: "
                   + document);
 
       final Type propertyType = p.getType();
