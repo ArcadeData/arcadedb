@@ -576,6 +576,9 @@ message InsertError {
   int64  row_index = 2; // index within the chunk (or -1 if not applicable)
   string code      = 3; // optional machine-usable code
   string field     = 4;
+  // Set only when code is "NOT_LEADER": the server refused the write because it is not the cluster leader, and this is
+  // the address of the leader to send the load to (the one the gRPC trailers carry for the same refusal)
+  string leader_address = 5;
 }
 
 message InsertSummary {
