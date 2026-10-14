@@ -112,6 +112,28 @@ public class LocalEdgeType extends LocalDocumentType implements EdgeType {
     return property.isMandatory() ? "MANDATORY" : "default-valued";
   }
 
+  /**
+   * The warning for a LIGHTWEIGHT edge type that carries a property {@link #checkCanBeLightweight} would refuse, or
+   * {@code null} when it carries none. Every DDL path refuses the combination since #9846, but the schema load deliberately
+   * does not, so a database written before can still open; this is how such a database says that a constraint its schema
+   * declares is not enforced (issue #9975). The schema load logs it once per type and {@code CHECK DATABASE} reports it.
+   *
+   * @return the message, or {@code null}
+   */
+  public static String unenforcedConstraintWarning(final DocumentType type) {
+    if (!(type instanceof EdgeType edgeType) || !edgeType.isLightweight())
+      return null;
+    final Property constraint = type.findPropertyAppliedToEmptyRecord();
+    if (constraint == null)
+      return null;
+
+    final DocumentType declaring = constraint instanceof AbstractProperty property && property.owner != null ? property.owner : type;
+    return "Edge type '" + type.getName() + "' is LIGHTWEIGHT but " + (declaring == type ? "declares" : "inherits") + " the "
+        + constraintKind(constraint) + " property '" + declaring.getName() + "." + constraint.getName()
+        + "': a lightweight edge has no record, so the constraint is not enforced on its edges. Declare the type without "
+        + "LIGHTWEIGHT, or make the property optional";
+  }
+
   public void setUnique(final boolean unique) {
     checkForSchemaMutation();
     // See setLightweight: a lightweight type builds no index, so nothing else would have shipped this flag (issue #9747)

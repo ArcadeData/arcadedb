@@ -26,6 +26,8 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.schema.DocumentType;
 
+import java.util.Map;
+
 /**
  * <p>Reads an upstream result set and returns a new result set that contains copies of the original OResult instances
  * </p>
@@ -59,7 +61,12 @@ public class CopyDocumentStep extends AbstractExecutionStep {
         try {
           Record resultDoc = null;
           if (toCopy.isElement()) {
+            // THE RECORD DECIDES THE KIND OF THE COPY (VERTEX OR DOCUMENT), THE ROW ITS PROPERTIES: A PROJECTION THAT
+            // EXCLUDED OR OVERRODE A COLUMN HAS ALREADY DECIDED WHAT THE ROW CONTAINS, AND COPYING THE RECORD'S OWN
+            // PROPERTIES WROTE BACK AN EXCLUDED COLUMN AND THE STORED VALUE OF AN OVERRIDDEN ONE (ISSUE #9965). THE ROW'S
+            // METADATA COLUMNS (@rid, @type) ARE SKIPPED BY set(Map)
             final Record docToCopy = toCopy.getElement().get().getRecord();
+            final Map<String, Object> properties = toCopy.toPropertyMap(false);
 
             if (docToCopy instanceof Vertex vertex) {
               if (targetType != null) {
@@ -67,18 +74,18 @@ public class CopyDocumentStep extends AbstractExecutionStep {
               } else {
                 resultDoc = getContext().getDatabase().newVertex(vertex.getTypeName());
               }
-              ((MutableVertex) resultDoc).set(vertex.toMap(false));
+              ((MutableVertex) resultDoc).set(properties);
             } else if (docToCopy instanceof Document document) {
               if (targetType != null) {
                 resultDoc = getContext().getDatabase().newDocument(targetType);
               } else {
                 resultDoc = getContext().getDatabase().newDocument(document.getTypeName());
               }
-              ((MutableDocument) resultDoc).set(document.toMap(false));
+              ((MutableDocument) resultDoc).set(properties);
             }
           } else {
             final DocumentType type = context.getDatabase().getSchema().getType(targetType);
-            resultDoc = type.newRecord().set(toCopy.toMap()).save();
+            resultDoc = type.newRecord().set(toCopy.toPropertyMap(false)).save();
           }
           return new UpdatableResult((MutableDocument) resultDoc);
         } finally {

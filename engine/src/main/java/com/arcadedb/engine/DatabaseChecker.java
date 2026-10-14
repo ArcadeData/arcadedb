@@ -322,6 +322,14 @@ public class DatabaseChecker {
         documentTypes.add(type);
     }
 
+    // #9975: a LIGHTWEIGHT edge type with a MANDATORY or default-valued property it can never apply, which only a database
+    // written before #9846 can hold. A finding of the schema, answered without reading a record, so no step of its own
+    for (final DocumentType edgeType : edgeTypes) {
+      final String warning = LocalEdgeType.unenforcedConstraintWarning(edgeType);
+      if (warning != null)
+        addWarning(warning);
+    }
+
     // #7952: the types this run has an existence-constraint question to ask about. Resolved from the SCHEMA alone,
     // before a single record is read, which is what keeps the pass free for the databases that declare no such
     // constraint - the large majority - rather than costing them a scan that can only report nothing. A TimeSeries

@@ -3043,18 +3043,23 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
   /**
    * Map literal visitor - handles {key: value, ...}.
-   * Grammar: mapLiteral : LBRACE (mapEntry (COMMA mapEntry)*)? RBRACE
+   * Grammar: mapLiteral : LBRACE (mapEntry (COMMA mapEntryOrRid)*)? RBRACE
+   *                     | LBRACE RID_STRING COLON expression (COMMA mapEntryOrRid)+ RBRACE
+   * The entries are read off the children in order, so a leading "@rid" keeps its place among the others.
    */
   @Override
   public Json visitMapLiteral(final SQLParser.MapLiteralContext ctx) {
     try {
       final Json json = new Json();
 
-      if (ctx.mapEntry() != null) {
-        for (final SQLParser.MapEntryContext entryCtx : ctx.mapEntry()) {
-          final JsonItem item = (JsonItem) visit(entryCtx);
-          json.items.add(item);
-        }
+      if (ctx.RID_STRING() != null)
+        // THE LEADING "@rid" ENTRY OF THE SECOND ALTERNATIVE: ITS VALUE IS THE FIRST EXPRESSION CHILD
+        json.items.add(ridKeyItem((Expression) visit(ctx.expression())));
+
+      for (int i = 0; i < ctx.getChildCount(); i++) {
+        final ParseTree child = ctx.getChild(i);
+        if (child instanceof SQLParser.MapEntryContext || child instanceof SQLParser.MapEntryOrRidContext)
+          json.items.add((JsonItem) visit(child));
       }
 
       return json;
@@ -3099,6 +3104,25 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     } catch (final Exception e) {
       throw new CommandSQLParsingException("Failed to build map entry: " + e.getMessage(), e);
     }
+  }
+
+  /**
+   * A map entry after the first one, which may also be keyed "@rid" (#9971).
+   * Grammar: mapEntryOrRid : mapEntry | RID_STRING COLON expression
+   */
+  @Override
+  public JsonItem visitMapEntryOrRid(final SQLParser.MapEntryOrRidContext ctx) {
+    if (ctx.mapEntry() != null)
+      return visitMapEntry(ctx.mapEntry());
+    return ridKeyItem((Expression) visit(ctx.expression()));
+  }
+
+  /** A map entry keyed "@rid", which the lexer takes as a token of its own (RID_STRING) rather than a string literal. */
+  private static JsonItem ridKeyItem(final Expression value) {
+    final JsonItem item = new JsonItem();
+    item.leftString = Property.RID_PROPERTY;
+    item.right = value;
+    return item;
   }
 
   /**

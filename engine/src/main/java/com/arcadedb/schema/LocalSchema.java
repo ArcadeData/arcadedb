@@ -1362,6 +1362,8 @@ public class LocalSchema implements Schema {
 
   // KEY PREFIX IN reportedUpgradeWarnings: A TYPE LEFT BEHIND BY AN OLDER VERSION (#8169) IS AN UPGRADE LEFTOVER TOO
   private static final String BUCKETLESS_TYPE_WARNING_PREFIX = "bucketless-type:";
+  // KEY PREFIX IN reportedUpgradeWarnings: A LIGHTWEIGHT EDGE TYPE WITH A CONSTRAINT IT CANNOT APPLY, ACCEPTED BEFORE #9846
+  private static final String UNENFORCED_LIGHTWEIGHT_CONSTRAINT_WARNING_PREFIX = "unenforced-lightweight-constraint:";
 
   /**
    * #8187: a {@code schema.json} written by a version affected by #8169 carries a dropped type as a real entry with no
@@ -3722,6 +3724,8 @@ public class LocalSchema implements Schema {
         }
       }
 
+      reportUnenforcedLightweightConstraints(types.keySet());
+
       if (saveConfiguration)
         saveConfiguration();
 
@@ -5179,6 +5183,25 @@ public class LocalSchema implements Schema {
   protected void updateSecurity() {
     if (security != null)
       security.updateSchema(database);
+  }
+
+  /**
+   * Logs, once per opened database and per type, a LIGHTWEIGHT edge type whose schema declares a MANDATORY or default-valued
+   * property it inherits but can never apply (issue #9975). The load accepts the combination on purpose - a database written
+   * before #9846 refused it must still open - so this WARNING is the only moment an operator learns of it short of reading the
+   * edges back. A read of the loaded schema and nothing more: it can neither change it nor fail the load.
+   */
+  private void reportUnenforcedLightweightConstraints(final Set<String> typeNames) {
+    for (final String typeName : typeNames) {
+      try {
+        final String warning = LocalEdgeType.unenforcedConstraintWarning(getTypeOrNull(typeName));
+        if (warning != null && reportedUpgradeWarnings.add(UNENFORCED_LIGHTWEIGHT_CONSTRAINT_WARNING_PREFIX + typeName))
+          LogManager.instance().log(this, Level.WARNING, "%s (database '%s')", null, warning, database.getName());
+      } catch (final Exception e) {
+        // Never let advisory reporting break a schema load
+        LogManager.instance().log(this, Level.FINE, "Cannot check type '%s' for unenforced constraints", e, typeName);
+      }
+    }
   }
 
   /**

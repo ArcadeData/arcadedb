@@ -83,8 +83,11 @@ public class UpdateMergeStep extends AbstractExecutionStep {
   private void handleMerge(final Record record, final CommandContext context) {
     final MutableDocument doc = ((Document) record).modify();
     final Map<String, Object> map = json != null ? json.toMap(record, context) : resolveExpression(record, context);
-    for (final Map.Entry<String, Object> entry : map.entrySet())
-      doc.set(entry.getKey(), entry.getValue());
+    // THROUGH THE MAP CONTRACT, LIKE UPDATE ... CONTENT AND INSERT ... CONTENT: A KEY STARTING WITH @ IS SKIPPED AS METADATA,
+    // EXCEPT THE ONES THE RECORD TYPE ASSIGNS (AN EDGE'S @in/@out RE-POINT IT). APPLIED KEY BY KEY THROUGH THE POSITIONAL
+    // SETTER, A RESERVED KEY WAS REFUSED, SO A DOCUMENT READ BACK AS JSON ({"@rid", "@type", "@cat", ...}) COULD NOT BE
+    // MERGED BACK (ISSUE #9971)
+    doc.merge(map);
   }
 
   private Map<String, Object> resolveExpression(final Record record, final CommandContext context) {
@@ -101,14 +104,14 @@ public class UpdateMergeStep extends AbstractExecutionStep {
       value = collection.iterator().next();
     }
 
-    // A user-supplied map is merged verbatim: its keys are an explicit intent, unlike the metadata a record-shaped
-    // payload carries implicitly, which the branches below strip
+    // A user-supplied map is merged as given, under the map contract of handleMerge(): an edge's @in/@out is an explicit
+    // intent there, unlike the metadata a record-shaped payload carries implicitly, which the branches below strip
     if (value instanceof Map<?, ?> map)
       return checkStringKeys(map);
     else if (value instanceof Document document)
       return document.toMap(false);
     else if (value instanceof Result result)
-      return toPropertyMap(result);
+      return toMergePayload(result);
     throw new CommandExecutionException("Invalid value for UPDATE MERGE, expected a map but found: " + value);
   }
 
@@ -124,7 +127,7 @@ public class UpdateMergeStep extends AbstractExecutionStep {
    * Converts a result into the map of the properties to merge. Metadata ({@code @rid}, {@code @type}, ...) and computed
    * pseudo-properties ({@code $score}, ...) are excluded so they never end up stored on the target record.
    */
-  private static Map<String, Object> toPropertyMap(final Result result) {
+  private static Map<String, Object> toMergePayload(final Result result) {
     final Map<String, Object> map = new LinkedHashMap<>();
     for (final String name : result.getPropertyNames()) {
       if (name.isEmpty())
