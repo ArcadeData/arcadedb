@@ -1112,7 +1112,9 @@ public class ShortestPathStep extends AbstractExecutionStep {
   }
 
   /**
-   * Resolves a list of vertex RIDs into a proper path with alternating Vertex and Edge objects.
+   * Resolves a list of vertex RIDs into a proper path with alternating Vertex and Edge objects, or null when two
+   * consecutive vertices are no longer joined by an edge (a ghost edge, or one deleted since the search): there is no path
+   * to report then, where the list used to skip the hop and bind a path that was not one (issue #9913).
    *
    * @param edgeTypes restrict edges to these types, or null/empty to allow any type
    */
@@ -1127,8 +1129,9 @@ public class ShortestPathStep extends AbstractExecutionStep {
       if (prev != null) {
         // Find the edge connecting prev to current
         final Edge edge = findConnectingEdge(prev, current, direction, edgeTypes);
-        if (edge != null)
-          result.add(edge);
+        if (edge == null)
+          return null;
+        result.add(edge);
       }
 
       result.add(current);

@@ -987,6 +987,8 @@ public enum PostgresType {
       case Result result -> result.toJSON().toString();
       case JSONObject json -> json.toString();
       case Map<?, ?> map -> new JSONObject(map).toString();
+      // a Cypher path as the same JSON object the text array carries, not its toString() (issue #9913)
+      case TraversalPath path -> new JSONObject(path.toMap()).toString();
       case EmbeddedDocument embeddedDocument -> embeddedDocument.toJSON(true).toString();
       case Record record -> record.toJSON(true).toString();
       default -> element.getClass().isArray() ? new JSONArray(convertPrimitiveArrayToCollection(element)).toString() : element.toString();
