@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher.traversal;
 
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.LightEdgeRID;
 import com.arcadedb.graph.Vertex;
 
 import java.util.ArrayList;
@@ -133,6 +134,11 @@ public class TraversalPath {
 
   /**
    * Returns true if this path already traverses the specified edge.
+   * <p>
+   * Compared with {@link LightEdgeRID#isSameEdge}, not with RID equality: two parallel lightweight edges of one type over
+   * the same ordered pair share their RID but are two relationships, so a path may walk one and then its twin (issue
+   * #9983). A linear scan rather than a set: a path is copied on every extension, its length is bounded by the hop
+   * count, and the comparison walks an edge list only when two lightweight edges with the same endpoints meet.
    *
    * @param edge edge to check
    * @return true if path contains edge
@@ -140,7 +146,7 @@ public class TraversalPath {
   public boolean containsEdge(final Edge edge) {
     final RID edgeRid = edge.getIdentity();
     for (int i = 0; i < edges.size(); i++)
-      if (edges.get(i).getIdentity().equals(edgeRid))
+      if (LightEdgeRID.isSameEdge(edges.get(i).getIdentity(), edgeRid))
         return true;
     return false;
   }

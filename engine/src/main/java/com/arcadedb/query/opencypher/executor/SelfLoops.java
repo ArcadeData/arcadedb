@@ -20,12 +20,11 @@ package com.arcadedb.query.opencypher.executor;
 
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.EdgeIdentitySet;
 import com.arcadedb.graph.Vertex;
 
-import java.util.HashSet;
 import java.util.Iterator;
 import java.util.NoSuchElementException;
-import java.util.Set;
 
 /**
  * An undirected pattern hop must yield each relationship once, but ArcadeDB stores every edge in two
@@ -173,8 +172,8 @@ public final class SelfLoops {
    */
   public static Iterator<Edge> deduplicatingEdges(final Iterator<Edge> edges) {
     return new Iterator<>() {
-      private Edge      nextEdge = null;
-      private Set<RID>  emitted  = null;
+      private Edge            nextEdge = null;
+      private EdgeIdentitySet emitted  = null;
 
       @Override
       public boolean hasNext() {
@@ -184,9 +183,10 @@ public final class SelfLoops {
           final Edge candidate = edges.next();
           if (candidate.getOut().equals(candidate.getIn())) {
             // A self-loop sits in both the outgoing and the incoming list of its vertex, so walking
-            // both lists reaches the very same relationship twice.
+            // both lists reaches the very same relationship twice. Not a Set<RID>: two parallel lightweight
+            // self-loops share their RID and are still two relationships (issue #9983)
             if (emitted == null)
-              emitted = new HashSet<>();
+              emitted = new EdgeIdentitySet();
             if (!emitted.add(candidate.getIdentity()))
               continue;
           }
