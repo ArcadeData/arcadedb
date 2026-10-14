@@ -224,8 +224,9 @@ public interface Procedure {
    */
   default Number optionalNumberArg(final Object[] args, final int index, final String paramName, final Number defaultValue) {
     final Object value = argOrDefault(args, index, defaultValue);
-    if (value instanceof Number number)
-      return number;
+    if (value == null || value instanceof Number)
+      // null only when the declared default is null: the caller decides what an absent number means
+      return (Number) value;
     throw new IllegalArgumentException(
         getName() + "(): " + paramName + " must be a number, got " + value.getClass().getSimpleName());
   }
