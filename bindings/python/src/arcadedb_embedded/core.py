@@ -449,7 +449,10 @@ class Database:
             # caller's transaction begin() pushes a NESTED level, and an
             # interrupt after that push but before begin() returns must pop it,
             # while a begin() that refused must leave the caller's level alone
-            # (#9813). See _end_transactions_opened_since.
+            # (#9813). See _end_transactions_opened_since. The mark stays above
+            # the try and above begin(): taking it opens nothing, and a mark
+            # taken after begin() would count the level begin() pushed as the
+            # caller's.
             mark = self._transaction_stack_mark()
             tx_at_start, commits_at_start = None, 0
             try:
@@ -526,7 +529,10 @@ class Database:
             except Exception as e:
                 first_error = first_error or e
         if not was_active and self.is_transaction_active():
-            self.rollback()
+            try:
+                self.rollback()
+            except Exception as e:
+                first_error = first_error or e
         if first_error is not None:
             raise first_error
 
