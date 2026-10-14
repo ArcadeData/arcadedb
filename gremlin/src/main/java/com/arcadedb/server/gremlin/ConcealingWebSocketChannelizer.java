@@ -20,7 +20,7 @@ package com.arcadedb.server.gremlin;
 
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
-import com.arcadedb.query.RunningQueryRegistry;
+import com.arcadedb.query.RunningQuery;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.HAServerPlugin;
 import io.netty.channel.ChannelHandler;
@@ -104,17 +104,11 @@ public class ConcealingWebSocketChannelizer extends WebSocketChannelizer {
 
     @Override
     public void channelRead(final ChannelHandlerContext ctx, final Object msg) throws Exception {
-      if (!(msg instanceof RequestMessage)) {
+      if (msg instanceof RequestMessage)
+        GremlinAuthContext.publishing(RunningQuery.Client.of(ctx.channel().id().asShortText(), ctx.channel().remoteAddress()),
+            () -> super.channelRead(ctx, msg));
+      else
         super.channelRead(ctx, msg);
-        return;
-      }
-      GremlinAuthContext.setClient(
-          new GremlinAuthContext.Client(ctx.channel().id().asShortText(), RunningQueryRegistry.clientAddress(ctx.channel().remoteAddress())));
-      try {
-        super.channelRead(ctx, msg);
-      } finally {
-        GremlinAuthContext.setClient(null);
-      }
     }
   }
 

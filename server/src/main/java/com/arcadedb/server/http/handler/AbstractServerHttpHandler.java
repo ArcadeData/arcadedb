@@ -30,7 +30,6 @@ import com.arcadedb.index.fulltext.FullTextQueryParseException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.query.RunningQuery;
-import com.arcadedb.query.RunningQueryRegistry;
 import com.arcadedb.query.sql.executor.CommandTimeoutOverride;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONException;
@@ -2084,8 +2083,8 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       final String databaseName, final String sessionId, final String sessionTag) {
     final String requestTag = queryTag(exchange);
     final RunningQuery runningQuery = httpServer.getServer().getRunningQueries()
-        .register(databaseName, user != null ? user.getName() : null, "http", sessionId, requestTag != null ? requestTag : sessionTag, null,
-            RunningQueryRegistry.clientAddress(exchange.getSourceAddress()));
+        .register(databaseName, user != null ? user.getName() : null, "http", sessionId, requestTag != null ? requestTag : sessionTag,
+            RunningQuery.Client.of(null, exchange.getSourceAddress()));
     // What the request is until the handler says which statement it runs: a commit, a batch load or a search has none
     runningQuery.setStatement(null, exchange.getRequestMethod() + " " + exchange.getRequestPath());
     final String forwardedFrom = exchange.getAttachment(FORWARDED_QUERY_ID);

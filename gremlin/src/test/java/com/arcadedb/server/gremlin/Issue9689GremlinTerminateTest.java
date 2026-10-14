@@ -126,7 +126,7 @@ class Issue9689GremlinTerminateTest extends AbstractGremlinServerIT {
     final AtomicReference<Throwable> failure = new AtomicReference<>();
     final AtomicReference<RunningQuery> entry = new AtomicReference<>();
     final Thread runner = new Thread(() -> {
-      try (final RunningQuery q = getServer(0).getRunningQueries().register(getDatabaseName(), "root", "http", null, null, null, null)) {
+      try (final RunningQuery q = getServer(0).getRunningQueries().register(getDatabaseName(), "root", "http", null, null, RunningQuery.Client.NONE)) {
         q.setStatement("gremlin", LONG_TRAVERSAL);
         entry.set(q);
         try (final ResultSet rs = database.command("gremlin", LONG_TRAVERSAL)) {

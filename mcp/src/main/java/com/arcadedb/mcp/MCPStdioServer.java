@@ -21,6 +21,7 @@ package com.arcadedb.mcp;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.RunningQuery;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
@@ -41,7 +42,7 @@ import java.util.logging.Level;
  */
 public class MCPStdioServer {
   // What "list queries" names as the client of a tool call: the process at the other end of the pipe has no address (issue #9962)
-  static final String STDIO_CLIENT = "stdio";
+  static final RunningQuery.Client STDIO_CLIENT = new RunningQuery.Client(null, "stdio");
 
   private final MCPDispatcher      dispatcher;
   private final ServerSecurityUser user;

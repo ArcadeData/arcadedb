@@ -177,10 +177,10 @@ public class MCPDispatcher {
    * server state is disclosed.
    *
    * @param client the client that sent the message, as {@code list queries} names it beside the user: the peer address
-   *               for the HTTP transport, {@code stdio} for the stdio one (issue #9962). Passed per message rather than
-   *               held, because one HTTP dispatcher serves every client of the endpoint
+   *               for the HTTP transport, {@link MCPStdioServer#STDIO_CLIENT} for the stdio one (issue #9962). Passed
+   *               per message rather than held, because one HTTP dispatcher serves every client of the endpoint
    */
-  public MCPResponse dispatch(final JSONObject request, final ServerSecurityUser user, final String client) {
+  public MCPResponse dispatch(final JSONObject request, final ServerSecurityUser user, final RunningQuery.Client client) {
     // A response acknowledges a server-to-client request and must never receive another response. ArcadeDB
     // does not currently issue such requests, so valid responses are accepted and discarded.
     if (isResponse(request))
@@ -372,11 +372,11 @@ public class MCPDispatcher {
    * arguments - with the secrets {@link #formatArgs} masks for the request log masked - otherwise, built only if somebody lists it.
    */
   private RunningQuery registerRunningQuery(final String toolName, final JSONObject args, final ServerSecurityUser user,
-      final String client) {
+      final RunningQuery.Client client) {
     // read without coercion: a member of the wrong type is the tool's to refuse, with its own message. The client is
     // what tells two agents apart, since an MCP endpoint typically serves all of them as one principal (issue #9962)
     final RunningQuery entry = server.getRunningQueries()
-        .register(textMember(args, "database"), user.getName(), "mcp", null, null, null, client);
+        .register(textMember(args, "database"), user.getName(), "mcp", null, null, client);
     final String text = "query".equals(toolName) ? textMember(args, "query") :
         "execute_command".equals(toolName) ? textMember(args, "command") : null;
     if (text != null) {
@@ -388,7 +388,7 @@ public class MCPDispatcher {
   }
 
   private MCPResponse toolsCall(final Object id, final JSONObject params, final ServerSecurityUser user,
-      final EffectiveToolProfile profile, final String client) {
+      final EffectiveToolProfile profile, final RunningQuery.Client client) {
     // Guarded for the same reason as the request members in dispatch: a member present but of the wrong JSON type
     // raises out of the read, and these reads sit above the try below. A malformed member here is invalid params
     // rather than a failed tool call, so it answers with a JSON-RPC error rather than an isError tool envelope.
@@ -764,7 +764,7 @@ public class MCPDispatcher {
    * dispatched independently and only the elements that are requests contribute a response, so a batch made
    * only of notifications and/or responses yields an empty array and the transport answers with no body.
    */
-  public JSONArray dispatchBatch(final JSONArray batch, final ServerSecurityUser user, final String client) {
+  public JSONArray dispatchBatch(final JSONArray batch, final ServerSecurityUser user, final RunningQuery.Client client) {
     final JSONArray responses = new JSONArray();
     for (int i = 0; i < batch.length(); i++) {
       final Object element = batch.get(i);

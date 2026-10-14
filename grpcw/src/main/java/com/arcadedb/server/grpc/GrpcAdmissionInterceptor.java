@@ -20,7 +20,6 @@ package com.arcadedb.server.grpc;
 
 import com.arcadedb.exception.QueryAdmissionException;
 import com.arcadedb.query.RunningQuery;
-import com.arcadedb.query.RunningQueryRegistry;
 import com.arcadedb.query.sql.executor.QueryAdmissionGate;
 import com.arcadedb.server.ArcadeDBServer;
 import com.google.protobuf.Descriptors;
@@ -64,7 +63,7 @@ import java.util.Set;
  */
 class GrpcAdmissionInterceptor implements ServerInterceptor {
   /** The peer of a client-streaming load, for the entry its handler opens ({@link StreamingLoadEntry}, issue #9962). */
-  static final Context.Key<String>          CLIENT_ADDRESS_KEY = Context.key("arcadedb-client-address");
+  static final Context.Key<RunningQuery.Client> CLIENT_KEY = Context.key("arcadedb-client");
   private static final Metadata.Key<String> DATABASE_HEADER = Metadata.Key.of("x-arcade-database", Metadata.ASCII_STRING_MARSHALLER);
   private static final Set<String>          NOT_GATED       = Set.of(//
       ArcadeDbServiceGrpc.getBeginTransactionMethod().getFullMethodName(),//
@@ -84,7 +83,7 @@ class GrpcAdmissionInterceptor implements ServerInterceptor {
       // A client-streaming load opens its entry itself, from the handler, where the call is out of reach: it reads its
       // client from the Context (issue #9962)
       if (isStreamingLoad(method))
-        return Contexts.interceptCall(Context.current().withValue(CLIENT_ADDRESS_KEY, clientAddress(call)), call, headers, next);
+        return Contexts.interceptCall(Context.current().withValue(CLIENT_KEY, client(call)), call, headers, next);
       return next.startCall(call, headers);
     }
 
@@ -108,7 +107,7 @@ class GrpcAdmissionInterceptor implements ServerInterceptor {
           call.close(refusal.getStatus(), refusal.getTrailers() != null ? refusal.getTrailers() : new Metadata());
           return;
         }
-        final RunningQuery runningQuery = register(method, headers, request, clientAddress(call));
+        final RunningQuery runningQuery = register(method, headers, request, client(call));
         // A cancelled call cancels its Context at once, on a thread of its own, while the handler still runs here
         final Context context = Context.current();
         final Context.CancellationListener onCancel = cancelled -> runningQuery.terminate("client (call cancelled)");
@@ -133,7 +132,7 @@ class GrpcAdmissionInterceptor implements ServerInterceptor {
    * statement (issue #9689). A transaction's statements run on the transaction's own thread, where the service binds it.
    */
   private RunningQuery register(final MethodDescriptor<?, ?> method, final Metadata headers, final Object request,
-      final String client) {
+      final RunningQuery.Client client) {
     // Who the call was authenticated as, by its headers or its session: never a name the payload carries
     final String user = GrpcAuthInterceptor.USER_CONTEXT_KEY.get();
     String database = requestDatabase(request);
@@ -155,7 +154,7 @@ class GrpcAdmissionInterceptor implements ServerInterceptor {
       language = "sql";
 
     final RunningQuery runningQuery = server.getRunningQueries()
-        .register(database != null && !database.isEmpty() ? database : null, user, "grpc", null, null, null, client);
+        .register(database != null && !database.isEmpty() ? database : null, user, "grpc", null, null, client);
     runningQuery.setStatement(language, text);
     return runningQuery;
   }
@@ -190,10 +189,10 @@ class GrpcAdmissionInterceptor implements ServerInterceptor {
   }
 
   /**
-   * The peer of {@code call}, as {@code list queries} names the client of the work it runs (issue #9962), or {@code null}
-   * when the transport reports none.
+   * The client of {@code call}, as {@code list queries} names it beside the user (issue #9962): its peer, when the
+   * transport reports one.
    */
-  static String clientAddress(final ServerCall<?, ?> call) {
-    return RunningQueryRegistry.clientAddress(call.getAttributes().get(Grpc.TRANSPORT_ATTR_REMOTE_ADDR));
+  static RunningQuery.Client client(final ServerCall<?, ?> call) {
+    return RunningQuery.Client.of(null, call.getAttributes().get(Grpc.TRANSPORT_ATTR_REMOTE_ADDR));
   }
 }

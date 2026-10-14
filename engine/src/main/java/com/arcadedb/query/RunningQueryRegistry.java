@@ -18,7 +18,6 @@
  */
 package com.arcadedb.query;
 
-import java.net.SocketAddress;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
@@ -54,16 +53,13 @@ public final class RunningQueryRegistry {
    * @param protocol      how it reached the server, e.g. {@code http}
    * @param sessionId     the transaction session it runs in, or {@code null}
    * @param tag           the opaque label the client gave it, or {@code null}
-   * @param connectionId  the client connection running it in the protocol's own terms (the Postgres backend pid a
-   *                      {@code pg_cancel_backend} takes, a Bolt connection, a channel id), or {@code null} when the
-   *                      protocol has none
-   * @param clientAddress the address of the client that asked for it, or the name of a transport that has no address
-   *                      ({@code stdio}). Taken here rather than by a later call, so a surface cannot open an entry
-   *                      that lists work without saying whose it is (issue #9962)
+   * @param client        who asked for it, {@link RunningQuery.Client#NONE} for work that comes from no connection. Taken
+   *                      here rather than by a later call, so a surface cannot open an entry that lists work without
+   *                      saying whose it is (issue #9962)
    */
   public RunningQuery register(final String database, final String user, final String protocol, final String sessionId,
-      final String tag, final String connectionId, final String clientAddress) {
-    final RunningQuery query = open(database, user, protocol, sessionId, tag, connectionId, clientAddress);
+      final String tag, final RunningQuery.Client client) {
+    final RunningQuery query = open(database, user, protocol, sessionId, tag, client);
     query.publish();
     return query;
   }
@@ -74,20 +70,12 @@ public final class RunningQueryRegistry {
    * work runs and closes it once the statement is over. Same parameters as {@link #register}.
    */
   public RunningQuery open(final String database, final String user, final String protocol, final String sessionId,
-      final String tag, final String connectionId, final String clientAddress) {
+      final String tag, final RunningQuery.Client client) {
     final RunningQuery query = new RunningQuery(this, lastId.incrementAndGet(), database, user, protocol, sessionId, tag);
     // Before the entry is listed, so no listing sees it without its client
-    query.setConnection(connectionId, clientAddress);
+    query.setClient(client);
     running.put(query.getNumericId(), query);
     return query;
-  }
-
-  /**
-   * The {@code clientAddress} of {@link #register} for a socket peer: its text, or {@code null} when the transport reports
-   * none (a closed channel, an in-process transport), so the listing omits the field instead of showing {@code "null"}.
-   */
-  public static String clientAddress(final SocketAddress address) {
-    return address != null ? address.toString() : null;
   }
 
   /** Who sees and stops every statement running here; anybody else sees and stops only their own. */
