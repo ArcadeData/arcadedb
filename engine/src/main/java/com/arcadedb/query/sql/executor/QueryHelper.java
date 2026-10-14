@@ -27,6 +27,8 @@ public class QueryHelper {
   // THE DEADLINE IS CHECKED EVERY 4096 STEPS OF A LIKE MATCH: System.nanoTime() IS NOT FREE, AND A MATCH THAT TAKES
   // FEWER STEPS ENDS ESSENTIALLY AT ONCE
   private static final int  DEADLINE_CHECK_INTERVAL_MASK = 4095;
+  // A PATTERN IS USER INPUT OF ANY LENGTH: THE TIMEOUT MESSAGE QUOTES ONLY ITS START
+  private static final int  MAX_PATTERN_IN_MESSAGE       = 100;
 
   /**
    * Answers {@code currentValue LIKE value}: {@code %} matches any sequence of characters, the empty one included,
@@ -72,8 +74,9 @@ public class QueryHelper {
 
     while (v < valueLength) {
       if ((++steps & DEADLINE_CHECK_INTERVAL_MASK) == 0 && deadlineNanos != Long.MAX_VALUE && System.nanoTime() - deadlineNanos > 0)
-        throw new TimeoutException(
-            "LIKE operation aborted (arcadedb.command.regexTimeout): pattern '" + value + "' against input of length " + valueLength);
+        throw new TimeoutException("LIKE operation aborted (arcadedb.command.regexTimeout): pattern '" + (patternLength > MAX_PATTERN_IN_MESSAGE ?
+            value.substring(0, MAX_PATTERN_IN_MESSAGE) + "...' of length " + patternLength :
+            value + "'") + " against input of length " + valueLength);
 
       if (p < patternLength) {
         final char c = value.charAt(p);
@@ -96,6 +99,8 @@ public class QueryHelper {
             literalLength = 2;
           }
         }
+        // A LITERAL IS COMPARED ONE UTF-16 UNIT AT A TIME: THE TWO HALVES OF A PAIR IN THE PATTERN MATCH THE PAIR IN THE VALUE,
+        // AND ONLY A PATTERN HOLDING HALF A PAIR, WHICH IS NO CHARACTER AT ALL, COULD MATCH HALF OF ONE
         if (currentValue.charAt(v) == literal) {
           ++v;
           p += literalLength;
