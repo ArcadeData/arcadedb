@@ -29,6 +29,7 @@ import com.arcadedb.server.grpc.GrpcLink;
 import com.arcadedb.server.grpc.GrpcList;
 import com.arcadedb.server.grpc.GrpcMap;
 import com.arcadedb.server.grpc.GrpcRecord;
+import com.arcadedb.server.grpc.GrpcTemporalCodec;
 import com.arcadedb.server.grpc.GrpcValue;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
@@ -40,16 +41,13 @@ import com.arcadedb.log.LogManager;
 import java.lang.reflect.Array;
 import java.math.BigDecimal;
 import java.math.BigInteger;
-import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
-import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.logging.Level;
 
 import java.util.Collection;
-import java.util.Date;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -275,42 +273,11 @@ public class ProtoUtils {
     if (value instanceof byte[] v)
       return dbgEnc("toGrpcValue", value, b.setBytesValue(ByteString.copyFrom(v)).build());
 
-    if (value instanceof Date v) {
-      return dbgEnc("toGrpcValue", value,
-          GrpcValue.newBuilder().setTimestampValue(Timestamp.newBuilder()
-                  .setSeconds(Math.floorDiv(v.getTime(), 1000L)).setNanos((int) Math.floorMod(v.getTime(), 1000L) * 1_000_000).build())
-              .setLogicalType("datetime").build());
-    }
-
-    if (value instanceof LocalDate ld) {
-      final long seconds = ld.toEpochDay() * 86400L;
-      return dbgEnc("toGrpcValue", value,
-          GrpcValue.newBuilder().setTimestampValue(Timestamp.newBuilder().setSeconds(seconds).setNanos(0).build())
-              .setLogicalType("date").build());
-    }
-
-    if (value instanceof LocalDateTime ldt) {
-      final Instant instant = ldt.toInstant(ZoneOffset.UTC);
-      return dbgEnc("toGrpcValue", value,
-          GrpcValue.newBuilder()
-              .setTimestampValue(Timestamp.newBuilder().setSeconds(instant.getEpochSecond()).setNanos(instant.getNano()).build())
-              .setLogicalType("datetime").build());
-    }
-
-    if (value instanceof Instant instant) {
-      return dbgEnc("toGrpcValue", value,
-          GrpcValue.newBuilder()
-              .setTimestampValue(Timestamp.newBuilder().setSeconds(instant.getEpochSecond()).setNanos(instant.getNano()).build())
-              .setLogicalType("datetime").build());
-    }
-
-    if (value instanceof ZonedDateTime zdt) {
-      final Instant instant = zdt.toInstant();
-      return dbgEnc("toGrpcValue", value,
-          GrpcValue.newBuilder()
-              .setTimestampValue(Timestamp.newBuilder().setSeconds(instant.getEpochSecond()).setNanos(instant.getNano()).build())
-              .setLogicalType("datetime").build());
-    }
+    // Issue #9969: the encoder the server shares, so a ZonedDateTime keeps its zone and an OffsetTime/LocalTime travels typed
+    // instead of as an untyped string.
+    final GrpcValue temporal = GrpcTemporalCodec.encode(value);
+    if (temporal != null)
+      return dbgEnc("toGrpcValue", value, temporal);
 
     if (value instanceof RID rid) {
       return dbgEnc("toGrpcValue", value, GrpcValue.newBuilder()
@@ -379,7 +346,8 @@ public class ProtoUtils {
     case DOUBLE_VALUE:
       return dbgDec("fromGrpcValue", v, v.getDoubleValue());
     case STRING_VALUE:
-      return dbgDec("fromGrpcValue", v, v.getStringValue());
+      // Issue #9969: a zoned datetime or a time of day travels as text tagged with its logical type
+      return dbgDec("fromGrpcValue", v, GrpcTemporalCodec.decodeString(v.getStringValue(), v.getLogicalType()));
     case BYTES_VALUE:
 
       if ("json".equalsIgnoreCase(v.getLogicalType())) {
@@ -400,14 +368,13 @@ public class ProtoUtils {
       // to a bare Long epoch-millis - which lost sub-millisecond precision (DATETIME_MICROS/NANOS)
       // and the temporal type identity, and forced consumers to re-apply a timezone (off-by-one risk).
       // The UTC-anchored temporal encoding (epochDay * 86400 for "date"; toInstant(UTC) for
-      // "datetime") is shared with the server encoder GrpcTypeConverter.toGrpcValue in the grpcw
-      // module and this class's own toGrpcValue above; keep all three in sync when changing it.
+      // "datetime") is GrpcTemporalCodec.encode, which both ends share (issue #9969).
       final Timestamp ts = v.getTimestampValue();
       final String logical = v.getLogicalType();
-      if ("date".equalsIgnoreCase(logical))
+      if (GrpcTemporalCodec.DATE.equalsIgnoreCase(logical))
         // Encode: epochDay * 86400 seconds. Inverse recovers the exact LocalDate at UTC.
         return dbgDec("fromGrpcValue", v, LocalDate.ofEpochDay(Math.floorDiv(ts.getSeconds(), 86_400L)));
-      if ("datetime".equalsIgnoreCase(logical))
+      if (GrpcTemporalCodec.DATETIME.equalsIgnoreCase(logical))
         // Encode: LocalDateTime/Instant.toInstant(UTC). Inverse preserves micros/nanos at UTC.
         return dbgDec("fromGrpcValue", v, LocalDateTime.ofEpochSecond(ts.getSeconds(), ts.getNanos(), ZoneOffset.UTC));
       // No logical_type: keep the legacy epoch-millis Long behavior (backward compatible).
