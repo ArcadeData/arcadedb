@@ -126,6 +126,17 @@ class Issue9913PathValueTest extends TestHelper {
   }
 
   @Test
+  void procedurePathsAreValuesForDistinctAndCollect() {
+    // the same route yielded twice is one DISTINCT value, and collect() keeps paths
+    final Result row = single(ENDS + "UNWIND [1, 2] AS i CALL algo.dijkstra(a, c, 'ROAD', 'km') YIELD path "
+        + "WITH collect(path) AS allPaths, collect(DISTINCT path) AS distinctPaths "
+        + "RETURN size(allPaths) AS a, size(distinctPaths) AS d, [p IN allPaths | length(p)] AS lens");
+    assertThat(row.<Number>getProperty("a").intValue()).isEqualTo(2);
+    assertThat(row.<Number>getProperty("d").intValue()).isEqualTo(1);
+    assertThat(row.<List<Long>>getProperty("lens")).containsExactly(2L, 2L);
+  }
+
+  @Test
   void shortestPathBindsAPath() {
     final Result row = single("MATCH path = shortestPath((a:City {name: 'A'})-[:ROAD*]->(c:City {name: 'C'}))" + PROJECT);
     assertRoute(row);
@@ -204,6 +215,10 @@ class Issue9913PathValueTest extends TestHelper {
         .isInstanceOf(CommandSemanticException.class).hasMessageContaining("PATH");
     assertThatThrownBy(() -> single("MATCH p = (:City {name: 'A'})-[:ROAD]->() RETURN apoc.path.slice(p, 'one') AS x"))
         .isInstanceOf(CommandSemanticException.class).hasMessageContaining("INTEGER");
+
+    // a {_type: 'path'} map whose counts do not make a path is not one
+    assertThatThrownBy(() -> single("MATCH (n:City {name: 'A'}) RETURN nodes({_type: 'path', nodes: [n, n], relationships: []}) AS x"))
+        .isInstanceOf(CommandSemanticException.class).hasMessageContaining("PATH");
 
     final Result nulls = single("RETURN nodes(null) AS n, relationships(null) AS r, length(null) AS l");
     assertThat(nulls.<Object>getProperty("n")).isNull();

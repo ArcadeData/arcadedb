@@ -134,13 +134,21 @@ public class TraversalPath {
       final ArrayList<Vertex> pathVertices = new ArrayList<>(elements.size() / 2 + 1);
       final ArrayList<Edge> pathEdges = new ArrayList<>(elements.size() / 2);
       boolean shaped = true;
-      for (int i = 0; i < elements.size() && shaped; i++) {
+      for (int i = 0; i < elements.size(); i++) {
         if (i % 2 == 0) {
           final Vertex vertex = asVertex(elements.get(i));
-          shaped = vertex != null && pathVertices.add(vertex);
+          if (vertex == null) {
+            shaped = false;
+            break;
+          }
+          pathVertices.add(vertex);
         } else {
           final Edge edge = asEdge(elements.get(i));
-          shaped = edge != null && pathEdges.add(edge);
+          if (edge == null) {
+            shaped = false;
+            break;
+          }
+          pathEdges.add(edge);
         }
       }
       if (shaped && joined(pathVertices, pathEdges))
