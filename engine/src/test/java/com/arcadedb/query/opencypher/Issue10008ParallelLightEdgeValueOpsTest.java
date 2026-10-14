@@ -201,6 +201,43 @@ class Issue10008ParallelLightEdgeValueOpsTest extends TestHelper {
   }
 
   /**
+   * An explicit delete of a twin and a DETACH of its endpoint in one statement: the DETACH reads the list after the twin
+   * is gone, so its survivors are numbered anew and must not be mistaken for the twins already deleted.
+   */
+  @ParameterizedTest(name = "{0} lightweight={1}: {2}")
+  @MethodSource("explicitAndDetach")
+  void anExplicitDeleteAndADetachOfItsEndpointCountEveryTwinOnce(final Fixture fixture, final boolean lightweight,
+      final String statement, final long nodes) {
+    build(fixture, lightweight);
+    final long[] reported = new long[2];
+    database.transaction(() -> {
+      try (final ResultSet rs = database.command("opencypher", statement)) {
+        while (rs.hasNext())
+          rs.next();
+        reported[0] = rs.getStatistics().orElseThrow().getRelationshipsDeleted();
+        reported[1] = rs.getStatistics().orElseThrow().getNodesDeleted();
+      }
+    });
+    assertThat(edgesLeft()).as(statement).isZero();
+    assertThat(reported[0]).as(statement).isEqualTo(fixture == Fixture.THREE_PARALLEL ? 3L : 2L);
+    assertThat(reported[1]).as(statement).isEqualTo(nodes);
+  }
+
+  static Stream<Arguments> explicitAndDetach() {
+    final List<Arguments> cases = new ArrayList<>();
+    for (final boolean lightweight : new boolean[] { true, false })
+      for (final Fixture fixture : Fixture.values()) {
+        cases.add(Arguments.of(fixture, lightweight, "MATCH (a:P {name: 'a'})-[r:K]->(:P) DETACH DELETE r, a", 1L));
+        cases.add(Arguments.of(fixture, lightweight, "MATCH (a:P {name: 'a'})-[r:K]->(:P) DETACH DELETE a, r", 1L));
+        if (fixture != Fixture.TWO_LOOPS)
+          cases.add(Arguments.of(fixture, lightweight, "MATCH (a:P {name: 'a'})-[r:K]->(b:P) DETACH DELETE r, b", 1L));
+        cases.add(Arguments.of(fixture, lightweight,
+            "MATCH (a:P {name: 'a'})-[r:K]->(:P) WITH a, collect(r) AS rs FOREACH (x IN rs | DETACH DELETE x, a)", 1L));
+      }
+    return cases.stream();
+  }
+
+  /**
    * Twins met only by the last rows of a streaming DELETE: the rows before them are deleted as they stream, the twins
    * read the rest in and are numbered before the first of them goes.
    */
