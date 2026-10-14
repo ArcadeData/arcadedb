@@ -67,8 +67,9 @@ import java.util.logging.Level;
  * lifted is not watched. The timeout is put back on every path that ends the watch, a client gone or a pipelined request
  * included: both stop the reads, and {@link #disarm()} - which always runs - restores it whether or not the watch was
  * still armed. The trade: a client that vanishes without closing its connection (no FIN or RST reaches the server) is
- * no longer cut off by the read timeout while its statement runs, and the watch cannot see it either, so the statement
- * runs to its end or to {@code arcadedb.command.timeout}, as it did before the watch existed.
+ * no longer cut off by the read timeout while its statement runs, as it was not before the watch existed. The HTTP
+ * listener turns TCP keep-alive on for that case: once the operating system finds the peer dead, the watch's read fails
+ * and the statement is terminated, rather than running to its end or to {@code arcadedb.command.timeout}.
  * <p>
  * Costs one listener swap per request and nothing while the client is quiet: the selector wakes the watch only when the
  * client sends or closes.
@@ -85,7 +86,9 @@ final class HttpClientDisconnectWatch implements ChannelListener<ConduitStreamSo
   private final ByteBuffer                                             probe = ByteBuffer.allocate(1);
   private       boolean                                              armed = true;
   // The read timeout the connection had before the watch lifted it, put back on disarm(); null when there is none to restore
-  private       Integer                                              liftedReadTimeout;
+  // Volatile: set by arm() on the worker thread, read by disarm(), which the exchange-completion listener may run on the I/O
+  // thread
+  private volatile Integer                                             liftedReadTimeout;
 
   private HttpClientDisconnectWatch(final HttpServerConnection connection, final RunningQuery runningQuery) {
     this.connection = connection;
