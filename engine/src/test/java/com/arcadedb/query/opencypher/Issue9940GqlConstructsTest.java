@@ -21,6 +21,9 @@ package com.arcadedb.query.opencypher;
 import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.serializer.JsonSerializer;
+import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -141,6 +144,31 @@ class Issue9940GqlConstructsTest extends TestHelper {
   void letItemsReadEarlierItemsAndFollowAnAggregation() {
     assertThat(rows("LET x = 1, y = x + 1 RETURN x, y").getFirst()).containsEntry("x", 1L).containsEntry("y", 2L);
     assertThat(column("MATCH (n:Person) WITH count(n) AS c LET d = c * 2 RETURN d", "d")).containsExactly(8L);
+  }
+
+  @Test
+  void letAfterUnwindOptionalMatchAndSubqueryKeepsTheScope() {
+    assertThat(column("UNWIND [1, 2] AS i LET j = i * 10 RETURN i + j AS r ORDER BY r", "r")).containsExactly(11L, 22L);
+    assertThat(column("MATCH (a:Person {name:'C'}) OPTIONAL MATCH (a)-[:KNOWS]->(b:Person {name:'A'}) "
+        + "LET hasB = b IS NOT NULL RETURN a.name AS a, hasB", "hasB")).containsExactly(false);
+    assertThat(column("MATCH (a:Person {name:'A'}) CALL (a) { MATCH (a)-[:KNOWS]->(x) RETURN count(x) AS out } "
+        + "LET twice = out * 2 RETURN twice", "twice")).containsExactly(4L);
+    assertThatThrownBy(() -> rows("UNWIND [1] AS i LET i = 2 RETURN i")).hasMessageContaining("Variable 'i' already declared");
+  }
+
+  @Test
+  void aShortestPathSerializesToJsonAsTheListItHasAlwaysBeen() {
+    try (final ResultSet rs = database.query("opencypher",
+        "MATCH p = shortestPath((:Person {name:'A'})-[:KNOWS*]->(:Person {name:'D'})) RETURN p")) {
+      final Result row = rs.next();
+      final JSONObject json = JsonSerializer.createJsonSerializer().serializeResult(database, row);
+      final JSONArray path = json.getJSONArray("p");
+      assertThat(path.length()).isEqualTo(3);
+      assertThat(path.getJSONObject(0).getString("name")).isEqualTo("A");
+      assertThat(path.getJSONObject(2).getString("name")).isEqualTo("D");
+      // and the JSON of the result itself
+      assertThat(row.toJSON().getJSONArray("p").length()).isEqualTo(3);
+    }
   }
 
   @Test
@@ -350,8 +378,10 @@ class Issue9940GqlConstructsTest extends TestHelper {
   }
 
   @Test
-  void isNormalizedRefusesANonString() {
-    assertThatThrownBy(() -> rows("RETURN 1 IS NORMALIZED AS n")).hasMessageContaining("NORMALIZED");
+  void isNormalizedOfANonStringIsNull() {
+    // as Neo4j Cypher 25: only a string has a normal form, anything else is UNKNOWN, so a WHERE drops the row
+    assertThat(rows("RETURN 1 IS NORMALIZED AS n, 1 IS NOT NORMALIZED AS m").getFirst()).containsEntry("n", null).containsEntry("m", null);
+    assertThat(column("UNWIND [1, 'a'] AS x WITH x WHERE x IS NORMALIZED RETURN x", "x")).containsExactly("a");
   }
 
   // 8. Path variable over a quantified path pattern with no outer hops
