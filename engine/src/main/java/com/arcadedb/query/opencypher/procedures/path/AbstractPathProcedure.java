@@ -402,7 +402,8 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
    * <p>
    * The edges are read off the adjacency lists knowing their endpoints, so a relationship to a node outside the set is
    * turned away on the RID in the list entry and its record is never read: the cost of this pass is the out-degree of the
-   * reported nodes in entries, not in records. The record of a relationship that is kept is read when the caller reads it.
+   * reported nodes in entries, not in records. The record of a relationship that is kept is read here, which is what finds an
+   * entry whose edge record is gone: it is reported and skipped, as in every other path walk.
    */
   private static void collectRelationshipsBetween(final List<Vertex> nodes, final List<Edge> edges) {
     if (nodes.isEmpty())
@@ -420,8 +421,10 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
         try {
           final Edge edge = outgoing.next();
           final RID target = edge.getIn();
+          // The record is read now, for the edges that are kept: an entry whose edge record is gone is not noticed by
+          // following the list, and the caller must not be handed a relationship it cannot read
           if (target != null && nodeIds.contains(target))
-            edges.add(edge);
+            edges.add(edge.asEdge(true));
         } catch (final RecordNotFoundException e) {
           GhostEdgeReporter.reportSkipped(e);
         }

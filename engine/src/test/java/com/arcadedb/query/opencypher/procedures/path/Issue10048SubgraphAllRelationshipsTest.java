@@ -18,9 +18,12 @@
  */
 package com.arcadedb.query.opencypher.procedures.path;
 
+import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -144,6 +147,44 @@ class Issue10048SubgraphAllRelationshipsTest {
       final String from = relationship.substring(0, 1);
       final String to = relationship.substring(relationship.length() - 1);
       assertThat(twoNodes).contains(from, to);
+    }
+  }
+
+  /**
+   * The relationships between the nodes are read off the adjacency lists without loading their records, so a list entry
+   * whose edge record is gone is not noticed by following it: it has to be before the relationship is kept, or the caller
+   * that reads it later fails on the whole result.
+   */
+  @Test
+  void aGhostEdgeBetweenTwoReturnedNodesIsSkippedNotReturned() {
+    database.getSchema().createVertexType("G");
+    database.getSchema().createEdgeType("LINK");
+    database.transaction(() -> {
+      final MutableVertex a = database.newVertex("G").set("name", "ga").save();
+      final MutableVertex b = database.newVertex("G").set("name", "gb").save();
+      final MutableVertex c = database.newVertex("G").set("name", "gc").save();
+      a.newEdge("LINK", b).set("tag", "ghost").save();
+      a.newEdge("LINK", c).set("tag", "live-ac").save();
+      c.newEdge("LINK", b).set("tag", "live-cb").save();
+    });
+
+    final RID ghost;
+    try (final ResultSet rs = database.query("opencypher", "MATCH (:G {name:'ga'})-[r:LINK {tag:'ghost'}]->(:G {name:'gb'}) RETURN r")) {
+      ghost = ((Edge) rs.next().getProperty("r")).getIdentity();
+    }
+    // Only the edge record goes: the entries naming it in the adjacency lists of ga and gb stay behind
+    database.transaction(() -> TestHelper.deleteRecordAtLowLevel(database, ghost));
+
+    try (final ResultSet rs = database.query("opencypher",
+        "MATCH (a:G {name:'ga'}) CALL path.subgraphAll(a, {relationshipFilter: 'LINK>'}) YIELD nodes, relationships "
+            + "RETURN nodes, relationships")) {
+      final Result row = rs.next();
+      assertThat((List<?>) row.getProperty("nodes")).hasSize(3);
+      final List<String> tags = new ArrayList<>();
+      for (final Object relationship : (List<?>) row.getProperty("relationships"))
+        tags.add(((Edge) relationship).getString("tag"));
+      Collections.sort(tags);
+      assertThat(tags).containsExactly("live-ac", "live-cb");
     }
   }
 
