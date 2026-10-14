@@ -61,10 +61,11 @@ public abstract class AbstractTraverseStep extends AbstractExecutionStep {
   static final int VISITED_ENTRY_BYTES = 24;
 
   // The visited set is the buffer a TRAVERSE holds for its whole life: one entry per record reached, released only when
-  // the step closes. It is under both heap limits as DISTINCT's set of keys is (issue #9792); the frontier is not counted
-  // apart, as it never holds a record the visited set does not. Counted here because EdgeIdentitySet.size() is not O(1).
+  // the step closes. Its bytes are charged to the heap budget all queries share (issue #9792); the frontier is not counted
+  // apart, as it never holds a record the visited set does not. It is not capped in number by
+  // queryMaxHeapElementsAllowedPerOp: an entry is a couple of primitives, not the ~2KB element that cap is sized on, so a
+  // traversal of a large graph would fail it with heap to spare.
   private OperationHeapLimit visitedLimit;
-  private long               visitedCount;
 
   public AbstractTraverseStep(final List<TraverseProjectionItem> projections, final WhereClause whileClause,
       final WhereClause postFilter,
@@ -118,8 +119,8 @@ public abstract class AbstractTraverseStep extends AbstractExecutionStep {
   }
 
   /**
-   * Adds {@code rid} to the records visited, accounting a new one under the heap limits: past the element cap the query
-   * fails, as a DISTINCT over the same records would, rather than the visited set growing until the heap is exhausted.
+   * Adds {@code rid} to the records visited, charging a new one to the heap budget: past it the query fails rather than
+   * the visited set growing until the heap is exhausted.
    *
    * @return true if the record was not visited before
    */
@@ -128,8 +129,13 @@ public abstract class AbstractTraverseStep extends AbstractExecutionStep {
       return false;
     if (visitedLimit == null)
       visitedLimit = OperationHeapLimit.of(context, "visited records", "TRAVERSE");
-    visitedLimit.check(++visitedCount);
-    visitedLimit.charge(visitedEntryBytes());
+    try {
+      visitedLimit.charge(visitedEntryBytes());
+    } catch (final RuntimeException e) {
+      // THE QUERY FAILS, POSSIBLY BEFORE ITS CALLER HOLDS A RESULT SET TO CLOSE: GIVE THE HEAP BACK NOW
+      visitedLimit.release();
+      throw e;
+    }
     return true;
   }
 
