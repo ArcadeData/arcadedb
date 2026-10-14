@@ -30,15 +30,17 @@ import java.util.List;
  * Syntax: interpolate(value, method [, timestamp])
  * Methods: 'prev' (carry forward), 'zero' (replace with 0), 'none' (leave nulls),
  *          'linear' (linear interpolation between surrounding non-null values, requires timestamp parameter)
+ * When a timestamp is given the rows are ordered by it, and the result is listed in timestamp order.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class SQLFunctionInterpolate extends SQLAggregatedFunction {
   public static final String NAME = "ts.interpolate";
 
-  private final List<Object> values     = new ArrayList<>();
-  private final List<Long>   timestamps = new ArrayList<>();
-  private       String       method;
+  // [value, timestamp in epoch millis or null]
+  private final List<Object[]> rows = new ArrayList<>();
+  private       boolean        anyTimestamp;
+  private       String         method;
 
   public SQLFunctionInterpolate() {
     super(NAME);
@@ -60,14 +62,10 @@ public class SQLFunctionInterpolate extends SQLAggregatedFunction {
     if (method == null && params.length > 1 && params[1] != null)
       method = params[1].toString();
 
-    values.add(params[0]);
-
-    // Capture timestamp if provided (needed for linear interpolation)
-    if (params.length > 2 && params[2] != null)
-      timestamps.add(SQLFunctionRate.toEpochMillis(params[2]));
-    else
-      timestamps.add((long) timestamps.size()); // Use index as fallback
-
+    final Long timestamp = params.length > 2 && params[2] != null ? SQLFunctionRate.toEpochMillis(params[2]) : null;
+    if (timestamp != null)
+      anyTimestamp = true;
+    rows.add(new Object[] { params[0], timestamp });
     return null;
   }
 
@@ -78,23 +76,30 @@ public class SQLFunctionInterpolate extends SQLAggregatedFunction {
 
   @Override
   public Object getResult() {
-    if (values.isEmpty())
+    if (rows.isEmpty())
       return new ArrayList<>();
 
+    // Filling a gap is defined over TIME: the previous and next samples are the neighbours in timestamp order, not in
+    // arrival order, so with a timestamp the rows are ordered by it first and the result is listed in that order, like
+    // ts.lag/ts.lead/ts.rank (issue #9956). Rows without a timestamp sort last and keep their arrival order; with no
+    // timestamp at all, arrival order is the only order there is.
+    if (anyTimestamp)
+      WindowRows.sortBy(NAME, rows, 1, "<timestamp>");
+
     final String m = method != null ? method : "none";
-    final List<Object> result = new ArrayList<>(values.size());
+    final List<Object> result = new ArrayList<>(rows.size());
 
     switch (m) {
     case "zero":
-      for (final Object v : values)
-        result.add(v != null ? v : 0.0);
+      for (final Object[] row : rows)
+        result.add(row[0] != null ? row[0] : 0.0);
       break;
 
     case "prev":
       Object lastNonNull = null;
-      for (final Object v : values) {
-        if (v != null)
-          lastNonNull = v;
+      for (final Object[] row : rows) {
+        if (row[0] != null)
+          lastNonNull = row[0];
         result.add(lastNonNull);
       }
       break;
@@ -104,18 +109,19 @@ public class SQLFunctionInterpolate extends SQLAggregatedFunction {
       break;
 
     default: // "none"
-      result.addAll(values);
+      for (final Object[] row : rows)
+        result.add(row[0]);
       break;
     }
     return result;
   }
 
   private void applyLinearInterpolation(final List<Object> result) {
-    final int size = values.size();
+    final int size = rows.size();
 
     // First pass: copy all values
-    for (final Object v : values)
-      result.add(v);
+    for (final Object[] row : rows)
+      result.add(row[0]);
 
     // Second pass: interpolate nulls between non-null values
     int i = 0;
@@ -135,7 +141,7 @@ public class SQLFunctionInterpolate extends SQLAggregatedFunction {
 
       // Find the next non-null value
       int nextIdx = i + 1;
-      while (nextIdx < size && values.get(nextIdx) == null)
+      while (nextIdx < size && rows.get(nextIdx)[0] == null)
         nextIdx++;
 
       if (nextIdx >= size) {
@@ -145,19 +151,21 @@ public class SQLFunctionInterpolate extends SQLAggregatedFunction {
 
       // Interpolate all nulls between prevIdx and nextIdx
       final double prevVal = requireNumericOrNull(result.get(prevIdx)).doubleValue();
-      final double nextVal = requireNumericOrNull(values.get(nextIdx)).doubleValue();
-      final long prevTs = timestamps.get(prevIdx);
-      final long nextTs = timestamps.get(nextIdx);
-      final long tsDelta = nextTs - prevTs;
+      final double nextVal = requireNumericOrNull(rows.get(nextIdx)[0]).doubleValue();
+      final Long prevTs = (Long) rows.get(prevIdx)[1];
+      final Long nextTs = (Long) rows.get(nextIdx)[1];
 
-      if (tsDelta == 0) {
+      if (prevTs != null && nextTs != null && prevTs.equals(nextTs)) {
         // Same timestamp - just use prev value
         for (int j = i; j < nextIdx; j++)
           result.set(j, prevVal);
       } else {
         for (int j = i; j < nextIdx; j++) {
-          final long currentTs = timestamps.get(j);
-          final double fraction = (double) (currentTs - prevTs) / tsDelta;
+          final Long currentTs = (Long) rows.get(j)[1];
+          // Without a timestamp on every row of the gap, the position stands in for time (the pre-#9956 index fallback)
+          final double fraction = prevTs != null && nextTs != null && currentTs != null ?
+              (double) (currentTs - prevTs) / (nextTs - prevTs) :
+              (double) (j - prevIdx) / (nextIdx - prevIdx);
           result.set(j, prevVal + fraction * (nextVal - prevVal));
         }
       }
@@ -179,6 +187,6 @@ public class SQLFunctionInterpolate extends SQLAggregatedFunction {
 
   @Override
   public long getHeldValues() {
-    return values.size();
+    return rows.size();
   }
 }
