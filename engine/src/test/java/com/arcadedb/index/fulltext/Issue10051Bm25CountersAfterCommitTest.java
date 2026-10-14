@@ -234,6 +234,22 @@ class Issue10051Bm25CountersAfterCommitTest extends TestHelper {
     assertThat(metadata().getScans()).isZero();
   }
 
+  /** The generation a write records as saved is the one read BEFORE it serialized: a change made while the file was written stays unsaved. */
+  @Test
+  void aChangeMadeWhileTheSchemaWasBeingWrittenStaysUnsaved() {
+    createAndFill();
+    final FullTextIndexMetadata m = metadata();
+
+    final long readBeforeSerializing = m.getCountersGeneration();
+    m.applyCorpusDelta(1, 3); // a commit lands while the file is being written
+    m.markCountersSaved(readBeforeSerializing);
+
+    assertThat(m.isCountersDirty()).as("the commit made during the write is not in the file").isTrue();
+
+    m.markCountersSaved(m.getCountersGeneration());
+    assertThat(m.isCountersDirty()).isFalse();
+  }
+
   @Test
   void aCompletedSchemaWriteMarksTheCountersSavedUnlessTheyMovedMeanwhile() {
     createAndFill();
@@ -302,7 +318,8 @@ class Issue10051Bm25CountersAfterCommitTest extends TestHelper {
       }
     });
     other.start();
-    other.join();
+    other.join(30_000L);
+    assertThat(other.isAlive()).as("the concurrent transaction finished").isFalse();
     assertThat(failure.get()).isNull();
 
     assertThatThrownBy(database::commit).isInstanceOf(ConcurrentModificationException.class);

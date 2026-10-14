@@ -803,7 +803,8 @@ public class FullTextIndexMetadata extends IndexMetadata {
     countersGeneration.incrementAndGet();
     // Each counter is clamped at zero on its own, which makes the application order-dependent when a counter is driven below
     // zero. Entries reach every node in log order, so the nodes agree; and a counter that was driven below zero was already wrong
-    // (a drift the check repairs), which is the one case the clamp exists for
+    // (a drift the check repairs), which is the one case the clamp exists for. That includes a transaction that removes more than
+    // cold counters hold, as after a crash: the clamp keeps them from going negative, and the first search's drift check rescans
     // Same publication order as addDocument()/removeDocument(): the counter avgDocLength reads first moves last when the
     // corpus grows and first when it shrinks, so a concurrent reader's torn pair is always biased towards a HIGH average
     synchronized (countersLock) {

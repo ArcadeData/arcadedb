@@ -155,6 +155,19 @@ class Issue10051ReplicatedCorpusDeltaTest extends TestHelper {
     assertThat(applied).isTrue();
   }
 
+  /** Whatever the lookup of a delta's index raises, the entry itself still applies and the other deltas are not lost. */
+  @Test
+  void aDeltaWhoseIndexCannotBeResolvedDoesNotFailTheApplyNorTheOtherDeltas() throws Exception {
+    final WALFile.WALTransaction entry = entryAdvancingTheBucketPage();
+
+    final boolean applied = ((DatabaseInternal) database).getTransactionManager().applyChanges(entry, Collections.emptyMap(),
+        List.of(new CorpusDelta(null, 9, 9), new CorpusDelta("Doc[content]", 4, 20)), false);
+
+    assertThat(applied).isTrue();
+    assertThat(metadata().getTotalDocs()).isEqualTo(DOCS + 4L);
+    assertThat(metadata().getSumDocLength()).isEqualTo(DOCS * 3L + 20);
+  }
+
   @Test
   void anEntryWithoutDeltasLeavesTheCountersAlone() throws Exception {
     final WALFile.WALTransaction entry = entryAdvancingTheBucketPage();
