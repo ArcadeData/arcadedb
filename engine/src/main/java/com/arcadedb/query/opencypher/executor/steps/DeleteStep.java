@@ -491,12 +491,12 @@ public class DeleteStep extends AbstractExecutionStep {
             v.delete();
             stats.incNodesDeleted();
           } catch (final RecordNotFoundException ignored) {
-            // Already removed by an earlier FOREACH iteration's flush. `deleted` is rebuilt fresh on
-            // every flushDeferredDeletes call (one per outer row), so it cannot by itself remember a
-            // vertex an EARLIER outer row's flush already deleted - only ForeachStep's eager
-            // materialization (issue #6491) guarantees every row still sees a consistent read; distinct
-            // rows can still legitimately bind the very same vertex (a disconnected-pattern MATCH's
-            // cross join), and Neo4j treats deleting an already-deleted node as a no-op, not an error.
+            // Already removed, by a flush this `deleted` did not see: it lives as long as its ForeachStep, so a
+            // vertex deleted under another ForeachStep of the statement (a nested FOREACH runs on a plan of its
+            // own per iteration) is not in it. Only ForeachStep's eager materialization (issue #6491) guarantees
+            // every row still sees a consistent read; distinct rows can still legitimately bind the very same
+            // vertex (a disconnected-pattern MATCH's cross join), and Neo4j treats deleting an already-deleted
+            // node as a no-op, not an error.
           }
           deleted.vertexDeleted(v);
         } else {
