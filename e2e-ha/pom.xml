@@ -37,16 +37,21 @@
         <!-- HaChaosIT runs only from ha-chaos-tests.yml, never in the nightly HA job.
              Override with -Dfailsafe.excludedGroups= to run it. -->
         <failsafe.excludedGroups>chaos</failsafe.excludedGroups>
+        <allowIncompleteProjects>true</allowIncompleteProjects>
     </properties>
 
     <build>
         <plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-deploy-plugin</artifactId>
-                <configuration>
-                    <skip>true</skip>
-                </configuration>
+                <artifactId>maven-jar-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>test-jar</goal>
+                        </goals>
+                    </execution>
+                </executions>
             </plugin>
         </plugins>
     </build>

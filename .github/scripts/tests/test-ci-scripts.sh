@@ -48,6 +48,7 @@ NEEDSOUTPUTS="$SCRIPTS/check-workflow-needs-outputs.py"
 STATUSCOMPLETE="$SCRIPTS/check-ci-status-completeness.py"
 GRAALVMPIN="$SCRIPTS/check-native-graalvm-pin.py"
 RELEASEASSETS="$SCRIPTS/check-release-upload-assets.py"
+CREDSCOPE="$SCRIPTS/check-deploy-credential-scope.py"
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
@@ -1660,6 +1661,154 @@ expect "reports a workflow it cannot parse as YAML" 1 "not parseable as YAML" \
 # The repository's own workflows must pass - this is the case that would have caught run 33796693420.
 expect "the repository's own workflows name their release assets" 0 "explicit" \
     "$RELEASEASSETS"
+
+echo
+echo "check-deploy-credential-scope.py"
+
+# These cases vary only the deploy command, so the job around it - setup-java wiring the 'central'
+# server's credentials, then one Maven step - is boilerplate.
+deploy_workflow() {
+    local path="$1" command="$2"
+    cat >"$path" <<YAML
+name: Deploy
+on: [ push ]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-java@0000000000000000000000000000000000000000 # v6
+        with:
+          distribution: temurin
+          java-version: 21
+          server-id: central
+          server-username: MAVEN_USERNAME
+          server-password: MAVEN_PASSWORD
+      - name: Publish
+        run: |
+          $command
+YAML
+}
+
+mkdir -p "$work/credscope"
+
+# The regression this check exists for: #10023. Under Maven 3.10 the credentials of server 'central'
+# only reach Maven Central's own origin, so the snapshot upload to central.sonatype.com carried none
+# and every `Java CI - deploy` run on main failed with HTTP 401 from 2026-10-08 on.
+deploy_workflow "$work/credscope/bare.yml" \
+    'mvn deploy -Pdeploy -Pdocker -pl !e2e --batch-mode --file pom.xml -DskipTests'
+expect "rejects the #10023 deploy command without the credential scope" 1 "mvn deploy -Pdeploy" \
+    "$CREDSCOPE" "$work/credscope/bare.yml"
+
+# The fix, in both positions the repository's workflows use it.
+deploy_workflow "$work/credscope/scoped.yml" \
+    'mvn deploy -Pdeploy -pl !e2e --batch-mode -DskipTests -Dmaven.repository.credentialScope=id'
+expect "accepts a deploy that restores id-scoped credentials" 0 "credential scope" \
+    "$CREDSCOPE" "$work/credscope/scoped.yml"
+deploy_workflow "$work/credscope/goal-last.yml" \
+    'mvn -Pdeploy,deploy-central --batch-mode -Dmaven.repository.credentialScope=id deploy'
+expect "accepts the flag ahead of a trailing deploy goal" 0 "credential scope" \
+    "$CREDSCOPE" "$work/credscope/goal-last.yml"
+
+# The goal-last shape without the flag is the release workflow's, and must be caught as well.
+deploy_workflow "$work/credscope/goal-last-bare.yml" \
+    'mvn -Pdeploy,deploy-central --batch-mode -DskipTests=true -pl !e2e deploy'
+expect "rejects a trailing deploy goal without the flag" 1 "deploy-central" \
+    "$CREDSCOPE" "$work/credscope/goal-last-bare.yml"
+
+# The wrapper is the same Maven.
+deploy_workflow "$work/credscope/wrapper.yml" './mvnw --batch-mode deploy:deploy'
+expect "rejects ./mvnw deploy:deploy without the flag" 1 "mvnw" \
+    "$CREDSCOPE" "$work/credscope/wrapper.yml"
+
+# MAVEN_ARGS is read by Maven itself (3.9+), so a step env that sets the flag there is as good.
+cat >"$work/credscope/maven-args.yml" <<'YAML'
+name: Deploy
+on: [ push ]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-java@0000000000000000000000000000000000000000 # v6
+        with:
+          server-id: central
+      - name: Publish
+        env:
+          MAVEN_ARGS: -Dmaven.repository.credentialScope=id
+        run: mvn deploy
+YAML
+expect "accepts the flag passed through MAVEN_ARGS" 0 "credential scope" \
+    "$CREDSCOPE" "$work/credscope/maven-args.yml"
+
+# MAVEN_ARGS is honoured at job and workflow level as well, as GitHub merges those into the step.
+for level in workflow job; do
+    if [[ $level == workflow ]]; then
+        workflow_env=$'env:\n  MAVEN_ARGS: -Dmaven.repository.credentialScope=id'
+        job_env=""
+    else
+        workflow_env=""
+        job_env=$'    env:\n      MAVEN_ARGS: -Dmaven.repository.credentialScope=id'
+    fi
+    cat >"$work/credscope/maven-args-$level.yml" <<YAML
+name: Deploy
+on: [ push ]
+$workflow_env
+jobs:
+  build:
+    runs-on: ubuntu-latest
+$job_env
+    steps:
+      - uses: actions/setup-java@0000000000000000000000000000000000000000 # v6
+        with:
+          server-id: central
+      - run: mvn deploy
+YAML
+    expect "accepts the flag passed through $level-level MAVEN_ARGS" 0 "credential scope" \
+        "$CREDSCOPE" "$work/credscope/maven-args-$level.yml"
+done
+
+# A command continued over several lines is still one invocation: the flag on the last line counts,
+# and a continued deploy without it is still caught.
+deploy_workflow "$work/credscope/continued.yml" $'mvn deploy -Pdeploy \\\n            --batch-mode \\\n            -Dmaven.repository.credentialScope=id'
+expect "accepts the flag on a continuation line" 0 "credential scope" \
+    "$CREDSCOPE" "$work/credscope/continued.yml"
+deploy_workflow "$work/credscope/continued-bare.yml" $'mvn deploy -Pdeploy \\\n            --batch-mode -DskipTests'
+expect "rejects a continued deploy without the flag" 1 "mvn deploy -Pdeploy --batch-mode -DskipTests" \
+    "$CREDSCOPE" "$work/credscope/continued-bare.yml"
+
+# `-Pdeploy` is a profile, not the deploy goal: a `verify` with that profile uploads nothing.
+deploy_workflow "$work/credscope/profile-only.yml" 'mvn verify -Pdeploy -pl e2e'
+expect "does not treat the -Pdeploy profile as the deploy goal" 0 "credential scope" \
+    "$CREDSCOPE" "$work/credscope/profile-only.yml"
+
+# A job that wires no server credentials has nothing to scope - its deploy fails for another reason.
+cat >"$work/credscope/no-server.yml" <<'YAML'
+name: Deploy
+on: [ push ]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-java@0000000000000000000000000000000000000000 # v6
+        with:
+          java-version: 21
+      - run: mvn deploy
+YAML
+expect "ignores a job that declares no server credentials" 0 "credential scope" \
+    "$CREDSCOPE" "$work/credscope/no-server.yml"
+
+# Fail closed on a workflow it cannot read, as the other workflow checks do.
+cat >"$work/credscope/broken.yml" <<'YAML'
+name: broken
+on: [workflow_dispatch
+jobs:
+  build:
+YAML
+expect "reports a workflow it cannot parse as YAML" 1 "not parseable as YAML" \
+    "$CREDSCOPE" "$work/credscope/broken.yml"
+
+# The repository's own workflows must pass - this is the case that would have caught #10023.
+expect "the repository's own deploy workflows scope their credentials" 0 "credential scope" \
+    "$CREDSCOPE"
 
 echo
 if [[ $failures -gt 0 ]]; then
