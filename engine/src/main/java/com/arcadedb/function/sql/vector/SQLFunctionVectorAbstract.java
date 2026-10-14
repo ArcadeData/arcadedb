@@ -437,11 +437,13 @@ public abstract class SQLFunctionVectorAbstract extends SQLFunctionAbstract {
 
     /**
      * Whether a record about to be emitted with group key {@code key} still belongs to the group the searches ranked it
-     * under. A RID no search resolved has nothing to disagree with.
+     * under. A RID no search resolved has nothing to disagree with. Compared by content, arrays included: the emit reads the
+     * record again, so a {@code groupBy} on an array property hands it a new array equal to the one the search read, and an
+     * identity comparison would count every such row as stale.
      */
     protected boolean rankedUnder(final RID rid, final Object key) {
       final Object known = keys.get(rid);
-      return known == null || Objects.equals(known == NULL_KEY ? null : known, key);
+      return known == null || Objects.deepEquals(known == NULL_KEY ? null : known, key);
     }
   }
 
