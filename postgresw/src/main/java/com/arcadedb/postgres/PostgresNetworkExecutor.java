@@ -864,6 +864,8 @@ public class PostgresNetworkExecutor extends Thread {
    */
   private ResultSet executeParsed(final Statement statement, final String language, final String text, final Object[] parameters) {
     if (mustForwardToTheLeader(statement))
+      // The text is parsed again there, out of the engine's statement cache, a cost only a follower's write pays. The
+      // replicated command() re-checks leadership itself, so a node that became the leader meanwhile runs it locally.
       return database.command(language, text, server.getConfiguration(), parameters);
     return statement.execute(database, parameters, createCommandContext());
   }
@@ -883,9 +885,11 @@ public class PostgresNetworkExecutor extends Thread {
 
   /** True when this connection's database is replicated and this server is not its leader. */
   private boolean isHAFollower() {
-    final HAReplicatedDatabase replicated = database instanceof HAReplicatedDatabase ha ? ha
-        : database instanceof DatabaseInternal internal && internal.getWrappedDatabaseInstance() instanceof HAReplicatedDatabase wrapped ? wrapped : null;
-    return replicated != null && !replicated.isLeader();
+    if (database instanceof HAReplicatedDatabase replicated)
+      return !replicated.isLeader();
+    if (database instanceof DatabaseInternal internal && internal.getWrappedDatabaseInstance() instanceof HAReplicatedDatabase replicated)
+      return !replicated.isLeader();
+    return false;
   }
 
   /**

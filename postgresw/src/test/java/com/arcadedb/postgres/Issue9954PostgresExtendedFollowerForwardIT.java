@@ -90,6 +90,29 @@ class Issue9954PostgresExtendedFollowerForwardIT extends BaseRaftHATest {
     }
   }
 
+  /** A prepared UPDATE and DELETE reach the follower's forward too, the other two writes a driver binds parameters to. */
+  @Test
+  @Timeout(120)
+  void aPreparedUpdateAndDeleteGoThroughTheFollowersForward() throws Exception {
+    final int leader = requireLeaderIndex();
+    final int follower = prepareFollower(leader);
+    final String leaderName = getRaftPlugin(follower).getRaftHAServer().getLeaderName();
+    final Runnable restore = refuseForwardedWritesOn(follower);
+    try (final Connection connection = connect(follower)) {
+      for (final String sql : new String[] { "UPDATE " + TYPE + " SET n = 1 WHERE name = ?", "DELETE FROM " + TYPE + " WHERE name = ?" }) {
+        try (final PreparedStatement statement = connection.prepareStatement(sql)) {
+          statement.setString(1, "any");
+          final Throwable refused = catchThrowable(statement::execute);
+          assertThat(refused).as("'%s' must reach the forward, which refuses it", sql).isInstanceOf(SQLException.class);
+          assertThat(((SQLException) refused).getSQLState()).isEqualTo("40001");
+          assertThat(refused.getMessage()).contains("The leader is server '" + leaderName + "'");
+        }
+      }
+    } finally {
+      restore.run();
+    }
+  }
+
   /** A prepared INSERT with a bound parameter, forwarded for real, lands on the leader with the parameter's value. */
   @Test
   @Timeout(120)
