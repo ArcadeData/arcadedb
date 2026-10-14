@@ -131,7 +131,6 @@ public class AlterDatabaseStatement extends DDLStatement {
       final Class<?> resolvedClass = finalValue instanceof Class<?> clazz ? clazz : null;
       finalValue = GlobalConfiguration.externalizeValue(finalValue);
 
-
       // Kept to undo the change below when it cannot be saved (issue #9763). Under Raft HA the save is what replicates
       // the configuration, and it can be refused - a peer that cannot decode the entry yet - or fail to commit: the
       // setting must then not stay in force on this node alone, which is the divergence the replication exists to end.
