@@ -39,6 +39,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
 import com.arcadedb.query.opencypher.procedures.ProcedureSchemaTypes;
+import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.WorkGuard;
@@ -1372,33 +1373,30 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
   }
 
   /**
-   * Builds a path representation from a list of RIDs.
+   * Builds the path a finder walked from its vertex RIDs interleaved with the edges joining them, as
+   * {@link #attachEdges} returns them.
+   * <p>
+   * The path is a {@link TraversalPath}, the same value a MATCH pattern binds, so {@code nodes()},
+   * {@code relationships()} and {@code length()} read it, and a Bolt client receives a path. It used to be a
+   * {@code {_type: "path", nodes, relationships, length}} map, which the path functions answered {@code []} and
+   * {@code 0} on (issue #9913); {@code path.nodes} and the other reads of that map still answer through
+   * {@link TraversalPath#getMember}.
    * <p>
    * A lightweight edge has no record to look up: it is rebuilt from the type and the endpoints its RID carries. Looking
    * it up failed the whole call with "Record #bucket:-1 not found" whenever the path walked one (found with #9914).
+   *
+   * @throws IllegalStateException when two consecutive vertices have no edge between them, which a finder that walked
+   *                               the path cannot produce
    */
-  protected Map<String, Object> buildPath(final List<RID> rids, final Database database) {
-    final List<Object> nodes = new ArrayList<>();
-    final List<Object> relationships = new ArrayList<>();
-
+  protected TraversalPath buildPath(final List<RID> rids, final Database database) {
+    final List<Object> elements = new ArrayList<>(rids.size());
     for (final RID rid : rids) {
-      if (rid instanceof LightEdgeRID light) {
-        relationships.add(new ImmutableLightEdge(database, database.getSchema().getTypeByBucketId(light.getBucketId()),
+      if (rid instanceof LightEdgeRID light)
+        elements.add(new ImmutableLightEdge(database, database.getSchema().getTypeByBucketId(light.getBucketId()),
             light.getBucketId(), light.getOutRID(), light.getInRID()));
-        continue;
-      }
-      final Document doc = database.lookupByRID(rid, true).asDocument();
-      if (doc instanceof Vertex)
-        nodes.add(doc);
-      else if (doc instanceof Edge)
-        relationships.add(doc);
+      else
+        elements.add(database.lookupByRID(rid, true));
     }
-
-    final Map<String, Object> path = new HashMap<>();
-    path.put("_type", "path");
-    path.put("nodes", nodes);
-    path.put("relationships", relationships);
-    path.put("length", relationships.size());
-    return path;
+    return TraversalPath.ofWalk(elements);
   }
 }

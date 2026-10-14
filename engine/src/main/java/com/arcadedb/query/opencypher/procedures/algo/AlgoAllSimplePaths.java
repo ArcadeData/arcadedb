@@ -23,6 +23,7 @@ import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -31,7 +32,6 @@ import com.arcadedb.utility.NumberUtils;
 
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -102,7 +102,7 @@ public class AlgoAllSimplePaths extends AbstractAlgoProcedure {
     final Vertex endNode = extractVertex(args[1], "endNode");
     final String[] relTypes = extractRelTypes(args[2], context);
     final int maxDepth = NumberUtils.saturateToInt((Number) args[3]);
-    final Map<String, Object> options = args.length > 4 ? extractMap(args[4], "options") : null;
+    final Map<String, Object> options = extractMap(argOrDefault(args, 4, null), "options");
     final Set<String> skipRelTypes = extractSkipTypes(options, "skipRelTypes", true, context);
     final Set<String> skipVertexTypes = extractSkipTypes(options, "skipVertexTypes", false, context);
 
@@ -120,25 +120,9 @@ public class AlgoAllSimplePaths extends AbstractAlgoProcedure {
         context, newWorkGuard(context));
 
     return allPaths.stream().map(pathElements -> {
-      final List<Object> nodes = new ArrayList<>();
-      final List<Object> relationships = new ArrayList<>();
-
-      for (final Object element : pathElements) {
-        if (element instanceof Vertex) {
-          nodes.add(element);
-        } else if (element instanceof Edge) {
-          relationships.add(element);
-        }
-      }
-
-      final Map<String, Object> path = new HashMap<>();
-      path.put("_type", "path");
-      path.put("nodes", nodes);
-      path.put("relationships", relationships);
-      path.put("length", relationships.size());
-
+      // a TraversalPath, the value every Cypher path is, so the path functions read it (issue #9913)
       final ResultInternal result = new ResultInternal();
-      result.setProperty("path", path);
+      result.setProperty("path", TraversalPath.ofWalk(pathElements));
       return result;
     });
   }

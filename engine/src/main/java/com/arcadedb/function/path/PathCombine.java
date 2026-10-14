@@ -18,27 +18,21 @@
  */
 package com.arcadedb.function.path;
 
-import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.CommandContext;
 
-import java.util.ArrayList;
 import java.util.Collection;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Objects;
 
 /**
  * path.combine(path1, path2) - Joins two paths into one, the second continuing from where the first ends (APOC's
  * {@code apoc.path.combine}).
  * <p>
  * The end node of {@code path1} must be the start node of {@code path2}; a {@code null} path leaves the other one as
- * the result. Paths of graph elements - the paths a {@code MATCH} binds, the maps the path procedures yield, alternating
- * node/relationship lists - combine into a real path, which {@code nodes()}, {@code relationships()}, {@code length()}
- * and the drivers read as one. The single-argument form {@code path.combine([p1, p2, ...])} joins a list of paths in
- * order.
+ * the result. Every path is read in any shape {@link TraversalPath#of(Object)} reads - the path a {@code MATCH} binds, the
+ * one a path procedure yields, the map a client sends back - and the result is a
+ * {@link TraversalPath}, which {@code nodes()}, {@code relationships()}, {@code length()} and the drivers read as one
+ * (issues #9913, #10017). The single-argument form {@code path.combine([p1, p2, ...])} joins a list of paths in order.
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
@@ -72,112 +66,45 @@ public class PathCombine extends AbstractPathFunction {
     final Object arg = args[0];
     if (arg == null)
       return null;
-    if (asTraversalPath(arg) == null && arg instanceof Collection<?> paths) {
-      // A LIST OF PATHS, JOINED IN ORDER
-      Object combined = null;
-      for (final Object path : paths)
-        combined = combine(combined, path);
-      return combined;
-    }
-    return asPathValue(arg);
+
+    final TraversalPath single = TraversalPath.of(arg);
+    if (single != null)
+      return single;
+
+    if (!(arg instanceof Collection<?> paths))
+      throw notAPath(arg);
+
+    // A LIST OF PATHS, JOINED IN ORDER
+    TraversalPath combined = null;
+    for (final Object path : paths)
+      combined = combine(combined, path);
+    return combined;
   }
 
-  /**
-   * The path {@code value} is: a real path when its elements are graph elements, the value itself when it is a path
-   * of other elements (a node/relationship map, an alternating list). Anything else is not a path and is refused, so a
-   * value that is not one never comes back out as a "combined path".
-   */
-  private static Object asPathValue(final Object value) {
-    final TraversalPath path = asTraversalPath(value);
-    if (path != null)
-      return path;
-    if (value instanceof Map<?, ?> map && map.get("nodes") instanceof List<?>)
-      return value;
-    if (value instanceof List<?> list && list.size() % 2 == 1)
-      return value;
-    throw new CommandExecutionException("path.combine() expects paths, got " + describe(value));
-  }
-
-  private static Object combine(final Object first, final Object second) {
+  private static TraversalPath combine(final Object first, final Object second) {
     if (first == null)
-      return second == null ? null : asPathValue(second);
+      return second == null ? null : asPath(second);
     if (second == null)
-      return asPathValue(first);
-    final TraversalPath firstPath = asTraversalPath(asPathValue(first));
-    final TraversalPath secondPath = asTraversalPath(asPathValue(second));
-    if (firstPath != null && secondPath != null) {
-      final Object end = firstPath.getEndVertex().getIdentity();
-      final Object start = secondPath.getStartVertex().getIdentity();
-      if (!Objects.equals(end, start))
-        throw notConnected(end, start);
-      return new TraversalPath(firstPath, secondPath);
-    }
-    return combineMaps(first, second);
+      return asPath(first);
+
+    final TraversalPath firstPath = asPath(first);
+    final TraversalPath secondPath = asPath(second);
+    if (!firstPath.getEndVertex().getIdentity().equals(secondPath.getStartVertex().getIdentity()))
+      throw new CommandExecutionException("path.combine(): the paths do not connect, the first ends at "
+          + firstPath.getEndVertex().getIdentity() + " and the second starts at " + secondPath.getStartVertex().getIdentity());
+    return new TraversalPath(firstPath, secondPath);
   }
 
-  /**
-   * The path maps of elements that are not graph elements (a path built by hand): joined node list and relationship
-   * list, under the same connection rule.
-   */
-  @SuppressWarnings("unchecked")
-  private static Map<String, Object> combineMaps(final Object first, final Object second) {
-    final List<Object> firstNodes = new ArrayList<>();
-    final List<Object> firstRels = new ArrayList<>();
-    final List<Object> secondNodes = new ArrayList<>();
-    final List<Object> secondRels = new ArrayList<>();
-    if (!split(first, firstNodes, firstRels) || !split(second, secondNodes, secondRels))
-      throw new CommandExecutionException("path.combine() expects two paths, got " + describe(first) + " and " + describe(second));
-
-    if (!firstNodes.isEmpty() && !secondNodes.isEmpty()) {
-      final Object end = identityOf(firstNodes.get(firstNodes.size() - 1));
-      final Object start = identityOf(secondNodes.get(0));
-      if (!Objects.equals(end, start))
-        throw notConnected(end, start);
-      secondNodes.remove(0);
-    }
-    firstNodes.addAll(secondNodes);
-    firstRels.addAll(secondRels);
-
-    final Map<String, Object> result = new LinkedHashMap<>();
-    result.put("_type", "path");
-    result.put("nodes", firstNodes);
-    result.put("relationships", firstRels);
-    result.put("length", firstRels.size());
-    return result;
+  /** The path {@code value} is, refusing anything else so a value that is not a path never comes back as a "combined path". */
+  private static TraversalPath asPath(final Object value) {
+    final TraversalPath path = TraversalPath.of(value);
+    if (path == null)
+      throw notAPath(value);
+    return path;
   }
 
-  @SuppressWarnings("unchecked")
-  private static boolean split(final Object path, final List<Object> nodes, final List<Object> rels) {
-    if (path instanceof TraversalPath traversal) {
-      nodes.addAll(traversal.getVertices());
-      rels.addAll(traversal.getEdges());
-      return true;
-    }
-    if (path instanceof Map<?, ?> map && map.get("nodes") instanceof List<?> mapNodes) {
-      nodes.addAll(mapNodes);
-      if (map.get("relationships") instanceof List<?> mapRels)
-        rels.addAll(mapRels);
-      return true;
-    }
-    if (path instanceof List<?> elements) {
-      // ALTERNATING NODE / RELATIONSHIP LIST
-      for (int i = 0; i < elements.size(); i++)
-        (i % 2 == 0 ? nodes : rels).add(elements.get(i));
-      return true;
-    }
-    return false;
-  }
-
-  private static Object identityOf(final Object node) {
-    return node instanceof Identifiable identifiable ? identifiable.getIdentity() : node;
-  }
-
-  private static CommandExecutionException notConnected(final Object end, final Object start) {
+  private static CommandExecutionException notAPath(final Object value) {
     return new CommandExecutionException(
-        "path.combine(): the paths do not connect, the first ends at " + end + " and the second starts at " + start);
-  }
-
-  private static String describe(final Object value) {
-    return value == null ? "null" : value.getClass().getSimpleName();
+        "path.combine() expects paths, got " + (value == null ? "null" : value.getClass().getSimpleName()));
   }
 }

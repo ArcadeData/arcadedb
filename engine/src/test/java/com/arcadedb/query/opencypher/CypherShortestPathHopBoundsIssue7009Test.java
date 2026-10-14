@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Type;
@@ -223,9 +224,9 @@ class CypherShortestPathHopBoundsIssue7009Test extends TestHelper {
         "MATCH (s:N {k:'a'}), (e:N {k:'b'}) RETURN shortestPath((s)-[:LINK*]-(e)) AS p")) {
       assertThat(rs.hasNext()).isTrue();
       final Object path = rs.next().getProperty("p");
-      assertThat(path).as("control: the unbounded expression form still finds the path").isInstanceOf(List.class);
-      // 5 vertices interleaved with 4 edges.
-      assertThat((List<?>) path).hasSize(9);
+      assertThat(path).as("control: the unbounded expression form still finds the path").isInstanceOf(TraversalPath.class);
+      // 5 vertices joined by 4 edges.
+      assertThat(((TraversalPath) path).length()).isEqualTo(4);
     }
   }
 

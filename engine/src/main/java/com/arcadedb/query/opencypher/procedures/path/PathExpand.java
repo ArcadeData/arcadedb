@@ -24,6 +24,7 @@ import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -33,7 +34,6 @@ import com.arcadedb.utility.RidHashSet;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 import java.util.stream.Stream;
 
@@ -119,7 +119,7 @@ public class PathExpand extends AbstractPathProcedure {
 
     // Convert paths to results
     return allPaths.stream().map(pathElements -> {
-      final Map<String, Object> path = buildPath(pathElements);
+      final TraversalPath path = buildPath(pathElements);
       final ResultInternal result = new ResultInternal();
       result.setProperty("path", path);
       return (Result) result;

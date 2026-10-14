@@ -20,6 +20,7 @@ package com.arcadedb.serializer.json;
 
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.utility.DateUtils;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
@@ -202,6 +203,8 @@ public class JSONObject implements Map<String, Object> {
     case Duration duration -> object.addProperty(name, duration.toSeconds() + (duration.toNanosPart() / 1_000_000_000.0));
     case Identifiable identifiable -> object.addProperty(name, identifiable.getIdentity().toString());
     case Map map -> object.add(name, new JSONObject(map).getInternal());
+    // a Cypher path as its {_type, nodes, relationships, length} map rather than its toString() (issue #9913)
+    case TraversalPath path -> object.add(name, new JSONObject(path.toMap()).getInternal());
     case Class<?> clazz -> object.addProperty(name, clazz.getName());
     case Object o when o.getClass().isArray() -> object.add(name, primitiveArrayToElement(o));
     default ->
@@ -874,6 +877,7 @@ public class JSONObject implements Map<String, Object> {
       case Collection collection -> new JSONArray(collection).getInternal();
       case Object[] objects -> new JSONArray(objects).getInternal();
       case Map map -> new JSONObject(map).getInternal();
+      case TraversalPath path -> new JSONObject(path.toMap()).getInternal();
       case Document document -> document.toJSON(false).getInternal();
       case Identifiable identifiable -> new JsonPrimitive(identifiable.getIdentity().toString());
       case Enum<?> enumValue -> new JsonPrimitive(enumValue.name());

@@ -24,6 +24,7 @@ import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -95,7 +96,7 @@ public class PathExpandConfig extends AbstractPathProcedure {
     validateArgs(args);
 
     final Vertex startNode = extractVertex(args[0], "startNode");
-    final Map<String, Object> config = extractConfig(args[1]);
+    final Map<String, Object> config = optionalMapArg(args, 1, "config");
 
     // Extract configuration options
     final int minLevel = config.containsKey("minLevel") ? NumberUtils.saturateToInt((Number) config.get("minLevel")) : 0;
@@ -132,7 +133,7 @@ public class PathExpandConfig extends AbstractPathProcedure {
 
     // Convert paths to results (respect limit)
     return allPaths.stream().limit(limit).map(pathElements -> {
-      final Map<String, Object> path = buildPath(pathElements);
+      final TraversalPath path = buildPath(pathElements);
       final ResultInternal result = new ResultInternal();
       result.setProperty("path", path);
       return (Result) result;

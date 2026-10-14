@@ -22,14 +22,14 @@ import com.arcadedb.database.RID;
 import com.arcadedb.graph.Vertex;
 
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
 /**
  * Argument-extraction helpers shared by the {@code refactor.*} procedures, which all take a
- * {@code (nodes, config)} argument shape.
+ * {@code (nodes, config)} argument shape. The optional {@code config} is read by {@code Procedure.optionalMapArg}, the
+ * helper every procedure family shares (issue #8124).
  */
 final class RefactorProcedureArgs {
   private RefactorProcedureArgs() {
@@ -57,22 +57,5 @@ final class RefactorProcedureArgs {
       byIdentity.putIfAbsent(vertex.getIdentity(), vertex);
     }
     return new ArrayList<>(byIdentity.values());
-  }
-
-  /**
-   * Returns the {@code config} of a {@code (nodes, config = {})} call: a map, or the empty map for {@code null}.
-   * <p>
-   * APOC declares the config with a default - {@code apoc.refactor.cloneNodesWithRelationships(nodes :: LIST<NODE>,
-   * config = {} :: MAP)}, and the same for {@code apoc.refactor.mergeNodes} - so Cypher migrated from Neo4j calls
-   * them without it (issue #7427). The callers read the slot through {@code Procedure.argOrDefault}, which answers
-   * {@code null} for an absent argument as for an explicit one.
-   */
-  @SuppressWarnings("unchecked")
-  static Map<String, Object> extractConfig(final String procedureName, final Object arg) {
-    if (arg == null)
-      return Collections.emptyMap();
-    if (!(arg instanceof Map))
-      throw new IllegalArgumentException(procedureName + "(): config must be a map, got " + arg.getClass().getSimpleName());
-    return (Map<String, Object>) arg;
   }
 }

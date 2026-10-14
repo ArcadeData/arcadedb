@@ -22,14 +22,12 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-
-import java.util.List;
-import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -100,9 +98,10 @@ class AlgoBellmanFordTest {
     final double weight = ((Number) result.getProperty("weight")).doubleValue();
     assertThat(weight).isEqualTo(3.0); // A->B->C->D = 1+1+1 = 3
 
-    final Map<String, Object> path = result.getProperty("path");
+    final TraversalPath path = result.getProperty("path");
     assertThat(path).isNotNull();
-    assertThat((List<?>) path.get("nodes")).hasSize(4);
+    assertThat(path.getVertices()).hasSize(4);
+    assertThat(path.getEdges()).hasSize(3);
   }
 
   @Test

@@ -28,6 +28,7 @@ import com.arcadedb.query.opencypher.grammar.Cypher25Lexer;
 import com.arcadedb.query.opencypher.grammar.Cypher25Parser;
 import com.arcadedb.query.opencypher.temporal.CypherTemporalValue;
 import com.arcadedb.query.opencypher.temporal.TemporalUtil;
+import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 
@@ -1662,6 +1663,10 @@ class CypherExpressionBuilder {
       if (baseValue instanceof Result) {
         return ((Result) baseValue).getProperty(propertyName);
       }
+
+      // path.nodes / path.relationships / path.length on a procedure's path, which used to be a map (issue #9913)
+      if (baseValue instanceof TraversalPath path)
+        return path.getMember(propertyName);
 
       // Handle temporal types (e.g., date().year, datetime().hour)
       if (baseValue instanceof CypherTemporalValue) {

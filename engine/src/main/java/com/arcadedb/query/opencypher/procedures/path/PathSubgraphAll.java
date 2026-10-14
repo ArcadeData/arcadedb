@@ -96,7 +96,7 @@ public class PathSubgraphAll extends AbstractPathProcedure {
     validateArgs(args);
 
     final Vertex startNode = extractVertex(args[0], "startNode");
-    final Map<String, Object> config = extractConfig(argOrDefault(args, 1, null));
+    final Map<String, Object> config = optionalMapArg(args, 1, "config");
 
     final int minLevel = extractComponentMinLevel(config);
     final int maxLevel = config.containsKey("maxLevel") ? NumberUtils.saturateToInt((Number) config.get("maxLevel")) : Integer.MAX_VALUE;

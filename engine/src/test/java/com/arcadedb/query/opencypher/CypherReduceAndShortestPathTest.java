@@ -22,6 +22,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
@@ -217,9 +218,9 @@ class CypherReduceAndShortestPathTest extends TestHelper {
 
     final Object path = result.getProperty("p");
     assertThat(path).isNotNull();
-    assertThat(path).isInstanceOf(List.class);
+    assertThat(path).isInstanceOf(TraversalPath.class);
 
-    final List<?> pathList = (List<?>) path;
+    final List<?> pathList = ((TraversalPath) path).toAlternatingList();
     // Path should be: Alice, edge, Bob, edge, Charlie, edge, David (4 nodes + 3 edges = 7)
     assertThat(pathList.size()).isEqualTo(7);
     assertThat(pathList.get(0)).isInstanceOf(Vertex.class);
@@ -243,9 +244,9 @@ class CypherReduceAndShortestPathTest extends TestHelper {
 
     final Object path = result.getProperty("p");
     assertThat(path).isNotNull();
-    assertThat(path).isInstanceOf(List.class);
+    assertThat(path).isInstanceOf(TraversalPath.class);
 
-    final List<?> pathList = (List<?>) path;
+    final List<?> pathList = ((TraversalPath) path).toAlternatingList();
     // Path should be: Alice, edge, Bob (2 nodes + 1 edge = 3)
     assertThat(pathList.size()).isEqualTo(3);
 
@@ -266,9 +267,9 @@ class CypherReduceAndShortestPathTest extends TestHelper {
 
     final Object path = result.getProperty("p");
     assertThat(path).isNotNull();
-    assertThat(path).isInstanceOf(List.class);
+    assertThat(path).isInstanceOf(TraversalPath.class);
 
-    final List<?> pathList = (List<?>) path;
+    final List<?> pathList = ((TraversalPath) path).toAlternatingList();
     // Path to self should be just the node itself (resolved as Vertex)
     assertThat(pathList.size()).isEqualTo(1);
     assertThat(pathList.get(0)).isInstanceOf(Vertex.class);
@@ -326,9 +327,9 @@ class CypherReduceAndShortestPathTest extends TestHelper {
 
     final Object path = result.getProperty("p");
     assertThat(path).isNotNull();
-    assertThat(path).isInstanceOf(List.class);
+    assertThat(path).isInstanceOf(TraversalPath.class);
 
-    final List<?> pathList = (List<?>) path;
+    final List<?> pathList = ((TraversalPath) path).toAlternatingList();
     // Path should be: Alice, edge, Bob, edge, Eve (3 nodes + 2 edges = 5)
     assertThat(pathList.size()).isEqualTo(5);
 

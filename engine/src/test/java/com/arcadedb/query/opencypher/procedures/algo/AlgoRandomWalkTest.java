@@ -21,13 +21,13 @@ package com.arcadedb.query.opencypher.procedures.algo;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -85,14 +85,12 @@ class AlgoRandomWalkTest {
     final long steps = ((Number) result.getProperty("steps")).longValue();
     assertThat(steps).isEqualTo(5L);
 
-    @SuppressWarnings("unchecked")
-    final Map<String, Object> path = (Map<String, Object>) result.getProperty("path");
+    final TraversalPath path = result.getProperty("path");
     assertThat(path).isNotNull();
 
-    @SuppressWarnings("unchecked")
-    final List<Object> nodes = (List<Object>) path.get("nodes");
-    // start node + 5 steps = 6 nodes in the path
-    assertThat(nodes).hasSize(6);
+    // start node + 5 steps = 6 nodes in the path, and the 5 relationships it stepped over (issue #9913)
+    assertThat(path.getVertices()).hasSize(6);
+    assertThat(path.getEdges()).hasSize(5);
   }
 
   @Test

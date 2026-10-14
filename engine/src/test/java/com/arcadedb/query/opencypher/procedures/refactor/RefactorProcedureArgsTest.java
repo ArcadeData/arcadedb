@@ -95,54 +95,29 @@ class RefactorProcedureArgsTest {
     assertThat(result.get(1).getIdentity()).isEqualTo(b.getIdentity());
   }
 
-  @Test
-  void extractConfigReturnsEmptyMapForNull() {
-    assertThat(RefactorProcedureArgs.extractConfig("test.proc", null)).isEqualTo(Collections.emptyMap());
-  }
-
-  @Test
-  void extractConfigReturnsTheGivenMap() {
-    final Map<String, Object> config = Map.of("key", "value");
-    assertThat(RefactorProcedureArgs.extractConfig("test.proc", config)).isEqualTo(config);
-  }
-
-  @Test
-  void extractConfigRejectsNonMapArgument() {
-    assertThatThrownBy(() -> RefactorProcedureArgs.extractConfig("test.proc", "not-a-map"))
-        .isInstanceOf(IllegalArgumentException.class)
-        .hasMessageContaining("config must be a map");
-  }
-
   /**
-   * Issue #7427: the {@code config} argument is optional in APOC, so a call that carries only {@code nodes} has to
-   * resolve to the same empty map an explicit {@code {}} produces. Read through {@code Procedure.argOrDefault} since
-   * issue #8124, as both refactor procedures do.
+   * The {@code config} of the {@code refactor.*} procedures is read by {@code Procedure.optionalMapArg}, which every
+   * procedure family shares since issue #8124: an absent and an explicitly {@code null} config both resolve to the empty
+   * map, as an explicit {@code {}} does (issue #7427), and anything else is refused naming the parameter.
    */
   @Test
-  void optionalConfigIsEmptyMapWhenTheArgumentIsAbsent() {
-    assertThat(optionalConfig(new Object[] { List.of() })).isEqualTo(Collections.emptyMap());
-  }
-
-  @Test
-  void optionalConfigIsEmptyMapWhenTheArgumentIsAnExplicitNull() {
-    assertThat(optionalConfig(new Object[] { List.of(), null })).isEqualTo(Collections.emptyMap());
-  }
-
-  @Test
-  void optionalConfigIsTheTrailingArgumentWhenPresent() {
-    final Map<String, Object> config = Map.of("key", "value");
-    assertThat(optionalConfig(new Object[] { List.of(), config })).isEqualTo(config);
-  }
-
-  @Test
-  void optionalConfigStillRejectsANonMapTrailingArgument() {
-    assertThatThrownBy(() -> optionalConfig(new Object[] { List.of(), "x" }))
-        .isInstanceOf(IllegalArgumentException.class)
-        .hasMessageContaining("config must be a map");
-  }
-
-  private static Map<String, Object> optionalConfig(final Object[] args) {
+  void configResolvesAnAbsentOrNullArgumentToTheEmptyMap() {
     final RefactorMergeNodes procedure = new RefactorMergeNodes();
-    return RefactorProcedureArgs.extractConfig(procedure.getName(), procedure.argOrDefault(args, 1, null));
+    assertThat(procedure.optionalMapArg(new Object[] { List.of() }, 1, "config")).isEqualTo(Collections.emptyMap());
+    assertThat(procedure.optionalMapArg(new Object[] { List.of(), null }, 1, "config")).isEqualTo(Collections.emptyMap());
+  }
+
+  @Test
+  void configReturnsTheTrailingArgumentWhenPresent() {
+    final Map<String, Object> config = Map.of("key", "value");
+    assertThat(new RefactorCloneNodesWithRelationships().optionalMapArg(new Object[] { List.of(), config }, 1, "config"))
+        .isEqualTo(config);
+  }
+
+  @Test
+  void configRejectsANonMapTrailingArgument() {
+    assertThatThrownBy(() -> new RefactorMergeNodes().optionalMapArg(new Object[] { List.of(), "x" }, 1, "config"))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessage("refactor.mergeNodes(): config must be a map, got String");
   }
 }

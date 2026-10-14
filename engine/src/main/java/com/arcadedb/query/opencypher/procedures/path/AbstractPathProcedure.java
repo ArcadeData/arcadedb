@@ -28,6 +28,7 @@ import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
+import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.utility.RidHashSet;
@@ -183,24 +184,12 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
     return Vertex.DIRECTION.valueOf(direction.toUpperCase(Locale.ENGLISH));
   }
 
-  protected Map<String, Object> buildPath(final List<Object> elements) {
-    final List<Object> nodes = new ArrayList<>();
-    final List<Object> relationships = new ArrayList<>();
-
-    for (final Object element : elements) {
-      if (element instanceof Vertex) {
-        nodes.add(element);
-      } else if (element instanceof Edge) {
-        relationships.add(element);
-      }
-    }
-
-    final Map<String, Object> path = new HashMap<>();
-    path.put("_type", "path");
-    path.put("nodes", nodes);
-    path.put("relationships", relationships);
-    path.put("length", relationships.size());
-    return path;
+  /**
+   * The path of the walked {@code [v0, e0, v1, ...]} elements: a {@link TraversalPath}, the value every Cypher path is, so
+   * the path functions read it and a Bolt client receives a path (issue #9913).
+   */
+  protected TraversalPath buildPath(final List<Object> elements) {
+    return TraversalPath.ofWalk(elements);
   }
 
   /**
@@ -410,19 +399,5 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
       reachableNodes.add(neighbor);
     if (verdict.continues)
       nextFrontier.add(neighbor);
-  }
-
-  /**
-   * The configuration map of a procedure that takes one: absent or null is the empty map APOC defaults it to, and
-   * anything else is refused - a string passed where the map goes used to be dropped silently, so the call walked the
-   * whole graph unfiltered.
-   */
-  @SuppressWarnings("unchecked")
-  protected Map<String, Object> extractConfig(final Object arg) {
-    if (arg == null)
-      return Map.of();
-    if (arg instanceof Map)
-      return (Map<String, Object>) arg;
-    throw new IllegalArgumentException(getName() + "(): config must be a map, got " + arg.getClass().getSimpleName());
   }
 }

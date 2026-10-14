@@ -35,7 +35,7 @@ import com.arcadedb.query.opencypher.ast.RelationshipPattern;
 import com.arcadedb.query.opencypher.ast.ShortestPathPattern;
 import com.arcadedb.query.opencypher.InlineProperties;
 import com.arcadedb.query.opencypher.traversal.GraphTraverser;
-import com.arcadedb.query.opencypher.traversal.ShortestPathList;
+import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -222,10 +222,10 @@ public class ShortestPathStep extends AbstractExecutionStep {
           result.setProperty(prop, inputResult.getProperty(prop));
         }
 
-        // Add path binding if path variable is specified
+        // Add path binding if path variable is specified: a TraversalPath, the value every other pattern binds, so a
+        // Bolt client receives a path and valueType() answers PATH (issue #9913)
         if (pathVariable != null && !pathVariable.isEmpty()) {
-          // every producer above builds a ShortestPathList, so the path is bound as it is, without a copy
-          result.setProperty(pathVariable, path instanceof ShortestPathList ? path : new ShortestPathList(path));
+          result.setProperty(pathVariable, TraversalPath.ofWalk(path));
         }
         return result;
       }
@@ -362,7 +362,7 @@ public class ShortestPathStep extends AbstractExecutionStep {
       // more than one hop rejects it (issue #7017).
       if (!bounds.acceptsSelfPath())
         return Collections.emptyIterator();
-      final List<Object> singleNode = new ShortestPathList(1);
+      final List<Object> singleNode = new ArrayList<>(1);
       singleNode.add(source);
       return Collections.singletonList(singleNode).iterator();
     }
@@ -596,7 +596,7 @@ public class ShortestPathStep extends AbstractExecutionStep {
       // more than one hop rejects it (issue #7017).
       if (!bounds.acceptsSelfPath())
         return null;
-      final List<Object> single = new ShortestPathList(1);
+      final List<Object> single = new ArrayList<>(1);
       single.add(source);
       return single;
     }
@@ -672,7 +672,7 @@ public class ShortestPathStep extends AbstractExecutionStep {
       current = parentVertex.get(currentRid);
       path.addFirst(current);
     }
-    return new ShortestPathList(path);
+    return new ArrayList<>(path);
   }
 
   /**
@@ -705,7 +705,7 @@ public class ShortestPathStep extends AbstractExecutionStep {
       // more than one hop rejects it (issue #7017).
       if (!bounds.acceptsSelfPath())
         return Collections.emptyIterator();
-      final List<Object> single = new ShortestPathList(1);
+      final List<Object> single = new ArrayList<>(1);
       single.add(source);
       return Collections.singletonList(single).iterator();
     }
@@ -1048,7 +1048,7 @@ public class ShortestPathStep extends AbstractExecutionStep {
 
     /** The stack holds the walk from the target; the path reads from the source (frame {@code last}) back to it. */
     private List<Object> buildPath(final int last) {
-      final List<Object> path = new ShortestPathList(2 * last + 1);
+      final List<Object> path = new ArrayList<>(2 * last + 1);
       path.add(vertices[last]);
       for (int i = last - 1; i >= 0; i--) {
         path.add(chosen[i]);
@@ -1112,13 +1112,15 @@ public class ShortestPathStep extends AbstractExecutionStep {
   }
 
   /**
-   * Resolves a list of vertex RIDs into a proper path with alternating Vertex and Edge objects.
+   * Resolves a list of vertex RIDs into a proper path with alternating Vertex and Edge objects, or null when two
+   * consecutive vertices are no longer joined by an edge (a ghost edge, or one deleted since the search): there is no path
+   * to report then, where the list used to skip the hop and bind a path that was not one (issue #9913).
    *
    * @param edgeTypes restrict edges to these types, or null/empty to allow any type
    */
   public static List<Object> resolvePathWithEdges(final List<RID> vertexRids, final Vertex.DIRECTION direction,
       final List<String> edgeTypes, final Database database) {
-    final List<Object> result = new ShortestPathList(vertexRids.size() * 2 - 1);
+    final List<Object> result = new ArrayList<>(vertexRids.size() * 2 - 1);
 
     Vertex prev = null;
     for (final RID rid : vertexRids) {
@@ -1127,8 +1129,9 @@ public class ShortestPathStep extends AbstractExecutionStep {
       if (prev != null) {
         // Find the edge connecting prev to current
         final Edge edge = findConnectingEdge(prev, current, direction, edgeTypes);
-        if (edge != null)
-          result.add(edge);
+        if (edge == null)
+          return null;
+        result.add(edge);
       }
 
       result.add(current);

@@ -109,6 +109,26 @@ class Bolt4998PathMappingTest {
     assertThat(bp.getIndices()).containsExactly(1L, 1L, 2L, 0L);
   }
 
+  /**
+   * Issue #9913: a procedure's path and a shortestPath() binding were a map and a list, so a Bolt client received a map
+   * and a list instead of a path. Both are a TraversalPath now and travel as a native Path.
+   */
+  @Test
+  @DisplayName("[TYPE-003] a procedure's path and a shortestPath binding map to a native BoltPath")
+  void type003_procedureAndShortestPath() {
+    for (final String query : new String[] {
+        "MATCH (a:V {k:'a'}), (c:V {k:'c'}) CALL algo.dijkstra(a, c, 'E', null, 'OUT') YIELD path RETURN path AS p",
+        "MATCH p = shortestPath((a:V {k:'a'})-[:E*]->(c:V {k:'c'})) RETURN p" }) {
+      final ResultSet rs = db.query("opencypher", query);
+      final Object out = BoltStructureMapper.toPackStreamValue(rs.next().getProperty("p"));
+      assertThat(out).as(query).isInstanceOf(BoltPath.class);
+      final BoltPath bp = (BoltPath) out;
+      assertThat(bp.getNodes()).as(query).hasSize(3);
+      assertThat(bp.getRelationships()).as(query).hasSize(2);
+      assertThat(bp.getIndices()).as(query).containsExactly(1L, 1L, 2L, 2L);
+    }
+  }
+
   @Test
   @DisplayName("[TYPE-012] RETURN point({...}) maps to a native BoltPointStructure")
   void type012_enginePointOutbound() {

@@ -87,8 +87,7 @@ public class RefactorMergeNodes implements CypherProcedure {
 
   /**
    * One, not two: APOC declares the trailing {@code config} with a default, so a call that omits it is a call this
-   * procedure has to accept (issue #7427). {@link #argOrDefault} reads the absent slot as null, which
-   * {@code RefactorProcedureArgs.extractConfig} answers with the empty map.
+   * procedure has to accept (issue #7427). {@link #optionalMapArg} supplies the empty map in its place.
    */
   @Override
   public int getMinArgs() {
@@ -123,7 +122,7 @@ public class RefactorMergeNodes implements CypherProcedure {
     if (nodes.size() < 2)
       throw new CommandSemanticException(getName() + "(): at least two distinct nodes are required to merge");
 
-    final Map<String, Object> config = RefactorProcedureArgs.extractConfig(getName(), argOrDefault(args, 1, null));
+    final Map<String, Object> config = optionalMapArg(args, 1, "config");
     final String globalPolicy = extractPropertiesPolicy(config);
 
     final Database database = context.getDatabase();

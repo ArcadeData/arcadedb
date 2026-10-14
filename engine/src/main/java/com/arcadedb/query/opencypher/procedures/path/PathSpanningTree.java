@@ -24,6 +24,7 @@ import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -92,7 +93,7 @@ public class PathSpanningTree extends AbstractPathProcedure {
 
     final Vertex startNode = extractVertex(args[0], "startNode");
     final Database database = startNode.getDatabase();
-    final Map<String, Object> config = extractConfig(argOrDefault(args, 1, null));
+    final Map<String, Object> config = optionalMapArg(args, 1, "config");
 
     final int minLevel = extractComponentMinLevel(config);
     final int maxLevel = config.containsKey("maxLevel") ? NumberUtils.saturateToInt((Number) config.get("maxLevel")) : Integer.MAX_VALUE;
@@ -174,7 +175,7 @@ public class PathSpanningTree extends AbstractPathProcedure {
 
     // Convert paths to results
     return allPaths.stream().map(pathElements -> {
-      final Map<String, Object> path = buildPath(pathElements);
+      final TraversalPath path = buildPath(pathElements);
       final ResultInternal result = new ResultInternal();
       result.setProperty("path", path);
       return (Result) result;

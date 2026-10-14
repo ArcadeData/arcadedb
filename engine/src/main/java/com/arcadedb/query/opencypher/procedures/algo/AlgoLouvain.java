@@ -95,7 +95,7 @@ public class AlgoLouvain extends AbstractAlgoProcedure {
   public Stream<Result> execute(final Object[] args, final Result inputRow, final CommandContext context) {
     validateArgs(args);
 
-    final Map<String, Object> config = args.length > 0 ? extractMap(args[0], "config") : null;
+    final Map<String, Object> config = extractMap(argOrDefault(args, 0, null), "config");
     final int maxIterations = config != null && config.get("maxIterations") instanceof Number n ?
         extractInt(n, "maxIterations", 1) : 10;
     final double tolerance = config != null && config.get("tolerance") instanceof Number n ?

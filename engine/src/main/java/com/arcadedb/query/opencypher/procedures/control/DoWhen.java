@@ -28,7 +28,6 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Stream;
@@ -189,7 +188,7 @@ public class DoWhen implements CypherProcedure {
     final boolean condition = extractBoolean(args[0]);
     final String ifQuery = extractString(args[1], "ifQuery");
     final String elseQuery = args[2] == null ? "" : extractString(args[2], "elseQuery");
-    final Map<String, Object> params = extractMap(argOrDefault(args, 3, Map.of()));
+    final Map<String, Object> params = optionalMapArg(args, 3, "params");
 
     final String query = condition ? ifQuery : elseQuery;
     if (query == null || query.isBlank())
@@ -228,14 +227,5 @@ public class DoWhen implements CypherProcedure {
       throw new IllegalArgumentException(getName() + "(): " + paramName + " must be a string, got " +
           (arg == null ? "null" : arg.getClass().getSimpleName()));
     return s;
-  }
-
-  @SuppressWarnings("unchecked")
-  private Map<String, Object> extractMap(final Object arg) {
-    if (arg == null)
-      return Collections.emptyMap();
-    if (!(arg instanceof Map))
-      throw new IllegalArgumentException(getName() + "(): params must be a map, got " + arg.getClass().getSimpleName());
-    return (Map<String, Object>) arg;
   }
 }

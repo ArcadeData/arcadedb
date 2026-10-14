@@ -19,16 +19,15 @@
 package com.arcadedb.function.graph;
 
 import com.arcadedb.function.StatelessFunction;
-import com.arcadedb.graph.Vertex;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
 
 /**
- * nodes() function - returns all nodes in a path.
+ * nodes() function - returns all nodes in a path. The path is read in any shape {@link TraversalPath#of(Object)} reads, and
+ * anything that is not a path is a type error rather than an empty list (issue #9913).
  */
 public class NodesFunction implements StatelessFunction {
   @Override
@@ -51,16 +50,9 @@ public class NodesFunction implements StatelessFunction {
     checkArity(args);
     if (args[0] == null)
       return null;
-    if (args[0] instanceof TraversalPath)
-      return new ArrayList<>(((TraversalPath) args[0]).getVertices());
-    if (args[0] instanceof List) {
-      final List<?> path = (List<?>) args[0];
-      final List<Vertex> nodes = new ArrayList<>();
-      for (final Object element : path)
-        if (element instanceof Vertex)
-          nodes.add((Vertex) element);
-      return nodes;
-    }
-    return Collections.emptyList();
+    final TraversalPath path = TraversalPath.of(args[0]);
+    if (path == null)
+      throw CypherFunctionHelper.typeMismatch(getName(), "a PATH", args[0]);
+    return new ArrayList<>(path.getVertices());
   }
 }

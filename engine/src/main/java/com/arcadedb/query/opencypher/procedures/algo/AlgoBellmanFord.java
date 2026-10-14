@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher.procedures.algo;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -29,7 +30,6 @@ import com.arcadedb.query.sql.executor.WorkGuard;
 import java.util.HashSet;
 import java.util.LinkedList;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 import java.util.stream.Stream;
 
@@ -223,7 +223,7 @@ public class AlgoBellmanFord extends AbstractAlgoProcedure {
 
     // The vertex walk lost its edges: put them back so the path exposes its relationships. 1.0 is the weight the
     // relaxation above gave an edge without the property, so the lightest parallel edge is the one that was relaxed
-    final Map<String, Object> path = buildPath(attachEdgesWithNegativeWeights(pathRids, relType, Vertex.DIRECTION.OUT, weightProperty).ridsWithEdges(), db);
+    final TraversalPath path = buildPath(attachEdgesWithNegativeWeights(pathRids, relType, Vertex.DIRECTION.OUT, weightProperty).ridsWithEdges(), db);
 
     final ResultInternal result = new ResultInternal();
     result.setProperty("path", path);
