@@ -36,7 +36,6 @@ import java.util.logging.Formatter;
 import java.util.logging.Handler;
 import java.util.logging.Level;
 import java.util.logging.LogManager;
-import java.util.logging.LogRecord;
 
 /**
  * Default Logger implementation that writes to the Java Logging Framework.
@@ -531,8 +530,10 @@ public class DefaultLogger implements Logger {
       } catch (final Exception e) {
         System.err.printf("Error on formatting message '%s'. Exception: %s", message, e);
       }
-    } else {
-      // USE THE LOG
+    } else if (log.isLoggable(level)) {
+      // USE THE LOG. CHECKED BEFORE THE MESSAGE IS FORMATTED, AS THE FIXED-ARITY OVERLOAD DOES: A DROPPED MESSAGE COSTS NO
+      // FORMATTING. THE BRANCH THAT PRINTED A DROPPED MESSAGE TO STDOUT BEHIND LogManager.isDebugEnabled() IS GONE WITH
+      // THE FLAG, WHICH NOTHING EVER SET (#9984)
       try {
         if (context != null)
           message = "<" + context + "> " + message;
@@ -541,18 +542,10 @@ public class DefaultLogger implements Logger {
         if (args.length > 0)
           msg = message.formatted(args);
 
-        if (log.isLoggable(level)) {
-          if (exception != null)
-            log.log(level, msg, exception);
-          else
-            log.log(level, msg);
-        } else if (com.arcadedb.log.LogManager.instance().isDebugEnabled()) {
-          if (exception != null) {
-            System.out.print(new LogFormatter().format(new LogRecord(level, msg)));
-            exception.printStackTrace();
-          } else
-            System.out.println(msg);
-        }
+        if (exception != null)
+          log.log(level, msg, exception);
+        else
+          log.log(level, msg);
       } catch (final Exception e) {
         System.err.printf("Error on formatting message '%s'. Exception: %s", message, e);
       }

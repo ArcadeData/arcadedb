@@ -1550,8 +1550,9 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * older block can still hold a newer row. An unbounded last-point query therefore costs
    * O(blocks touched) instead of O(series), without any extra persisted state.
    * <p>
-   * Early termination is guarded by the timestamp of the oldest row currently retained, so it stays
-   * correct even if two adjacent blocks happen to overlap in time.
+   * Early termination is guarded by the timestamp of the oldest row currently retained, compared with the
+   * running maximum of {@code maxTimestamp} rather than with one block's own, so it stays correct when blocks
+   * overlap in time, which a compaction that met late-arriving samples produces (issues #8813, #9982).
    *
    * @param fromTs        start timestamp (inclusive)
    * @param toTs          end timestamp (inclusive)
@@ -1589,22 +1590,29 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       }
       final int startBlockIdx = lo;
 
+      // The directory is ordered by minTimestamp and its blocks overlap, so maxTimestamp is NOT monotonic along it
+      // and one block ending early says nothing about the blocks before it (issue #9982, the descending half of
+      // #8813). Both early exits below therefore read the running maximum, which bounds every block at or before
+      // an index, and a single block that falls short is only skipped.
+      final long[] runningMax = runningMaxTimestamps();
+      // Every block before this one ends before the requested lower bound.
+      final int stopBlockIdx = firstBlockEndingAtOrAfter(runningMax, fromTs);
+
       // Timestamp of the oldest row retained so far: once `need` rows are held, any block whose
-      // maxTimestamp is older than this cannot contribute and the walk stops.
+      // maxTimestamp is older than this cannot contribute.
       long cutoffTs = Long.MIN_VALUE;
 
-      for (int blockIdx = startBlockIdx; blockIdx >= 0; blockIdx--) {
+      for (int blockIdx = startBlockIdx; blockIdx >= stopBlockIdx; blockIdx--) {
+        // No block from here down can hold a row newer than the oldest one retained: the walk is over.
+        if (results.size() >= need && runningMax[blockIdx] < cutoffTs)
+          break;
+
         final BlockEntry entry = blockDirectory.get(blockIdx);
 
-        // Early termination: blocks are ordered by ascending timestamp, so once a block ends before
-        // the requested lower bound no older block can be in range either.
-        if (entry.maxTimestamp < fromTs)
-          break;
+        if (entry.maxTimestamp < fromTs || entry.minTimestamp > toTs)
+          continue;
 
         if (results.size() >= need && entry.maxTimestamp < cutoffTs)
-          break;
-
-        if (entry.minTimestamp > toTs)
           continue;
 
         final BlockMatchResult tagMatch = tagFilter != null
@@ -1638,6 +1646,11 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         // first `need` matches found are the newest ones in this block.
         int taken = 0;
         for (int i = end - 1; i >= start && taken < need; i--) {
+          // Once `need` rows are held, a row older than the oldest of them cannot enter the answer, and the rest of
+          // the block is older still. `cutoffTs` is the value from before this block, so it can only under-estimate,
+          // which makes this break conservative (the mirror of the one in scanRangeAscending).
+          if (results.size() >= need && ts[i] < cutoffTs)
+            break;
           if (tagMatch == BlockMatchResult.SLOW_PATH && !matchesRawColumns(rawCols, i, tagFilter, projection.scanIndices()))
             continue;
           final Object[] row = new Object[resultCols];
@@ -5493,6 +5506,28 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * the first position where it reaches {@code fromTs} is exactly the first block that can (issue #8813).
    */
   private int firstBlockEndingAtOrAfter(final long fromTs) {
+    return firstBlockEndingAtOrAfter(runningMaxTimestamps(), fromTs);
+  }
+
+  private static int firstBlockEndingAtOrAfter(final long[] runningMax, final long fromTs) {
+    int lo = 0, hi = runningMax.length;
+    while (lo < hi) {
+      final int mid = (lo + hi) >>> 1;
+      if (runningMax[mid] < fromTs)
+        lo = mid + 1;
+      else
+        hi = mid;
+    }
+    return lo;
+  }
+
+  /**
+   * The running maximum of {@code maxTimestamp} along the directory (see {@link MaxTimestampPrefix}), cached per
+   * {@link #directoryVersion}. It is what bounds a walk over overlapping blocks in either direction: going up it says
+   * where the first block that can reach a lower bound is, going down it says that no block at or before an index can
+   * hold anything newer (issue #9982). Caller holds the directory read lock.
+   */
+  private long[] runningMaxTimestamps() {
     final int dirSize = blockDirectory.size();
     MaxTimestampPrefix prefix = maxTimestampPrefix;
     if (prefix == null || prefix.version() != directoryVersion || prefix.runningMax().length != dirSize) {
@@ -5505,17 +5540,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       prefix = new MaxTimestampPrefix(directoryVersion, runningMax);
       maxTimestampPrefix = prefix;
     }
-
-    final long[] runningMax = prefix.runningMax();
-    int lo = 0, hi = dirSize;
-    while (lo < hi) {
-      final int mid = (lo + hi) >>> 1;
-      if (runningMax[mid] < fromTs)
-        lo = mid + 1;
-      else
-        hi = mid;
-    }
-    return lo;
+    return prefix.runningMax();
   }
 
   private long[] decompressTimestamps(final BlockEntry entry, final int tsColIdx) throws IOException {

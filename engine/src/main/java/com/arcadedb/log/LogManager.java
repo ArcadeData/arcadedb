@@ -43,7 +43,6 @@ public class LogManager {
   private static final ThreadLocal<Correlation>      CORRELATION_INSTANCE = new ThreadLocal<>();
   private static final LogManager                    instance             = new LogManager();
   private static volatile TraceContextSupplier       traceContextSupplier = null;
-  private              boolean                        debug                = false;
   // VOLATILE BECAUSE setLogger() IS A RUNTIME PATH - GlobalConfiguration.LOG_IMPL SWAPS THE LOGGER FROM AN
   // ARBITRARY THREAD WHILE OTHERS ARE LOGGING - AND EVERY log() OVERLOAD READS IT
   private volatile     Logger                         logger;
@@ -327,18 +326,15 @@ public class LogManager {
 
   /**
    * Cheap pre-check for hot paths: false when a message at this level would be dropped, so the caller can skip building
-   * (and boxing) its arguments. Unlike {@link #isDebugEnabled()}, it follows the real logging configuration.
+   * (and boxing) its arguments. It follows the real logging configuration, so a guard written as
+   * {@code isLoggable(this, Level.FINE)} opens exactly when the requester's logger is set to {@code FINE}.
+   * <p>
+   * It is the only such pre-check on purpose: {@code isDebugEnabled()} read a flag that lost its last writer in a code
+   * clean-up, so every guard behind it was unreachable whatever the configuration said, and it was removed rather than
+   * rewired so that no new guard can be written against a second, diverging notion of "debug" (#9984).
    */
   public boolean isLoggable(final Object requester, final Level level) {
     return logger.isLoggable(requester, level);
-  }
-
-  public boolean isDebugEnabled() {
-    return debug;
-  }
-
-  public void setDebugEnabled(boolean value) {
-    debug = value;
   }
 
   public void flush() {
