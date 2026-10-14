@@ -28,10 +28,6 @@ import org.apache.ratis.server.protocol.TermIndex;
 import org.apache.ratis.server.raftlog.RaftLog;
 import org.apache.ratis.util.ProtoUtils;
 
-import java.lang.reflect.InvocationHandler;
-import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Method;
-import java.lang.reflect.Proxy;
 import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 
@@ -62,7 +58,7 @@ import java.util.logging.Level;
  * what a restarted node applies before it hears from a leader, and {@code BootstrapElection}'s first-formation gate
  * reads that very commit index.
  * <p>
- * Drop this class, and its use in {@link FixedGrpcFactory#newRaftServerRpc(RaftServer)}, once an Apache Ratis release
+ * Drop this class, and its call in {@link GuardedRaftServer#wrap}, once an Apache Ratis release
  * samples the transfer's {@code lastEntry} after the commit update.
  */
 public final class TransfereeCatchUp {
@@ -97,29 +93,6 @@ public final class TransfereeCatchUp {
   }
 
   private TransfereeCatchUp() {
-  }
-
-  /**
-   * Returns a {@link RaftServer} that behaves exactly like {@code server}, except that
-   * {@link RaftServer#startLeaderElection(StartLeaderElectionRequestProto)} first runs
-   * {@link #beforeStartLeaderElection(RaftServer, StartLeaderElectionRequestProto)}.
-   */
-  public static RaftServer wrap(final RaftServer server) {
-    final InvocationHandler handler = new InvocationHandler() {
-      @Override
-      public Object invoke(final Object proxy, final Method method, final Object[] args) throws Throwable {
-        if (args != null && args.length == 1 && args[0] instanceof StartLeaderElectionRequestProto request
-            && "startLeaderElection".equals(method.getName()))
-          beforeStartLeaderElection(server, request);
-        try {
-          return method.invoke(server, args);
-        } catch (final InvocationTargetException e) {
-          throw e.getCause();
-        }
-      }
-    };
-    return (RaftServer) Proxy.newProxyInstance(RaftServer.class.getClassLoader(), new Class<?>[] { RaftServer.class },
-        handler);
   }
 
   /**

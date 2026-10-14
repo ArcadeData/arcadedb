@@ -27,6 +27,8 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.ServerDatabase;
+import com.arcadedb.server.ha.raft.ratis.GuardedRaftServer;
+import com.arcadedb.server.ha.raft.ratis.RatisMisdirectedRequestFilter;
 import com.arcadedb.server.ha.raft.ratis.RatisRefusedEntryErrorFilter;
 import com.arcadedb.server.ha.raft.ratis.RatisSnapshotDigestWarningFilter;
 import com.arcadedb.server.http.HttpServer;
@@ -369,6 +371,18 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   // catches the RejectedExecutionException and decides what a drop means for it) instead of running on the caller,
   // so it can never stall replica classification - the invariant the off-thread move buys.
   private final    ThreadPoolExecutor        channelRecoveryExecutor = createChannelRecoveryExecutor();
+  // Issue #10016: how many inbound Raft RPCs addressed to another peer this node has refused, and when the last
+  // recovery for each addressed peer was queued, so a misresolved name answering every heartbeat queues one recovery
+  // per MISDIRECTED_RECOVERY_INTERVAL_MS rather than one per refused RPC.
+  private final    AtomicLong                misdirectedRaftRequestsRefused = new AtomicLong();
+  private final    Map<RaftPeerId, Long>     misdirectedRecoveryQueuedAt    = new ConcurrentHashMap<>();
+  // Read and written by the single channel-recovery worker only; concurrent so that stays safe if the pool ever grows.
+  private final    Map<RaftPeerId, Long>     misdirectedWarnedAt            = new ConcurrentHashMap<>();
+  // Short enough that the self-dial channel is rebuilt soon after the resolver changes its answer, long enough that the
+  // single channel-recovery worker, whose channel close can block for seconds, is never kept busy by it.
+  static final     long                      MISDIRECTED_RECOVERY_INTERVAL_MS = 5_000L;
+  // The operator needs the condition once, not once per recovery: later recoveries within this window log at FINE.
+  static final     long                      MISDIRECTED_WARNING_INTERVAL_MS  = 60_000L;
   // Timeout for the leadership transfer that escalates an unrecoverable replication channel (issue #5346).
   // Matches the manual step-down timeout: the transfer either lands within a couple of election rounds or
   // is not going to.
@@ -913,6 +927,86 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
           "Replication-channel recovery queue is saturated; the reset for follower '%s' was dropped and its attempt "
               + "still counted against the retry budget.",
           peerId);
+    }
+  }
+
+  /** How many inbound Raft RPCs addressed to another peer this node has refused (issue #10016). */
+  public long getMisdirectedRaftRequestsRefused() {
+    return misdirectedRaftRequestsRefused.get();
+  }
+
+  /**
+   * Called by the Raft gRPC guard ({@link GuardedRaftServer}) on the request's handler thread each time it refuses an
+   * inbound server RPC addressed to another peer (issue #10016). The refusal itself is already decided; what is left
+   * here is telling the operator and, when this node sent the request to itself, repairing the channel that did it.
+   * <p>
+   * <b>A self-dial is repaired here, because only the sender can repair it.</b> When the requestor is this node, the
+   * address this node holds for {@code addressedTo} leads back to this node - a stopped container's host name that the
+   * resolver now answers with the loopback address or this node's own, which is how the reporter's cluster lost its
+   * leader for good. Ratis keeps one cached gRPC channel per peer, and a channel whose connection works never resolves
+   * its name again: refusing the RPCs keeps the cluster safe, but left alone the channel would point at this node until
+   * the process restarted, so the peer would stay unreachable even after it came back under its own address. So the
+   * channel is reset, which makes the next RPC to that peer resolve the name afresh. The reset closes a channel and
+   * can block for seconds, which is why it runs on {@link #channelRecoveryExecutor} and not on the gRPC thread this is
+   * called from; and it is throttled per peer, because the name may keep resolving the same way for a while (the JVM
+   * caches a successful lookup for 30 s by default) and every heartbeat in that window would otherwise queue another.
+   * <p>
+   * <b>A request from another peer can only be reported.</b> It means that peer's address for {@code addressedTo}
+   * leads here; the channel to fix is on that peer, which logs nothing about it, so the WARNING here names the peer
+   * that has to be looked at.
+   */
+  void onMisdirectedRaftRequest(final String rpc, final RaftPeerId addressedTo, final RaftPeerId requestor) {
+    misdirectedRaftRequestsRefused.incrementAndGet();
+    if (shutdownRequested)
+      return;
+
+    final long now = System.currentTimeMillis();
+    final boolean[] claimed = { false };
+    misdirectedRecoveryQueuedAt.compute(addressedTo, (peer, last) -> {
+      if (last != null && now - last < MISDIRECTED_RECOVERY_INTERVAL_MS)
+        return last;
+      claimed[0] = true;
+      return now;
+    });
+    if (!claimed[0])
+      return;
+
+    final boolean selfDial = localPeerId.equals(requestor);
+    try {
+      channelRecoveryExecutor.execute(() -> {
+        final Long lastWarned = misdirectedWarnedAt.get(addressedTo);
+        final Level level;
+        if (lastWarned == null || now - lastWarned >= MISDIRECTED_WARNING_INTERVAL_MS) {
+          misdirectedWarnedAt.put(addressedTo, now);
+          level = Level.WARNING;
+        } else
+          level = Level.FINE;
+
+        final String resolved = resolvePeerAddresses(addressedTo);
+        if (!selfDial) {
+          LogManager.instance().log(this, level,
+              "Refused a Raft %s from peer '%s' addressed to peer '%s' (issue #10016): the address '%s' holds for '%s' "
+                  + "leads to this node instead. A node never answers for another peer, so '%s' cannot reach '%s' "
+                  + "until that address is fixed on '%s' (here '%s' resolves to %s). Check the DNS and %s.",
+              rpc, requestor, addressedTo, requestor, addressedTo, requestor, addressedTo, requestor, addressedTo,
+              resolved, GlobalConfiguration.HA_SERVER_LIST.getKey());
+          return;
+        }
+
+        final RaftServer server = raftServer;
+        final boolean reset = server != null && !shutdownRequested
+            && resetPeerAppenderChannel(server.getServerRpc(), addressedTo);
+        LogManager.instance().log(this, level,
+            "This node sent a Raft %s meant for peer '%s' to itself and refused it (issue #10016): the address of '%s' "
+                + "resolves to %s, which leads back to this node. %s Check the DNS and %s if this persists.",
+            rpc, addressedTo, addressedTo, resolved,
+            reset ? "Reset the channel to '" + addressedTo + "' so the next request resolves the name again."
+                : "Could not reset the channel to '" + addressedTo + "'.",
+            GlobalConfiguration.HA_SERVER_LIST.getKey());
+      });
+    } catch (final RejectedExecutionException e) {
+      // Counted by the executor's policy. Free to drop: the next refused request after the interval queues it again.
+      misdirectedRecoveryQueuedAt.remove(addressedTo, now);
     }
   }
 
@@ -1495,6 +1589,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     // Drop the Ratis client's SEVERE for an entry the leader refused before appending it: that is an ordinary
     // retryable conflict since issue #6965, not a send failure.
     RatisRefusedEntryErrorFilter.install();
+    // Drop the Ratis gRPC service's per-request stack trace for a request refused as addressed to another peer: the
+    // condition is reported once per peer and period by onMisdirectedRaftRequest (issue #10016).
+    RatisMisdirectedRequestFilter.install();
 
     final RaftProperties properties = RaftPropertiesBuilder.build(configuration);
 
@@ -7457,6 +7554,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
           "Raft gRPC transport secured with TLS (mutual authentication: %s)", tlsConfig.getMtlsEnabled());
 
     installGrpcServerCustomizations(configuration, parameters);
+
+    // Read by FixedGrpcFactory, which hands it to the guard that refuses Raft RPCs addressed to another peer (#10016).
+    parameters.put(GuardedRaftServer.MISDIRECTED_REQUEST_LISTENER_KEY, this::onMisdirectedRaftRequest,
+        GuardedRaftServer.MisdirectedRequestListener.class);
 
     // Last line on every path: see the field's comment. Nothing above may publish a partially-configured
     // Parameters, and nothing below may add to it.
