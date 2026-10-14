@@ -383,14 +383,12 @@ public class DefaultLogger implements Logger {
 
     java.util.logging.Logger log = loggersCache.get(requesterName);
     if (log == null) {
+      // NEVER NULL: Logger.getLogger() CREATES THE LOGGER WHEN IT DOES NOT EXIST, SO CALLERS NEED NO NULL CHECK
       log = java.util.logging.Logger.getLogger(requesterName);
 
-      if (log != null) {
-        final java.util.logging.Logger oldLogger = loggersCache.putIfAbsent(requesterName, log);
-
-        if (oldLogger != null)
-          log = oldLogger;
-      }
+      final java.util.logging.Logger oldLogger = loggersCache.putIfAbsent(requesterName, log);
+      if (oldLogger != null)
+        log = oldLogger;
     }
     return log;
   }
