@@ -862,6 +862,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             "executeCommandInternal(): external transaction - tx already active, not beginning");
       } else if (hasTx && tx.getBegin()) {
         db.begin();
+        // The client asked for this transaction and ends it with its own commit/rollback flag: an HA replica runs the
+        // statement in it rather than forwarding it, which would commit it on the leader whatever the flag says (#10040)
+        ((DatabaseInternal) db).getTransaction().setClientManaged(true);
         beganHere = true;
       } else if (autoWrap) {
         // Server-side safety: keep UPDATE/UPSERT/MERGE pipelines atomic
@@ -1886,6 +1889,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         } finally {
           ProtocolContext.clear();
         }
+        // The client ends this transaction with its own Commit/Rollback: an HA replica runs its writes in it (issue #10040)
+        ((DatabaseInternal) database).getTransaction().setClientManaged(true);
 
         // #8134: the engine's transaction object, taken on the thread whose DatabaseContext owns it and
         // therefore the only thread that can see it. Held for the transaction's whole life so that every RPC

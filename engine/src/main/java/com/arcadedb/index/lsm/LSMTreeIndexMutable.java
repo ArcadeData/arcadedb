@@ -34,6 +34,7 @@ import com.arcadedb.exception.DatabaseIsReadOnlyException;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexCursorEntry;
+import com.arcadedb.index.IndexException;
 import com.arcadedb.index.TempIndexCursor;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Type;
@@ -83,12 +84,30 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
   }
 
   /**
+   * Raised by the load of an index file whose header page is missing or blank (issue #10046), which the component
+   * factory answers by leaving the file out of the schema rather than serving it. Package-private: only the factory
+   * handlers in {@link LSMTreeIndex} catch it.
+   */
+  static final class MissingHeaderException extends IndexException {
+    MissingHeaderException(final String message) {
+      super(message);
+    }
+  }
+
+  /**
    * Called at load time (1st page only).
+   *
+   * @throws MissingHeaderException when the file has no header page (yet), see {@link #onAfterLoad()}
    */
   protected LSMTreeIndexMutable(final LSMTreeIndex mainIndex, final DatabaseInternal database, final String name,
       final boolean unique, final String filePath, final int id, final ComponentFile.MODE mode, final int pageSize,
       final int version) throws IOException {
     super(mainIndex, database, name, unique, filePath, id, mode, pageSize, version);
+    // A file with no page at all has no header to read, and reading page 0 anyway would invent a zeroed one - and cache
+    // it - instead of failing (issue #10046). An HA follower holds such a file between the entry that creates a
+    // compaction's new files and the one that writes their pages, and keeps it if the sequence is cut short.
+    if (getTotalPages() == 0)
+      throw new MissingHeaderException("Index file '" + name + "' has no header page");
     onAfterLoad();
   }
 
@@ -119,10 +138,17 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
       // The header carries the STORAGE type of each key column, so this file keeps whatever encoding it was created
       // with: one written before #5703 declares TYPE_RID and goes on reading fixed-width LINK keys.
       final int len = currentPage.readByte(pos++);
-      this.storageKeyTypes = new byte[len];
-      for (int i = 0; i < len; ++i)
-        this.storageKeyTypes[i] = currentPage.readByte(pos++);
+      if (len <= 0)
+        // Every index has at least one key column, so a header declaring none is a page that was never written: served
+        // as is, it made every lookup and range scan fail with an ArrayIndexOutOfBoundsException (issue #10046). Later
+        // callers of this hook run it on an instance the load constructor has just validated, so only that one hits it.
+        throw new MissingHeaderException("Index file '" + componentName + "' has a blank header page (key columns=" + len + ")");
 
+      final byte[] loadedStorageKeyTypes = new byte[len];
+      for (int i = 0; i < len; ++i)
+        loadedStorageKeyTypes[i] = currentPage.readByte(pos++);
+
+      this.storageKeyTypes = loadedStorageKeyTypes;
       this.binaryKeyTypes = declaredKeyTypes(this.storageKeyTypes);
 
       this.keyTypes = new Type[len];
@@ -149,6 +175,9 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
         // incomplete lookups silently until someone compares them against a full scan.
         subIndex.checkKeyOrderOnLoad();
       }
+    } catch (final MissingHeaderException e) {
+      // Not a sub-index failure: without its key types this index cannot answer anything, so it is not served at all
+      throw e;
     } catch (final Exception e) {
       // #4743: do NOT repair the schema from here. This callback runs on EVERY load of the component,
       // including the Raft apply path on a replica, where a schema write throws

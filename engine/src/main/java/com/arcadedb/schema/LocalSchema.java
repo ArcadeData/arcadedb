@@ -64,6 +64,7 @@ import com.arcadedb.index.hash.HashIndexBucket;
 import com.arcadedb.index.fulltext.LSMTreeFullTextIndex;
 import com.arcadedb.index.geospatial.LSMTreeGeoIndex;
 import com.arcadedb.index.lsm.LSMTreeIndex;
+import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.index.sparsevector.LSMSparseVectorIndex;
 import com.arcadedb.index.sparsevector.SparseSegmentComponent;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract.NULL_STRATEGY;
@@ -287,6 +288,9 @@ public class LocalSchema implements Schema {
   // cannot be null - LocalDocumentType uses the TypeIndex's own name, and ManualIndexBuilder.create() rejects a null
   // one up front, it being the only route by which a caller-supplied name reaches this map unmediated.
   protected final     Map<String, IndexInternal>             indexMap                      = new ConcurrentHashMap<>();
+  // #10046: per type, the definitions of the bucket indexes whose file the last load refused for a missing header page,
+  // keyed by file name. Re-emitted by LocalDocumentType.toJSON() so a save does not lose them, see readConfiguration().
+  private volatile    Map<String, Map<String, JSONObject>>   unavailableIndexDefinitions   = Map.of();
 
   /**
    * The index and bucket components an in-flight schema load has instantiated but whose {@code onAfterSchemaLoad()}
@@ -1329,12 +1333,20 @@ public class LocalSchema implements Schema {
    * forever. Every legitimate compacted component gets its mainIndex set by the owning mutable index while
    * reading its header (SUB-INDEX FILE ID), so a compacted component still unclaimed after the whole schema
    * load is provably an orphan.
+   * <p>
+   * With one exception: a compacted file of the same index as a mutable file the load left out because its header page
+   * has not arrived yet (issue #10046). That mutable is the one that would claim it, so the compacted file is kept - with
+   * its bloom filter - until a later load finds the header, or the index is rebuilt.
    */
   private void sweepOrphanCompactedIndexFiles(final List<Component> snapshot) {
+    final Set<String> awaitingHeader = headerlessMutableIndexBaseNames();
     for (final Component component : snapshot) {
       if (component instanceof LSMTreeIndexBloomFilter filter) {
         // A filter is owned by exactly one compacted index; without it nothing can ever read the file again.
         final Component owner = filter.getOwnerName() != null ? getFileByName(filter.getOwnerName()) : null;
+        if (owner instanceof LSMTreeIndexCompacted compactedOwner && awaitingHeader.contains(
+            LSMTreeIndexAbstract.compactionBaseName(compactedOwner.getName())))
+          continue;
         if (!(owner instanceof LSMTreeIndexCompacted compactedOwner) || compactedOwner.getMainIndex() == null) {
           LogManager.instance().log(this, Level.INFO,
               "Dropping orphan index bloom filter file '%s' (fileId=%d)", null, filter.getName(), filter.getFileId());
@@ -1345,6 +1357,14 @@ public class LocalSchema implements Schema {
 
       if (!(component instanceof LSMTreeIndexCompacted compacted) || compacted.getMainIndex() != null)
         continue;
+
+      if (awaitingHeader.contains(LSMTreeIndexAbstract.compactionBaseName(compacted.getName()))) {
+        LogManager.instance().log(this, Level.WARNING,
+            "Keeping unclaimed compacted index file '%s' (fileId=%d): a mutable file of the same index has no header page yet. "
+                + "If it never arrives, run 'REBUILD INDEX' on that index",
+            null, compacted.getName(), compacted.getFileId());
+        continue;
+      }
 
       LogManager.instance().log(this, Level.INFO,
           "Dropping orphan compacted index file '%s' (fileId=%d) left behind by an interrupted compaction", null,
@@ -1358,6 +1378,35 @@ public class LocalSchema implements Schema {
             .log(this, Level.WARNING, "Error on dropping orphan compacted index file '%s'", e, compacted.getName());
       }
     }
+  }
+
+  /**
+   * The definitions, keyed by file name, of the bucket indexes of {@code typeName} that the last load found bound to a file
+   * with no header page (issue #10046): not served, but kept in the schema file until they can be again.
+   */
+  Map<String, JSONObject> getUnavailableIndexDefinitions(final String typeName) {
+    final Map<String, JSONObject> definitions = unavailableIndexDefinitions.get(typeName);
+    return definitions != null ? definitions : Map.of();
+  }
+
+  /**
+   * The compaction base names ({@link LSMTreeIndexAbstract#compactionBaseName}) of the mutable LSM index files the file
+   * manager holds and this load did not turn into a component: the ones refused for a missing header (issue #10046).
+   */
+  private Set<String> headerlessMutableIndexBaseNames() {
+    Set<String> names = null;
+    for (final ComponentFile file : database.getFileManager().getFiles()) {
+      if (file == null)
+        continue;
+      final String ext = file.getFileExtension();
+      if ((LSMTreeIndexMutable.UNIQUE_INDEX_EXT.equals(ext) || LSMTreeIndexMutable.NOTUNIQUE_INDEX_EXT.equals(ext))
+          && lookupFile(file.getFileId()) == null) {
+        if (names == null)
+          names = new HashSet<>();
+        names.add(LSMTreeIndexAbstract.compactionBaseName(file.getComponentName()));
+      }
+    }
+    return names != null ? names : Collections.emptySet();
   }
 
   // KEY PREFIX IN reportedUpgradeWarnings: A TYPE LEFT BEHIND BY AN OLDER VERSION (#8169) IS AN UPGRADE LEFTOVER TOO
@@ -3447,6 +3496,7 @@ public class LocalSchema implements Schema {
       // "Cannot find index" warnings for cases that are then silently relinked, which masks
       // the genuine cases where the file is truly missing (issue #4063).
       final Map<String, List<String>> deferredMissingIndexWarnings = new LinkedHashMap<>();
+      final Map<String, Map<String, JSONObject>> unavailableIndexes = new HashMap<>();
       // The BM25 corpus counters of a full-text index are TYPE-wide, so every bucket sub-index of one logical index has to
       // share ONE FullTextIndexMetadata, as the creation path does. Building one per bucket sub-index here made each copy
       // count only its own bucket's inserts, ran the once-per-session stale check (a full type scan) once per bucket, and
@@ -3558,6 +3608,16 @@ public class LocalSchema implements Schema {
                 reportUpgradeWarning(index, typeName, properties);
               }
 
+            } else if (database.getFileManager().getFileByComponentName(indexName) != null) {
+              // The file is there, but its load was refused for a missing header page (issue #10046): the index cannot
+              // serve, and queries scan instead. Its definition is KEPT, unlike a missing file's below: dropping it from
+              // the schema would lose a user index for good (#4743), where the file may yet be completed - an HA entry
+              // still to apply writes its header - or the index rebuilt from this very definition.
+              unavailableIndexes.computeIfAbsent(typeName, k -> new TreeMap<>()).put(indexName, indexJSON.copy());
+              LogManager.instance().log(this, Level.SEVERE,
+                  "Index '%s' of type '%s' is unavailable: its file has no header page. Queries on the type scan instead of "
+                      + "using it. Its definition is kept until the file is complete or an index on the same properties is "
+                      + "created again with 'REBUILD INDEX' or 'CREATE INDEX'", null, indexName, typeName);
             } else {
               orphanIndexes.put(indexName, indexJSON);
               indexJSON.put("type", typeName);
@@ -3656,6 +3716,8 @@ public class LocalSchema implements Schema {
       // unrelinkable index reference would log "Cannot find indexes [...]" on every later
       // SCHEMA_ENTRY apply because applySchemaEntry calls load() each time and the persisted
       // schema.json kept the dangling reference).
+      unavailableIndexDefinitions = unavailableIndexes.isEmpty() ? Map.of() : unavailableIndexes;
+
       for (final Map.Entry<String, List<String>> entry : deferredMissingIndexWarnings.entrySet()) {
         final List<String> stillMissing = new ArrayList<>(entry.getValue().size());
         for (final String n : entry.getValue())

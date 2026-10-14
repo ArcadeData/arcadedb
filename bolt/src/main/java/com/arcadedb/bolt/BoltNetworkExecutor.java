@@ -1133,6 +1133,8 @@ public class BoltNetworkExecutor extends Thread {
 
     try {
       database.begin();
+      // The client ends this transaction with its own COMMIT/ROLLBACK: an HA replica runs its writes in it (issue #10040)
+      ((DatabaseInternal) database).getTransaction().setClientManaged(true);
       explicitTransaction = true;
       nextQid = 0; // qids are numbered per explicit transaction
 
