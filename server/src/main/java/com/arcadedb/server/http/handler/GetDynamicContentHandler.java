@@ -125,6 +125,9 @@ public class GetDynamicContentHandler extends AbstractServerHttpHandler {
   // dynamic content (now, uuid, role-gated protectBegin sections).
   private static final int                      STATIC_CACHE_MAX_ENTRIES = 512;
   private static final Map<String, StaticAsset> STATIC_CONTENT_CACHE     = new ConcurrentHashMap<>();
+  // The resource paths found missing, for the same reason and with the same bound: a page that references an asset not on
+  // the classpath would otherwise look it up again on every render
+  private static final Set<String>              MISSING_STATIC_CONTENT   = ConcurrentHashMap.newKeySet();
 
   // Shown at the server root when the Studio module is not on the classpath (e.g. the "base"/"headless"
   // distributions). Self-contained (no external assets) so it renders even without Studio installed.
@@ -315,10 +318,15 @@ public class GetDynamicContentHandler extends AbstractServerHttpHandler {
     final StaticAsset cached = STATIC_CONTENT_CACHE.get(resourcePath);
     if (cached != null)
       return cached;
+    if (MISSING_STATIC_CONTENT.contains(resourcePath))
+      return null;
 
     final InputStream file = GetDynamicContentHandler.class.getClassLoader().getResourceAsStream(resourcePath);
-    if (file == null)
+    if (file == null) {
+      if (MISSING_STATIC_CONTENT.size() < STATIC_CACHE_MAX_ENTRIES)
+        MISSING_STATIC_CONTENT.add(resourcePath);
       return null;
+    }
 
     final byte[] bytes;
     try {
