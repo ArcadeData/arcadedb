@@ -19,12 +19,7 @@
 package com.arcadedb.database.async;
 
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.database.Document;
-import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.Record;
-import com.arcadedb.database.RecordEventsRegistry;
-import com.arcadedb.engine.ComponentFile;
-import com.arcadedb.exception.DatabaseIsReadOnlyException;
 import com.arcadedb.log.LogManager;
 
 import java.util.logging.Level;
@@ -35,6 +30,10 @@ import java.util.logging.Level;
  * so an asynchronous update persisted a record violating a MANDATORY/NOTNULL constraint with no error anywhere - not
  * to the caller, not to the error callback (issue #7002). A violation now takes the same route as any other failure of
  * this task: the worker's transaction is rolled back and the error callback is invoked.
+ * <p>
+ * That validation, the listeners and the {@code updateRecord} statistic now all live in
+ * {@link DatabaseInternal#updateRecordWithEventsNoLock(Record, boolean)}, which the synchronous update shares: this task
+ * re-implemented two of the three and missed the statistic (issue #9987).
  */
 public class DatabaseAsyncUpdateRecord implements DatabaseAsyncTask {
   public final Record                record;
@@ -50,28 +49,10 @@ public class DatabaseAsyncUpdateRecord implements DatabaseAsyncTask {
   @Override
   public void execute(final DatabaseAsyncExecutorImpl.AsyncThread async, final DatabaseInternal database) {
     try {
-      if (record.getIdentity() == null)
-        throw new IllegalArgumentException("Cannot update the record because it is not persistent");
-
-      if (database.getMode() == ComponentFile.MODE.READ_ONLY)
-        throw new DatabaseIsReadOnlyException("Cannot update a record");
-
-      if (record instanceof MutableDocument document)
-        document.validate();
-
-      // INVOKE EVENT CALLBACKS
-      if (!((RecordEventsRegistry) database.getEvents()).onBeforeUpdate(record))
+      // The preconditions, the validation, the before/after-update listeners and the statistic are the database's,
+      // shared with the synchronous update; a veto skips the success callback, as for the delete (issue #9987)
+      if (!database.updateRecordWithEventsNoLock(record, onOkCallback == null))
         return;
-      if (record instanceof Document document)
-        if (!((RecordEventsRegistry) document.getType().getEvents()).onBeforeUpdate(record))
-          return;
-
-      database.updateRecordNoLock(record, onOkCallback == null);
-
-      // INVOKE EVENT CALLBACKS
-      ((RecordEventsRegistry) database.getEvents()).onAfterUpdate(record);
-      if (record instanceof Document document)
-        ((RecordEventsRegistry) document.getType().getEvents()).onAfterUpdate(record);
 
       if (onOkCallback != null)
         onOkCallback.call(record);

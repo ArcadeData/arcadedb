@@ -1772,6 +1772,11 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   }
 
   @Override
+  public boolean updateRecordWithEventsNoLock(final Record record, final boolean discardRecordAfter) {
+    return proxied.updateRecordWithEventsNoLock(record, discardRecordAfter);
+  }
+
+  @Override
   public boolean deleteRecordNoLock(final Record record) {
     return proxied.deleteRecordNoLock(record);
   }

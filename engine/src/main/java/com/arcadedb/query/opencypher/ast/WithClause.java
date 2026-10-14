@@ -44,6 +44,7 @@ public class WithClause {
   private final OrderByClause orderByClause;
   private final Expression skip;
   private final Expression limit;
+  private final boolean letBinding;
 
   public WithClause(final List<ReturnClause.ReturnItem> items,
                     final boolean distinct,
@@ -51,12 +52,30 @@ public class WithClause {
                     final OrderByClause orderByClause,
                     final Expression skip,
                     final Expression limit) {
+    this(items, distinct, whereClause, orderByClause, skip, limit, false);
+  }
+
+  private WithClause(final List<ReturnClause.ReturnItem> items, final boolean distinct, final WhereClause whereClause,
+      final OrderByClause orderByClause, final Expression skip, final Expression limit, final boolean letBinding) {
     this.items = items;
     this.distinct = distinct;
     this.whereClause = whereClause;
     this.orderByClause = orderByClause;
     this.skip = skip;
     this.limit = limit;
+    this.letBinding = letBinding;
+  }
+
+  /**
+   * The rewrite of a GQL {@code LET} item, {@code WITH *, expr AS x} (issue #9940). A LET declares a NEW variable, so unlike
+   * a plain WITH it cannot reuse a name already in scope.
+   */
+  public static WithClause letBinding(final List<ReturnClause.ReturnItem> items) {
+    return new WithClause(items, false, null, null, null, null, true);
+  }
+
+  public boolean isLetBinding() {
+    return letBinding;
   }
 
   public List<ReturnClause.ReturnItem> getItems() {

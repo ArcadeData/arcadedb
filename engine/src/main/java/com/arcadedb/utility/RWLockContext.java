@@ -19,6 +19,7 @@
 package com.arcadedb.utility;
 
 import com.arcadedb.exception.ArcadeDBException;
+import com.arcadedb.exception.DatabaseOperationException;
 
 import java.util.concurrent.Callable;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
@@ -30,7 +31,8 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
  * thread id, so readers on different stripes touch different memory, while a writer takes every stripe, always in the same
  * order, and so excludes every reader. Readers vastly outnumber writers (close, drop, schema changes), so the writer pays
  * the cost of the stripes. Semantics per thread are those of {@link ReentrantReadWriteLock}: reads and writes are reentrant,
- * a writer may take the read lock (downgrade), a reader must not ask for the write lock.
+ * a writer may take the read lock (downgrade), a reader must not ask for the write lock - {@link #writeLock()} refuses it
+ * with an exception instead of letting the thread wait for itself forever (#10012).
  */
 public class RWLockContext {
   private static final int MAX_STRIPES = 64;
@@ -83,6 +85,16 @@ public class RWLockContext {
   protected ReentrantReadWriteLock.WriteLock[] writeLock() {
     if (!enableLocking)
       return null;
+
+    // A READER ASKING FOR THE WRITE LOCK WAITS FOR ITSELF FOREVER: A ReentrantReadWriteLock NEVER UPGRADES. THE ONLY
+    // READ LOCK THIS THREAD CAN HOLD IS ITS OWN STRIPE, SO THAT IS THE ONE TO ASK. A WRITER THAT TOOK THE READ LOCK
+    // TOO (A DOWNGRADE) STILL OWNS THE WRITE LOCK AND RE-ENTERS IT NORMALLY. REFUSED RATHER THAN PARKED: A DDL ISSUED
+    // FROM A RECORD READ LISTENER, OR FROM ANYTHING ELSE RUNNING UNDER THE READ LOCK, USED TO HANG THE THREAD (#10012)
+    final ReentrantReadWriteLock own = stripes[(int) Thread.currentThread().threadId() & stripeMask];
+    if (own.getReadHoldCount() > 0 && !own.isWriteLockedByCurrentThread())
+      throw new DatabaseOperationException("Cannot acquire the exclusive lock while this thread holds the shared lock: "
+          + "a read lock cannot be upgraded. The operation (e.g. a schema change) was issued from code running under the "
+          + "shared lock, such as a record read listener: run it outside of it");
 
     final ReentrantReadWriteLock.WriteLock[] wl = new ReentrantReadWriteLock.WriteLock[stripes.length];
     // ALWAYS IN THE SAME ORDER, SO TWO WRITERS CANNOT DEADLOCK EACH OTHER

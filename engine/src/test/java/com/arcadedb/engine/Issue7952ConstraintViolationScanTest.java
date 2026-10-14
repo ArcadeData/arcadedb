@@ -31,6 +31,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
+import com.arcadedb.utility.ProgressCallback;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -38,6 +39,7 @@ import org.junit.jupiter.api.Timeout;
 import java.util.Collection;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -452,21 +454,24 @@ class Issue7952ConstraintViolationScanTest extends TestHelper {
    * it violated is gone by the time the repair reaches it, so there is nothing left to condemn it for and it must
    * survive. Re-reading the constrained properties from the array the scan was planned with would delete it.
    * <p>
-   * Same hook as the concurrent-completion test and for the same reason - an {@code AfterRecordReadListener} fires
-   * on the re-validation's {@code lookupByRID} and not on the bucket scan - except that here the listener changes
-   * the SCHEMA and hands the record back untouched.
+   * The constraint is dropped from the checker's progress callback, on the tick the scan emits right after it has
+   * queued the record: that is between the scan and the repair, and on a thread holding no database lock. It used to
+   * be dropped from an {@code AfterRecordReadListener} on the re-validation's {@code lookupByRID}, which runs under the
+   * database READ lock - and a schema change takes the WRITE lock, which a reader can never be granted, so the test
+   * waited for itself forever (#10012). That shape is now refused with an exception, see
+   * {@code Issue10012ReadLockUpgradeTest}.
    */
   @Test
+  @Timeout(value = 2, unit = TimeUnit.MINUTES) // HANG DETECTOR: THIS ONE USED TO SELF-DEADLOCK
   void aRecordWhoseConstraintIsDroppedBeforeTheRepairReachesItIsLeftAlone() {
     createConstrainedDocumentType();
 
     final RID provisional = leaveProvisionalRecord("Record", 1);
 
     final AtomicBoolean dropped = new AtomicBoolean();
-    final AfterRecordReadListener dropTheConstraint = record -> {
-      if (provisional.equals(record.getIdentity()) && dropped.compareAndSet(false, true))
+    final ProgressCallback dropTheConstraint = (stepName, stepIndex, totalSteps, done, total) -> {
+      if ("Checking existence constraints".equals(stepName) && done > 0 && dropped.compareAndSet(false, true))
         database.getSchema().getType("Record").getProperty("orgId").setMandatory(false);
-      return record;
     };
     final BeforeRecordDeleteListener tripwire = record -> {
       if (provisional.equals(record.getIdentity()))
@@ -474,21 +479,21 @@ class Issue7952ConstraintViolationScanTest extends TestHelper {
       return true;
     };
 
-    database.getSchema().getType("Record").getEvents().registerListener(dropTheConstraint)
-        .registerListener(tripwire);
+    database.getSchema().getType("Record").getEvents().registerListener(tripwire);
     try {
       final Map<String, Object> result = new DatabaseChecker(db()).setFix(true).setDeleteInvalidRecords(true)
-          .setVerboseLevel(0).check();
+          .setVerboseLevel(0).setProgressCallback(dropTheConstraint).check();
 
-      assertThat(dropped.get()).as("the re-read really did happen - otherwise this test proves nothing").isTrue();
+      assertThat(dropped.get()).as("the constraint really was dropped mid-check - otherwise this test proves nothing")
+          .isTrue();
+      assertThat(database.getSchema().getType("Record").getProperty("orgId").isMandatory()).isFalse();
       assertThat((Long) result.get("totalConstraintViolations")).as("the scan still found it").isEqualTo(1L);
       assertThat((Long) result.get("totalDeletedConstraintViolatingRecords")).isZero();
       assertThat(database.countType("Record", false)).as("but nothing removed it").isEqualTo(1);
       assertThat((Collection<String>) result.get("warnings"))
           .anyMatch(w -> w.contains(provisional.toString()) && w.contains("left in place"));
     } finally {
-      database.getSchema().getType("Record").getEvents().unregisterListener(dropTheConstraint)
-          .unregisterListener(tripwire);
+      database.getSchema().getType("Record").getEvents().unregisterListener(tripwire);
     }
   }
 

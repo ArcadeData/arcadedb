@@ -80,6 +80,11 @@ public class CypherSemanticValidator {
       return;
     }
 
+    if (statement instanceof ConditionalStatement conditional) {
+      validateConditional(conditional);
+      return;
+    }
+
     final CypherSemanticValidator v = new CypherSemanticValidator();
     v.validateVariableTypes(statement);
     v.validateVariableBinding(statement);
@@ -108,6 +113,25 @@ public class CypherSemanticValidator {
       // A branch with no RETURN carries no columns to compare and is not a query this validates on its own.
       if (query.getReturnClause() != null)
         validate(query);
+  }
+
+  /**
+   * A conditional query (issue #9940) validates each branch as the query it is, and requires them all to return the same
+   * columns: which branch runs is decided per execution, so a caller could not know otherwise what it gets back.
+   */
+  private static void validateConditional(final ConditionalStatement conditional) {
+    List<String> firstColumns = null;
+    for (final CypherStatement branch : conditional.getAllBranches()) {
+      validate(branch);
+      final ReturnClause returnClause = branch.getReturnClause();
+      final List<String> columns = returnClause != null ? returnClause.getItems() : List.of();
+      if (firstColumns == null)
+        firstColumns = columns;
+      else if (!firstColumns.equals(columns))
+        throw new CommandParsingException(
+            "DifferentColumnsInConditionalQuery: every branch of a conditional query (WHEN ... THEN ... ELSE ...) must return the "
+                + "same columns in the same order");
+    }
   }
 
   /**
@@ -414,6 +438,8 @@ public class CypherSemanticValidator {
 
   private void validateVariableBinding(final CypherStatement statement) {
     final Set<String> boundVars = new HashSet<>();
+    // What a LET can see: boundVars, except that WITH * passes the incoming names through instead of dropping them
+    final Set<String> visibleVars = new HashSet<>();
 
     final List<ClauseEntry> clausesInOrder = statement.getClausesInOrder();
     if (clausesInOrder != null && !clausesInOrder.isEmpty()) {
@@ -440,14 +466,22 @@ public class CypherSemanticValidator {
           case WITH:
             // WITH resets scope to only the projected aliases
             final WithClause withClause = entry.getTypedClause();
+            if (withClause.isLetBinding())
+              checkLetDeclaresNewVariables(withClause, visibleVars, boundVars);
             boundVars.clear();
+            boolean star = false;
             for (final ReturnClause.ReturnItem item : withClause.getItems()) {
+              if (item.isStar())
+                star = true;
               final String alias = item.getAlias();
               if (alias != null)
                 boundVars.add(alias);
               else if (item.getExpression() instanceof VariableExpression)
                 boundVars.add(((VariableExpression) item.getExpression()).getVariableName());
             }
+            if (!star)
+              visibleVars.clear();
+            visibleVars.addAll(boundVars);
             break;
           case UNWIND:
             final UnwindClause unwindClause = entry.getTypedClause();
@@ -460,6 +494,7 @@ public class CypherSemanticValidator {
           default:
             break;
         }
+        visibleVars.addAll(boundVars);
       }
     } else {
       // Fallback: walk match then create
@@ -471,6 +506,19 @@ public class CypherSemanticValidator {
       if (statement.getCreateClause() != null && !statement.getCreateClause().isEmpty())
         for (final PathPattern path : statement.getCreateClause().getPathPatterns())
           checkCreateBinding(path, boundVars);
+    }
+  }
+
+  /**
+   * A GQL {@code LET} declares new variables (issue #9940): naming one already in scope is refused, as Neo4j does, instead
+   * of silently shadowing it the way the {@code WITH *, expr AS x} it is rewritten to would.
+   */
+  private static void checkLetDeclaresNewVariables(final WithClause letClause, final Set<String> visibleVars,
+      final Set<String> boundVars) {
+    for (final ReturnClause.ReturnItem item : letClause.getItems()) {
+      final String alias = item.isStar() ? null : item.getAlias();
+      if (alias != null && (visibleVars.contains(alias) || boundVars.contains(alias)))
+        throw new CommandParsingException("VariableAlreadyBound: Variable '" + alias + "' already declared, LET cannot redeclare it");
     }
   }
 

@@ -100,4 +100,24 @@ class Issue8552ServerDatabaseDiscardRecordAfterTest extends TestHelper {
     assertThat(((RecordInternal) doc).getBuffer()).as("parity: updateRecordNoLock already passed its flag on").isNull();
     assertThat(database.lookupByRID(rid[0], true).asDocument().getString("name")).isEqualTo("after");
   }
+
+  @Test
+  void updateRecordWithEventsNoLockReachesTheEmbeddedDatabase() {
+    final ServerDatabase handle = handle();
+    final RID[] rid = new RID[1];
+    database.transaction(() -> rid[0] = database.newDocument(TYPE).set("name", "before").save().getIdentity());
+
+    final MutableDocument doc = database.lookupByRID(rid[0], true).asDocument().modify();
+    doc.set("name", "after");
+    ((RecordInternal) doc).setBuffer(null);
+    final long updates = ((Number) database.getStats().get("updateRecord")).longValue();
+    final boolean[] applied = new boolean[1];
+    database.transaction(() -> applied[0] = handle.updateRecordWithEventsNoLock(doc, true));
+
+    // #9987: the wrapper forwards the whole update, flag included, and the embedded database counts it
+    assertThat(applied[0]).isTrue();
+    assertThat(((RecordInternal) doc).getBuffer()).as("discardRecordAfter=true reached the bucket").isNull();
+    assertThat(((Number) database.getStats().get("updateRecord")).longValue()).isEqualTo(updates + 1);
+    assertThat(database.lookupByRID(rid[0], true).asDocument().getString("name")).isEqualTo("after");
+  }
 }

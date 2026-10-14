@@ -59,6 +59,11 @@ public class ShortestPathPattern extends PathPattern {
     return allPaths;
   }
 
+  @Override
+  public PathPattern withNodes(final List<NodePattern> newNodes) {
+    return new ShortestPathPattern(newNodes, getRelationships(), getPathVariable(), allPaths);
+  }
+
   /**
    * Returns true - this is always a shortest path pattern.
    *

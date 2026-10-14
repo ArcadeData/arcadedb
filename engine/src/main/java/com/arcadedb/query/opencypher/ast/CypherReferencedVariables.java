@@ -87,8 +87,8 @@ public final class CypherReferencedVariables {
    */
   private static final Set<Class<?>> NAMELESS_PREDICATES = Set.of(
       BooleanCoercionExpression.class, ComparisonExpression.class, InExpression.class, IsNullExpression.class,
-      IsTypedExpression.class, LabelCheckExpression.class, LogicalExpression.class, PatternPredicateExpression.class,
-      RegexExpression.class, StringMatchExpression.class);
+      IsNormalizedExpression.class, IsTypedExpression.class, LabelCheckExpression.class, LogicalExpression.class,
+      PatternPredicateExpression.class, RegexExpression.class, StringMatchExpression.class);
 
   /**
    * The types {@code Collector.visit} handles in an arm of its own rather than through the nameless sets. The first
