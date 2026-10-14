@@ -76,7 +76,8 @@ public class EdgeIdentityMultiset {
 
   /**
    * Removes one entry for the edge, the very RID object that was added first (the common case of a search giving back
-   * what it took), then any entry that is the same edge.
+   * what it took), then any entry that is the same edge. The reference match comes first because it is free, while
+   * {@link LightEdgeRID#isSameEdge} on two twins may have to walk an edge list to number them.
    *
    * @return true if an entry was removed
    */
