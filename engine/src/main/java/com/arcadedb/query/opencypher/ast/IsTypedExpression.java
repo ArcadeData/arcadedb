@@ -104,6 +104,9 @@ public class IsTypedExpression implements BooleanExpression {
   }
 
   private static boolean isListMatch(final Object value, final String elementName, final boolean elementNonNull) {
+    // a path is a PATH, not a LIST, even when it is carried by a list (issue #9940)
+    if (CypherFunctionHelper.isPathValue(value))
+      return false;
     if (!(value instanceof Collection<?>) && !value.getClass().isArray())
       return false;
     if (elementName == null)
