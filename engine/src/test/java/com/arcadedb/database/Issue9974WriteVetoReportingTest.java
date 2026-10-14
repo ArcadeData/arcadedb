@@ -156,6 +156,29 @@ class Issue9974WriteVetoReportingTest extends TestHelper {
     assertThat(count("T")).isEqualTo(250L);
   }
 
+  /**
+   * The delete step acts one row ahead of what it returns: a LIMIT must still bound the records deleted, and every record deleted
+   * must be one the statement returns.
+   */
+  @Test
+  void sqlDeleteWithALimitDeletesExactlyTheRowsItReturns() {
+    database.getSchema().createDocumentType("T");
+    createDocuments("T", "a", "b", "c", "d");
+
+    final List<String> returned = new ArrayList<>();
+    database.transaction(() -> {
+      try (final ResultSet rs = database.command("sql", "DELETE FROM T RETURN BEFORE LIMIT 2")) {
+        while (rs.hasNext())
+          returned.add(rs.next().getProperty("name"));
+      }
+    });
+
+    assertThat(returned).hasSize(2);
+    assertThat(count("T")).isEqualTo(2L);
+    assertThat(commandCount("DELETE FROM T LIMIT 1")).isEqualTo(1L);
+    assertThat(count("T")).isEqualTo(1L);
+  }
+
   @Test
   void sqlDeleteOfOnlyVetoedRowsCountsZero() {
     database.getSchema().createDocumentType("T").getEvents().registerListener((BeforeRecordDeleteListener) record -> false);

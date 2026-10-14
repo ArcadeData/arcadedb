@@ -31,7 +31,9 @@ import java.util.NoSuchElementException;
  * one upstream batch. {@code finished} is sticky only for this one pull.
  * <p>
  * The row is acted on in {@link #hasNext()}, one row ahead of {@link #next()}: a consumer that asks whether there is a next row
- * learns it only once the write has been applied or refused.
+ * learns it only once the write has been applied or refused, and a write failure is raised from {@code hasNext()}. That is never
+ * a row written and not returned: the plans these steps run in ({@code UpdateExecutionPlan}, {@code InsertExecutionPlan}) drain
+ * every pull before the caller sees a row, and a {@code LIMIT} is applied BEFORE the write step, never after it.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -66,6 +68,8 @@ abstract class SkippingResultSet implements ResultSet {
           finished = true;
           return;
         }
+        // the drained batch is NOT closed: a step's ResultSet may close the step itself on close() (FilterStep's does), which
+        // would end the very pull that comes next. The step chain is closed once, by the plan
         upstream = prevStep.syncPull(context, nRecords);
         if (!upstream.hasNext()) {
           finished = true;

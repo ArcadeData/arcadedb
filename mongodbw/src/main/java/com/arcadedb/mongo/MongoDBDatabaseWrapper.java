@@ -831,8 +831,10 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       return new UpdateCount(1, 1);
     // The SQL count is what the engine changed. Without a filter every record matches, so the matched count is the type's own (an
     // O(1) counter), and differs from the changed one only by the updates a listener vetoed
+    // Read after the update, so a concurrent insert or delete can move it: never below what was modified, never past an int
     final long total = database.countType(collectionName, true);
-    return new UpdateCount((int) (multi ? total : Math.min(1, total)), modified);
+    final int matched = (int) Math.min(Integer.MAX_VALUE, multi ? total : Math.min(1, total));
+    return new UpdateCount(Math.max(matched, modified), modified);
   }
 
   /**
@@ -1194,7 +1196,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       return new LinkedHashMap<>(map);
     if (container instanceof com.arcadedb.database.Document embedded) {
       final Map<Object, Object> copy = new LinkedHashMap<>(embedded.toMap());
-      copy.keySet().removeIf(key -> MongoDBToSqlTranslator.isRecordMetadata((String) key));
+      copy.keySet().removeIf(key -> MongoDBToSqlTranslator.isRecordMetadata(String.valueOf(key)));
       return copy;
     }
     return new LinkedHashMap<>();
@@ -1203,7 +1205,9 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   /**
    * The key of {@code map} a path segment names. A {@code MAP} property keeps its keys with their own class (an Integer, a Long, a
    * {@code null}), while a MongoDB path names a field by its text, the text {@code find} shows it under (issue #9973): the stored
-   * key whose text is {@code name} is the one updated, keeping its class, and a name no key has is a new String key.
+   * key whose text is {@code name} is the one updated, keeping its class, and a name no key has is a new String key. A String key
+   * equal to the name wins over another key with the same text, the same member {@code find} shows for it. The scan only runs
+   * when the name is not itself a key, which is never the case for a map whose keys are all Strings and that holds it.
    */
   private static Object keyNamed(final Map<?, ?> map, final String name) {
     if (map.containsKey(name))
