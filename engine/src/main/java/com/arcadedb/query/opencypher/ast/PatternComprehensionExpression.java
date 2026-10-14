@@ -22,6 +22,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.EdgeIdentityMultiset;
 import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.graph.Vertex;
@@ -37,10 +38,8 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
-import java.util.Set;
 
 /**
  * Expression representing a pattern comprehension.
@@ -71,7 +70,12 @@ public class PatternComprehensionExpression implements Expression {
   public Object evaluate(final Result result, final CommandContext context) {
     final List<Object> resultList = new ArrayList<>();
     final List<Object> pathElements = new ArrayList<>();
-    traversePattern(result, context, 0, result, resultList, pathElements, null);
+    // Relationship uniqueness spans the whole pattern, every hop and every relationship a variable-length hop walks. A
+    // single fixed-length hop cannot repeat a relationship, so the common [(a)-->(b) | b] tracks nothing
+    final int hops = pathPattern.getRelationshipCount();
+    final EdgeIdentityMultiset usedEdges =
+        hops > 1 || (hops == 1 && pathPattern.getRelationship(0).isVariableLength()) ? new EdgeIdentityMultiset() : null;
+    traversePattern(result, context, 0, result, resultList, pathElements, usedEdges, null);
     return resultList;
   }
 
@@ -87,7 +91,7 @@ public class PatternComprehensionExpression implements Expression {
    */
   private void traversePattern(final Result baseResult, final CommandContext context,
       final int hopIndex, final Result currentResult, final List<Object> resultList,
-      final List<Object> pathElements, final Vertex knownStartVertex) {
+      final List<Object> pathElements, final EdgeIdentityMultiset usedEdges, final Vertex knownStartVertex) {
     if (hopIndex >= pathPattern.getRelationshipCount()) {
       // All hops matched - apply WHERE filter and map expression
       if (whereExpression != null) {
@@ -119,7 +123,7 @@ public class PatternComprehensionExpression implements Expression {
     // (issue #4106).
     if (startVertex == null) {
       if (hopIndex == 0)
-        traverseUncorrelatedStart(baseResult, context, currentResult, resultList, pathElements, startNodePattern);
+        traverseUncorrelatedStart(baseResult, context, currentResult, resultList, pathElements, usedEdges, startNodePattern);
       return;
     }
 
@@ -151,7 +155,7 @@ public class PatternComprehensionExpression implements Expression {
     final Direction direction = relPattern.getDirection();
 
     if (relPattern.isVariableLength() && GraphTraverser.isBoundRelationshipList(currentResult, relPattern.getVariable()))
-      traverseBoundRelationshipList(baseResult, context, hopIndex, currentResult, resultList, pathElements, startVertex,
+      traverseBoundRelationshipList(baseResult, context, hopIndex, currentResult, resultList, pathElements, usedEdges, startVertex,
           direction, relTypeArray, endNodePattern, relPattern);
     else if (relPattern.isVariableLength()) {
       final int minHops = relPattern.getEffectiveMinHops();
@@ -163,15 +167,14 @@ public class PatternComprehensionExpression implements Expression {
           && matchesEndPattern(startVertex, endNodePattern, baseResult, currentResult,
               inlineWhereRow(endNodePattern, currentResult), relPattern, List.of(), context)) {
         final ResultInternal hopResult = buildHopResult(currentResult, endNodePattern, startVertex, relPattern, List.of());
-        traversePattern(baseResult, context, hopIndex + 1, hopResult, resultList, pathElements, startVertex);
+        traversePattern(baseResult, context, hopIndex + 1, hopResult, resultList, pathElements, usedEdges, startVertex);
       }
 
       if (maxHops >= 1)
-        traverseVariableLength(baseResult, context, hopIndex, currentResult, resultList, pathElements,
-            startVertex, direction, relTypeArray, endNodePattern, relPattern, 0, minHops, maxHops, new HashSet<>(),
-            new ArrayList<>());
+        traverseVariableLength(baseResult, context, hopIndex, currentResult, resultList, pathElements, usedEdges,
+            startVertex, direction, relTypeArray, endNodePattern, relPattern, 0, minHops, maxHops, new ArrayList<>());
     } else
-      traverseEdges(baseResult, context, hopIndex, currentResult, resultList, pathElements,
+      traverseEdges(baseResult, context, hopIndex, currentResult, resultList, pathElements, usedEdges,
           startVertex, direction, relTypeArray, endNodePattern, relPattern);
 
     // Remove start vertex from path when backtracking
@@ -186,7 +189,7 @@ public class PatternComprehensionExpression implements Expression {
    */
   private void traverseUncorrelatedStart(final Result baseResult, final CommandContext context,
       final Result currentResult, final List<Object> resultList, final List<Object> pathElements,
-      final NodePattern startNodePattern) {
+      final EdgeIdentityMultiset usedEdges, final NodePattern startNodePattern) {
     // The scan visits every vertex type the label constraint can be satisfied by, which for a disjunction
     // (y:A|B) means the types of both alternatives. Taking the first label as the iteration root left the
     // per-candidate filter below correct but never handed it a vertex carrying only a later alternative, and an
@@ -217,7 +220,7 @@ public class PatternComprehensionExpression implements Expression {
       // Re-enter traversal with this candidate as the known start vertex. Passing it directly
       // (rather than re-resolving) also handles an anonymous uncorrelated start node, which has
       // no variable to bind and would otherwise re-trigger this iteration endlessly (issue #5007).
-      traversePattern(baseResult, context, 0, candidateResult, resultList, pathElements, candidate);
+      traversePattern(baseResult, context, 0, candidateResult, resultList, pathElements, usedEdges, candidate);
     }
   }
 
@@ -252,12 +255,11 @@ public class PatternComprehensionExpression implements Expression {
 
   private void traverseVariableLength(final Result baseResult, final CommandContext context,
       final int hopIndex, final Result currentResult, final List<Object> resultList,
-      final List<Object> pathElements,
+      final List<Object> pathElements, final EdgeIdentityMultiset usedEdges,
       final Vertex currentVertex, final Direction direction,
       final String[] relTypeArray, final NodePattern endNodePattern,
       final RelationshipPattern relPattern,
-      final int currentHop, final int minHops, final int maxHops,
-      final Set<RID> visitedEdges, final List<Edge> walkedEdges) {
+      final int currentHop, final int minHops, final int maxHops, final List<Edge> walkedEdges) {
     if (currentHop >= maxHops)
       return;
 
@@ -281,9 +283,10 @@ public class PatternComprehensionExpression implements Expression {
       if (whereEvalRow != null && !matchesEdgeWhereExpression(edge, relPattern, whereEvalRow, context))
         continue;
       final RID edgeRid = edge.getIdentity();
-      // Trail semantics: do not repeat the same edge in a single path
-      if (!visitedEdges.add(edgeRid))
+      // Trail semantics: do not repeat an edge the pattern already walked, in this hop or an earlier one
+      if (usedEdges.contains(edgeRid))
         continue;
+      usedEdges.add(edgeRid);
 
       final Vertex nextVertex;
       try {
@@ -291,7 +294,7 @@ public class PatternComprehensionExpression implements Expression {
       } catch (final RecordNotFoundException e) {
         // Ghost edge: dangling segment pointer to a missing edge/target record. Undo the visit mark and skip.
         GhostEdgeReporter.reportSkipped(e);
-        visitedEdges.remove(edgeRid);
+        usedEdges.remove(edgeRid);
         continue;
       }
       final int nextHop = currentHop + 1;
@@ -310,21 +313,20 @@ public class PatternComprehensionExpression implements Expression {
             relationships, context)) {
           final ResultInternal hopResult = buildHopResult(currentResult, endNodePattern, nextVertex, relPattern,
               relationships);
-          traversePattern(baseResult, context, hopIndex + 1, hopResult, resultList, pathElements, nextVertex);
+          traversePattern(baseResult, context, hopIndex + 1, hopResult, resultList, pathElements, usedEdges, nextVertex);
         }
       }
 
       if (nextHop < maxHops)
-        traverseVariableLength(baseResult, context, hopIndex, currentResult, resultList, pathElements,
-            nextVertex, direction, relTypeArray, endNodePattern, relPattern, nextHop, minHops, maxHops, visitedEdges,
-            walkedEdges);
+        traverseVariableLength(baseResult, context, hopIndex, currentResult, resultList, pathElements, usedEdges,
+            nextVertex, direction, relTypeArray, endNodePattern, relPattern, nextHop, minHops, maxHops, walkedEdges);
 
       if (trackPath) {
         pathElements.remove(pathElements.size() - 1);
         pathElements.remove(pathElements.size() - 1);
       }
       walkedEdges.removeLast();
-      visitedEdges.remove(edgeRid);
+      usedEdges.remove(edgeRid);
     }
   }
 
@@ -335,8 +337,8 @@ public class PatternComprehensionExpression implements Expression {
    */
   private void traverseBoundRelationshipList(final Result baseResult, final CommandContext context, final int hopIndex,
       final Result currentResult, final List<Object> resultList, final List<Object> pathElements,
-      final Vertex startVertex, final Direction direction, final String[] relTypeArray, final NodePattern endNodePattern,
-      final RelationshipPattern relPattern) {
+      final EdgeIdentityMultiset usedEdges, final Vertex startVertex, final Direction direction, final String[] relTypeArray,
+      final NodePattern endNodePattern, final RelationshipPattern relPattern) {
     final VariableLengthPathTraverser traverser = new VariableLengthPathTraverser(direction, relTypeArray,
         InlineProperties.resolveAll(relPattern.getProperties(), currentResult, context), relPattern.getEffectiveMinHops(),
         relPattern.getEffectiveMaxHops(), true, false, pathPattern.getEffectivePathMode());
@@ -351,9 +353,15 @@ public class PatternComprehensionExpression implements Expression {
         relPattern, null, context))
       return;
 
-    final boolean trackPath = pathVariable != null;
     final List<Edge> edges = path.getEdges();
+    for (int i = 0; i < edges.size(); i++)
+      if (usedEdges.contains(edges.get(i).getIdentity()))
+        return;
+
+    final boolean trackPath = pathVariable != null;
     final List<Vertex> vertices = path.getVertices();
+    for (int i = 0; i < edges.size(); i++)
+      usedEdges.add(edges.get(i).getIdentity());
     if (trackPath)
       for (int i = 0; i < edges.size(); i++) {
         pathElements.add(edges.get(i));
@@ -361,11 +369,13 @@ public class PatternComprehensionExpression implements Expression {
       }
 
     final ResultInternal hopResult = buildHopResult(currentResult, endNodePattern, endVertex, relPattern, null);
-    traversePattern(baseResult, context, hopIndex + 1, hopResult, resultList, pathElements, endVertex);
+    traversePattern(baseResult, context, hopIndex + 1, hopResult, resultList, pathElements, usedEdges, endVertex);
 
     if (trackPath)
       for (int i = 0; i < edges.size() * 2; i++)
         pathElements.removeLast();
+    for (int i = 0; i < edges.size(); i++)
+      usedEdges.remove(edges.get(i).getIdentity());
   }
 
   private boolean matchesEndPattern(final Vertex vertex, final NodePattern endNodePattern, final Result baseResult,
@@ -478,7 +488,7 @@ public class PatternComprehensionExpression implements Expression {
 
   private void traverseEdges(final Result baseResult, final CommandContext context,
       final int hopIndex, final Result currentResult, final List<Object> resultList,
-      final List<Object> pathElements,
+      final List<Object> pathElements, final EdgeIdentityMultiset usedEdges,
       final Vertex startVertex, final Direction direction,
       final String[] relTypeArray, final NodePattern endNodePattern,
       final RelationshipPattern relPattern) {
@@ -493,6 +503,9 @@ public class PatternComprehensionExpression implements Expression {
 
     while (edges.hasNext()) {
       final Edge edge = edges.next();
+      // Relationship uniqueness: an edge an earlier hop of the pattern walked cannot be walked again
+      if (usedEdges != null && usedEdges.contains(edge.getIdentity()))
+        continue;
       // Inline relationship property filter, e.g. [(a)-[:VE {w:1}]->(x) | ...] (issue #5139).
       if (!matchesEdgeProperties(edge, relPattern, currentResult, context))
         continue;
@@ -535,7 +548,11 @@ public class PatternComprehensionExpression implements Expression {
 
       // Continue to next hop or collect result. The matched target is the start of the next hop,
       // which is required when the next hop's start node is anonymous (issue #5007).
-      traversePattern(baseResult, context, hopIndex + 1, hopResult, resultList, pathElements, targetVertex);
+      if (usedEdges != null)
+        usedEdges.add(edge.getIdentity());
+      traversePattern(baseResult, context, hopIndex + 1, hopResult, resultList, pathElements, usedEdges, targetVertex);
+      if (usedEdges != null)
+        usedEdges.remove(edge.getIdentity());
 
       // Remove edge and target from path when backtracking
       if (pathVariable != null) {

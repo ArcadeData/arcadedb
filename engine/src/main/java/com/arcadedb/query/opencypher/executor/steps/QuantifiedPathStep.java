@@ -23,6 +23,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.EdgeIdentityMultiset;
 import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.InlineProperties;
@@ -47,7 +48,6 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Deque;
-import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -218,7 +218,8 @@ public class QuantifiedPathStep extends AbstractExecutionStep {
     private final Vertex                boundTarget;
     private final List<Result>          out;
     private final WorkGuard             guard;
-    private final Set<RID>              usedEdges;
+    // NOT A Set<RID>: PARALLEL LIGHTWEIGHT TWINS SHARE THEIR RID AND ARE STILL TWO RELATIONSHIPS (ISSUE #9983)
+    private final EdgeIdentityMultiset  usedEdges;
     private final List<Repetition>      repetitions = new ArrayList<>();
     private final Map<String, Object>[] relationshipProperties;
     private final Predicate<Edge>[]     relationshipPredicates;
@@ -531,14 +532,14 @@ public class QuantifiedPathStep extends AbstractExecutionStep {
    * cannot reuse one. Only the clause's own variables are examined: Cypher scopes relationship isomorphism
    * to a single MATCH clause.
    */
-  private Set<RID> collectBoundRelationships(final Result input) {
-    final Set<RID> used = new HashSet<>();
+  private EdgeIdentityMultiset collectBoundRelationships(final Result input) {
+    final EdgeIdentityMultiset used = new EdgeIdentityMultiset();
     collectBoundRelationships(input, clauseVariables, used);
     collectBoundRelationships(input, clauseRelationshipVariables, used);
     return used;
   }
 
-  private void collectBoundRelationships(final Result input, final Set<String> scope, final Set<RID> used) {
+  private void collectBoundRelationships(final Result input, final Set<String> scope, final EdgeIdentityMultiset used) {
     final List<String> groupVariables = group.getGroupVariables();
     for (final String property : scope) {
       if (property.equals(targetVariable) || property.equals(pathVariable) || groupVariables.contains(property))
@@ -547,7 +548,7 @@ public class QuantifiedPathStep extends AbstractExecutionStep {
     }
   }
 
-  private static void collectRelationships(final Object value, final Set<RID> used) {
+  private static void collectRelationships(final Object value, final EdgeIdentityMultiset used) {
     if (value instanceof Edge edge)
       used.add(edge.getIdentity());
     else if (value instanceof TraversalPath path) {
