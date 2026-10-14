@@ -47,8 +47,8 @@ public class QueryHelper {
    * long)}.
    */
   public static boolean likeUntil(String currentValue, String value, final long deadlineNanos) {
-    if (currentValue == null || value == null || (currentValue.isEmpty() ^ value.isEmpty()))
-      // EMPTY/NULL PARAMETERS
+    if (currentValue == null || value == null)
+      // NULL PARAMETERS
       return false;
     else if (currentValue.isEmpty() && value.isEmpty())
       return true;
