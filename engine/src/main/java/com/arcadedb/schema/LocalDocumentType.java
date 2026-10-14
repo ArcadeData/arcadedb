@@ -179,6 +179,7 @@ public class LocalDocumentType implements DocumentType {
   public LocalDocumentType(final LocalSchema schema, final String name) {
     this.schema = schema;
     this.name = name;
+    // NO SCHEMA ONLY FOR A TYPE BUILT DETACHED FROM ANY DATABASE (A TEST FIXTURE): NO READ OF A DATABASE REACHES IT
     this.events = schema != null ? schema.newTypeEventsRegistry() : new RecordEventsRegistry();
   }
 

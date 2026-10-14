@@ -23,6 +23,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.Record;
 import com.arcadedb.database.RecordEventsRegistry;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.trigger.JavaTrigger;
@@ -31,7 +32,11 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -50,8 +55,7 @@ class Issue9997BeforeReadListenerCountTest extends TestHelper {
 
   public static class CountingBeforeReadTrigger implements JavaTrigger {
     @Override
-    public boolean execute(final Database database, final com.arcadedb.database.Record record,
-        final com.arcadedb.database.Record oldRecord) {
+    public boolean execute(final Database database, final Record record, final Record oldRecord) {
       return true;
     }
 
@@ -160,6 +164,55 @@ class Issue9997BeforeReadListenerCountTest extends TestHelper {
     assertThat(anyBeforeReadListener()).isFalse();
     assertThat(scan("Triggered")).isEqualTo(10);
     assertThat(TRIGGER_FIRED.get()).isEqualTo(20);
+  }
+
+  /**
+   * The ordering the fast path relies on, across threads: a read another thread STARTS after {@code registerListener}
+   * returned must see the listener. The registry counts the listener before it adds it, so whoever observes the
+   * registration (here through a volatile flag set after the call returned) also observes a count above zero.
+   */
+  @Test
+  void aReadStartedAfterTheRegistrationReturnedOnAnotherThreadSeesTheListener() throws Exception {
+    final RID rid = createRecords("Racing", 1);
+    final AtomicInteger seen = new AtomicInteger();
+    final AtomicBoolean registered = new AtomicBoolean();
+    final AtomicInteger readsAfterRegistration = new AtomicInteger();
+    final AtomicReference<Throwable> failure = new AtomicReference<>();
+    final CountDownLatch readerStarted = new CountDownLatch(1);
+    final int readsToCheck = 2_000;
+
+    final Thread reader = new Thread(() -> {
+      try {
+        readerStarted.countDown();
+        while (readsAfterRegistration.get() < readsToCheck) {
+          final boolean registeredBefore = registered.get();
+          database.transaction(() -> database.lookupByRID(rid, true));
+          if (registeredBefore)
+            readsAfterRegistration.incrementAndGet();
+        }
+      } catch (final Throwable t) {
+        failure.set(t);
+      }
+    });
+    reader.start();
+    assertThat(readerStarted.await(10, TimeUnit.SECONDS)).isTrue();
+
+    final BeforeRecordReadListener listener = r -> {
+      seen.incrementAndGet();
+      return true;
+    };
+    database.getSchema().getType("Racing").getEvents().registerListener(listener);
+    registered.set(true);
+
+    reader.join(TimeUnit.MINUTES.toMillis(2));
+    assertThat(reader.isAlive()).isFalse();
+    assertThat(failure.get()).isNull();
+    // EVERY READ THAT STARTED AFTER THE FLAG WAS SEEN MUST HAVE FIRED THE LISTENER; THE ONES IN FLIGHT AT THE
+    // REGISTRATION MAY OR MAY NOT, WHICH IS WHY THIS IS A LOWER BOUND
+    assertThat(seen.get()).isGreaterThanOrEqualTo(readsToCheck);
+
+    database.getSchema().getType("Racing").getEvents().unregisterListener(listener);
+    assertThat(anyBeforeReadListener()).isFalse();
   }
 
   @Test

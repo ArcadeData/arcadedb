@@ -154,6 +154,33 @@ class Issue9997StoredStringConversionMemoTest extends TestHelper {
   }
 
   @Test
+  void droppingTheSuperTypeThatDeclaresTheTemporalPropertyTurnsTheSubTypeOff() {
+    database.getSchema().createDocumentType("Top");
+    database.getSchema().createDocumentType("Middle").createProperty("lt", Type.LOCAL_TIME);
+    database.getSchema().createDocumentType("Leaf");
+    database.getSchema().getType("Leaf").addSuperType("Middle");
+    database.transaction(() -> database.newDocument("Leaf").set("lt2", "10:15:30").save());
+    assertThat(converts("Leaf")).isTrue();
+
+    // A MIDDLE TYPE WITHOUT SUPER TYPES: THE DROP RE-LINKS NOTHING, SO NO addSuperType() MOVES THE SERIAL FOR IT
+    database.getSchema().dropType("Middle");
+
+    assertThat(database.getSchema().getType("Leaf").getSuperTypes()).isEmpty();
+    assertThat(converts("Leaf")).isFalse();
+
+    // ...AND ONE BETWEEN TWO TYPES: THE SUB TYPE IS RE-LINKED TO THE TOP, WHICH DECLARES NOTHING
+    database.getSchema().createDocumentType("Middle2").createProperty("lt", Type.LOCAL_TIME);
+    database.getSchema().getType("Middle2").addSuperType("Top");
+    database.getSchema().getType("Leaf").addSuperType("Middle2");
+    assertThat(converts("Leaf")).isTrue();
+
+    database.getSchema().dropType("Middle2");
+
+    assertThat(database.getSchema().getType("Leaf").getSuperTypes()).extracting("name").containsExactly("Top");
+    assertThat(converts("Leaf")).isFalse();
+  }
+
+  @Test
   void anEmbeddedDocumentFollowsItsOwnType() {
     database.getSchema().createDocumentType("Slot");
     database.getSchema().createDocumentType("Agenda");
