@@ -22,7 +22,13 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.serializer.BinarySerializer;
+import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
+
+import java.io.File;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -113,6 +119,27 @@ class Issue9976DateImplementationChangeKeepsConstraintsTest extends TestHelper {
     database.command("sql", "ALTER PROPERTY R5.d MIN '2024-01-15'");
     database.command("sql", "ALTER DATABASE `arcadedb.dateFormat` 'yyyy-MM-dd'");
     assertThat(database.getSchema().getDateFormat()).isEqualTo("yyyy-MM-dd");
+  }
+
+  @Test
+  void aSchemaWhoseFormatAndBoundsAlreadyDisagreeStillOpens() throws IOException {
+    database.command("sql", "ALTER DATABASE `arcadedb.dateFormat` 'dd/MM/yyyy'");
+    database.command("sql", "CREATE VERTEX TYPE R6");
+    database.command("sql", "CREATE PROPERTY R6.d DATE (min '15/01/2024')");
+    database.close();
+
+    // the format is changed behind the check's back: the load assigns it, it does not go through the setter that refuses
+    final File schemaFile = new File(getDatabasePath(), "schema.json");
+    final JSONObject root = new JSONObject(Files.readString(schemaFile.toPath(), StandardCharsets.UTF_8));
+    root.getJSONObject("settings").put("dateFormat", "yyyy-MM-dd");
+    Files.writeString(schemaFile.toPath(), root.toString(), StandardCharsets.UTF_8);
+
+    database = factory.open();
+    assertThat(database.getSchema().getDateFormat()).isEqualTo("yyyy-MM-dd");
+    assertThat(database.getSchema().getType("R6").getProperty("d").getMin()).isEqualTo("15/01/2024");
+    // the remedy works, and the setter refuses nothing a bound it cannot read either predates
+    database.command("sql", "ALTER PROPERTY R6.d MIN '2024-01-15'");
+    database.command("sql", "ALTER DATABASE `arcadedb.dateFormat` 'yyyy/MM/dd'");
   }
 
   private BinarySerializer serializer() {
