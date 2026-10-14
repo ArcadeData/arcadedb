@@ -90,7 +90,9 @@ public class PrometheusApiSpec implements OpenApiContributor {
     final ApiResponses responses = new ApiResponses();
     responses.addApiResponse("204", SpecBuilders.emptyResponse("Samples ingested"));
     responses.addApiResponse("400", SpecBuilders.errorResponse(
-        "Bad request: database parameter missing, body empty, or not Snappy-compressed"));
+        "Bad request: database parameter missing, body empty, or not Snappy-compressed; or a partial write, where the valid "
+            + "series are stored and the body names, under undeclaredLabels and unreadableValues, the labels the type does not "
+            + "declare and the values a column cannot hold"));
     responses.addApiResponse("401", SpecBuilders.errorResponse("Unauthorized"));
     responses.addApiResponse("403", SpecBuilders.errorResponse("Forbidden"));
     responses.addApiResponse("404", SpecBuilders.errorResponse(SpecBuilders.WRITE_STALE_SESSION_DESCRIPTION));
