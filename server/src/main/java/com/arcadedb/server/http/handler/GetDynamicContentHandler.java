@@ -247,7 +247,8 @@ public class GetDynamicContentHandler extends AbstractServerHttpHandler {
 
   /**
    * Whether an {@code If-None-Match} request header names {@code etag}: one of its entity tags does, compared weakly as
-   * the header requires, or it is {@code *}.
+   * the header requires, or it is {@code *}. Splitting on commas holds for the tags this handler issues, which are hex; an
+   * entity tag may contain a comma in general, so this is not a general-purpose If-None-Match parser.
    */
   static boolean matchesEntityTag(final Iterable<String> ifNoneMatch, final String etag) {
     if (ifNoneMatch == null)
@@ -283,7 +284,8 @@ public class GetDynamicContentHandler extends AbstractServerHttpHandler {
     while (matcher.find()) {
       final String reference = matcher.group(2);
       final ContentTypeSpec spec = CONTENT_TYPES.get(extensionOf(reference));
-      if (spec == null || spec.templated() || reference.contains(".."))
+      // A protocol-relative "//host/path" names another origin, like one with a scheme
+      if (spec == null || spec.templated() || reference.contains("..") || reference.startsWith("//"))
         continue;
 
       final StaticAsset asset = loadStaticResource(

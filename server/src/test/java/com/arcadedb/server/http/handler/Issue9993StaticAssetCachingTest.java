@@ -180,6 +180,7 @@ class Issue9993StaticAssetCachingTest extends BaseGraphServerTest {
     assertThat(page).contains("src=\"js/cache-probe.js?v=pinned\"")//
         .contains("src=\"js/missing-asset.js\"")//
         .contains("src=\"../js/cache-probe.js\"")//
+        .contains("src=\"//cdn.example.com/js/cache-probe.js\"")//
         .contains("href=\"https://fonts.googleapis.com/css2?family=Poppins&display=swap\"")//
         .contains("href=\"#top\"")//
         .contains("href=\"index.html\"")//

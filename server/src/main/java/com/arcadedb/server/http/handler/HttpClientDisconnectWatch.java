@@ -152,8 +152,10 @@ final class HttpClientDisconnectWatch implements ChannelListener<ConduitStreamSo
     try {
       connection.setOption(Options.READ_TIMEOUT, timeout);
     } catch (final IOException | RuntimeException e) {
-      LogManager.instance().log(this, Level.FINE, "Cannot restore the read timeout of the connection of query %s: %s",
-          runningQuery.getId(), e.getMessage());
+      // Not FINE: the connection keeps no read timeout for the rest of its keep-alive life, so an idle client is never cut off
+      LogManager.instance()
+          .log(this, Level.WARNING, "Cannot restore the read timeout of the connection of query %s, it stays without one: %s",
+              runningQuery.getId(), e.getMessage());
     }
   }
 
