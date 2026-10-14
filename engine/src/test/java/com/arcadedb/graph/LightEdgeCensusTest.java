@@ -280,10 +280,14 @@ class LightEdgeCensusTest extends TestHelper {
           if (i != j && edges.get(i).equals(edges.get(j)))
             pairs.add(new int[] { i, j });
       Collections.shuffle(pairs, random);
-      for (final int[] pair : pairs)
+      for (final int[] pair : pairs) {
+        final boolean expected = truth.get(pair[0]).equals(truth.get(pair[1]));
+        // both orders, asked back to back: whichever side the first call resolved, the second one agrees
         assertThat(LightEdgeRID.isSameEdge(edges.get(pair[0]), edges.get(pair[1])))
-            .as("seed %d, %d vs %d", seed, pair[0], pair[1])
-            .isEqualTo(truth.get(pair[0]).equals(truth.get(pair[1])));
+            .as("seed %d, %d vs %d", seed, pair[0], pair[1]).isEqualTo(expected);
+        assertThat(LightEdgeRID.isSameEdge(edges.get(pair[1]), edges.get(pair[0])))
+            .as("seed %d, %d vs %d", seed, pair[1], pair[0]).isEqualTo(expected);
+      }
     }
   }
 

@@ -31,6 +31,7 @@ import java.util.Map;
 import java.util.Random;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression tests for #9914: {@code algo.kShortestPaths} only followed outgoing edges and took no direction, so on a
@@ -138,6 +139,8 @@ class Issue9914KShortestPathsDirectionTest extends TestHelper {
     assertThat(kShortest("B", "A", 3, ", 'IN'")).hasSize(1);
     assertThat(kShortest("B", "C", 3, ", 'IN'")).hasSize(1);
     assertThat(kShortest("C", "B", 3, ", 'IN'")).isEmpty();
+    // a direction that is none of the three is refused, not read as a default
+    assertThatThrownBy(() -> kShortest("A", "C", 3, ", 'SIDEWAYS'")).hasStackTraceContaining("unknown direction 'SIDEWAYS'");
   }
 
   @Test
