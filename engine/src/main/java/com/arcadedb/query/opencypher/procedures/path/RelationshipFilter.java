@@ -59,6 +59,10 @@ final class RelationshipFilter {
   /**
    * Parses a filter given as a string (APOC's form) or as a list of strings, each of which is one alternative of the
    * single hop (the list form ArcadeDB accepted before #10025, kept: {@code ['ROAD>', '<RAIL']} is {@code 'ROAD>|<RAIL'}).
+   * The list form never forms a sequence: a comma inside one of its elements is part of a type name.
+   * <p>
+   * A type follows its subtypes, as {@code MATCH ()-[:ROAD]->()} does: a hierarchy of edge types has no counterpart in
+   * Neo4j, and naming the parent means the whole hierarchy.
    */
   static RelationshipFilter parse(final String procedureName, final Object filter, final Schema schema) {
     if (filter == null)
@@ -82,7 +86,7 @@ final class RelationshipFilter {
     // A filter that is blank as a whole means "everything", as a missing one does
     boolean blank = true;
     for (final String step : steps)
-      if (!step.isBlank()) {
+      if (!step.replace('|', ' ').isBlank()) {
         blank = false;
         break;
       }
@@ -161,6 +165,6 @@ final class RelationshipFilter {
   boolean isSymmetric(final int depth) {
     final String[] out = typesFor(depth, Vertex.DIRECTION.OUT);
     final String[] in = typesFor(depth, Vertex.DIRECTION.IN);
-    return out != null && in != null && (out == in || Arrays.equals(out, in));
+    return out != null && in != null && Arrays.equals(out, in);
   }
 }
