@@ -210,7 +210,7 @@ class Issue9896VectorSearchCancellationTest {
 
         LSMVectorIndex.acquireAllRebuildPermitsForTest();
         final Thread runner = new Thread(() -> {
-          try (final RunningQuery q = registry.register(db.getName(), "admin", "test", null, "tag-9896", null, null)) {
+          try (final RunningQuery q = registry.register(db.getName(), "admin", "test", null, "tag-9896", RunningQuery.Client.NONE)) {
             q.setStatement("sql", query);
             entry.set(q);
             drain(db.query("sql", query, (Object) embedding(7)));
@@ -335,7 +335,7 @@ class Issue9896VectorSearchCancellationTest {
         // The graph is built first, so nothing below waits: what stops the search is the guard
         assertThat(index.findNeighborsFromVector(embedding(7), 5)).isNotEmpty();
 
-        try (final RunningQuery q = registry.register(db.getName(), "admin", "test", null, "tag-9896", null, null)) {
+        try (final RunningQuery q = registry.register(db.getName(), "admin", "test", null, "tag-9896", RunningQuery.Client.NONE)) {
           q.terminate("root");
           final WorkGuard guard = WorkGuard.forCommandDeadline(null);
           assertThatThrownBy(() -> index.findNeighborsFromVector(embedding(7), 5, -1, null, guard))

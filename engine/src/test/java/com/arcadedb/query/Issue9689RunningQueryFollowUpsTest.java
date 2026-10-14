@@ -209,7 +209,7 @@ class Issue9689RunningQueryFollowUpsTest {
   @Test
   void aBoundEntryReachesWorkOnAnotherThreadAndLeavesItClean() throws Exception {
     final RunningQueryRegistry registry = newRegistry();
-    final RunningQuery query = registry.open(database.getName(), "alice", "test", null, null, null, null);
+    final RunningQuery query = registry.open(database.getName(), "alice", "test", null, null, RunningQuery.Client.NONE);
     try {
       // Opened, not published: the opening thread does not carry it
       assertThat(RunningQuery.current()).isNull();
@@ -245,7 +245,7 @@ class Issue9689RunningQueryFollowUpsTest {
   @Test
   void terminationListenersRunOnceAndCanBeWithdrawn() throws Exception {
     final RunningQueryRegistry registry = newRegistry();
-    try (final RunningQuery query = registry.open("db", "alice", "test", null, null, null, null)) {
+    try (final RunningQuery query = registry.open("db", "alice", "test", null, null, RunningQuery.Client.NONE)) {
       final AtomicInteger notified = new AtomicInteger();
       final AtomicInteger withdrawn = new AtomicInteger();
       query.onTerminate(notified::incrementAndGet);
@@ -272,24 +272,29 @@ class Issue9689RunningQueryFollowUpsTest {
   @Test
   void anEntryIsListedWithItsClientFromTheStart() {
     final RunningQueryRegistry registry = newRegistry();
-    try (final RunningQuery published = registry.register("db", "alice", "test", null, null, "c-1", "10.0.0.1:5000");
-        final RunningQuery opened = registry.open("db", "alice", "test", null, null, "c-2", "10.0.0.2:5000")) {
+    try (final RunningQuery published = registry.register("db", "alice", "test", null, null,
+        new RunningQuery.Client("c-1", "10.0.0.1:5000"));
+        final RunningQuery opened = registry.open("db", "alice", "test", null, null,
+            RunningQuery.Client.of("c-2", new InetSocketAddress("10.0.0.2", 5000)))) {
       assertThat(registry.getRunning()).extracting(RunningQuery::getConnectionId).containsExactly("c-1", "c-2");
-      assertThat(registry.getRunning()).extracting(RunningQuery::getClientAddress).containsExactly("10.0.0.1:5000", "10.0.0.2:5000");
+      assertThat(registry.getRunning()).extracting(RunningQuery::getClientAddress).containsExactly("10.0.0.1:5000", "/10.0.0.2:5000");
       assertThat(published.toJSON().getString("clientAddress")).isEqualTo("10.0.0.1:5000");
     }
 
-    assertThat(RunningQueryRegistry.clientAddress(null)).isNull();
-    assertThat(RunningQueryRegistry.clientAddress(new InetSocketAddress("127.0.0.1", 5000))).isEqualTo("/127.0.0.1:5000");
-    try (final RunningQuery noPeer = registry.register("db", "alice", "test", null, null, null, RunningQueryRegistry.clientAddress(null))) {
-      assertThat(noPeer.toJSON().has("clientAddress")).as("omitted, not the text \"null\"").isFalse();
+    // A peer the transport does not report, and work from no connection at all: the fields are left out, never "null"
+    try (final RunningQuery noPeer = registry.register("db", "alice", "test", null, null, RunningQuery.Client.of("c-3", null));
+        final RunningQuery none = registry.register("db", "alice", "test", null, null, RunningQuery.Client.NONE)) {
+      assertThat(noPeer.getConnectionId()).isEqualTo("c-3");
+      assertThat(noPeer.toJSON().has("clientAddress")).isFalse();
+      assertThat(none.toJSON().has("connectionId")).isFalse();
+      assertThat(none.toJSON().has("clientAddress")).isFalse();
     }
   }
 
   @Test
   void visibilityIsTheRegistrysOneRule() {
     final RunningQueryRegistry registry = newRegistry();
-    try (final RunningQuery query = registry.open("db", "alice", "test", null, null, "pg-42", "10.0.0.1:5000")) {
+    try (final RunningQuery query = registry.open("db", "alice", "test", null, null, new RunningQuery.Client("pg-42", "10.0.0.1:5000"))) {
       assertThat(registry.isVisible("root", query)).isTrue();
       assertThat(registry.isVisible("alice", query)).isTrue();
       assertThat(registry.isVisible("bob", query)).isFalse();
@@ -301,7 +306,7 @@ class Issue9689RunningQueryFollowUpsTest {
       assertThat(registry.isVisible((String) null, "alice")).isFalse();
       // A registry nobody set an administrator for has none
       final RunningQueryRegistry plain = new RunningQueryRegistry();
-      try (final RunningQuery other = plain.open("db", "alice", "test", null, null, null, null)) {
+      try (final RunningQuery other = plain.open("db", "alice", "test", null, null, RunningQuery.Client.NONE)) {
         assertThat(plain.isVisible("root", other)).isFalse();
       }
 
@@ -361,7 +366,7 @@ class Issue9689RunningQueryFollowUpsTest {
   /** Runs {@code text} as Cypher under an entry of {@code user}'s, as a server protocol would. */
   private static List<Result> cypherAs(final RunningQueryRegistry registry, final String user, final String text,
       final Map<String, Object> parameters) {
-    try (final RunningQuery ignored = registry.register(database.getName(), user, "test", null, null, null, null)) {
+    try (final RunningQuery ignored = registry.register(database.getName(), user, "test", null, null, RunningQuery.Client.NONE)) {
       ignored.setStatement("opencypher", text);
       final List<Result> rows = new ArrayList<>();
       try (final ResultSet rs = database.query("opencypher", text, parameters)) {
@@ -397,7 +402,7 @@ class Issue9689RunningQueryFollowUpsTest {
         final Consumer<RunningQuery> work) throws InterruptedException {
       final Background background = new Background();
       background.thread = new Thread(() -> {
-        try (final RunningQuery q = registry.register(database.getName(), user, "test", null, tag, null, null)) {
+        try (final RunningQuery q = registry.register(database.getName(), user, "test", null, tag, RunningQuery.Client.NONE)) {
           q.setStatement("opencypher", LONG_CYPHER);
           background.entry = q;
           background.started.countDown();

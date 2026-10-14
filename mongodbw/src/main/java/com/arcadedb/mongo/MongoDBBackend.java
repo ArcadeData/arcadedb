@@ -22,7 +22,6 @@ import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.QueryAdmissionException;
 import com.arcadedb.query.RunningQuery;
-import com.arcadedb.query.RunningQueryRegistry;
 import com.arcadedb.query.sql.executor.QueryAdmissionGate;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.security.ServerSecurityException;
@@ -162,8 +161,8 @@ public class MongoDBBackend extends AbstractMongoBackend {
 
   private RunningQuery registerRunningQuery(final Channel channel, final String databaseName, final String command,
       final Document query, final ServerSecurityUser user) {
-    final RunningQuery runningQuery = server.getRunningQueries().register(databaseName, user.getName(), "mongodb", null, null, channel.id().asShortText(),
-        RunningQueryRegistry.clientAddress(channel.remoteAddress()));
+    final RunningQuery runningQuery = server.getRunningQueries().register(databaseName, user.getName(), "mongodb", null, null,
+        RunningQuery.Client.of(channel.id().asShortText(), channel.remoteAddress()));
     // Read on the listing thread while the command runs: a document the backend changes meanwhile can at worst fail the
     // read, which RunningQuery.getText() turns into an entry listed without its text
     runningQuery.setStatement("mongo", () -> command + " " + query.toString());

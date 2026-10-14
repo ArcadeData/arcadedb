@@ -107,7 +107,7 @@ class Issue9962MCPClientListedTest extends BaseGraphServerTest {
     final RunningQuery entry = awaitRunning();
     try {
       assertThat(entry.getProtocol()).isEqualTo("mcp");
-      assertThat(entry.getClientAddress()).isEqualTo(MCPStdioServer.STDIO_CLIENT);
+      assertThat(entry.getClientAddress()).isEqualTo("stdio");
     } finally {
       entry.terminate("root");
     }

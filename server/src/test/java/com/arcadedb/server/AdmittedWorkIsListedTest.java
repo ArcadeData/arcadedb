@@ -62,7 +62,7 @@ class AdmittedWorkIsListedTest {
     sources.put("a/Unlisted.java", """
         class Unlisted { void run() { try (QueryAdmissionGate.Ticket t = QueryAdmissionGate.getInstance().admit()) { work(); } } }""");
     sources.put("b/Listed.java", """
-        class Listed { void run() { QueryAdmissionGate.getInstance().admit(); server.getRunningQueries().register(db, u, "x", null, null, null, null); } }""");
+        class Listed { void run() { QueryAdmissionGate.getInstance().admit(); server.getRunningQueries().register(db, u, "x", null, null, c); } }""");
     sources.put("b/NoGate.java", "class NoGate { void run() { other.admit(); } }");
 
     assertThat(offenders(sources)).containsExactly("a/Unlisted.java");

@@ -42,7 +42,6 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ChannelBinaryServer;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.query.RunningQuery;
-import com.arcadedb.query.RunningQueryRegistry;
 import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -388,8 +387,8 @@ public class PostgresNetworkExecutor extends Thread {
    */
   private RunningStatement startStatement(final String language, final String text) {
     final RunningQuery entry = server.getRunningQueries()
-        .register(database != null ? database.getName() : databaseName, userName, "postgres", null, null, String.valueOf(processId),
-            clientAddress());
+        .register(database != null ? database.getName() : databaseName, userName, "postgres", null, null,
+            new RunningQuery.Client(String.valueOf(processId), clientAddress()));
     entry.setStatement(language, text);
     runningStatement = entry;
     return new RunningStatement(entry);
@@ -397,7 +396,8 @@ public class PostgresNetworkExecutor extends Thread {
 
   private String clientAddress() {
     final ChannelBinaryServer current = channel;
-    return current != null && current.socket != null ? RunningQueryRegistry.clientAddress(current.socket.getRemoteSocketAddress()) : null;
+    return current != null && current.socket != null && current.socket.getRemoteSocketAddress() != null ?
+        current.socket.getRemoteSocketAddress().toString() : null;
   }
 
   /** The entry of the statement running on this connection, closed once its work is over. Closing twice is harmless. */

@@ -22,6 +22,7 @@ import com.arcadedb.exception.QueryTerminatedException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONObject;
 
+import java.net.SocketAddress;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
@@ -428,13 +429,34 @@ public final class RunningQuery implements AutoCloseable {
   }
 
   /**
-   * Records which client connection runs the statement, for the listing: {@code connectionId} in the protocol's own
-   * terms (the Postgres backend pid a {@code pg_cancel_backend} takes, a Bolt connection), and the client's address.
-   * Set only by {@link RunningQueryRegistry#open}, as part of opening the entry (issue #9962).
+   * Who asked for a statement, as the listing names it beside the user (issue #9962). One value rather than two strings
+   * next to the others {@link RunningQueryRegistry#register} takes, so the two cannot be swapped silently.
+   *
+   * @param connectionId the client connection in the protocol's own terms (the Postgres backend pid a
+   *                     {@code pg_cancel_backend} takes, a Bolt connection, a channel id), or {@code null} when the
+   *                     protocol has none
+   * @param address      the address of the client, or the name of a transport that has none ({@code stdio}), or
+   *                     {@code null}
    */
-  RunningQuery setConnection(final String connectionId, final String clientAddress) {
-    this.connectionId = connectionId;
-    this.clientAddress = clientAddress;
+  public record Client(String connectionId, String address) {
+    /** No client: work that does not come from a connection, such as a test's or an embedded caller's. */
+    public static final Client NONE = new Client(null, null);
+
+    /**
+     * A socket client. A peer the transport does not report (a closed channel, an in-process transport) is no address at
+     * all, so the listing omits the field instead of showing {@code "null"}.
+     */
+    public static Client of(final String connectionId, final SocketAddress peer) {
+      return new Client(connectionId, peer != null ? peer.toString() : null);
+    }
+  }
+
+  /** Set only by {@link RunningQueryRegistry#open}, as part of opening the entry (issue #9962). */
+  RunningQuery setClient(final Client client) {
+    if (client != null) {
+      this.connectionId = client.connectionId();
+      this.clientAddress = client.address();
+    }
     return this;
   }
 
