@@ -27,7 +27,6 @@ import com.arcadedb.database.RID;
 import com.arcadedb.database.Transaction;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Property;
-import com.arcadedb.serializer.BinaryTypes;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.Map;
@@ -81,12 +80,6 @@ public class MutableEdge extends MutableDocument implements Edge {
   }
 
   @Override
-  public void reload() {
-    super.reload();
-    init();
-  }
-
-  @Override
   public Object get(final String propertyName) {
     if ("@in".equals(propertyName))
       return in;
@@ -99,6 +92,15 @@ public class MutableEdge extends MutableDocument implements Edge {
   public void setBuffer(final Binary buffer) {
     super.setBuffer(buffer);
     init();
+  }
+
+  /**
+   * Same reason as {@code MutableVertex.parseRecordPrefix()}, with the variable-length prefix of {@link ImmutableEdge}:
+   * a stale {@code propertiesStartingPosition} can point past the properties of the reloaded buffer (issue #9985).
+   */
+  @Override
+  protected void parseRecordPrefix(final Binary content) {
+    parseVertexPointers(content);
   }
 
   @Override
@@ -304,11 +306,17 @@ public class MutableEdge extends MutableDocument implements Edge {
   }
 
   private void init() {
-    if (buffer != null) {
-      buffer.position(1);
-      out = (RID) database.getSerializer().deserializeValue(database, buffer, BinaryTypes.TYPE_COMPRESSED_RID, null);
-      in = (RID) database.getSerializer().deserializeValue(database, buffer, BinaryTypes.TYPE_COMPRESSED_RID, null);
-      this.propertiesStartingPosition = buffer.position();
-    }
+    // READ THE FIELD ONCE, LIKE EVERY OTHER BUFFER DEREFERENCE
+    final Binary content = buffer;
+    if (content != null)
+      parseVertexPointers(content);
+  }
+
+  private void parseVertexPointers(final Binary content) {
+    ImmutableEdge.checkVertexPointersPrefix(content, rid);
+    content.position(1);
+    out = ImmutableEdge.readVertexPointer(database, content, rid);
+    in = ImmutableEdge.readVertexPointer(database, content, rid);
+    this.propertiesStartingPosition = content.position();
   }
 }

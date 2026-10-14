@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher.parser;
 
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.opencypher.ast.ClauseEntry;
+import com.arcadedb.query.opencypher.ast.ConditionalStatement;
 import com.arcadedb.query.opencypher.ast.CypherReferencedVariables;
 import com.arcadedb.query.opencypher.ast.CypherStatement;
 import com.arcadedb.query.opencypher.ast.Direction;
@@ -101,6 +102,19 @@ public final class OptionalMatchAntiJoinRewriter {
         queries.add(rewritten);
       }
       return changed ? new UnionStatement(queries, union.getUnionAllFlags()) : statement;
+    }
+
+    if (statement instanceof ConditionalStatement conditional) {
+      final List<CypherStatement> branches = new ArrayList<>(conditional.getBranches().size());
+      boolean changed = false;
+      for (final CypherStatement branch : conditional.getBranches()) {
+        final CypherStatement rewritten = rewrite(branch);
+        changed |= rewritten != branch;
+        branches.add(rewritten);
+      }
+      final CypherStatement elseBranch = conditional.getElseBranch() != null ? rewrite(conditional.getElseBranch()) : null;
+      changed |= elseBranch != conditional.getElseBranch();
+      return changed ? new ConditionalStatement(conditional.getConditions(), branches, elseBranch) : statement;
     }
 
     if (!(statement instanceof SimpleCypherStatement simple) || !simple.isReadOnly() || !hasModelledClausesOnly(simple))

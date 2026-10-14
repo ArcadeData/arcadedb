@@ -142,6 +142,11 @@ public enum ErrorCategory {
    * HTTP handler already gives (503), instead of a gRPC {@code INTERNAL} a retry-driven client reads as a server
    * fault (issue #8166, review of PR #8197).
    * <p>
+   * {@link DatabaseIsReopeningException} rides with them too: the handle the request was using was closed so the same
+   * database could be reopened under its name (an HA snapshot reinstall), so the request re-issued resolves the reopened
+   * database and succeeds. Only that subtype: a plain {@link DatabaseIsClosedException} is a {@code DROP}, a
+   * {@code CLOSE DATABASE} or a shutdown, which no retry fixes, and stays {@link #SERVER} (issue #8199).
+   * <p>
    * {@link QueryHeapBudgetExceededException} rides with them for the same reason: the query was refused heap because
    * the queries running at the same time hold the budget they all share, and fits it on its own, so the same request
    * re-issued once they complete can succeed (issue #8591). Nor is it a {@link NeedRetryException}: a commit loop
@@ -162,6 +167,7 @@ public enum ErrorCategory {
     if (CauseChain.contains(error, QueryTerminatedException.class))
       return TERMINATED;
     if (CauseChain.contains(error, NeedRetryException.class) //
+        || CauseChain.contains(error, DatabaseIsReopeningException.class) //
         || CauseChain.contains(error, TimeSeriesWalkCoarsenedException.class) //
         || CauseChain.contains(error, QueryHeapBudgetExceededException.class) //
         || CauseChain.contains(error, QueryAdmissionException.class))

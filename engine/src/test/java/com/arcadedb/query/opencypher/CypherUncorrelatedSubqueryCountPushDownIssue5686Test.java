@@ -35,6 +35,7 @@ import com.arcadedb.query.opencypher.ast.CypherStatement;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.FunctionCallExpression;
 import com.arcadedb.query.opencypher.ast.InExpression;
+import com.arcadedb.query.opencypher.ast.IsNormalizedExpression;
 import com.arcadedb.query.opencypher.ast.IsNullExpression;
 import com.arcadedb.query.opencypher.ast.CypherTypeName;
 import com.arcadedb.query.opencypher.ast.IsTypedExpression;
@@ -73,6 +74,7 @@ import java.net.URISyntaxException;
 import java.net.URL;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.text.Normalizer;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -406,6 +408,7 @@ class CypherUncorrelatedSubqueryCountPushDownIssue5686Test extends TestHelper {
     fixtures.put(InExpression.class, new InExpression(planted(), List.of(literal())));
     fixtures.put(IsNullExpression.class, new IsNullExpression(planted(), false));
     fixtures.put(IsTypedExpression.class, new IsTypedExpression(planted(), new CypherTypeName("STRING", null, false, false), false));
+    fixtures.put(IsNormalizedExpression.class, new IsNormalizedExpression(planted(), Normalizer.Form.NFC, false));
     fixtures.put(LabelCheckExpression.class, new LabelCheckExpression(planted(), "L", "p:L"));
     fixtures.put(LogicalExpression.class, new LogicalExpression(LogicalExpression.Operator.AND,
         new BooleanCoercionExpression(planted()), new BooleanCoercionExpression(literal())));

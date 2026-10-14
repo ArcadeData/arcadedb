@@ -25,6 +25,8 @@ import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.PageManager;
 import com.arcadedb.engine.TransactionManager;
 import com.arcadedb.engine.WALFileFactory;
+import com.arcadedb.exception.DatabaseIsClosedException;
+import com.arcadedb.exception.DatabaseIsReopeningException;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.exception.ValidationException;
@@ -89,6 +91,15 @@ public interface DatabaseInternal extends Database {
    */
   default void closeForDrop() {
     throw new UnsupportedOperationException("Only an embedded database instance can be closed for drop");
+  }
+
+  /**
+   * Closes the database because the same database is about to be reopened under its name: an operation still holding
+   * this handle is refused with the retryable {@link DatabaseIsReopeningException} instead of the permanent
+   * {@link DatabaseIsClosedException} (issue #8199). Only the embedded instance supports it, like {@link #closeForDrop()}.
+   */
+  default void closeForReopen() {
+    throw new UnsupportedOperationException("Only an embedded database instance can be closed for reopen");
   }
 
   DatabaseContext.DatabaseContextTL getContext();
@@ -269,7 +280,24 @@ public interface DatabaseInternal extends Database {
    */
   boolean updateRecordReportingVeto(Record record);
 
+  /**
+   * Writes an updated record to its page now, and nothing else: no validation, no events, no statistics. The building
+   * block the commit uses to flush the updates it deferred, which were validated, announced and counted when they were
+   * made. To UPDATE a record, use {@link #updateRecordReportingVeto(Record)} or
+   * {@link #updateRecordWithEventsNoLock(Record, boolean)}.
+   */
   void updateRecordNoLock(Record record, boolean discardRecordAfter);
+
+  /**
+   * Updates the record exactly as {@link #updateRecordReportingVeto(Record)} does - preconditions, validation, the
+   * before/after-update listeners, the {@code updateRecord} statistic - but without the database read lock and writing
+   * the record to its page now, inside the caller's transaction, instead of queueing it for the commit. The update
+   * sibling of {@link #createRecordNoLock} and {@link #deleteRecordNoLock}, used the same way by the asynchronous update
+   * task (issue #9987).
+   *
+   * @return {@code true} when the update was applied, {@code false} when a before-update listener vetoed it
+   */
+  boolean updateRecordWithEventsNoLock(Record record, boolean discardRecordAfter);
 
   /**
    * Deletes the record without taking the database read lock, dispatching the before/after-delete listeners itself.
@@ -371,7 +399,23 @@ public interface DatabaseInternal extends Database {
 
   long getOpenedOn();
 
+  /**
+   * Saves the configuration. Under Raft HA this replicates EVERY setting this node holds in memory and its
+   * {@code configuration.json} does not, including one a concurrent statement put in force and has not submitted yet:
+   * a caller that changed one setting saves it with {@link #saveConfiguration(String)} instead (issue #9959).
+   */
   void saveConfiguration() throws IOException;
+
+  /**
+   * Saves the configuration after the setting {@code key} (as stored, {@code arcadedb.} prefix included) changed. Under
+   * Raft HA only that setting is replicated, never another change this node holds in memory and has not saved yet,
+   * such as one a concurrent statement is still about to submit (issue #9959). Elsewhere the same as
+   * {@link #saveConfiguration()}. A database that wraps another must forward this method, not inherit the default: the
+   * default would turn the keyed save back into the whole-difference one.
+   */
+  default void saveConfiguration(final String key) throws IOException {
+    saveConfiguration();
+  }
 
   Map<String, Object> alignToReplicas();
 

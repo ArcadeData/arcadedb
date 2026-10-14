@@ -29,6 +29,7 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.opencypher.temporal.CypherDuration;
+import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
@@ -416,6 +417,27 @@ public class JsonSerializer {
     return array;
   }
 
+  /**
+   * A path as its {@code {_type, nodes, relationships, length}} object rather than its toString() (issue #9913). The nodes
+   * and relationships are written whole whatever {@link #setUseCollectionSizeForEdges} says: that setting keeps a
+   * vertex's edge lists from being dumped, while the relationships of a path are part of the value itself.
+   */
+  private JSONObject serializePath(final TraversalPath path) {
+    final JSONArray nodes = new JSONArray();
+    for (final Vertex vertex : path.getVertices())
+      nodes.put(serializeDocument(vertex));
+    final JSONArray relationships = new JSONArray();
+    for (final Edge edge : path.getEdges())
+      relationships.put(serializeDocument(edge));
+
+    final JSONObject json = new JSONObject();
+    json.put(TraversalPath.TYPE_KEY, TraversalPath.PATH_TYPE);
+    json.put(TraversalPath.NODES_KEY, nodes);
+    json.put(TraversalPath.RELATIONSHIPS_KEY, relationships);
+    json.put(TraversalPath.LENGTH_KEY, path.length());
+    return json;
+  }
+
   private Object serializeMap(final Database database, final Map<Object, Object> value) {
     final Object result;
     if (useCollectionSize) {
@@ -711,6 +733,8 @@ public class JsonSerializer {
       value = serializeIterator(database, iter, null);
     else if (value instanceof Map)
       value = serializeMap(database, (Map<Object, Object>) value);
+    else if (value instanceof TraversalPath path)
+      value = serializePath(path);
     else if (value.getClass().isArray())
       value = serializeArray(database, value);
 

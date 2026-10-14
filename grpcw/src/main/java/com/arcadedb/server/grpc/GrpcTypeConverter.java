@@ -19,6 +19,9 @@
 package com.arcadedb.server.grpc;
 
 import com.arcadedb.database.RID;
+import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Timestamp;
 
@@ -26,12 +29,7 @@ import java.lang.reflect.Array;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.time.Instant;
-import java.time.LocalDate;
-import java.time.LocalDateTime;
-import java.time.ZoneOffset;
-import java.time.ZonedDateTime;
 import java.util.ArrayList;
-import java.util.Date;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -93,7 +91,8 @@ class GrpcTypeConverter {
     case DOUBLE_VALUE:
       return v.getDoubleValue();
     case STRING_VALUE:
-      return v.getStringValue();
+      // Issue #9969: a zoned datetime or a time of day travels as text tagged with its logical type
+      return GrpcTemporalCodec.decodeString(v.getStringValue(), v.getLogicalType());
     case BYTES_VALUE:
       return v.getBytesValue().toByteArray();
     case TIMESTAMP_VALUE: {
@@ -160,34 +159,11 @@ class GrpcTypeConverter {
     if (o instanceof byte[] v)
       return b.setBytesValue(ByteString.copyFrom(v)).build();
 
-    if (o instanceof Date v)
-      return b.setTimestampValue(msToTimestamp(v.getTime())).setLogicalType("datetime").build();
-
-    // Issue #4149: ArcadeDB stores datetimes natively as java.time temporals, not java.util.Date.
-    // Without these branches the read path falls through to String.valueOf(o), emitting
-    // string_value at LocalDateTime#toString precision rather than timestamp_value at the
-    // column's declared precision.
-    // Issue #5045: this UTC-anchored temporal encoding (epochDay * 86400 for "date";
-    // toInstant(UTC) for "datetime") is the inverse of the client decoder
-    // ProtoUtils.fromGrpcValue in the grpc-client module; keep the two in sync when changing it.
-    if (o instanceof LocalDate ld) {
-      final long seconds = ld.atStartOfDay(ZoneOffset.UTC).toEpochSecond();
-      return b.setTimestampValue(Timestamp.newBuilder().setSeconds(seconds).setNanos(0).build())
-          .setLogicalType("date").build();
-    }
-    if (o instanceof LocalDateTime ldt) {
-      final Instant instant = ldt.toInstant(ZoneOffset.UTC);
-      return b.setTimestampValue(Timestamp.newBuilder().setSeconds(instant.getEpochSecond()).setNanos(instant.getNano()).build())
-          .setLogicalType("datetime").build();
-    }
-    if (o instanceof Instant instant)
-      return b.setTimestampValue(Timestamp.newBuilder().setSeconds(instant.getEpochSecond()).setNanos(instant.getNano()).build())
-          .setLogicalType("datetime").build();
-    if (o instanceof ZonedDateTime zdt) {
-      final Instant instant = zdt.toInstant();
-      return b.setTimestampValue(Timestamp.newBuilder().setSeconds(instant.getEpochSecond()).setNanos(instant.getNano()).build())
-          .setLogicalType("datetime").build();
-    }
+    // Issue #9969: every java.time value goes through the one encoder the client shares, so a ZonedDateTime keeps its zone
+    // and an OffsetTime/LocalTime arrives typed instead of as an untyped string.
+    final GrpcValue temporal = GrpcTemporalCodec.encode(o);
+    if (temporal != null)
+      return temporal;
 
     if (o instanceof RID rid)
       return b.setLinkValue(GrpcLink.newBuilder().setRid(rid.toString()).build()).setLogicalType("rid").build();
@@ -213,6 +189,21 @@ class GrpcTypeConverter {
       for (int i = 0; i < len; i++)
         lb.addValues(toGrpcValue(Array.get(o, i)));
       return b.setListValue(lb.build()).build();
+    }
+
+    // a path as its {_type, nodes, relationships, length} map rather than its toString() (issue #9913). Its nodes and
+    // relationships travel as RID links: this converter has no record encoding, and a record would fall to its toString()
+    if (o instanceof TraversalPath path) {
+      final Map<String, Object> map = path.toMap();
+      final List<RID> nodes = new ArrayList<>(path.getVertices().size());
+      for (final Vertex vertex : path.getVertices())
+        nodes.add(vertex.getIdentity());
+      final List<RID> relationships = new ArrayList<>(path.getEdges().size());
+      for (final Edge edge : path.getEdges())
+        relationships.add(edge.getIdentity());
+      map.put(TraversalPath.NODES_KEY, nodes);
+      map.put(TraversalPath.RELATIONSHIPS_KEY, relationships);
+      return toGrpcValue(map);
     }
 
     if (o instanceof Map<?, ?> map) {

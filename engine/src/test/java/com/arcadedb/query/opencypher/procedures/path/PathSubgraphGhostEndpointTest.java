@@ -25,6 +25,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
@@ -33,7 +34,6 @@ import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -177,7 +177,7 @@ class PathSubgraphGhostEndpointTest {
   private static List<String> pathEndpoints(final ResultSet rs) {
     final List<String> paths = new ArrayList<>();
     while (rs.hasNext()) {
-      final List<?> nodes = (List<?>) ((Map<?, ?>) rs.next().getProperty("path")).get("nodes");
+      final List<?> nodes = ((TraversalPath) rs.next().getProperty("path")).getVertices();
       paths.add(nodes.stream().map(node -> ((Vertex) node).getString("name")).collect(Collectors.joining(">")));
     }
     return paths;

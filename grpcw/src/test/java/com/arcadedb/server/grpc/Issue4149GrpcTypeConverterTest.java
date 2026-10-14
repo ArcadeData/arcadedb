@@ -88,13 +88,15 @@ class Issue4149GrpcTypeConverterTest {
   }
 
   @Test
-  void toGrpcValueZonedDateTimeProducesTimestampWithNanos() {
+  void toGrpcValueZonedDateTimeKeepsNanos() {
+    // Issue #9969: a ZonedDateTime travels as zoned ISO text rather than as a bare instant; the nanoseconds survive in it
     final ZonedDateTime zdt = LocalDateTime.of(2026, 5, 9, 12, 34, 56, 111_222_333).atZone(ZoneOffset.UTC);
 
     final GrpcValue result = GrpcTypeConverter.toGrpcValue(zdt);
 
-    assertThat(result.hasTimestampValue()).isTrue();
-    assertThat(result.getTimestampValue().getNanos()).isEqualTo(111_222_333);
+    assertThat(result.getLogicalType()).isEqualTo("zoned_datetime");
+    assertThat(GrpcTypeConverter.fromGrpcValue(result)).isEqualTo(zdt);
+    assertThat(((ZonedDateTime) GrpcTypeConverter.fromGrpcValue(result)).getNano()).isEqualTo(111_222_333);
   }
 
   @Test

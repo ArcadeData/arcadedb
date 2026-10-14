@@ -26,8 +26,6 @@ import com.arcadedb.database.Record;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.log.LogManager;
 
-import java.util.ArrayList;
-import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 
@@ -77,6 +75,12 @@ public class LightEdgeRID extends DatabaseRID {
   private RID              originSegment;
   private int              originPosition;
   private Vertex.DIRECTION originDirection;
+  // THE USED BYTES OF THE CHUNK WHEN THE ENTRY WAS READ OFF IT, -1 WHEN NOT KNOWN: A CENSUS ANSWERS ONLY FOR THE CHUNK IT
+  // COUNTED, AND A CHUNK OF ANOTHER SIZE IS ANOTHER IMAGE OF IT (ISSUE #10008)
+  private int              originChunkUsed = -1;
+  // THE TWINS OF THE WHOLE LIST, COUNTED ONCE FOR EVERY EDGE THE SAME ITERATION READ (ISSUE #10008). NULL WHEN THE
+  // EDGE WAS NOT READ BY AN ITERATION THAT OFFERS ONE: IT THEN WALKS ITS LIST ALONE
+  private LightEdgeCensus  census;
   // -1 = NOT RESOLVED YET. VOLATILE, AND ALWAYS WRITTEN AFTER twins, SO A THREAD THAT SEES A RESOLVED OCCURRENCE SEES
   // ITS TWIN COUNT TOO (THE RID IS HANDED BETWEEN THREADS WITH THE ROW THAT HOLDS IT)
   private volatile int     occurrence = -1;
@@ -97,11 +101,34 @@ public class LightEdgeRID extends DatabaseRID {
    * Remembers the list entry this identity was read from, so that {@link #getOccurrence()} can tell it from a twin.
    * Called once, by the iterator that built it, before the edge is handed out.
    */
-  LightEdgeRID readFrom(final RID segment, final int position, final Vertex.DIRECTION direction) {
+  LightEdgeRID readFrom(final RID segment, final int position, final Vertex.DIRECTION direction, final int chunkUsed,
+      final LightEdgeCensus census) {
     this.originSegment = segment;
     this.originPosition = position;
     this.originDirection = direction;
+    this.originChunkUsed = chunkUsed;
+    this.census = census;
     return this;
+  }
+
+  /** The chunk of the list entry this edge was read from, or null. For tests. */
+  RID getOriginSegment() {
+    return originSegment;
+  }
+
+  /** The byte position of the list entry this edge was read from in its chunk. For tests. */
+  int getOriginPosition() {
+    return originPosition;
+  }
+
+  /** The used bytes of the chunk when this edge was read off it, -1 when not known. For tests. */
+  int getOriginChunkUsed() {
+    return originChunkUsed;
+  }
+
+  /** The census this edge shares with the iteration that read it, or null. For tests. */
+  LightEdgeCensus getCensus() {
+    return census;
   }
 
   /**
@@ -142,6 +169,14 @@ public class LightEdgeRID extends DatabaseRID {
     return twins;
   }
 
+  /**
+   * True when this edge already knows, without walking anything, that its triple has no twin in the list it was read
+   * from: whatever other edge has the same triple is then the same relationship.
+   */
+  private boolean isKnownSingle() {
+    return occurrence >= 0 && twins == 1;
+  }
+
   private boolean sameListEntry(final LightEdgeRID other) {
     return originSegment != null && originPosition == other.originPosition && originDirection == other.originDirection
         && originSegment.equals(other.originSegment);
@@ -149,11 +184,14 @@ public class LightEdgeRID extends DatabaseRID {
 
   /**
    * Whether {@code candidate} is the same relationship as {@code used}: equal, and for lightweight edges that share
-   * their triple, the same entry of it rather than a twin (issue #9573). The only costly case is two distinct
-   * lightweight edge objects with one triple read through different lists - a path that walks an edge back over
-   * itself. It is settled by one pass over the candidate's list when the edge has no twin (O(degree) of the list the
-   * caller is iterating anyway, once per such step, so a constant factor on that iteration rather than a new order of
-   * growth); the same entry of the same list is recognised without any pass.
+   * their triple, the same entry of it rather than a twin (issue #9573). Symmetric: the two arguments are named for
+   * the pattern checks that call it, not because their order matters.
+   * <p>
+   * The only costly case is two distinct lightweight edge objects with one triple read through different lists - an
+   * undirected walk meeting the edge from its other end, or a value operation ({@code =}, {@code DISTINCT}) comparing
+   * the same relationship read twice. It is settled by whichever side already knows its triple has no twin, then by
+   * one pass over the candidate's list (shared by every edge of the iteration that read it, see
+   * {@link LightEdgeCensus}); the same entry of the same list is recognised without any pass.
    */
   public static boolean isSameEdge(final RID used, final RID candidate) {
     if (!used.equals(candidate))
@@ -162,91 +200,155 @@ public class LightEdgeRID extends DatabaseRID {
       return true;
     if (!(used instanceof LightEdgeRID usedLight) || !(candidate instanceof LightEdgeRID candidateLight))
       return true;
-    // THE SAME ENTRY OF THE SAME LIST NEEDS NO WALK (A RE-READ OF THE EDGE JUST WALKED)
-    if (usedLight.sameListEntry(candidateLight) || candidateLight.getTwinCount() <= 1)
+    // THE SAME ENTRY OF THE SAME LIST NEEDS NO WALK (A RE-READ OF THE EDGE JUST WALKED), AND NEITHER DOES A TRIPLE
+    // ONE SIDE HAS ALREADY COUNTED
+    if (usedLight.sameListEntry(candidateLight) || usedLight.isKnownSingle() || candidateLight.isKnownSingle())
+      return true;
+    final int candidateTwins = candidateLight.getTwinCount();
+    if (candidateTwins == 1)
+      return true;
+    // 0: THE CANDIDATE CANNOT SAY (NOT READ OFF A LIST, OR NO LONGER IN IT). IT IS THEN THE FIRST ENTRY OF ITS TRIPLE,
+    // WHICH IS ALL THE OTHER SIDE CAN BE TOO UNLESS IT KNOWS OF TWINS
+    if (candidateTwins == 0 && usedLight.getTwinCount() <= 1)
       return true;
     return usedLight.getOccurrence() == candidateLight.getOccurrence();
   }
 
   /**
-   * The chains of the owner's edge list that can hold an entry for {@code neighbor}: the one chain of a classic list, or,
-   * for a super-node (striped list), the one chain per generation that the neighbour hashes to - twins share their
-   * neighbour, so they share a stripe. This leans on {@link StripeDirectory#stripeOf} placing an entry by its neighbour
-   * alone: a placement that also looked at the edge would have to be mirrored here.
+   * A key for hash-based duplicate elimination ({@code DISTINCT}, grouping, {@code UNION}) that is equal for the same
+   * relationship and different for twins (issue #10008). It hashes like the RID, so only edges with the same triple
+   * ever compare: the occurrence of an edge is resolved only when a second edge with its triple turns up, never per row.
+   * <p>
+   * Two keys compare by occurrence alone, not through the shortcuts of {@link #isSameEdge}: a shortcut answers from
+   * whatever one side has already resolved, so its answer could depend on the order the keys met, and a hash set needs
+   * an equality that is stable and transitive. An occurrence, once resolved, is cached on the RID, so every comparison
+   * of a key answers the same.
    */
-  private static List<RID> chainHeads(final DatabaseInternal db, final VertexInternal vertex, final boolean outgoing,
-      final RID neighbor) {
-    final RID head = outgoing ? vertex.getOutEdgesHeadChunk() : vertex.getInEdgesHeadChunk();
-    if (head == null)
-      return List.of();
-    if (db.lookupByRID(head, true) instanceof StripeDirectory directory) {
-      final List<RID> heads = new ArrayList<>(directory.getGenerationCount());
-      for (int g = 0; g < directory.getGenerationCount(); g++) {
-        final RID stripeHead = directory.getHead(g, StripeDirectory.stripeOf(neighbor, directory.getStripes(g)));
-        if (stripeHead != null)
-          heads.add(stripeHead);
-      }
-      return heads;
+  public Object distinctKey() {
+    return new DistinctKey(this);
+  }
+
+  private record DistinctKey(LightEdgeRID edge) {
+    @Override
+    public boolean equals(final Object obj) {
+      if (!(obj instanceof DistinctKey other))
+        return false;
+      return edge == other.edge || (edge.equals(other.edge) && edge.getOccurrence() == other.edge.getOccurrence());
     }
-    return List.of(head);
+
+    @Override
+    public int hashCode() {
+      return edge.hashCode();
+    }
+
+    @Override
+    public String toString() {
+      return edge.toString();
+    }
+  }
+
+  /** Receives the entries of an edge list, in the order the iterators read them. */
+  @FunctionalInterface
+  interface ListEntryVisitor {
+    void visit(RID segment, int position, RID edge, RID vertex);
+  }
+
+  /**
+   * Walks the edge list of {@code vertex} in {@code direction}, chunk by chunk in the order the iterators read it. With
+   * a {@code neighbor}, a striped (super-node) list is walked only on the chains that can hold an entry for it: one per
+   * generation, the stripe the neighbour hashes to - twins share their neighbour, so they share a stripe. Without one,
+   * every stripe of every generation is walked, generation after generation, which numbers the entries of any one
+   * neighbour in the same order. This leans on {@link StripeDirectory#stripeOf} placing an entry by its neighbour alone:
+   * a placement that also looked at the edge would have to be mirrored here.
+   */
+  static void walkList(final DatabaseInternal db, final VertexInternal vertex, final Vertex.DIRECTION direction,
+      final RID neighbor, final ListEntryVisitor visitor) {
+    final RID head = direction == Vertex.DIRECTION.OUT ? vertex.getOutEdgesHeadChunk() : vertex.getInEdgesHeadChunk();
+    if (head == null)
+      return;
+    if (db.lookupByRID(head, true) instanceof StripeDirectory directory) {
+      for (int g = 0; g < directory.getGenerationCount(); g++) {
+        final int stripes = directory.getStripes(g);
+        if (neighbor != null)
+          walkChain(db, directory.getHead(g, StripeDirectory.stripeOf(neighbor, stripes)), visitor);
+        else
+          for (int stripe = 0; stripe < stripes; stripe++)
+            walkChain(db, directory.getHead(g, stripe), visitor);
+      }
+    } else
+      walkChain(db, head, visitor);
+  }
+
+  private static void walkChain(final DatabaseInternal db, final RID head, final ListEntryVisitor visitor) {
+    if (head == null)
+      return;
+    RID segmentRID = head;
+    final ChainCycleGuard guard = new ChainCycleGuard(segmentRID);
+    final AtomicInteger cursor = new AtomicInteger();
+    while (segmentRID != null) {
+      final EdgeSegment segment = (EdgeSegment) db.lookupByRID(segmentRID, true);
+      final RID segmentIdentity = segment.getIdentity();
+      cursor.set(MutableEdgeSegment.CONTENT_START_POSITION);
+      final int used = segment.getUsed();
+      while (cursor.get() < used) {
+        final int at = cursor.get();
+        final RID entryEdge = segment.getRID(cursor);
+        final RID entryVertex = segment.getRID(cursor);
+        visitor.visit(segmentIdentity, at, entryEdge, entryVertex);
+      }
+      final RID previous = segment.getPreviousRID();
+      segmentRID = previous == null || previous.equals(segmentIdentity) || guard.revisits(previous) ? null : previous;
+    }
   }
 
   private void resolve() {
     if (originSegment == null) {
-      occurrence = 0;
-      twins = 0;
+      numbered(0, 0);
       return;
     }
+    if (census != null && census.resolve(this, originSegment, originPosition, originChunkUsed))
+      return;
+
     final DatabaseInternal db = (DatabaseInternal) getBoundDatabase();
     final boolean outgoing = originDirection == Vertex.DIRECTION.OUT;
     final RID owner = outgoing ? out : in;
     final RID neighbor = outgoing ? in : out;
-    int found = 0;
-    int before = 0;
+    final int bucketId = getBucketId();
+    final OriginWalk walk = new OriginWalk();
     try {
       final VertexInternal vertex = (VertexInternal) db.lookupByRID(owner, false);
-      boolean reached = false;
-      for (final RID head : chainHeads(db, vertex, outgoing, neighbor)) {
-        RID segmentRID = head;
-        final ChainCycleGuard guard = new ChainCycleGuard(segmentRID);
-        while (segmentRID != null) {
-          final EdgeSegment segment = (EdgeSegment) db.lookupByRID(segmentRID, true);
-          final boolean originChunk = segment.getIdentity().equals(originSegment);
-          final AtomicInteger cursor = new AtomicInteger(MutableEdgeSegment.CONTENT_START_POSITION);
-          final int used = segment.getUsed();
-          while (cursor.get() < used) {
-            final int at = cursor.get();
-            final RID entryEdge = segment.getRID(cursor);
-            final RID entryVertex = segment.getRID(cursor);
-            if (originChunk && at == originPosition) {
-              reached = true;
-              before = found;
-            }
-            if (entryEdge.getPosition() < 0 && entryEdge.getBucketId() == getBucketId() && entryVertex.equals(neighbor))
-              ++found;
-          }
-          final RID previous = segment.getPreviousRID();
-          segmentRID = previous == null || previous.equals(segment.getIdentity()) || guard.revisits(previous) ? null : previous;
+      walkList(db, vertex, originDirection, neighbor, (segment, position, entryEdge, entryVertex) -> {
+        if (!walk.reached && position == originPosition && segment.equals(originSegment)) {
+          walk.reached = true;
+          walk.before = walk.found;
         }
-      }
-      if (!reached) {
+        if (entryEdge.getPosition() < 0 && entryEdge.getBucketId() == bucketId && entryVertex.equals(neighbor))
+          ++walk.found;
+      });
+      if (!walk.reached) {
         // THE ENTRY IS NOT IN THE LIST ANY MORE (THE LIST CHANGED UNDER THE QUERY): IT KEEPS THE IDENTITY IT HAD BEFORE
         // THE OCCURRENCE EXISTED
         LogManager.instance().log(this, Level.FINE, "Lightweight edge %s (%s -> %s) is no longer in the edge list it was read from",
             this, out, in);
-        before = 0;
-        found = 0;
+        walk.found = 0;
+        walk.before = 0;
       }
     } catch (final RecordNotFoundException e) {
       LogManager.instance().log(this, Level.FINE, "Cannot resolve the occurrence of lightweight edge %s (%s -> %s): %s", this, out,
           in, e.getMessage());
-      before = 0;
-      found = 0;
+      walk.found = 0;
+      walk.before = 0;
     }
-    // TWO THREADS RESOLVING THE SAME RID BOTH WALK THE LIST AND STORE THE SAME ANSWER: HARMLESS. twins GOES FIRST, SO
-    // WHOEVER SEES THE VOLATILE occurrence SEES ITS twins
-    twins = found;
-    occurrence = before;
+    // TWO THREADS RESOLVING THE SAME RID BOTH WALK THE LIST AND STORE THE SAME ANSWER: HARMLESS
+    numbered(walk.before, walk.found);
+  }
+
+  /** What one walk of the list learns about the entry an edge was read from. */
+  private static final class OriginWalk {
+    // ENTRIES OF THE TRIPLE FOUND, HOW MANY OF THEM PRECEDE THE ORIGIN ENTRY, WHETHER THE ORIGIN WAS REACHED
+    private int     found;
+    private int     before;
+    private boolean reached;
   }
 
   @Override

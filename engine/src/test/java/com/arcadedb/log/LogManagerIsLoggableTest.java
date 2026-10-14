@@ -26,7 +26,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Regression for #9174: hot paths guard their FINE messages with {@link LogManager#isLoggable}, which must follow the
- * real logging configuration (unlike {@link LogManager#isDebugEnabled()}, a flag nobody sets).
+ * real logging configuration (unlike {@code LogManager.isDebugEnabled()}, a flag nobody set, removed by #9984).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

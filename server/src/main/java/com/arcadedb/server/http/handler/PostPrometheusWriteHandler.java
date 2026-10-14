@@ -211,7 +211,10 @@ public class PostPrometheusWriteHandler extends AbstractBinaryHttpHandler {
     final Map<String, Set<String>> tagNamesByType = new HashMap<>();
     // `metric.label` of every label that made a series be dropped, bounded because the labels come from the client
     final Set<String> undeclaredLabels = new LinkedHashSet<>();
+    // `metric.column (tag|field): reason` of every value a column could not store, bounded the same way (issue #9972)
+    final Set<String> unreadableValues = new LinkedHashSet<>();
     int droppedSeries = 0;
+    int droppedSamples = 0;
     if (ownTransaction)
       database.begin();
     try {
@@ -238,6 +241,7 @@ public class PostPrometheusWriteHandler extends AbstractBinaryHttpHandler {
         if (rejectUndeclared && collectUndeclaredLabels(ts.getLabels(),
             tagNamesByType.computeIfAbsent(typeName, k -> tagNamesOf(columns)), typeName, undeclaredLabels)) {
           ++droppedSeries;
+          droppedSamples += ts.getSamples().size();
           continue;
         }
 
@@ -250,7 +254,7 @@ public class PostPrometheusWriteHandler extends AbstractBinaryHttpHandler {
         if (count == 0)
           continue;
 
-        final long[] timestamps = new long[count];
+        long[] timestamps = new long[count];
         for (int s = 0; s < count; s++)
           timestamps[s] = tsSamples.get(s).timestampMs();
 
@@ -258,20 +262,75 @@ public class PostPrometheusWriteHandler extends AbstractBinaryHttpHandler {
         // the series labels, which are per-series and not per-sample, so it is resolved ONCE and broadcast
         // down the column: findLabelValue is a linear scan that re-sanitizes every label name it visits,
         // so resolving it per sample would repeat identical work for every sample of every tag column.
+        //
+        // Every value goes through ColumnDefinition.storableValue before it enters the grid, as it does in
+        // TimeSeriesGateway.write (issue #9972): a label is always text, so a type declaring a tag as INTEGER,
+        // BOOLEAN or DATE used to reach the storage layer with a String and fail the whole request with a 500 (or,
+        // for BOOLEAN, store false). A tag the column cannot hold drops the series; a sample value a field cannot
+        // hold drops that sample alone. Both are named in unreadableValues and answered 400 below.
         final Object[][] columnValues = new Object[columns.size() - 1][count];
+        // Allocated on the first refused sample, so a clean series pays nothing for it
+        boolean[] refusedSamples = null;
+        int refusedCount = 0;
+        boolean seriesRefused = false;
 
         int colIdx = 0;
         for (final ColumnDefinition col : columns) {
           if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
             continue;
 
-          if (col.getRole() == ColumnDefinition.ColumnRole.TAG)
-            Arrays.fill(columnValues[colIdx], findLabelValue(ts.getLabels(), col.getName()));
-          else
-            for (int s = 0; s < count; s++)
-              columnValues[colIdx][s] = tsSamples.get(s).value(); // the "value" field
+          if (col.getRole() == ColumnDefinition.ColumnRole.TAG) {
+            final Object tagValue;
+            try {
+              tagValue = col.storableValue(database, findLabelValue(ts.getLabels(), col.getName()));
+            } catch (final IllegalArgumentException e) {
+              addUnreadable(unreadableValues, typeName, col, "tag", e);
+              seriesRefused = true;
+              break;
+            }
+            Arrays.fill(columnValues[colIdx], tagValue);
+          } else
+            for (int s = 0; s < count; s++) {
+              if (refusedSamples != null && refusedSamples[s])
+                continue;
+              try {
+                columnValues[colIdx][s] = col.storableValue(database, tsSamples.get(s).value()); // the "value" field
+              } catch (final IllegalArgumentException e) {
+                addUnreadable(unreadableValues, typeName, col, "field", e);
+                if (refusedSamples == null)
+                  refusedSamples = new boolean[count];
+                refusedSamples[s] = true;
+                ++refusedCount;
+              }
+            }
 
           colIdx++;
+        }
+
+        if (seriesRefused) {
+          ++droppedSeries;
+          droppedSamples += count;
+          continue;
+        }
+
+        if (refusedCount > 0) {
+          droppedSamples += refusedCount;
+          final int valid = count - refusedCount;
+          if (valid == 0)
+            continue;
+          // Compacts only when a sample was refused, so the copy is paid by the failing request and never by a clean one
+          final long[] keptTimestamps = new long[valid];
+          for (int c = 0; c < columnValues.length; c++) {
+            final Object[] kept = new Object[valid];
+            for (int s = 0, k = 0; s < count; s++)
+              if (!refusedSamples[s])
+                kept[k++] = columnValues[c][s];
+            columnValues[c] = kept;
+          }
+          for (int s = 0, k = 0; s < count; s++)
+            if (!refusedSamples[s])
+              keptTimestamps[k++] = timestamps[s];
+          timestamps = keptTimestamps;
         }
 
         engine.appendBatch(timestamps, columnValues);
@@ -284,19 +343,39 @@ public class PostPrometheusWriteHandler extends AbstractBinaryHttpHandler {
       throw e;
     }
 
-    if (droppedSeries > 0) {
-      // 400, which Prometheus does not retry: the series that were valid are already stored, and re-sending the
-      // batch cannot make an undeclared label declared
+    if (!undeclaredLabels.isEmpty() || !unreadableValues.isEmpty()) {
+      // 400, which Prometheus does not retry: the series and samples that were valid are already stored, and re-sending
+      // the batch cannot make an undeclared label declared or a value its column cannot hold storable
+      final StringBuilder message = new StringBuilder("partial write: ").append(droppedSeries).append(" series and ")
+          .append(droppedSamples).append(" sample(s) dropped");
+      if (!undeclaredLabels.isEmpty())
+        message.append("; undeclared label(s): ").append(String.join(", ", undeclaredLabels)).append(" (declare them on the type, fix the label, or set ")
+            .append(GlobalConfiguration.TIMESERIES_UNDECLARED_KEYS.getKey()).append("=ignore to discard them)");
+      if (!unreadableValues.isEmpty())
+        message.append("; unreadable value(s): ").append(String.join("; ", unreadableValues));
+      message.append('.');
+
       final JSONObject error = new JSONObject();
-      error.put("error", "partial write: " + droppedSeries + " series dropped for undeclared label(s): "
-          + String.join(", ", undeclaredLabels) + " (declare them on the type, fix the label, or set "
-          + GlobalConfiguration.TIMESERIES_UNDECLARED_KEYS.getKey() + "=ignore to discard them).");
+      error.put("error", message.toString());
       error.put("dropped", droppedSeries);
+      error.put("droppedSamples", droppedSamples);
       error.put("undeclaredLabels", new JSONArray(undeclaredLabels));
+      error.put("unreadableValues", new JSONArray(unreadableValues));
       return new ExecutionResponse(400, error.toString());
     }
 
     return new ExecutionResponse(204, "");
+  }
+
+  /**
+   * Names a value {@code col} refused as {@code metric.column (role): reason}, the shape {@code TimeSeriesGateway.write} reports
+   * for the line protocol, up to {@link TimeSeriesGateway#MAX_REPORTED_UNREADABLE_VALUES}. The reason names the column and its
+   * type, never the value, which comes from the client.
+   */
+  private static void addUnreadable(final Set<String> unreadable, final String typeName, final ColumnDefinition col,
+      final String role, final IllegalArgumentException e) {
+    if (unreadable.size() < TimeSeriesGateway.MAX_REPORTED_UNREADABLE_VALUES)
+      unreadable.add(typeName + "." + col.getName() + " (" + role + "): " + e.getMessage());
   }
 
   private static Set<String> tagNamesOf(final List<ColumnDefinition> columns) {

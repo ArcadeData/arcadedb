@@ -35,6 +35,7 @@ import com.arcadedb.query.opencypher.ast.RelationshipPattern;
 import com.arcadedb.query.opencypher.ast.ShortestPathPattern;
 import com.arcadedb.query.opencypher.InlineProperties;
 import com.arcadedb.query.opencypher.traversal.GraphTraverser;
+import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -221,9 +222,10 @@ public class ShortestPathStep extends AbstractExecutionStep {
           result.setProperty(prop, inputResult.getProperty(prop));
         }
 
-        // Add path binding if path variable is specified
+        // Add path binding if path variable is specified: a TraversalPath, the value every other pattern binds, so a
+        // Bolt client receives a path and valueType() answers PATH (issue #9913)
         if (pathVariable != null && !pathVariable.isEmpty()) {
-          result.setProperty(pathVariable, path);
+          result.setProperty(pathVariable, TraversalPath.ofWalk(path));
         }
         return result;
       }
@@ -1110,7 +1112,9 @@ public class ShortestPathStep extends AbstractExecutionStep {
   }
 
   /**
-   * Resolves a list of vertex RIDs into a proper path with alternating Vertex and Edge objects.
+   * Resolves a list of vertex RIDs into a proper path with alternating Vertex and Edge objects, or null when two
+   * consecutive vertices are no longer joined by an edge (a ghost edge, or one deleted since the search): there is no path
+   * to report then, where the list used to skip the hop and bind a path that was not one (issue #9913).
    *
    * @param edgeTypes restrict edges to these types, or null/empty to allow any type
    */
@@ -1125,8 +1129,9 @@ public class ShortestPathStep extends AbstractExecutionStep {
       if (prev != null) {
         // Find the edge connecting prev to current
         final Edge edge = findConnectingEdge(prev, current, direction, edgeTypes);
-        if (edge != null)
-          result.add(edge);
+        if (edge == null)
+          return null;
+        result.add(edge);
       }
 
       result.add(current);

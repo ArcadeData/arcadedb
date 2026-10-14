@@ -42,6 +42,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 
 /**
@@ -73,6 +74,7 @@ public class CSRBuilder {
   private final Set<String> edgePropertyFilterSet; // null = no edge properties (default)
   private final int propertySampleSize;
   private ScanObserver scanObserver;
+  private AtomicLong uncoveredEdgeWrites;
 
   /**
    * Told which out-edges the scan captured for a vertex whose edges a concurrent transaction is changing, so the
@@ -164,12 +166,25 @@ public class CSRBuilder {
     return buildClean(vertexTypes, edgeTypes, System.currentTimeMillis());
   }
 
+  /**
+   * Has the scan tell whether every edge of the database was in the edge types it materialized (issue #9915): the
+   * counter of the edges of the other types written since the view started tracking changes, read before the scan
+   * starts, is stored in the result when the scan met no entry of another type.
+   */
+  void setUncoveredEdgeWrites(final AtomicLong uncoveredEdgeWrites) {
+    this.uncoveredEdgeWrites = uncoveredEdgeWrites;
+  }
+
   private CSRResult buildClean(final String[] vertexTypes, final String[] edgeTypes, final long startTime) {
     LogManager.instance().log(this, Level.INFO, "CSR build started for vertex types %s, edge types %s...",
         vertexTypes != null ? Arrays.toString(vertexTypes) : "[all]",
         edgeTypes != null ? Arrays.toString(edgeTypes) : "[all]");
 
+    // READ BEFORE THE SCAN: AN EDGE OF ANOTHER TYPE WRITTEN WHILE IT RUNS MOVES THE COUNTER PAST THIS MARK (#9915)
+    final long uncoveredMark = uncoveredEdgeWrites != null ? uncoveredEdgeWrites.get() : -1L;
     final Map<Integer, String> bucketToEdgeType = buildBucketToEdgeTypeMap(edgeTypes);
+    final Set<String> scannedEdgeTypes = Set.copyOf(bucketToEdgeType.values());
+    boolean uncoveredEdgesSeen = false;
     final boolean extractProps = propertyIncludeSet == null || !propertyIncludeSet.isEmpty() || propertyExcludeSet != null;
 
     // --- Phase A: Collect RID positions for node ID mapping ---
@@ -190,7 +205,8 @@ public class CSRBuilder {
     if (nodeCount == 0) {
       final long elapsedMs = System.currentTimeMillis() - startTime;
       LogManager.instance().log(this, Level.INFO, "CSR built: 0 nodes, 0 edges, 0.0 MB, %d ms", elapsedMs);
-      return new CSRResult(new HashMap<>(), mapping, createEmptyBucketColumns(mapping));
+      return new CSRResult(new HashMap<>(), mapping, createEmptyBucketColumns(mapping)).withScanCoverage(uncoveredMark,
+          scannedEdgeTypes);
     }
 
     // Detect property types from schema (instant, no scanning needed).
@@ -275,8 +291,11 @@ public class CSRBuilder {
         while (entries.hasNext()) {
           final Pair<RID, RID> entry = entries.next();
           final String edgeTypeName = bucketToEdgeType.get(entry.getFirst().getBucketId());
-          if (edgeTypeName == null)
+          if (edgeTypeName == null) {
+            // AN EDGE OF A TYPE THE VIEW DOES NOT MATERIALIZE, LIGHTWEIGHT ONES INCLUDED: NO RECORD COUNT CAN SAY THAT
+            uncoveredEdgesSeen = true;
             continue;
+          }
           final int targetGlobalId = mapping.getGlobalId(entry.getSecond());
           if (targetGlobalId < 0)
             continue;
@@ -579,7 +598,8 @@ public class CSRBuilder {
         nodeCount, mapping.getNumBuckets(), totalAllEdges, csrPerType.size(), totalColumns, edgePropColumns,
         totalMemory / (1024.0 * 1024.0), elapsedMs);
 
-    return new CSRResult(csrPerType, mapping, bucketColumns, edgeColumnStores, bwdToFwdMap);
+    return new CSRResult(csrPerType, mapping, bucketColumns, edgeColumnStores, bwdToFwdMap).withScanCoverage(
+        uncoveredEdgesSeen ? -1L : uncoveredMark, scannedEdgeTypes);
   }
 
   private void registerVertexBuckets(final NodeIdMapping mapping, final String[] vertexTypes) {
@@ -1188,6 +1208,9 @@ public class CSRBuilder {
     private final ColumnStore[]                  bucketColumns;
     private final Map<String, ColumnStore>       edgeColumnStores;
     private final Map<String, int[]>             bwdToFwd;
+    // SEE GraphAnalyticalView.Snapshot.uncoveredEdgeFreeAsOf (ISSUE #9915). -1: UNKNOWN, OR THE SCAN MET SUCH AN EDGE
+    private       long                           uncoveredEdgeFreeAsOf = -1L;
+    private       Set<String>                    scannedEdgeTypes;
 
     public CSRResult(final Map<String, CSRAdjacencyIndex> csrPerType, final NodeIdMapping mapping,
         final ColumnStore[] bucketColumns) {
@@ -1204,6 +1227,14 @@ public class CSRBuilder {
       this.bwdToFwd = bwdToFwd;
     }
 
+    CSRResult withScanCoverage(final long uncoveredEdgeFreeAsOf, final Set<String> scannedEdgeTypes) {
+      this.uncoveredEdgeFreeAsOf = uncoveredEdgeFreeAsOf;
+      this.scannedEdgeTypes = scannedEdgeTypes;
+      return this;
+    }
+
+    long getUncoveredEdgeFreeAsOf() { return uncoveredEdgeFreeAsOf; }
+    Set<String> getScannedEdgeTypes() { return scannedEdgeTypes; }
     public Map<String, CSRAdjacencyIndex> getCsrPerType() { return csrPerType; }
     public NodeIdMapping getMapping() { return mapping; }
     public ColumnStore[] getBucketColumns() { return bucketColumns; }

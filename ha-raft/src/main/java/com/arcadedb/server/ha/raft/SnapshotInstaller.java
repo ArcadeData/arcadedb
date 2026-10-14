@@ -1073,12 +1073,15 @@ public final class SnapshotInstaller {
    * Closes a resolved local instance and takes it out of the server registry - the mutating half of
    * {@link #closeLocalDatabaseIfOpen}, shared with {@link #closeRegisteredDatabaseForRepair}.
    * <p>
-   * Closes the embedded instance ({@code getEmbedded().close()}) rather than the wrapper: every caller is doing a
-   * local file swap or repair, which must not carry the HA wrapper's replicated-close semantics.
+   * Closes the embedded instance rather than the wrapper: every caller is doing a local file swap or repair, which must
+   * not carry the HA wrapper's replicated-close semantics. Closed FOR REOPEN, because every caller reopens the database
+   * under the same name once its files are in place: a request still holding this handle is refused with the retryable
+   * {@code DatabaseIsReopeningException}, which every wire protocol reports as such, and not with the permanent
+   * {@code DatabaseIsClosedException} a DROP or CLOSE DATABASE raises (issue #8199).
    */
   private static void closeAndDeregister(final ArcadeDBServer server, final DatabaseInternal db,
       final String databaseName) {
-    db.getEmbedded().close();
+    db.getEmbedded().closeForReopen();
     server.removeDatabase(databaseName);
   }
 

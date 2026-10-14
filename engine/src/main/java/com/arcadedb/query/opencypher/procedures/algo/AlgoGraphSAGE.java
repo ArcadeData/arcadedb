@@ -98,7 +98,7 @@ public class AlgoGraphSAGE extends AbstractAlgoProcedure {
   public Stream<Result> execute(final Object[] args, final Result inputRow, final CommandContext context) {
     validateArgs(args);
 
-    final Map<String, Object> config = args.length > 0 ? extractMap(args[0], "config") : null;
+    final Map<String, Object> config = extractMap(argOrDefault(args, 0, null), "config");
     final int outDim = config != null && config.get("embeddingDimension") instanceof Number n ? extractEmbeddingDimension(n, "embeddingDimension") : 64;
     final int layers = config != null && config.get("layers") instanceof Number n ? extractInt(n, "layers", 1) : 2;
     final long seed = config != null && config.get("seed") instanceof Number n ? n.longValue() : -1L;

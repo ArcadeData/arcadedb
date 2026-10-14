@@ -100,6 +100,25 @@ public interface Property {
    */
   Object getDefaultValueDefinition();
 
+  /**
+   * Whether this property's default fills in a value on a record created without it. A {@code DEFAULT null} is kept as its
+   * source text {@code "null"} and leaves the property absent, so it fills in nothing - which is why it is the way to take
+   * a default back under a LIGHTWEIGHT edge type, and must not be refused as a default there (issues #9846 and #9975).
+   */
+  default boolean hasDefaultFillingInAValue() {
+    return fillsInAValue(getDefaultValueDefinition());
+  }
+
+  /**
+   * {@link #hasDefaultFillingInAValue()} for a default definition not yet assigned to a property.
+   */
+  // A String definition is the source text of an expression, from SQL and from the Java API alike (setDefaultValue("null")
+  // is the null literal, setDefaultValue("'null'") the string): the bare text null fills in nothing, while a string default
+  // is quoted (DEFAULT 'null' is kept as 'null', with its quotes) and fills in the four characters like any other string
+  static boolean fillsInAValue(final Object defaultDefinition) {
+    return defaultDefinition != null && !(defaultDefinition instanceof String text && "null".equalsIgnoreCase(text.trim()));
+  }
+
   Property setDefaultValue(Object defaultValue);
 
   String getOfType();

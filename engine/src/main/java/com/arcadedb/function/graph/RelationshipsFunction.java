@@ -19,16 +19,16 @@
 package com.arcadedb.function.graph;
 
 import com.arcadedb.function.StatelessFunction;
-import com.arcadedb.graph.Edge;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
 
 /**
- * relationships() function - returns all relationships in a path.
+ * relationships() function - returns all relationships in a path. The path is read in any shape
+ * {@link TraversalPath#of(Object)} reads, and anything that is not a path is a type error rather than an empty list
+ * (issue #9913).
  */
 public class RelationshipsFunction implements StatelessFunction {
   @Override
@@ -51,16 +51,9 @@ public class RelationshipsFunction implements StatelessFunction {
     checkArity(args);
     if (args[0] == null)
       return null;
-    if (args[0] instanceof TraversalPath)
-      return new ArrayList<>(((TraversalPath) args[0]).getEdges());
-    if (args[0] instanceof List) {
-      final List<?> path = (List<?>) args[0];
-      final List<Edge> edges = new ArrayList<>();
-      for (final Object element : path)
-        if (element instanceof Edge)
-          edges.add((Edge) element);
-      return edges;
-    }
-    return Collections.emptyList();
+    final TraversalPath path = TraversalPath.of(args[0]);
+    if (path == null)
+      throw CypherFunctionHelper.typeMismatch(getName(), "a PATH", args[0]);
+    return new ArrayList<>(path.getEdges());
   }
 }

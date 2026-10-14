@@ -879,17 +879,24 @@ public class CypherExecutionPlan {
   private void setupFunctionResolver(final BasicCommandContext context) {
     // A read-only statement cannot change what an unindexed chained MATCH re-reads, so it may answer from a snapshot (issue #8695)
     context.setVariable(MatchNodeStep.READ_ONLY_STATEMENT_KEY, statement.isReadOnly());
-    if (expressionEvaluator != null) {
-      final CypherFunctionFactory factory = expressionEvaluator.getFunctionFactory();
-      context.setVariable(FunctionCallExpression.FUNCTION_RESOLVER_KEY,
-          (Function<String, StatelessFunction>) name -> {
-            try {
-              return factory.getFunctionExecutor(name);
-            } catch (final Exception e) {
-              return null;
-            }
-          });
-    }
+    if (expressionEvaluator != null)
+      installFunctionResolver(context, expressionEvaluator.getFunctionFactory());
+  }
+
+  /**
+   * Makes the functions of {@code factory} resolvable by a {@link FunctionCallExpression} evaluated against {@code context}.
+   * Every context an expression is evaluated against needs it, not only an execution plan's: a logical expression calls
+   * {@link FunctionCallExpression#evaluate} directly (issue #9940, the condition of a conditional query).
+   */
+  public static void installFunctionResolver(final BasicCommandContext context, final CypherFunctionFactory factory) {
+    context.setVariable(FunctionCallExpression.FUNCTION_RESOLVER_KEY,
+        (Function<String, StatelessFunction>) name -> {
+          try {
+            return factory.getFunctionExecutor(name);
+          } catch (final Exception e) {
+            return null;
+          }
+        });
   }
 
   /**
@@ -2685,7 +2692,7 @@ public class CypherExecutionPlan {
               if (!boundVariables.contains(groupVariable))
                 matchVariables.add(groupVariable);
             nextStep = new QuantifiedPathStep(effectiveSourceVar, effectiveTargetVar, pathVariable,
-                bindsGroupPathVariable(pathPattern), quantified, effectiveTargetNode, matchVariables,
+                quantified, effectiveTargetNode, matchVariables,
                 clauseRelVariables, context);
           } else if (relPattern.isVariableLength()) {
             // DFS, not BFS: DFS's active stack is bounded by maxHops regardless of branching
@@ -3087,19 +3094,6 @@ public class CypherExecutionPlan {
     final String targetVariable = pathPattern.getLastNode().getVariable();
     return targetVariable != null && !targetVariable.equals(sourceVariable)
         && targetVariable.equals(physicalPlan.getAnchor().getVariable());
-  }
-
-  /**
-   * Returns true when a named path over {@code pathPattern} names nothing but a single quantified group,
-   * which ISO/IEC 39075 §15.4 (grouped path assignment) binds to a {@code LIST<PATH>} - one path per
-   * repetition - rather than to one path.
-   * <p>
-   * A path that also spans ordinary hops around the group has no such list form and stays a single
-   * concatenated path, so the distinction is made here, on the written pattern, and not inside the step.
-   */
-  private static boolean bindsGroupPathVariable(final PathPattern pathPattern) {
-    return pathPattern.getRelationshipCount() == 1
-        && pathPattern.getRelationship(0) instanceof QuantifiedPathPattern;
   }
 
   /**
@@ -3842,7 +3836,7 @@ public class CypherExecutionPlan {
                     if (!legacyBoundVariables.contains(groupVariable))
                       matchVariables.add(groupVariable);
                   nextStep = new QuantifiedPathStep(currentSourceVar, targetVar, pathVariable,
-                      bindsGroupPathVariable(pathPattern), quantified, targetNode, matchVariables, clauseRelVariables,
+                      quantified, targetNode, matchVariables, clauseRelVariables,
                       context);
                 } else if (relPattern.isVariableLength()) {
                   // Variable-length path - pass path variable, relationship variable, and target node for label

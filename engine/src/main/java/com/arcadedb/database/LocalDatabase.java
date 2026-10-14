@@ -50,6 +50,7 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DatabaseIsClosedException;
 import com.arcadedb.exception.DatabaseIsReadOnlyException;
+import com.arcadedb.exception.DatabaseIsReopeningException;
 import com.arcadedb.exception.DatabaseMetadataException;
 import com.arcadedb.exception.DatabaseNotFoundException;
 import com.arcadedb.exception.DatabaseOperationException;
@@ -243,6 +244,11 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   protected final    Lock                                      asyncLock                 = new ReentrantLock();
   protected          boolean                                   autoTransaction           = false;
   protected volatile boolean                                   open                      = false;
+  /**
+   * Set by {@link #closeForReopen()}: this instance was closed so that the same database could be reopened (#8199). Never
+   * reset, because an instance is single-use: it is opened once, by the factory that builds it, and a reopen is a new one.
+   */
+  private volatile boolean                                     closedForReopen           = false;
   private            boolean                                   readYourWrites            = true;
   // Database-wide durability settings (issue #8352): null until set, so every thread follows the configuration its
   // transaction context was created with. A thread's own setting (Transaction.setUseWAL() and siblings) wins.
@@ -264,6 +270,13 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    * interleave with (issue #9904).
    */
   private final      Object                                    configurationApplyLock    = new Object();
+  /**
+   * The {@link #changeSetting(String, Runnable) change} whose value each setting holds, by key, when that value was
+   * stored by one: what tells an undo whether its change is still the latest, and whether the value it would put back
+   * belongs to a change that was itself refused (issue #9951). A setting written since by anything else (the apply of a
+   * replicated change, a restore from {@code configuration.json}) has no entry. Guarded by {@link #configurationApplyLock}.
+   */
+  private final      Map<String, SettingToken>                 settingTokens             = new HashMap<>();
   // VOLATILE: the HA wrap installs the wrapper from the plugin's thread, and handles resolved before it
   // (ServerDatabase.commit(), issue #8282) read it from connection threads with no lock in common
   private volatile   DatabaseInternal                          wrappedDatabaseInstance   = this;
@@ -432,6 +445,18 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   @Override
   public void close() {
+    closeInternal(false);
+  }
+
+  /**
+   * Closes this instance because the same database is about to be reopened under its name, by whoever closes it - an HA
+   * snapshot reinstall swapping its files, say. An operation still holding this handle is then refused with the
+   * retryable {@link DatabaseIsReopeningException} instead of the permanent {@link DatabaseIsClosedException}, since the
+   * database resolved again is the reopened one (issue #8199).
+   */
+  @Override
+  public void closeForReopen() {
+    closedForReopen = true;
     closeInternal(false);
   }
 
@@ -1613,6 +1638,25 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   @Override
   public boolean updateRecordReportingVeto(final Record record) {
+    return updateRecord(record, false, false);
+  }
+
+  @Override
+  public boolean updateRecordWithEventsNoLock(final Record record, final boolean discardRecordAfter) {
+    return updateRecord(record, true, discardRecordAfter);
+  }
+
+  /**
+   * The one owner of an update's contract - preconditions, validation, the before/after-update events and the
+   * {@code updateRecord} statistic - shared by the synchronous update and the asynchronous one, the shape the delete
+   * already has in {@link #deleteRecordNoLock(Record)}. The asynchronous task used to re-implement the validation and
+   * the events around the bare page write and miss the statistic, so the metrics endpoint undercounted every
+   * asynchronous update (issue #9987).
+   *
+   * @param writeNow true for the asynchronous worker: no database read lock, and the record is written to its page
+   *                 now, inside the caller's transaction, rather than queued for the commit
+   */
+  private boolean updateRecord(final Record record, final boolean writeNow, final boolean discardRecordAfter) {
     if (record.getIdentity() == null)
       throw new IllegalArgumentException("Cannot update the record because it is not persistent");
 
@@ -1629,89 +1673,97 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       if (!((RecordEventsRegistry) document.getType().getEvents()).onBeforeUpdate(record))
         return false;
 
-    return executeInReadLock(() -> {
-      if (isTransactionActive()) {
-        // MARK THE RECORD FOR UPDATE IN TX AND DEFER THE SERIALIZATION AT COMMIT TIME. THIS SPEEDS UP CASES WHEN THE
-        // SAME RECORDS ARE UPDATE MULTIPLE TIME INSIDE
-        // THE SAME TX. THE MOST CLASSIC EXAMPLE IS INSERTING EDGES: THE RECORD CHUNK IS UPDATED EVERYTIME A NEW EDGE
-        // IS CREATED IN THE SAME CHUNK.
-        // THE PAGE IS EARLY LOADED IN TX CACHE TO USE THE PAGE MVCC IN CASE OF CONCURRENT OPERATIONS ON THE MODIFIED
-        // RECORD
-        try {
-          final TransactionContext tx = getTransaction();
-          // #7149: false means this transaction has already deleted the record, so there is nothing to write and
-          // nothing to index - the delete wins, and the index entries went with it. Returning here also keeps the
-          // after-update events from firing for a write that never happened.
-          // #8066: remembered before queueing, so a refused update takes back only what THIS call queued
-          final boolean alreadyQueued = tx.isUpdateQueued(record.getIdentity());
-          if (!tx.addUpdatedRecord(record))
-            return false;
+    if (writeNow)
+      return applyUpdate(record, true, discardRecordAfter);
+    return executeInReadLock(() -> applyUpdate(record, false, false));
+  }
 
-          if (record instanceof Document document) {
-            // UPDATE THE INDEX IN MEMORY BEFORE UPDATING THE PAGE
-            final List<IndexInternal> indexes = indexer.getInvolvedIndexes(document);
-            if (!indexes.isEmpty()) {
-              // UPDATE THE INDEXES TOO.
-              // #4935: when the same record is updated more than once in this tx, diff against the previous
-              // in-tx indexed state (snapshot below), not the committed buffer returned by
-              // getOriginalDocument() - the buffer stays frozen until commit because serialization is
-              // deferred, so diffing against it leaks a phantom index entry for every intermediate value.
-              // The snapshot holds ONLY the indexed property values (not a full detach of the document) to
-              // stay light on allocations for wide documents and bulk updates.
-              final RID rid = record.getIdentity();
-              final Document previous = tx.getLastIndexedSnapshot(rid);
-              final Document originalRecord = previous != null ? previous : getOriginalDocument(record);
-              // updateDocument returns a refreshed snapshot (built from the key values it already extracted
-              // for the diff) ONLY when an index actually changed: otherwise the previous diff source
-              // (committed buffer or an earlier snapshot) still describes the indexed state, and updates
-              // that touch only non-indexed properties pay no snapshot cost at all.
-              // #8066: same invariant as the create path (#7467) - a refused row leaves no trace. Without the undo the
-              // new key stays queued in the transaction's index changes and the chunk's commit dies naming the row
-              // the caller was already told was refused, discarding every row that was accepted.
-              final TransactionIndexContext indexChanges = tx.getIndexChanges();
-              indexChanges.armRecordUndo();
-              final Document refreshedSnapshot;
-              try {
-                refreshedSnapshot = indexer.updateDocument(originalRecord, document, indexes);
-              } catch (final RuntimeException | Error e) {
-                indexChanges.undoRecordChanges();
-                // The deferred write must not reach the commit either: it would store the refused values in a body
-                // no index entry describes. A record already queued by an earlier update keeps its queue entry,
-                // because the earlier update's indexed state is still what the index holds.
-                // (The page pinned and the off-page fingerprint recorded by addUpdatedRecord stay: the next update of
-                // the record overwrites them, so they are harmless.)
-                if (!alreadyQueued)
-                  tx.removeRecordFromCache(rid);
-                throw e;
-              } finally {
-                indexChanges.disarmRecordUndo();
-              }
-              if (refreshedSnapshot != null)
-                tx.setLastIndexedSnapshot(rid, refreshedSnapshot);
+  /**
+   * The write half of {@link #updateRecord(Record, boolean, boolean)}, after the before-update listeners let it through.
+   */
+  private boolean applyUpdate(final Record record, final boolean writeNow, final boolean discardRecordAfter) {
+    if (!writeNow && isTransactionActive()) {
+      // MARK THE RECORD FOR UPDATE IN TX AND DEFER THE SERIALIZATION AT COMMIT TIME. THIS SPEEDS UP CASES WHEN THE
+      // SAME RECORDS ARE UPDATE MULTIPLE TIME INSIDE
+      // THE SAME TX. THE MOST CLASSIC EXAMPLE IS INSERTING EDGES: THE RECORD CHUNK IS UPDATED EVERYTIME A NEW EDGE
+      // IS CREATED IN THE SAME CHUNK.
+      // THE PAGE IS EARLY LOADED IN TX CACHE TO USE THE PAGE MVCC IN CASE OF CONCURRENT OPERATIONS ON THE MODIFIED
+      // RECORD
+      try {
+        final TransactionContext tx = getTransaction();
+        // #7149: false means this transaction has already deleted the record, so there is nothing to write and
+        // nothing to index - the delete wins, and the index entries went with it. Returning here also keeps the
+        // after-update events from firing for a write that never happened.
+        // #8066: remembered before queueing, so a refused update takes back only what THIS call queued
+        final boolean alreadyQueued = tx.isUpdateQueued(record.getIdentity());
+        if (!tx.addUpdatedRecord(record))
+          return false;
+
+        if (record instanceof Document document) {
+          // UPDATE THE INDEX IN MEMORY BEFORE UPDATING THE PAGE
+          final List<IndexInternal> indexes = indexer.getInvolvedIndexes(document);
+          if (!indexes.isEmpty()) {
+            // UPDATE THE INDEXES TOO.
+            // #4935: when the same record is updated more than once in this tx, diff against the previous
+            // in-tx indexed state (snapshot below), not the committed buffer returned by
+            // getOriginalDocument() - the buffer stays frozen until commit because serialization is
+            // deferred, so diffing against it leaks a phantom index entry for every intermediate value.
+            // The snapshot holds ONLY the indexed property values (not a full detach of the document) to
+            // stay light on allocations for wide documents and bulk updates.
+            final RID rid = record.getIdentity();
+            final Document previous = tx.getLastIndexedSnapshot(rid);
+            final Document originalRecord = previous != null ? previous : getOriginalDocument(record);
+            // updateDocument returns a refreshed snapshot (built from the key values it already extracted
+            // for the diff) ONLY when an index actually changed: otherwise the previous diff source
+            // (committed buffer or an earlier snapshot) still describes the indexed state, and updates
+            // that touch only non-indexed properties pay no snapshot cost at all.
+            // #8066: same invariant as the create path (#7467) - a refused row leaves no trace. Without the undo the
+            // new key stays queued in the transaction's index changes and the chunk's commit dies naming the row
+            // the caller was already told was refused, discarding every row that was accepted.
+            final TransactionIndexContext indexChanges = tx.getIndexChanges();
+            indexChanges.armRecordUndo();
+            final Document refreshedSnapshot;
+            try {
+              refreshedSnapshot = indexer.updateDocument(originalRecord, document, indexes);
+            } catch (final RuntimeException | Error e) {
+              indexChanges.undoRecordChanges();
+              // The deferred write must not reach the commit either: it would store the refused values in a body
+              // no index entry describes. A record already queued by an earlier update keeps its queue entry,
+              // because the earlier update's indexed state is still what the index holds.
+              // (The page pinned and the off-page fingerprint recorded by addUpdatedRecord stay: the next update of
+              // the record overwrites them, so they are harmless.)
+              if (!alreadyQueued)
+                tx.removeRecordFromCache(rid);
+              throw e;
+            } finally {
+              indexChanges.disarmRecordUndo();
             }
+            if (refreshedSnapshot != null)
+              tx.setLastIndexedSnapshot(rid, refreshedSnapshot);
           }
-        } catch (final IOException e) {
-          throw new DatabaseOperationException("Error on update the record " + record.getIdentity() + " in " +
-              "transaction", e);
         }
-      } else
-        updateRecordNoLock(record, false);
+      } catch (final IOException e) {
+        throw new DatabaseOperationException("Error on update the record " + record.getIdentity() + " in " +
+            "transaction", e);
+      }
+    } else
+      updateRecordNoLock(record, discardRecordAfter);
 
-      // Counted HERE rather than before the branch (#7149): the statistic reports records this database actually
-      // updated, and the two ways out above that are not an update - a listener vetoing the write, and a write to a
-      // record this transaction already deleted - both leave without reaching it. Both also skip the after-update
-      // events right below, so the two stay in step.
-      stats.updateRecord.incrementAndGet();
-      // THE IN-TRANSACTION BRANCH DEFERS THE WRITE TO COMMIT AND NEVER REACHES updateRecordNoLock()
-      markModified();
+    // Counted HERE rather than before the branch (#7149): the statistic reports records this database actually
+    // updated, and the two ways out above that are not an update - a listener vetoing the write, and a write to a
+    // record this transaction already deleted - both leave without reaching it. Both also skip the after-update
+    // events right below, so the two stay in step. NOT in updateRecordNoLock(): the commit flushes every deferred
+    // update through it, so an update made in a transaction would be counted twice (#9987).
+    stats.updateRecord.incrementAndGet();
+    // THE IN-TRANSACTION BRANCH DEFERS THE WRITE TO COMMIT AND NEVER REACHES updateRecordNoLock()
+    markModified();
 
-      // INVOKE EVENT CALLBACKS
-      events.onAfterUpdate(record);
-      if (record instanceof Document document)
-        ((RecordEventsRegistry) document.getType().getEvents()).onAfterUpdate(record);
+    // INVOKE EVENT CALLBACKS
+    events.onAfterUpdate(record);
+    if (record instanceof Document document)
+      ((RecordEventsRegistry) document.getType().getEvents()).onAfterUpdate(record);
 
-      return true;
-    });
+    return true;
   }
 
   public Document getOriginalDocument(final Record record) {
@@ -2969,6 +3021,16 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   }
 
   /**
+   * Saves the configuration after {@code key} changed (issue #9959). A database of its own writes the whole
+   * configuration to its file, as {@link #saveConfiguration()} does: there is nothing to replicate. The key matters to
+   * the Raft HA wrapper, which replicates the change to that setting alone.
+   */
+  @Override
+  public void saveConfiguration(final String key) throws IOException {
+    saveConfiguration();
+  }
+
+  /**
    * The settings this database holds in memory that its {@code configuration.json} does not hold yet, as a document
    * {@link #applyConfigurationChanges(String)} takes: {@code {"configuration": {changed settings}, "removed": [keys]}},
    * keys without the {@code arcadedb.} prefix as in the file. {@code null} when memory and file agree.
@@ -2979,18 +3041,41 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    * on every other change.
    */
   public String pendingConfigurationChanges() throws IOException {
+    return pendingConfigurationChanges(null);
+  }
+
+  /**
+   * The change to ONE setting this database holds in memory that its {@code configuration.json} does not hold yet, in
+   * the document {@link #pendingConfigurationChanges()} produces, {@code null} when memory and file agree on it.
+   * {@code key} is the setting's key as the configuration stores it ({@code arcadedb.} prefix included).
+   * <p>
+   * Issue #9959: what {@code ALTER DATABASE} and the "set database setting" command replicate under Raft HA. The whole
+   * difference between memory and file also holds what ANOTHER statement on this node has put in force and not
+   * submitted yet: shipped with this statement's entry, it was in force cluster-wide even when that statement's own save
+   * was then refused and the caller told nothing had changed.
+   */
+  public String pendingConfigurationChange(final String key) throws IOException {
+    // A declared setting under its declared key, the one the configuration stores it under, however the caller spelled it
+    final GlobalConfiguration setting = GlobalConfiguration.findByKey(key);
+    return pendingConfigurationChanges(ContextConfiguration.jsonKey(setting != null ? setting.getKey() : key));
+  }
+
+  /** The difference between memory and {@code configuration.json}, restricted to {@code onlyFileKey} when not null. */
+  private String pendingConfigurationChanges(final String onlyFileKey) throws IOException {
     final JSONObject saved = readSavedConfiguration().getJSONObject("configuration", new JSONObject());
     final JSONObject current = new JSONObject(configuration.toJSON()).getJSONObject("configuration", new JSONObject());
 
     final JSONObject changed = new JSONObject();
     for (final String key : current.keySet()) {
+      if (onlyFileKey != null && !onlyFileKey.equals(key))
+        continue;
       final Object value = current.get(key);
       if (!saved.has(key) || !String.valueOf(saved.get(key)).equals(String.valueOf(value)))
         changed.put(key, value);
     }
     final JSONArray removed = new JSONArray();
     for (final String key : saved.keySet())
-      if (!current.has(key))
+      if ((onlyFileKey == null || onlyFileKey.equals(key)) && !current.has(key))
         removed.put(key);
 
     if (changed.keySet().isEmpty() && removed.length() == 0)
@@ -3021,6 +3106,11 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     for (int i = 0; i < removed.length(); i++)
       configuration.setValue(GlobalConfiguration.PREFIX + removed.getString(i), null);
     configurationChanged();
+    // The values just installed belong to no change made on this node: an undo of one finds it superseded (issue #9951)
+    for (final String key : changed.keySet())
+      settingTokens.remove(tokenKey(GlobalConfiguration.PREFIX + key));
+    for (int i = 0; i < removed.length(); i++)
+      settingTokens.remove(tokenKey(GlobalConfiguration.PREFIX + removed.getString(i)));
 
     // Read-modify-write, so under the lock every writer of the file takes
     synchronized (configurationFileLock) {
@@ -3067,9 +3157,26 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   /**
    * One change to one setting, as {@link #changeSetting(String, Runnable)} made it: the value the setting held before
    * ({@code null}: not set) and the value the change stored. What {@link #undoSettingChange(SettingChange)} needs to put
-   * the previous value back only while nothing else changed the setting since (issue #9919).
+   * the previous value back only while nothing else changed the setting since (issue #9919). {@code token} identifies
+   * this change, {@code previousToken} the change whose value it replaced ({@code null}: a value no change on this node
+   * stored), so an undo can tell whether that value belongs to a change that was itself refused (issue #9951).
    */
-  public record SettingChange(String key, Object previousValue, Object valueSet) {
+  public record SettingChange(String key, Object previousValue, Object valueSet, SettingToken previousToken,
+                              SettingToken token) {
+    /** A change made without {@link #changeSetting(String, Runnable)}: no token, so nothing to undo it against. */
+    public SettingChange(final String key, final Object previousValue, final Object valueSet) {
+      this(key, previousValue, valueSet, null, null);
+    }
+  }
+
+  /**
+   * Identifies one {@link #changeSetting(String, Runnable) change} to a setting (issue #9951). Compared by identity, so
+   * a change storing the same value as another is still told apart from it. Its state is guarded by
+   * {@link #configurationApplyLock}.
+   */
+  public static final class SettingToken {
+    /** The change was refused while another change to the setting had already replaced its value. */
+    private boolean refusedWhileSuperseded;
   }
 
   /**
@@ -3093,42 +3200,76 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    */
   public SettingChange changeSetting(final String key, final Runnable change) {
     synchronized (configurationApplyLock) {
+      final String tokenKey = tokenKey(key);
       final Object previousValue = settingValue(key);
-      change.run();
+      final SettingToken previousToken = settingTokens.get(tokenKey);
       try {
-        configurationChanged();
-      } catch (final RuntimeException | Error e) {
-        // null: the setting was not set, and setValue() then removes it rather than storing an explicit entry
-        configuration.setValue(key, previousValue);
+        change.run();
         try {
           configurationChanged();
-        } catch (final RuntimeException | Error restoreFailure) {
-          // the failure that caused the restore is the one to report
-          e.addSuppressed(restoreFailure);
+        } catch (final RuntimeException | Error e) {
+          // null: the setting was not set, and setValue() then removes it rather than storing an explicit entry
+          configuration.setValue(key, previousValue);
+          try {
+            configurationChanged();
+          } catch (final RuntimeException | Error restoreFailure) {
+            // the failure that caused the restore is the one to report
+            e.addSuppressed(restoreFailure);
+          }
+          throw e;
         }
+      } catch (final RuntimeException | Error e) {
+        // A change that fails puts the previous value back (restoreSetting(), which forgets the token): that value is
+        // the previous change's again, so an undo of that change must still find it the latest (issue #9951)
+        if (previousToken != null)
+          settingTokens.put(tokenKey, previousToken);
         throw e;
       }
-      return new SettingChange(key, previousValue, settingValue(key));
+      final SettingToken token = new SettingToken();
+      settingTokens.put(tokenKey, token);
+      return new SettingChange(key, previousValue, settingValue(key), previousToken, token);
     }
   }
 
   /**
    * Undoes a {@link #changeSetting(String, Runnable) change} whose save was refused outright: the previous value goes
-   * back, side effects included, unless the setting no longer holds the value the change stored (issue #9919). Then
-   * another writer changed it since - under Raft HA the apply of a change to the same setting another node committed,
-   * or another change to it on this node whose save is still under way - and that value stands: putting the previous
-   * one back would leave this node on a value no other node holds, and that its own {@code configuration.json} does
-   * not hold. The check and the put run under the lock the apply holds, so an apply cannot land between them.
+   * back, side effects included, unless another writer changed the setting since (issue #9919) - under Raft HA the
+   * apply of a change to the same setting another node committed, or another change to it on this node whose save is
+   * still under way - and that value stands: putting the previous one back would leave this node on a value no other
+   * node holds, and that its own {@code configuration.json} does not hold. "Changed since" is told by the change's
+   * token, not by comparing values, so another writer that stored the SAME value is not mistaken for no writer at all
+   * (issue #9951); a value that differs from the one the change stored counts as changed too, for a writer that
+   * bypassed {@link #changeSetting(String, Runnable)}.
+   * <p>
+   * The previous value is itself not put back when it was stored by a change that was refused meanwhile, while this
+   * one had already replaced it (issue #9951): it is held by no other node and not by {@code configuration.json}. The
+   * setting then takes what {@code configuration.json} holds, as {@link #restoreSettingFromSavedConfiguration(String)}
+   * does. The checks and the put run under the lock the apply holds, so an apply cannot land between them.
    * {@link #restoreSetting(String, Object)} does the rest, a value already saved included.
    */
   public void undoSettingChange(final SettingChange change) {
     synchronized (configurationApplyLock) {
-      // Equal values cannot tell "untouched" from "another writer stored the same value": both undo, and the second
-      // case is then caught by restoreSetting() once that value is saved, or reverts a value that is not saved anywhere
-      if (!Objects.equals(settingValue(change.key()), change.valueSet()))
-        // Changed since by another writer: its value stands
+      final String tokenKey = tokenKey(change.key());
+      if (change.token() != null && settingTokens.get(tokenKey) != change.token()
+          || !Objects.equals(settingValue(change.key()), change.valueSet())) {
+        // Changed since by another writer: its value stands. Should this change's value come back through the undo of
+        // the change that replaced it, that undo must know it was refused
+        if (change.token() != null)
+          change.token().refusedWhileSuperseded = true;
         return;
-      restoreSetting(change.key(), change.previousValue());
+      }
+      if (change.previousToken() != null && change.previousToken().refusedWhileSuperseded) {
+        // The value this change replaced belongs to a refused change: settle on what the file holds
+        restoreSettingFromSavedConfigurationLocked(change.key());
+        return;
+      }
+      if (restoreSettingLocked(change.key(), change.previousValue()) && change.token() != null) {
+        // The value back in force is the previous change's again, so an undo of that change still finds it the latest
+        if (change.previousToken() != null)
+          settingTokens.put(tokenKey, change.previousToken());
+        else
+          settingTokens.remove(tokenKey);
+      }
     }
   }
 
@@ -3143,12 +3284,20 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    */
   public void restoreSetting(final String key, final Object previousValue) {
     synchronized (configurationApplyLock) {
-      if (isSaved(key))
-        // The value in force already reached configuration.json: another save shipped it, so it is committed and stays
-        return;
-      configuration.setValue(key, previousValue);
-      configurationChanged();
+      if (restoreSettingLocked(key, previousValue))
+        // A value no change made on this node stored (issue #9951)
+        settingTokens.remove(tokenKey(key));
     }
+  }
+
+  /** {@link #restoreSetting(String, Object)} without the token bookkeeping. Whether the value was put back. */
+  private boolean restoreSettingLocked(final String key, final Object previousValue) {
+    if (isSaved(key))
+      // The value in force already reached configuration.json: another save shipped it, so it is committed and stays
+      return false;
+    configuration.setValue(key, previousValue);
+    configurationChanged();
+    return true;
   }
 
   /**
@@ -3170,30 +3319,42 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    */
   public void restoreSettingFromSavedConfiguration(final String key) {
     synchronized (configurationApplyLock) {
-      final JSONObject savedSettings;
-      try {
-        savedSettings = readSavedConfiguration().getJSONObject("configuration", new JSONObject());
-      } catch (final IOException | RuntimeException e) {
-        LogManager.instance().log(this, Level.WARNING,
-            "Cannot read '%s' to settle setting '%s' after a change whose replication outcome is unknown: it keeps the value just set",
-            e, configurationFile, key);
-        return;
-      }
-      final String fileKey = key.startsWith(GlobalConfiguration.PREFIX) ? key.substring(GlobalConfiguration.PREFIX.length()) : key;
-
-      Object savedValue = null;
-      if (savedSettings.has(fileKey) && GlobalConfiguration.findByKey(key) == null)
-        // A setting nothing declares is stored as given, and fromJSON() skips it: take the file's value as it is
-        savedValue = savedSettings.get(fileKey);
-      else if (savedSettings.has(fileKey)) {
-        // Read back the way open() and the apply read the file, so the value is coerced and stored the same way
-        final ContextConfiguration saved = new ContextConfiguration();
-        saved.fromJSON(new JSONObject().put("configuration", new JSONObject().put(fileKey, savedSettings.get(fileKey))).toString());
-        savedValue = saved.hasValue(key) ? saved.getValue(key, null) : null;
-      }
-      configuration.setValue(key, savedValue);
-      configurationChanged();
+      restoreSettingFromSavedConfigurationLocked(key);
     }
+  }
+
+  private void restoreSettingFromSavedConfigurationLocked(final String key) {
+    final JSONObject savedSettings;
+    try {
+      savedSettings = readSavedConfiguration().getJSONObject("configuration", new JSONObject());
+    } catch (final IOException | RuntimeException e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Cannot read '%s' to settle setting '%s' after a change whose replication outcome is unknown: it keeps the value just set",
+          e, configurationFile, key);
+      return;
+    }
+    final String fileKey = key.startsWith(GlobalConfiguration.PREFIX) ? key.substring(GlobalConfiguration.PREFIX.length()) : key;
+
+    Object savedValue = null;
+    if (savedSettings.has(fileKey) && GlobalConfiguration.findByKey(key) == null)
+      // A setting nothing declares is stored as given, and fromJSON() skips it: take the file's value as it is
+      savedValue = savedSettings.get(fileKey);
+    else if (savedSettings.has(fileKey)) {
+      // Read back the way open() and the apply read the file, so the value is coerced and stored the same way
+      final ContextConfiguration saved = new ContextConfiguration();
+      saved.fromJSON(new JSONObject().put("configuration", new JSONObject().put(fileKey, savedSettings.get(fileKey))).toString());
+      savedValue = saved.hasValue(key) ? saved.getValue(key, null) : null;
+    }
+    configuration.setValue(key, savedValue);
+    configurationChanged();
+    // The value the file holds belongs to no change made on this node (issue #9951)
+    settingTokens.remove(tokenKey(key));
+  }
+
+  /** The key {@link #settingTokens} holds {@code key}'s token under: the declared spelling, as the configuration stores it. */
+  private static String tokenKey(final String key) {
+    final GlobalConfiguration cfg = GlobalConfiguration.findByKey(key);
+    return cfg != null ? cfg.getKey() : key;
   }
 
   /** The value this database's configuration stores for {@code key}, {@code null} when it stores none. */
@@ -4007,7 +4168,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   protected void checkDatabaseIsOpen(final boolean updateIntent, final String databaseReadOnlyErrorMessage) {
     if (!open)
-      throw new DatabaseIsClosedException(name);
+      throw closedForReopen ? new DatabaseIsReopeningException(name) : new DatabaseIsClosedException(name);
     if (fenceReason != null)
       // #5053: a commit failed AFTER its WAL append - the WAL holds a record whose pages were never
       // published, so the live in-memory state diverges from what recovery will reconstruct. Every further

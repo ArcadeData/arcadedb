@@ -20,6 +20,7 @@ package com.arcadedb.server.grpc;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.query.sql.parser.MatchStatement;
 import com.arcadedb.query.sql.parser.OrderBy;
@@ -107,9 +108,6 @@ import java.io.IOException;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
-import java.time.LocalDate;
-import java.time.LocalDateTime;
-import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
@@ -150,7 +148,6 @@ import java.util.logging.Level;
 public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImplBase {
   /** The {@code protocol} tag every query this service runs is metered under. */
   private static final String GRPC_PROTOCOL = GrpcProtocolContextInterceptor.GRPC_PROTOCOL;
-
 
   // Pick serializer once
   private static final JsonSerializer FAST = JsonSerializer.createJsonSerializer().setIncludeVertexEdges(false)
@@ -865,6 +862,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             "executeCommandInternal(): external transaction - tx already active, not beginning");
       } else if (hasTx && tx.getBegin()) {
         db.begin();
+        // The client asked for this transaction and ends it with its own commit/rollback flag: an HA replica runs the
+        // statement in it rather than forwarding it, which would commit it on the leader whatever the flag says (#10040)
+        ((DatabaseInternal) db).getTransaction().setClientManaged(true);
         beganHere = true;
       } else if (autoWrap) {
         // Server-side safety: keep UPDATE/UPSERT/MERGE pipelines atomic
@@ -1368,7 +1368,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
       final var dbRef = db;
 
-      LogManager.instance().log(this, Level.FINE, "updateRecord(): el = %s; type = %s", el, el.getRecordType());
+      // THE RECORD BY ITS IDENTITY, NOT ITS CONTENT: SEE LOG_SHOW_VALUES (#9984)
+      LogManager.instance().log(this, Level.FINE, "updateRecord(): el = %s; type = %s", summarizeJava(el), el.getRecordType());
 
       if (el instanceof Vertex elAsVertex) {
 
@@ -1706,7 +1707,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
           Result result = resultSet.next();
 
-          LogManager.instance().log(this, Level.FINE, "executeQuery(): result = %s", result);
+          // THE ROW BY ITS SHAPE, NOT ITS CONTENT: SEE LOG_SHOW_VALUES (#9984)
+          if (LogManager.instance().isLoggable(this, Level.FINE))
+            LogManager.instance().log(this, Level.FINE, "executeQuery(): result = %s", summarizeResult(result));
 
           final long serRowStart = System.nanoTime();
           // Convert Result to GrpcRecord, preserving aliases and all properties
@@ -1886,6 +1889,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         } finally {
           ProtocolContext.clear();
         }
+        // The client ends this transaction with its own Commit/Rollback: an HA replica runs its writes in it (issue #10040)
+        ((DatabaseInternal) database).getTransaction().setClientManaged(true);
 
         // #8134: the engine's transaction object, taken on the thread whose DatabaseContext owns it and
         // therefore the only thread that can see it. Held for the transaction's whole life so that every RPC
@@ -5225,7 +5230,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       if (k.startsWith("@"))
         return;
       Object javaVal = fromGrpcValue(grpcVal);
-      if (LogManager.instance().isDebugEnabled())
+      if (LogManager.instance().isLoggable(this, Level.FINE))
         LogManager.instance().log(this, Level.FINE, "APPLY-DOC %s <= %s -> %s", k, summarizeGrpc(grpcVal),
             summarizeJava(javaVal));
       doc.set(k, javaVal);
@@ -5238,7 +5243,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       if (k.startsWith("@"))
         return;
       Object javaVal = fromGrpcValue(grpcVal);
-      if (LogManager.instance().isDebugEnabled())
+      if (LogManager.instance().isLoggable(this, Level.FINE))
         LogManager.instance()
             .log(this, Level.FINE, "APPLY-VERTEX %s <= %s -> %s", k, summarizeGrpc(grpcVal), summarizeJava(javaVal));
       vertex.set(k, javaVal);
@@ -5251,7 +5256,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       if (k.startsWith("@"))
         return;
       Object javaVal = fromGrpcValue(grpcVal);
-      if (LogManager.instance().isDebugEnabled())
+      if (LogManager.instance().isLoggable(this, Level.FINE))
         LogManager.instance().log(this, Level.FINE, "APPLY-EDGE %s <= %s -> %s", k, summarizeGrpc(grpcVal),
             summarizeJava(javaVal));
       edge.set(k, javaVal);
@@ -5273,7 +5278,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       case DOUBLE_VALUE:
         return dbgDec("fromGrpcValue", v, v.getDoubleValue(), null);
       case STRING_VALUE:
-        return dbgDec("fromGrpcValue", v, v.getStringValue(), null);
+        // Issue #9969: a zoned datetime or a time of day travels as text tagged with its logical type
+        return dbgDec("fromGrpcValue", v, GrpcTemporalCodec.decodeString(v.getStringValue(), v.getLogicalType()), null);
       case BYTES_VALUE:
         return dbgDec("fromGrpcValue", v, v.getBytesValue().toByteArray(), null);
       case TIMESTAMP_VALUE: {
@@ -5324,10 +5330,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
     // This method runs per value on the read hot path (recursively for collections/maps), so all
     // FINE logging is guarded to avoid building the delegated varargs array at the default log level.
-    final boolean debug = LogManager.instance().isDebugEnabled();
+    final boolean debug = LogManager.instance().isLoggable(this, Level.FINE);
 
     if (debug)
-      LogManager.instance().log(this, Level.FINE, "toGrpcValue(): Converting\n   value = %s\n   class = %s", o,
+      LogManager.instance().log(this, Level.FINE, "toGrpcValue(): Converting\n   value = %s\n   class = %s", summarizeJava(o),
           o == null ? "null" : o.getClass().getName());
 
     if (o instanceof JsonElement je) {
@@ -5358,37 +5364,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     if (o instanceof byte[] v)
       return dbgEnc("toGrpcValue", o, b.setBytesValue(ByteString.copyFrom(v)).build(), null);
 
-    if (o instanceof Date v) {
-      return dbgEnc("toGrpcValue", o,
-          GrpcValue.newBuilder().setTimestampValue(GrpcTypeConverter.msToTimestamp(v.getTime())).setLogicalType(
-              "datetime").build(), null);
-    }
-
-    // Issue #4149: emit Java time temporals as proto Timestamp instead of falling through to
-    // String.valueOf(o), which silently dropped sub-millisecond precision.
-    if (o instanceof LocalDate ld) {
-      final long seconds = ld.atStartOfDay(ZoneOffset.UTC).toEpochSecond();
-      return dbgEnc("toGrpcValue", o, GrpcValue.newBuilder()
-          .setTimestampValue(Timestamp.newBuilder().setSeconds(seconds).setNanos(0).build())
-          .setLogicalType("date").build(), null);
-    }
-    if (o instanceof LocalDateTime ldt) {
-      final Instant instant = ldt.toInstant(ZoneOffset.UTC);
-      return dbgEnc("toGrpcValue", o, GrpcValue.newBuilder()
-          .setTimestampValue(Timestamp.newBuilder().setSeconds(instant.getEpochSecond()).setNanos(instant.getNano()).build())
-          .setLogicalType("datetime").build(), null);
-    }
-    if (o instanceof Instant instant) {
-      return dbgEnc("toGrpcValue", o, GrpcValue.newBuilder()
-          .setTimestampValue(Timestamp.newBuilder().setSeconds(instant.getEpochSecond()).setNanos(instant.getNano()).build())
-          .setLogicalType("datetime").build(), null);
-    }
-    if (o instanceof ZonedDateTime zdt) {
-      final Instant instant = zdt.toInstant();
-      return dbgEnc("toGrpcValue", o, GrpcValue.newBuilder()
-          .setTimestampValue(Timestamp.newBuilder().setSeconds(instant.getEpochSecond()).setNanos(instant.getNano()).build())
-          .setLogicalType("datetime").build(), null);
-    }
+    // Issue #9969: the encoder GrpcTypeConverter and the client's ProtoUtils share, so a ZonedDateTime keeps its zone and an
+    // OffsetTime/LocalTime arrives typed instead of as an untyped string.
+    final GrpcValue temporal = GrpcTemporalCodec.encode(o);
+    if (temporal != null)
+      return dbgEnc("toGrpcValue", o, temporal, null);
 
     if (o instanceof RID rid) {
       return dbgEnc("toGrpcValue", o,
@@ -5595,6 +5575,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       return GrpcValue.newBuilder().setMapValue(mb.build()).build();
     }
 
+    // a path as its {_type, nodes, relationships, length} map rather than its toString() (issue #9913)
+    if (o instanceof TraversalPath path)
+      return toGrpcValue(path.toMap(), pc);
+
     if (o instanceof Map<?, ?> m) {
       GrpcMap.Builder mb = GrpcMap.newBuilder();
       for (var e : m.entrySet()) {
@@ -5642,7 +5626,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       LogManager.instance()
           .log(this, Level.FINE, "GRPC-ENC [toGrpcValue] FALLBACK-TO-STRING for class=%s value=%s",
               o.getClass().getName(),
-              String.valueOf(o));
+              summarizeJava(o));
 
     return dbgEnc("toGrpcValue", o, GrpcValue.newBuilder().setStringValue(String.valueOf(o)).build(), null);
   }
@@ -6332,14 +6316,14 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     // Iterate over ALL properties from the Result, including aliases.
     // Null-valued projections must be included (unset GrpcValue) so clients can always
     // address every projected alias by key, matching the HTTP serializer's {"key": null} behavior.
-    final boolean debug = LogManager.instance().isDebugEnabled();
+    final boolean debug = LogManager.instance().isLoggable(this, Level.FINE);
     for (String propertyName : result.getPropertyNames()) {
       final Object value = result.getProperty(propertyName);
 
       if (debug)
         LogManager.instance()
             .log(this, Level.FINE, "convertResultToGrpcRecord(): Converting %s\n  value = %s\n  class = %s",
-                propertyName, value, value == null ? "null" : value.getClass().getName());
+                propertyName, summarizeJava(value), value == null ? "null" : value.getClass().getName());
 
       final GrpcValue gv = projectionConfig != null ?
           toGrpcValue(value, projectionConfig) :
@@ -6402,7 +6386,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         builder.setRid(doc.getIdentity().toString());
 
       // set all properties
-      final boolean debug = LogManager.instance().isDebugEnabled();
+      final boolean debug = LogManager.instance().isLoggable(this, Level.FINE);
       for (String propertyName : doc.getPropertyNames()) {
 
         Object value = doc.get(propertyName);
@@ -6412,7 +6396,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           if (debug)
             LogManager.instance()
                 .log(this, Level.FINE, "convertToGrpcRecord(): Converting %s\n  value = %s\n  class = %s", propertyName
-                    , value,
+                    , summarizeJava(value),
                     value.getClass());
 
           GrpcValue gv = toGrpcValue(value);
@@ -6456,10 +6440,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
     final Object propValue = result.getProperty(propName);
 
-    if (LogManager.instance().isDebugEnabled())
+    if (LogManager.instance().isLoggable(this, Level.FINE))
       LogManager.instance()
           .log(this, Level.FINE, "convertPropToGrpcValue(): Converting %s\n  value = %s\n  class = %s", propName,
-              propValue,
+              summarizeJava(propValue),
               propValue == null ? "null" : propValue.getClass());
 
     return toGrpcValue(propValue, pc);
@@ -6469,10 +6453,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
     final Object propValue = result.getProperty(propName);
 
-    if (LogManager.instance().isDebugEnabled())
+    if (LogManager.instance().isLoggable(this, Level.FINE))
       LogManager.instance()
           .log(this, Level.FINE, "convertPropToGrpcValue(): Converting %s\n  value = %s\n  class = %s", propName,
-              propValue,
+              summarizeJava(propValue),
               propValue == null ? "null" : propValue.getClass());
 
     return toGrpcValue(propValue);
@@ -6597,6 +6581,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           case INT64_VALUE -> new Date(v.getInt64Value());
           case STRING_VALUE -> {
             final String s = v.getStringValue();
+            // Issue #9969: a ZonedDateTime travels as zoned text; its instant is exact, so it must not be re-read through the
+            // string chain, which rebases an offset onto the database's zone
+            if (GrpcTemporalCodec.ZONED_DATETIME.equalsIgnoreCase(v.getLogicalType())
+                && GrpcTemporalCodec.decodeString(s, v.getLogicalType()) instanceof ZonedDateTime zdt)
+              yield Date.from(zdt.toInstant());
             try {
               yield new Date(Long.parseLong(s));
             } catch (NumberFormatException ignored) {
@@ -6828,6 +6817,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             // (not java.util.Date) so sub-millisecond precision survives - Type.convert() truncates
             // to the column's declared precision.
             final String s = v.getStringValue();
+            // Issue #9969: see the DATE/DATETIME branch
+            if (GrpcTemporalCodec.ZONED_DATETIME.equalsIgnoreCase(v.getLogicalType())
+                && GrpcTemporalCodec.decodeString(s, v.getLogicalType()) instanceof ZonedDateTime zdt)
+              yield zdt.toInstant();
             try {
               yield Instant.ofEpochMilli(Long.parseLong(s));
             } catch (final NumberFormatException ignored) {
@@ -6856,27 +6849,56 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   }
 
   // ---- Debug helpers ----
+
+  /**
+   * The FINE traces of the conversions describe a value by its shape - type, length, size - and show what it holds only
+   * when this is set, the same opt-in the client's {@code ProtoUtils} reads. The traces became reachable once their
+   * guards started following the logging configuration (#9984), and turning a logger to FINE to watch the wire must
+   * not also start copying record content into the log.
+   */
+  private static final boolean LOG_SHOW_VALUES = Boolean.getBoolean("arcadedb.grpc.log.showString");
+
   private static String summarizeJava(Object o) {
     if (o == null)
       return "null";
     try {
       if (o instanceof CharSequence s)
-        return "String(" + s.length() + ")=\"" + (s.length() > 120 ? s.subSequence(0, 120) + "…" : s) + "\"";
+        return LOG_SHOW_VALUES ?
+            "String(" + s.length() + ")=\"" + (s.length() > 120 ? s.subSequence(0, 120) + "…" : s) + "\"" :
+            "String(" + s.length() + ")";
       if (o instanceof byte[] b)
         return "bytes[" + b.length + "]";
       if (o instanceof Collection<?> c)
         return o.getClass().getSimpleName() + "[size=" + c.size() + "]";
       if (o instanceof Map<?, ?> m)
         return o.getClass().getSimpleName() + "[size=" + m.size() + "]";
-      return o.getClass().getSimpleName() + "(" + String.valueOf(o) + ")";
+      if (o instanceof Identifiable id)
+        return o.getClass().getSimpleName() + "(" + id.getIdentity() + ")";
+      return LOG_SHOW_VALUES ? o.getClass().getSimpleName() + "(" + o + ")" : o.getClass().getSimpleName();
     } catch (Exception e) {
       return o.getClass().getSimpleName();
     }
   }
 
+  private static String summarizeResult(final Result result) {
+    if (LOG_SHOW_VALUES)
+      return String.valueOf(result);
+    return "Result(rid=" + result.getIdentity().map(Object::toString).orElse("none") + ", properties=" + result.getPropertyNames() + ")";
+  }
+
   private static String summarizeGrpc(GrpcValue v) {
     if (v == null)
       return "GrpcValue(null)";
+    if (!LOG_SHOW_VALUES)
+      return switch (v.getKindCase()) {
+        case STRING_VALUE -> "STRING(" + v.getStringValue().length() + ")";
+        case BYTES_VALUE -> "BYTES[" + v.getBytesValue().size() + "]";
+        case LIST_VALUE -> "LIST[size=" + v.getListValue().getValuesCount() + "]";
+        case MAP_VALUE -> "MAP[size=" + v.getMapValue().getEntriesCount() + "]";
+        case EMBEDDED_VALUE -> "EMBEDDED[type=" + v.getEmbeddedValue().getType() + ", size=" + v.getEmbeddedValue().getFieldsCount() + "]";
+        case LINK_VALUE -> "LINK(" + v.getLinkValue().getRid() + ")";
+        default -> v.getKindCase().name();
+      };
     switch (v.getKindCase()) {
       case BOOL_VALUE:
         return "BOOL(" + v.getBoolValue() + ")";
@@ -6914,7 +6936,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
   private GrpcValue dbgEnc(String where, Object in, GrpcValue out, String ctx) {
     // Guard the eager summary building so nothing is allocated at the default (non-debug) log level.
-    if (LogManager.instance().isDebugEnabled())
+    if (LogManager.instance().isLoggable(this, Level.FINE))
       LogManager.instance()
           .log(this, Level.FINE, "GRPC-ENC [%s]%s in=%s -> out=%s", where, ctx == null ? "" : " " + ctx,
               summarizeJava(in),
@@ -6924,7 +6946,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
   private Object dbgDec(String where, GrpcValue in, Object out, String ctx) {
     // Guard the eager summary building so nothing is allocated at the default (non-debug) log level.
-    if (LogManager.instance().isDebugEnabled())
+    if (LogManager.instance().isLoggable(this, Level.FINE))
       LogManager.instance()
           .log(this, Level.FINE, "GRPC-DEC [%s]%s in=%s -> out=%s", where, ctx == null ? "" : " " + ctx,
               summarizeGrpc(in),

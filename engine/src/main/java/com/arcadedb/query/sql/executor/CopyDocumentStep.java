@@ -26,6 +26,8 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.schema.DocumentType;
 
+import java.util.Map;
+
 /**
  * <p>Reads an upstream result set and returns a new result set that contains copies of the original OResult instances
  * </p>
@@ -59,7 +61,11 @@ public class CopyDocumentStep extends AbstractExecutionStep {
         try {
           Record resultDoc = null;
           if (toCopy.isElement()) {
+            // The record decides the kind of the copy (vertex or document), the row its properties: a projection that
+            // excluded or overrode a column has already decided what the row contains, and copying the record's own
+            // properties wrote back an excluded column and the stored value of an overridden one (issue #9965)
             final Record docToCopy = toCopy.getElement().get().getRecord();
+            final Map<String, Object> properties = propertiesToWrite(toCopy);
 
             if (docToCopy instanceof Vertex vertex) {
               if (targetType != null) {
@@ -67,18 +73,18 @@ public class CopyDocumentStep extends AbstractExecutionStep {
               } else {
                 resultDoc = getContext().getDatabase().newVertex(vertex.getTypeName());
               }
-              ((MutableVertex) resultDoc).set(vertex.toMap(false));
+              ((MutableVertex) resultDoc).set(properties);
             } else if (docToCopy instanceof Document document) {
               if (targetType != null) {
                 resultDoc = getContext().getDatabase().newDocument(targetType);
               } else {
                 resultDoc = getContext().getDatabase().newDocument(document.getTypeName());
               }
-              ((MutableDocument) resultDoc).set(document.toMap(false));
+              ((MutableDocument) resultDoc).set(properties);
             }
           } else {
             final DocumentType type = context.getDatabase().getSchema().getType(targetType);
-            resultDoc = type.newRecord().set(toCopy.toMap()).save();
+            resultDoc = type.newRecord().set(propertiesToWrite(toCopy)).save();
           }
           return new UpdatableResult((MutableDocument) resultDoc);
         } finally {
@@ -93,6 +99,21 @@ public class CopyDocumentStep extends AbstractExecutionStep {
       }
 
     };
+  }
+
+  /**
+   * The properties a statement writes from a row ({@code INSERT ... FROM SELECT}, {@code UPDATE ... MERGE} of a sub-query): the
+   * row's own properties ({@link Result#toPropertyMap(boolean)}), less the names that are not properties of a record -
+   * metadata ({@code @rid}, {@code @type}, ...) and the {@code $} variables a query projects ({@code $score},
+   * {@code $distance}, ...) - so neither ends up stored on the target record. A {@code $} name the row's own record stores
+   * is a property like any other, and is written.
+   */
+  static Map<String, Object> propertiesToWrite(final Result row) {
+    final Map<String, Object> properties = row.toPropertyMap(false);
+    // The source record is asked only about a $ name, which most rows do not have
+    properties.keySet().removeIf(name -> name.isEmpty() || name.charAt(0) == '@' ||//
+        (name.charAt(0) == '$' && !(row.isElement() && row.toElement().has(name))));
+    return properties;
   }
 
   @Override

@@ -18,13 +18,18 @@
  */
 package com.arcadedb.function.path;
 
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.function.StatelessFunction;
-
-import java.util.List;
-import java.util.Map;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
+import com.arcadedb.query.opencypher.traversal.TraversalPath;
 
 /**
  * Abstract base class for path functions.
+ * <p>
+ * Every Cypher path is a {@link TraversalPath} (issue #9913): the one a pattern binds, the one a path procedure yields, and
+ * the one each of these functions returns, so {@code nodes()}, {@code relationships()}, {@code length()} and the drivers
+ * read it as a path (issue #10017). {@link TraversalPath#of(Object)} also reads the {@code {_type: "path"}} map a client may
+ * send back as a parameter.
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
@@ -37,16 +42,15 @@ public abstract class AbstractPathFunction implements StatelessFunction {
   protected abstract String getSimpleName();
 
   /**
-   * Checks if an object is a path representation (list of alternating nodes and relationships).
+   * Returns the path argument in any shape {@link TraversalPath#of(Object)} reads. Anything else is a type error rather
+   * than a null or empty answer, which would read as a correct one (issue #9913).
+   *
+   * @throws CommandSemanticException when the argument is not a path
    */
-  protected boolean isPath(final Object obj) {
-    if (obj instanceof List) {
-      return true; // Assume list is a path
-    }
-    if (obj instanceof Map) {
-      final Map<?, ?> map = (Map<?, ?>) obj;
-      return map.containsKey("_type") && "path".equals(map.get("_type"));
-    }
-    return false;
+  protected TraversalPath requirePath(final Object value) {
+    final TraversalPath path = TraversalPath.of(value);
+    if (path == null)
+      throw CypherFunctionHelper.typeMismatch(getName(), "a PATH", value);
+    return path;
   }
 }

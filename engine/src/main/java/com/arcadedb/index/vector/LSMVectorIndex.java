@@ -336,6 +336,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
   // Product Quantization (PQ) for zero-disk-I/O approximate search
   // PQ file stores codebooks and encoded vectors; pqVectors is cached in memory
   private          LSMVectorIndexPQFile pqFile;
+  /**
+   * Set when a PQ file known to describe an earlier graph could not be deleted (issue #9917): the drop before a graph
+   * persist failed, or the drop after a failed PQ write did. Cleared once the file is replaced or gone. While it is set
+   * the file on disk cannot vouch for the graph next to it, and {@link LSMVectorIndexGraphSideFiles} refuses to archive
+   * the pair. Session-local: a restart forgets it, which the SEVERE log line written when it is set already warns about.
+   */
+  private volatile boolean             persistedPQKnownStale;
   private volatile PQVectors            pqVectors;
   private volatile ProductQuantization  productQuantization;
 
@@ -4288,6 +4295,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
         boolean graphCertified = false;
 
         try {
+          dropPersistedProductQuantizationBeforeGraphWrite();
           gf.writeGraph(graphIndex, vectors, chunkSizeMB, chunkCallback, earlyPq, earlyPqVectors);
 
           // Report persistence completion
@@ -4401,17 +4409,17 @@ public class LSMVectorIndex implements Index, IndexInternal {
               dropReplacedComponent(gf);
             }
           }
+          // THE EXCEPTION IS THE THROWABLE OF THE CALL, NOT A SURPLUS FORMAT ARGUMENT: THE STACK TRACE GOES WHEREVER THE
+          // SEVERE LINE GOES, WHERE IT USED TO BE PRINTED ONLY BEHIND A DEBUG FLAG NOTHING EVER SET (#9984)
           LogManager.instance().log(this, Level.SEVERE,
               "PERSIST: Failed to persist graph for %s (nodes=%d, storeVectorsInGraph=%b, txStatus=%s): %s - %s",
+              e,
               indexName,
               totalNodes,
               metadata.storeVectorsInGraph,
               persistStatus,
               e.getClass().getSimpleName(),
-              e.getMessage(),
-              e);
-          if (LogManager.instance().isDebugEnabled())
-            e.printStackTrace();
+              e.getMessage());
           // Don't throw - allow the index to continue working, just won't have persisted graph
         }
       } else {
@@ -4579,6 +4587,21 @@ public class LSMVectorIndex implements Index, IndexInternal {
     return graphFile;
   }
 
+  /**
+   * @return where this index keeps its product quantization, or {@code null} when it is not PRODUCT-quantized - the
+   * same condition {@code loadPersistedGraphOrDecidePrefix()} uses to decide that a graph without usable PQ data must
+   * be rebuilt. For {@link LSMVectorIndexGraphSideFiles}, which has to archive the file with the graph it belongs to.
+   */
+  Path getProductQuantizationFilePath() {
+    final LSMVectorIndexPQFile pq = pqFile;
+    return metadata.quantizationType == VectorQuantizationType.PRODUCT && pq != null ? pq.getFilePath() : null;
+  }
+
+  /** @return whether the PQ file on disk is known to describe an earlier graph than the one persisted next to it */
+  boolean isPersistedPQKnownStale() {
+    return persistedPQKnownStale;
+  }
+
   /** Test hook: behave as if the resident graph's persist never certified (issue #7260). */
   void forgetPersistedGraphSourceForTest() {
     persistedGraphSource = null;
@@ -4670,8 +4693,40 @@ public class LSMVectorIndex implements Index, IndexInternal {
   private void discardProductQuantization() {
     this.productQuantization = null;
     this.pqVectors = null;
-    if (pqFile != null)
-      pqFile.deletePQFile();
+    if (pqFile != null && pqFile.deletePQFile())
+      persistedPQKnownStale = false;
+  }
+
+  /**
+   * Drops the PQ file before a graph persist rewrites the pages it was computed for (issue #9917), the way
+   * {@link LSMVectorIndexGraphFile#writeGraph} drops the manifest. The PQ is written only AFTER the new graph is
+   * certified ({@link #persistProductQuantization}), so without this the file on disk would keep describing the
+   * previous graph's ordinals from the moment the pages start changing until the new PQ replaces it - across a crash
+   * too. With it, a PQ file on disk was always written for the graph its index has certified since the last persist
+   * began, which is what lets a full backup archive the PQ with the graph's pages without trying to order the two by
+   * their modification times (see {@link LSMVectorIndexGraphSideFiles}). This session keeps searching with the codes it
+   * holds in memory, which are not touched.
+   * <p>
+   * Not a durability cost: a persist that fails or is killed after this point leaves no certified graph either (the
+   * manifest is dropped or marked unusable), so the next open rebuilds graph and PQ together whether or not the old PQ
+   * is still there. Before this, a killed persist left the old PQ beside pages it no longer described.
+   * <p>
+   * Only on the rebuild-and-persist path, which is the one that also writes the PQ. The {@code build()} path re-writes
+   * the pages of the graph that same rebuild has just persisted, and its PQ, so the file stays valid for them.
+   */
+  private void dropPersistedProductQuantizationBeforeGraphWrite() {
+    final LSMVectorIndexPQFile pq = pqFile;
+    if (pq == null || metadata.quantizationType != VectorQuantizationType.PRODUCT || !pq.exists())
+      return;
+    if (!pq.deletePQFile()) {
+      // NOT A REASON TO FAIL THE PERSIST: the new PQ, written once the graph is certified, replaces the file by a rename
+      // whether or not it could be deleted here. Until then the flag keeps a backup from pairing the two
+      persistedPQKnownStale = true;
+      LogManager.instance().log(this, Level.SEVERE,
+          "The PQ file %s of index %s could not be deleted before its graph is rewritten: until the new PQ replaces it, it "
+              + "describes the previous graph. Delete it by hand if the next open pairs it with the new one",
+          pq.getFilePath(), indexName);
+    }
   }
 
   /**
@@ -4692,6 +4747,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
   private void persistProductQuantization(final ProductQuantization pq, final PQVectors codes) {
     try {
       pqFile.writePQ(pq, codes);
+      persistedPQKnownStale = false;
     } catch (final Throwable e) {
       // Throwable, not IndexException: writePQ wraps every Exception in it, but an Error (an OutOfMemoryError while
       // streaming) passes straight through, and the stale file must be gone whichever way the write failed. An Error
@@ -4701,11 +4757,15 @@ public class LSMVectorIndex implements Index, IndexInternal {
               + "dropped, the next open rebuilds the graph and the PQ together. Approximate search stays available "
               + "until then",
           indexName, e.getMessage());
-      if (!pqFile.deletePQFile())
+      if (pqFile.deletePQFile())
+        persistedPQKnownStale = false;
+      else {
+        persistedPQKnownStale = true;
         LogManager.instance().log(this, Level.SEVERE,
             "The stale PQ file %s of index %s could not be deleted: it describes the previous graph and the next open will "
                 + "pair it with the current one. Delete it by hand to force the PQ to be rebuilt",
             pqFile.getFilePath(), indexName);
+      }
       if (e instanceof Error error)
         throw error;
     }

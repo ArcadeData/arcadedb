@@ -89,8 +89,7 @@ public class RefactorCloneNodesWithRelationships implements CypherProcedure {
 
   /**
    * One, not two: APOC declares the trailing {@code config} with a default, so a call that omits it is a call this
-   * procedure has to accept (issue #7427). {@link RefactorProcedureArgs#extractOptionalConfig} supplies the empty
-   * map in its place.
+   * procedure has to accept (issue #7427). {@link #optionalMapArg} supplies the empty map in its place.
    */
   @Override
   public int getMinArgs() {
@@ -122,7 +121,7 @@ public class RefactorCloneNodesWithRelationships implements CypherProcedure {
     validateArgs(args);
 
     final List<Vertex> nodes = RefactorProcedureArgs.extractVertices(getName(), args[0]);
-    final Map<String, Object> config = RefactorProcedureArgs.extractOptionalConfig(getName(), args);
+    final Map<String, Object> config = optionalMapArg(args, 1, "config");
     final Set<String> skipProperties = extractSkipProperties(config);
     final Database database = context.getDatabase();
 

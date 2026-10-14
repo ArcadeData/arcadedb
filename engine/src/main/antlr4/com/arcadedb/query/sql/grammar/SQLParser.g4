@@ -1558,14 +1558,25 @@ arrayLiteral
 /**
  * Map literal {key: value, ...}
  */
+// "@rid" is lexed as RID_STRING, for the {"@rid": expr} RID form, so a plain map entry cannot spell it, and no map literal
+// could carry the key every document read back as JSON has: the MERGE/CONTENT of one failed to parse (#9971). It is admitted
+// in a map of two entries or more, which the RID form never is - a single-entry {"@rid": expr} must stay a RID, and an
+// expression reaches mapLit (through mathExpr) before ridLiteral. The two alternatives part on the token after the brace, so
+// an ordinary map literal costs the prediction nothing more than before
 mapLiteral
-    : LBRACE (mapEntry (COMMA mapEntry)*)? RBRACE
+    : LBRACE (mapEntry (COMMA mapEntryOrRid)*)? RBRACE
+    | LBRACE RID_STRING COLON expression (COMMA mapEntryOrRid)+ RBRACE
     ;
 
 mapEntry
     // MAXDEPTH is a keyword of TRAVERSE, not a general identifier (it would be swallowed as a projection alias there),
     // but it is a documented option key of the path functions, so a map key may spell it unquoted (#9148)
     : (identifier | MAXDEPTH | STRING_LITERAL) COLON expression
+    ;
+
+mapEntryOrRid
+    : mapEntry
+    | RID_STRING COLON expression
     ;
 
 /**

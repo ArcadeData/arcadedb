@@ -27,7 +27,6 @@ import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.Json;
 
 import java.util.Collection;
-import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
@@ -83,8 +82,12 @@ public class UpdateMergeStep extends AbstractExecutionStep {
   private void handleMerge(final Record record, final CommandContext context) {
     final MutableDocument doc = ((Document) record).modify();
     final Map<String, Object> map = json != null ? json.toMap(record, context) : resolveExpression(record, context);
-    for (final Map.Entry<String, Object> entry : map.entrySet())
-      doc.set(entry.getKey(), entry.getValue());
+    // Through the map contract, like UPDATE ... CONTENT and INSERT ... CONTENT: a key starting with @ is skipped as metadata,
+    // except the ones the record type assigns (an edge's @in/@out re-point it). Every other key takes the same path as the
+    // positional setter (putProperty: schema conversion, null stored as null). Applied key by key through the positional
+    // setter, a reserved key was refused, so a document read back as JSON ({"@rid", "@type", "@cat", ...}) could not be
+    // merged back (issue #9971)
+    doc.merge(map);
   }
 
   private Map<String, Object> resolveExpression(final Record record, final CommandContext context) {
@@ -101,14 +104,15 @@ public class UpdateMergeStep extends AbstractExecutionStep {
       value = collection.iterator().next();
     }
 
-    // A user-supplied map is merged verbatim: its keys are an explicit intent, unlike the metadata a record-shaped
-    // payload carries implicitly, which the branches below strip
+    // A user-supplied map is merged as given, under the map contract of handleMerge(): an edge's @in/@out is an explicit
+    // intent there, unlike the metadata a record-shaped payload carries implicitly, which the branches below strip
     if (value instanceof Map<?, ?> map)
       return checkStringKeys(map);
     else if (value instanceof Document document)
       return document.toMap(false);
     else if (value instanceof Result result)
-      return toPropertyMap(result);
+      // The rule every statement that writes a row follows
+      return CopyDocumentStep.propertiesToWrite(result);
     throw new CommandExecutionException("Invalid value for UPDATE MERGE, expected a map but found: " + value);
   }
 
@@ -118,23 +122,6 @@ public class UpdateMergeStep extends AbstractExecutionStep {
       if (!(key instanceof String))
         throw new CommandExecutionException("Invalid value for UPDATE MERGE, expected a map with string keys but found: " + key);
     return (Map<String, Object>) map;
-  }
-
-  /**
-   * Converts a result into the map of the properties to merge. Metadata ({@code @rid}, {@code @type}, ...) and computed
-   * pseudo-properties ({@code $score}, ...) are excluded so they never end up stored on the target record.
-   */
-  private static Map<String, Object> toPropertyMap(final Result result) {
-    final Map<String, Object> map = new LinkedHashMap<>();
-    for (final String name : result.getPropertyNames()) {
-      if (name.isEmpty())
-        continue;
-      final char prefix = name.charAt(0);
-      if (prefix == '@' || prefix == '$')
-        continue;
-      map.put(name, result.getProperty(name));
-    }
-    return map;
   }
 
   @Override

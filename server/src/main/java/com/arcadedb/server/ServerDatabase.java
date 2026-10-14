@@ -472,6 +472,11 @@ public class ServerDatabase implements DatabaseInternal {
   }
 
   @Override
+  public boolean updateRecordWithEventsNoLock(final Record record, final boolean discardRecordAfter) {
+    return current().updateRecordWithEventsNoLock(record, discardRecordAfter);
+  }
+
+  @Override
   public boolean deleteRecordNoLock(final Record record) {
     return current().deleteRecordNoLock(record);
   }
@@ -786,6 +791,11 @@ public class ServerDatabase implements DatabaseInternal {
   @Override
   public void saveConfiguration() throws IOException {
     current().saveConfiguration();
+  }
+
+  @Override
+  public void saveConfiguration(final String key) throws IOException {
+    current().saveConfiguration(key);
   }
 
   public StatementCache getStatementCache() {

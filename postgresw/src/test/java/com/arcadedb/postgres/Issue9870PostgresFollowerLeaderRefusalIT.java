@@ -83,21 +83,21 @@ class Issue9870PostgresFollowerLeaderRefusalIT extends BaseRaftHATest {
   }
 
   /**
-   * The extended protocol runs a parsed SQL statement on the node the client reached rather than through the follower's
-   * forward (issue #9954), so a schema change sent this way is refused by the follower's schema layer, naming the leader
-   * by its HTTP address, without any injection. If #9954 routes it through the forward, this becomes the simple-protocol
-   * case above and needs {@link BaseRaftHATest#refuseForwardedWritesOn} like it.
+   * The extended protocol reaches the same forward since issue #9954 (it used to run a parsed statement on the node the
+   * client reached, so a schema change was refused by the follower's schema layer instead), so it needs the same
+   * injection as the simple-protocol case above and is refused the same way, naming the leader.
    */
   @Test
   @Timeout(120)
   void aSchemaChangeOnTheExtendedQueryProtocolNamesTheLeader() throws Exception {
     final int follower = firstFollowerOf(requireLeaderIndex());
-    final String leaderAddress = getRaftPlugin(follower).getRaftHAServer().getLeaderHttpAddress();
-    assertThat(leaderAddress).as("the follower must know where the leader is").isNotBlank();
+    final Runnable restore = refuseForwardedWritesOn(follower);
     try (final Connection connection = connect(follower, "extended");
         final PreparedStatement statement = connection.prepareStatement("CREATE DOCUMENT TYPE Issue9870PgExtended")) {
       final Throwable refused = catchThrowable(statement::execute);
-      assertRefusalNaming(refused, leaderAddress);
+      assertRefusalNaming(refused, getRaftPlugin(follower).getRaftHAServer().getLeaderName());
+    } finally {
+      restore.run();
     }
   }
 

@@ -84,10 +84,10 @@ public class AlgoKatz extends AbstractAlgoProcedure {
   public Stream<Result> execute(final Object[] args, final Result inputRow, final CommandContext context) {
     validateArgs(args);
 
-    final String[] relTypes    = args.length > 0 ? extractRelTypes(args[0], context) : null;
-    final double alpha         = args.length > 1 ? ((Number) args[1]).doubleValue() : 0.005;
-    final int maxIterations    = args.length > 2 ? extractInt((Number) args[2], "maxIterations", 1) : 100;
-    final double tolerance     = args.length > 3 ? ((Number) args[3]).doubleValue() : 1e-6;
+    final String[] relTypes    = extractRelTypes(argOrDefault(args, 0, null), context);
+    final double alpha         = optionalNumberArg(args, 1, "alpha", 0.005).doubleValue();
+    final int maxIterations    = extractInt(optionalNumberArg(args, 2, "maxIterations", 100), "maxIterations", 1);
+    final double tolerance     = optionalNumberArg(args, 3, "tolerance", 1e-6).doubleValue();
 
     final Database db = context.getDatabase();
     final WorkGuard guard = newWorkGuard(context);

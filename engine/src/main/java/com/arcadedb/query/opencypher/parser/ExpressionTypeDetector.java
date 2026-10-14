@@ -214,6 +214,9 @@ class ExpressionTypeDetector {
       // GQL IS [NOT] TYPED type and :: type (issue #3365 section 3.3)
       if (comp instanceof Cypher25Parser.TypeComparisonContext)
         return builder.parseIsTypedExpression((Cypher25Parser.TypeComparisonContext) comp);
+      // IS [NOT] [form] NORMALIZED (issue #9940)
+      if (comp instanceof Cypher25Parser.NormalFormComparisonContext normalForm)
+        return builder.parseIsNormalizedExpression(normalForm);
     }
     return null;
   }

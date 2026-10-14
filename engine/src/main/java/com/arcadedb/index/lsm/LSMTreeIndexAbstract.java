@@ -150,7 +150,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
       throw new IllegalArgumentException("Index null strategy is null");
 
     if (keyTypes == null || keyTypes.length == 0)
-      throw new IllegalArgumentException("Key types empty ");
+      throw new IllegalArgumentException("Key types empty");
 
     this.mainIndex = mainIndex;
     this.serializer = database.getSerializer();
@@ -183,6 +183,11 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
     super(database, name, filePath, TEMP_EXT + ext, ComponentFile.MODE.READ_WRITE, pageSize, version);
     if (nullStrategy == null)
       throw new IllegalArgumentException("Index null strategy is null");
+
+    // The same refusal the creation constructor makes: a clone is what a compaction writes to disk and ships to the
+    // replicas, so empty key types copied here would turn one broken instance into a broken file (issue #10046)
+    if (storageKeyTypes == null || storageKeyTypes.length == 0)
+      throw new IllegalArgumentException("Key types empty");
 
     this.mainIndex = mainIndex;
     this.serializer = database.getSerializer();
@@ -308,7 +313,11 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
     final int last_ = fileName.lastIndexOf('_');
     if (last_ < 1 || last_ == fileName.length() - 1)
       return fileName;
-    for (int i = last_ + 1; i < fileName.length(); i++)
+    // The stamp is a System.nanoTime(), which may be negative: its origin is arbitrary
+    final int firstDigit = fileName.charAt(last_ + 1) == '-' ? last_ + 2 : last_ + 1;
+    if (firstDigit == fileName.length())
+      return fileName;
+    for (int i = firstDigit; i < fileName.length(); i++)
       if (!Character.isDigit(fileName.charAt(i)))
         return fileName;
     return fileName.substring(0, last_);

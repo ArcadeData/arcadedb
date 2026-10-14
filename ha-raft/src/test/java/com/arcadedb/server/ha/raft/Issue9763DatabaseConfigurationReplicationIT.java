@@ -201,6 +201,59 @@ class Issue9763DatabaseConfigurationReplicationIT extends BaseRaftHATest {
         (index, file) -> assertThat(file.getInt("typeDefaultBuckets")).isEqualTo(11));
   }
 
+  /**
+   * Issue #9959: the entry a change submits names the setting it changed and nothing else. A value another statement on
+   * the same node has put in force and not submitted yet - its save still ahead of it, and possibly refused - used to
+   * travel with this change's entry and commit on every node. Here that other statement is the in-memory store each
+   * writer makes before its save, left pending on the node that then runs a change to a different setting: through
+   * {@code ALTER DATABASE} on the leader and through the "set database setting" command on a follower.
+   */
+  @Test
+  void aChangeDoesNotCarryAnotherPendingSettingOfItsNode() throws Exception {
+    final int leaderIndex = findLeaderIndex();
+    final int followerIndex = (leaderIndex + 1) % getServerCount();
+    final String walFlushKey = GlobalConfiguration.TX_WAL_FLUSH.getKey();
+    final LocalDatabase leaderLocal = (LocalDatabase) ((DatabaseInternal) leader()).getEmbedded();
+    final LocalDatabase followerLocal = (LocalDatabase) ((DatabaseInternal) getServerDatabase(followerIndex,
+        getDatabaseName())).getEmbedded();
+    final int[] walFlushBefore = new int[getServerCount()];
+    for (int i = 0; i < getServerCount(); i++) {
+      final DatabaseInternal database = (DatabaseInternal) getServerDatabase(i, getDatabaseName());
+      walFlushBefore[i] = database.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_WAL_FLUSH);
+      assertThat(readConfigurationFile(database).has("txWalFlush")).as("precondition: server %d", i).isFalse();
+    }
+
+    // The other statements: in force on their node, not submitted
+    leaderLocal.getConfiguration().setValue(GlobalConfiguration.TX_WAL_FLUSH, 2);
+    followerLocal.getConfiguration().setValue(GlobalConfiguration.TX_WAL_FLUSH, 1);
+    try {
+      leader().command("sql", "ALTER DATABASE `arcadedb.typeDefaultBuckets` 4");
+      new ServerControlPlane(getServer(followerIndex)).setDatabaseSetting(getDatabaseName(),
+          GlobalConfiguration.TX_RETRIES.getKey(), "8");
+
+      assertOnEveryNode((index, database) -> {
+        assertThat(database.getConfiguration().getValueAsInteger(GlobalConfiguration.TYPE_DEFAULT_BUCKETS))
+            .as("server %d in memory", index).isEqualTo(4);
+        assertThat(database.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_RETRIES))
+            .as("server %d in memory", index).isEqualTo(8);
+        final int expectedWalFlush = index == leaderIndex ? 2 : index == followerIndex ? 1 : walFlushBefore[index];
+        assertThat(database.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_WAL_FLUSH))
+            .as("server %d runs with its own pending value, or none, never another node's", index)
+            .isEqualTo(expectedWalFlush);
+      }, (index, file) -> {
+        assertThat(file.getInt("typeDefaultBuckets")).as("server %d configuration.json", index).isEqualTo(4);
+        assertThat(file.getInt("txRetries")).as("server %d configuration.json", index).isEqualTo(8);
+        assertThat(file.has("txWalFlush")).as("server %d: no entry carried the pending setting", index).isFalse();
+      });
+    } finally {
+      try {
+        leaderLocal.getConfiguration().setValue(walFlushKey, null);
+      } finally {
+        followerLocal.getConfiguration().setValue(walFlushKey, null);
+      }
+    }
+  }
+
   // -----------------------------------------------------------------------------------------------------------
 
   @FunctionalInterface

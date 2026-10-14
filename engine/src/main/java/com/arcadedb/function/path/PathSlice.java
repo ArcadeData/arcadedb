@@ -18,12 +18,9 @@
  */
 package com.arcadedb.function.path;
 
+import com.arcadedb.function.cypher.CypherFunctionHelper;
+import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.CommandContext;
-
-import java.util.ArrayList;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
 
 /**
  * path.slice(path, from, [to]) - Extract a subpath from a path.
@@ -52,64 +49,29 @@ public class PathSlice extends AbstractPathFunction {
   }
 
   @Override
-  @SuppressWarnings("unchecked")
   public Object execute(final Object[] args, final CommandContext context) {
     if (args[0] == null)
       return null;
 
-    final int from = args[1] != null ? ((Number) args[1]).intValue() : 0;
-
-    List<Object> nodes;
-    List<Object> rels;
-
-    if (args[0] instanceof Map) {
-      final Map<String, Object> pathMap = (Map<String, Object>) args[0];
-      nodes = (List<Object>) pathMap.get("nodes");
-      rels = (List<Object>) pathMap.get("relationships");
-    } else if (args[0] instanceof List) {
-      // Assume alternating node/rel list
-      nodes = new ArrayList<>();
-      rels = new ArrayList<>();
-      final List<?> elements = (List<?>) args[0];
-      for (int i = 0; i < elements.size(); i++) {
-        if (i % 2 == 0) {
-          nodes.add(elements.get(i));
-        } else {
-          rels.add(elements.get(i));
-        }
-      }
-    } else {
-      return null;
-    }
-
-    if (nodes == null || rels == null)
-      return null;
-
-    final int relCount = rels.size();
-    final int to = args.length > 2 && args[2] != null ? ((Number) args[2]).intValue() : relCount;
+    // A TraversalPath in, a TraversalPath out: the path a MATCH pattern binds used to answer null (issue #9913)
+    final TraversalPath path = requirePath(args[0]);
+    final int relCount = path.length();
+    final int from = index(args[1], 0);
+    final int to = index(args.length > 2 ? args[2] : null, relCount);
 
     // Clamp the bounds. An empty slice (from == to, or from == relCount, i.e. slicing at the path's
     // end) yields a zero-relationship path containing just the boundary node, not null (issue #4707).
     final int actualFrom = Math.max(0, Math.min(from, relCount));
     final int actualTo = Math.max(actualFrom, Math.min(relCount, to));
+    return path.subPath(actualFrom, actualTo);
+  }
 
-    final List<Object> slicedNodes = new ArrayList<>();
-    final List<Object> slicedRels = new ArrayList<>();
-
-    // Nodes are indexed: node[i] -rel[i]-> node[i+1]
-    for (int i = actualFrom; i <= actualTo && i < nodes.size(); i++) {
-      slicedNodes.add(nodes.get(i));
-    }
-    for (int i = actualFrom; i < actualTo && i < rels.size(); i++) {
-      slicedRels.add(rels.get(i));
-    }
-
-    final Map<String, Object> result = new LinkedHashMap<>();
-    result.put("_type", "path");
-    result.put("nodes", slicedNodes);
-    result.put("relationships", slicedRels);
-    result.put("length", slicedRels.size());
-
-    return result;
+  /** A relationship index, {@code defaultValue} for null; anything but a number is a type error, not a ClassCastException. */
+  private int index(final Object value, final int defaultValue) {
+    if (value == null)
+      return defaultValue;
+    if (value instanceof Number number)
+      return number.intValue();
+    throw CypherFunctionHelper.typeMismatch(getName(), "an INTEGER", value);
   }
 }

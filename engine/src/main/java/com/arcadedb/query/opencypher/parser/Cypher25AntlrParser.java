@@ -31,6 +31,7 @@ import org.antlr.v4.runtime.CommonTokenStream;
 import org.antlr.v4.runtime.Token;
 import org.antlr.v4.runtime.tree.ParseTree;
 
+import java.util.ArrayDeque;
 import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.Locale;
@@ -189,6 +190,14 @@ public class Cypher25AntlrParser {
         throw new CommandParsingException(errorMsg.toString());
       }
 
+      // USE can only name the database this parser belongs to (issue #9940). Checked here, where the database is known, and
+      // on the tree, so a USE anywhere - a leading clause, before a braced query, inside a subquery - is reached. The walk
+      // runs only for a query holding the USE keyword at all.
+      // No database only on DoWhen's read-only probe (new Cypher25AntlrParser().parse(q).isReadOnly()), which never executes
+      // the statement: every query that runs is parsed by CypherStatementCache, with its database, and is checked here
+      if (database != null && containsToken(tokens, Cypher25Lexer.USE))
+        checkUseClauses(statementContext, database.getName());
+
       // Build AST using visitor
       final CypherASTBuilder astBuilder = new CypherASTBuilder();
       final CypherStatement statement = astBuilder.visitStatement(statementContext);
@@ -210,6 +219,31 @@ public class Cypher25AntlrParser {
       throw new CommandParsingException("Failed to parse Cypher query: " + query, e);
     } finally {
       ExpressionRewriter.restoreMaxExpressionDepth(previousMaxDepth);
+    }
+  }
+
+  private static boolean containsToken(final CommonTokenStream tokens, final int type) {
+    for (final Token token : tokens.getTokens())
+      if (token.getType() == type)
+        return true;
+    return false;
+  }
+
+  private static void checkUseClauses(final ParseTree root, final String databaseName) {
+    // Iterative, so a deeply nested query cannot overflow the stack here
+    final ArrayDeque<ParseTree> pending = new ArrayDeque<>();
+    pending.push(root);
+    while (!pending.isEmpty()) {
+      final ParseTree node = pending.pop();
+      if (node instanceof Cypher25Parser.UseClauseContext use) {
+        final String graph = CypherASTBuilder.useGraphName(use);
+        if (!graph.equals(databaseName))
+          throw new FeatureNotImplementedException("USE " + graph + " is not supported; a query can only USE "
+              + "the database it runs against ('" + databaseName + "')");
+        continue;
+      }
+      for (int i = 0; i < node.getChildCount(); i++)
+        pending.push(node.getChild(i));
     }
   }
 

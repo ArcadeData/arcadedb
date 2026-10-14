@@ -58,7 +58,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * The archive now carries the component as an EMPTY entry, the state of a freshly created index, so the restored
  * database keeps it registered under the same file id and builds its own graph, with its own manifest, on first use.
  * <p>
- * Both backup paths are driven, because they enumerate their files separately.
+ * Both backup paths are driven, because they enumerate their files separately. Since issue #9917 the snapshot path
+ * archives an idle graph with its pages AND its side files, so there the graph is reused - verified, which is what this
+ * test pins on both paths: never an unverified reuse.
  */
 class Issue9888BackupArchivesEmptyVectorGraphTest {
   private static final String DATABASE_PATH = "target/databases/issue9888-backup-vector-graph";
@@ -108,8 +110,14 @@ class Issue9888BackupArchivesEmptyVectorGraphTest {
         .toList();
     assertThat(graphs).as("the graph components are still archived, so the restore keeps their file ids").hasSize(2);
     for (final String graph : graphs)
-      assertThat(entries.get(graph)).as("'%s' is archived empty: the restored database builds its own graph", graph)
-          .isZero();
+      if (pageSnapshot)
+        // SINCE #9917 THE SNAPSHOT PATH ARCHIVES AN IDLE GRAPH WITH ITS PAGES AND THE SIDE FILES THAT VOUCH FOR THEM,
+        // SO THE REUSE BELOW IS A VERIFIED ONE; Issue9917BackupReusesVectorGraphTest covers that path in full
+        assertThat(entries.get(graph + ".vecgraphfp")).as("'%s' is archived with the manifest vouching for it", graph)
+            .isNotNull();
+      else
+        assertThat(entries.get(graph)).as("'%s' is archived empty: the restored database builds its own graph", graph)
+            .isZero();
     assertThat(entries.entrySet()).as("the vector index pages, where the vectors live, are still archived with their bytes")
         .anyMatch(e -> e.getKey().endsWith(".lsmvecidx") && e.getValue() > 0);
 

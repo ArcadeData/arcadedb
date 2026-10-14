@@ -92,8 +92,8 @@ public class AlgoLongestPathDAG extends AbstractAlgoProcedure {
   public Stream<Result> execute(final Object[] args, final Result inputRow, final CommandContext context) {
     validateArgs(args);
 
-    final String[] relTypes     = args.length > 0 ? extractRelTypes(args[0], context) : null;
-    final String weightProperty = args.length > 1 ? extractString(args[1], "weightProperty") : null;
+    final String[] relTypes     = extractRelTypes(argOrDefault(args, 0, null), context);
+    final String weightProperty = extractString(argOrDefault(args, 1, null), "weightProperty");
 
     final Database db = context.getDatabase();
 

@@ -315,6 +315,11 @@ class SQLMethodTransformTest {
       }
 
       @Override
+      public boolean updateRecordWithEventsNoLock(final Record record, final boolean discardRecordAfter) {
+        return true;
+      }
+
+      @Override
       public boolean deleteRecordNoLock(final Record record) {
         return true;
       }

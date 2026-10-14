@@ -36,6 +36,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeSet;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -82,6 +84,8 @@ public final class ContractionHierarchy {
     UNAVAILABLE
   }
 
+  // EDGE TYPE SETS LOGGED AS NOT MATCHING, AT MOST: A LOG LINE PER SET, NOT A SET PER REQUEST (ISSUE #9915)
+  private static final int  MAX_LOGGED_MISMATCHES = 64;
   private static final int  MODE_DIRECTED   = 1;
   private static final int  MODE_UNDIRECTED = 2;
   private static final long MIN_ARC_BUDGET  = 100_000;
@@ -114,6 +118,9 @@ public final class ContractionHierarchy {
   private final LongAdder partialCustomizations  = new LongAdder();
   private final LongAdder queries                = new LongAdder();
   private final LongAdder fallbacks              = new LongAdder();
+  // REQUESTS FOR THIS WEIGHT THAT DID NOT MATCH THE EDGE TYPES, AND THE TYPE SETS ALREADY LOGGED (ISSUE #9915)
+  private final LongAdder edgeTypeMismatches     = new LongAdder();
+  private final Set<String> loggedMismatches     = ConcurrentHashMap.newKeySet();
   private volatile long   lastPartialCustomizationMicros;
   private volatile int    lastPartialArcs;
   private volatile long   lastCatchUpMicros;
@@ -197,13 +204,25 @@ public final class ContractionHierarchy {
   public static ContractionHierarchy find(final Database database, final String weightProperty, final String... edgeTypes) {
     if (!GraphTraversalProviderRegistry.hasAnyProviders() || GraphTraversalProviderRegistry.isWithheld(database))
       return null;
+    boolean anyMatch = false;
     for (final GraphTraversalProvider provider : GraphTraversalProviderRegistry.getProviders(database)) {
       if (!(provider instanceof GraphAnalyticalView view) || !view.hasContractionHierarchies())
         continue;
       final ContractionHierarchy hierarchy = view.getContractionHierarchy(weightProperty, edgeTypes);
-      if (hierarchy != null && provider.coversVertexType(null) && provider.isReady())
+      if (hierarchy == null)
+        continue;
+      anyMatch = true;
+      if (provider.coversVertexType(null) && provider.isReady())
         return hierarchy;
     }
+    if (!anyMatch)
+      // A HIERARCHY FOR THE WEIGHT THAT NONE MATCHED THE EDGE TYPES OF: THE REQUEST IS ANSWERED BY A SEARCH ORDERS OF
+      // MAGNITUDE SLOWER, AND NOTHING ELSE WOULD SAY WHY (ISSUE #9915)
+      for (final GraphTraversalProvider provider : GraphTraversalProviderRegistry.getProviders(database))
+        if (provider instanceof GraphAnalyticalView view && view.hasContractionHierarchies())
+          for (final ContractionHierarchy hierarchy : view.getContractionHierarchies())
+            if (hierarchy.weightProperty.equals(weightProperty))
+              hierarchy.onEdgeTypesMismatch(edgeTypes);
     return null;
   }
 
@@ -213,7 +232,9 @@ public final class ContractionHierarchy {
       return false;
     final boolean all = requested == null || requested.length == 0;
     if (edgeTypes == null)
-      return all ? view.coversEdgeType(null) : sameTypes(view.getMaterializedEdgeTypes(), view.resolveEdgeTypes(requested));
+      // EVERY TYPE: THE VIEW HAS TO HOLD EVERY EDGE, WHICH AN EDGE TYPE IT DOES NOT LIST BUT THAT HAS NO EDGE DOES NOT
+      // CHANGE (ISSUE #9915)
+      return all ? view.coversEveryEdge() : sameTypes(view.getMaterializedEdgeTypes(), view.resolveEdgeTypes(requested));
     if (all)
       return false;
     return sameTypes(view.resolveEdgeTypes(edgeTypes), view.resolveEdgeTypes(requested));
@@ -861,6 +882,34 @@ public final class ContractionHierarchy {
     return fallbacks.sum();
   }
 
+  /** Requests for this hierarchy's weight that it could not take because they asked for other edge types (issue #9915). */
+  public long getEdgeTypeMismatchCount() {
+    return edgeTypeMismatches.sum();
+  }
+
+  /**
+   * A request for this hierarchy's weight over {@code requested} edge types (none: every type) found no hierarchy for
+   * them, so it is answered without one. Counted, and logged once per type set.
+   */
+  void onEdgeTypesMismatch(final String[] requested) {
+    edgeTypeMismatches.increment();
+    final boolean all = requested == null || requested.length == 0;
+    final String key = all ? "*" : String.join(",", new TreeSet<>(Arrays.asList(requested)));
+    if (loggedMismatches.size() >= MAX_LOGGED_MISMATCHES || !loggedMismatches.add(key))
+      return;
+    if (all)
+      LogManager.instance().log(this, Level.INFO,
+          "Contraction hierarchy '%s' on view '%s' does not answer a shortest path that names no edge type, which means every "
+              + "edge type of the database: the view does not hold the edges of every type. The search runs without it, which "
+              + "is much slower. Name the edge types in the request, or include the other types in the view",
+          weightProperty, view.getName());
+    else
+      LogManager.instance().log(this, Level.INFO,
+          "Contraction hierarchy '%s' on view '%s' routes over %s and does not answer a shortest path over [%s]. The search "
+              + "runs without it, which is much slower", weightProperty, view.getName(),
+          edgeTypes == null ? "every edge type of the view" : Arrays.toString(edgeTypes), key);
+  }
+
   long getMemoryUsageBytes() {
     final Prepared p = prepared;
     long bytes = 0;
@@ -903,6 +952,7 @@ public final class ContractionHierarchy {
     stats.put("lastIncrementalUpdateMicros", lastCatchUpMicros);
     stats.put("queries", queries.sum());
     stats.put("fallbacks", fallbacks.sum());
+    stats.put("edgeTypeMismatches", edgeTypeMismatches.sum());
     return stats;
   }
 }

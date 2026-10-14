@@ -63,6 +63,12 @@ class ClauseDispatcher {
     register(Cypher25Parser.ClauseContext::subqueryClause, this::handleSubquery);
     register(Cypher25Parser.ClauseContext::loadCSVClause, this::handleLoadCSV);
     register(Cypher25Parser.ClauseContext::finishClause, this::handleFinish);
+    register(Cypher25Parser.ClauseContext::letClause, this::handleLet);
+    // USE names the graph to run against. Only the current database can be named: Cypher25AntlrParser refuses any other
+    // name (it knows the database, this dispatcher does not), so a USE that reaches here selects what is selected already.
+    // The graph reference is still resolved, so a form that names no graph by name is refused here too.
+    register(Cypher25Parser.ClauseContext::useClause,
+        (ctx, builder, astBuilder) -> CypherASTBuilder.useGraphName(ctx.useClause()));
   }
 
   /**
@@ -80,7 +86,14 @@ class ClauseDispatcher {
         return;
       }
     }
-    // No handler found - this should not happen with valid grammar
+    // A clause the grammar accepts and nothing executes must not vanish from the query: dropping it is how LET and USE used
+    // to run as if they had not been written (issue #9940)
+    throw new FeatureNotImplementedException("the clause '" + CypherASTBuilder.getOriginalText(ctx) + "' is not supported");
+  }
+
+  /** How many clause alternatives have a handler, for the test that keeps it in step with the grammar. */
+  int handlerCount() {
+    return handlers.size();
   }
 
   private <T> void register(final Function<Cypher25Parser.ClauseContext, T> accessor, final ClauseHandler handler) {
@@ -153,6 +166,14 @@ class ClauseDispatcher {
     builder.addWith(implicitWith);
   }
 
+  private void handleLet(final Cypher25Parser.ClauseContext ctx, final StatementBuilder builder,
+                         final CypherASTBuilder astBuilder) {
+    // GQL LET x = expr [, y = expr] (issue #9940): binds new variables next to the incoming ones without grouping, which is
+    // an implicit `WITH *, expr AS x` per item. One WITH per item, in order, so an item may read the ones before it.
+    for (final WithClause with : astBuilder.visitLetClause(ctx.letClause()))
+      builder.addWith(with);
+  }
+
   private void handleReturn(final Cypher25Parser.ClauseContext ctx, final StatementBuilder builder,
                             final CypherASTBuilder astBuilder) {
     final Cypher25Parser.ReturnBodyContext body = ctx.returnClause().returnBody();
@@ -192,6 +213,17 @@ class ClauseDispatcher {
     final Expression limitExpr = orderBySkipLimit.limit() != null
         ? (Expression) astBuilder.visitLimit(orderBySkipLimit.limit())
         : null;
+
+    // After a RETURN the clause is part of the RETURN's own paging. As an implicit WITH it ran BEFORE the RETURN's ORDER BY,
+    // so `RETURN ... ORDER BY ... LIMIT 2 OFFSET 1` skipped a row of the unsorted input (issue #9940)
+    if (builder.hasReturn()) {
+      final ReturnClause returnClause = builder.getReturn();
+      builder.mergeTrailingPage(orderBy == null ? null :
+              ProjectedOrderByNormalizer.normalize(orderBy, returnClause.getReturnItems(),
+                  returnClause.isDistinct() || returnClause.hasAggregations()),
+          skipExpr, limitExpr);
+      return;
+    }
 
     final List<ReturnClause.ReturnItem> starItems = new ArrayList<>();
     starItems.add(ReturnClause.ReturnItem.star());

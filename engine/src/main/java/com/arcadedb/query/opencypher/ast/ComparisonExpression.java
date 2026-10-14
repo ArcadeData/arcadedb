@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher.ast;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.function.graph.IdFunction;
+import com.arcadedb.graph.LightEdgeRID;
 import com.arcadedb.query.opencypher.InlineProperties;
 import com.arcadedb.query.opencypher.query.OpenCypherQueryEngine;
 import com.arcadedb.query.opencypher.temporal.CypherDateTime;
@@ -217,9 +218,11 @@ public class ComparisonExpression implements BooleanExpression {
 
     // Graph entities compare by record identity even when different implementations represent them.
     // This is common when a Graph Analytical View vertex is compared with a regular OLTP vertex (#6010).
+    // Two parallel lightweight edges of one type over the same ordered pair share their RID but are two
+    // relationships, which the RID cannot tell apart and LightEdgeRID.isSameEdge can (issue #10008)
     if (left instanceof Identifiable leftIdentifiable
         && right instanceof Identifiable rightIdentifiable) {
-      final boolean equal = leftIdentifiable.getIdentity().equals(rightIdentifiable.getIdentity());
+      final boolean equal = LightEdgeRID.isSameEdge(leftIdentifiable.getIdentity(), rightIdentifiable.getIdentity());
       if (operator == Operator.EQUALS)
         return equal;
       if (operator == Operator.NOT_EQUALS)

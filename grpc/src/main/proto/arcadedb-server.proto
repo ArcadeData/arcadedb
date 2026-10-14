@@ -78,6 +78,8 @@ message GrpcValue {
   }
 
   // Optional semantic hint (non-breaking): "date", "datetime", "rid", "decimal(38,9)", etc.
+  // A value that holds more than an instant travels as ISO text in string_value: "zoned_datetime"
+  // (ISO_ZONED_DATE_TIME, zone id kept), "offset_time" (ISO_OFFSET_TIME), "local_time" (ISO_LOCAL_TIME).
   string logical_type = 14;
 }
 

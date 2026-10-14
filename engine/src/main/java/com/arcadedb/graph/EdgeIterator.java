@@ -114,10 +114,10 @@ public class EdgeIterator extends ResettableIteratorBase<Edge> {
 
       if (direction == Vertex.DIRECTION.OUT)
         return new ImmutableLightEdge(currentContainer.getDatabase(), edgeType, nextEdgeRID.getBucketId(), vertex, nextVertexRID,
-            currentContainer.getIdentity(), lastElementPosition, direction);
+            currentContainer.getIdentity(), lastElementPosition, direction, currentContainer.getUsed(), lightEdgeCensus());
       else
         return new ImmutableLightEdge(currentContainer.getDatabase(), edgeType, nextEdgeRID.getBucketId(), nextVertexRID, vertex,
-            currentContainer.getIdentity(), lastElementPosition, direction);
+            currentContainer.getIdentity(), lastElementPosition, direction, currentContainer.getUsed(), lightEdgeCensus());
     }
 
     ++browsed;

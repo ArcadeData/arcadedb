@@ -30,6 +30,7 @@ import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParameterMissingException;
 import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.QueryNotIdempotentException;
 import com.arcadedb.exception.SchemaException;
@@ -40,10 +41,12 @@ import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.QuerySession;
 import com.arcadedb.query.literal.LiteralParameterizer.Lookup;
 import com.arcadedb.query.opencypher.Labels;
+import com.arcadedb.query.opencypher.ast.ConditionalStatement;
 import com.arcadedb.query.opencypher.ast.CypherAdminStatement;
 import com.arcadedb.query.opencypher.ast.CypherDDLStatement;
 import com.arcadedb.query.opencypher.ast.CypherShowSchemaStatement;
 import com.arcadedb.query.opencypher.ast.CypherTypeName;
+import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.IsTypedExpression;
 import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
@@ -100,6 +103,13 @@ public class OpenCypherQueryEngine implements QueryEngine {
   private static final DefaultSQLFunctionFactory SQL_FUNCTION_FACTORY = DefaultSQLFunctionFactory.getInstance();
   private static final CypherFunctionFactory CYPHER_FUNCTION_FACTORY = new CypherFunctionFactory(SQL_FUNCTION_FACTORY);
   private static final ExpressionEvaluator EXPRESSION_EVALUATOR = new ExpressionEvaluator(CYPHER_FUNCTION_FACTORY);
+  /**
+   * Plan-cache key prefixes of the branches of a conditional query: {@code "\0WHEN#<i>\0<query>"} and
+   * {@code "\0ELSE\0<query>"}. The NUL inside the key is refused by the lexer outside a string literal, so no query text
+   * that plans can be equal to a key.
+   */
+  private static final String WHEN_BRANCH_KEY_PREFIX = "\u0000WHEN#";
+  private static final String ELSE_BRANCH_KEY_PREFIX = "\u0000ELSE\u0000";
 
   /** Columns of {@code SHOW USERS} and {@code SHOW CURRENT USER}. */
   private static final List<String> USER_COLUMNS = List.of("user", "databases");
@@ -427,6 +437,30 @@ public class OpenCypherQueryEngine implements QueryEngine {
   }
 
   /**
+   * The context the conditions of a conditional query are evaluated against: the database, the parameters, the functions.
+   * A condition reads parameters only (the parser refuses anything else) and is expected to have no side effect.
+   */
+  private BasicCommandContext conditionContext(final Map<String, Object> parameters) {
+    final BasicCommandContext context = new BasicCommandContext();
+    context.setDatabase(database);
+    context.setInputParameters(parameters);
+    CypherExecutionPlan.installFunctionResolver(context, CYPHER_FUNCTION_FACTORY);
+    return context;
+  }
+
+  /**
+   * Evaluates the condition of a conditional query branch. Only {@code true} takes the branch: null and false both pass to
+   * the next one, as a WHERE does. Anything that is not a boolean is a type error rather than a silent "not taken".
+   */
+  private static boolean isConditionTrue(final Expression condition, final BasicCommandContext context) {
+    final Object value = EXPRESSION_EVALUATOR.evaluate(condition, new ResultInternal(), context);
+    if (value == null || value instanceof Boolean)
+      return Boolean.TRUE.equals(value);
+    throw new CommandSemanticException("Type mismatch: the condition of a conditional query (WHEN ... THEN) must be a BOOLEAN, got "
+        + CypherFunctionHelper.cypherTypeName(value));
+  }
+
+  /**
    * Executes a parsed Cypher statement.
    *
    * @param queryString   the original query string (for plan cache key)
@@ -443,6 +477,24 @@ public class OpenCypherQueryEngine implements QueryEngine {
    */
   private ResultSet execute(final String queryString, final CypherStatement statement, final ContextConfiguration configuration,
       final Map<String, Object> parameters, final boolean explain, final boolean profile, final boolean timeExecution) {
+    // A conditional query runs one of its branches, picked now that the parameters its conditions read are known. Each branch
+    // is planned and cached under a key of its own, since the same text runs different branches for different parameters.
+    // The key carries a NUL inside it ("\0WHEN#i\0<query>"), and the lexer refuses a NUL outside a string literal, so no
+    // query text that plans can equal a key.
+    if (statement instanceof ConditionalStatement conditional) {
+      final List<CypherStatement> branches = conditional.getBranches();
+      // The conditions share one context: they read the same parameters
+      final BasicCommandContext conditionContext = conditionContext(parameters);
+      for (int i = 0; i < branches.size(); i++)
+        if (isConditionTrue(conditional.getConditions().get(i), conditionContext))
+          return execute(WHEN_BRANCH_KEY_PREFIX + i + "\u0000" + queryString, branches.get(i), configuration, parameters, explain,
+              profile, timeExecution);
+      if (conditional.getElseBranch() != null)
+        return execute(ELSE_BRANCH_KEY_PREFIX + queryString, conditional.getElseBranch(), configuration, parameters, explain,
+            profile, timeExecution);
+      return new InternalResultSet();
+    }
+
     // Try to get cached physical plan first (saves optimization time: 200-500ms)
     final CypherExecutionPlan plan;
     final DatabaseInternal execDb = executionDatabase(statement);

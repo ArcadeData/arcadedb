@@ -26,6 +26,7 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DatabaseIsClosedException;
+import com.arcadedb.exception.DatabaseIsReopeningException;
 import com.arcadedb.exception.DatabaseNotAvailableException;
 import com.arcadedb.exception.DatabaseOperationInProgressException;
 import com.arcadedb.exception.DuplicatedKeyException;
@@ -65,6 +66,7 @@ import org.junit.jupiter.api.TestFactory;
 import org.mockito.ArgumentCaptor;
 
 import java.io.UncheckedIOException;
+import java.lang.reflect.Field;
 import java.util.List;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
@@ -111,8 +113,12 @@ class Issue6201ErrorStatusParityTest {
           () -> new RecordNotFoundException("Record not found", new RID(1, 1))),
       // A database closed out from under an in-flight request by an HA snapshot-reinstall resync (issue #5977
       // pattern) is a transient condition, not a permanent failure - it used to fall through to a hard 500,
-      // which a remote client's own retry-on-503 loop never saw (issue #6770).
-      new MappedFailure("DatabaseIsClosedException", 503, () -> new DatabaseIsClosedException("mydb")),
+      // which a remote client's own retry-on-503 loop never saw (issue #6770). The reinstall closes the handle FOR
+      // REOPEN, which is what raises this subtype (issue #8199).
+      new MappedFailure("DatabaseIsReopeningException", 503, () -> new DatabaseIsReopeningException("mydb")),
+      // A DROP/CLOSE DATABASE or a shutdown closed the handle for good: no retry against the same name can succeed,
+      // so it is not a 503 any more (issue #8199).
+      new MappedFailure("DatabaseIsClosedException", 404, () -> new DatabaseIsClosedException("mydb")),
       // A TimeSeries read a DOWNSAMPLE overtook: the rows it had not reached were replaced by coarser ones, so no
       // answer it can still produce is at one resolution and it refuses instead of returning a silently short one
       // (issue #8166). Transient in the same sense as the two above - downsampling is a maintenance event, not a
@@ -223,9 +229,25 @@ class Issue6201ErrorStatusParityTest {
    */
   @Test
   void aDatabaseClosedByAConcurrentResyncIsReportedAsRetryable() {
-    final HandledResponse response = handle(new DatabaseIsClosedException("mydb"));
+    final HandledResponse response = handle(new DatabaseIsReopeningException("mydb"));
 
     assertThat(response.statusCode).isEqualTo(503);
+    final JSONObject json = new JSONObject(response.body);
+    assertThat(json.getString("exception")).isEqualTo(DatabaseIsReopeningException.class.getName());
+  }
+
+  /**
+   * Issue #8199: the 503 above used to be given to EVERY closed database, so a DROP/CLOSE DATABASE or a shutdown racing
+   * a request - permanent, not transient - was reported as retryable too, and only HTTP did so: every other wire
+   * protocol classifies through {@code ErrorCategory}, which named neither. The reinstall now closes its handle for
+   * reopen, and only that close is retryable, on every protocol; the permanent one is the 404 a client gets once the
+   * name no longer resolves.
+   */
+  @Test
+  void aDatabaseClosedForGoodIsNotReportedAsRetryable() {
+    final HandledResponse response = handle(new DatabaseIsClosedException("mydb"));
+
+    assertThat(response.statusCode).isEqualTo(404);
     final JSONObject json = new JSONObject(response.body);
     assertThat(json.getString("exception")).isEqualTo(DatabaseIsClosedException.class.getName());
   }
@@ -493,6 +515,23 @@ class Issue6201ErrorStatusParityTest {
             .isNull();
   }
 
+  /**
+   * Issue #8199: a database a server shutdown closed under an in-flight request keeps the 503 it always had, because for
+   * the client it is transient - it retries on another node, or once this one is back - unlike a DROP or CLOSE DATABASE.
+   */
+  @Test
+  void aDatabaseClosedByAShutdownIsStillReportedAsRetryable() throws Exception {
+    final ArcadeDBServer server = TestServerHelper.unstartedServer("test", new ContextConfiguration());
+    final Field status = ArcadeDBServer.class.getDeclaredField("status");
+    status.setAccessible(true);
+    status.set(server, ArcadeDBServer.STATUS.SHUTTING_DOWN);
+
+    final HandledResponse response = handle(new ThrowingHandler(HTTP_SERVERS.of(server), new DatabaseIsClosedException("mydb")));
+
+    assertThat(response.statusCode).isEqualTo(503);
+    assertThat(new JSONObject(response.body).getString("exception")).isEqualTo(DatabaseIsClosedException.class.getName());
+  }
+
   private ThrowingHandler handler(final RuntimeException toThrow) {
     final ArcadeDBServer server = TestServerHelper.unstartedServer("test", new ContextConfiguration());
 
@@ -505,6 +544,10 @@ class Issue6201ErrorStatusParityTest {
    * throws the given exception, and captures the status code and JSON body the classification produces.
    */
   private HandledResponse handle(final RuntimeException toThrow) {
+    return handle(handler(toThrow));
+  }
+
+  private HandledResponse handle(final ThrowingHandler handler) {
     final Sender sender = mock(Sender.class);
     final HttpServerExchange exchange = mock(HttpServerExchange.class);
     final int[] statusCode = { 200 };
@@ -520,7 +563,7 @@ class Issue6201ErrorStatusParityTest {
     when(exchange.getRelativePath()).thenReturn("/command/graph");
     when(exchange.getResponseSender()).thenReturn(sender);
 
-    handler(toThrow).handleRequest(exchange);
+    handler.handleRequest(exchange);
 
     final ArgumentCaptor<String> body = ArgumentCaptor.forClass(String.class);
     verify(sender).send(body.capture());

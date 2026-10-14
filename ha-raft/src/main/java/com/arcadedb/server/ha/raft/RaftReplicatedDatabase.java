@@ -1518,8 +1518,12 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       // bypass leader-coordinated mutations of shared state (e.g., the schema dictionary,
       // see issue #4039), where the local page cache lags behind the asynchronous state
       // machine apply and produces inconsistent IDs across the cluster.
-      if (queryEngine.isExecutedByTheLeader() || analyzed.isDDL() || !analyzed.isIdempotent())
-        return forwardCommandToLeaderViaRaft(language, query, null, args);
+      if (queryEngine.isExecutedByTheLeader() || analyzed.isDDL() || !analyzed.isIdempotent()) {
+        if (!runsInTheClientTransaction(queryEngine, analyzed))
+          return forwardCommandToLeaderViaRaft(language, query, null, args);
+        ForwardedRequestIdContext.markExecutedLocally();
+        return proxied.command(language, query, configuration, args);
+      }
       // Read-only command executed locally on this follower: honor the read-consistency header
       // exactly like query() does. /api/v1/command can carry read-only statements (a SELECT), and
       // a LINEARIZABLE/READ_YOUR_WRITES caller must not get a silently weaker guarantee than via
@@ -1535,6 +1539,40 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     // path pays no extra parsing.
     applyReadConsistencyForReadOnlyCommandIfRequested(language, query);
     return proxied.command(language, query, configuration, args);
+  }
+
+  /**
+   * Whether a statement this follower would forward to the leader runs here instead, inside the transaction the client
+   * opened (issue #10040). Forwarded, a write runs and commits on the leader as a request of its own: the client's
+   * ROLLBACK then discards an empty local transaction, and a block of several writes is no longer atomic. Run here, it
+   * joins the client's transaction, whose commit replicates through Raft like any other follower commit - the leader
+   * refuses a stale base page there, which reaches the client as a retryable conflict at COMMIT.
+   * <p>
+   * Only a transaction the CLIENT opened counts ({@link TransactionContext#isClientManaged()}): the HTTP auto-commit
+   * wrapper and the gRPC auto-wrap open one around a single request too, and those keep forwarding, which is what gives a
+   * retried request its exactly-once execution on the leader (#8323, #8347).
+   * <p>
+   * A script (an engine the leader executes) that writes nothing keeps being forwarded, as before this rule existed.
+   * <p>
+   * DDL keeps being forwarded: a schema change is not transactional anywhere - a ROLLBACK does not undo one on the
+   * leader either - and a follower cannot write the schema at all. A script carrying DDL is refused, because it cannot
+   * be honoured either way: forwarded, its writes would escape the transaction; run here, its DDL could not.
+   */
+  private boolean runsInTheClientTransaction(final QueryEngine queryEngine, final QueryEngine.AnalyzedQuery analyzed) {
+    final TransactionContext tx = proxied.getTransactionIfExists();
+    if (tx == null || !tx.isActive() || !tx.isClientManaged())
+      return false;
+    if (queryEngine.isExecutedByTheLeader() && analyzed.isIdempotent())
+      // A script that writes nothing has nothing to keep in the transaction, and may hold an operation that belongs on the
+      // leader: BACKUP DATABASE, which rolls back a transaction holding changes before it archives. Forwarded, as always.
+      return false;
+    if (!analyzed.isDDL())
+      return true;
+    if (queryEngine.isExecutedByTheLeader())
+      throw new TransactionException("A script that changes the schema cannot run inside a transaction on a replica server: "
+          + "its writes would commit outside the transaction. Run it outside the transaction, or send its schema changes "
+          + "as separate commands");
+    return false;
   }
 
   @Override
@@ -1559,8 +1597,12 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     if (!isLeader()) {
       final QueryEngine queryEngine = proxied.getQueryEngineManager().getEngine(language, this);
       final QueryEngine.AnalyzedQuery analyzed = queryEngine.analyze(query);
-      if (queryEngine.isExecutedByTheLeader() || analyzed.isDDL() || !analyzed.isIdempotent())
-        return forwardCommandToLeaderViaRaft(language, query, args, null);
+      if (queryEngine.isExecutedByTheLeader() || analyzed.isDDL() || !analyzed.isIdempotent()) {
+        if (!runsInTheClientTransaction(queryEngine, analyzed))
+          return forwardCommandToLeaderViaRaft(language, query, args, null);
+        ForwardedRequestIdContext.markExecutedLocally();
+        return proxied.command(language, query, configuration, args);
+      }
       // Read-only command executed locally on this follower: honor the read-consistency header.
       applyReadConsistencyForReadOnlyCommand(analyzed);
       // Executed here, so a write it forwards is a part of the client's request, not the whole of it (issue #8347).
@@ -1769,6 +1811,11 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   @Override
   public void updateRecordNoLock(final Record record, final boolean discardRecordAfter) {
     proxied.updateRecordNoLock(record, discardRecordAfter);
+  }
+
+  @Override
+  public boolean updateRecordWithEventsNoLock(final Record record, final boolean discardRecordAfter) {
+    return proxied.updateRecordWithEventsNoLock(record, discardRecordAfter);
   }
 
   @Override
@@ -4455,14 +4502,39 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       proxied.saveConfiguration();
       return;
     }
+    replicateConfiguration(raft, null);
+  }
 
+  /**
+   * Replicates the change to the setting {@code key} alone, which {@code ALTER DATABASE} and the "set database setting"
+   * command just put in force (issue #9959). {@link #saveConfiguration()} ships every setting memory holds that this
+   * node's {@code configuration.json} does not, and that includes a value ANOTHER statement on this node has put in
+   * force and not submitted yet, since the in-memory store and the submit are not one step. Carried in this entry, it
+   * committed cluster-wide even when that statement's own save was then refused, and its caller was told nothing had
+   * changed. The entry names one setting, so it cannot carry another statement's change, whatever the interleaving.
+   */
+  @Override
+  public void saveConfiguration(final String key) throws IOException {
+    final RaftHAServer raft = raftHAServer;
+    if (raft == null) {
+      proxied.saveConfiguration(key);
+      return;
+    }
+    replicateConfiguration(raft, key);
+  }
+
+  /**
+   * Submits the configuration change: the one to {@code key}, or every pending change when {@code key} is null, and
+   * waits for this node to apply it. See {@link #saveConfiguration()}.
+   */
+  private void replicateConfiguration(final RaftHAServer raft, final String key) throws IOException {
     refuseWhileRemovedFromConfiguration("change the database configuration");
     SecurityEntryCapabilityGate.requireEveryPeerCanDecode(server, raft, RaftLogEntryType.DATABASE_CONFIGURATION_ENTRY,
         "configuration of database '" + getName() + "'");
 
     final long committedLogIndex;
     synchronized (configurationReplicationLock) {
-      final String changes = proxied.pendingConfigurationChanges();
+      final String changes = key != null ? proxied.pendingConfigurationChange(key) : proxied.pendingConfigurationChanges();
       if (changes == null)
         // Nothing this node holds that its file does not: the value set was already the stored one
         return;

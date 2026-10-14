@@ -82,8 +82,8 @@ public class AlgoMaxFlow extends AbstractAlgoProcedure {
 
     final Vertex sourceNode       = extractVertex(args[0], "sourceNode");
     final Vertex sinkNode         = extractVertex(args[1], "sinkNode");
-    final String[] relTypes       = args.length > 2 ? extractRelTypes(args[2], context) : null;
-    final String capacityProperty = args.length > 3 ? extractString(args[3], "capacityProperty") : null;
+    final String[] relTypes       = extractRelTypes(argOrDefault(args, 2, null), context);
+    final String capacityProperty = extractString(argOrDefault(args, 3, null), "capacityProperty");
 
     final Database db = context.getDatabase();
     final WorkGuard guard = newWorkGuard(context);
