@@ -1208,7 +1208,7 @@ public class ServerControlPlane {
     final GlobalConfiguration setting = GlobalConfiguration.findByKey(storedKey);
     if (local != null && (setting == GlobalConfiguration.DATE_IMPLEMENTATION
         || setting == GlobalConfiguration.DATE_TIME_IMPLEMENTATION))
-      change = changeDateImplementation(database, local, setting, storedKey, key, value);
+      change = changeDateImplementation(database, local, setting, value);
     else if (local != null)
       change = local.changeSetting(storedKey, () -> applySetting(database.getConfiguration(), key, value));
     else {
@@ -1242,14 +1242,14 @@ public class ServerControlPlane {
    * stored. Checked and stored under the write lock, taken before the apply lock {@code changeSetting} takes, never after.
    */
   private static LocalDatabase.SettingChange changeDateImplementation(final DatabaseInternal database,
-      final LocalDatabase local, final GlobalConfiguration setting, final String storedKey, final String key,
-      final String value) {
+      final LocalDatabase local, final GlobalConfiguration setting, final String value) {
     // A Class-typed setting coerces to a Class or throws, so the value is refused here before any lock is taken
     final Class<?> implementation = (Class<?>) coerceSetting(setting, value);
-    final String described = "'" + storedKey + "' to '" + GlobalConfiguration.externalizeValue(implementation) + "'";
+    final String described = "'" + setting.getKey() + "' to '" + GlobalConfiguration.externalizeValue(implementation) + "'";
     return database.executeInWriteLock(() -> {
       DocumentValidator.requireDateImplementationChangeSatisfiable(database, setting, implementation, described);
-      return local.changeSetting(storedKey, () -> applySetting(database.getConfiguration(), key, value));
+      // the class already coerced is what applySetting() would store: no second parse that could disagree with the check
+      return local.changeSetting(setting.getKey(), () -> database.getConfiguration().setValue(setting, implementation));
     });
   }
 
