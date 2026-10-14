@@ -24,6 +24,8 @@ import com.arcadedb.exception.CommandParameterMissingException;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.exception.ConcurrentModificationException;
+import com.arcadedb.exception.DatabaseIsClosedException;
+import com.arcadedb.exception.DatabaseIsReopeningException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.ErrorCategory;
 import com.arcadedb.exception.InvalidPropertyTypeException;
@@ -67,6 +69,20 @@ class Issue7624BoltErrorCategoryCoverageTest {
     assertThat(BoltNetworkExecutor.classifyExecutionError(e, BoltErrorCodes.DATABASE_ERROR))
         .isEqualTo(BoltErrorCodes.ENTITY_NOT_FOUND_ERROR);
     assertThat(BoltErrorCodes.ENTITY_NOT_FOUND_ERROR).isEqualTo("Neo.ClientError.Statement.EntityNotFound");
+  }
+
+  /**
+   * Issue #8199: a database an HA snapshot reinstall closed out from under a statement is transient - the same statement
+   * re-run sees the reinstalled database - and HTTP has answered it with a 503 since #6770, but Bolt reported it as a
+   * DatabaseError. A database closed for good (DROP, CLOSE DATABASE, shutdown) stays a DatabaseError.
+   */
+  @Test
+  void aDatabaseClosedForReopenIsTransientAndOneClosedForGoodIsNot() {
+    assertThat(BoltNetworkExecutor.classifyExecutionError(new DatabaseIsReopeningException("db"), BoltErrorCodes.DATABASE_ERROR))
+        .isEqualTo(BoltErrorCodes.TRANSIENT_CONFLICT_ERROR);
+    assertThat(BoltErrorCodes.TRANSIENT_CONFLICT_ERROR).startsWith("Neo.TransientError.");
+    assertThat(BoltNetworkExecutor.classifyExecutionError(new DatabaseIsClosedException("db"), BoltErrorCodes.DATABASE_ERROR))
+        .isEqualTo(BoltErrorCodes.DATABASE_ERROR);
   }
 
   @Test

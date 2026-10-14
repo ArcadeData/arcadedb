@@ -25,6 +25,8 @@ import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.PageManager;
 import com.arcadedb.engine.TransactionManager;
 import com.arcadedb.engine.WALFileFactory;
+import com.arcadedb.exception.DatabaseIsClosedException;
+import com.arcadedb.exception.DatabaseIsReopeningException;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.exception.ValidationException;
@@ -89,6 +91,15 @@ public interface DatabaseInternal extends Database {
    */
   default void closeForDrop() {
     throw new UnsupportedOperationException("Only an embedded database instance can be closed for drop");
+  }
+
+  /**
+   * Closes the database because the same database is about to be reopened under its name: an operation still holding
+   * this handle is refused with the retryable {@link DatabaseIsReopeningException} instead of the permanent
+   * {@link DatabaseIsClosedException} (issue #8199). Only the embedded instance supports it, like {@link #closeForDrop()}.
+   */
+  default void closeForReopen() {
+    throw new UnsupportedOperationException("Only an embedded database instance can be closed for reopen");
   }
 
   DatabaseContext.DatabaseContextTL getContext();
