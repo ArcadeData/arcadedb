@@ -289,6 +289,10 @@ class Issue9689RunningQueryFollowUpsTest {
       assertThat(none.toJSON().has("connectionId")).isFalse();
       assertThat(none.toJSON().has("clientAddress")).isFalse();
     }
+
+    // Forgetting the client is refused at once rather than listed as an entry nobody can attribute
+    assertThatThrownBy(() -> registry.open("db", "alice", "test", null, null, null)).isInstanceOf(NullPointerException.class);
+    assertThat(registry.getRunning()).isEmpty();
   }
 
   @Test

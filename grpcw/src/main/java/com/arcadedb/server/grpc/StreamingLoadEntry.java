@@ -66,7 +66,8 @@ final class StreamingLoadEntry {
   StreamingLoadEntry(final RunningQueryRegistry registry, final String rpc) {
     this.registry = registry;
     this.rpc = rpc;
-    this.client = GrpcAdmissionInterceptor.CLIENT_KEY.get();
+    final RunningQuery.Client current = GrpcAdmissionInterceptor.CLIENT_KEY.get();
+    this.client = current != null ? current : RunningQuery.Client.NONE;
   }
 
   /**

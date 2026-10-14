@@ -453,10 +453,8 @@ public final class RunningQuery implements AutoCloseable {
 
   /** Set only by {@link RunningQueryRegistry#open}, as part of opening the entry (issue #9962). */
   RunningQuery setClient(final Client client) {
-    if (client != null) {
-      this.connectionId = client.connectionId();
-      this.clientAddress = client.address();
-    }
+    this.connectionId = client.connectionId();
+    this.clientAddress = client.address();
     return this;
   }
 
