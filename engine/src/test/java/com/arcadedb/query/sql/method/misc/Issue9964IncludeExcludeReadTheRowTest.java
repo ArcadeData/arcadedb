@@ -20,7 +20,9 @@ package com.arcadedb.query.sql.method.misc;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.Document;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
@@ -142,6 +144,39 @@ class Issue9964IncludeExcludeReadTheRowTest extends TestHelper {
       for (final String name : names)
         assertThat(json.has(name)).as(query + " toJSON() has " + name).isTrue();
     }
+  }
+
+  /**
+   * {@code ResultInternal.toPropertyMap} walks the row's store directly: it must answer exactly what
+   * {@code getPropertyNames()} and {@code getProperty()} do, tombstones included, whichever store answers.
+   */
+  @Test
+  void toPropertyMapAgreesWithTheRowGettersOnEveryStoreShape() {
+    database.transaction(() -> {
+      final Document record = rid.asDocument();
+
+      final ResultInternal elementOnly = new ResultInternal(record);
+      final ResultInternal elementWithTombstone = new ResultInternal(record);
+      elementWithTombstone.removeProperty("m");
+      final ResultInternal contentAndElement = new ResultInternal(database);
+      contentAndElement.setElement(record);
+      contentAndElement.setProperty("s", "OVERRIDE");
+      contentAndElement.setProperty("z", rid);
+      final ResultInternal contentWithTombstone = new ResultInternal(database);
+      contentWithTombstone.setElement(record);
+      contentWithTombstone.setProperty("s", "x2");
+      contentWithTombstone.setProperty("n", 9);
+      contentWithTombstone.removeProperty("n");
+      final ResultInternal contentOnly = new ResultInternal(Map.of("a", 1));
+
+      for (final ResultInternal row : List.of(elementOnly, elementWithTombstone, contentAndElement, contentWithTombstone, contentOnly)) {
+        final Map<String, Object> expected = new LinkedHashMap<>();
+        for (final String name : row.getPropertyNames())
+          expected.put(name, row.getProperty(name));
+        assertThat(row.toPropertyMap(false)).as(row.toString()).containsExactlyEntriesOf(expected);
+      }
+      assertThat(elementWithTombstone.toPropertyMap(false)).doesNotContainKey("m");
+    });
   }
 
   private Result firstRow(final String query) {

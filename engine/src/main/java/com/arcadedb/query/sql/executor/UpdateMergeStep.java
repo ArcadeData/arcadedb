@@ -111,7 +111,8 @@ public class UpdateMergeStep extends AbstractExecutionStep {
     else if (value instanceof Document document)
       return document.toMap(false);
     else if (value instanceof Result result)
-      return toMergePayload(result);
+      // The rule every statement that writes a row follows
+      return CopyDocumentStep.propertiesToWrite(result);
     throw new CommandExecutionException("Invalid value for UPDATE MERGE, expected a map but found: " + value);
   }
 
@@ -121,14 +122,6 @@ public class UpdateMergeStep extends AbstractExecutionStep {
       if (!(key instanceof String))
         throw new CommandExecutionException("Invalid value for UPDATE MERGE, expected a map with string keys but found: " + key);
     return (Map<String, Object>) map;
-  }
-
-  /**
-   * Converts a result into the map of the properties to merge, by the rule every statement that writes a row follows: see
-   * {@link CopyDocumentStep#propertiesToWrite(Result)}.
-   */
-  private static Map<String, Object> toMergePayload(final Result result) {
-    return CopyDocumentStep.propertiesToWrite(result);
   }
 
   @Override

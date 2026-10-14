@@ -112,6 +112,8 @@ public interface Property {
   /**
    * {@link #hasDefaultFillingInAValue()} for a default definition not yet assigned to a property.
    */
+  // A String definition is the source text of an expression: the bare text null is the null literal, while a string default
+  // is quoted (DEFAULT 'null' is kept as 'null', with its quotes) and fills in the four characters like any other string
   static boolean fillsInAValue(final Object defaultDefinition) {
     return defaultDefinition != null && !(defaultDefinition instanceof String text && "null".equalsIgnoreCase(text.trim()));
   }

@@ -135,6 +135,21 @@ class Issue9965InsertFromSelectHonoursProjectionTest extends TestHelper {
   }
 
   @Test
+  void aStoredDollarPropertyIsCopiedLikeAnyOther() {
+    database.transaction(() -> {
+      database.command("sql", "DELETE FROM S");
+      database.newDocument("S").set("$foo", 7).set("pub", "p").save();
+    });
+    for (final String projection : List.of("", "*")) {
+      database.transaction(() -> {
+        database.command("sql", "DELETE FROM T");
+        database.command("sql", "INSERT INTO T FROM SELECT " + projection + " FROM S");
+      });
+      assertThat(single("SELECT FROM T").toMap(false)).as(projection).containsOnly(Map.entry("$foo", 7), Map.entry("pub", "p"));
+    }
+  }
+
+  @Test
   void aContentOnlyRowIsCopiedAsBefore() {
     database.transaction(() -> database.command("sql", "INSERT INTO T FROM SELECT pub FROM S"));
     assertThat(single("SELECT FROM T").toMap(false)).containsOnly(Map.entry("pub", "p"));

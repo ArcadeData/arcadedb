@@ -35,6 +35,7 @@ import java.util.List;
 import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression for issue #9975: a database written before #9846 may pair a LIGHTWEIGHT edge type with a MANDATORY or
@@ -126,6 +127,12 @@ class Issue9975LightweightUnenforcedConstraintWarningTest extends TestHelper {
     database.command("sql", "ALTER PROPERTY " + PARENT + ".weight DEFAULT null").close();
     database.command("sql", "CREATE PROPERTY " + PARENT + ".other STRING (DEFAULT null)").close();
     assertThat(LocalEdgeType.unenforcedConstraintWarning(database.getSchema().getType(CHILD))).isNull();
+
+    // the STRING 'null' is a value like any other, and still refused
+    assertThatThrownBy(() -> database.command("sql", "CREATE PROPERTY " + PARENT + ".text STRING (DEFAULT 'null')").close())
+        .hasMessageContaining(CHILD).hasMessageContaining("keep the property without a default");
+    assertThat(Property.fillsInAValue("'null'")).isTrue();
+    assertThat(Property.fillsInAValue(" NULL ")).isFalse();
   }
 
   @Test
