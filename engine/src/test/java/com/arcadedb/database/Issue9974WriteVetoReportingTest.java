@@ -24,8 +24,12 @@ import com.arcadedb.event.BeforeRecordDeleteListener;
 import com.arcadedb.event.BeforeRecordUpdateListener;
 import com.arcadedb.graph.MutableLightEdge;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.query.sql.executor.DeleteStep;
+import com.arcadedb.query.sql.executor.ExecutionStep;
+import com.arcadedb.query.sql.executor.LimitExecutionStep;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.executor.SaveElementStep;
 import com.arcadedb.schema.EdgeType;
 import org.junit.jupiter.api.Test;
 
@@ -197,6 +201,32 @@ class Issue9974WriteVetoReportingTest extends TestHelper {
     assertThat(count("T")).isEqualTo(2L);
     assertThat(commandCount("DELETE FROM T LIMIT 1")).isEqualTo(1L);
     assertThat(count("T")).isEqualTo(1L);
+  }
+
+  /**
+   * The write steps act one row ahead of what they return ({@code SkippingResultSet}), which is only safe because no step after
+   * them can stop pulling early. Pinned on the plans themselves: in every DML plan a LIMIT comes before the write step.
+   */
+  @Test
+  void noDmlPlanLimitsAfterItsWriteStep() {
+    database.getSchema().createDocumentType("T");
+    createDocuments("T", "a", "b", "c");
+
+    for (final String sql : new String[] { "DELETE FROM T LIMIT 1", "DELETE FROM T RETURN BEFORE LIMIT 1",
+        "UPDATE T SET x = 1 LIMIT 1", "UPDATE T SET x = 2 RETURN AFTER LIMIT 1", "UPDATE T SET x = 3 RETURN BEFORE LIMIT 1",
+        "INSERT INTO T SET name = 'n'", "INSERT INTO T FROM SELECT name FROM T LIMIT 1" })
+      database.transaction(() -> {
+        try (final ResultSet rs = database.command("sql", sql)) {
+          final List<ExecutionStep> steps = rs.getExecutionPlan().orElseThrow().getSteps();
+          int write = -1;
+          for (int i = 0; i < steps.size(); i++)
+            if (steps.get(i) instanceof DeleteStep || steps.get(i) instanceof SaveElementStep)
+              write = i;
+          assertThat(write).as("write step of: %s", sql).isGreaterThanOrEqualTo(0);
+          for (int i = write + 1; i < steps.size(); i++)
+            assertThat(steps.get(i)).as("step after the write of: %s", sql).isNotInstanceOf(LimitExecutionStep.class);
+        }
+      });
   }
 
   @Test

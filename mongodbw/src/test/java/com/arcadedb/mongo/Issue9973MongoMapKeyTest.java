@@ -137,6 +137,27 @@ class Issue9973MongoMapKeyTest {
     }
   }
 
+  /** When an Integer key and a String key have the same text, the path names the String one, whatever the map's order. */
+  @Test
+  void aDottedSetNamesTheStringKeyWhenTwoKeysShareItsText() {
+    database.transaction(() -> {
+      final Map<Object, Object> map = new LinkedHashMap<>();
+      map.put(1, "integer");
+      map.put("1", "string");
+      database.newDocument("Coll").set("_id", "b").set("m", map).save();
+    });
+
+    final MongoDBDatabaseWrapper wrapper = new MongoDBDatabaseWrapper(database, null, null);
+    wrapper.handleCommand(null, "update", new Document("update", "Coll").append("updates",
+        List.of(new Document("q", new Document("_id", "b")).append("u", new Document("$set", new Document("m.1", "changed"))))), null, null);
+
+    try (final ResultSet rs = database.query("sql", "SELECT m FROM Coll WHERE _id = 'b'")) {
+      final Map<?, ?> stored = rs.next().getProperty("m");
+      assertThat(stored.get("1")).isEqualTo("changed");
+      assertThat(stored.get(1)).isEqualTo("integer");
+    }
+  }
+
   private void assertFieldsNamedByKeyText() {
     try (final ResultSet rs = database.query("sql", "SELECT FROM Coll")) {
       final Document converted = MongoDBToSqlTranslator.convertDocumentToMongoDB(rs.next().toElement());
