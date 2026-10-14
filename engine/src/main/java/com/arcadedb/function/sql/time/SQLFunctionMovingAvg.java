@@ -123,8 +123,6 @@ public class SQLFunctionMovingAvg extends SQLAggregatedFunction {
     // EVERY SUM ONLY EVER ADDS THE WINDOW's OWN MEMBERS (#9958).
     final double[] prefixSum = new double[n];
     final int[] prefixCount = new int[n];
-    final double[] suffixSum = new double[n];
-    final int[] suffixCount = new int[n];
 
     for (int i = 0; i < n; i++) {
       final boolean blockStart = i % w == 0;
@@ -133,6 +131,15 @@ public class SQLFunctionMovingAvg extends SQLAggregatedFunction {
       prefixSum[i] = blockStart ? v : prefixSum[i - 1] + v;
       prefixCount[i] = blockStart ? c : prefixCount[i - 1] + c;
     }
+    if (n <= w) {
+      // EVERY WINDOW STARTS AT ROW 0, SO EACH ONE IS A PREFIX OF THE SINGLE BLOCK: NO SUFFIX PASS NEEDED
+      for (int i = 0; i < n; i++)
+        result.add(prefixCount[i] == 0 ? null : prefixSum[i] / prefixCount[i]);
+      return result;
+    }
+
+    final double[] suffixSum = new double[n];
+    final int[] suffixCount = new int[n];
     for (int i = n - 1; i >= 0; i--) {
       final boolean blockEnd = i == n - 1 || (i + 1) % w == 0;
       final double v = present[i] ? values[i] : 0D;

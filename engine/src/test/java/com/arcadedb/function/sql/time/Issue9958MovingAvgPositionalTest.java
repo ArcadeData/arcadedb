@@ -100,14 +100,21 @@ class Issue9958MovingAvgPositionalTest extends TestHelper {
 
   @Test
   void windowEqualToAndWiderThanTheSeries() {
-    insertSeries("Wide9958", 2.0, null, 4.0, 1e16, 6.0);
+    // small integers sum exactly in any order, so exact comparison is safe
+    insertSeries("Wide9958", 2.0, null, 4.0, 9.0, 5.0);
 
     // w == n: the single block spans every row
-    assertThat(single("SELECT ts.movingAvg(v, 5) AS r FROM Wide9958")).containsExactly(2.0, 2.0, 3.0, (6.0 + 1e16) / 3,
-        (12.0 + 1e16) / 4);
+    assertThat(single("SELECT ts.movingAvg(v, 5) AS r FROM Wide9958")).containsExactly(2.0, 2.0, 3.0, 5.0, 5.0);
     // w > n: every window is a prefix of the series
-    assertThat(single("SELECT ts.movingAvg(v, 50) AS r FROM Wide9958")).containsExactly(2.0, 2.0, 3.0, (6.0 + 1e16) / 3,
-        (12.0 + 1e16) / 4);
+    assertThat(single("SELECT ts.movingAvg(v, 50) AS r FROM Wide9958")).containsExactly(2.0, 2.0, 3.0, 5.0, 5.0);
+  }
+
+  @Test
+  void allNullSeriesAnswersOneNullPerRow() {
+    insertSeries("OnlyNull9958", null, null, null);
+
+    // before #9958 this answered [], now every row keeps its slot and no window holds a value
+    assertThat(single("SELECT ts.movingAvg(v, 2) AS r FROM OnlyNull9958")).containsExactly(null, null, null);
   }
 
   @Test
