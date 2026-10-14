@@ -140,11 +140,18 @@ public class ContextConfiguration implements Serializable {
     for (final Map.Entry<String, Object> entry : config.entrySet()) {
       // A Class-typed setting (arcadedb.dateImplementation and friends) is persisted by NAME: that is what a
       // JSON document can hold, and what fromJSON reads back through GlobalConfiguration.coerce (issue #7163).
-      cfg.put(entry.getKey().substring(GlobalConfiguration.PREFIX.length()),
-          GlobalConfiguration.externalizeValue(entry.getValue()));
+      cfg.put(jsonKey(entry.getKey()), GlobalConfiguration.externalizeValue(entry.getValue()));
     }
 
     return json.toString();
+  }
+
+  /**
+   * The name {@link #toJSON()} writes a setting under: its key without the {@code arcadedb.} prefix. The one place that
+   * derives it, so a reader looking a single setting up in that document (issue #9959) finds what the writer wrote.
+   */
+  public static String jsonKey(final String key) {
+    return key.substring(GlobalConfiguration.PREFIX.length());
   }
 
   public Object setValue(final GlobalConfiguration iConfig, final Object iValue) {

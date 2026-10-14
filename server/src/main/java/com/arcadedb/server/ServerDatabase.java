@@ -788,6 +788,11 @@ public class ServerDatabase implements DatabaseInternal {
     current().saveConfiguration();
   }
 
+  @Override
+  public void saveConfiguration(final String key) throws IOException {
+    current().saveConfiguration(key);
+  }
+
   public StatementCache getStatementCache() {
     return current().getStatementCache();
   }
