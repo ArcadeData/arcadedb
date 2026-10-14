@@ -876,7 +876,8 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
    * authority: when set the counters are used as-is. A recompute done here changes this node's counters only and marks the schema
    * dirty: it is written by the next schema save or by the close (so a repair is paid once, not on every restart), and the read/query
    * path never calls {@code saveConfiguration} itself. An explicit {@link #recomputeBM25Counters()} also advances the counters epoch
-   * and is shipped to the other nodes of an HA cluster.
+   * and is shipped to the other nodes of an HA cluster. The repair made here is not: on an HA follower the write is local, so the
+   * follower and the leader hold different persisted counters until the next explicit recompute (an epoch bump) reaches the follower.
    */
   private void ensureCounters() {
     if (ftMetadata == null)
@@ -1272,6 +1273,9 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
    * a transaction the index write is immediate, and so is the count.
    */
   private void countDocuments(final int numDocs, final int docLen) {
+    // Only an index write that has no open transaction to wait for is counted at once, which is exactly when LSMTreeIndex.put()
+    // writes the postings at once too. The postings a commit applies reach the underlying index through putReplay() and never
+    // come through here, so a commit that fails while applying them has counted nothing
     if (ftMetadata == null)
       return;
     final TransactionContext tx = underlyingIndex.getMutableIndex().getDatabase().getTransaction();

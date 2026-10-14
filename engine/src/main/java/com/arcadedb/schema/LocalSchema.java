@@ -4547,7 +4547,14 @@ public class LocalSchema implements Schema {
    * the in-memory version equal to the one the file holds instead of a generation ahead of it (issue #7604).
    */
   private synchronized void writeNextGeneration() throws IOException {
+    // The generations are read BEFORE the document is serialized and recorded only once the file is on disk: a counter changed
+    // meanwhile, or a write that fails, leaves it unsaved
+    final Map<FullTextIndexMetadata, Long> counterGenerations = new IdentityHashMap<>();
+    for (final Index index : getIndexes())
+      if (index instanceof LSMTreeFullTextIndex ftIndex && ftIndex.getFullTextMetadata() != null)
+        counterGenerations.computeIfAbsent(ftIndex.getFullTextMetadata(), FullTextIndexMetadata::getCountersGeneration);
     update(toJSON(versionSerial.get() + 1));
+    counterGenerations.forEach(FullTextIndexMetadata::markCountersSaved);
   }
 
   public synchronized JSONObject toJSON() {

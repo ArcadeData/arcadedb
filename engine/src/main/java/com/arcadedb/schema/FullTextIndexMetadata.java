@@ -124,9 +124,12 @@ public class FullTextIndexMetadata extends IndexMetadata {
   // Full-type scans whose result was published here: lets a test, or an operator reading schema:index, tell a drift check that
   // found nothing to repair from one that scanned the whole type
   private final AtomicLong scans         = new AtomicLong(0L);
-  // Set by every change of the counters, cleared when they are serialized into the schema: a commit moves the counters but must
-  // not dirty the schema (that would rewrite schema.json after every commit), so the schema asks this at close instead
-  private volatile boolean countersDirty = false;
+  // Bumped by every change of the counters; the schema records the generation it had written to schema.json once the file is
+  // on disk. A commit moves the counters but must not dirty the schema (that would rewrite schema.json after every commit), so
+  // the schema compares the two at close instead. Serializing the counters for anything else (an export, a replication payload)
+  // or a save that fails after serializing leaves them unsaved, because only a completed write marks a generation saved
+  private final AtomicLong countersGeneration      = new AtomicLong(0L);
+  private volatile long    countersSavedGeneration = 0L;
   // Set when a scan result could not be proven exact: the next drift check must rescan even if the document counts agree
   private final AtomicBoolean rescanRequired = new AtomicBoolean(false);
   private volatile boolean countersValid = false;
@@ -400,7 +403,6 @@ public class FullTextIndexMetadata extends IndexMetadata {
       metadata.put("ft_sumDocLength", sumDocLength.get());
       metadata.put("ft_countersValid", true);
       metadata.put("ft_countersEpoch", countersEpoch.get());
-      countersDirty = false;
     }
     return metadata;
   }
@@ -732,7 +734,7 @@ public class FullTextIndexMetadata extends IndexMetadata {
     final long newDocs = this.totalDocs.updateAndGet(v -> Math.max(0L, v + docsDelta));
     this.countersValid = true;
     scans.incrementAndGet();
-    countersDirty = true;
+    countersGeneration.incrementAndGet();
     // Exact only when no writer touched the counters at all: equal net values can hide an add and a remove that cancelled out
     final boolean exact = mutations.get() == mutationsAtStart && newDocs == totalDocs && newLen == sumDocLength;
     this.rescanRequired.set(!exact);
@@ -759,7 +761,7 @@ public class FullTextIndexMetadata extends IndexMetadata {
     // counted before the counters move: a scan can at worst see a mutation whose bump is not visible yet, i.e. a spurious
     // "inexact", which is the safe direction
     mutations.incrementAndGet();
-    countersDirty = true;
+    countersGeneration.incrementAndGet();
     sumDocLength.addAndGet(docLength);
     totalDocs.incrementAndGet();
   }
@@ -774,7 +776,7 @@ public class FullTextIndexMetadata extends IndexMetadata {
     // sumDocLength-not-yet, which inflates avgdl slightly (under-penalizes) rather than deflating it - the safe side, matching
     // addDocument's bias.
     mutations.incrementAndGet();
-    countersDirty = true;
+    countersGeneration.incrementAndGet();
     totalDocs.updateAndGet(v -> v > 0 ? v - 1 : v);
     sumDocLength.updateAndGet(v -> Math.max(0L, v - docLength));
   }
@@ -793,7 +795,10 @@ public class FullTextIndexMetadata extends IndexMetadata {
    */
   public void applyCorpusDelta(final long docsDelta, final long lengthDelta) {
     mutations.incrementAndGet();
-    countersDirty = true;
+    countersGeneration.incrementAndGet();
+    // Each counter is clamped at zero on its own, which makes the application order-dependent when a counter is driven below
+    // zero. Entries reach every node in log order, so the nodes agree; and a counter that was driven below zero was already wrong
+    // (a drift the check repairs), which is the one case the clamp exists for
     // Same publication order as addDocument()/removeDocument(): the counter avgDocLength reads first moves last when the
     // corpus grows and first when it shrinks, so a concurrent reader's torn pair is always biased towards a HIGH average
     if (docsDelta >= 0) {
@@ -803,6 +808,15 @@ public class FullTextIndexMetadata extends IndexMetadata {
       totalDocs.updateAndGet(v -> Math.max(0L, v + docsDelta));
       sumDocLength.updateAndGet(v -> Math.max(0L, v + lengthDelta));
     }
+  }
+
+  /**
+   * Arms the drift check again: the next search compares the live count with the counters and rescans when they disagree, or
+   * unconditionally. For a node that knows it missed a change to them.
+   */
+  public void requireRescan() {
+    rescanRequired.set(true);
+    staleChecked.set(false);
   }
 
   /**
@@ -832,7 +846,24 @@ public class FullTextIndexMetadata extends IndexMetadata {
    * Whether the counters changed since they were last serialized into the schema.
    */
   public boolean isCountersDirty() {
-    return countersDirty;
+    return countersGeneration.get() > countersSavedGeneration;
+  }
+
+  /**
+   * The generation of the counters as they are now: what a schema write that is about to serialize them records as saved once the
+   * file is on disk, see {@link #markCountersSaved}.
+   */
+  public long getCountersGeneration() {
+    return countersGeneration.get();
+  }
+
+  /**
+   * Records that the counters were written to {@code schema.json} as of {@code generation}, read BEFORE they were serialized: a
+   * change made while the file was being written keeps them dirty.
+   */
+  public void markCountersSaved(final long generation) {
+    if (generation > countersSavedGeneration)
+      countersSavedGeneration = generation;
   }
 
   /**
@@ -854,20 +885,22 @@ public class FullTextIndexMetadata extends IndexMetadata {
     if (!definition.getBoolean("ft_countersValid", false))
       return false;
     final long epoch = definition.getLong("ft_countersEpoch", 0L);
-    synchronized (countersEpoch) {
-      if (epoch <= countersEpoch.get())
-        return false;
-      // Absolute values, not a delta: the persisted pair is the leader's recompute result and replaces whatever drifted here.
-      // Counted as a mutation so a scan racing this adoption does not call its own result exact
-      mutations.incrementAndGet();
-      countersDirty = true;
-      sumDocLength.set(definition.getLong("ft_sumDocLength", 0L));
-      totalDocs.set(definition.getLong("ft_totalDocs", 0L));
-      countersEpoch.set(epoch);
-      this.countersValid = true;
-      // The adopted counters are the leader's exact result: no drift check is owed this session
-      this.staleChecked.set(true);
-    }
+    final long current = countersEpoch.get();
+    // One adopter wins; the epoch moves first, so a second reader of the same definition (every bucket index of the logical index
+    // carries it) finds nothing newer
+    if (epoch <= current || !countersEpoch.compareAndSet(current, epoch))
+      return false;
+    // Absolute values, not a delta: the persisted pair is the leader's recompute result and replaces whatever drifted here. The
+    // two writes are NOT atomic with a commit applying its delta on another thread: one landing between them is half
+    // overwritten. That is a drift of one transaction at most, and the drift check below finds it. Counted as a mutation so a
+    // scan racing this adoption does not call its own result exact
+    mutations.incrementAndGet();
+    countersGeneration.incrementAndGet();
+    sumDocLength.set(definition.getLong("ft_sumDocLength", 0L));
+    totalDocs.set(definition.getLong("ft_totalDocs", 0L));
+    this.countersValid = true;
+    // The once-per-session check stays armed on purpose: it is only a live count against these counters, and it is what repairs
+    // the window above
     return true;
   }
 

@@ -19,6 +19,7 @@
 package com.arcadedb.index.fulltext;
 
 import com.arcadedb.database.TransactionContext;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.FullTextIndexMetadata;
 import com.arcadedb.schema.Schema;
@@ -59,6 +60,10 @@ public final class FullTextCorpusDeltas {
   public record CorpusDelta(String indexName, long docs, long length) {
   }
 
+  private final List<Entry> entries = new ArrayList<>(2);
+  // Every document of a bulk load lands on the same index: remember it, so the common case costs a reference comparison
+  private       Entry       last;
+
   private static final class Entry {
     private final FullTextIndexMetadata metadata;
     private final String                indexName;
@@ -70,10 +75,6 @@ public final class FullTextCorpusDeltas {
       this.indexName = indexName;
     }
   }
-
-  private final List<Entry> entries = new ArrayList<>(2);
-  // Every document of a bulk load lands on the same index: remember it, so the common case costs a reference comparison
-  private       Entry       last;
 
   private FullTextCorpusDeltas() {
   }
@@ -167,20 +168,33 @@ public final class FullTextCorpusDeltas {
    * dropped bucket.
    */
   public static void applyReplicated(final Schema schema, final List<CorpusDelta> deltas) {
-    for (final CorpusDelta delta : deltas)
+    for (final CorpusDelta delta : deltas) {
+      final FullTextIndexMetadata metadata = metadataOf(schema, delta.indexName());
+      if (metadata == null)
+        continue;
       try {
-        final FullTextIndexMetadata metadata = metadataOf(schema, delta.indexName());
-        if (metadata != null)
-          metadata.applyCorpusDelta(delta.docs(), delta.length());
+        metadata.applyCorpusDelta(delta.docs(), delta.length());
       } catch (final RuntimeException e) {
-        // The counters are an estimate the drift check repairs; a replicated transaction is not worth failing over them
+        // A replicated transaction is not worth failing over the counters, but a node that skipped a delta has drifted from the
+        // rest of the cluster: the next search checks them against the live data
+        metadata.requireRescan();
         LogManager.instance().log(FullTextCorpusDeltas.class, Level.WARNING,
             "Cannot apply the BM25 corpus counters of full-text index '%s' carried by a replicated transaction", e,
             delta.indexName());
       }
+    }
   }
 
+  /**
+   * One lookup, not an existence check followed by a read: the index may be dropped between the two.
+   *
+   * @return the counters of the index, or null when this node has no such full-text index
+   */
   private static FullTextIndexMetadata metadataOf(final Schema schema, final String indexName) {
-    return schema.existsIndex(indexName) ? LSMTreeFullTextIndex.metadataOf(schema.getIndexByName(indexName)) : null;
+    try {
+      return LSMTreeFullTextIndex.metadataOf(schema.getIndexByName(indexName));
+    } catch (final SchemaException e) {
+      return null;
+    }
   }
 }
