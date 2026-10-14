@@ -2601,8 +2601,9 @@ public class TimeSeriesSealedStore implements AutoCloseable {
           if (bucketIntervalMs > 0 && (rowTs < windowStart || rowTs >= windowEnd)) {
             windowStart = TimeBucketGrid.bucketStart(rowTs, bucketIntervalMs, bucketOffsetMs);
             final long end = windowStart + bucketIntervalMs;
-            // a bucket that ends past Long.MAX_VALUE leaves the window empty, so its rows find their bucket one by one
-            windowEnd = end > windowStart ? end : windowStart;
+            // The window is kept only when it holds the row it was computed from. A bucket that ends past Long.MAX_VALUE, or begins
+            // before Long.MIN_VALUE and so has its start answered modulo 2^64, leaves it empty: its rows find their bucket one by one
+            windowEnd = windowStart <= rowTs && rowTs < end ? end : windowStart;
           }
           group.accumulateRow(bucketIntervalMs > 0 ? windowStart : singleBucketTs, rowValues, rowLongs);
         }

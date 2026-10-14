@@ -24,6 +24,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
+import java.math.BigInteger;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
@@ -50,6 +51,8 @@ class TimeSeriesGroupedBucketCursorTest extends TestHelper {
       "SELECT host, ts.timeBucket('1h', ts) AS b, count(*) AS c, sum(v) AS s, avg(v) AS a, min(v) AS mn, max(v) AS mx FROM S GROUP BY host, b";
   private static final String OFFSET_SQL     =
       "SELECT host, ts.timeBucket('1h', ts, {'offset': '15m'}) AS b, count(*) AS c, sum(v) AS s, avg(v) AS a, min(v) AS mn, max(v) AS mx FROM S GROUP BY host, b";
+  private static final String OFFSET_50M_SQL =
+      "SELECT host, ts.timeBucket('1h', ts, {'offset': '50m'}) AS b, count(*) AS c, sum(v) AS s, avg(v) AS a, min(v) AS mn, max(v) AS mx FROM S GROUP BY host, b";
   private static final String UNGROUPED_SQL  =
       "SELECT ts.timeBucket('1h', ts) AS b, count(*) AS c, sum(v) AS s, avg(v) AS a, min(v) AS mn, max(v) AS mx FROM S GROUP BY b";
 
@@ -76,8 +79,10 @@ class TimeSeriesGroupedBucketCursorTest extends TestHelper {
     database.command("sql", "COMPACT TIMESERIES TYPE S");
   }
 
+  /** Computed exactly: {@code ts - offset} wraps for a timestamp within the offset of Long.MIN_VALUE. */
   private static long bucketOf(final long ts, final long offset) {
-    return Math.floorDiv(ts - offset, HOUR) * HOUR + offset;
+    final BigInteger t = BigInteger.valueOf(ts);
+    return t.subtract(t.subtract(BigInteger.valueOf(offset)).mod(BigInteger.valueOf(HOUR))).longValueExact();
   }
 
   /** The brute-force answer, keyed by host then bucket start; {@code byHost} false keys every group under the empty host. */
@@ -236,5 +241,29 @@ class TimeSeriesGroupedBucketCursorTest extends TestHelper {
     insert(samples);
     compact();
     assertSameGroups(engineAnswer(GROUPED_SQL), expected(samples, 0L, true));
+  }
+
+  /**
+   * The first bucket of the timeline starts within its offset of Long.MIN_VALUE (code review on PR #10004): {@code ts - offset}
+   * wraps for the rows at its start, and the bucket arithmetic must not let that split one bucket in two, neither when the row
+   * computes its bucket nor when the next row reuses the window of the previous one. On the 1h grid shifted by 50m, Long.MIN_VALUE
+   * is 2,824,192 ms past an hour boundary, so the first whole bucket starts 175,808 ms after it and the subtraction wraps for its
+   * first 2,824,192 ms.
+   */
+  @ParameterizedTest
+  @ValueSource(strings = { STRADDLING, HOUR_ALIGNED })
+  void aTimestampNearLongMinValueWithAnOffset(final String layout) {
+    createType(layout);
+    final long offset = 50 * MINUTE;
+    final long first = Long.MIN_VALUE + 175_808L;
+    assertThat(bucketOf(first, offset)).isEqualTo(first);
+    final List<Sample> samples = new ArrayList<>();
+    final long[] deltas = { 0, 1, 824_191, 2_824_191, 2_824_192, 2_824_193, HOUR - 1, HOUR, HOUR + 5, 3 * HOUR + 7 };
+    for (int i = 0; i < deltas.length; i++)
+      samples.add(new Sample(i % 3 == 2 ? "b" : "a", first + deltas[i], i + 1));
+    insert(samples);
+    compact();
+    assertSameGroups(engineAnswer(OFFSET_50M_SQL), expected(samples, offset, true));
+    assertThat(engineAnswer(OFFSET_50M_SQL).get("a")).hasSize(3);
   }
 }
