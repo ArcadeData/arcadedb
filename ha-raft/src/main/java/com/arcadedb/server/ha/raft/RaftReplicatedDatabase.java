@@ -1188,7 +1188,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
             "Database '%s': transactions do not carry their effect on the BM25 corpus counters, so the other nodes do not count "
                 + "them. Some peer does not advertise '%s' (older build, not probed yet, or offline). Once every peer does, run "
                 + "REBUILD INDEX <name> WITH statsOnly = true on the leader to bring the counters of every node back in line",
-            getName(), PeerCapabilities.TX_FULLTEXT_CORPUS_DELTA);
+            getName(), PeerCapabilities.TX_FULLTEXT_CORPUS_DELTAS);
       }
       return Collections.emptyList();
     }

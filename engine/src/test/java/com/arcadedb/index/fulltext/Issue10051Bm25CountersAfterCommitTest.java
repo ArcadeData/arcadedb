@@ -183,6 +183,47 @@ class Issue10051Bm25CountersAfterCommitTest extends TestHelper {
     assertThat(metadata().getSumDocLength()).isEqualTo(DOCS * 3L + 3 * 4L);
   }
 
+  /**
+   * The pending effect of the writing transaction is negative when it removed committed documents (the scan no longer sees
+   * them), and mixed when it also inserted: what is subtracted from the scan must leave exactly the committed data, so the
+   * commit lands the counters on the final state.
+   */
+  @Test
+  void aColdCountersScanInsideATransactionThatDeletedAndInsertedCountsTheCommittedDataOnce() {
+    createAndFill();
+    metadata().setCountersValid(false);
+
+    database.begin();
+    database.command("sql", "DELETE FROM Doc LIMIT 2");
+    for (int i = 0; i < 3; i++)
+      database.command("sql", "INSERT INTO Doc SET content = 'alpha beta gamma delta'");
+    database.query("sql", "SELECT FROM Doc WHERE SEARCH_INDEX('Doc[content]', 'alpha') = true").close();
+    assertThat(metadata().getTotalDocs()).as("the scan described the committed data: %d documents", DOCS).isEqualTo(DOCS);
+    assertThat(metadata().getSumDocLength()).isEqualTo(DOCS * 3L);
+    database.commit();
+
+    assertThat(database.countType("Doc", false)).isEqualTo(DOCS + 1L);
+    assertThat(metadata().getTotalDocs()).isEqualTo(DOCS + 1L);
+    // 2 documents of 3 tokens left, 3 of 4 tokens came in
+    assertThat(metadata().getSumDocLength()).isEqualTo(DOCS * 3L - 2 * 3L + 3 * 4L);
+  }
+
+  /** A scan inside a transaction that only deleted: the pending effect is negative and is added back. */
+  @Test
+  void aColdCountersScanInsideATransactionThatOnlyDeletedCountsTheCommittedDataOnce() {
+    createAndFill();
+    metadata().setCountersValid(false);
+
+    database.begin();
+    database.command("sql", "DELETE FROM Doc LIMIT 4");
+    database.query("sql", "SELECT FROM Doc WHERE SEARCH_INDEX('Doc[content]', 'alpha') = true").close();
+    assertThat(metadata().getTotalDocs()).isEqualTo(DOCS);
+    database.commit();
+
+    assertThat(metadata().getTotalDocs()).isEqualTo(DOCS - 4L);
+    assertThat(metadata().getSumDocLength()).isEqualTo((DOCS - 4L) * 3L);
+  }
+
   /** The same scan, but the transaction is then rolled back: the scan result must describe the committed data only. */
   @Test
   void aColdCountersScanInsideATransactionThatRollsBackDescribesTheCommittedData() {

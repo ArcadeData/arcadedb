@@ -128,7 +128,7 @@ public final class PeerCapabilities {
    * trailing bytes, which is why a writer emits it only when every peer advertises this token. Withholding it is harmless: the
    * counters of a node that did not receive the deltas are repaired by its own drift check.
    */
-  public static final String TX_FULLTEXT_CORPUS_DELTA = "tx-fulltext-corpus-deltas";
+  public static final String TX_FULLTEXT_CORPUS_DELTAS = "tx-fulltext-corpus-deltas";
 
   /**
    * Everything this build can decode. Immutable, and deliberately a whitelist written out by hand rather than
@@ -137,7 +137,7 @@ public final class PeerCapabilities {
    */
   public static final Set<String> LOCAL = Set.of(SCHEMA_DELTA, SECURITY_PRECONDITION, SECURITY_GROUPS_ENTRY,
       SECURITY_API_TOKENS_ENTRY, TX_PREPARED_AT_INDEX, SCHEMA_FILE_RENAMES, DATABASE_CONFIGURATION_ENTRY,
-      TX_FULLTEXT_CORPUS_DELTA);
+      TX_FULLTEXT_CORPUS_DELTAS);
 
   private PeerCapabilities() {
     // utility class

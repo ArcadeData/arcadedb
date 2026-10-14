@@ -510,7 +510,7 @@ public final class RaftLogEntryCodec {
    * As {@link #encodeTxEntry(String, byte[], Map, long)}, also stating what the transaction did to the BM25 corpus counters of
    * the full-text indexes it wrote (issue #10018), as a second framed extension section. An empty list writes no section.
    * <p>
-   * Only to be written once every peer advertises {@link PeerCapabilities#TX_FULLTEXT_CORPUS_DELTA}, for the reason
+   * Only to be written once every peer advertises {@link PeerCapabilities#TX_FULLTEXT_CORPUS_DELTAS}, for the reason
    * {@link #writeExtensionSection} gives.
    */
   public static ByteString encodeTxEntry(final String databaseName, final byte[] walData,

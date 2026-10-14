@@ -7297,7 +7297,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
   // The same short-lived, membership-aware verdict as the prepared-at one above, asked on every commit as well
   private final TxPreparedAtCapabilityCache fullTextCorpusDeltaCapability = new TxPreparedAtCapabilityCache(
-      () -> allPeersSupport(PeerCapabilities.TX_FULLTEXT_CORPUS_DELTA), System::currentTimeMillis, 1_000L);
+      () -> allPeersSupport(PeerCapabilities.TX_FULLTEXT_CORPUS_DELTAS), System::currentTimeMillis, 1_000L);
 
   /**
    * Whether every peer can read the {@code tx-fulltext-corpus-deltas} section, so a transaction may carry the effect it had on
