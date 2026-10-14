@@ -185,6 +185,9 @@ public interface DatabaseAsyncExecutor {
    * durable: a later task in the same still-open batch can fail and roll the whole batch back, discarding this
    * record even though the callback already fired (issue #6470). Register {@link #onOk(OkCallback)} (or call
    * {@link #waitCompletion()}) for a signal that fires only once the batch has actually committed.
+   * <p>
+   * A create a {@code BeforeRecordCreateListener} vetoed is not an error and created nothing: neither the callback nor the error
+   * callback fires for it, exactly as for an asynchronous delete a {@code BeforeRecordDeleteListener} vetoed (issue #9974).
    *
    * @param record            Record to create
    * @param newRecordCallback Callback invoked after the record has been applied to the current batch

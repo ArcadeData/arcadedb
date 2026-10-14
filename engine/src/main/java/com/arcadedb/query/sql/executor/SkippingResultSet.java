@@ -28,7 +28,8 @@ import java.util.NoSuchElementException;
  * first pull that comes back EMPTY. So a pull must never answer empty while upstream still has rows: when every row of the batch
  * was dropped, the next batch is pulled here, as {@link FilterStep} does. Once this pull has passed rows on, the end of the batch
  * ends it: its consumer pulls again and the next pull starts on the next batch, so nothing is skipped and the pull stays bounded by
- * one upstream batch. {@code finished} is sticky only for this one pull.
+ * one upstream batch. {@code finished} is sticky only for this one pull. When EVERY row upstream is dropped, one pull reads the
+ * whole upstream before answering empty, exactly as a {@link FilterStep} that matches nothing does.
  * <p>
  * The row is acted on in {@link #hasNext()}, one row ahead of {@link #next()}: a consumer that asks whether there is a next row
  * learns it only once the write has been applied or refused, and a write failure is raised from {@code hasNext()}. That is never
