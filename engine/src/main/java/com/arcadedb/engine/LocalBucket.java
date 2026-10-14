@@ -2443,14 +2443,20 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * {@code SELECT FROM SameType} is a reasonable thing to write in one.
    * <p>
    * The rule the guard implements is the ordinary one: a listener's own reads do not fire listeners. It costs
-   * nothing when nobody is listening - the two {@code hasBeforeReadListeners()} probes are field reads, and the
-   * thread-local is not touched at all in that case, which is every read on a database with no read listener.
+   * one volatile read when nobody is listening - the database's count of the BEFORE READ listeners registered on it and
+   * on all its types (#9997) - and neither the record's type nor the thread-local is looked up in that case, which is
+   * every read on a database with no read listener.
    * <p>
    * The flag lives on {@code DatabaseContextTL} rather than in a thread-local of its own so that it is scoped per
    * DATABASE as well as per thread; see the field's javadoc for why that distinction matters.
    */
   boolean fireBeforeReadEvents(final RID rid) {
     final RecordEventsRegistry databaseEvents = (RecordEventsRegistry) database.getEvents();
+    if (!databaseEvents.hasBeforeReadListenersInDatabase())
+      // NOBODY LISTENS ON THIS DATABASE OR ON ANY OF ITS TYPES: NO NEED TO FIND THE TYPE OF THE RECORD TO FIND ITS
+      // REGISTRY, A CHECKED getSchema() AND A BUCKET-TO-TYPE LOOKUP FOR EVERY RECORD A SCAN HANDS OUT (#9997)
+      return true;
+
     final DocumentType type = database.getSchema().getTypeByBucketId(rid.getBucketId());
     final RecordEventsRegistry typeEvents = type != null ? (RecordEventsRegistry) type.getEvents() : null;
 

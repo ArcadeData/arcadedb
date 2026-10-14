@@ -347,6 +347,11 @@ public class BinarySerializer {
       for (int i = 0; i < fieldNames.length; ++i)
         fieldIds[i] = dictionary.getIdByName(fieldNames[i], false);
 
+      // RESOLVED ONCE PER RECORD, NOT PER PROPERTY (#9997): THE OWNER AND THE TYPE THAT DECIDES WHETHER ITS STRINGS ARE
+      // CONVERTED (#8572) ARE THE SAME FOR EVERY PROPERTY OF THE RECORD
+      final Document owner = embeddedModifier != null ? embeddedModifier.getOwner() : null;
+      final DocumentType conversionType = storedStringConversionType(owner);
+
       for (int i = 0; i < properties; ++i) {
         final int nameId = (int) buffer.getUnsignedNumber();
         final int contentPosition = (int) buffer.getUnsignedNumber();
@@ -375,8 +380,12 @@ public class BinarySerializer {
 
           final byte type = buffer.getByte();
 
-          final EmbeddedModifierProperty propertyModifier =
-              embeddedModifier != null ? new EmbeddedModifierProperty(embeddedModifier.getOwner(), propertyName) : null;
+          // ONLY A VALUE THAT CAN HOLD AN EMBEDDED DOCUMENT IS TOLD WHERE IT LIVES, AS IN readPropertyValue(): FOR EVERY
+          // OTHER ONE THE MODIFIER WAS AN OBJECT PER PROPERTY READ THAT NOTHING USED
+          final EmbeddedModifierProperty propertyModifier = owner != null && (type == BinaryTypes.TYPE_EMBEDDED
+              || type == BinaryTypes.TYPE_LIST || type == BinaryTypes.TYPE_MAP || isExternalType(type)) ?
+              new EmbeddedModifierProperty(owner, propertyName) :
+              null;
 
           final Object propertyValue;
           if (isExternalType(type)) {
@@ -385,7 +394,7 @@ public class BinarySerializer {
             propertyValue = readExternalValue((DatabaseInternal) database, extBucketId, extPosition, propertyModifier,
                 isExternalCompressedType(type));
           } else {
-            propertyValue = convertStoredString(database, propertyModifier, propertyName,
+            propertyValue = convertStoredString(database, conversionType, propertyName,
                 deserializeValue(database, buffer, type, propertyModifier));
           }
 
@@ -596,23 +605,34 @@ public class BinarySerializer {
    * existed: it is converted when read, and saved in the declared type the next time the record is written (issue
    * #8572). A String that cannot be converted is returned as it is, so a read never fails on it.
    */
-  private static Object convertStoredString(final Database database, final EmbeddedModifier modifier, final String propertyName,
-      final Object value) {
-    return modifier == null ? value : convertStoredString(database, modifier.getOwner(), propertyName, value);
-  }
-
   private static Object convertStoredString(final Database database, final Document owner, final String propertyName,
       final Object value) {
     if (!(value instanceof String))
       return value;
-    final DocumentType documentType = owner != null ? owner.getType() : null;
-    if (documentType == null)
+    return convertStoredString(database, storedStringConversionType(owner), propertyName, value);
+  }
+
+  /**
+   * The type whose properties decide whether a String read from a record of {@code owner} is converted, or null when none
+   * of them can be (issue #9997): the type remembers whether it, or a super type, declares a property of a type that
+   * converts a stored String, so a record of a type that declares none pays no property lookup per String it reads.
+   */
+  private static DocumentType storedStringConversionType(final Document owner) {
+    final DocumentType type = owner != null ? owner.getType() : null;
+    if (type instanceof LocalDocumentType localType && !localType.mayConvertStoredStrings())
+      return null;
+    return type;
+  }
+
+  private static Object convertStoredString(final Database database, final DocumentType conversionType,
+      final String propertyName, final Object value) {
+    if (conversionType == null || !(value instanceof String))
       return value;
-    final Property property = documentType.getPolymorphicPropertyIfExists(propertyName);
+    final Property property = conversionType.getPolymorphicPropertyIfExists(propertyName);
     if (property == null)
       return value;
     final Type declared = property.getType();
-    if (declared != Type.OFFSET_TIME && declared != Type.LOCAL_TIME && declared != Type.ZONED_DATETIME && declared != Type.DURATION)
+    if (!declared.isConvertedFromStoredString())
       return value;
     try {
       return Type.convert(database, value, declared.getDefaultJavaType(), property);
