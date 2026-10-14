@@ -59,6 +59,15 @@ public abstract class ResettableIteratorBase<T> implements ResettableIterator<T>
     this.currentContainer = current;
   }
 
+  final void setCensusSource(final EdgeLinkedList list) {
+    this.censusSource = list;
+  }
+
+  /** The census the lightweight edges handed out by this iteration share, or null when the iteration has none. */
+  protected final LightEdgeCensus lightEdgeCensus() {
+    return censusSource != null ? censusSource.lightEdgeCensus() : null;
+  }
+
   /**
    * Restricts the iteration to the entries whose neighbour vertex is the given one.
    * <p>
@@ -71,15 +80,6 @@ public abstract class ResettableIteratorBase<T> implements ResettableIterator<T>
    *
    * @param neighbor the only neighbour vertex to accept, or {@code null} to iterate everything
    */
-  final void setCensusSource(final EdgeLinkedList list) {
-    this.censusSource = list;
-  }
-
-  /** The census the lightweight edges handed out by this iteration share, or null when the iteration has none. */
-  protected final LightEdgeCensus lightEdgeCensus() {
-    return censusSource != null ? censusSource.lightEdgeCensus() : null;
-  }
-
   public void setNeighborVertexFilter(final RID neighbor) {
     this.neighborFiltered = neighbor != null;
     this.neighborBucketId = neighbor != null ? neighbor.getBucketId() : -1;

@@ -107,6 +107,21 @@ public class LightEdgeRID extends DatabaseRID {
     return this;
   }
 
+  /** The chunk of the list entry this edge was read from, or null. For tests. */
+  RID getOriginSegment() {
+    return originSegment;
+  }
+
+  /** The byte position of the list entry this edge was read from in its chunk. For tests. */
+  int getOriginPosition() {
+    return originPosition;
+  }
+
+  /** The census this edge shares with the iteration that read it, or null. For tests. */
+  LightEdgeCensus getCensus() {
+    return census;
+  }
+
   /**
    * For an edge not read off an edge list but off a snapshot that already sorts twins next to each other: which of
    * {@code twinCount} twins it is.
@@ -284,34 +299,41 @@ public class LightEdgeRID extends DatabaseRID {
     final RID owner = outgoing ? out : in;
     final RID neighbor = outgoing ? in : out;
     final int bucketId = getBucketId();
-    // [0] ENTRIES OF THE TRIPLE FOUND, [1] HOW MANY OF THEM PRECEDE THE ORIGIN ENTRY, [2] 1 ONCE THE ORIGIN IS REACHED
-    final int[] walk = new int[3];
+    final OriginWalk walk = new OriginWalk();
     try {
       final VertexInternal vertex = (VertexInternal) db.lookupByRID(owner, false);
       walkList(db, vertex, originDirection, neighbor, (segment, position, entryEdge, entryVertex) -> {
-        if (walk[2] == 0 && position == originPosition && segment.equals(originSegment)) {
-          walk[2] = 1;
-          walk[1] = walk[0];
+        if (!walk.reached && position == originPosition && segment.equals(originSegment)) {
+          walk.reached = true;
+          walk.before = walk.found;
         }
         if (entryEdge.getPosition() < 0 && entryEdge.getBucketId() == bucketId && entryVertex.equals(neighbor))
-          ++walk[0];
+          ++walk.found;
       });
-      if (walk[2] == 0) {
+      if (!walk.reached) {
         // THE ENTRY IS NOT IN THE LIST ANY MORE (THE LIST CHANGED UNDER THE QUERY): IT KEEPS THE IDENTITY IT HAD BEFORE
         // THE OCCURRENCE EXISTED
         LogManager.instance().log(this, Level.FINE, "Lightweight edge %s (%s -> %s) is no longer in the edge list it was read from",
             this, out, in);
-        walk[0] = 0;
-        walk[1] = 0;
+        walk.found = 0;
+        walk.before = 0;
       }
     } catch (final RecordNotFoundException e) {
       LogManager.instance().log(this, Level.FINE, "Cannot resolve the occurrence of lightweight edge %s (%s -> %s): %s", this, out,
           in, e.getMessage());
-      walk[0] = 0;
-      walk[1] = 0;
+      walk.found = 0;
+      walk.before = 0;
     }
     // TWO THREADS RESOLVING THE SAME RID BOTH WALK THE LIST AND STORE THE SAME ANSWER: HARMLESS
-    numbered(walk[1], walk[0]);
+    numbered(walk.before, walk.found);
+  }
+
+  /** What one walk of the list learns about the entry an edge was read from. */
+  private static final class OriginWalk {
+    // ENTRIES OF THE TRIPLE FOUND, HOW MANY OF THEM PRECEDE THE ORIGIN ENTRY, WHETHER THE ORIGIN WAS REACHED
+    private int     found;
+    private int     before;
+    private boolean reached;
   }
 
   @Override
