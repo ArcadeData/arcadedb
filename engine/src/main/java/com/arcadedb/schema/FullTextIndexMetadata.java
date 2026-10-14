@@ -802,20 +802,33 @@ public class FullTextIndexMetadata extends IndexMetadata {
     mutations.incrementAndGet();
     countersGeneration.incrementAndGet();
     // Each counter is clamped at zero on its own, which makes the application order-dependent when a counter is driven below
-    // zero. Entries reach every node in log order, so the nodes agree; and a counter that was driven below zero was already wrong
-    // (a drift the check repairs), which is the one case the clamp exists for. That includes a transaction that removes more than
-    // cold counters hold, as after a crash: the clamp keeps them from going negative, and the first search's drift check rescans
+    // zero. Entries reach every node in log order, so the nodes agree while no clamp fires. A clamp firing means the counter was
+    // already wrong (the transaction removed more than the counters held, as after a crash that left cold counters), and the
+    // node that clamped must not stay silently different from one that did not, so it arms the unconditional rescan below
+    //
     // Same publication order as addDocument()/removeDocument(): the counter avgDocLength reads first moves last when the
     // corpus grows and first when it shrinks, so a concurrent reader's torn pair is always biased towards a HIGH average
+    boolean clamped;
     synchronized (countersLock) {
       if (docsDelta >= 0) {
-        sumDocLength.updateAndGet(v -> Math.max(0L, v + lengthDelta));
-        totalDocs.updateAndGet(v -> Math.max(0L, v + docsDelta));
+        clamped = addClamped(sumDocLength, lengthDelta);
+        clamped |= addClamped(totalDocs, docsDelta);
       } else {
-        totalDocs.updateAndGet(v -> Math.max(0L, v + docsDelta));
-        sumDocLength.updateAndGet(v -> Math.max(0L, v + lengthDelta));
+        clamped = addClamped(totalDocs, docsDelta);
+        clamped |= addClamped(sumDocLength, lengthDelta);
       }
     }
+    if (clamped)
+      requireRescan();
+  }
+
+  /**
+   * Adds {@code delta} to {@code counter}, never leaving it below zero.
+   *
+   * @return true when the counter would have gone below zero, i.e. when the clamp changed the result
+   */
+  private static boolean addClamped(final AtomicLong counter, final long delta) {
+    return counter.getAndUpdate(v -> Math.max(0L, v + delta)) + delta < 0L;
   }
 
   /**
@@ -895,7 +908,9 @@ public class FullTextIndexMetadata extends IndexMetadata {
     final long epoch = definition.getLong("ft_countersEpoch", 0L);
     final long current = countersEpoch.get();
     // One adopter wins; the epoch moves first, so a second reader of the same definition (every bucket index of the logical index
-    // carries it) finds nothing newer
+    // carries it) finds nothing newer. A reader of the epoch can therefore see the new one for an instant while the pair is still
+    // the old one: harmless, since nothing acts on the epoch but the next adoption and the persisted definition, and the drift
+    // check is re-armed below
     if (epoch <= current || !countersEpoch.compareAndSet(current, epoch))
       return false;
     // Absolute values, not a delta: the persisted pair is the leader's recompute result and replaces whatever drifted here. Counted
