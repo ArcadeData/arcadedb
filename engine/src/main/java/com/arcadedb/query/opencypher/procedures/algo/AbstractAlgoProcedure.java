@@ -30,7 +30,9 @@ import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.GraphEngine;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
+import com.arcadedb.graph.ImmutableLightEdge;
 import com.arcadedb.graph.IncomingEdgeLookup;
+import com.arcadedb.graph.LightEdgeRID;
 import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.NodeEdgeWeights;
 import com.arcadedb.graph.Vertex;
@@ -1401,12 +1403,20 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
 
   /**
    * Builds a path representation from a list of RIDs.
+   * <p>
+   * A lightweight edge has no record to look up: it is rebuilt from the type and the endpoints its RID carries. Looking
+   * it up failed the whole call with "Record #bucket:-1 not found" whenever the path walked one (found with #9914).
    */
   protected Map<String, Object> buildPath(final List<RID> rids, final Database database) {
     final List<Object> nodes = new ArrayList<>();
     final List<Object> relationships = new ArrayList<>();
 
     for (final RID rid : rids) {
+      if (rid instanceof LightEdgeRID light) {
+        relationships.add(new ImmutableLightEdge(database, database.getSchema().getTypeByBucketId(light.getBucketId()),
+            light.getBucketId(), light.getOutRID(), light.getInRID()));
+        continue;
+      }
       final Document doc = database.lookupByRID(rid, true).asDocument();
       if (doc instanceof Vertex)
         nodes.add(doc);

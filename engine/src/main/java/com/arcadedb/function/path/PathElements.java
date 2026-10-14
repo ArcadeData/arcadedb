@@ -18,6 +18,7 @@
  */
 package com.arcadedb.function.path;
 
+import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.util.ArrayList;
@@ -59,6 +60,10 @@ public class PathElements extends AbstractPathFunction {
 
     List<Object> nodes;
     List<Object> rels;
+
+    if (args[0] instanceof TraversalPath path)
+      // A PATH BOUND BY A PATTERN (ISSUE #10017)
+      return path.toAlternatingList();
 
     if (args[0] instanceof Map) {
       final Map<String, Object> pathMap = (Map<String, Object>) args[0];

@@ -20,6 +20,7 @@ package com.arcadedb.function.agg;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.function.DistinctNumberWrapper;
+import com.arcadedb.function.DistinctNumericKey;
 import com.arcadedb.function.HeapBufferingFunction;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -27,8 +28,10 @@ import com.arcadedb.query.sql.executor.HeapEstimator;
 import com.arcadedb.query.sql.executor.OperationHeapLimit;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -37,7 +40,10 @@ import java.util.Set;
  * Example: MATCH (n:Person) RETURN collect(DISTINCT n.name)
  */
 public class CollectDistinctFunction implements StatelessFunction, HeapBufferingFunction {
-  private final Set<Object>        distinctValues = new LinkedHashSet<>();
+  // A VALUE THAT IS ITS OWN KEY (A STRING, A BOOLEAN, ANY VALUE canonicalize() LEAVES ALONE) IS HELD AS IS, EVERY OTHER
+  // ONE IN A DistinctNumberWrapper: THE TWO NEVER EQUAL EACH OTHER, AND THE COMMON collect(DISTINCT n.name) ALLOCATES NO
+  // WRAPPER PER ROW
+  private final Set<Object> distinctValues = new LinkedHashSet<>();
   /** The set is held in heap until the aggregation ends (issues #8585, #8591). */
   private       OperationHeapLimit limit;
   // TRUE WHEN NO STEP HANDED AN OPERATION: THE CHARGE IS THEN THIS FUNCTION'S TO GIVE BACK
@@ -68,18 +74,12 @@ public class CollectDistinctFunction implements StatelessFunction, HeapBuffering
   public Object execute(final Object[] args, final CommandContext context) {
     checkArity(args);
     final Object value = args[0];
-    // Only add non-null values, and use identity for Identifiable objects
+    // Only add non-null values, keyed the way every other DISTINCT keys them (DistinctNumericKey): a graph element by
+    // its identity, so proxies and reloaded records collapse, and a lightweight edge by an identity that tells parallel
+    // twins apart (issue #10008); a number across its Java types, so INTEGER 1 and FLOAT 1.0 are one value as under
+    // Cypher's `=` (issue #5789); a list or map by its canonicalized elements
     if (value != null) {
-      final boolean added;
-      if (value instanceof Identifiable)
-        // Use RID as the key for deduplication to handle proxies and loaded records
-        added = distinctValues.add(new IdentifiableWrapper((Identifiable) value));
-      else if (value instanceof Number)
-        // Canonicalize cross-type numeric equality (e.g. INTEGER 1 vs FLOAT 1.0) so DISTINCT stays
-        // consistent with Cypher's `=` operator (issue #5789).
-        added = distinctValues.add(new DistinctNumberWrapper(value));
-      else
-        added = distinctValues.add(value);
+      final boolean added = distinctValues.add(needsKey(value) ? new DistinctNumberWrapper(value) : value);
       if (limit == null) {
         limit = OperationHeapLimit.of(context, "collect(DISTINCT)");
         ownLimit = true;
@@ -101,47 +101,15 @@ public class CollectDistinctFunction implements StatelessFunction, HeapBuffering
     if (ownLimit)
       // THE VALUES GO TO THE CALLER, WHICH HOLDS THEM FROM NOW ON
       limit.release();
-    // Unwrap IdentifiableWrapper back to the original objects
+    // Unwrap the keys back to the original objects
     final List<Object> result = new ArrayList<>(distinctValues.size());
-    for (final Object value : distinctValues) {
-      if (value instanceof IdentifiableWrapper)
-        result.add(((IdentifiableWrapper) value).getIdentifiable());
-      else if (value instanceof DistinctNumberWrapper)
-        result.add(((DistinctNumberWrapper) value).getOriginal());
-      else
-        result.add(value);
-    }
+    for (final Object value : distinctValues)
+      result.add(value instanceof DistinctNumberWrapper wrapper ? wrapper.getOriginal() : value);
     return result;
   }
 
-  /**
-   * Wrapper for Identifiable objects that uses RID for equals/hashCode.
-   * This ensures proper deduplication even when the same record is loaded multiple times.
-   */
-  private static class IdentifiableWrapper {
-    private final Identifiable identifiable;
-
-    IdentifiableWrapper(final Identifiable identifiable) {
-      this.identifiable = identifiable;
-    }
-
-    Identifiable getIdentifiable() {
-      return identifiable;
-    }
-
-    @Override
-    public boolean equals(final Object obj) {
-      if (this == obj)
-        return true;
-      if (obj == null || getClass() != obj.getClass())
-        return false;
-      final IdentifiableWrapper other = (IdentifiableWrapper) obj;
-      return identifiable.getIdentity().equals(other.identifiable.getIdentity());
-    }
-
-    @Override
-    public int hashCode() {
-      return identifiable.getIdentity().hashCode();
-    }
+  /** Whether {@code value} keys by something other than itself: see {@link DistinctNumericKey#canonicalize}. */
+  private static boolean needsKey(final Object value) {
+    return value instanceof Number || value instanceof Identifiable || value instanceof Collection || value instanceof Map;
   }
 }

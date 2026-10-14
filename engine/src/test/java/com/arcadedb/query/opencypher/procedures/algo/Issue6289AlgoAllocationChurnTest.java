@@ -150,21 +150,17 @@ class Issue6289AlgoAllocationChurnTest {
   }
 
   @Test
-  void kShortestPathsPricesTwoNodeSizedMasksRatherThanASquareOne() {
-    // The reservation follows the allocation: what is held beside the weight matrix is two boolean[nodeCount]
-    // masks for the whole call, not a nodeCount x nodeCount matrix per spur node. On this graph that is
-    // 501 x 501 doubles plus two 501-entry masks. The budget has to admit the loaded graph, priced since #6317
-    // at 501 x OLTP_VERTEX_BYTES, and still refuse the ~2 MB matrix, which 100 KB does.
+  void kShortestPathsFitsABudgetTheWeightMatrixDidNot() {
+    // The reservation follows the allocation. Yen's used to hold a nodeCount x nodeCount weight matrix - 501 x 501
+    // doubles, ~2 MB, on this graph - which 100 KB refused. Since #9914 it runs on the adjacency lists, and what it
+    // holds beside them is node-sized: the search state and the two spur masks, ~9 KB here. The budget has to admit
+    // the loaded graph, priced since #6317 at 501 x OLTP_VERTEX_BYTES, and now admits the whole call.
     database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 100_000L);
 
-    final int n = CHAIN_HOPS * 2 + 1 + PADDING_NODES;
-    assertThatThrownBy(() -> drain("""
+    assertThat(drain("""
         MATCH (a:Node {name: 'A0'}), (z:Node {name: 'A20'}) \
         CALL algo.kShortestPaths(a, z, 3) YIELD weight \
-        RETURN weight"""))
-        .hasStackTraceContaining("the weight matrix and the spur masks would need")
-        .hasStackTraceContaining("a double matrix of " + n + " x " + n + " nodes and two boolean masks of " + n + " nodes")
-        .hasStackTraceContaining(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY.getKey());
+        RETURN weight""")).hasSize(3);
   }
 
   @Test
@@ -174,9 +170,10 @@ class Issue6289AlgoAllocationChurnTest {
     //
     // The call below walks ~150 spur nodes over a 501-node graph. Each used to allocate a
     // boolean[501][501] - ~264 KB - for ~40 MB of churn, against a weight matrix of 501 x 501 doubles
-    // (~2 MB) allocated once. Measured: 4.4 MB now against 43.3 MB before, so a bound of six matrices
+    // (~2 MB) allocated once. Measured: 4.4 MB after #6289 against 43.3 MB before, so a bound of six matrices
     // (12 MB) leaves room for Dijkstra's per-spur-node scratch on either side of it and still refuses
-    // anything that reallocates a square mask per spur node.
+    // anything that reallocates a square mask per spur node. Since #9914 there is no matrix at all, and the bound
+    // stays the size of six of the matrices it no longer allocates.
     final com.sun.management.ThreadMXBean threads = threadAllocationBean();
     assumeTrue(threads != null, "JVM does not expose per-thread allocation counters");
 

@@ -23,6 +23,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.GraphBatch;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
@@ -627,6 +628,105 @@ class GraphAnalyticalViewCCHTest {
     assertThat(anyType.weight()).isCloseTo(reference(0, Vertex.DIRECTION.OUT, true)[20], within(EPS));
   }
 
+  /**
+   * Issue #9915: a request that names no edge type means every edge type of the database, and the hierarchy of a
+   * ROAD-only view used to turn it away as soon as the schema had any other edge type - even one without a single edge
+   * - so it was answered by a search 1000x slower, and nothing said so.
+   */
+  @Test
+  void edgeTypesTheViewDoesNotListButThatHoldNoEdgeDoNotTurnAwayUntypedRequests() {
+    grid(8, new Random(3), false);
+    final GraphAnalyticalView view = syncView("roads");
+    final ContractionHierarchy cch = view.getContractionHierarchy("distance", "ROAD");
+    assertThat(cch.awaitReady(true, 60, TimeUnit.SECONDS)).isTrue();
+
+    // RAIL exists since setup() and holds no edge; TRAM appears after the build, empty as well
+    assertThat(view.coversEdgeType(null)).isFalse();
+    assertThat(view.coversEveryEdge()).isTrue();
+    database.getSchema().createEdgeType("TRAM");
+    assertThat(ContractionHierarchy.find(database, "distance")).isSameAs(cch);
+    final Random random = new Random(13);
+    for (final Vertex.DIRECTION direction : Vertex.DIRECTION.values())
+      for (int p = 0; p < 20; p++) {
+        final int s = random.nextInt(junctions.length);
+        final int t = random.nextInt(junctions.length);
+        final ShortestPathFinder.Result untyped = ShortestPathFinder.find(database, junctions[s], junctions[t], "distance",
+            direction, null, null);
+        final double expected = reference(s, direction)[t];
+        if (expected == Double.POSITIVE_INFINITY) {
+          assertThat(untyped).isNull();
+          continue;
+        }
+        if (s != t)
+          assertThat(untyped.engine()).isEqualTo(ShortestPathFinder.Engine.CONTRACTION_HIERARCHY);
+        assertThat(untyped.weight()).isCloseTo(expected, within(EPS));
+      }
+    assertThat(cch.getEdgeTypeMismatchCount()).isZero();
+
+    // the first RAIL edge makes every edge type something the view does not hold: the records answer, rails included
+    database.transaction(() -> {
+      junctions[0].asVertex().modify().newEdge("RAIL", junctions[63].asVertex()).save();
+      rails.add(new double[] { 0, 63, 1.0 });
+    });
+    assertThat(view.coversEveryEdge()).isFalse();
+    assertThat(ContractionHierarchy.find(database, "distance")).isNull();
+    assertThat(cch.getEdgeTypeMismatchCount()).isEqualTo(1);
+    final ShortestPathFinder.Result withRail = ShortestPathFinder.find(database, junctions[0], junctions[63], "distance",
+        Vertex.DIRECTION.OUT, null, null);
+    assertThat(withRail.engine()).isNotEqualTo(ShortestPathFinder.Engine.CONTRACTION_HIERARCHY);
+    assertThat(withRail.weight()).isCloseTo(1.0, within(EPS));
+    assertThat(cch.getEdgeTypeMismatchCount()).isEqualTo(2);
+    assertThat(cch.getStats()).containsEntry("edgeTypeMismatches", 2L);
+    // a request naming the types the hierarchy routes over is untouched
+    assertThat(ContractionHierarchy.find(database, "distance", "ROAD")).isSameAs(cch);
+  }
+
+  /**
+   * A lightweight edge has no record, so no bucket count tells whether a type holds one: the view knows it because its
+   * scan reads every entry of every edge list, and its listeners hear every lightweight edge created since (#9915).
+   */
+  @Test
+  @SuppressWarnings("deprecation")
+  void aLightweightEdgeOfAnotherTypeIsAnEdgeTheViewDoesNotHold() {
+    grid(6, new Random(4), false);
+    database.transaction(() -> junctions[1].asVertex().modify().newLightEdge("RAIL", junctions[30].asVertex()));
+    final GraphAnalyticalView view = syncView("roads");
+    assertThat(view.getContractionHierarchy("distance", "ROAD").awaitReady(false, 60, TimeUnit.SECONDS)).isTrue();
+    // seen by the scan
+    assertThat(view.coversEveryEdge()).isFalse();
+    assertThat(ContractionHierarchy.find(database, "distance")).isNull();
+
+    // and heard after the build: a second view over a database whose RAIL edges are gone
+    database.transaction(() -> {
+      final List<Edge> railEdges = new ArrayList<>();
+      for (final Edge edge : junctions[1].asVertex().getEdges(Vertex.DIRECTION.OUT, "RAIL"))
+        railEdges.add(edge);
+      for (final Edge edge : railEdges)
+        edge.delete();
+    });
+    GraphAnalyticalViewRegistry.dropAll(database);
+    final GraphAnalyticalView rebuilt = syncView("roads2");
+    assertThat(rebuilt.getContractionHierarchy("distance", "ROAD").awaitReady(false, 60, TimeUnit.SECONDS)).isTrue();
+    assertThat(rebuilt.coversEveryEdge()).isTrue();
+    database.transaction(() -> junctions[2].asVertex().modify().newLightEdge("RAIL", junctions[20].asVertex()));
+    assertThat(rebuilt.coversEveryEdge()).isFalse();
+    assertThat(ContractionHierarchy.find(database, "distance")).isNull();
+  }
+
+  /** A bulk load reports the edge types it wrote, the ones the view does not hold included (#9915). */
+  @Test
+  void aBulkLoadOfAnotherEdgeTypeIsHeardToo() {
+    grid(5, new Random(6), false);
+    final GraphAnalyticalView view = syncView("roads");
+    assertThat(view.getContractionHierarchy("distance", "ROAD").awaitReady(false, 60, TimeUnit.SECONDS)).isTrue();
+    assertThat(view.coversEveryEdge()).isTrue();
+    try (final GraphBatch batch = database.batch().build()) {
+      batch.newEdge(junctions[0], "RAIL", junctions[24]);
+    }
+    assertThat(view.coversEveryEdge()).isFalse();
+    assertThat(ContractionHierarchy.find(database, "distance")).isNull();
+  }
+
   @Test
   void concurrentQueriesWhileWeightsChange() throws Exception {
     grid(15, new Random(9));
@@ -789,6 +889,10 @@ class GraphAnalyticalViewCCHTest {
 
   /** A side x side grid of junctions with one-way streets here and there, plus a few rail links the views ignore. */
   private void grid(final int side, final Random random) {
+    grid(side, random, true);
+  }
+
+  private void grid(final int side, final Random random, final boolean withRails) {
     database.transaction(() -> {
       junctions = new RID[side * side];
       for (int i = 0; i < junctions.length; i++) {
@@ -810,7 +914,7 @@ class GraphAnalyticalViewCCHTest {
               road(v, u, 1 + random.nextInt(30));
           }
         }
-      for (int i = 0; i < side; i++) {
+      for (int i = 0; withRails && i < side; i++) {
         final int from = random.nextInt(junctions.length);
         final int to = random.nextInt(junctions.length);
         junctions[from].asVertex().modify().newEdge("RAIL", junctions[to].asVertex()).save();

@@ -943,4 +943,23 @@ class CollectDistinctTest {
       assertThat(names).isNotEmpty();
     }
   }
+
+  /**
+   * collect(DISTINCT) keys its values the way every other DISTINCT does (#10008): numbers across their Java types, lists
+   * and maps by their canonicalized elements, so values Cypher's {@code =} calls equal collapse; strings and nulls as before.
+   */
+  @Test
+  void collectDistinctKeysLikeEveryOtherDistinct() {
+    try (final ResultSet rs = database.query("opencypher",
+        "UNWIND [1, 1.0, 2, [1], [1.0], {a: 1}, {a: 1.0}, 'x', 'x', null, [1, 'y'], [1.0, 'y']] AS v "
+            + "RETURN collect(DISTINCT v) AS d, count(DISTINCT v) AS n")) {
+      final Result row = rs.next();
+      final List<Object> distinct = row.getProperty("d");
+      // 1 / 1.0, 2, [1] / [1.0], {a: 1} / {a: 1.0}, 'x', [1, 'y'] / [1.0, 'y']
+      assertThat(distinct).hasSize(6);
+      assertThat(((Number) row.getProperty("n")).longValue()).isEqualTo(6L);
+      // the first of equal values is the one kept, as it was
+      assertThat(distinct.getFirst()).isEqualTo(1L);
+    }
+  }
 }
