@@ -95,6 +95,7 @@ class Issue9992LinkRegexpTextFormTest extends TestHelper {
     database.command("sql", "CREATE DOCUMENT TYPE S9992");
     database.command("sql", "CREATE PROPERTY S9992.l LINK");
     database.command("sql", "CREATE PROPERTY S9992.tags LIST");
+    database.command("sql", "CREATE PROPERTY S9992.s STRING");
     database.close();
 
     // patterns no declaration accepts today: the text of a selected record on the LINK, and one on a type with no text
@@ -103,6 +104,8 @@ class Issue9992LinkRegexpTextFormTest extends TestHelper {
     final JSONObject properties = root.getJSONObject("types").getJSONObject("S9992").getJSONObject("properties");
     properties.getJSONObject("l").put("regexp", "#[0-9]+:[0-9]+\\[.*\\]");
     properties.getJSONObject("tags").put("regexp", "\\[.*\\]");
+    // and one that does not even compile
+    properties.getJSONObject("s").put("regexp", "[a-");
     Files.writeString(schemaFile.toPath(), root.toString(), StandardCharsets.UTF_8);
 
     database = factory.open();
@@ -122,6 +125,11 @@ class Issue9992LinkRegexpTextFormTest extends TestHelper {
       document.set("tags", List.of("a", "b"));
       document.save();
     })).isInstanceOf(ValidationException.class).hasMessageContaining("is not applicable to type LIST")
+        .hasMessageContaining("REGEXP null");
+
+    // a pattern that does not compile says so, with the remedy, rather than escaping as a PatternSyntaxException
+    assertThatThrownBy(() -> database.transaction(() -> database.newDocument("S9992").set("s", "abc").save()))
+        .isInstanceOf(ValidationException.class).hasMessageContaining("is not a valid regular expression")
         .hasMessageContaining("REGEXP null");
 
     // the remedy works, and so does a write without the property

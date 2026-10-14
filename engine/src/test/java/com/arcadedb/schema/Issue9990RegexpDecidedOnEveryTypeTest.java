@@ -119,6 +119,19 @@ class Issue9990RegexpDecidedOnEveryTypeTest extends TestHelper {
   }
 
   @Test
+  void aPatternTooLargeForAnAutomatonDegradesToADoubtNeverToARefusal() {
+    // a million states: past RegexAutomaton.MAX_STATES, so the check falls back to the samples and the budgeted search,
+    // which cannot rule it out either. Accepted with a doubt, and a write tells the truth about it
+    final RegexpUsability tooLarge = DocumentValidator.regexpUsability(database, Type.LONG, "[0-9]{1000000}");
+    assertThat(tooLarge.refusal()).isNull();
+    assertThat(tooLarge.doubt()).isNotNull();
+    // the same size, satisfiable: a sample settles it
+    final RegexpUsability satisfiable = DocumentValidator.regexpUsability(database, Type.LONG, "[0-9]{0,1000000}");
+    assertThat(satisfiable.refusal()).isNull();
+    assertThat(satisfiable.doubt()).isNull();
+  }
+
+  @Test
   void aPatternNoAutomatonExpressesIsStillDecidedWhenASampleValueMatchesIt() {
     // a back reference: settled by the sample values, the edge values of the type, before any search
     final RegexpUsability backReference = DocumentValidator.regexpUsability(database, Type.LONG, "(0)\\1*");
