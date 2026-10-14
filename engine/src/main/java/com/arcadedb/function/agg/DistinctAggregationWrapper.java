@@ -86,7 +86,7 @@ public class DistinctAggregationWrapper implements StatelessFunction, HeapBuffer
       ownLimit = true;
     }
     // THE KEY, THE LIST THAT WRAPS IT AND ITS ENTRY IN THE SET
-    limit.chargeElement(key, HeapEstimator.HASH_ENTRY_BYTES + HeapEstimator.OBJECT_BYTES);
+    limit.add(seenValues.size(), key, HeapEstimator.HASH_ENTRY_BYTES + HeapEstimator.OBJECT_BYTES);
     return delegate.execute(args, context);
   }
 

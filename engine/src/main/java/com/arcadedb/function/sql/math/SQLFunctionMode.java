@@ -108,4 +108,9 @@ public class SQLFunctionMode extends SQLAggregatedFunction {
   public boolean holdsEveryValue() {
     return true;
   }
+
+  @Override
+  public long getHeldValues() {
+    return seen.size();
+  }
 }

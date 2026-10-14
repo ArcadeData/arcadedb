@@ -25,7 +25,6 @@ import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.query.sql.parser.LocalResultSet;
 import com.arcadedb.query.sql.parser.Statement;
 
-import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -56,6 +55,10 @@ public class LetQueryStep extends AbstractExecutionStep {
   // can never outlive the execution, and with it the input parameters and database state, it was computed under.
   private       CorrelatedSubQueryCache resultCache;
   private       boolean                 resultCacheInitialized;
+  // WHAT THE VALUE OF THE ROW BEING SERVED HOLDS, UNDER BOTH HEAP LIMITS (ISSUE #9792). ONE ROW'S VALUE AT A TIME: THE
+  // PREVIOUS ONE GOES DOWNSTREAM WITH ITS ROW, WHOSE BUFFERING STEPS ANSWER FOR IT FROM THEN ON. THE CACHE ABOVE IS BOUNDED
+  // ON ITS OWN, IN ENTRIES AND IN ROWS PER ENTRY
+  private       OperationHeapLimit      valueLimit;
 
   public LetQueryStep(final Identifier varName, final Statement query, final CommandContext context) {
     this(varName, query, null, context);
@@ -91,6 +94,8 @@ public class LetQueryStep extends AbstractExecutionStep {
 
       private void calculate(final Result result, final CommandContext context) {
         final long beginTime = System.nanoTime();
+        // THE PREVIOUS ROW TOOK ITS VALUE DOWNSTREAM
+        releaseValue();
 
         final DatabaseInternal database = context.getDatabase();
         final CorrelatedSubQueryCache cache = getResultCache(database);
@@ -117,7 +122,9 @@ public class LetQueryStep extends AbstractExecutionStep {
               cachedSubPlanTemplate = subExecutionPlan;
           }
 
-          value = toList(new LocalResultSet(subExecutionPlan));
+          if (valueLimit == null)
+            valueLimit = OperationHeapLimit.of(context, "LET " + varName.getStringValue() + " subquery");
+          value = valueLimit.materialize(new LocalResultSet(subExecutionPlan));
           if (useCache)
             cache.store((CorrelatedSubQueryCache.TrackingContext) subCtx, context, database, value);
         }
@@ -134,20 +141,23 @@ public class LetQueryStep extends AbstractExecutionStep {
           cost += System.nanoTime() - beginTime;
       }
 
-      private List<Result> toList(final LocalResultSet oLocalResultSet) {
-        final List<Result> result = new ArrayList<>();
-        while (oLocalResultSet.hasNext()) {
-          result.add(oLocalResultSet.next());
-        }
-        oLocalResultSet.close();
-        return result;
-      }
-
       @Override
       public void close() {
+        releaseValue();
         source.close();
       }
     };
+  }
+
+  private void releaseValue() {
+    if (valueLimit != null)
+      valueLimit.release();
+  }
+
+  @Override
+  public void close() {
+    releaseValue();
+    super.close();
   }
 
   private CorrelatedSubQueryCache getResultCache(final DatabaseInternal database) {
