@@ -457,7 +457,7 @@ public final class RegexAutomaton {
     }
 
     private static long mix(final long value) {
-      long h = value * 0x9E3779B97F4A7C15L;
+      final long h = value * 0x9E3779B97F4A7C15L;
       return h ^ (h >>> 32);
     }
   }
