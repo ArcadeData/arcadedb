@@ -636,7 +636,8 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
    * @param limit            max number of distinct groups to return; must be {@code > 0}
    * @param groupSize        max records per group; must be {@code > 0}
    * @param allowedRIDs      optional whitelist; applied inside the BMW loop, no over-fetch needed
-   * @param groupKeyResolver maps a candidate RID to its group key; {@code null} group keys are
+   * @param groupKeyResolver maps a candidate RID to its group key, or {@link GroupAdmissionState#UNRESOLVED} for a candidate
+   *                         whose record it cannot read, which is skipped (issue #10002); {@code null} group keys are
    *                         allowed (single "null" bucket)
    *
    * @return ordered list of (RID, score) pairs from highest to lowest score; capped at
@@ -846,7 +847,10 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
       for (final RidScore candidate : rescored) {
         if (candidate.score() <= floor)
           break;
-        if (perGroup.merge(groupKeyResolver.apply(candidate.rid()), 1, Integer::sum) <= groupSize)
+        // Re-resolved, so a record gone since the engine resolved it reads UNRESOLVED now (issue #10002): only the
+        // groups asked for are counted, as topKForGroups counts them
+        final Object key = groupKeyResolver.apply(candidate.rid());
+        if (groupKeys.contains(key) && perGroup.merge(key, 1, Integer::sum) <= groupSize)
           out.add(candidate);
       }
 
@@ -877,9 +881,12 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
   private static boolean groupedExhausted(final List<RidScore> candidates, final Function<RID, Object> groupKeyResolver,
       final int groupsAsked, final int membersAsked) {
     final HashMap<Object, Integer> perGroup = new HashMap<>();
-    for (final RidScore candidate : candidates)
-      if (perGroup.merge(groupKeyResolver.apply(candidate.rid()), 1, Integer::sum) >= membersAsked)
+    for (final RidScore candidate : candidates) {
+      final Object key = groupKeyResolver.apply(candidate.rid());
+      // A record gone since the engine resolved it belongs to no group (issue #10002), so it cannot fill a cap
+      if (key != GroupAdmissionState.UNRESOLVED && perGroup.merge(key, 1, Integer::sum) >= membersAsked)
         return false;
+    }
     return perGroup.size() < groupsAsked;
   }
 

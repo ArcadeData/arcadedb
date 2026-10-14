@@ -4041,6 +4041,8 @@ public class SelectExecutionPlanner {
     final List<InternalExecutionPlan> resultSubPlans = new ArrayList<>();
 
     boolean indexedFunctionsFound = false;
+    // Decided before the branches are planned: it lets each of them take the rows the LIMIT needs (issue #10022)
+    final boolean mergeByScore = branchesMergeByScore(typez, info, context);
 
     for (AndBlock block : info.flattenedWhereClause) {
       List<BinaryCondition> indexedFunctionConditions = block.getIndexedFunctionConditions(typez, context);
@@ -4138,11 +4140,13 @@ public class SelectExecutionPlanner {
           block = residual;
         }
         final IndexedFunctionPushdown.Order order = indexedFunctionRidOrder(blockCandidateFunction, info, context);
-        // An OR splits the WHERE into branches whose rows are merged and deduplicated, so no branch alone knows how many of
-        // its rows the LIMIT will take: only a single block can hand the function its row limit (issue #9895)
+        // An OR splits the WHERE into branches whose rows are concatenated and deduplicated, so no branch alone knows how many
+        // of its rows the LIMIT will take (issue #9895) - unless the branches are merged by score (issue #10022): a record
+        // among the best n of the merge is among the best n of the branch that gives it its score, since every record ranked
+        // above it there is ranked above it in the merge too
         final int functionLimit =
-            info.flattenedWhereClause.size() == 1 && coversWholeHierarchy(filterClusters, typez, info, ridConditions, context) ?
-            indexedFunctionRowLimit(blockCandidateFunction, block, info, order, context) : -1;
+            (info.flattenedWhereClause.size() == 1 || mergeByScore) && coversWholeHierarchy(filterClusters, typez, info,
+                ridConditions, context) ? indexedFunctionRowLimit(blockCandidateFunction, block, info, order, context) : -1;
         final FetchFromIndexedFunctionStep step = new FetchFromIndexedFunctionStep(blockCandidateFunction, info.target,
             functionLimit, ridConditions, order, context);
         if (order != IndexedFunctionPushdown.Order.FUNCTION)
@@ -4182,9 +4186,17 @@ public class SelectExecutionPlanner {
     }
 
     if (resultSubPlans.size() > 1) { // if resultSubPlans.size() == 1 the step was already chained (see above)
-      plan.chain(new ParallelExecStep(resultSubPlans, context));
-      plan.chain(new FilterByClustersStep(filterClusters, context));
-      plan.chain(new DistinctExecutionStep(context));
+      if (mergeByScore) {
+        // Best first across the branches, each record once, lazily: the ORDER BY $score DESC, if any, is already applied
+        plan.chain(new MergeByScoreStep(resultSubPlans, context));
+        plan.chain(new FilterByClustersStep(filterClusters, context));
+        if (info.orderBy != null)
+          info.orderApplied = true;
+      } else {
+        plan.chain(new ParallelExecStep(resultSubPlans, context));
+        plan.chain(new FilterByClustersStep(filterClusters, context));
+        plan.chain(new DistinctExecutionStep(context));
+      }
       indexedFunctionsFound = true;
     }
 
@@ -4196,6 +4208,47 @@ public class SelectExecutionPlanner {
     } else {
       return false;
     }
+  }
+
+  /**
+   * Whether the branches of the WHERE's OR can be merged by score (issue #10022) - {@link MergeByScoreStep} - instead of run
+   * one after the other, deduplicated and, for an {@code ORDER BY $score DESC}, sorted, which loads every match of every
+   * branch before the first row. That takes:
+   * <ul>
+   *   <li>every branch fetched by a single indexed function that answers best first and sets {@code $score} to the score it
+   *       ranked each record by ({@link BinaryCondition#indexedFunctionAnswersByScore}), evaluated again by the branch's
+   *       filter, which is what sets it;</li>
+   *   <li>nothing else in a branch's filter that could set {@code $score} to another value. Every function that sets it
+   *       reads the database and so is not deterministic: a filter made of cacheable conditions only calls none of them. A
+   *       per-record LET is evaluated in the branch as well, so a branch that reads one is not merged either;</li>
+   *   <li>an order the merge produces: {@code ORDER BY $score DESC}, or none - then the merged rows are best first, as those
+   *       of a single such condition are - and nothing that changes the rows before it: no UNWIND, expand, DISTINCT,
+   *       GROUP BY or aggregate, whose answer the order of the branches cannot change.</li>
+   * </ul>
+   */
+  private boolean branchesMergeByScore(final DocumentType type, final QueryPlanningInfo info, final CommandContext context) {
+    if (info.flattenedWhereClause.size() < 2 || info.deferredLetWhereClause != null)
+      return false;
+    if (info.expand || info.unwind != null || info.distinct || info.groupBy != null || info.aggregateProjection != null)
+      return false;
+    if (info.orderBy != null && !isOrderByScoreDescending(info))
+      return false;
+    for (final AndBlock block : info.flattenedWhereClause) {
+      final List<BinaryCondition> functions = filterIndexedFunctionsWithoutIndex(block.getIndexedFunctionConditions(type, context),
+          info.target, context);
+      if (functions == null || functions.size() != 1)
+        return false;
+      final BinaryCondition function = functions.getFirst();
+      if (!function.indexedFunctionAnswersByScore(context) || !function.executeIndexedFunctionAfterIndexSearch(info.target, context))
+        return false;
+      // By identity, as the residual of indexedFunctionRowLimit: the function's condition is the very instance the block holds
+      for (final BooleanExpression condition : block.getSubBlocks())
+        if (condition != function && !condition.isCacheable())
+          return false;
+      if (refersToLet(block.getSubBlocks(), info.perRecordLetClause))
+        return false;
+    }
+    return true;
   }
 
   /**
@@ -4361,7 +4414,11 @@ public class SelectExecutionPlanner {
 
   /**
    * Whether the ORDER BY is exactly {@code $score DESC}, the order a scoring indexed function produces its rows in, and the
-   * projection does not give {@code $score} another meaning.
+   * projection does not give {@code $score} another meaning. A name that is a projection alias is resolved through that
+   * projection item, as {@link #resolveOrderByProperty} resolves it: {@code SELECT $score AS s ... ORDER BY s DESC} sorts by
+   * the score, and so does {@code SELECT $score AS s ... ORDER BY $score DESC}, which the planner rewrites to the alias it
+   * projects the key under ({@link #addOrderByProjections}) - while {@code SELECT n AS $score ... ORDER BY $score} does not
+   * (issue #10022).
    */
   private static boolean isOrderByScoreDescending(final QueryPlanningInfo info) {
     if (info.orderBy.getItems() == null || info.orderBy.getItems().size() != 1)
@@ -4370,15 +4427,26 @@ public class SelectExecutionPlanner {
     if (item.modifier != null || item.recordAttr != null || item.getDirectionParameter() != null
         || !OrderByItem.DESC.equalsIgnoreCase(item.getType()))
       return false;
-    final String sortedBy = item.expression != null ? item.expression.toString() : item.getAlias();
-    if (!SCORE_VARIABLE.equals(sortedBy))
+    String sortedBy = item.expression != null ? item.expression.toString() : item.getAlias();
+    if (sortedBy == null)
       return false;
-    if (info.projection != null && info.projection.getItems() != null)
-      for (final ProjectionItem projected : info.projection.getItems())
-        if (SCORE_VARIABLE.equals(projected.getProjectionAliasAsString()) && (projected.getExpression() == null
-            || !SCORE_VARIABLE.equals(projected.getExpression().toString())))
+    if (info.projection != null && info.projection.getItems() != null) {
+      ProjectionItem match = null;
+      for (final ProjectionItem projected : info.projection.getItems()) {
+        if (projected.isAll() || !sortedBy.equals(projected.getProjectionAliasAsString()))
+          continue;
+        if (match != null)
+          // two items under one name: which one the sort sees is not for the plan to guess
           return false;
-    return true;
+        match = projected;
+      }
+      if (match != null) {
+        if (match.getExpression() == null)
+          return false;
+        sortedBy = match.getExpression().toString();
+      }
+    }
+    return SCORE_VARIABLE.equals(sortedBy);
   }
 
   /**

@@ -20,6 +20,7 @@ package com.arcadedb.index.sparsevector;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.RID;
+import com.arcadedb.index.vector.GroupAdmissionState;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -220,7 +221,8 @@ public final class BmwScorer {
    * @param cursors          opens the per-dim cursors, once per traversal
    * @param limit            max number of distinct groups to return
    * @param groupSize        max records per group
-   * @param groupKeyResolver maps a candidate RID to its group key; {@code null} group keys are
+   * @param groupKeyResolver maps a candidate RID to its group key, or {@link GroupAdmissionState#UNRESOLVED} for a candidate
+   *                         whose record it cannot read, which is skipped (issue #10002); {@code null} group keys are
    *                         allowed (treated as the "null" group), matching the MVP's HashMap
    *                         null-key handling
    * @param allowedRIDs      optional RID whitelist; {@code null} or empty means no restriction
@@ -1362,6 +1364,9 @@ public final class BmwScorer {
     @Override
     public void collect(final RID rid, final float score) {
       final Object groupKey = groupKeyResolver.apply(rid);
+      // A record the resolver could not read right now belongs to no group (issue #10002): it must not take a slot
+      if (groupKey == GroupAdmissionState.UNRESOLVED)
+        return;
       GroupState group = groups.get(groupKey);
       boolean stateChanged;
       if (group != null) {
