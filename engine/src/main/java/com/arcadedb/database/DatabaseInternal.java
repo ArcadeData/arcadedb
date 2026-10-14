@@ -269,7 +269,24 @@ public interface DatabaseInternal extends Database {
    */
   boolean updateRecordReportingVeto(Record record);
 
+  /**
+   * Writes an updated record to its page now, and nothing else: no validation, no events, no statistics. The building
+   * block the commit uses to flush the updates it deferred, which were validated, announced and counted when they were
+   * made. To UPDATE a record, use {@link #updateRecordReportingVeto(Record)} or
+   * {@link #updateRecordWithEventsNoLock(Record, boolean)}.
+   */
   void updateRecordNoLock(Record record, boolean discardRecordAfter);
+
+  /**
+   * Updates the record exactly as {@link #updateRecordReportingVeto(Record)} does - preconditions, validation, the
+   * before/after-update listeners, the {@code updateRecord} statistic - but without the database read lock and writing
+   * the record to its page now, inside the caller's transaction, instead of queueing it for the commit. The update
+   * sibling of {@link #createRecordNoLock} and {@link #deleteRecordNoLock}, used the same way by the asynchronous update
+   * task (issue #9987).
+   *
+   * @return {@code true} when the update was applied, {@code false} when a before-update listener vetoed it
+   */
+  boolean updateRecordWithEventsNoLock(Record record, boolean discardRecordAfter);
 
   /**
    * Deletes the record without taking the database read lock, dispatching the before/after-delete listeners itself.
