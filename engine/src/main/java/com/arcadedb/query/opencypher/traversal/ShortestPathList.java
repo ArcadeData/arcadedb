@@ -30,6 +30,10 @@ import java.util.Collection;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class ShortestPathList extends ArrayList<Object> {
+  public ShortestPathList(final int initialCapacity) {
+    super(initialCapacity);
+  }
+
   public ShortestPathList(final Collection<?> elements) {
     super(elements);
   }

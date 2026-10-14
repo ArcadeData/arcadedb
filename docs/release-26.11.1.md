@@ -129,7 +129,8 @@ RETURN's sort, as one page: sort, then skip, then limit. It used to run before t
 This is a fix that changes results: such a query can now return different rows than before.
 
 `LET`, `IS [NFC|NFD|NFKC|NFKD] NORMALIZED`, `USE` of the current database and the conditional query
-`WHEN ... THEN ... ELSE ...` are now executed. A `LET` that names a variable already in scope is refused
+`WHEN ... THEN ... ELSE ...` are now executed. As for any query, every parameter a conditional query names must be bound, also
+the parameters of the branches that are not taken. A `LET` that names a variable already in scope is refused
 ("Variable 'n' already declared"), as in Neo4j.
 
 ## Fixes

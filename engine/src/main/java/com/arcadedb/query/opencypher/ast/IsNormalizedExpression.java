@@ -25,8 +25,8 @@ import java.text.Normalizer;
 
 /**
  * GQL / Cypher 25 normalized predicate {@code <string> IS [NOT] [NFC|NFD|NFKC|NFKD] NORMALIZED} (issue #9940): whether the
- * string is already in the given Unicode normal form, NFC when none is written. A null string answers null, and anything
- * other than a string is a type error, as in Neo4j.
+ * string is already in the given Unicode normal form, NFC when none is written. Null, and anything other than a string,
+ * answers null (UNKNOWN), as in Neo4j Cypher 25.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

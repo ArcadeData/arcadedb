@@ -328,6 +328,22 @@ class Issue9940GqlConstructsTest extends TestHelper {
   }
 
   @Test
+  void conditionalQueryConditionCanCallFunctionsThatReadTheDatabaseOrTheClock() {
+    assertThat(column("WHEN datetime() > datetime('2000-01-01T00:00:00Z') THEN RETURN 'now' AS r ELSE RETURN 'past' AS r", "r"))
+        .containsExactly("now");
+    // inside an explicit transaction, the chosen branch writes in that transaction
+    database.transaction(() -> database.command("opencypher",
+        "WHEN toUpper($s) = 'YES' THEN CREATE (:Marker9940d {v: 1}) ELSE CREATE (:Marker9940d {v: 2})", Map.of("s", "yes")));
+    assertThat(column("MATCH (m:Marker9940d) RETURN m.v AS v", "v")).containsExactly(1);
+  }
+
+  @Test
+  void conditionalQueryWithANonBooleanConditionIsRefused() {
+    assertThatThrownBy(() -> column("WHEN $x THEN RETURN 1 AS r ELSE RETURN 2 AS r", "r", Map.of("x", 5)))
+        .hasMessageContaining("must be a BOOLEAN");
+  }
+
+  @Test
   void conditionalQueryBranchesMustReturnTheSameColumns() {
     assertThatThrownBy(() -> rows("WHEN true THEN RETURN 1 AS a ELSE RETURN 2 AS b")).hasMessageContaining("conditional");
   }
@@ -447,6 +463,16 @@ class Issue9940GqlConstructsTest extends TestHelper {
         "vt")).containsExactly("PATH NOT NULL");
   }
 
+  @Test
+  void aShortestPathStaysAPathThroughWithCollectAndUnwind() {
+    for (final String query : new String[] {
+        "MATCH p = shortestPath((:Person {name:'A'})-[:KNOWS*]->(:Person {name:'C'})) WITH p RETURN valueType(p) AS vt",
+        "MATCH p = shortestPath((:Person {name:'A'})-[:KNOWS*]->(:Person {name:'C'})) WITH collect(p) AS ps UNWIND ps AS q "
+            + "RETURN valueType(q) AS vt",
+        "MATCH p = allShortestPaths((:Person {name:'A'})-[:KNOWS*]->(:Person {name:'C'})) RETURN valueType(p) AS vt" })
+      assertThat(column(query, "vt")).as(query).containsOnly("PATH NOT NULL");
+  }
+
   // 11. OFFSET written after LIMIT
 
   @Test
@@ -463,6 +489,9 @@ class Issue9940GqlConstructsTest extends TestHelper {
       assertThat(column(query, "n.name")).as(query).containsExactly("B", "C");
 
     assertThatThrownBy(() -> rows("MATCH (n:Item9940) RETURN n.name ORDER BY n.name LIMIT 2 LIMIT 1"))
+        .hasMessageContaining("RETURN");
+    // ORDER BY written both before and after the RETURN's paging is the same part twice: refused, not merged
+    assertThatThrownBy(() -> rows("MATCH (n:Item9940) RETURN n.name ORDER BY n.name LIMIT 2 ORDER BY n.name DESC"))
         .hasMessageContaining("RETURN");
   }
 
