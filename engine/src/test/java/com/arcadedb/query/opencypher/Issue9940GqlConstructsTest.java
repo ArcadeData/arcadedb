@@ -344,6 +344,23 @@ class Issue9940GqlConstructsTest extends TestHelper {
   }
 
   @Test
+  void conditionalQueryBranchesMustReturnTheirColumnsInTheSameOrder() {
+    // stricter than Neo4j, which reorders the columns of a later branch to the first branch's order: refused, never answered
+    // with the columns in a different order
+    assertThatThrownBy(() -> rows("WHEN true THEN RETURN 1 AS a, 2 AS b ELSE RETURN 2 AS b, 1 AS a"))
+        .hasMessageContaining("same columns in the same order");
+  }
+
+  @Test
+  void aConditionalQueryWithAWritingBranchIsNotIdempotent() {
+    // query() runs idempotent statements only: a conditional query any of whose branches writes is a write statement,
+    // even when the branch taken would only read
+    assertThatThrownBy(() -> database.query("opencypher", "WHEN true THEN RETURN 1 AS r ELSE CREATE (:Marker9940e) RETURN 2 AS r"))
+        .isInstanceOf(Exception.class);
+    assertThat(column("MATCH (m:Marker9940e) RETURN count(m) AS c", "c")).containsExactly(0L);
+  }
+
+  @Test
   void conditionalQueryBranchesMustReturnTheSameColumns() {
     assertThatThrownBy(() -> rows("WHEN true THEN RETURN 1 AS a ELSE RETURN 2 AS b")).hasMessageContaining("conditional");
   }

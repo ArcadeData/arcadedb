@@ -129,7 +129,8 @@ public class CypherSemanticValidator {
         firstColumns = columns;
       else if (!firstColumns.equals(columns))
         throw new CommandParsingException(
-            "DifferentColumnsInConditionalQuery: every branch of a conditional query (WHEN ... THEN ... ELSE ...) must return the same column names");
+            "DifferentColumnsInConditionalQuery: every branch of a conditional query (WHEN ... THEN ... ELSE ...) must return the "
+                + "same columns in the same order");
     }
   }
 

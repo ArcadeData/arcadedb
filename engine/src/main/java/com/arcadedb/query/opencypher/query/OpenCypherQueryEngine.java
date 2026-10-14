@@ -436,7 +436,10 @@ public class OpenCypherQueryEngine implements QueryEngine {
       throw new CommandParameterMissingException(missing.toArray(new String[0]));
   }
 
-  /** The context the conditions of a conditional query are evaluated against: the database, the parameters, the functions. */
+  /**
+   * The context the conditions of a conditional query are evaluated against: the database, the parameters, the functions.
+   * A condition reads parameters only (the parser refuses anything else) and is expected to have no side effect.
+   */
   private BasicCommandContext conditionContext(final Map<String, Object> parameters) {
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database);
