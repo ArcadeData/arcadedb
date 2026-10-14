@@ -104,8 +104,8 @@ public class AlgoSteinerTree extends AbstractAlgoProcedure {
     validateArgs(args);
 
     final List<Vertex> terminals = extractVertexList(args[0], "terminalNodes");
-    final String[] relTypes = args.length > 1 ? extractRelTypes(args[1], context) : null;
-    final String weightProperty = args.length > 2 ? extractString(args[2], "weightProperty") : null;
+    final String[] relTypes = extractRelTypes(argOrDefault(args, 1, null), context);
+    final String weightProperty = extractString(argOrDefault(args, 2, null), "weightProperty");
 
     if (terminals.size() < 2)
       return Stream.empty();

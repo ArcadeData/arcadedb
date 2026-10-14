@@ -19,14 +19,14 @@
 package com.arcadedb.function.graph;
 
 import com.arcadedb.function.StatelessFunction;
-import com.arcadedb.graph.Edge;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.CommandContext;
 
-import java.util.List;
-
 /**
- * length() function - returns the length of a path (number of relationships).
+ * length() function - returns the length of a path (number of relationships). The path is read in any shape
+ * {@link TraversalPath#of(Object)} reads; a string answers its length, as it always has; anything else is a type error
+ * rather than 0 (issue #9913).
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
@@ -52,23 +52,12 @@ public class LengthFunction implements StatelessFunction {
 
     if (args[0] == null)
       return null;
-    if (args[0] instanceof TraversalPath)
-      return (long) ((TraversalPath) args[0]).length();
-    if (args[0] instanceof List) {
-      // Path is represented as a list of alternating vertices and edges
-      // Length = number of edges
-      final List<?> path = (List<?>) args[0];
-      long edgeCount = 0;
-      for (final Object element : path) {
-        if (element instanceof Edge) {
-          edgeCount++;
-        }
-      }
-      return edgeCount;
-    } else if (args[0] instanceof String) {
-      // Also support string length for compatibility
-      return (long) ((String) args[0]).length();
-    }
-    return 0L;
+    final TraversalPath path = TraversalPath.of(args[0]);
+    if (path != null)
+      return (long) path.length();
+    // Also support string length for compatibility
+    if (args[0] instanceof String string)
+      return (long) string.length();
+    throw CypherFunctionHelper.typeMismatch(getName(), "a PATH or a STRING", args[0]);
   }
 }

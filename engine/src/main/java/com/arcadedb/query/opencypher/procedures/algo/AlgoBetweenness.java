@@ -90,7 +90,7 @@ public class AlgoBetweenness extends AbstractAlgoProcedure {
   public Stream<Result> execute(final Object[] args, final Result inputRow, final CommandContext context) {
     validateArgs(args);
 
-    final Map<String, Object> config = args.length > 0 ? extractMap(args[0], "config") : null;
+    final Map<String, Object> config = extractMap(argOrDefault(args, 0, null), "config");
     final boolean normalized = config == null || !Boolean.FALSE.equals(config.get("normalized"));
 
     final Database db = context.getDatabase();

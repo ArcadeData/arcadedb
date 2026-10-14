@@ -96,7 +96,7 @@ public class PathSubgraphAll extends AbstractPathProcedure {
     validateArgs(args);
 
     final Vertex startNode = extractVertex(args[0], "startNode");
-    final Map<String, Object> config = extractConfig(args.length > 1 ? args[1] : null);
+    final Map<String, Object> config = extractConfig(argOrDefault(args, 1, null));
 
     final String[] relTypes = extractRelTypes(config.get("relationshipFilter"));
     final String[] labelFilter = extractLabels(config.get("labelFilter"));

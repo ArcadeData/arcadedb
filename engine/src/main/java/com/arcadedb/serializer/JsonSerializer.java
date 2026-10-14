@@ -29,6 +29,7 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.opencypher.temporal.CypherDuration;
+import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
@@ -711,6 +712,9 @@ public class JsonSerializer {
       value = serializeIterator(database, iter, null);
     else if (value instanceof Map)
       value = serializeMap(database, (Map<Object, Object>) value);
+    else if (value instanceof TraversalPath path)
+      // a path as its {_type, nodes, relationships, length} map rather than its toString() (issue #9913)
+      value = serializeMap(database, (Map) path.toMap());
     else if (value.getClass().isArray())
       value = serializeArray(database, value);
 

@@ -26,6 +26,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
@@ -191,6 +192,9 @@ public interface Result {
         for (final Map.Entry<?, ?> entry : map.entrySet())
           object.put(String.valueOf(entry.getKey()), valueToJSON(entry.getValue()));
         return object;
+      } else if (val instanceof TraversalPath path) {
+        // a path as its {_type, nodes, relationships, length} map rather than its toString() (issue #9913)
+        return valueToJSON(path.toMap());
       } else if (JsonSerializer.isNativeCypherTemporal(val, null)) {
         // A time of day, a zoned datetime and a duration have no epoch form that round trips: epoch millis drops the zone and
         // the generic conversion drops an OffsetTime altogether. The ISO text is what the server's own serializer sends

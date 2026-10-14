@@ -18,13 +18,9 @@
  */
 package com.arcadedb.function.path;
 
-import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.CommandContext;
 
-import java.util.ArrayList;
 import java.util.Collections;
-import java.util.List;
-import java.util.Map;
 
 /**
  * path.elements(path) - Get all elements (nodes and relationships) from a path.
@@ -53,42 +49,11 @@ public class PathElements extends AbstractPathFunction {
   }
 
   @Override
-  @SuppressWarnings("unchecked")
   public Object execute(final Object[] args, final CommandContext context) {
     if (args[0] == null)
       return Collections.emptyList();
 
-    List<Object> nodes;
-    List<Object> rels;
-
-    if (args[0] instanceof TraversalPath path)
-      // A PATH BOUND BY A PATTERN (ISSUE #10017)
-      return path.toAlternatingList();
-
-    if (args[0] instanceof Map) {
-      final Map<String, Object> pathMap = (Map<String, Object>) args[0];
-      nodes = (List<Object>) pathMap.get("nodes");
-      rels = (List<Object>) pathMap.get("relationships");
-    } else if (args[0] instanceof List) {
-      // Already a list of elements
-      return args[0];
-    } else {
-      return Collections.emptyList();
-    }
-
-    if (nodes == null)
-      return Collections.emptyList();
-
-    final List<Object> elements = new ArrayList<>();
-
-    // Interleave nodes and relationships
-    for (int i = 0; i < nodes.size(); i++) {
-      elements.add(nodes.get(i));
-      if (rels != null && i < rels.size()) {
-        elements.add(rels.get(i));
-      }
-    }
-
-    return elements;
+    // the path a MATCH pattern binds used to answer an empty list (issue #9913)
+    return requirePath(args[0]).toAlternatingList();
   }
 }

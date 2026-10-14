@@ -22,6 +22,7 @@ import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.EmbeddedDocument;
 import com.arcadedb.database.Record;
+import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONArray;
@@ -609,7 +610,8 @@ public enum PostgresType {
       return PostgresType.JSON;
     } else if (val instanceof EmbeddedDocument) {
       return PostgresType.JSON;
-    } else if (val instanceof Map) {
+    } else if (val instanceof Map || val instanceof TraversalPath) {
+      // a Cypher path travels as its {_type, nodes, relationships, length} map (issue #9913)
       return PostgresType.JSON;
     } else if (val instanceof Record) {
       return PostgresType.JSON;
@@ -808,6 +810,8 @@ public enum PostgresType {
       serializedValue = json.toString();
     } else if (value instanceof Map<?, ?> map) {
       serializedValue = new JSONObject(map).toString();
+    } else if (value instanceof TraversalPath path) {
+      serializedValue = new JSONObject(path.toMap()).toString();
     } else if (value instanceof Record record) {
       serializedValue = record.toJSON(true).toString();
     } else if (value instanceof Result result) {
@@ -1039,6 +1043,8 @@ public enum PostgresType {
         appendQuoted(sb, json.toString());
       } else if (element instanceof Map<?, ?> map) {
         appendQuoted(sb, new JSONObject(map).toString());
+      } else if (element instanceof TraversalPath path) {
+        appendQuoted(sb, new JSONObject(path.toMap()).toString());
       } else if (element instanceof Record record) {
         appendQuoted(sb, record.toJSON(true).toString());
       } else if (element instanceof EmbeddedDocument embeddedDocument) {
@@ -1285,6 +1291,7 @@ public enum PostgresType {
     // documents. One json document renders as the plain [{...},{...}] the data actually is, everywhere.
     if (element instanceof JSONObject ||
         element instanceof Map ||
+        element instanceof TraversalPath ||
         element instanceof Result ||
         element instanceof EmbeddedDocument ||
         element instanceof Record)

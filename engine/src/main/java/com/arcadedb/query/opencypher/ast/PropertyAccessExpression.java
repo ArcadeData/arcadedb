@@ -26,6 +26,7 @@ import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.query.opencypher.InlineProperties;
 import com.arcadedb.query.opencypher.executor.DeletedEntityMarker;
 import com.arcadedb.query.opencypher.temporal.*;
+import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 
@@ -65,6 +66,9 @@ public class PropertyAccessExpression implements PropertyReadExpression {
     } else if (variable instanceof Result) {
       // Handle Result types (nested results)
       return ((Result) variable).getProperty(propertyName);
+    } else if (variable instanceof TraversalPath path) {
+      // path.nodes / path.relationships / path.length on a procedure's path, which used to be a map (issue #9913)
+      return path.getMember(propertyName);
     } else if (variable instanceof CypherTemporalValue) {
       // Handle temporal value property access (e.g., date.year, time.hour)
       return ((CypherTemporalValue) variable).getTemporalProperty(propertyName);

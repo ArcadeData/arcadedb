@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher.procedures.algo;
 
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -84,7 +85,7 @@ public class AlgoDijkstra extends AbstractAlgoProcedure {
     final String relType = extractString(args[2], "relTypes");
     requireEdgeTypes(context.getDatabase(), relType);
     final String weightProperty = extractString(args[3], "weightProperty");
-    final String direction = args.length > 4 ? extractString(args[4], "direction") : "BOTH";
+    final String direction = extractString(argOrDefault(args, 4, "BOTH"), "direction");
 
     // Build options map for edge type filtering
     final Map<String, Object> options = new HashMap<>();
@@ -107,7 +108,7 @@ public class AlgoDijkstra extends AbstractAlgoProcedure {
     final WeightedPath weighted = attachEdges(pathRids, relType, parseDirection(direction), weightProperty);
 
     // Build path representation including edges
-    final Map<String, Object> path = buildPath(weighted.ridsWithEdges(), context.getDatabase());
+    final TraversalPath path = buildPath(weighted.ridsWithEdges(), context.getDatabase());
     final double totalWeight = weighted.weight();
 
     final ResultInternal result = new ResultInternal();

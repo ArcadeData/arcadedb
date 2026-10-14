@@ -29,6 +29,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.OperationType;
 import com.arcadedb.query.QueryEngine;
+import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.ExecutionPlan;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -704,6 +705,11 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
     } else if (value instanceof Result result) {
       return analyzeResultContent(database, serializerImpl, includedVertices, resultVertices, includedEdges, vertices, edges,
           result, limit);
+    } else if (value instanceof TraversalPath path) {
+      // A path's nodes and relationships, so the graph view draws a returned path, whether a MATCH pattern bound it or
+      // a procedure yielded it (issue #9913)
+      return analyzePropertyValue(database, serializerImpl, includedVertices, resultVertices, includedEdges, vertices, edges,
+          path.toAlternatingList(), limit);
     } else if (value instanceof Collection<?> collection) {
       for (final Iterator<?> it = collection.iterator(); it.hasNext(); ) {
         // The cap is tested INSIDE the collection, not only between rows and between properties. One row can

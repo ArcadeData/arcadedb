@@ -82,8 +82,8 @@ public class AlgoKTruss extends AbstractAlgoProcedure {
   public Stream<Result> execute(final Object[] args, final Result inputRow, final CommandContext context) {
     validateArgs(args);
 
-    final String[] relTypes = args.length > 0 ? extractRelTypes(args[0], context) : null;
-    final int kParam = args.length > 1 && args[1] instanceof Number n ? extractInt(n, "k") : 3;
+    final String[] relTypes = extractRelTypes(argOrDefault(args, 0, null), context);
+    final int kParam = extractInt(optionalNumberArg(args, 1, "k", 3), "k");
 
     final Database db = context.getDatabase();
     final WorkGuard guard = newWorkGuard(context);

@@ -19,6 +19,7 @@
 package com.arcadedb.postgres;
 
 import com.arcadedb.database.Binary;
+import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.schema.Type;
@@ -2462,5 +2463,19 @@ class PostgresTypeTest {
 
     assertThat(PostgresType.byName("hstore")).as("a type this protocol cannot produce").isNull();
     assertThat(PostgresType.byName(null)).isNull();
+  }
+
+  /**
+   * Issue #9913: a Cypher path is a TraversalPath. It travels as the {_type, nodes, relationships, length} JSON object a
+   * procedure's path always had, not as its toString().
+   */
+  @Test
+  void pathIsSentAsJson() {
+    final TraversalPath path = new TraversalPath();
+    assertThat(PostgresType.getTypeForValue(path)).isEqualTo(PostgresType.JSON);
+    assertThat(PostgresType.getArrayTypeForElementType(path)).isEqualTo(PostgresType.JSON);
+    final JSONObject json = new JSONObject(PostgresType.JSON.toText(PostgresType.JSON, path));
+    assertThat(json.getString("_type")).isEqualTo("path");
+    assertThat(json.getInt("length")).isEqualTo(0);
   }
 }

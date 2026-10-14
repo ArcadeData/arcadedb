@@ -19,6 +19,7 @@
 package com.arcadedb.server.grpc;
 
 import com.arcadedb.database.RID;
+import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Timestamp;
 import org.junit.jupiter.api.Test;
@@ -419,5 +420,14 @@ class GrpcTypeConverterTest {
   void bytesOfUtf8() {
     // UTF-8 multibyte characters
     assertThat(GrpcTypeConverter.bytesOf("日本")).isEqualTo(6); // 3 bytes each
+  }
+
+  /** Issue #9913: a Cypher path is a TraversalPath, sent as its {_type, nodes, relationships, length} map. */
+  @Test
+  void pathIsSentAsAMap() {
+    final GrpcValue result = GrpcTypeConverter.toGrpcValue(new TraversalPath());
+    assertThat(result.hasMapValue()).isTrue();
+    assertThat(result.getMapValue().getEntriesMap().get("_type").getStringValue()).isEqualTo("path");
+    assertThat(result.getMapValue().getEntriesMap().get("nodes").getListValue().getValuesCount()).isZero();
   }
 }

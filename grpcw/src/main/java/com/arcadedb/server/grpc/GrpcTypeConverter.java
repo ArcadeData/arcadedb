@@ -19,6 +19,7 @@
 package com.arcadedb.server.grpc;
 
 import com.arcadedb.database.RID;
+import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Timestamp;
 
@@ -214,6 +215,10 @@ class GrpcTypeConverter {
         lb.addValues(toGrpcValue(Array.get(o, i)));
       return b.setListValue(lb.build()).build();
     }
+
+    // a path as its {_type, nodes, relationships, length} map rather than its toString() (issue #9913)
+    if (o instanceof TraversalPath path)
+      return toGrpcValue(path.toMap());
 
     if (o instanceof Map<?, ?> map) {
       final GrpcMap.Builder mb = GrpcMap.newBuilder();
