@@ -62,11 +62,13 @@ import java.util.logging.Level;
  * exactly that persist's pages.</li>
  * <li>The ordinal map is written immediately before the manifest and dropped with it, so it can only change together
  * with it; its identity is checked anyway, absent-and-still-absent included.</li>
- * <li>The PQ is written AFTER the manifest certifies the graph, and nothing deletes it when the next persist starts. So a
- * PQ file is that persist's only when it was written after the manifest: one that is older belongs to an earlier graph
- * and is refused, which refuses the whole set - a PRODUCT-quantized index with no usable PQ rebuilds its graph anyway.
- * A PQ and a manifest carrying the same modification time are refused too, since the order cannot be told; on a file
- * system with a coarse clock that costs a rebuild, never a wrong pairing.</li>
+ * <li>The PQ is written AFTER the manifest certifies the graph, and a persist deletes the previous one before it writes
+ * the first page ({@code LSMVectorIndex.dropPersistedProductQuantizationBeforeGraphWrite}). So a PQ that is the same
+ * file before t0 and after it was written for the graph the unchanged manifest certifies: the persist that wrote that
+ * manifest had deleted any older PQ before it started, and the PQ is no longer there while the new one is still owed.
+ * A PRODUCT-quantized index whose PQ is missing is refused - its restored copy would rebuild its graph anyway. No
+ * modification times are compared: the manifest and the PQ are written milliseconds apart, which a coarse file system
+ * clock cannot order.</li>
  * <li>Every writer replaces these files by renaming a new one over them and never rewrites one in place, so a file
  * opened while its identity still matched the capture keeps the captured bytes however long the copy takes, even if a
  * persist replaces or deletes it meanwhile.</li>
@@ -178,7 +180,7 @@ public final class LSMVectorIndexGraphSideFiles {
    * Observes the side files of one graph.
    *
    * @return {@code null} when they cannot vouch for the pages: the graph is not its index's current one, there is no
-   * manifest, or the index is PRODUCT-quantized and its PQ is missing or not the one written for this manifest
+   * manifest, or the index is PRODUCT-quantized and has no PQ on disk
    */
   static LSMVectorIndexGraphSideFiles capture(final LSMVectorIndexGraphFile graphFile) {
     // The PQ is found through the index, which names it after its own component rather than after the graph. A graph
@@ -198,8 +200,8 @@ public final class LSMVectorIndexGraphSideFiles {
         return null;
 
       final FileIdentity pqIdentity = pqPath != null ? FileIdentity.of(pqPath) : null;
-      if (pqPath != null && (pqIdentity == null || pqIdentity.lastModifiedNanos() <= manifestIdentity.lastModifiedNanos()))
-        // Missing, or written before this manifest and so for an earlier graph (or at a time the clock cannot order)
+      if (pqPath != null && pqIdentity == null)
+        // Not written yet for the graph this manifest certifies, or dropped after a failed write
         return null;
 
       return new LSMVectorIndexGraphSideFiles(manifestPath, manifestIdentity, ordinalMapPath, FileIdentity.of(ordinalMapPath),

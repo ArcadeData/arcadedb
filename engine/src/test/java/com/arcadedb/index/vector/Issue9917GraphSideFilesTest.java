@@ -21,6 +21,7 @@ package com.arcadedb.index.vector;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.index.TypeIndex;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -97,18 +98,59 @@ class Issue9917GraphSideFilesTest extends TestHelper {
   }
 
   @Test
-  void aPQOlderThanTheManifestIsRefusedBecauseItBelongsToAnEarlierGraph() {
-    createVectorIndex("Doc", "NONE");
+  void aGraphPersistDropsThePQBeforeItRewritesThePages() {
+    createVectorIndex("PqDoc", "PRODUCT");
+    final Path pq = vectorIndex("PqDoc").getProductQuantizationFilePath();
+    assertThat(Files.exists(pq)).as("the fixture: the first build persisted a PQ").isTrue();
+
+    // REPORTED AFTER THE PAGES ARE WRITTEN AND BEFORE THE MANIFEST IS: the window in which the pages on disk are the
+    // new graph's and the PQ, if it were still there, the previous graph's
+    final boolean[] observed = { false, false, false };
+    vectorIndex("PqDoc").buildVectorGraphNow((phase, processed, total, accesses) -> {
+      if ("persisting".equals(phase) && processed == total && total > 0) {
+        observed[0] = true;
+        observed[1] = Files.exists(pq);
+        observed[2] = graphFile("PqDoc").getManifest().exists();
+      }
+    });
+
+    assertThat(observed[0]).as("the fixture: the persist reported its pages written").isTrue();
+    assertThat(observed[2]).as("the manifest is gone while the pages change").isFalse();
+    assertThat(observed[1]).as("and so is the PQ written for the previous graph, so nothing can pair it with the new one")
+        .isFalse();
+    assertThat(Files.exists(pq)).as("the persist writes the new graph's PQ once it is certified").isTrue();
+    assertThat(LSMVectorIndexGraphSideFiles.capture(graphFile("PqDoc"))).isNotNull();
+  }
+
+  @Test
+  void aManifestRewrittenWithoutNewPagesStillPairsWithItsPQ() {
     createVectorIndex("PqDoc", "PRODUCT");
 
-    // A MANIFEST WRITTEN AFTER THE PQ: the order a persist leaves behind between certifying a new graph and replacing
-    // the previous graph's PQ. markCloseDeferred rewrites the manifest without touching anything else
+    // markCloseDeferred rewrites the manifest - so it is now NEWER than the PQ - without touching the pages: the PQ
+    // still belongs to them, and the pair is vouched for without comparing the two files' modification times
     graphFile("PqDoc").getManifest().markCloseDeferred();
-    graphFile("Doc").getManifest().markCloseDeferred();
 
-    assertThat(LSMVectorIndexGraphSideFiles.capture(graphFile("PqDoc"))).as("the PQ predates the manifest").isNull();
-    assertThat(LSMVectorIndexGraphSideFiles.capture(graphFile("Doc"))).as("an index with no PQ is not affected")
-        .isNotNull();
+    assertThat(LSMVectorIndexGraphSideFiles.capture(graphFile("PqDoc"))).isNotNull();
+  }
+
+  @Test
+  void aGraphComponentThatIsNotItsIndexsCurrentGraphIsNotVouchedFor() throws Exception {
+    createVectorIndex("Doc", "NONE");
+    final DatabaseInternal db = (DatabaseInternal) database;
+
+    // THE SHAPE A COMPACT INDEX LEAVES BEHIND: the pre-compaction graph component still registered and still pointing
+    // at its index, while the index has moved on to a replacement. Its side files are not the index's to vouch for
+    final LSMVectorIndexGraphFile stale = new LSMVectorIndexGraphFile(db, "issue9917-stale", db.getDatabasePath() + "/issue9917-stale",
+        ComponentFile.MODE.READ_WRITE, graphFile("Doc").getPageSize());
+    try {
+      stale.setMainIndex(vectorIndex("Doc"));
+      assertThat(vectorIndex("Doc").getGraphFile()).isNotSameAs(stale);
+
+      assertThat(LSMVectorIndexGraphSideFiles.capture(stale)).isNull();
+      assertThat(LSMVectorIndexGraphSideFiles.capture(graphFile("Doc"))).as("the index's own graph still is").isNotNull();
+    } finally {
+      stale.close();
+    }
   }
 
   @Test

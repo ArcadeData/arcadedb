@@ -155,6 +155,52 @@ class Issue9917BackupReusesVectorGraphTest {
     TestHelper.checkActiveDatabases();
   }
 
+  @Test
+  void aSideFileGoneBetweenTheCaptureAndTheCopyTakesOnlyItsOwnGraphBackToARebuild() throws Exception {
+    GlobalConfiguration.PAGE_SNAPSHOT_ENABLED.setValue(true);
+    try (final Database database = new DatabaseFactory(DATABASE_PATH).create()) {
+      createVectorIndex(database, "Doc", "NONE");
+      createVectorIndex(database, "PqDoc", "PRODUCT");
+
+      // ONE INDEX'S ORDINAL MAP DISAPPEARS AFTER t0: the open finds it gone and refuses that graph's whole set, and the
+      // backup itself carries on
+      final File directory = new File(DATABASE_PATH);
+      FullBackupFormat.beforeVectorGraphSideFilesOpenForTesting = () -> {
+        final File[] maps = directory.listFiles((dir, name) -> name.startsWith("Doc_") && name.endsWith(
+            "." + LSMVectorIndexOrdinalMapFile.FILE_EXT));
+        assertThat(maps).as("the fixture: the non-quantized index has its ordinal map").hasSize(1);
+        assertThat(maps[0].delete()).isTrue();
+      };
+      new Backup(database, BACKUP_FILE).setVerboseLevel(0).backupDatabase();
+    } finally {
+      FullBackupFormat.beforeVectorGraphSideFilesOpenForTesting = null;
+      TestHelper.checkActiveDatabases();
+    }
+
+    final Map<String, Long> entries = entrySizes();
+    for (final Map.Entry<String, Long> entry : entries.entrySet())
+      if (entry.getKey().endsWith(GRAPH_EXT))
+        if (entry.getKey().startsWith("Doc_"))
+          assertThat(entry.getValue()).as("'%s' lost a side file, so it falls back to an empty entry", entry.getKey()).isZero();
+        else
+          assertThat(entry.getValue()).as("'%s' is unaffected and keeps its pages", entry.getKey()).isGreaterThan(0L);
+    assertThat(entries.keySet()).as("no part of the refused set is archived")
+        .noneMatch(n -> n.startsWith("Doc_") && (n.endsWith("." + LSMVectorIndexGraphManifest.FILE_EXT) || n.endsWith(
+            "." + LSMVectorIndexOrdinalMapFile.FILE_EXT)));
+
+    new Restore(BACKUP_FILE, RESTORED_PATH).setVerboseLevel(0).restoreDatabase();
+
+    try (final Database restored = new DatabaseFactory(RESTORED_PATH).open()) {
+      for (final String type : new String[] { "Doc", "PqDoc" })
+        assertThat(search(restored, type)).as("%s answers a search after the restore", type).isTrue();
+      assertThat(vectorIndex(restored, "Doc").getStats().get("graphRebuildCount")).isGreaterThan(0L);
+      assertThat(vectorIndex(restored, "PqDoc").getStats().get("graphRebuildCount")).isEqualTo(0L);
+      for (final String type : new String[] { "Doc", "PqDoc" })
+        assertThat(vectorIndex(restored, type).getStats().get("unverifiedGraphReuses")).isEqualTo(0L);
+    }
+    TestHelper.checkActiveDatabases();
+  }
+
   // ------------------------------------------------------------------------------------------------------- HELPERS
 
   private static void createVectorIndex(final Database database, final String type, final String quantization) {

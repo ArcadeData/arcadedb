@@ -4288,6 +4288,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
         boolean graphCertified = false;
 
         try {
+          dropPersistedProductQuantizationBeforeGraphWrite();
           gf.writeGraph(graphIndex, vectors, chunkSizeMB, chunkCallback, earlyPq, earlyPqVectors);
 
           // Report persistence completion
@@ -4682,6 +4683,30 @@ public class LSMVectorIndex implements Index, IndexInternal {
     this.pqVectors = null;
     if (pqFile != null)
       pqFile.deletePQFile();
+  }
+
+  /**
+   * Drops the PQ file before a graph persist rewrites the pages it was computed for (issue #9917), the way
+   * {@link LSMVectorIndexGraphFile#writeGraph} drops the manifest. The PQ is written only AFTER the new graph is
+   * certified ({@link #persistProductQuantization}), so without this the file on disk would keep describing the
+   * previous graph's ordinals from the moment the pages start changing until the new PQ replaces it - across a crash
+   * too. With it, a PQ file on disk was always written for the graph its index has certified since the last persist
+   * began, which is what lets a full backup archive the PQ with the graph's pages without trying to order the two by
+   * their modification times (see {@link LSMVectorIndexGraphSideFiles}). This session keeps searching with the codes it
+   * holds in memory, which are not touched.
+   * <p>
+   * Only on the rebuild-and-persist path, which is the one that also writes the PQ. The {@code build()} path re-writes
+   * the pages of the graph that same rebuild has just persisted, and its PQ, so the file stays valid for them.
+   */
+  private void dropPersistedProductQuantizationBeforeGraphWrite() {
+    final LSMVectorIndexPQFile pq = pqFile;
+    if (pq == null || metadata.quantizationType != VectorQuantizationType.PRODUCT || !pq.exists())
+      return;
+    if (!pq.deletePQFile())
+      LogManager.instance().log(this, Level.SEVERE,
+          "The PQ file %s of index %s could not be deleted before its graph is rewritten: until the new PQ replaces it, it "
+              + "describes the previous graph. Delete it by hand if the next open pairs it with the new one",
+          pq.getFilePath(), indexName);
   }
 
   /**

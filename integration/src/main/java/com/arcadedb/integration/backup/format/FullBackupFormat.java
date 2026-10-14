@@ -307,10 +307,13 @@ public class FullBackupFormat extends AbstractBackupFormat {
               // PAGES, AND THE RESTORED DATABASE REUSES IT INSTEAD OF REBUILDING IT (issue #9917)
               origSize += sideFilesSize;
               input = snapshot.newInputStream(file.fileId());
-            } else
+            } else {
               // AN EMPTY ENTRY NEVER OPENS THE WINDOW'S STREAM, DELIBERATELY: ITS PAGES ARE NOT PART OF THE ARCHIVE, SO
               // THERE IS NOTHING OF THEM TO READ, AND THE checkValid() BELOW STILL COVERS EVERY PAGE THAT WAS READ
               input = InputStream.nullInputStream();
+              logger.logLine(2, "- Vector graph '%s' archived empty: nothing vouches for its pages at the snapshot's point in "
+                  + "time (a graph persist ran across it, or none has completed), so the restored database rebuilds it", file.fileName());
+            }
           }
           origSize += compressEntry(archive, file.fileName(), file.lastModified(), input);
         }
