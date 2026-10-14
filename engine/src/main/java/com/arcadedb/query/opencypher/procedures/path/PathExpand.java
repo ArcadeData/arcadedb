@@ -18,30 +18,20 @@
  */
 package com.arcadedb.query.opencypher.procedures.path;
 
-import com.arcadedb.database.Database;
-import com.arcadedb.database.RID;
-import com.arcadedb.exception.RecordNotFoundException;
-import com.arcadedb.graph.Edge;
-import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.Vertex;
-import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.utility.NumberUtils;
-import com.arcadedb.utility.RidHashSet;
 
-import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.List;
-import java.util.Set;
 import java.util.stream.Stream;
 
 /**
  * Procedure: path.expand(startNode, relationshipFilter, labelFilter, minDepth, maxDepth)
  * <p>
  * Expands paths from a starting node following relationship types and node labels. Both filters take APOC's syntax:
- * see {@link RelationshipFilter} and {@link LabelFilter}.
+ * see {@link RelationshipFilter} and {@link LabelFilter}. The walk is APOC's for this form: breadth-first, one path per trail
+ * ({@link PathUniqueness#RELATIONSHIP_PATH}).
  * </p>
  * <p>
  * Example Cypher usage:
@@ -82,113 +72,27 @@ public class PathExpand extends AbstractPathProcedure {
     return List.of("path");
   }
 
+  /**
+   * APOC's walk for this form is fixed: breadth-first, over the trails of the graph ({@link PathUniqueness#RELATIONSHIP_PATH}),
+   * with no limit. A negative bound, APOC's {@code -1}, is no bound: {@code minDepth} then is 0 and {@code maxDepth} is the
+   * whole graph.
+   */
   @Override
   public Stream<Result> execute(final Object[] args, final Result inputRow, final CommandContext context) {
     validateArgs(args);
 
     final Vertex startNode = extractVertex(args[0], "startNode");
-    final int minDepth = NumberUtils.saturateToInt((Number) args[3]);
-    final int maxDepth = NumberUtils.saturateToInt((Number) args[4]);
+    final int minDepth = Math.max(0, NumberUtils.saturateToInt((Number) args[3]));
+    final int requestedMaxDepth = NumberUtils.saturateToInt((Number) args[4]);
+    final int maxDepth = requestedMaxDepth < 0 ? Integer.MAX_VALUE : requestedMaxDepth;
 
-    if (minDepth < 0) {
-      throw new IllegalArgumentException(getName() + "(): minDepth must be non-negative");
-    }
     if (maxDepth < minDepth) {
       throw new IllegalArgumentException(getName() + "(): maxDepth must be >= minDepth");
     }
 
-    final Database database = startNode.getDatabase();
-    final Filters filters = extractPositionalFilters(args[1], args[2], database, minDepth);
+    final Filters filters = extractPositionalFilters(args[1], args[2], startNode.getDatabase(), minDepth);
 
-    // Expand paths using BFS/DFS
-    final List<List<Object>> allPaths = new ArrayList<>();
-    final LabelFilter.Verdict startVerdict = filters.labels().evaluate(database, startNode.getIdentity(), 0);
-    if (startVerdict != LabelFilter.Verdict.EXCLUDE_AND_PRUNE) {
-      final List<Object> currentPath = new ArrayList<>();
-      final Set<RID> visited = new HashSet<>();
-      final RidHashSet ghostNodes = new RidHashSet(16);
-
-      currentPath.add(startNode);
-      visited.add(startNode.getIdentity());
-
-      if (startVerdict.includes && minDepth == 0)
-        allPaths.add(new ArrayList<>(currentPath));
-      if (startVerdict.continues)
-        expandPaths(startNode, filters, 0, minDepth, maxDepth, currentPath, visited, ghostNodes, allPaths, context);
-    }
-
-    // Convert paths to results
-    return allPaths.stream().map(pathElements -> {
-      final TraversalPath path = buildPath(pathElements);
-      final ResultInternal result = new ResultInternal();
-      result.setProperty("path", path);
-      return (Result) result;
-    });
-  }
-
-  // `visited` here is a boxing Set<RID> rather than the primitive RidHashSet the breadth-first walks use, and has to
-  // stay one: this is a depth-first path enumeration, so it UNMARKS a vertex on backtracking, and an open-addressed
-  // set with linear probing cannot remove an entry without tombstones - which RidHashSet deliberately does not carry
-  private void expandPaths(final Vertex current, final Filters filters, final int currentDepth, final int minDepth,
-      final int maxDepth, final List<Object> currentPath, final Set<RID> visited, final RidHashSet ghostNodes,
-      final List<List<Object>> allPaths, final CommandContext context) {
-
-    // Stop if we've reached maxDepth
-    if (currentDepth >= maxDepth) {
-      return;
-    }
-
-    // Expand outgoing edges, then incoming ones
-    for (int side = 0; side < 2; side++)
-      expandInDirection(current, filters, currentDepth, minDepth, maxDepth, currentPath, visited, ghostNodes, allPaths, context,
-          walkDirection(side));
-  }
-
-  private void expandInDirection(final Vertex current, final Filters filters, final int currentDepth, final int minDepth,
-      final int maxDepth, final List<Object> currentPath, final Set<RID> visited, final RidHashSet ghostNodes,
-      final List<List<Object>> allPaths, final CommandContext context, final Vertex.DIRECTION direction) {
-
-    final Iterable<Edge> edges = hopEdges(context, current, direction, filters.relationships(), currentDepth);
-    if (edges == null)
-      return;
-
-    final int depth = currentDepth + 1;
-    for (final Edge edge : edges) {
-      try {
-        // The neighbour is tested by its RID and loaded only once it is going into the path (issue #7976)
-        final RID neighborId = direction == Vertex.DIRECTION.OUT ? edge.getIn() : edge.getOut();
-        if (visited.contains(neighborId))
-          continue;
-
-        final LabelFilter.Verdict verdict = filters.labels().evaluate(current.getDatabase(), neighborId, depth);
-        if (verdict == LabelFilter.Verdict.EXCLUDE_AND_PRUNE)
-          continue;
-
-        final Vertex neighbor = resolveNeighbor(neighborId, ghostNodes);
-        if (neighbor == null)
-          continue;
-
-        visited.add(neighborId);
-        currentPath.add(edge);
-        currentPath.add(neighbor);
-
-        // try-finally so the path/visited bookkeeping is unwound even if the recursion throws.
-        try {
-          if (verdict.includes && depth >= minDepth)
-            allPaths.add(new ArrayList<>(currentPath));
-          if (verdict.continues)
-            expandPaths(neighbor, filters, depth, minDepth, maxDepth, currentPath, visited, ghostNodes, allPaths, context);
-        } finally {
-          // Backtrack
-          currentPath.removeLast();
-          currentPath.removeLast();
-          visited.remove(neighborId);
-        }
-      } catch (final RecordNotFoundException e) {
-        // Only edge.getIn()/getOut() (a ghost edge record, surfaced by its lazy load) can land here now; a ghost
-        // VERTEX is caught and remembered inside resolveNeighbor. The recursion has its own per-edge catches.
-        GhostEdgeReporter.reportSkipped(e);
-      }
-    }
+    return pathRows(new PathExpansion(startNode, filters, PathUniqueness.RELATIONSHIP_PATH, true, minDepth, maxDepth,
+        Integer.MAX_VALUE, context), false);
   }
 }
