@@ -201,8 +201,9 @@ final class LightEdgeCensus {
     } catch (final RuntimeException e) {
       // NOT ONLY A RECORD GONE: ANY FAILURE TO READ THE LIST. THE CENSUS IS GIVEN UP ON, AND EACH EDGE WALKS ITS LIST ALONE,
       // WHERE A FAILURE THAT IS NOT TRANSIENT SURFACES AS IT DID BEFORE THE CENSUS EXISTED
-      LogManager.instance().log(this, Level.FINE, "Cannot count the lightweight edges of %s (%s): %s", owner, direction,
-          e.toString());
+      // ONCE PER CENSUS (IT IS NOT TRIED AGAIN): A LIST THAT CANNOT BE READ IS WORTH SEEING, NOT ONLY AT FINE
+      LogManager.instance().log(this, Level.WARNING, "Cannot count the lightweight edges of %s (%s), each edge walks its list alone: %s",
+          owner, direction, e.toString());
       return null;
     }
   }

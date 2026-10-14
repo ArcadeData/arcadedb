@@ -25,10 +25,16 @@ import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Random;
 import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -185,6 +191,95 @@ class LightEdgeCensusTest extends TestHelper {
     assertThat(census.isBuilt()).isFalse();
     assertThat(census.resolve(edge, edge.getOriginSegment(), edge.getOriginPosition())).isFalse();
     assertThat(census.hasFailed()).isTrue();
+  }
+
+  /**
+   * {@link LightEdgeRID#isSameEdge} takes shortcuts from whatever each side has resolved: on random twin layouts, read
+   * from both ends and compared in random order, it must agree with the occurrences counted by hand off the lists.
+   */
+  @Test
+  @SuppressWarnings("deprecation")
+  void isSameEdgeAgreesWithTheOccurrencesOnRandomTwinLayouts() {
+    for (long seed = 0; seed < 10; seed++) {
+      final Random random = new Random(seed);
+      final RID[] neighbors = new RID[4];
+      database.transaction(() -> {
+        final MutableVertex a = database.newVertex("P").save();
+        final MutableVertex[] targets = new MutableVertex[neighbors.length];
+        for (int i = 0; i < targets.length; i++) {
+          targets[i] = database.newVertex("P").save();
+          neighbors[i] = targets[i].getIdentity();
+        }
+        for (int i = 0; i < 24; i++)
+          a.newLightEdge("K", targets[random.nextInt(targets.length)]);
+        hub = a.getIdentity();
+      });
+
+      // the edges and the occurrence each has in the list it was read from, counted in iteration order
+      final List<LightEdgeRID> edges = new ArrayList<>();
+      final List<Integer> truth = new ArrayList<>();
+      final Map<RID, Integer> outSeen = new HashMap<>();
+      for (final LightEdgeRID edge : read()) {
+        edges.add(edge);
+        truth.add(outSeen.merge(edge.getInRID(), 1, Integer::sum) - 1);
+      }
+      for (final RID neighbor : neighbors) {
+        int inSeen = 0;
+        for (final Edge edge : database.lookupByRID(neighbor, true).asVertex().getEdges(Vertex.DIRECTION.IN)) {
+          edges.add((LightEdgeRID) edge.getIdentity());
+          truth.add(inSeen++);
+        }
+      }
+
+      final List<int[]> pairs = new ArrayList<>();
+      for (int i = 0; i < edges.size(); i++)
+        for (int j = 0; j < edges.size(); j++)
+          if (i != j && edges.get(i).equals(edges.get(j)))
+            pairs.add(new int[] { i, j });
+      Collections.shuffle(pairs, random);
+      for (final int[] pair : pairs)
+        assertThat(LightEdgeRID.isSameEdge(edges.get(pair[0]), edges.get(pair[1])))
+            .as("seed %d, %d vs %d", seed, pair[0], pair[1])
+            .isEqualTo(truth.get(pair[0]).equals(truth.get(pair[1])));
+    }
+  }
+
+  /** The rows of one iteration resolved by many threads at once: one census, the numbering of a single thread. */
+  @Test
+  @SuppressWarnings("deprecation")
+  void concurrentResolutionsShareOneCensus() throws Exception {
+    database.transaction(() -> {
+      final MutableVertex a = database.newVertex("P").save();
+      final MutableVertex b = database.newVertex("P").save();
+      for (int i = 0; i < 200; i++)
+        a.newLightEdge("K", i % 10 == 0 ? b : database.newVertex("P").save());
+      hub = a.getIdentity();
+    });
+    final List<Integer> expected = new ArrayList<>();
+    for (final LightEdgeRID edge : read())
+      expected.add(edge.getOccurrence());
+
+    final List<LightEdgeRID> edges = read();
+    final ExecutorService pool = Executors.newFixedThreadPool(8);
+    try {
+      final List<Future<?>> futures = new ArrayList<>();
+      for (int t = 0; t < 8; t++) {
+        final long seed = t;
+        futures.add(pool.submit(() -> {
+          final List<LightEdgeRID> shuffled = new ArrayList<>(edges);
+          Collections.shuffle(shuffled, new Random(seed));
+          for (final LightEdgeRID edge : shuffled)
+            edge.getOccurrence();
+        }));
+      }
+      for (final Future<?> future : futures)
+        future.get(60, TimeUnit.SECONDS);
+    } finally {
+      pool.shutdownNow();
+    }
+    for (int i = 0; i < edges.size(); i++)
+      assertThat(edges.get(i).getOccurrence()).as("edge %d", i).isEqualTo(expected.get(i));
+    assertThat(edges.getFirst().getCensus().isBuilt()).isTrue();
   }
 
   @SuppressWarnings("deprecation")

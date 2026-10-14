@@ -322,15 +322,20 @@ public class DeleteStep extends AbstractExecutionStep {
   }
 
   /**
-   * Resolves which twin each lightweight edge of {@code edges} is, while the edge lists still hold every one of them.
+   * Resolves which twin each lightweight edge of {@code edges} is, while the edge lists still hold every one of them:
+   * {@link LightEdgeRID#getOccurrence()} resolves it once and caches it on the RID, so a delete that renumbers the list
+   * afterwards does not change it. EVERY edge has to be resolved: this loop must never stop at the first twin it meets.
    *
    * @return true when one of them has a twin, i.e. when deleting it changes how the others are numbered
    */
   private static boolean pinOccurrences(final List<?> edges) {
     boolean twinned = false;
     for (final Object edge : edges)
-      if (edge instanceof Edge e && e.getIdentity() instanceof LightEdgeRID light && light.getTwinCount() > 1)
-        twinned = true;
+      if (edge instanceof Edge e && e.getIdentity() instanceof LightEdgeRID light) {
+        light.getOccurrence();
+        if (light.getTwinCount() > 1)
+          twinned = true;
+      }
     return twinned;
   }
 

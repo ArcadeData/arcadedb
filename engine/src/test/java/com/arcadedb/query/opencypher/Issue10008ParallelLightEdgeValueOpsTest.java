@@ -201,6 +201,40 @@ class Issue10008ParallelLightEdgeValueOpsTest extends TestHelper {
   }
 
   /**
+   * Twins met only by the last rows of a streaming DELETE: the rows before them are deleted as they stream, the twins
+   * read the rest in and are numbered before the first of them goes.
+   */
+  @ParameterizedTest(name = "lightweight={0}")
+  @MethodSource("lightweightOrNot")
+  void twinsMetByTheLastRowsOfAStreamingDelete(final boolean lightweight) {
+    database.transaction(() -> {
+      final MutableVertex a = database.newVertex("P").set("name", "a").save();
+      final MutableVertex b = database.newVertex("P").set("name", "b").save();
+      // a list is read newest first: the twins, created first, come last
+      for (int i = 0; i < 3; i++)
+        if (lightweight)
+          a.newLightEdge("K", b);
+        else
+          a.newEdge("K", b);
+      for (int i = 0; i < 50; i++)
+        if (lightweight)
+          a.newLightEdge("K", database.newVertex("P").save());
+        else
+          a.newEdge("K", database.newVertex("P").save());
+    });
+    final long[] reported = new long[1];
+    database.transaction(() -> {
+      try (final ResultSet rs = database.command("opencypher", "MATCH (:P {name: 'a'})-[r:K]->(:P) DELETE r")) {
+        while (rs.hasNext())
+          rs.next();
+        reported[0] = rs.getStatistics().orElseThrow().getRelationshipsDeleted();
+      }
+    });
+    assertThat(edgesLeft()).isZero();
+    assertThat(reported[0]).isEqualTo(53L);
+  }
+
+  /**
    * The first twin reads the remaining rows in before it is deleted, under the per-operation heap limit. A limit too
    * small for them fails the statement, which rolls back whole: nothing is deleted, rather than the rows that fit.
    */
