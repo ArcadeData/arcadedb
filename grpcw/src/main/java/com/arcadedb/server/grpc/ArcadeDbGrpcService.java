@@ -107,9 +107,6 @@ import java.io.IOException;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
-import java.time.LocalDate;
-import java.time.LocalDateTime;
-import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
@@ -5276,7 +5273,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       case DOUBLE_VALUE:
         return dbgDec("fromGrpcValue", v, v.getDoubleValue(), null);
       case STRING_VALUE:
-        return dbgDec("fromGrpcValue", v, v.getStringValue(), null);
+        // Issue #9969: a zoned datetime or a time of day travels as text tagged with its logical type
+        return dbgDec("fromGrpcValue", v, GrpcTemporalCodec.decodeString(v.getStringValue(), v.getLogicalType()), null);
       case BYTES_VALUE:
         return dbgDec("fromGrpcValue", v, v.getBytesValue().toByteArray(), null);
       case TIMESTAMP_VALUE: {
@@ -5361,37 +5359,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     if (o instanceof byte[] v)
       return dbgEnc("toGrpcValue", o, b.setBytesValue(ByteString.copyFrom(v)).build(), null);
 
-    if (o instanceof Date v) {
-      return dbgEnc("toGrpcValue", o,
-          GrpcValue.newBuilder().setTimestampValue(GrpcTypeConverter.msToTimestamp(v.getTime())).setLogicalType(
-              "datetime").build(), null);
-    }
-
-    // Issue #4149: emit Java time temporals as proto Timestamp instead of falling through to
-    // String.valueOf(o), which silently dropped sub-millisecond precision.
-    if (o instanceof LocalDate ld) {
-      final long seconds = ld.atStartOfDay(ZoneOffset.UTC).toEpochSecond();
-      return dbgEnc("toGrpcValue", o, GrpcValue.newBuilder()
-          .setTimestampValue(Timestamp.newBuilder().setSeconds(seconds).setNanos(0).build())
-          .setLogicalType("date").build(), null);
-    }
-    if (o instanceof LocalDateTime ldt) {
-      final Instant instant = ldt.toInstant(ZoneOffset.UTC);
-      return dbgEnc("toGrpcValue", o, GrpcValue.newBuilder()
-          .setTimestampValue(Timestamp.newBuilder().setSeconds(instant.getEpochSecond()).setNanos(instant.getNano()).build())
-          .setLogicalType("datetime").build(), null);
-    }
-    if (o instanceof Instant instant) {
-      return dbgEnc("toGrpcValue", o, GrpcValue.newBuilder()
-          .setTimestampValue(Timestamp.newBuilder().setSeconds(instant.getEpochSecond()).setNanos(instant.getNano()).build())
-          .setLogicalType("datetime").build(), null);
-    }
-    if (o instanceof ZonedDateTime zdt) {
-      final Instant instant = zdt.toInstant();
-      return dbgEnc("toGrpcValue", o, GrpcValue.newBuilder()
-          .setTimestampValue(Timestamp.newBuilder().setSeconds(instant.getEpochSecond()).setNanos(instant.getNano()).build())
-          .setLogicalType("datetime").build(), null);
-    }
+    // Issue #9969: the encoder GrpcTypeConverter and the client's ProtoUtils share, so a ZonedDateTime keeps its zone and an
+    // OffsetTime/LocalTime arrives typed instead of as an untyped string.
+    final GrpcValue temporal = GrpcTemporalCodec.encode(o);
+    if (temporal != null)
+      return dbgEnc("toGrpcValue", o, temporal, null);
 
     if (o instanceof RID rid) {
       return dbgEnc("toGrpcValue", o,
@@ -6600,6 +6572,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           case INT64_VALUE -> new Date(v.getInt64Value());
           case STRING_VALUE -> {
             final String s = v.getStringValue();
+            // Issue #9969: a ZonedDateTime travels as zoned text; its instant is exact, so it must not be re-read through the
+            // string chain, which rebases an offset onto the database's zone
+            if (GrpcTemporalCodec.ZONED_DATETIME.equalsIgnoreCase(v.getLogicalType())
+                && GrpcTemporalCodec.decodeString(s, v.getLogicalType()) instanceof ZonedDateTime zdt)
+              yield Date.from(zdt.toInstant());
             try {
               yield new Date(Long.parseLong(s));
             } catch (NumberFormatException ignored) {
@@ -6831,6 +6808,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             // (not java.util.Date) so sub-millisecond precision survives - Type.convert() truncates
             // to the column's declared precision.
             final String s = v.getStringValue();
+            // Issue #9969: see the DATE/DATETIME branch
+            if (GrpcTemporalCodec.ZONED_DATETIME.equalsIgnoreCase(v.getLogicalType())
+                && GrpcTemporalCodec.decodeString(s, v.getLogicalType()) instanceof ZonedDateTime zdt)
+              yield zdt.toInstant();
             try {
               yield Instant.ofEpochMilli(Long.parseLong(s));
             } catch (final NumberFormatException ignored) {

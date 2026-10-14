@@ -254,9 +254,9 @@ class ProtoUtilsTest {
     final ZonedDateTime zdt = ZonedDateTime.of(2026, 5, 26, 14, 27, 38, 470_000_000, ZoneOffset.UTC);
     final GrpcValue value = ProtoUtils.toGrpcValue(zdt);
 
-    assertThat(value.hasTimestampValue()).as("ZonedDateTime must serialize to TIMESTAMP_VALUE").isTrue();
-    assertThat(value.getTimestampValue().getSeconds()).isEqualTo(zdt.toEpochSecond());
-    assertThat(value.getTimestampValue().getNanos()).isEqualTo(zdt.getNano());
+    // Issue #9969: zoned ISO text, not a bare instant, so the zone that decides equality survives
+    assertThat(value.getLogicalType()).isEqualTo("zoned_datetime");
+    assertThat(ProtoUtils.fromGrpcValue(value)).isEqualTo(zdt);
   }
 
   // testToGrpcValueEmbeddedDocument removed - requires database, tested in integration tests
