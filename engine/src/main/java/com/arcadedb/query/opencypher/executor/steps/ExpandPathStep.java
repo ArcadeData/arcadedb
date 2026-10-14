@@ -325,19 +325,15 @@ public class ExpandPathStep extends AbstractExecutionStep {
       // Skip our own variables
       if (prop.equals(relationshipVariable) || prop.equals(pathVariable) || prop.equals(targetVariable))
         continue;
+      // LightEdgeRID.isSameEdge, not RID equality: a parallel lightweight twin shares the RID but is another
+      // relationship (issues #9573, #9983)
       final Object val = result.getProperty(prop);
-      if (val instanceof Edge) {
-        for (final Edge pathEdge : path.getEdges())
-          if (pathEdge.getIdentity().equals(((Edge) val).getIdentity()))
-            return true;
-      }
+      if (val instanceof Edge edge && path.containsEdge(edge))
+        return true;
       if (val instanceof List) {
         for (final Object item : (List<Object>) val)
-          if (item instanceof Edge) {
-            for (final Edge pathEdge : path.getEdges())
-              if (pathEdge.getIdentity().equals(((Edge) item).getIdentity()))
-                return true;
-          }
+          if (item instanceof Edge edge && path.containsEdge(edge))
+            return true;
       }
     }
     return false;
