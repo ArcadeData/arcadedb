@@ -21,21 +21,27 @@ package com.arcadedb.database;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.ValidationException;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
+import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
+import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.utility.RegexOverAlphabet;
 import com.arcadedb.utility.TimeBoundRegex;
 
 import java.lang.reflect.Array;
 import java.math.BigDecimal;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Date;
+import java.util.EnumMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.logging.Level;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
 
@@ -248,8 +254,8 @@ public class DocumentValidator {
       value = coerced;
     }
 
-    if (constraints.pattern() != null && !TimeBoundRegex.matchesUntil(constraints.pattern(), value.toString(),
-        TimeBoundRegex.newDeadline(constraints.regexTimeoutMs())))
+    if (constraints.pattern() != null && !TimeBoundRegex.matchesUntil(constraints.pattern(),
+        regexpTextOrRefuse(document, p, value), TimeBoundRegex.newDeadline(constraints.regexTimeoutMs())))
       throwValidationException(document.getType(), p,
           "does not match the regular expression '" + constraints.regexp() + "'. Field value is: " + stored);
 
@@ -335,17 +341,19 @@ public class DocumentValidator {
   }
 
   /**
-   * Whether {@code regexp} can serve as the REGEXP of a property of {@code type} (issues #9808, #9853). A pattern is matched
-   * against the text form of the value ({@code toString()}), which only a scalar has: on a BINARY, a LIST, a MAP, an
-   * EMBEDDED document, a LINK or an ARRAY_OF_* it is a class name, a hash or a bracketed dump no pattern was written for. On
-   * a BOOLEAN the text forms are {@code true} and {@code false}, so a pattern matching neither refuses every value.
+   * Whether {@code regexp} can serve as the REGEXP of a property of {@code type} (issues #9808, #9853, #9990). A pattern is
+   * matched against the text form of the value ({@link #regexpText}), which only a scalar and a LINK have: on a BINARY, a
+   * LIST, a MAP, an EMBEDDED document or an ARRAY_OF_* it would be a class name, a hash or a bracketed dump no pattern was
+   * written for. On a BOOLEAN the text forms are {@code true} and {@code false}, so a pattern matching neither refuses every
+   * value. A LINK is written as the RID of the record it points to ({@code #12:0}).
    * <p>
-   * A number or a temporal has a great many text forms, but all of them are written with a small, fixed set of characters
-   * and have a known shape ({@link TextForm}): a pattern no string over those characters, of that shape, matches cannot
-   * match any value either, and is refused. A pattern some such string matches stays legal ({@code '[0-9]{5}'} on a LONG),
-   * even when no actual value happens to be written that way: the form over-approximates the texts, it does not enumerate
-   * them. When the search for such a string runs out of budget the pattern is not refused but carries a {@code doubt}.
-   * Kept next to {@link #unreadableBound}, its MIN/MAX twin.
+   * A number, a temporal or a RID has a great many text forms, but all of them are written with a small, fixed set of
+   * characters and have a known shape ({@link TextForm}): a pattern no string over those characters, of that shape, matches
+   * cannot match any value either, and is refused. A pattern some such string matches stays legal ({@code '[0-9]{5}'} on a
+   * LONG), even when no actual value happens to be written that way: the form over-approximates the texts, it does not
+   * enumerate them. The answer is decided whatever the width of the type for every regular pattern; only a pattern using a
+   * back reference or a look-around can be left undecided, and is then not refused but carries a {@code doubt}. Kept next to
+   * {@link #unreadableBound}, its MIN/MAX twin.
    *
    * @param database the database the property belongs to, which decides how a DATE or DATETIME value is held (and so
    *                 written as text); null for the default implementations
@@ -355,26 +363,28 @@ public class DocumentValidator {
   }
 
   /**
-   * @param searchTextForm false to skip the search over the text forms of a number or a temporal, the one part of the check
-   *                       that costs more than a few comparisons: a schema loaded from disk only warns anyway, and is loaded
-   *                       on every open and every replicated schema change
+   * @param searchTextForm false to skip the check against the text forms of a number, a temporal or a RID, the one part of
+   *                       the check that costs more than a few comparisons: a schema loaded from disk only warns anyway, and
+   *                       is loaded on every open and every replicated schema change
    */
   public static RegexpUsability regexpUsability(final Database database, final Type type, final String regexp,
       final boolean searchTextForm) {
+    return regexpUsability(type, heldClass(database, type), regexp, searchTextForm);
+  }
+
+  /**
+   * The same check for a value held as {@code held}, which is how a change of the DATE or DATETIME implementation asks about
+   * the class it is about to put in force (issue #9976) before the database holds anything as it.
+   */
+  public static RegexpUsability regexpUsability(final Type type, final Class<?> held, final String regexp,
+      final boolean searchTextForm) {
     if (regexp == null)
       return RegexpUsability.USABLE;
-    switch (type) {
-    case BINARY, LIST, MAP, EMBEDDED, LINK, ARRAY_OF_SHORTS, ARRAY_OF_INTEGERS, ARRAY_OF_LONGS, ARRAY_OF_FLOATS, ARRAY_OF_DOUBLES -> {
-      return new RegexpUsability("is not applicable to type " + type + ": its values have no text form a pattern can describe",
-          null);
-    }
-    case STRING -> {
+    final String noTextForm = noTextForm(type);
+    if (noTextForm != null)
+      return new RegexpUsability(noTextForm, null);
+    if (type == Type.STRING)
       return RegexpUsability.USABLE;
-    }
-    default -> {
-      // a BOOLEAN, a number or a temporal: judged below, once the pattern is compiled
-    }
-    }
 
     final Pattern pattern;
     try {
@@ -392,15 +402,13 @@ public class DocumentValidator {
     if (!searchTextForm)
       return RegexpUsability.USABLE;
 
-    final Class<?> held = type.getJavaImplementation(database);
     final TextForm form = TextForm.of(held);
     if (form == null)
       return RegexpUsability.USABLE;
 
     // how a DATE or DATETIME is written depends on the class the database holds it as, so the message names it
     final String typeName = type.isDateOrDateTime() ? type + " (held as " + held.getSimpleName() + ")" : type.toString();
-    return switch (RegexOverAlphabet.check(pattern, form.shape(), form.characters(), REGEXP_SEARCH_MAX_LENGTH,
-        REGEXP_SEARCH_MAX_PROBES, TimeBoundRegex.newDeadline(REGEXP_SEARCH_TIMEOUT_MS))) {
+    return switch (form.admits(pattern, REGEXP_SEARCH_MAX_LENGTH, REGEXP_SEARCH_MAX_PROBES, REGEXP_SEARCH_TIMEOUT_MS)) {
       case SATISFIABLE -> RegexpUsability.USABLE;
       case UNSATISFIABLE -> new RegexpUsability(
           "matches no text a value of " + typeName + " can be written as (one of the shape '" + form.shape().pattern()
@@ -409,6 +417,134 @@ public class DocumentValidator {
           "was not shown to match any text a value of " + typeName + " can be written as (one of the shape '"
               + form.shape().pattern() + "')");
     };
+  }
+
+  /**
+   * {@link #regexpText}, refusing the write of a value that has no text: a pattern on such a type is refused at declaration
+   * time, and a schema written before that rule only loads with a warning, so the write says the same thing the declaration
+   * would have said instead of matching the pattern against whatever {@code toString()} the value happens to have.
+   */
+  private static String regexpTextOrRefuse(final Document document, final Property p, final Object value) {
+    final String text = regexpText(p.getType(), value);
+    if (text == null)
+      throwValidationException(document.getType(), p,
+          "has the REGEXP '" + p.getRegexp() + "', which " + noTextForm(p.getType()) + ". Remove it with ALTER PROPERTY `"
+              + document.getType().getName() + "`.`" + p.getName() + "` REGEXP null");
+    return text;
+  }
+
+  /** The class a value of {@code type} is held as in {@code database}, which is what its text form depends on. */
+  private static Class<?> heldClass(final Database database, final Type type) {
+    return type == Type.LINK ? RID.class : type.getJavaImplementation(database);
+  }
+
+  /** Why a value of {@code type} has no text a pattern can be matched against, or null when it has one. */
+  private static String noTextForm(final Type type) {
+    return switch (type) {
+      case BINARY, LIST, MAP, EMBEDDED, ARRAY_OF_SHORTS, ARRAY_OF_INTEGERS, ARRAY_OF_LONGS, ARRAY_OF_FLOATS, ARRAY_OF_DOUBLES ->
+          "is not applicable to type " + type + ": its values have no text form a pattern can describe";
+      default -> null;
+    };
+  }
+
+  /**
+   * The text the REGEXP of a property of {@code type} is matched against for {@code value}: the single definition shared by
+   * the write path, the check of the records already stored and, through {@link TextForm}, the declaration-time check, so
+   * the three cannot disagree about a type (issue #9992). The text of a scalar is its {@code toString()}, the value being
+   * held as the property's type by then. A LINK is matched as the RID of the record it points to, whatever the object the
+   * link arrived as: a selected record writes itself as {@code #1:0[n=0]}, a RID as {@code #1:0}, and the same link used to
+   * pass or fail depending on which of the two it was.
+   *
+   * @return the text, or null for a type whose values have none ({@link #noTextForm}), which no pattern can be matched
+   * against
+   */
+  public static String regexpText(final Type type, final Object value) {
+    if (type == Type.LINK && value instanceof Identifiable identifiable)
+      return String.valueOf(identifiable.getIdentity());
+    if (type != null && noTextForm(type) != null)
+      return null;
+    return value.toString();
+  }
+
+  /**
+   * Refuses a change of how the database holds or reads dates that would leave a DATE or DATETIME property with a constraint
+   * no value can satisfy (issue #9976). A REGEXP is matched against the text of the value, and that text is the
+   * {@code toString()} of the class the database holds the value as, which {@code arcadedb.dateImplementation} and
+   * {@code arcadedb.dateTimeImplementation} decide for the whole database: a pattern checked against one class at its
+   * declaration can match no text of the next one. A MIN or MAX is read through {@code arcadedb.dateFormat} and
+   * {@code arcadedb.dateTimeFormat} on every write, and a bound written in the old pattern can be unreadable in the new one.
+   * Either way every later write of the property would fail, which is what the declaration-time checks exist to prevent, so
+   * the change is refused naming the properties, before anything is changed. A pattern only left undecided under the new
+   * class is not refused but logged, as at its declaration.
+   * <p>
+   * The arguments are the settings as they would be after the change; only a property whose held class or whose patterns
+   * change is checked, so a constraint the change does not touch never blocks it.
+   *
+   * @param setting the setting being changed and its new value, for the message
+   */
+  public static void requireDateConstraintsSatisfiableUnder(final Database database, final String setting,
+      final Class<?> dateImplementation, final Class<?> dateTimeImplementation, final String dateTimeFormat,
+      final String dateFormat) {
+    final DatabaseInternal internal = (DatabaseInternal) database;
+    final Schema schema = database.getSchema();
+    final boolean formatsChanged = !dateTimeFormat.equals(schema.getDateTimeFormat()) || !dateFormat.equals(
+        schema.getDateFormat());
+    final Map<Type, Class<?>> heldAfter = new EnumMap<>(Type.class);
+    heldAfter.put(Type.DATE, dateImplementation);
+    heldAfter.put(Type.DATETIME, dateTimeImplementation);
+    heldAfter.put(Type.DATETIME_SECOND, dateTimeImplementation);
+    final Class<?> subMillis = BinarySerializer.subMillisDateTimeImplementation(dateTimeImplementation);
+    heldAfter.put(Type.DATETIME_MICROS, subMillis);
+    heldAfter.put(Type.DATETIME_NANOS, subMillis);
+
+    final List<String> broken = new ArrayList<>();
+    for (final DocumentType type : schema.getTypes())
+      for (final Property p : type.getProperties()) {
+        final Class<?> held = heldAfter.get(p.getType());
+        if (held == null)
+          continue;
+        final String named = type.getName() + "." + p.getName();
+
+        if (p.getRegexp() != null && held != p.getType().getJavaImplementation(internal)) {
+          final RegexpUsability usability = regexpUsability(p.getType(), held, p.getRegexp(), true);
+          if (usability.refusal() != null) {
+            // a pattern the class in force refuses too predates the declaration-time check, and is not this change's doing
+            if (regexpUsability(database, p.getType(), p.getRegexp()).refusal() == null)
+              broken.add(named + ": the REGEXP '" + p.getRegexp() + "' " + usability.refusal());
+          } else if (usability.doubt() != null)
+            LogManager.instance().log(DocumentValidator.class, Level.WARNING,
+                "After %s the REGEXP '%s' of property '%s' %s: if no value matches it, every write of the property fails. Remove it with ALTER PROPERTY `%s`.`%s` REGEXP null",
+                setting, p.getRegexp(), named, usability.doubt(), type.getName(), p.getName());
+        }
+
+        if (formatsChanged) {
+          for (final String side : new String[] { "MIN", "MAX" }) {
+            final String bound = side.equals("MIN") ? p.getMin() : p.getMax();
+            if (bound == null)
+              continue;
+            // a bound the formats in force cannot read either predates the declaration-time check
+            if (!readableDate(database, bound, dateTimeFormat, dateFormat) && readableDate(database, bound,
+                schema.getDateTimeFormat(), schema.getDateFormat()))
+              broken.add(named + ": the " + side + " '" + bound + "' cannot be read as a date with the date format '" + dateFormat
+                  + "' and the datetime format '" + dateTimeFormat + "'");
+          }
+        }
+      }
+
+    if (!broken.isEmpty())
+      throw new CommandExecutionException("Cannot set " + setting + ": " + (broken.size() == 1 ? "a property" : broken.size()
+          + " properties") + " would be left with a constraint no value can satisfy, and every write of it would fail. "
+          + String.join("; ", broken) + ". Change or remove the constraint first (ALTER PROPERTY ... REGEXP null, MIN null, MAX null)");
+  }
+
+  private static boolean readableDate(final Database database, final String text, final String dateTimeFormat,
+      final String dateFormat) {
+    try {
+      Type.parseDate(database, text, dateTimeFormat, dateFormat);
+      return true;
+    } catch (final RuntimeException e) {
+      return false;
+    }
   }
 
   /**
@@ -558,13 +694,14 @@ public class DocumentValidator {
     final Object fieldValue = document.get(p.getName());
 
     if (fieldValue != null) {
-      if (p.getRegexp() != null)
+      final Pattern regexp = p.getRegexpPattern();
+      if (regexp != null)
         // REGEXP - bounded against catastrophic backtracking (issue #5886): this runs on every insert/update of
         // a validated property, reachable through any write path (REST, any wire protocol) with no query
         // privileges needed, so an admin-defined pattern with a vulnerable shape (classic email/URL validation
         // regexes are notorious for this) combined with an attacker-supplied field value is enough to hang a
         // worker thread indefinitely.
-        if (!TimeBoundRegex.matchesUntil(Pattern.compile(p.getRegexp()), fieldValue.toString(), regexDeadline))
+        if (!TimeBoundRegex.matchesUntil(regexp, regexpTextOrRefuse(document, p, fieldValue), regexDeadline))
           throwValidationException(document.getType(), p,
               "does not match the regular expression '" + p.getRegexp() + "'. Field value is: " + fieldValue + ", record: "
                   + document);

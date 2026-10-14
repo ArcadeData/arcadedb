@@ -319,10 +319,11 @@ public class LocalProperty extends AbstractProperty {
   @Override
   public Property setRegexp(final String regexp) {
     checkForSchemaMutation();
-    final boolean changed = !Objects.equals(this.regexp, regexp);
+    final boolean changed = !Objects.equals(getRegexp(), regexp);
     if (changed) {
       checkRegexp(regexp);
-      publish(() -> this.regexp = regexp);
+      final Regexp compiled = Regexp.of(regexp);
+      publish(() -> this.regexp = compiled);
     }
     return this;
   }
@@ -430,7 +431,7 @@ public class LocalProperty extends AbstractProperty {
    */
   LocalProperty copyWithName(final String newName) {
     final LocalProperty copy = new LocalProperty((LocalDocumentType) owner, newName, type);
-    copy.custom = new HashMap<>(custom);
+    copy.custom.putAll(custom);
     copy.readonly = readonly;
     copy.mandatory = mandatory;
     copy.notNull = notNull;

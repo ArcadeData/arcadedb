@@ -130,8 +130,13 @@ public class RemoteProperty extends AbstractProperty {
       // embedded database to evaluate an SQL expression against.
       setDefaultValueDefinition(entry.get("default"));
     if (entry.containsKey("regexp"))
-      regexp = (String) entry.get("regexp");
-    if (entry.containsKey("custom"))
-      custom = (Map<String, Object>) entry.get("custom");
+      regexp = Regexp.of((String) entry.get("regexp"));
+    if (entry.containsKey("custom") && entry.get("custom") instanceof Map<?, ?> received) {
+      custom.clear();
+      // a concurrent map holds no null, which is what a custom value set to null is anyway: not set
+      for (final Map.Entry<?, ?> e : received.entrySet())
+        if (e.getKey() != null && e.getValue() != null)
+          custom.put(e.getKey().toString(), e.getValue());
+    }
   }
 }

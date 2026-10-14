@@ -35,6 +35,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
@@ -62,7 +63,9 @@ public class LocalTimeSeriesType extends LocalDocumentType implements TimeSeries
   // whatever version wrote its pages, which is what lets a pre-#5519 database open unchanged.
   private volatile int                    mutableFormatVersion = TimeSeriesBucket.CURRENT_VERSION;
   private final    AtomicBoolean          legacyPrecisionWarned = new AtomicBoolean();
-  private final    List<ColumnDefinition> tsColumns            = new ArrayList<>();
+  // filled before the type is reachable and handed to the engine and to every query as it is: copy-on-write, so the
+  // sweep of Issue7299SchemaCopyOnWritePublicationTest does not have to take that ordering on trust (#9989)
+  private final    List<ColumnDefinition> tsColumns            = new CopyOnWriteArrayList<>();
   // Replaced, never mutated in place: TimeSeriesMaintenanceScheduler iterates the list it read with no lock held.
   // Always an immutable copy, so no caller of getDownsamplingTiers() can mutate the published list either.
   private volatile List<DownsamplingTier> downsamplingTiers    = List.of();

@@ -171,17 +171,18 @@ class Issue9853RegexpNoValueCanMatchTest extends TestHelper {
     LogManager.instance().setLogger(new CapturingLogger(warnings));
     try {
       database.command("sql", "CREATE DOCUMENT TYPE W");
-      // any number of digits followed by a letter: every string of digits might still grow into a match, so the search
-      // can neither find one nor rule all of them out
-      database.command("sql", "CREATE PROPERTY W.n LONG (regexp '[0-9]*[A-Z]')");
-      assertThat(database.getSchema().getType("W").getProperty("n").getRegexp()).isEqualTo("[0-9]*[A-Z]");
+      // a look-ahead no automaton expresses, asking for more digits than a LONG has: every string of digits might still
+      // grow into a match, so the search can neither find one nor rule all of them out. A regular pattern is decided since
+      // #9990, and this is what is left undecided
+      database.command("sql", "CREATE PROPERTY W.n LONG (regexp '(?=[0-9]{20})[0-9]+')");
+      assertThat(database.getSchema().getType("W").getProperty("n").getRegexp()).isEqualTo("(?=[0-9]{20})[0-9]+");
       assertThat(warnings).anySatisfy(w -> assertThat(w).contains("W.n").contains("LONG")
           .contains("ALTER PROPERTY `W`.`n` REGEXP null"));
 
-      // a separator no number is written with, after an unbounded run of digits: refused or warned, never silent
-      warnings.clear();
-      database.command("sql", "CREATE PROPERTY W.c LONG (regexp '[0-9]+,[0-9]+')");
-      assertThat(warnings).anySatisfy(w -> assertThat(w).contains("W.c"));
+      // the regular patterns this test used to leave undecided are now refused at the declaration (#9990)
+      for (final String regexp : List.of("[0-9]*[A-Z]", "[0-9]+,[0-9]+"))
+        assertThatThrownBy(() -> database.command("sql", "CREATE PROPERTY W.c LONG (regexp '" + regexp + "')")).as(regexp)
+            .hasMessageContaining("would refuse every value");
 
       // a pattern the search decides costs no warning
       warnings.clear();
