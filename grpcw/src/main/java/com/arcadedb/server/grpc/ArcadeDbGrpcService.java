@@ -5645,7 +5645,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       LogManager.instance()
           .log(this, Level.FINE, "GRPC-ENC [toGrpcValue] FALLBACK-TO-STRING for class=%s value=%s",
               o.getClass().getName(),
-              String.valueOf(o));
+              summarizeJava(o));
 
     return dbgEnc("toGrpcValue", o, GrpcValue.newBuilder().setStringValue(String.valueOf(o)).build(), null);
   }

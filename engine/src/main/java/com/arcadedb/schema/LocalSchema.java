@@ -2915,7 +2915,7 @@ public class LocalSchema implements Schema {
           throw new SchemaException(
               "Cannot drop type '" + typeName + "' because it is the backing type for materialized view '" + view.getName() + "'. " +
                   "Drop the materialized view first with: DROP MATERIALIZED VIEW " + view.getName());
-        if (view.getSourceTypeNames().contains(canonicalTypeName))
+        if (isSourceTypeName(view.getSourceTypeNames(), canonicalTypeName))
           throw new SchemaException(
               "Cannot drop type '" + typeName + "' because it is a source type for materialized view '" + view.getName() + "'. " +
                   "Drop the materialized view first with: DROP MATERIALIZED VIEW " + view.getName());
@@ -2925,13 +2925,30 @@ public class LocalSchema implements Schema {
           throw new SchemaException(
               "Cannot drop type '" + typeName + "' because it is the backing type for continuous aggregate '" + ca.getName() + "'. " +
                   "Drop the continuous aggregate first with: DROP CONTINUOUS AGGREGATE " + ca.getName());
-        if (ca.getSourceTypeName().equals(canonicalTypeName))
+        if (canonicalTypeName.equals(canonicalTypeNameOf(ca.getSourceTypeName())))
           throw new SchemaException(
               "Cannot drop type '" + typeName + "' because it is the source type for continuous aggregate '" + ca.getName() + "'. " +
                   "Drop the continuous aggregate first with: DROP CONTINUOUS AGGREGATE " + ca.getName());
       }
     }
     return canonicalTypeName;
+  }
+
+  /**
+   * A view or an aggregate stores its source types as its query names them, and a query can name a type by an alias:
+   * each stored name is resolved before it is compared, so a type is protected whichever of its names the dependant
+   * was defined with - including definitions persisted before this check resolved them.
+   */
+  private boolean isSourceTypeName(final List<String> sourceTypeNames, final String canonicalTypeName) {
+    for (final String sourceTypeName : sourceTypeNames)
+      if (canonicalTypeName.equals(canonicalTypeNameOf(sourceTypeName)))
+        return true;
+    return false;
+  }
+
+  private String canonicalTypeNameOf(final String typeName) {
+    final LocalDocumentType type = getTypeOrNull(typeName);
+    return type != null ? type.getName() : typeName;
   }
 
   @Override
