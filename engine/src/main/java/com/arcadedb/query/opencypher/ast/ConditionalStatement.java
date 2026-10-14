@@ -55,10 +55,8 @@ public class ConditionalStatement implements CypherStatement {
     // OpenCypherQueryEngine runs the chosen branch by recursing into execute(): a branch that is itself conditional would
     // be a nested conditional query, which the parser refuses, so it must never get here
     for (final CypherStatement branch : branches)
-      if (branch instanceof ConditionalStatement)
-        throw new IllegalArgumentException("A branch of a conditional query cannot be a conditional query");
-    if (elseBranch instanceof ConditionalStatement)
-      throw new IllegalArgumentException("A branch of a conditional query cannot be a conditional query");
+      requireNotConditional(branch);
+    requireNotConditional(elseBranch);
     if (conditions.isEmpty() || conditions.size() != branches.size())
       throw new IllegalArgumentException("A conditional query needs one query per WHEN condition");
     this.conditions = List.copyOf(conditions);
@@ -148,5 +146,10 @@ public class ConditionalStatement implements CypherStatement {
       if (branch.hasRemove())
         return true;
     return false;
+  }
+
+  private static void requireNotConditional(final CypherStatement branch) {
+    if (branch instanceof ConditionalStatement)
+      throw new IllegalArgumentException("A branch of a conditional query cannot be a conditional query");
   }
 }
