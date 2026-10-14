@@ -42,6 +42,12 @@ The check applies to a job that wires server credentials through setup-java's `s
 what writes the `<server>` into settings.xml) and to every `mvn`/`mvnw` invocation in it that runs
 the `deploy` goal. The `-Pdeploy` PROFILE is not the goal and does not count.
 
+Limits: a run script is split into commands on newlines, `;`, `&` and `|` after folding `\`
+continuations, and only the first `mvn`/`mvnw` word of each command is examined. A deploy hidden
+inside `$(...)`, a here-doc or `bash -c "..."` is NOT seen, nor is the flag set through
+`.mvn/maven.config` or `MAVEN_OPTS`. Every deploy in this repository's workflows is a plain command
+in a step's `run:`; keep it that way, or extend this check alongside.
+
 Usage:
   check-deploy-credential-scope.py [workflow ...]   # defaults to .github/workflows/*.yml
 

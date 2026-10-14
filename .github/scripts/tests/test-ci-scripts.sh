@@ -1739,6 +1739,42 @@ YAML
 expect "accepts the flag passed through MAVEN_ARGS" 0 "credential scope" \
     "$CREDSCOPE" "$work/credscope/maven-args.yml"
 
+# MAVEN_ARGS is honoured at job and workflow level as well, as GitHub merges those into the step.
+for level in workflow job; do
+    if [[ $level == workflow ]]; then
+        workflow_env=$'env:\n  MAVEN_ARGS: -Dmaven.repository.credentialScope=id'
+        job_env=""
+    else
+        workflow_env=""
+        job_env=$'    env:\n      MAVEN_ARGS: -Dmaven.repository.credentialScope=id'
+    fi
+    cat >"$work/credscope/maven-args-$level.yml" <<YAML
+name: Deploy
+on: [ push ]
+$workflow_env
+jobs:
+  build:
+    runs-on: ubuntu-latest
+$job_env
+    steps:
+      - uses: actions/setup-java@0000000000000000000000000000000000000000 # v6
+        with:
+          server-id: central
+      - run: mvn deploy
+YAML
+    expect "accepts the flag passed through $level-level MAVEN_ARGS" 0 "credential scope" \
+        "$CREDSCOPE" "$work/credscope/maven-args-$level.yml"
+done
+
+# A command continued over several lines is still one invocation: the flag on the last line counts,
+# and a continued deploy without it is still caught.
+deploy_workflow "$work/credscope/continued.yml" $'mvn deploy -Pdeploy \\\n            --batch-mode \\\n            -Dmaven.repository.credentialScope=id'
+expect "accepts the flag on a continuation line" 0 "credential scope" \
+    "$CREDSCOPE" "$work/credscope/continued.yml"
+deploy_workflow "$work/credscope/continued-bare.yml" $'mvn deploy -Pdeploy \\\n            --batch-mode -DskipTests'
+expect "rejects a continued deploy without the flag" 1 "mvn deploy -Pdeploy --batch-mode -DskipTests" \
+    "$CREDSCOPE" "$work/credscope/continued-bare.yml"
+
 # `-Pdeploy` is a profile, not the deploy goal: a `verify` with that profile uploads nothing.
 deploy_workflow "$work/credscope/profile-only.yml" 'mvn verify -Pdeploy -pl e2e'
 expect "does not treat the -Pdeploy profile as the deploy goal" 0 "credential scope" \
