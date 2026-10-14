@@ -197,6 +197,14 @@ class Issue9913PathValueTest extends TestHelper {
           .isInstanceOf(CommandSemanticException.class)
           .hasMessageContaining("PATH");
 
+    // a list is not a path either, even a one-element list of a node, which used to read as a zero-length path
+    assertThatThrownBy(() -> single("MATCH (n:City {name: 'A'}) RETURN length([n]) AS x"))
+        .isInstanceOf(CommandSemanticException.class).hasMessageContaining("PATH");
+    assertThatThrownBy(() -> single("MATCH (n:City {name: 'A'}) RETURN nodes([n]) AS x"))
+        .isInstanceOf(CommandSemanticException.class).hasMessageContaining("PATH");
+    assertThatThrownBy(() -> single("MATCH p = (:City {name: 'A'})-[:ROAD]->() RETURN apoc.path.slice(p, 'one') AS x"))
+        .isInstanceOf(CommandSemanticException.class).hasMessageContaining("INTEGER");
+
     final Result nulls = single("RETURN nodes(null) AS n, relationships(null) AS r, length(null) AS l");
     assertThat(nulls.<Object>getProperty("n")).isNull();
     assertThat(nulls.<Object>getProperty("r")).isNull();
@@ -227,7 +235,9 @@ class Issue9913PathValueTest extends TestHelper {
         "MATCH path = (:City {name: 'A'})-[:ROAD*]->(:City {name: 'C'}) RETURN path").getProperty("path");
 
     assertThat(TraversalPath.of(path)).isSameAs(path);
-    assertThat(TraversalPath.of(path.toAlternatingList())).isEqualTo(path);
+    // a walk's alternating elements build the path; a list is never a path to of(), as IS :: PATH says
+    assertThat(TraversalPath.ofWalk(path.toAlternatingList())).isEqualTo(path);
+    assertThat(TraversalPath.of(path.toAlternatingList())).isNull();
     assertThat(TraversalPath.of(path.toMap())).isEqualTo(path);
 
     // the same elements as RIDs, as a map that went through a client and came back as a parameter
@@ -249,7 +259,8 @@ class Issue9913PathValueTest extends TestHelper {
     // the right counts, but A-[r0]->B listed between A and C: r0 does not join them
     final List<Object> swapped = List.of(nodeRids.get(0), nodeRids.get(2), nodeRids.get(1));
     assertThat(TraversalPath.of(Map.of("_type", "path", "nodes", swapped, "relationships", relRids))).isNull();
-    assertThat(TraversalPath.of(List.of(path.getVertices().get(0), path.getEdges().get(1), path.getVertices().get(1)))).isNull();
+    assertThatThrownBy(() -> TraversalPath.ofWalk(List.of(path.getVertices().get(0), path.getEdges().get(1), path.getVertices().get(1))))
+        .isInstanceOf(IllegalStateException.class);
   }
 
   @Test

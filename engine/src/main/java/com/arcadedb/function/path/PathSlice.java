@@ -18,6 +18,7 @@
  */
 package com.arcadedb.function.path;
 
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.CommandContext;
 
@@ -55,13 +56,22 @@ public class PathSlice extends AbstractPathFunction {
     // A TraversalPath in, a TraversalPath out: the path a MATCH pattern binds used to answer null (issue #9913)
     final TraversalPath path = requirePath(args[0]);
     final int relCount = path.length();
-    final int from = args[1] != null ? ((Number) args[1]).intValue() : 0;
-    final int to = args.length > 2 && args[2] != null ? ((Number) args[2]).intValue() : relCount;
+    final int from = index(args[1], 0);
+    final int to = index(args.length > 2 ? args[2] : null, relCount);
 
     // Clamp the bounds. An empty slice (from == to, or from == relCount, i.e. slicing at the path's
     // end) yields a zero-relationship path containing just the boundary node, not null (issue #4707).
     final int actualFrom = Math.max(0, Math.min(from, relCount));
     final int actualTo = Math.max(actualFrom, Math.min(relCount, to));
     return path.subPath(actualFrom, actualTo);
+  }
+
+  /** A relationship index, {@code defaultValue} for null; anything but a number is a type error, not a ClassCastException. */
+  private int index(final Object value, final int defaultValue) {
+    if (value == null)
+      return defaultValue;
+    if (value instanceof Number number)
+      return number.intValue();
+    throw CypherFunctionHelper.typeMismatch(getName(), "an INTEGER", value);
   }
 }

@@ -28,7 +28,7 @@ import com.arcadedb.query.opencypher.traversal.TraversalPath;
  * <p>
  * Every Cypher path is a {@link TraversalPath} (issue #9913): the one a pattern binds, the one a path procedure yields, and
  * the one each of these functions returns, so {@code nodes()}, {@code relationships()}, {@code length()} and the drivers
- * read it as a path (issue #10017). {@link TraversalPath#of(Object)} also reads the map and alternating list a client may
+ * read it as a path (issue #10017). {@link TraversalPath#of(Object)} also reads the {@code {_type: "path"}} map a client may
  * send back as a parameter.
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
