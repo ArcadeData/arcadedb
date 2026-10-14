@@ -19,6 +19,8 @@
 package com.arcadedb.server.grpc;
 
 import com.arcadedb.database.RID;
+import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Timestamp;
@@ -216,9 +218,20 @@ class GrpcTypeConverter {
       return b.setListValue(lb.build()).build();
     }
 
-    // a path as its {_type, nodes, relationships, length} map rather than its toString() (issue #9913)
-    if (o instanceof TraversalPath path)
-      return toGrpcValue(path.toMap());
+    // a path as its {_type, nodes, relationships, length} map rather than its toString() (issue #9913). Its nodes and
+    // relationships travel as RID links: this converter has no record encoding, and a record would fall to its toString()
+    if (o instanceof TraversalPath path) {
+      final Map<String, Object> map = path.toMap();
+      final List<RID> nodes = new ArrayList<>(path.getVertices().size());
+      for (final Vertex vertex : path.getVertices())
+        nodes.add(vertex.getIdentity());
+      final List<RID> relationships = new ArrayList<>(path.getEdges().size());
+      for (final Edge edge : path.getEdges())
+        relationships.add(edge.getIdentity());
+      map.put(TraversalPath.NODES_KEY, nodes);
+      map.put(TraversalPath.RELATIONSHIPS_KEY, relationships);
+      return toGrpcValue(map);
+    }
 
     if (o instanceof Map<?, ?> map) {
       final GrpcMap.Builder mb = GrpcMap.newBuilder();

@@ -31,6 +31,7 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
@@ -2477,5 +2478,11 @@ class PostgresTypeTest {
     final JSONObject json = new JSONObject(PostgresType.JSON.toText(PostgresType.JSON, path));
     assertThat(json.getString("_type")).isEqualTo("path");
     assertThat(json.getInt("length")).isEqualTo(0);
+
+    // the element of a binary json[] array is the same object, not the path's toString()
+    final Binary buffer = new Binary();
+    PostgresType.ARRAY_JSON.serializeAsBinary(PostgresType.ARRAY_JSON, buffer, List.of(path));
+    final String written = new String(buffer.toByteArray(), StandardCharsets.UTF_8);
+    assertThat(written).contains("\"_type\":\"path\"");
   }
 }
