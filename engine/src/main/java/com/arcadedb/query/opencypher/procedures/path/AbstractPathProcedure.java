@@ -30,7 +30,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.Schema;
 import com.arcadedb.utility.RidHashSet;
 
 import java.util.*;
@@ -62,9 +62,24 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
     return () -> IncomingEdgeLookup.getEdges(context, vertex, direction, types);
   }
 
+  /**
+   * The edges the hop leaving {@code vertex}, a node {@code depth} hops away from the start, follows in
+   * {@code direction}, or {@code null} when the relationship filter does not follow that direction on this hop.
+   */
+  protected static Iterable<Edge> hopEdges(final CommandContext context, final Vertex vertex, final Vertex.DIRECTION direction,
+      final RelationshipFilter relationships, final int depth) {
+    final String[] types = relationships.typesFor(depth, direction);
+    return types == null ? null : edgesOf(context, vertex, direction, types);
+  }
+
   // Private, not protected: `final` on an array fixes the reference and nothing else, so a shared array with
   // elements in it, handed to subclasses, is one stray write away from corrupting every caller of every path walk
   private static final Vertex.DIRECTION[] BOTH_DIRECTIONS = { Vertex.DIRECTION.OUT, Vertex.DIRECTION.IN };
+
+  /** The direction of the {@code index}-th side a walk reads (0 = outgoing, 1 = incoming), without sharing an array. */
+  protected static Vertex.DIRECTION walkDirection(final int index) {
+    return index == 0 ? Vertex.DIRECTION.OUT : Vertex.DIRECTION.IN;
+  }
 
   protected Vertex extractVertex(final Object arg, final String paramName) {
     if (arg == null)
@@ -80,52 +95,86 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
         getName() + "(): " + paramName + " must be a node, got " + arg.getClass().getSimpleName());
   }
 
-  @SuppressWarnings("unchecked")
-  protected String[] extractRelTypes(final Object arg) {
-    if (arg == null)
-      return null;
+  /**
+   * The relationship and label filters of a walk configured by an APOC-style map: {@code relationshipFilter} and
+   * {@code labelFilter}, or {@code sequence}, which takes precedence over both, plus {@code filterStartNode} and
+   * {@code beginSequenceAtStart} (issue #10025).
+   *
+   * @param minLevel the walk's minimum level, which decides whether a termination node closer than that stops the walk
+   */
+  protected Filters extractFilters(final Map<String, Object> config, final Database database, final int minLevel) {
+    final Schema schema = database.getSchema();
+    final boolean filterStartNode = extractBoolean(config, "filterStartNode", false);
+    final boolean beginSequenceAtStart = extractBoolean(config, "beginSequenceAtStart", true);
 
-    if (arg instanceof String s) {
-      final String trimmedSource = s.trim();
-      if (trimmedSource.isEmpty())
-        return null;
-
-      // Handle pipe- or comma-separated format "REL1|REL2" or "REL1,REL2"
-      if (trimmedSource.contains("|") || trimmedSource.contains(",")) {
-        final String[] types = Arrays.stream(trimmedSource.split("[,|]")).map(String::trim).filter(t -> !t.isEmpty()).toArray(String[]::new);
-        return types.length == 0 ? null : types;
-      }
-
-      return new String[]{trimmedSource};
+    final Object sequence = config.get("sequence");
+    if (sequence != null) {
+      if (!(sequence instanceof String sequenceString))
+        throw new IllegalArgumentException(getName() + "(): sequence must be a string, got " + sequence.getClass().getSimpleName());
+      if (!sequenceString.isBlank())
+        return extractSequence(sequenceString, schema, filterStartNode, beginSequenceAtStart, minLevel);
     }
-    if (arg instanceof Collection<?> coll)
-      return coll.stream().map(Object::toString).toArray(String[]::new);
 
-    return new String[]{arg.toString()};
+    return new Filters(RelationshipFilter.parse(getName(), config.get("relationshipFilter"), schema),
+        LabelFilter.parse(getName(), config.get("labelFilter"), schema, filterStartNode, beginSequenceAtStart, minLevel));
   }
 
-  @SuppressWarnings("unchecked")
-  protected String[] extractLabels(final Object arg) {
-    if (arg == null)
-      return null;
+  /** The filters of {@code path.expand}'s positional form, which has neither a sequence nor the start-node options. */
+  protected Filters extractFilters(final Object relationshipFilter, final Object labelFilter, final Database database,
+      final int minLevel) {
+    final Schema schema = database.getSchema();
+    return new Filters(RelationshipFilter.parse(getName(), relationshipFilter, schema),
+        LabelFilter.parse(getName(), labelFilter, schema, false, true, minLevel));
+  }
 
-    if (arg instanceof String s) {
-      final String trimmedSource = s.trim();
-      if (trimmedSource.isEmpty())
-        return null;
+  /**
+   * APOC's {@code sequence}: label and relationship filters alternating, one pair per step of a repeating sequence. It
+   * starts with the label filter of the start node, or - when the sequence begins one hop away from it - with the
+   * relationship filter of the first hop, and so has as many filters of one kind as of the other.
+   */
+  private Filters extractSequence(final String sequence, final Schema schema, final boolean filterStartNode,
+      final boolean beginSequenceAtStart, final int minLevel) {
+    final String[] entries = sequence.split(",", -1);
+    if (entries.length % 2 != 0)
+      throw new IllegalArgumentException(getName() + "(): sequence '" + sequence + "' must alternate label and relationship filters, "
+          + (beginSequenceAtStart ?
+          "starting with a label filter and ending with a relationship filter" :
+          "starting with a relationship filter and ending with a label filter (beginSequenceAtStart is false)"));
 
-      // Handle pipe- or comma-separated format "Label1|Label2" or "Label1,Label2"
-      if (trimmedSource.contains("|") || trimmedSource.contains(",")) {
-        final String[] labels = Arrays.stream(trimmedSource.split("[,|]")).map(String::trim).filter(t -> !t.isEmpty()).toArray(String[]::new);
-        return labels.length == 0 ? null : labels;
-      }
+    final List<String> labelSteps = new ArrayList<>(entries.length / 2);
+    final List<String> relationshipSteps = new ArrayList<>(entries.length / 2);
+    for (int i = 0; i < entries.length; i++)
+      ((i % 2 == 0) == beginSequenceAtStart ? labelSteps : relationshipSteps).add(entries[i]);
 
-      return new String[]{trimmedSource};
-    }
-    if (arg instanceof Collection<?> coll)
-      return coll.stream().map(Object::toString).toArray(String[]::new);
+    return new Filters(RelationshipFilter.ofSteps(getName(), relationshipSteps, schema),
+        LabelFilter.ofSteps(getName(), labelSteps, schema, filterStartNode, beginSequenceAtStart, minLevel));
+  }
 
-    return new String[]{arg.toString()};
+  private boolean extractBoolean(final Map<String, Object> config, final String key, final boolean defaultValue) {
+    final Object value = config.get(key);
+    if (value == null)
+      return defaultValue;
+    if (value instanceof Boolean b)
+      return b;
+    throw new IllegalArgumentException(getName() + "(): " + key + " must be a boolean, got " + value.getClass().getSimpleName());
+  }
+
+  /**
+   * The minimum level of the procedures that report each reachable node once ({@code path.subgraphNodes},
+   * {@code path.subgraphAll}, {@code path.spanningTree}): 0 includes the start node, 1 leaves it out. Nothing else means
+   * anything for a walk that reaches every node once, by its shortest route, and APOC refuses the rest the same way.
+   */
+  protected int extractComponentMinLevel(final Map<String, Object> config) {
+    final Object value = config.get("minLevel");
+    if (value == null)
+      return 0;
+    if (!(value instanceof Number number) || (number.longValue() != 0 && number.longValue() != 1))
+      throw new IllegalArgumentException(getName() + "(): minLevel can only be 0 or 1, got " + value);
+    return number.intValue();
+  }
+
+  /** The two filters of a walk, parsed once per call. */
+  protected record Filters(RelationshipFilter relationships, LabelFilter labels) {
   }
 
   protected Vertex.DIRECTION parseDirection(final String direction) {
@@ -173,44 +222,58 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
    * the vertex record the filter exists to avoid loading). Under a plain {@code YIELD nodes} a filtered-out
    * neighbour is still never read, which remains the filter's whole value there.
    * <p>
+   * A node the label filter walks THROUGH without reporting it - one that is not an end node when the filter names end
+   * or termination nodes - is visited but kept out of {@code reachableNodes}, so the closing pass drops the edges that
+   * reach it too (APOC answers the same).
+   * <p>
    * The walk is level-synchronous rather than a queue of (vertex, level) pairs: the level is a property of the
-   * wave, so tracking it per entry allocates one wrapper per vertex to carry a number the loop already knows.
+   * wave, so tracking it per entry allocates one wrapper per vertex to carry a number the loop already knows - and the
+   * level is also what picks the step of a relationship or label sequence.
    *
-   * @param startNode      the vertex the component is measured from; always the first entry of the result
-   * @param relTypes       edge types to follow, or {@code null}/empty for all of them
-   * @param labelFilter    vertex labels to accept, or {@code null}/empty for all of them
+   * @param startNode      the vertex the component is measured from; the first entry of the result when it is reported
+   * @param filters        the relationships to follow and the nodes to report
+   * @param minLevel       0 to report the start node, 1 to leave it out
    * @param maxLevel       maximum number of hops from {@code startNode}
-   * @param reachableNodes collects the reached vertices, in breadth-first order
+   * @param reachableNodes collects the reported vertices, in breadth-first order
    * @param reachableEdges collects the traversed edges, or {@code null} to skip building them entirely
    */
-  protected void collectReachableComponent(final Vertex startNode, final String[] relTypes, final String[] labelFilter,
-      final int maxLevel, final List<Vertex> reachableNodes, final List<Edge> reachableEdges, final CommandContext context) {
+  protected void collectReachableComponent(final Vertex startNode, final Filters filters, final int minLevel, final int maxLevel,
+      final List<Vertex> reachableNodes, final List<Edge> reachableEdges, final CommandContext context) {
     final Database database = startNode.getDatabase();
-    final String[] edgeTypes = relTypes != null ? relTypes : NO_TYPES;
+    final RelationshipFilter relationships = filters.relationships();
+    final LabelFilter labels = filters.labels();
     final boolean collectEdges = reachableEdges != null;
-    // THE INCOMING SIDE OF A UNIDIRECTIONAL EDGE TYPE IS ON THE OTHER END ONLY (ISSUE #8629): READ FROM THE EDGES THAT END IN
-    // THE VERTEX, AND THE ADJACENCY ENTRIES ARE WALKED ONLY WHEN NO SUCH TYPE IS INVOLVED
-    final boolean incomingSideMissing = IncomingEdgeLookup.isNeeded(context, database, Vertex.DIRECTION.IN, edgeTypes);
 
     final RidHashSet visitedNodes = new RidHashSet();
     final RidHashSet ghostNodes = new RidHashSet(16);
     final EdgeIdentitySet visitedEdges = collectEdges ? new EdgeIdentitySet() : null;
 
+    final LabelFilter.Verdict startVerdict = labels.evaluate(database, startNode.getIdentity(), 0);
+    if (startVerdict == LabelFilter.Verdict.EXCLUDE_AND_PRUNE)
+      // The start node itself is denied (filterStartNode): there is no component to report
+      return;
+
     visitedNodes.add(startNode.getIdentity());
-    reachableNodes.add(startNode);
+    if (startVerdict.includes && minLevel == 0)
+      reachableNodes.add(startNode);
 
     List<Vertex> frontier = new ArrayList<>();
-    frontier.add(startNode);
+    if (startVerdict.continues)
+      frontier.add(startNode);
 
     for (int level = 0; level < maxLevel && !frontier.isEmpty(); ++level) {
       final List<Vertex> nextFrontier = new ArrayList<>();
+      final int depth = level + 1;
 
-      for (final Vertex current : frontier) {
-        if (collectEdges) {
+      if (collectEdges) {
+        for (final Vertex current : frontier) {
           // The edges are part of the answer: materialise them, but still take the neighbour from the edge's RID
           // rather than from its record, so an already-visited neighbour costs nothing
           for (final Vertex.DIRECTION direction : BOTH_DIRECTIONS) {
-            for (final Edge edge : edgesOf(context, current, direction, edgeTypes)) {
+            final Iterable<Edge> edges = hopEdges(context, current, direction, relationships, level);
+            if (edges == null)
+              continue;
+            for (final Edge edge : edges) {
               try {
                 // Reading the endpoint is what forces a lazily loaded edge, so a ghost edge record surfaces here
                 final RID neighborId = direction == Vertex.DIRECTION.OUT ? edge.getIn() : edge.getOut();
@@ -220,27 +283,48 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
                 if (visitedEdges.add(edge.getIdentity()))
                   reachableEdges.add(edge);
 
-                visitNeighbor(database, neighborId, labelFilter, visitedNodes, ghostNodes, reachableNodes, nextFrontier);
+                visitNeighbor(database, neighborId, depth, labels, minLevel, visitedNodes, ghostNodes, reachableNodes, nextFrontier);
               } catch (final RecordNotFoundException e) {
                 GhostEdgeReporter.reportSkipped(e);
               }
             }
           }
-        } else {
-          // Only the nodes are asked for: walk the adjacency entries without loading a single edge record
+        }
+      } else {
+        // Only the nodes are asked for: walk the adjacency entries without loading a single edge record. Both sides
+        // are read in one pass when the hop follows the same types both ways and none of them is stored one way only.
+        // THE INCOMING SIDE OF A UNIDIRECTIONAL EDGE TYPE IS ON THE OTHER END ONLY (ISSUE #8629): READ FROM THE EDGES THAT
+        // END IN THE VERTEX
+        final String[] outTypes = relationships.typesFor(level, Vertex.DIRECTION.OUT);
+        final String[] inTypes = relationships.typesFor(level, Vertex.DIRECTION.IN);
+        final boolean incomingSideMissing =
+            inTypes != null && IncomingEdgeLookup.isNeeded(context, database, Vertex.DIRECTION.IN, inTypes);
+        final boolean bothInOnePass = relationships.isSymmetric(level) && !incomingSideMissing;
+
+        for (final Vertex current : frontier) {
+          if (bothInOnePass) {
+            for (final RID neighborId : current.getConnectedVertexRIDs(Vertex.DIRECTION.BOTH, outTypes))
+              visitNeighbor(database, neighborId, depth, labels, minLevel, visitedNodes, ghostNodes, reachableNodes, nextFrontier);
+            continue;
+          }
+
+          if (outTypes != null)
+            for (final RID neighborId : current.getConnectedVertexRIDs(Vertex.DIRECTION.OUT, outTypes))
+              visitNeighbor(database, neighborId, depth, labels, minLevel, visitedNodes, ghostNodes, reachableNodes, nextFrontier);
+
+          if (inTypes == null)
+            continue;
           if (incomingSideMissing) {
-            for (final RID neighborId : current.getConnectedVertexRIDs(Vertex.DIRECTION.OUT, edgeTypes))
-              visitNeighbor(database, neighborId, labelFilter, visitedNodes, ghostNodes, reachableNodes, nextFrontier);
-            for (final Edge edge : edgesOf(context, current, Vertex.DIRECTION.IN, edgeTypes)) {
+            for (final Edge edge : edgesOf(context, current, Vertex.DIRECTION.IN, inTypes)) {
               try {
-                visitNeighbor(database, edge.getOut(), labelFilter, visitedNodes, ghostNodes, reachableNodes, nextFrontier);
+                visitNeighbor(database, edge.getOut(), depth, labels, minLevel, visitedNodes, ghostNodes, reachableNodes, nextFrontier);
               } catch (final RecordNotFoundException e) {
                 GhostEdgeReporter.reportSkipped(e);
               }
             }
           } else
-            for (final RID neighborId : current.getConnectedVertexRIDs(Vertex.DIRECTION.BOTH, edgeTypes))
-              visitNeighbor(database, neighborId, labelFilter, visitedNodes, ghostNodes, reachableNodes, nextFrontier);
+            for (final RID neighborId : current.getConnectedVertexRIDs(Vertex.DIRECTION.IN, inTypes))
+              visitNeighbor(database, neighborId, depth, labels, minLevel, visitedNodes, ghostNodes, reachableNodes, nextFrontier);
         }
       }
 
@@ -282,25 +366,28 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
   }
 
   /**
-   * Adds a neighbour to the walk unless it has been seen already or its label is filtered out. The vertex record is
+   * Adds a neighbour to the walk unless it has been seen already or the label filter turns it away. The vertex record is
    * loaded only once both tests have passed, which is what keeps the walk's loads proportional to the component
    * rather than to its adjacency entries: a neighbour the {@code labelFilter} excludes is never resolved, here or
    * later, because a closing pass over {@code reachableNodes} (not this method) is what keeps a collected edge from
    * naming such a neighbour (issue #7982) - so there is nothing this method needs to know about that neighbour
    * beyond "not part of {@code nodes}".
    * <p>
+   * A neighbour turned away is not marked visited: in a label sequence the same node can be welcome at another depth.
+   * <p>
    * A RID with no record behind it is recorded in {@code ghostNodes} rather than in {@code visitedNodes}: the two
    * answer different questions, and conflating them would mark a missing vertex as reached - so the FIRST edge to
    * a ghost would be dropped and every later one silently kept, which is worse than either consistent outcome.
    */
-  private void visitNeighbor(final Database database, final RID neighborId, final String[] labelFilter,
-      final RidHashSet visitedNodes, final RidHashSet ghostNodes, final List<Vertex> reachableNodes,
+  private void visitNeighbor(final Database database, final RID neighborId, final int depth, final LabelFilter labels,
+      final int minLevel, final RidHashSet visitedNodes, final RidHashSet ghostNodes, final List<Vertex> reachableNodes,
       final List<Vertex> nextFrontier) {
     // Before any set is touched: RidHashSet reads the bucket and offset off the RID without checking it for null
     if (neighborId == null || visitedNodes.contains(neighborId) || ghostNodes.contains(neighborId))
       return;
 
-    if (!matchesLabels(database, neighborId, labelFilter))
+    final LabelFilter.Verdict verdict = labels.evaluate(database, neighborId, depth);
+    if (verdict == LabelFilter.Verdict.EXCLUDE_AND_PRUNE)
       return;
 
     final Vertex neighbor = resolveNeighbor(neighborId, ghostNodes);
@@ -308,38 +395,23 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
       return;
 
     visitedNodes.add(neighborId);
-    reachableNodes.add(neighbor);
-    nextFrontier.add(neighbor);
+    if (verdict.includes && depth >= minLevel)
+      reachableNodes.add(neighbor);
+    if (verdict.continues)
+      nextFrontier.add(neighbor);
   }
 
   /**
-   * Tells whether a vertex's label is one the caller accepts, answered from the RID alone: a vertex's label is its
-   * type name, and a bucket belongs to exactly one type, so the schema knows the answer without the record being
-   * read. That is the whole point - it replaced a {@code Vertex}-based overload that could only answer once the
-   * record was in hand, which meant loading precisely the vertices the filter exists to leave out.
+   * The configuration map of a procedure that takes one: absent or null is the empty map APOC defaults it to, and
+   * anything else is refused - a string passed where the map goes used to be dropped silently, so the call walked the
+   * whole graph unfiltered.
    */
-  protected boolean matchesLabels(final Database database, final RID vertexId, final String[] labels) {
-    if (labels == null || labels.length == 0)
-      return true;
-
-    final DocumentType type = database.getSchema().getTypeByBucketId(vertexId.getBucketId());
-    if (type == null)
-      return false;
-
-    final String vertexType = type.getName();
-    for (final String label : labels)
-      if (vertexType.equals(label))
-        return true;
-
-    return false;
-  }
-
   @SuppressWarnings("unchecked")
   protected Map<String, Object> extractConfig(final Object arg) {
     if (arg == null)
-      return new HashMap<>();
+      return Map.of();
     if (arg instanceof Map)
       return (Map<String, Object>) arg;
-    return new HashMap<>();
+    throw new IllegalArgumentException(getName() + "(): config must be a map, got " + arg.getClass().getSimpleName());
   }
 }
