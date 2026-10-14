@@ -39,9 +39,9 @@ class Issue9697GroupedStaleTopUpLoopTest {
   }
 
   /** Replays the steps in order and records the budgets each pass was asked for. */
-  private static final class ScriptedPass implements SQLFunctionVectorAbstract.GroupedSearchPass {
+  private static class ScriptedPass implements SQLFunctionVectorAbstract.GroupedSearchPass {
     private final Step[]      steps;
-    private final List<int[]> asked = new ArrayList<>();
+    final         List<int[]> asked = new ArrayList<>();
 
     private ScriptedPass(final Step... steps) {
       this.steps = steps;
@@ -116,6 +116,31 @@ class Issue9697GroupedStaleTopUpLoopTest {
     final List<Object> answer = SQLFunctionVectorAbstract.searchGroupedWithStaleTopUp(3, 2, 100_000, pass);
     assertThat(answer).hasSize(4).allMatch(row -> row.toString().startsWith("pass1-"));
     assertThat(pass.asked).containsExactly(new int[] { 3, 2 }, new int[] { 5, 4 }, new int[] { 6, 5 });
+  }
+
+  /**
+   * Issue #10002: a writer that keeps deleting what the searches rank hands every pass stale candidates no earlier pass met,
+   * and never a full answer. The loop keeps widening, and the candidate budget is what ends it.
+   */
+  @Test
+  void anEndlessStreamOfFreshStaleCandidatesStopsAtTheBudget() {
+    final ScriptedPass pass = new ScriptedPass() {
+      @Override
+      public ArrayList<Object> run(final int fetchGroups, final int fetchGroupSize, final Set<RID> staleRids) {
+        final int passNumber = asked.size();
+        asked.add(new int[] { fetchGroups, fetchGroupSize });
+        for (int i = 0; i < 3; i++)
+          staleRids.add(new RID(1, passNumber * 3L + i));
+        final ArrayList<Object> rows = new ArrayList<>();
+        for (int i = 0; i < 4; i++)
+          rows.add("pass" + asked.size() + "-row" + i);
+        return rows;
+      }
+    };
+    // groups=3, groupSize=2 widens by 3 a pass: (3,2), (6,5), (9,8), (12,11); the next, (15,14), costs 1,050 > 1,000
+    final List<Object> answer = SQLFunctionVectorAbstract.searchGroupedWithStaleTopUp(3, 2, 1_000, pass);
+    assertThat(answer).hasSize(4);
+    assertThat(pass.asked).containsExactly(new int[] { 3, 2 }, new int[] { 6, 5 }, new int[] { 9, 8 }, new int[] { 12, 11 });
   }
 
   @Test
