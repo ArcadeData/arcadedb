@@ -232,6 +232,29 @@ class Issue10051Bm25CounterAdoptionTest extends TestHelper {
     assertThat(metadata().getTotalDocs()).isEqualTo(5L);
   }
 
+  /**
+   * A delta that removes more than the counters hold is clamped at zero, and the node that clamped must not stay silently
+   * different from one that did not: it arms the unconditional rescan. A delta that fits arms nothing.
+   */
+  @Test
+  void aClampThatFiresArmsTheRescanAndOneThatDoesNotLeavesTheCheckAlone() {
+    final FullTextIndexMetadata m = new FullTextIndexMetadata("Doc", new String[] { "content" }, 0);
+    m.setCounters(10L, 30L);
+    assertThat(m.isStaleCheckDone()).isTrue();
+
+    m.applyCorpusDelta(-4, -12);
+    assertThat(m.getTotalDocs()).isEqualTo(6L);
+    assertThat(m.getSumDocLength()).isEqualTo(18L);
+    assertThat(m.isStaleCheckDone()).as("no clamp fired").isTrue();
+    assertThat(m.consumeRescanRequired()).isFalse();
+
+    m.applyCorpusDelta(-50, -12);
+    assertThat(m.getTotalDocs()).isZero();
+    assertThat(m.getSumDocLength()).isEqualTo(6L);
+    assertThat(m.isStaleCheckDone()).as("the clamp re-armed the check").isFalse();
+    assertThat(m.consumeRescanRequired()).isTrue();
+  }
+
   /** A node that skipped a delta arms the drift check, which then repairs it. */
   @Test
   void aSkippedDeltaArmsTheDriftCheck() {

@@ -3563,6 +3563,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         // WHILE THE DATABASE IS STILL OPEN: THE SCHEMA CANNOT BE SERIALIZED ONCE THE CLOSE HAS BEGUN
         schema.saveUnsavedFullTextCounters();
       } catch (final Exception e) {
+        // BEST EFFORT, AND THE CLOSE CARRIES ON: THE COUNTERS ARE AN ESTIMATE THE FIRST SEARCH OF THE NEXT SESSION CHECKS AGAINST
+        // THE DATA, WHILE A CLOSE THAT FAILS HERE WOULD LEAVE THE FILES OPEN
         LogManager.instance().log(this, Level.WARNING, "Error on saving the full-text corpus counters of database '%s'", e, name);
       }
 
