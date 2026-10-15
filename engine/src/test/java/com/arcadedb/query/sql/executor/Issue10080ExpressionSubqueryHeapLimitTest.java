@@ -161,6 +161,22 @@ class Issue10080ExpressionSubqueryHeapLimitTest extends TestHelper {
     assertThat((List<?>) database.getSchema().getFunction("lib10080", "all").execute()).hasSize(INNER_ROWS);
   }
 
+  /** What the function answers is unchanged: nothing for no row, the bare value for one, the list of values for many. */
+  @Test
+  @SuppressWarnings("unchecked")
+  void aUserDefinedSqlFunctionAnswersWhatItAlwaysDid() {
+    createData();
+    final SQLFunctionLibraryDefinition library = new SQLFunctionLibraryDefinition(database, "lib10080b");
+    library.registerFunction(new SQLFunctionDefinition(database, "none", "SELECT k FROM InnerT WHERE k < 0"));
+    library.registerFunction(new SQLFunctionDefinition(database, "one", "SELECT k FROM InnerT WHERE k = 7"));
+    library.registerFunction(new SQLFunctionDefinition(database, "many", "SELECT k FROM InnerT WHERE k < 3 ORDER BY k"));
+    database.getSchema().registerFunctionLibrary(library);
+
+    assertThat(database.getSchema().getFunction("lib10080b", "none").execute()).isNull();
+    assertThat(database.getSchema().getFunction("lib10080b", "one").execute()).isEqualTo(7);
+    assertThat((List<Object>) database.getSchema().getFunction("lib10080b", "many").execute()).containsExactly(0, 1, 2);
+  }
+
   /** The claim {@code OperationHeapLimit.materialize()} makes is checkable: no other code of the SQL engine drains a sub-plan into a list. */
   @Test
   void onlyOperationHeapLimitDrainsASubPlanIntoAList() throws IOException {

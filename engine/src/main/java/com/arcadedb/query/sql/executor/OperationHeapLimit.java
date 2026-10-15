@@ -183,7 +183,8 @@ public final class OperationHeapLimit {
    * Pulls {@code source} to exhaustion into a list, each row accounted with {@link #add(long, Object)}, and closes it: the
    * one way a step materialises a sub-plan, so none can hold one on the heap without the limits seeing it (issue #9792).
    * When a limit fails the query, what was charged is given back and the source is closed before the exception leaves.
-   * The caller owns the charge of the list returned, and gives it back with {@link #release()} when it lets go of it.
+   * The caller owns the charge of the list returned, and gives it back with {@link #release()} when it lets go of it. The list is a
+   * new mutable {@link ArrayList} that nothing else references, which a caller may rewrite in place.
    */
   public List<Result> materialize(final ResultSet source) {
     final List<Result> rows = new ArrayList<>();
