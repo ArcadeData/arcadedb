@@ -27,7 +27,6 @@ import org.apache.ratis.protocol.RaftPeer;
 import org.apache.ratis.protocol.RaftPeerId;
 
 import java.io.IOException;
-import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
@@ -153,17 +152,13 @@ final class PeerAuthSessionQuery {
     final boolean useSSL = raft.getServer().getConfiguration().getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL);
     final String url = useSSL && dial.httpsAddress() != null ? "https://" + dial.httpsAddress() + ROUTE
         : "http://" + dial.httpAddress() + ROUTE;
-    final HttpRequest.Builder builder = HttpRequest.newBuilder()
-        .uri(URI.create(url))
+    return PeerRequest.newRequest(url, useSSL, PeerAuthSessionQuery.class,
+            "asking it to " + action + " an authentication session", raft.getClusterToken())
         .timeout(Duration.ofMillis(timeoutMs))
         .header("Content-Type", "application/json")
-        .header("X-ArcadeDB-Forwarded-User", RaftHAServer.FORWARDED_ROOT_USER)
         .POST(HttpRequest.BodyPublishers.ofString(
-            new JSONObject().put("action", action).put("token", token).toString()));
-    final String clusterToken = raft.getClusterToken();
-    if (clusterToken != null && !clusterToken.isBlank())
-      builder.header("X-ArcadeDB-Cluster-Token", clusterToken);
-    return builder.build();
+            new JSONObject().put("action", action).put("token", token).toString()))
+        .build();
   }
 
   private static HttpClient client(final RaftHAServer raft, final HttpRequest request) throws IOException {

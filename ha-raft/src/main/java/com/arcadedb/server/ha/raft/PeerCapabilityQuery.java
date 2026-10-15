@@ -26,7 +26,6 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.http.handler.LeaderDial;
 
 import java.io.IOException;
-import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
@@ -36,7 +35,6 @@ import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
 
 /**
@@ -119,9 +117,6 @@ public final class PeerCapabilityQuery {
       .connectTimeout(Duration.ofSeconds(5))
       .build();
 
-  /** One-time warning that SSL is enabled but the probe fell back to plain HTTP for lack of an HTTPS address. */
-  private static final AtomicBoolean PLAIN_HTTP_FALLBACK_WARNED = new AtomicBoolean(false);
-
   private PeerCapabilityQuery() {
   }
 
@@ -190,29 +185,19 @@ public final class PeerCapabilityQuery {
     final String url = chooseUrl(httpAddr, httpsAddr, useSSL);
     if (url == null)
       throw new IOException("no peer address available for a capability query");
-    if (useSSL && !url.startsWith("https://") && PLAIN_HTTP_FALLBACK_WARNED.compareAndSet(false, true))
-      // The same one-time warning LeaderDatabaseQuery emits on the same fallback, and it matters MORE here: that
-      // query runs at a join or on an operator's request, while this one repeats every
-      // PeerCapabilityRegistry.REFRESH_PERIOD_MS for as long as the node leads. On a cluster that enables SSL but
-      // declares no 'https' ports, the cluster token would otherwise go out in clear text on this RPC
-      // indefinitely with nothing in the log to point at it. Named for the peer that first hit it, because the
-      // remedy is per-peer configuration; one line, because the cause is a configuration fact and not an event.
-      LogManager.instance().log(PeerCapabilityQuery.class, Level.WARNING,
-          "SSL is enabled but no HTTPS address is known for peer '%s'; its capability query - and the cluster "
-              + "token it carries - go over plain HTTP. Declare each node's 'https' port in %s.",
-          expectedPeerId != null ? expectedPeerId : httpAddr, GlobalConfiguration.HA_SERVER_LIST.getKey());
-
-    final HttpRequest.Builder builder = HttpRequest.newBuilder()
-        .uri(URI.create(url))
+    // A plain URL under SSL is said once, by the latch every peer dial shares, and it matters MORE here: this query
+    // repeats every PeerCapabilityRegistry.REFRESH_PERIOD_MS for as long as the node leads, so on a cluster that enables
+    // SSL but declares no 'https' ports the cluster token would otherwise go out in clear text on this RPC indefinitely
+    // with nothing in the log to point at it. Named for the peer that first hit it, because the remedy is per-peer
+    // configuration (issue #9999 moved it off a latch of its own).
+    final HttpRequest.Builder builder = PeerRequest.newRequest(url, useSSL, PeerCapabilityQuery.class,
+            "asking '" + (expectedPeerId != null ? expectedPeerId : httpAddr) + "' for its capabilities", clusterToken)
         .timeout(Duration.ofMillis(timeoutMs))
         .header("Content-Type", "application/json")
         .POST(HttpRequest.BodyPublishers.ofString("{}"));
     if (caller != null)
       for (final Map.Entry<String, String> header : caller.entrySet())
         builder.header(header.getKey(), header.getValue());
-    if (clusterToken != null && !clusterToken.isBlank())
-      builder.header("X-ArcadeDB-Cluster-Token", clusterToken);
-    builder.header("X-ArcadeDB-Forwarded-User", RaftHAServer.FORWARDED_ROOT_USER);
     final HttpRequest request = builder.build();
 
     // The client carrying the cluster trust context, built once per server and reused until its truststore changes

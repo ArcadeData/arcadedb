@@ -27,7 +27,6 @@ import com.arcadedb.server.http.handler.LeaderDial;
 import org.apache.ratis.server.protocol.TermIndex;
 
 import java.io.IOException;
-import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
@@ -136,20 +135,13 @@ public final class LeaderDatabaseQuery {
     final Endpoint endpoint = chooseEndpoint(httpAddr, httpsAddr, useSSL);
     if (endpoint == null)
       throw new IOException("no peer address available for bootstrap-state query");
-    if (useSSL && !endpoint.https())
-      // One latch across every dial that can fall back this way, rather than one per dial: they say the same
-      // thing and are fixed by the same setting, so three copies would only bury the first (issue #7546).
-      PlainHttpFallbackNotice.sayOnce(LeaderDatabaseQuery.class, "querying its database list");
-
-    final HttpRequest.Builder builder = HttpRequest.newBuilder()
-        .uri(URI.create(endpoint.url()))
+    // A plain endpoint under SSL is said once, by the same latch every other dial that can fall back uses (issue #7546).
+    final HttpRequest request = PeerRequest.newRequest(endpoint.url(), useSSL, LeaderDatabaseQuery.class,
+            "querying its database list", clusterToken)
         .timeout(Duration.ofMillis(timeoutMs))
         .header("Content-Type", "application/json")
-        .POST(HttpRequest.BodyPublishers.ofString(body));
-    if (clusterToken != null && !clusterToken.isBlank())
-      builder.header("X-ArcadeDB-Cluster-Token", clusterToken);
-    builder.header("X-ArcadeDB-Forwarded-User", RaftHAServer.FORWARDED_ROOT_USER);
-    final HttpRequest request = builder.build();
+        .POST(HttpRequest.BodyPublishers.ofString(body))
+        .build();
 
     if (endpoint.https()) {
       // A dedicated client carrying the cluster trust context. HttpClient is AutoCloseable on Java 21, so the

@@ -29,7 +29,6 @@ import org.apache.ratis.protocol.RaftPeer;
 import org.apache.ratis.protocol.RaftPeerId;
 
 import java.io.IOException;
-import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
@@ -371,7 +370,8 @@ class BootstrapElection {
           final boolean https = url.startsWith("https://");
           if (https && client == null)
             continue;
-          final HttpRequest request = bootstrapStateRequestTo(url, haServer.getClusterToken(), probeAttemptTimeoutMs, body);
+          final HttpRequest request = bootstrapStateRequestTo(url, useSSL, haServer.getClusterToken(), probeAttemptTimeoutMs,
+              body);
           sends.add((https ? client : HTTP).sendAsync(request, HttpResponse.BodyHandlers.ofString()));
           sentTo.add(peerByUrl.get(url));
         }
@@ -536,8 +536,7 @@ class BootstrapElection {
 
     // The fallback is the rule, but it is not silent: these probes carry the cluster token, and an operator who
     // set arcadedb.ssl.enabled has no other way to learn that some of them went out in the clear (issue #7546).
-    if (useSSL && peerAddresses.values().stream().anyMatch(url -> url.startsWith("http://")))
-      PlainHttpFallbackNotice.sayOnce(BootstrapElection.class, "probing its bootstrap-state");
+    // Said by PeerRequest as each probe is built (issue #9999).
 
     // One client for the whole fan-out, closed when it has finished. collectRemoteStatesWithRetry cancels a
     // timed-out future rather than waiting on it, so a send CAN still be running when close() is reached;
@@ -760,22 +759,23 @@ class BootstrapElection {
    * {@link #fetchBootstrapState}, so both reach the endpoint with the same credentials (issue #6124) and
    * on the same scheme (issue #7563).
    */
-  static HttpRequest bootstrapStateRequestTo(final String url, final String clusterToken, final long timeoutMs) {
-    return bootstrapStateRequestTo(url, clusterToken, timeoutMs, "{}");
+  static HttpRequest bootstrapStateRequestTo(final String url, final boolean sslEnabled, final String clusterToken,
+      final long timeoutMs) {
+    return bootstrapStateRequestTo(url, sslEnabled, clusterToken, timeoutMs, "{}");
   }
 
-  /** As {@link #bootstrapStateRequestTo(String, String, long)}, carrying {@code body} (issue #8368). */
-  static HttpRequest bootstrapStateRequestTo(final String url, final String clusterToken, final long timeoutMs,
-      final String body) {
-    final HttpRequest.Builder builder = HttpRequest.newBuilder()
-        .uri(URI.create(url))
+  /**
+   * As {@link #bootstrapStateRequestTo(String, boolean, String, long)}, carrying {@code body} (issue #8368).
+   * {@code sslEnabled} is this node's {@code arcadedb.ssl.enabled}: a plain {@code url} under it is a fallback, and is
+   * said (issue #9999).
+   */
+  static HttpRequest bootstrapStateRequestTo(final String url, final boolean sslEnabled, final String clusterToken,
+      final long timeoutMs, final String body) {
+    return PeerRequest.newRequest(url, sslEnabled, BootstrapElection.class, "probing its bootstrap-state", clusterToken)
         .timeout(Duration.ofMillis(timeoutMs))
         .header("Content-Type", "application/json")
-        .POST(HttpRequest.BodyPublishers.ofString(body));
-    if (clusterToken != null && !clusterToken.isBlank())
-      builder.header("X-ArcadeDB-Cluster-Token", clusterToken);
-    builder.header("X-ArcadeDB-Forwarded-User", "root");
-    return builder.build();
+        .POST(HttpRequest.BodyPublishers.ofString(body))
+        .build();
   }
 
   /**
@@ -789,7 +789,7 @@ class BootstrapElection {
    * still a live shape, and the test predates this change.
    */
   static HttpRequest bootstrapStateRequest(final String httpAddr, final String clusterToken, final long timeoutMs) {
-    return bootstrapStateRequestTo(chooseUrl(httpAddr, null, false), clusterToken, timeoutMs);
+    return bootstrapStateRequestTo(chooseUrl(httpAddr, null, false), false, clusterToken, timeoutMs);
   }
 
   /**
@@ -848,10 +848,8 @@ class BootstrapElection {
     final String url = chooseUrl(httpAddr, httpsAddr, useSSL);
     if (url == null)
       return null;
-    if (useSSL && url.startsWith("http://"))
-      PlainHttpFallbackNotice.sayOnce(BootstrapElection.class, "probing its bootstrap-state");
     try {
-      final HttpRequest request = bootstrapStateRequestTo(url, clusterToken, timeoutMs);
+      final HttpRequest request = bootstrapStateRequestTo(url, useSSL, clusterToken, timeoutMs);
       // Bounded by sendBounded rather than by the request timeout alone, which on JDK 21-25 stops at the response
       // headers: a leader that stalls inside its body would otherwise park the state-machine thread asking for its
       // bootstrap baselines with no bound at all (issue #8472).
@@ -899,7 +897,12 @@ class BootstrapElection {
     return queryPeer(peerId, url, dbFilter, attemptTimeoutMs, httpsClient, "{}");
   }
 
-  /** As above, with the probe carrying {@code body} - the pass's announce, from {@link #collectStates}. */
+  /** This node's {@code arcadedb.ssl.enabled}: under it a probe to a plain URL is a fallback (issue #9999). */
+  private boolean sslEnabled() {
+    return server != null && server.getConfiguration().getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL);
+  }
+
+  /** As {@link #queryPeer(RaftPeerId, String, Set, long, HttpClient)}, with the probe carrying {@code body} - the pass's announce, from {@link #collectStates}. */
   CompletableFuture<ProbeOutcome> queryPeer(final RaftPeerId peerId, final String url, final Set<String> dbFilter,
       final long attemptTimeoutMs, final HttpClient httpsClient, final String body) {
     final boolean https = url.startsWith("https://");
@@ -914,7 +917,8 @@ class BootstrapElection {
       return CompletableFuture.completedFuture(
           ProbeOutcome.fatal("no HTTPS client could be built from the cluster truststore"));
 
-    final HttpRequest request = bootstrapStateRequestTo(url, haServer.getClusterToken(), attemptTimeoutMs, body);
+    final HttpRequest request = bootstrapStateRequestTo(url, sslEnabled(), haServer.getClusterToken(), attemptTimeoutMs,
+        body);
 
     return (https ? httpsClient : HTTP).sendAsync(request, HttpResponse.BodyHandlers.ofString())
         .thenApply(resp -> {

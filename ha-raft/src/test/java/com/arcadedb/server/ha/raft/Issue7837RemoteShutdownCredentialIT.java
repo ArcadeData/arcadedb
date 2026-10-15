@@ -122,7 +122,8 @@ class Issue7837RemoteShutdownCredentialIT extends BaseRaftHATest {
 
     // Rebuilt rather than mutated: HttpRequest is immutable, so the headers under test are copied across
     // verbatim from the very request the production dial would send.
-    final HttpRequest production = RaftHAPlugin.shutdownRequest(serverCommandUrl(toIndex), raft.getClusterToken());
+    final HttpRequest production = RaftHAPlugin.shutdownRequest(serverCommandUrl(toIndex), false,
+        raft.getClusterToken());
     final HttpRequest.Builder builder = HttpRequest.newBuilder()
         .uri(production.uri())
         .timeout(Duration.ofSeconds(10))

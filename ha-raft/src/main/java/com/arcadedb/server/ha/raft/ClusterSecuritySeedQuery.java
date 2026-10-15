@@ -30,7 +30,6 @@ import com.arcadedb.server.security.ReplicatedSecurityFingerprintRepository;
 import com.arcadedb.server.security.ServerSecurity;
 
 import java.io.IOException;
-import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
@@ -303,8 +302,6 @@ public final class ClusterSecuritySeedQuery {
       throw new IOException("the cluster leader address is unknown, so the security seed cannot be requested");
     if (dial.refused())
       throw new IOException("the security seed cannot be requested from the leader: " + dial.refusal());
-    if (server.getConfiguration().getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL) && !dial.https())
-      PlainHttpFallbackNotice.sayOnce(ClusterSecuritySeedQuery.class, "requesting the cluster security seed");
 
     final JSONObject body = new JSONObject().put("reason", reason);
     // The request TYPE, not a consequence of what else the body happens to carry. A catch-up on a node with no
@@ -320,13 +317,12 @@ public final class ClusterSecuritySeedQuery {
     final long timeoutMs = Math.max(declared != null
         ? declaredAdmissionReportTimeoutMs(server.getConfiguration()) + CLIENT_HEADROOM_MS
         : reportTimeoutMs(server.getConfiguration()), LeaderDial.MIN_FORWARD_TIMEOUT_MS);
-    final HttpRequest.Builder builder = HttpRequest.newBuilder()
-        .uri(URI.create(dial.url(PostSecuritySeedHandler.ROUTE)))
+    final HttpRequest.Builder builder = PeerRequest.newRequest(dial.url(PostSecuritySeedHandler.ROUTE),
+            server.getConfiguration().getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL), ClusterSecuritySeedQuery.class,
+            "requesting the cluster security seed", raft.getClusterToken())
         .timeout(Duration.ofMillis(timeoutMs))
         .header("Content-Type", "application/json")
         .POST(HttpRequest.BodyPublishers.ofString(body.toString(), StandardCharsets.UTF_8));
-
-    PeerCredentials.attach(builder, raft.getClusterToken());
 
     try {
       // Bounded over the whole exchange, body included (issue #8325): on JDK 21-25 the request timeout stops at the

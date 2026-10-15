@@ -51,7 +51,7 @@ class Issue7563ShutdownTargetAndFallbackNoticeTest {
   @BeforeEach
   @AfterEach
   void rearmTheNotice() {
-    PlainHttpFallbackNotice.rearmForTests();
+    PeerRequest.rearmForTests();
   }
 
   // ------------------------------------------------------------------ which peer the name selects
@@ -166,13 +166,13 @@ class Issue7563ShutdownTargetAndFallbackNoticeTest {
   /** One latch for every dial that can fall back, so the second one to notice does not repeat the first. */
   @Test
   void theFallbackNoticeIsSaidOnceForTheWholeFamilyOfDials() {
-    assertThat(PlainHttpFallbackNotice.sayOnce(BootstrapElection.class, "probing its bootstrap-state"))
+    assertThat(PeerRequest.sayOnce(BootstrapElection.class, "probing its bootstrap-state"))
         .as("the first dial to fall back says it")
         .isTrue();
-    assertThat(PlainHttpFallbackNotice.sayOnce(RaftHAPlugin.class, "sending it the shutdown command"))
+    assertThat(PeerRequest.sayOnce(RaftHAPlugin.class, "sending it the shutdown command"))
         .as("a different dial falling back the same way adds nothing an operator can act on")
         .isFalse();
-    assertThat(PlainHttpFallbackNotice.sayOnce(BootstrapElection.class, "probing its bootstrap-state"))
+    assertThat(PeerRequest.sayOnce(BootstrapElection.class, "probing its bootstrap-state"))
         .as("nor does the same one on its next round")
         .isFalse();
   }

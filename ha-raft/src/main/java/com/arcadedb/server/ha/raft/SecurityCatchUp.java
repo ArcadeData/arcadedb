@@ -305,7 +305,7 @@ final class SecurityCatchUp implements AutoCloseable {
   /**
    * Puts the latch back to its at-start value, so a test can drive a trigger from a known state rather than
    * from whatever the server's own startup left behind. Same shape, and the same reason, as
-   * {@code PlainHttpFallbackNotice.rearmForTests()}.
+   * {@code PeerRequest.rearmForTests()}.
    */
   void rearmForTests() {
     requestOwner.set(FREE);

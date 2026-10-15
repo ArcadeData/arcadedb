@@ -151,8 +151,6 @@ final class UnverifiedClosedCopyCheck {
 
     final boolean useSSL = server.getConfiguration().getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL);
     final Map<RaftPeerId, String> urls = election.peerProbeUrls(useSSL);
-    if (useSSL && urls.values().stream().anyMatch(url -> url != null && url.startsWith("http://")))
-      PlainHttpFallbackNotice.sayOnce(UnverifiedClosedCopyCheck.class, "asking about an unverified closed copy");
 
     final String clusterToken = raftHAServer.getClusterToken();
     return check(databaseName, localCopyState(server, stateMachine, databaseName), urls, (peerId, url, name) -> {
@@ -161,7 +159,7 @@ final class UnverifiedClosedCopyCheck {
         final HttpClient client = url.startsWith("https://") ?
             raftHAServer.getHttpsClients().clientFor(server) :
             BootstrapElection.HTTP;
-        return askOverHttp(client, peerId, url, name, clusterToken);
+        return askOverHttp(client, peerId, url, useSSL, name, clusterToken);
       } catch (final IOException e) {
         return CompletableFuture.failedFuture(e);
       }
@@ -388,8 +386,8 @@ final class UnverifiedClosedCopyCheck {
    * Package-private for tests.
    */
   static CompletableFuture<CopyState> askOverHttp(final HttpClient client, final String peerId, final String url,
-      final String databaseName, final String clusterToken) {
-    final HttpRequest request = BootstrapElection.bootstrapStateRequestTo(url, clusterToken, ROUND_TIMEOUT_MS,
+      final boolean sslEnabled, final String databaseName, final String clusterToken) {
+    final HttpRequest request = BootstrapElection.bootstrapStateRequestTo(url, sslEnabled, clusterToken, ROUND_TIMEOUT_MS,
         new JSONObject().put(COPY_OF, databaseName).toString());
     return client.sendAsync(request, HttpResponse.BodyHandlers.ofString()).thenApply(response -> {
       try {
@@ -406,8 +404,8 @@ final class UnverifiedClosedCopyCheck {
    * tests.
    */
   static CompletableFuture<Boolean> askWhetherServed(final HttpClient client, final String expectedPeerId,
-      final String url, final String databaseName, final String clusterToken) {
-    final HttpRequest request = BootstrapElection.bootstrapStateRequestTo(url, clusterToken, ROUND_TIMEOUT_MS,
+      final String url, final boolean sslEnabled, final String databaseName, final String clusterToken) {
+    final HttpRequest request = BootstrapElection.bootstrapStateRequestTo(url, sslEnabled, clusterToken, ROUND_TIMEOUT_MS,
         new JSONObject().put(COPY_OF, databaseName).toString());
     return client.sendAsync(request, HttpResponse.BodyHandlers.ofString()).thenApply(response -> {
       try {

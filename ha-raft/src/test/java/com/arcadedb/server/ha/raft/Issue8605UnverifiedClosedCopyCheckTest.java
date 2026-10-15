@@ -277,11 +277,12 @@ class Issue8605UnverifiedClosedCopyCheckTest {
       final UnverifiedClosedCopyCheck check = new UnverifiedClosedCopyCheck(raft, server);
       check.refusalReuseMs = 0L;
       final UnverifiedClosedCopyCheck.PeerQuestion http = (peer, url, name) -> UnverifiedClosedCopyCheck.askOverHttp(
-          BootstrapElection.HTTP, peer, url, name, null);
+          BootstrapElection.HTTP, peer, url, false, name, "s3cr3t");
 
       final String newer = check.check(DB_NAME, new CopyState(true, 10L), Map.of(PEER_1, urlOf(current)), http);
       assertThat(newer).contains("peer-1").contains("42");
       assertThat(new JSONObject(body.get()).getString(UnverifiedClosedCopyCheck.COPY_OF)).isEqualTo(DB_NAME);
+      // The principal travels with the token that proves it, never without one (issue #9999)
       assertThat(forwardedUser.get()).isEqualTo("root");
 
       assertThat(check.check(DB_NAME, new CopyState(true, 42L), Map.of(PEER_1, urlOf(current)), http)).isNull();
@@ -363,7 +364,7 @@ class Issue8605UnverifiedClosedCopyCheckTest {
       final UnverifiedClosedCopyCheck check = new UnverifiedClosedCopyCheck(raft, server);
       check.refusalReuseMs = 0L;
       final UnverifiedClosedCopyCheck.PeerQuestion http = (peer, url, name) -> UnverifiedClosedCopyCheck.askOverHttp(
-          BootstrapElection.HTTP, peer, url, name, null);
+          BootstrapElection.HTTP, peer, url, false, name, null);
 
       assertThat(check.check(DB_NAME, new CopyState(true, 42L), Map.of(PEER_1, urlOf(stranger)), http))
           .contains("could not all be asked").contains("peer-1").contains("peer-3");
