@@ -28,14 +28,15 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Issues #10084 and #10085: the gRPC service replies with counters and with the record it wrote, so no write it makes may go through
- * the {@code void} {@code save()}, which throws away the answer a before-event listener's veto gives. The only {@code newEdge()} calls
- * left are the unary {@code createRecord} edge arm, which has to answer a RID and so lets the {@code RecordVetoedException} it raises
- * reach the caller as {@code INVALID_ARGUMENT}, and {@code GraphBatch.newEdge()}, the bulk path that raises no record events.
+ * the {@code void} {@code save()} or {@code newEdge()}, which throw away (or raise) the answer a before-event listener's veto gives. The
+ * only {@code newEdge()} calls left are {@code GraphBatch.newEdge()}, the bulk path that raises no record events. The unary
+ * {@code createRecord} has to answer a RID, so it reads the engine's answer and raises a {@code RecordVetoedException} itself, which
+ * reaches the caller as {@code INVALID_ARGUMENT}.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class Issue10084GrpcCountedWritesReportTheVetoTest {
-  private static final Pattern DELIBERATE = Pattern.compile("outV\\.newEdge\\(cls, inEl\\)|batch\\.newEdge\\(");
+  private static final Pattern DELIBERATE = Pattern.compile("batch\\.newEdge\\(");
 
   @Test
   void theServiceWritesOnlyThroughTheReportingForms() throws IOException {

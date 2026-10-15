@@ -65,6 +65,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.function.Consumer;
 import java.util.function.LongConsumer;
 import java.util.logging.Level;
 
@@ -125,6 +126,7 @@ public class GraphEngine {
   }
 
   private static final EdgeWriteListener[] NO_EDGE_WRITE_LISTENERS = new EdgeWriteListener[0];
+  private static final Object[]            NO_PROPERTIES           = new Object[0];
 
   private final    DatabaseInternal    database;
   // COPY-ON-WRITE: READ ON EVERY LIGHTWEIGHT EDGE CREATED, WRITTEN ONLY WHEN A GRAPH ANALYTICAL VIEW STARTS OR STOPS
@@ -308,7 +310,7 @@ public class GraphEngine {
    */
   public MutableEdge newEdge(final VertexInternal fromVertex, final String edgeTypeName, final Identifiable toVertex,
                              final Object... edgeProperties) {
-    final MutableEdge edge = createEdge(fromVertex, edgeTypeName, toVertex, edgeProperties);
+    final MutableEdge edge = createEdge(fromVertex, edgeTypeName, toVertex, null, edgeProperties);
     if (edge == null)
       throw vetoedEdge(edgeTypeName, fromVertex.getIdentity(), toVertex);
     return edge;
@@ -326,7 +328,24 @@ public class GraphEngine {
    */
   public MutableEdge newEdgeReportingVeto(final Vertex fromVertex, final String edgeTypeName, final Identifiable toVertex,
                                           final Object... edgeProperties) {
-    return createEdge(getMostUpdatedVertex(asVertexInternal(fromVertex)), edgeTypeName, toVertex, edgeProperties);
+    return createEdge(getMostUpdatedVertex(asVertexInternal(fromVertex)), edgeTypeName, toVertex, null, edgeProperties);
+  }
+
+  /**
+   * {@link #newEdgeReportingVeto(Vertex, String, Identifiable, Object...)} for a caller that cannot name the edge's properties as
+   * values before the edge exists, because building them needs the edge itself (an embedded document is created on its owner).
+   * {@code initializer} sets them on the new edge before it is saved, so they are part of the CREATE: a listener's veto and a unique
+   * index that refuses one of them both refuse the whole edge, and nothing is left wired the way a create followed by an update
+   * would leave it (issue #10085). A lightweight edge type has no record to initialize, but the initializer still sees the edge so that
+   * naming a property on it is refused as it is by {@code set()}.
+   *
+   * @param initializer receives the new, unsaved edge; {@code null} for none
+   *
+   * @return the created edge, or {@code null} when a before-create listener vetoed it
+   */
+  public MutableEdge newEdgeReportingVeto(final Vertex fromVertex, final String edgeTypeName, final Identifiable toVertex,
+                                          final Consumer<MutableEdge> initializer) {
+    return createEdge(getMostUpdatedVertex(asVertexInternal(fromVertex)), edgeTypeName, toVertex, initializer, NO_PROPERTIES);
   }
 
   private static RecordVetoedException vetoedEdge(final String edgeTypeName, final RID fromVertexRID, final Identifiable toVertex) {
@@ -336,7 +355,7 @@ public class GraphEngine {
 
   /** @return the edge, or {@code null} when a before-create listener vetoed it, in which case nothing was stored or wired */
   private MutableEdge createEdge(final VertexInternal fromVertex, String edgeTypeName, final Identifiable toVertex,
-                                 final Object... edgeProperties) {
+                                 final Consumer<MutableEdge> initializer, final Object... edgeProperties) {
     if (toVertex == null)
       throw new IllegalArgumentException("Destination vertex is null");
 
@@ -377,6 +396,8 @@ public class GraphEngine {
       checkLightEdgeUniqueness(fromVertex, type, toVertex.getIdentity());
 
       final MutableLightEdge lightEdge = new MutableLightEdge(database, type, fromVertexRID, toVertex.getIdentity());
+      if (initializer != null)
+        initializer.accept(lightEdge);
       connectOutgoingEdge(fromVertex, toVertex, lightEdge);
       if (type.isBidirectional())
         connectIncomingEdge(toVertex, fromVertexRID, lightEdge.getIdentity());
@@ -387,6 +408,8 @@ public class GraphEngine {
     final MutableEdge edge = new MutableEdge(database, type, fromVertexRID, toVertex.getIdentity());
     if (edgeProperties != null && edgeProperties.length > 0)
       setProperties(edge, edgeProperties);
+    if (initializer != null)
+      initializer.accept(edge);
 
     // A VETO LEAVES THE EDGE WITHOUT AN IDENTITY: WIRING IT WOULD HAND THE ADJACENCY LIST A null RID (issue #10085)
     if (!(bucketName != null ? edge.saveReportingVeto(bucketName) : edge.saveReportingVeto()))

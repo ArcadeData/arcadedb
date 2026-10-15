@@ -1197,17 +1197,14 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         final var inEl = db.lookupByRID(new RID(inStr), false);
         final Vertex outV = outEl.asVertex(false);
 
-        final MutableEdge e = outV.newEdge(cls, inEl);
-        props.forEach((k, val) -> {
+        // The properties are set on the edge BEFORE it is saved, so they are part of the create: a listener's veto and a unique index
+        // that refuses one of them refuse the whole edge, and nothing is left wired in an externally managed transaction (issue #10085)
+        final MutableEdge e = ((DatabaseInternal) db).getGraphEngine().newEdgeReportingVeto(outV, cls, inEl, edge -> props.forEach((k, val) -> {
           if (!"out".equals(k) && !"in".equals(k))
-            e.set(k, toJavaForProperty(db, e, dt, k, val));
-        });
-        // newEdge() raised a RecordVetoedException if a listener refused the create; this save is an UPDATE of the created edge, so
-        // the refusal it reports is a BeforeRecordUpdateListener's. Under an externally managed transaction the edge stays wired in it
-        // until the client rolls back, as after any other error of the call.
-        if (!e.saveReportingVeto())
-          throw new RecordVetoedException("Cannot set the properties of the new edge " + e.getIdentity() + " of type '" + cls
-              + "': a beforeUpdate listener vetoed the update");
+            edge.set(k, toJavaForProperty(db, edge, dt, k, val));
+        }));
+        if (e == null)
+          throw vetoed(cls);
 
         if (beganHere)
           db.commit();
