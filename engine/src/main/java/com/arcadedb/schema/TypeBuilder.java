@@ -22,6 +22,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.SchemaException;
+import com.arcadedb.exception.TypeAlreadyExistsException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.security.SecurityDatabaseUser;
@@ -86,8 +87,9 @@ public class TypeBuilder<T> {
     // for the statement: asked BEFORE the schema write lock is taken, because the replica has to apply the leader's schema entry
     // before the statement goes on, and that apply needs the same lock (issue #10067). Only a type that is missing altogether:
     // completing a half-built one changes a type that exists, which has no such form.
-    // The lookup is not under the read lock, deliberately: it is a pre-check, and a type created by someone else in between only
-    // makes the leader's statement a no-op (it is rendered IF NOT EXISTS), after which the type is read under the lock below.
+    // The lookup is not under the read lock, deliberately: it is a pre-check on a ConcurrentHashMap (the schema's type map is one,
+    // published or staged), and a type created by someone else in between only makes the leader's statement a no-op (it is
+    // rendered IF NOT EXISTS), after which the type is read under the lock below.
     if (!schema.typeMap().containsKey(typeName)) {
       // IF NOT EXISTS whatever this builder says: a create() that found the type already there is an error for its caller, but here
       // the type was missing when the call began and a racing creation by another client (the same new label, through another
@@ -196,7 +198,7 @@ public class TypeBuilder<T> {
 
   private LocalDocumentType checkExistingIsCompatible(final LocalDocumentType t) {
     if (!ignoreIfExists)
-      throw new SchemaException("Cannot create type '" + typeName + "' because already exists");
+      throw new TypeAlreadyExistsException(typeName);
 
     return checkIsOfTheRequestedKind(t);
   }
