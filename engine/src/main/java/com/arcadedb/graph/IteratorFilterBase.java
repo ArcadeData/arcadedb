@@ -20,6 +20,7 @@ package com.arcadedb.graph;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.Record;
 import com.arcadedb.log.LogManager;
 
 import java.util.logging.Level;
@@ -29,6 +30,8 @@ public abstract class IteratorFilterBase<T> extends ResettableIteratorBase<T> {
   protected       RID          nextEdge;
   protected       RID          nextVertex;
   protected       RID          next;
+  // THE RECORD hasNext() LOOKED UP TO VALIDATE THE VERTEX RID OF next, HANDED OUT BY next() INSTEAD OF A SECOND LOOKUP
+  protected       Record       validatedVertex;
   // NULL WHEN NONE OF THE REQUESTED TYPES IS AN EDGE TYPE. A PRIMITIVE MASK INSTEAD OF A Set<Integer>, SO REJECTING AN
   // ENTRY OF ANOTHER TYPE COSTS NEITHER AN RID DECODE NOR A BOXED LOOKUP (#8417)
   protected final EdgeBucketMask validBuckets;
@@ -103,7 +106,7 @@ public abstract class IteratorFilterBase<T> extends ResettableIteratorBase<T> {
 
           // VALIDATE RID
           try {
-            database.lookupByRID(nextVertex, false);
+            validatedVertex = database.lookupByRID(nextVertex, false);
           } catch (final Exception e) {
             handleCorruption(e, nextEdge, nextVertex);
             continue;

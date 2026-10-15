@@ -115,7 +115,6 @@ import org.apache.ratis.protocol.RaftPeerId;
 
 import java.io.IOException;
 import java.net.ConnectException;
-import java.net.URI;
 import java.nio.ByteBuffer;
 import java.net.http.HttpClient;
 import java.net.http.HttpConnectTimeoutException;
@@ -4029,11 +4028,24 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     throw new ClusterCapabilityNotReadyException(message.toString(), PeerCapabilities.SCHEMA_FILE_RENAMES, missing);
   }
 
+  /**
+   * The refusal names the leader by its HTTP address, unless that address is this node's own: what a cluster whose peers
+   * share a host and declare no HTTP port resolves for every peer (issue #6191). Named that way, the refusal would send
+   * the client back to the follower that just refused it, so it names the leader by its server name instead, as the
+   * forwarding refusals do in the same state (issue #10060). No address at all still names nobody: the refusal stays the
+   * retryable one an election in flight gets.
+   */
   private ServerIsNotTheLeaderException schemaChangesNeedTheLeader() {
-    final String leaderAddr = raftHAServer != null ? raftHAServer.getLeaderHttpAddress() : null;
+    final RaftHAServer raft = raftHAServer;
+    String leader = null;
+    if (raft != null) {
+      leader = raft.getLeaderHttpAddress();
+      if (leader != null && raft.isOwnHttpAddress(leader))
+        leader = raft.getLeaderName();
+    }
     // Holds on this node until leadership moves: a local retry would only repeat it (issue #9995)
     return new ServerIsNotTheLeaderException("Changes to the schema must be executed on the leader server",
-        leaderAddr != null ? leaderAddr : "", true);
+        leader != null ? leader : "", true);
   }
 
   /**
@@ -4891,7 +4903,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     // Counted here, past every refusal above, so a forward that never leaves this node takes no ordinal.
     final int forwardOrdinal = ForwardedRequestIdContext.nextForwardOrdinal();
     final String clusterToken = raftHAServer.getClusterToken();
-    final boolean ordinalTrusted = clusterToken != null && !clusterToken.isBlank();
+    final boolean ordinalTrusted = PeerRequest.hasToken(clusterToken);
     final boolean relaysRequestId = forwardOrdinal > 0 && !postsToItself && (forwardOrdinal == 1 || ordinalTrusted);
 
     // This forward is the client's whole request, and relays its key (issue #8347): it posts the client's own body, not
@@ -4958,14 +4970,33 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     }
     final long deadlineMs = Math.max(resolvedTimeoutMs, LeaderDial.MIN_FORWARD_TIMEOUT_MS);
 
-    final HttpRequest.Builder builder = HttpRequest.newBuilder()
-        .uri(URI.create(leaderUrl))
+    String proxiedUser = proxied.getCurrentUserName();
+    if (proxiedUser == null || proxiedUser.isBlank()) {
+      // No per-thread security context: this is an in-process, embedded call (e.g. an embedded
+      // scripting engine or an application background/worker thread) that bypassed the HTTP layer
+      // where the request user is normally bound to the thread-local DatabaseContext. Such callers
+      // are fully trusted: locally a null security context already grants full access (permission
+      // checks are skipped), so we represent the operation to the leader as the root user. The
+      // forwarding itself remains authenticated server-to-server via the shared cluster token, so
+      // this is not a remote privilege-escalation vector. Mirrors BootstrapElection, which also
+      // forwards server-internal operations as "root".
+      proxiedUser = RaftHAServer.FORWARDED_ROOT_USER;
+      if (forwardAsRootWarned.compareAndSet(false, true))
+        LogManager.instance().log(this, Level.WARNING,
+            "No authenticated user in the security context while forwarding a write to the leader (db=%s): "
+                + "this is expected for embedded/in-process callers and the command is forwarded as 'root'. "
+                + "This notice is logged only once.", getName());
+    }
+    // The cluster token and the user it is forwarded as, together or not at all (issue #9999); and the one notice a plain
+    // dial on an SSL cluster owes the operator, since this forward carries every client write that lands on a follower.
+    final boolean sslEnabled = server.getConfiguration().getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL);
+    final HttpRequest.Builder builder = PeerRequest.newRequest(leaderUrl, sslEnabled, RaftReplicatedDatabase.class,
+            "forwarding a write to the leader", clusterToken, proxiedUser)
         .timeout(Duration.ofMillis(deadlineMs))
         .header("Content-Type", "application/json")
         .POST(HttpRequest.BodyPublishers.ofString(requestBody));
 
     if (ordinalTrusted) {
-      builder.header("X-ArcadeDB-Cluster-Token", clusterToken);
       // One hop, and the receiving node knows it: if this address does not identify the leader, the node it
       // does reach refuses the command instead of resolving the same wrong address and forwarding it again
       // (issue #6191). Sent only with the token, because that is the only form in which a receiving node
@@ -4981,25 +5012,6 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       if (configuredCommandTimeout > 0)
         builder.header(LeaderForwardContext.FORWARDED_COMMAND_TIMEOUT_HEADER, Long.toString(configuredCommandTimeout));
     }
-
-    String proxiedUser = proxied.getCurrentUserName();
-    if (proxiedUser == null || proxiedUser.isBlank()) {
-      // No per-thread security context: this is an in-process, embedded call (e.g. an embedded
-      // scripting engine or an application background/worker thread) that bypassed the HTTP layer
-      // where the request user is normally bound to the thread-local DatabaseContext. Such callers
-      // are fully trusted: locally a null security context already grants full access (permission
-      // checks are skipped), so we represent the operation to the leader as the root user. The
-      // forwarding itself remains authenticated server-to-server via the shared cluster token, so
-      // this is not a remote privilege-escalation vector. Mirrors BootstrapElection, which also
-      // forwards server-internal operations as "root".
-      proxiedUser = "root";
-      if (forwardAsRootWarned.compareAndSet(false, true))
-        LogManager.instance().log(this, Level.WARNING,
-            "No authenticated user in the security context while forwarding a write to the leader (db=%s): "
-                + "this is expected for embedded/in-process callers and the command is forwarded as 'root'. "
-                + "This notice is logged only once.", getName());
-    }
-    builder.header("X-ArcadeDB-Forwarded-User", proxiedUser);
 
     // The client's request id, so the leader executes this write inside its own idempotency cache (issue #8323). The
     // HTTP handler that served the request on this node reserves the id too, but it caches only what the leader
@@ -5050,7 +5062,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         builder.header(AbstractServerHttpHandler.QUERY_TAG_HEADER, runningQuery.getTag());
       runningQuery.setForwardedTo(raft.getLeaderName());
       final String leaderServerUrl = leaderUrl.substring(0, leaderUrl.indexOf("/api/v1/command/")) + "/api/v1/server";
-      terminationRelay = runningQuery.onTerminate(() -> relayTermination(dialClient, leaderServerUrl, clusterToken, runningQuery));
+      terminationRelay = runningQuery.onTerminate(() -> relayTermination(dialClient, leaderServerUrl, sslEnabled, clusterToken,
+          runningQuery));
     }
 
     try {
@@ -5141,8 +5154,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * answer is what reports the outcome - the leader answers the forward with the termination once its statement has
    * stopped. A relay that fails is logged; the statement then runs to its end on the leader, as it did before.
    */
-  private void relayTermination(final HttpClient client, final String leaderServerUrl, final String clusterToken,
-      final RunningQuery runningQuery) {
+  private void relayTermination(final HttpClient client, final String leaderServerUrl, final boolean sslEnabled,
+      final String clusterToken, final RunningQuery runningQuery) {
     if (runningQuery.getUser() == null) {
       // Nobody to terminate it as: fail closed rather than relay as root. Every statement a client sends has a user
       LogManager.instance().log(this, Level.WARNING,
@@ -5151,12 +5164,12 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     }
     try {
       final String body = new JSONObject().put("command", "terminate query " + runningQuery.getId()).put("wait", 0).toString();
-      final HttpRequest request = HttpRequest.newBuilder().uri(URI.create(leaderServerUrl)).timeout(Duration.ofSeconds(10))
+      // The statement's own user: who may stop it there as here. The authority of whoever terminated it was checked on
+      // this node, against the same entry
+      final HttpRequest request = PeerRequest.newRequest(leaderServerUrl, sslEnabled, RaftReplicatedDatabase.class,
+              "relaying a query termination to the leader", clusterToken, runningQuery.getUser())
+          .timeout(Duration.ofSeconds(10))
           .header("Content-Type", "application/json")//
-          .header("X-ArcadeDB-Cluster-Token", clusterToken)//
-          // The statement's own user: who may stop it there as here. The authority of whoever terminated it was
-          // checked on this node, against the same entry
-          .header("X-ArcadeDB-Forwarded-User", runningQuery.getUser())//
           .POST(HttpRequest.BodyPublishers.ofString(body)).build();
       client.sendAsync(request, HttpResponse.BodyHandlers.discarding()).whenComplete((response, error) -> {
         if (error != null || response.statusCode() != 200)

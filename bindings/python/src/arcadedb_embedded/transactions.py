@@ -13,8 +13,9 @@ class TransactionContext:
         self.started = False
 
     def __enter__(self):
-        # A transaction that was already open is not ours to roll back if begin() refuses to nest
-        was_active = self.database.is_transaction_active()
+        # The levels the caller already holds are not ours to roll back: begin() inside a caller's transaction pushes a
+        # nested level, so ownership is decided by the stack before the call, not by whether begin() returned (#9970)
+        mark = self.database._transaction_stack_mark()
         try:
             # begin() inside the try: an interrupt landing right after it must still reach the rollback,
             # because an exception out of __enter__ means __exit__ never runs
@@ -24,8 +25,7 @@ class TransactionContext:
         except BaseException:
             self.started = False
             try:
-                if not was_active and self.database.is_transaction_active():
-                    self.database.rollback()
+                self.database._end_transactions_opened_since(mark)
             except Exception:  # nosec B110 - best-effort rollback
                 pass
             raise
