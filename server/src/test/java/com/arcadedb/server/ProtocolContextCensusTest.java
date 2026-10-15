@@ -84,7 +84,9 @@ class ProtocolContextCensusTest {
         taggers.put(module, countTagCalls(REACTOR_ROOT.resolve(module).resolve("src/main/java")));
 
     assertThat(taggers).as("a module that serves clients on its own threads without tagging them inherits the "
-        + "ProtocolContext.INTERNAL exemption of the HA safety gate, and its traffic is reported as the engine's").allSatisfy(
+        + "ProtocolContext.INTERNAL exemption of the HA safety gate, and its traffic is reported as the engine's. To resolve: "
+        + "call ProtocolContext.set(<protocol>) where the module's request thread starts and clear or restore it in a finally; "
+        + "if the module serves no client of its own, add it to NOT_A_LISTENER with the reason").allSatisfy(
         (module, calls) -> assertThat(calls).as("%s tags its threads", module).isPositive());
 
     // The server itself: the HTTP handlers and the WebSocket insert sessions
