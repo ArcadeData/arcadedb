@@ -83,6 +83,22 @@ class Issue10096TypeRenameCarriesDependantsTest extends TestHelper {
   }
 
   @Test
+  void aViewWithAWhereAndAGroupByKeepsTheRestOfItsQueryWhenItFollowsTheRename() {
+    database.getSchema().buildMaterializedView().withName("MV")
+        .withQuery("SELECT name, count(*) AS c FROM Src WHERE name <> 'z' GROUP BY name").create();
+    assertThat(count("MV")).isEqualTo(2);
+
+    database.command("sql", "ALTER TYPE Src NAME Renamed");
+
+    final MaterializedView view = database.getSchema().getMaterializedView("MV");
+    assertThat(view.getQuery()).isEqualTo("SELECT name, count(*) AS c FROM Renamed WHERE name <> 'z' GROUP BY name");
+    database.transaction(() -> database.newDocument("Renamed").set("name", "a").save());
+    view.refresh();
+    assertThat(count("MV")).as("two groups, 'a' counted twice now").isEqualTo(2);
+    assertNoSchemaObjectNamesAnUnresolvableType();
+  }
+
+  @Test
   void anIncrementalViewKeepsFollowingItsRenamedSource() {
     database.getSchema().buildMaterializedView().withName("MV").withQuery("SELECT FROM Src")
         .withRefreshMode(MaterializedViewRefreshMode.INCREMENTAL).create();
@@ -171,6 +187,8 @@ class Issue10096TypeRenameCarriesDependantsTest extends TestHelper {
 
     assertThat(database.getSchema().existsType("Src")).isTrue();
     assertThat(database.getSchema().existsType("Renamed")).isFalse();
+    // NO FILE MOVED: THE BUCKETS STILL CARRY THE NAME OF THE TYPE
+    assertThat(database.getSchema().getType("Src").getBuckets(false)).isNotEmpty().allMatch(b -> b.getName().startsWith("Src_"));
     assertThat(database.getSchema().getMaterializedView("MV").getSourceTypeNames()).containsExactly("Src");
     database.getSchema().getMaterializedView("MV").refresh();
     assertNoSchemaObjectNamesAnUnresolvableType();

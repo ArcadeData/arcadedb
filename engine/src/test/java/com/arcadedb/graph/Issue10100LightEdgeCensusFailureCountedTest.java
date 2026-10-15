@@ -22,6 +22,7 @@ import com.arcadedb.Profiler;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.RID;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.log.Logger;
@@ -29,8 +30,14 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -143,6 +150,39 @@ class Issue10100LightEdgeCensusFailureCountedTest extends TestHelper {
     assertThat(fallbacks(database)).isEqualTo(before + lists);
     assertThat(captured.censusRecords(Level.WARNING)).hasSize(MAX_REPORTED_LISTS);
     assertThat(captured.censusRecords(Level.FINE)).hasSize(lists - MAX_REPORTED_LISTS);
+  }
+
+  @Test
+  void theBudgetOfReportedListsIsExactWhenManyThreadsFail() throws Exception {
+    final LocalDatabase local = (LocalDatabase) ((DatabaseInternal) database).getEmbedded();
+    final long before = fallbacks(database);
+    final int threads = 8;
+    final int listsPerThread = 50;
+    final List<RID> owners = new ArrayList<>();
+    for (int i = 0; i < threads * listsPerThread; i++)
+      owners.add(missingOwner(database, 5_000 + i));
+
+    final AtomicInteger reported = new AtomicInteger();
+    final ExecutorService pool = Executors.newFixedThreadPool(threads);
+    try {
+      final List<Future<?>> futures = new ArrayList<>();
+      for (int t = 0; t < threads; t++) {
+        final int first = t * listsPerThread;
+        futures.add(pool.submit(() -> {
+          for (int i = first; i < first + listsPerThread; i++)
+            if (local.countLightEdgeCensusFallback(owners.get(i), Vertex.DIRECTION.OUT))
+              reported.incrementAndGet();
+        }));
+      }
+      for (final Future<?> future : futures)
+        future.get(60, TimeUnit.SECONDS);
+    } finally {
+      pool.shutdownNow();
+    }
+
+    assertThat(reported.get()).as("a check-then-add would overshoot the budget when threads race on the last slots")
+        .isEqualTo(MAX_REPORTED_LISTS);
+    assertThat(fallbacks(database)).isEqualTo(before + threads * listsPerThread);
   }
 
   /** Two questions: the census declines the first and builds on the second, and the build fails on a missing owner. */
