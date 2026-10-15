@@ -19,6 +19,7 @@
 package com.arcadedb.graph;
 
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.RID;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.LongObjectHashMap;
@@ -27,7 +28,6 @@ import com.arcadedb.utility.RidIntHashMap;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
 
 /**
@@ -64,7 +64,6 @@ import java.util.logging.Level;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 final class LightEdgeCensus {
-  private static final AtomicBoolean FAILURE_WARNED = new AtomicBoolean();
   private final DatabaseInternal                 database;
   private final RID                              owner;
   private final Vertex.DIRECTION                 direction;
@@ -236,12 +235,18 @@ final class LightEdgeCensus {
     } catch (final RuntimeException e) {
       // NOT ONLY A RECORD GONE: ANY FAILURE TO READ THE LIST. THE CENSUS IS GIVEN UP ON, AND EACH EDGE WALKS ITS LIST ALONE,
       // WHERE A FAILURE THAT IS NOT TRANSIENT SURFACES AS IT DID BEFORE THE CENSUS EXISTED
-      // THE FIRST ONE OF THE PROCESS AT WARNING, THE OTHERS AT FINE: A LIST THAT CANNOT BE READ IS WORTH SEEING, BUT NOT
-      // ONCE PER VERTEX OF EVERY QUERY THAT MEETS IT
-      LogManager.instance().log(this, FAILURE_WARNED.compareAndSet(false, true) ? Level.WARNING : Level.FINE,
+      // COUNTED EVERY TIME, AND REPORTED AT WARNING THE FIRST TIME FOR EACH LIST OF THE DATABASE (A BOUNDED NUMBER OF THEM):
+      // A LIST THAT CANNOT BE READ IS WORTH SEEING, BUT NOT ONCE PER VERTEX OF EVERY QUERY THAT MEETS IT, AND A SECOND LIST,
+      // OR ANOTHER DATABASE, MUST NOT INHERIT THE SILENCE OF THE FIRST (#10100)
+      LogManager.instance().log(this, reportFailure() ? Level.WARNING : Level.FINE,
           "Cannot count the lightweight edges of %s (%s), each edge walks its list alone: %s", owner, direction, e.toString());
       return null;
     }
+  }
+
+  /** @return true when the failure is the first of this list in its database, which the caller reports at WARNING */
+  private boolean reportFailure() {
+    return !(database.getEmbedded() instanceof final LocalDatabase local) || local.countLightEdgeCensusFallback(owner, direction);
   }
 
   /** What the walk carries from one entry to the next. */

@@ -32,6 +32,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.engine.timeseries.DownsamplingTier;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
+import com.arcadedb.engine.timeseries.TimeSeriesStorableRows;
 import com.arcadedb.engine.timeseries.codec.TimeSeriesCodec;
 import com.arcadedb.index.CompressedRID2RIDIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract.NULL_STRATEGY;
@@ -68,6 +69,7 @@ import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -202,7 +204,7 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
           case "d" -> loadDocument(database, context, jsonLine.getJSONObject("c"));
           case "v" -> loadVertex(database, context, jsonLine.getJSONObject("c"));
           case "e" -> loadEdge(database, context, jsonLine.getJSONObject("c"));
-          case "ts" -> loadTimeSeriesSamples(database, context, jsonLine.getJSONObject("c"));
+          case "ts" -> loadTimeSeriesSamples(database, context, jsonLine.getJSONObject("c"), skipOnRowError);
           }
         } catch (final Exception e) {
           // Every per-record failure (document/vertex/edge, and a broken schema entry too) funnels through here,
@@ -696,9 +698,18 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
    * emitted - the engine layout, so an export written by an earlier build is byte-identical under both
    * readings for every type whose TIMESTAMP column is first, and no earlier build could export a type whose
    * TIMESTAMP column is not.
+   * <p>
+   * <b>The values are converted, not trusted</b> (issue #10107). The exporter writes the typed values of its own database, but
+   * a hand-built or third-party file can carry text for an INTEGER, BOOLEAN or DATE tag, and the engine's row source casts
+   * whatever it is given in the middle of the append: the whole chunk was lost and the import aborted without naming the
+   * sample. Every value goes through {@link TimeSeriesStorableRows}, the conversion the line protocol, gRPC and the Prometheus
+   * remote write share: text a column can store is stored as the value it names, and a sample carrying one it cannot is
+   * refused BEFORE anything of its chunk reaches the engine, named as {@code <type>.<column> (tag|field): <reason>}, under the
+   * importer's own row-error policy - the import fails by default, and with {@code -onRowError skip} that sample alone is
+   * dropped and counted in {@code errors} while the others of its chunk are kept.
    */
   private void loadTimeSeriesSamples(final DatabaseInternal database, final ImporterContext context,
-      final JSONObject chunk) throws IOException {
+      final JSONObject chunk, final boolean skipOnRowError) throws IOException {
     final String typeName = chunk.getString("t");
     if (!(database.getSchema().getType(typeName) instanceof LocalTimeSeriesType tsType))
       throw new ImportException("Type '" + typeName + "' is not a TIMESERIES type, cannot import its samples");
@@ -724,44 +735,50 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
     }
 
     final long[] timestamps = new long[rows];
-    // appendBatch indexes the value columns, skipping the timestamp - see ObjectColumnsRowSource.
-    final Object[][] values = new Object[columns.size() - 1][rows];
-
     for (int r = 0; r < rows; r++) {
-      final JSONArray sample = samples.getJSONArray(r);
-      // Position 0 is the timestamp and the rest follow it in non-timestamp schema order, which is exactly the
-      // order appendBatch wants its value columns in - see the engine-row note on this method.
-      timestamps[r] = ((Number) sample.get(0)).longValue();
-      int valueIdx = 0;
-      for (final ColumnDefinition column : columns) {
-        if (column.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
-          continue;
-        values[valueIdx][r] = decodeSampleValue(sample.get(valueIdx + 1), column.getDataType());
-        valueIdx++;
-      }
+      // Position 0 is the timestamp - see the engine-row note on this method
+      if (!(samples.getJSONArray(r).get(0) instanceof Number timestamp))
+        throw new ImportException("TIMESERIES sample " + r + " of type '" + typeName + "' has a timestamp that is not a number");
+      timestamps[r] = timestamp.longValue();
     }
 
-    engine.appendBatch(timestamps, values);
-    context.createdTimeSeriesSamples.addAndGet(rows);
-    timeSeriesSamplesSinceCommit += rows;
+    // The values follow the timestamp in non-timestamp schema order, which is the order of the converted grid's columns: the
+    // value column `valueColumn` is at position `valueColumn + 1` of the sample
+    final Set<String> unreadable = new LinkedHashSet<>();
+    final TimeSeriesStorableRows converted = TimeSeriesStorableRows.convert(database, typeName, columns, timestamps, rows, false,
+        (row, valueColumn, column) -> decodeSampleValue(samples.getJSONArray(row).get(valueColumn + 1), column.getDataType()),
+        unreadable);
+
+    if (converted.refused() > 0) {
+      if (!skipOnRowError)
+        throw new ImportException("TIMESERIES type '" + typeName + "': " + converted.refused() + " of " + rows + " sample(s) hold "
+            + "a value their column cannot store - " + String.join("; ", unreadable) + ". Nothing of this chunk was imported; fix "
+            + "the source, or import with -onRowError skip to drop those samples and keep the others");
+
+      context.errors.addAndGet(converted.refused());
+      LogManager.instance().log(this, Level.SEVERE,
+          "Skipped %d TIMESERIES sample(s) of type '%s' holding a value their column cannot store: %s", converted.refused(),
+          typeName, String.join("; ", unreadable));
+    }
+
+    converted.appendTo(engine);
+    context.createdTimeSeriesSamples.addAndGet(converted.size());
+    timeSeriesSamplesSinceCommit += converted.size();
   }
 
   /**
    * Reverses the exporter's {@link NonFiniteNumbers#encode}: the non-finite doubles travel as string markers
    * because {@code JSONArray.put(Number)} would otherwise rewrite them to 0, turning "no measurement" into a
-   * measurement of zero. Every other value passes through - {@code ObjectColumnsRowSource} accepts any
-   * {@link Number} for a numeric column, so JSON's widening does no harm.
+   * measurement of zero. Every other value passes through for {@link TimeSeriesStorableRows} to convert: a
+   * {@link Number} that its column can hold (JSON's widening does no harm), and text a hand-written or foreign-tool
+   * file quoted for a column of another type - a plain number, a boolean, a date - which the column reads as it names
+   * it, or refuses by name when it cannot (issue #10107).
    */
   private static Object decodeSampleValue(final Object value, final Type dataType) {
     if (value instanceof String text && (dataType == Type.DOUBLE || dataType == Type.FLOAT)) {
       final Double marker = NonFiniteNumbers.decode(text);
       if (marker != null)
         return marker;
-      // Not reachable from an export this build wrote - the exporter only ever emits the three markers. Kept as
-      // a tolerant parse for a hand-written or foreign-tool file that quoted a plain number, which is otherwise
-      // a perfectly well-formed sample; a genuinely unparseable token still fails loudly, through the same
-      // per-line row-error policy as anything else on the line.
-      return Double.parseDouble(text);
     }
     return value;
   }

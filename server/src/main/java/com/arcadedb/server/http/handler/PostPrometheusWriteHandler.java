@@ -278,7 +278,7 @@ public class PostPrometheusWriteHandler extends AbstractBinaryHttpHandler {
         if (rows.size() == 0)
           continue;
 
-        engine.appendBatch(rows.timestamps(), rows.columnValues());
+        rows.appendTo(engine);
       }
       if (ownTransaction)
         database.commit();

@@ -81,6 +81,8 @@ class PrometheusEngineMetricsIT extends BaseGraphServerTest {
     assertThat(response.body()).contains("# TYPE arcadedb_engine_databases gauge");
     // #9235: the follower-side signal of #8649, a count(*) that keeps being a full scan
     assertThat(response.body()).contains("# TYPE arcadedb_engine_bucket_recount_publishes_refused_total counter");
+    // #10100: a lightweight-edge list the census could not count, whose edges each walk it alone
+    assertThat(response.body()).contains("# TYPE arcadedb_engine_graph_light_edge_census_fallbacks_total counter");
     // New RED timer series present (HTTP request timer is always-on):
     assertThat(response.body()).contains("arcadedb_http_requests");
   }

@@ -229,6 +229,11 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   public final       AtomicLong                                indexCompactions          = new AtomicLong();
   // #8649: count() recomputes not cached because a replicated apply wrote the bucket without its lock during the scan
   public final       AtomicLong                                recountPublishesRefused   = new AtomicLong();
+  /** The most lists whose census failure is reported at WARNING by one database; the counter is not bounded (#10100). */
+  private static final int                                     MAX_REPORTED_CENSUS_FAILURES = 64;
+  // #10100: lightweight-edge census builds that failed, so that every edge of the list walks it alone
+  private final      AtomicLong                                lightEdgeCensusFallbacks  = new AtomicLong();
+  private final      Set<String>                               lightEdgeCensusReported   = ConcurrentHashMap.newKeySet();
   protected final    String                                    name;
   protected final    ComponentFile.MODE                        mode;
   protected final    ContextConfiguration                      configuration;
@@ -665,7 +670,23 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     final Map<String, Object> map = stats.toMap();
     map.put("indexCompactions", indexCompactions.get());
     map.put("recountPublishesRefused", recountPublishesRefused.get());
+    map.put("lightEdgeCensusFallbacks", lightEdgeCensusFallbacks.get());
     return map;
+  }
+
+  /**
+   * Counts a lightweight-edge census that could not count the edge list of {@code owner} in {@code direction}: from then
+   * on every lightweight edge of that list resolves its occurrence by walking the list itself, the per-vertex quadratic
+   * cost the census exists to remove (#10100). Every failure is counted ({@code lightEdgeCensusFallbacks} in
+   * {@link #getStats()}); what is bounded is how many are worth a WARNING.
+   *
+   * @return true when this is the first failure reported for this list and the database is still within its budget of
+   *         distinct lists, so the caller logs it at WARNING; false for a repeat or past the budget, which are not worth
+   *         a line each (a query meets the same list once per vertex) and are counted all the same
+   */
+  public boolean countLightEdgeCensusFallback(final RID owner, final Vertex.DIRECTION direction) {
+    lightEdgeCensusFallbacks.incrementAndGet();
+    return lightEdgeCensusReported.size() < MAX_REPORTED_CENSUS_FAILURES && lightEdgeCensusReported.add(owner + "|" + direction);
   }
 
   @Override

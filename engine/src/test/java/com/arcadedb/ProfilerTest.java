@@ -98,6 +98,18 @@ class ProfilerTest {
     assertThat(out.toString()).contains("recountPublishesRefused=");
   }
 
+  /** #10100: the lightweight-edge census fallbacks leave the process like every other monotonic counter. */
+  @Test
+  void lightEdgeCensusFallbacksIsExposed() {
+    final JSONObject json = Profiler.INSTANCE.toJSON();
+    assertThat(json.has("lightEdgeCensusFallbacks")).isTrue();
+    assertThat(json.getJSONObject("lightEdgeCensusFallbacks").getLong("count", -1L)).isGreaterThanOrEqualTo(0L);
+
+    final ByteArrayOutputStream out = new ByteArrayOutputStream();
+    Profiler.INSTANCE.dumpMetrics(new PrintStream(out));
+    assertThat(out.toString()).contains("lightEdgeCensusFallbacks=");
+  }
+
   /** #9518: the query admission gate's queue and counters leave the process with the other query metrics. */
   @Test
   void queryAdmissionGateIsExposed() {

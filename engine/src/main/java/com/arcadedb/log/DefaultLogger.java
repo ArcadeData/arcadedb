@@ -404,11 +404,17 @@ public class DefaultLogger implements Logger {
   }
 
   /**
-   * Fixed-arity form, kept so the common no-argument call allocates no {@code Object[]}. Both overloads are the SAME
-   * operation and differ only in how the arguments arrive (issue #9967): which one a call site reaches is decided by its
-   * argument count alone, so every behaviour - the level gate ahead of any formatting, the shutdown filter, the flush
-   * after a SEVERE record, what a bad format string does - lives in {@link #isLoggable(Object, Level)},
+   * Fixed-arity form, reached by {@link com.arcadedb.log.LogManager}'s overloads of 1 to 7 arguments. Both overloads are
+   * the SAME operation and differ only in how the arguments arrive (issue #9967): which one a call site reaches is decided
+   * by its argument count alone, so every behaviour - the level gate ahead of any formatting, the shutdown filter, the
+   * flush after a SEVERE record, what a bad format string does - lives in {@link #isLoggable(Object, Level)},
    * {@link #formatFailed(String, Exception)} and {@link #publish(Object, Level, String, Throwable)}, which both call.
+   * <p>
+   * So does the decision that the call HAS arguments (issue #10106), and it is the caller's, never the values': a call
+   * without arguments reaches the varargs form with an empty array, so this form is only ever reached with {@code arg1}
+   * supplied, and a {@code null} there is an argument that renders as {@code null}. Deciding it from "is any slot
+   * non-null" made a lone null argument publish the format string itself, where the same message through the varargs form
+   * published {@code value=null}.
    */
   @Override
   public void log(final Object requester, final Level level, final String message, final Throwable exception,
@@ -422,23 +428,21 @@ public class DefaultLogger implements Logger {
       return;
 
     String msg = withContext(context, message);
-    if (arg1 != null || arg2 != null || arg3 != null || arg4 != null || arg5 != null || arg6 != null || arg7 != null
-        || arg8 != null || arg9 != null || arg10 != null || arg11 != null || arg12 != null || arg13 != null
-        || arg14 != null || arg15 != null || arg16 != null || arg17 != null) {
-      try {
-        msg = msg.formatted(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12, arg13, arg14,
-            arg15, arg16, arg17);
-      } catch (final Exception e) {
-        msg = formatFailed(msg, e);
-      }
+    try {
+      msg = msg.formatted(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12, arg13, arg14, arg15,
+          arg16, arg17);
+    } catch (final Exception e) {
+      msg = formatFailed(msg, e);
     }
 
     publish(requester, level, msg, exception);
   }
 
   /**
-   * Varargs form, reached by a call with more arguments than {@link com.arcadedb.log.LogManager}'s fixed-arity overloads
-   * take. The same operation as the fixed-arity form: see there.
+   * Varargs form, reached by a call with no argument at all (an empty array) or with more arguments than
+   * {@link com.arcadedb.log.LogManager}'s fixed-arity overloads take. The same operation as the fixed-arity form: see
+   * there. An empty or {@code null} array is a message without arguments and is published as written; any element, null or
+   * not, makes it a format string.
    */
   @Override
   public void log(final Object requester, final Level level, final String message, final Throwable exception,
