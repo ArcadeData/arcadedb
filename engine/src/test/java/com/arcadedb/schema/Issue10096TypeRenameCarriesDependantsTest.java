@@ -19,11 +19,17 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.Index;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
+
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -239,6 +245,79 @@ class Issue10096TypeRenameCarriesDependantsTest extends TestHelper {
     database.getSchema().dropTrigger("TrgSrc");
     database.transaction(() -> database.newDocument("Renamed").set("name", "z").save());
     assertThat(count("Audit")).as("a dropped trigger does not fire").isEqualTo(2);
+  }
+
+  /**
+   * The check of the rename runs before any lock, so a view can be registered between it and the carry. The window is made
+   * deterministic by holding the database write lock on a helper thread: the rename passes its check, moves the files and parks
+   * on the lock that reserves the new name, and only then does the helper - still holding the lock - register a view on the type.
+   * The carry, which runs under that lock too, takes the late view along.
+   */
+  @Test
+  void aViewRegisteredAfterTheCheckOfTheRenameIsCarriedToo() throws Exception {
+    final LocalDatabase embedded = (LocalDatabase) ((DatabaseInternal) database).getEmbedded();
+    final CountDownLatch lockHeld = new CountDownLatch(1);
+    final CountDownLatch renameParked = new CountDownLatch(1);
+    final AtomicReference<Throwable> holderFailure = new AtomicReference<>();
+    final AtomicReference<Throwable> renameFailure = new AtomicReference<>();
+
+    final Thread holder = new Thread(() -> {
+      try {
+        embedded.executeInWriteLock(() -> {
+          lockHeld.countDown();
+          assertThat(renameParked.await(30, TimeUnit.SECONDS)).isTrue();
+          database.getSchema().buildMaterializedView().withName("LateView").withQuery("SELECT FROM Src").create();
+          return null;
+        });
+      } catch (final Throwable t) {
+        holderFailure.set(t);
+      }
+    }, "Issue10096-lock-holder");
+
+    final Thread renamer = new Thread(() -> {
+      try {
+        database.getSchema().getType("Src").rename("Renamed");
+      } catch (final Throwable t) {
+        renameFailure.set(t);
+      }
+    }, "Issue10096-renamer");
+
+    holder.start();
+    try {
+      assertThat(lockHeld.await(30, TimeUnit.SECONDS)).as("the helper thread took the database write lock").isTrue();
+      renamer.start();
+      awaitParkedOnTheWriteLock(renamer);
+    } finally {
+      renameParked.countDown();
+      holder.join(60_000);
+      renamer.join(60_000);
+    }
+
+    assertThat(holder.isAlive()).isFalse();
+    assertThat(renamer.isAlive()).isFalse();
+    assertThat(holderFailure.get()).as("the view registered under the lock").isNull();
+    assertThat(renameFailure.get()).as("the rename").isNull();
+
+    final MaterializedView late = database.getSchema().getMaterializedView("LateView");
+    assertThat(late.getSourceTypeNames()).containsExactly("Renamed");
+    assertThat(late.getQuery()).contains("Renamed").doesNotContain("Src");
+    assertNoSchemaObjectNamesAnUnresolvableType();
+    late.refresh();
+    assertThat(count("LateView")).isEqualTo(2);
+  }
+
+  /** The renamer is waiting inside the write lock acquisition, so the check of the rename is behind it. */
+  private static void awaitParkedOnTheWriteLock(final Thread thread) throws InterruptedException {
+    for (int i = 0; i < 3_000; i++) {
+      final Thread.State state = thread.getState();
+      if (state == Thread.State.WAITING || state == Thread.State.TIMED_WAITING)
+        for (final StackTraceElement frame : thread.getStackTrace())
+          if (frame.getClassName().equals(LocalDatabase.class.getName()) && frame.getMethodName().equals("executeInWriteLock"))
+            return;
+      assertThat(thread.isAlive()).as("the renamer ended before it reached the write lock").isTrue();
+      Thread.sleep(10);
+    }
+    throw new AssertionError("The renamer never parked on the database write lock");
   }
 
   @Test

@@ -126,6 +126,11 @@ public class MaterializedViewImpl implements MaterializedView {
    * A source type of this view was renamed (issue #10096): the name that spells it, here and in the defining query, becomes the
    * new one. Done in place, not by building another view, because the incremental listener, the periodic scheduler entry and the
    * refresh state all hold THIS instance. The names are what the schema persists, so the caller saves the schema after.
+   * <p>
+   * The names and the query are two writes, not one: the caller holds the database write lock, so no registration or schema save
+   * sees them apart, and a refresh that races the rename reads the old query against a type that was just renamed, fails once
+   * and succeeds on the next refresh. One immutable holder would close that window and cost every reader an indirection for a
+   * rename that happens once in the life of a database.
    *
    * @param newQuery the defining query naming the type by its new name
    */
