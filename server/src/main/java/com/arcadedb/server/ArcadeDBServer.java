@@ -1503,7 +1503,7 @@ public class ArcadeDBServer {
 
       serverDatabase = databases.get(databaseName);
       if (serverDatabase != null)
-        throw new IllegalArgumentException("Database '" + databaseName + "' already exists");
+        throw new DatabaseAlreadyExistsException("Database '" + databaseName + "' already exists");
 
       final String databasePath =
           configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY) + File.separator + databaseName;
@@ -1521,7 +1521,7 @@ public class ArcadeDBServer {
       factory.setSecurity(getDatabaseSecurityManager());
 
       if (factory.exists())
-        throw new IllegalArgumentException("Database '" + databaseName + "' already exists");
+        throw new DatabaseAlreadyExistsException("Database '" + databaseName + "' already exists");
 
       DatabaseInternal embeddedDatabase = (DatabaseInternal) factory.create();
 
