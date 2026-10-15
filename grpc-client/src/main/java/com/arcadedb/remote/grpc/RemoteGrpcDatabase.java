@@ -888,8 +888,6 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
   @Override
   protected RID saveRecord(final MutableDocument record) {
-    stats.createRecord.incrementAndGet();
-
     final RID rid = record.getIdentity();
 
     if (rid != null) {
@@ -915,6 +913,8 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
         // If your proto has flags, you can check response.getSuccess()/getUpdated()
         // Otherwise, treat non-exception as success.
+        // each arm counts its own statistic, and only once the server confirmed the write (issue #10095)
+        stats.updateRecord.incrementAndGet();
         return rid;
       } catch (StatusRuntimeException | StatusException e) {
         handleGrpcWriteException(e, "UpdateRecord", commitsOnItsOwn(updateBuilder.getTransaction()));
@@ -947,6 +947,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
         // Construct a DatabaseRID bound to this remote database so asX() resolves correctly.
         final RID newRID = newRID(ridStr);
         trackCreatedRecord(record);
+        stats.createRecord.incrementAndGet();
         return newRID;
       } catch (StatusRuntimeException | StatusException e) {
         handleGrpcWriteException(e, "CreateRecord", commitsOnItsOwn(request.getTransaction()));

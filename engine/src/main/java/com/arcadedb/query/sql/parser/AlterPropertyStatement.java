@@ -89,7 +89,7 @@ public class AlterPropertyStatement extends DDLStatement {
       // expression, so it is taken literally rather than resolved as a variable reference, and any backtick
       // quoting is unescaped instead of being stored as part of the property name.
       final Object finalValue = "name".equalsIgnoreCase(setting) ? settingValue.getDefaultAlias().getStringValue()
-          : "default".equalsIgnoreCase(setting) ? settingValue.toString() : settingValue.execute((Identifiable) null, context);
+          : "default".equalsIgnoreCase(setting) ? settingValue.toString() : PropertyAttributeValues.evaluate(setting, settingValue, context);
 
       final Object oldValue;
 
@@ -98,26 +98,29 @@ public class AlterPropertyStatement extends DDLStatement {
         typez.renameProperty(propertyName.getStringValue(), String.valueOf(finalValue));
       } else if ("readonly".equalsIgnoreCase(setting)) {
         oldValue = property.isReadonly();
-        property.setReadonly((boolean) finalValue);
+        property.setReadonly(PropertyAttributeValues.asBoolean(setting, finalValue));
       } else if ("mandatory".equalsIgnoreCase(setting)) {
         oldValue = property.isMandatory();
-        if ((boolean) finalValue && !property.isMandatory())
+        final boolean mandatory = PropertyAttributeValues.asBoolean(setting, finalValue);
+        if (mandatory && !property.isMandatory())
           ExistingRecordsCheck.requireExistence(db, typez, property.getName(), true, false);
-        property.setMandatory((boolean) finalValue);
+        property.setMandatory(mandatory);
       } else if ("notnull".equalsIgnoreCase(setting)) {
         oldValue = property.isNotNull();
-        if ((boolean) finalValue && !property.isNotNull())
+        final boolean notNull = PropertyAttributeValues.asBoolean(setting, finalValue);
+        if (notNull && !property.isNotNull())
           ExistingRecordsCheck.requireExistence(db, typez, property.getName(), false, true);
-        property.setNotNull((boolean) finalValue);
+        property.setNotNull(notNull);
       } else if ("hidden".equalsIgnoreCase(setting)) {
         oldValue = property.isHidden();
-        property.setHidden((boolean) finalValue);
+        property.setHidden(PropertyAttributeValues.asBoolean(setting, finalValue));
       } else if ("external".equalsIgnoreCase(setting)) {
         oldValue = property.isExternal();
-        property.setExternal((boolean) finalValue);
+        property.setExternal(PropertyAttributeValues.asBoolean(setting, finalValue));
       } else if ("compression".equalsIgnoreCase(setting)) {
         oldValue = property.getCompression();
-        property.setCompression(String.valueOf(finalValue));
+        // null clears, as in CREATE PROPERTY: the text "null" is not a compression (issue #10099)
+        property.setCompression(PropertyAttributeValues.asText(finalValue));
       } else if ("max".equalsIgnoreCase(setting)) {
         oldValue = property.getMax();
         requireStoredValuesWithin(db, typez, property, finalValue, null, "" + finalValue, null, "MAX " + finalValue);

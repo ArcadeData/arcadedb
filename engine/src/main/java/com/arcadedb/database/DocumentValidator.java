@@ -573,6 +573,57 @@ public class DocumentValidator {
   }
 
   /**
+   * The REGEXP of a DATE or DATETIME property that matches no text a value of the class the database holds it as NOW can be
+   * written as, so that every write of the property fails (issue #10104). The check {@link #requireDateConstraintsSatisfiableUnder}
+   * makes before a change, run after one instead: for the routes that put a class in force without a statement that can refuse
+   * - the context configuration an open reads, the public setters of the serializer, the apply of a replicated setting - and
+   * cannot be made to, since an open must not fail over a constraint. Only a pattern shown to match nothing is reported, not one
+   * the search could not settle, which {@link #requireDateConstraintsSatisfiableUnder} already warns about at the change.
+   * <p>
+   * The pattern was declared against some class, and the schema does not record which one, so every pattern is checked against
+   * the class in force. One search budget serves the whole walk, and a schema with no pattern on a date property - nearly all of
+   * them - costs a pass over its properties.
+   *
+   * @return one message per property, each naming it and the remedy, empty when every pattern can still match
+   */
+  public static List<String> findUnsatisfiableDateRegexps(final DatabaseInternal database) {
+    final BinarySerializer serializer = database.getSerializer();
+    List<String> found = null;
+    long deadline = 0L;
+    for (final DocumentType type : database.getSchema().getTypes())
+      for (final Property p : type.getProperties()) {
+        if (p.getRegexp() == null)
+          continue;
+        final Class<?> held = heldClassUnder(p.getType(), serializer.getDateImplementation(), serializer.getDateTimeImplementation());
+        if (held == null)
+          continue;
+
+        if (found == null) {
+          found = new ArrayList<>();
+          // one deadline for the whole walk, started when the first pattern is searched
+          deadline = TimeBoundRegex.newDeadline(REGEXP_SEARCH_TIMEOUT_MS);
+        }
+        final String refusal = regexpUsability(p.getType(), held, p.getRegexp(), true, deadline).refusal();
+        if (refusal != null)
+          found.add("the REGEXP '" + p.getRegexp() + "' of property '" + type.getName() + "." + p.getName() + "' " + refusal
+              + ": every write of the property fails. Remove it with ALTER PROPERTY `" + type.getName() + "`.`" + p.getName()
+              + "` REGEXP null, or hold the value as the class the pattern was written for (arcadedb.dateImplementation, "
+              + "arcadedb.dateTimeImplementation)");
+      }
+    return found == null ? List.of() : found;
+  }
+
+  /**
+   * Logs, one WARNING per property, what {@link #findUnsatisfiableDateRegexps} finds.
+   *
+   * @param cause what put the class in force, for the message
+   */
+  public static void warnAboutUnsatisfiableDateRegexps(final DatabaseInternal database, final String cause) {
+    for (final String finding : findUnsatisfiableDateRegexps(database))
+      LogManager.instance().log(DocumentValidator.class, Level.WARNING, "After %s, %s", cause, finding);
+  }
+
+  /**
    * The class a value of {@code type} is held as when DATE is held as {@code dateImplementation} and DATETIME as
    * {@code dateTimeImplementation}, or null for a type those two settings do not decide. The one place the mapping is
    * written for the checks of a change of them, mirroring {@link Type#getJavaImplementation}; a test holds the two to

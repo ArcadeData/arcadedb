@@ -20,6 +20,7 @@ package com.arcadedb.query.sql.antlr;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.OperationHeapLimit;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.parser.BaseExpression;
@@ -28,8 +29,6 @@ import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.query.sql.parser.Statement;
 import com.arcadedb.query.sql.parser.SubQueryCollector;
 
-import java.util.ArrayList;
-import java.util.List;
 import java.util.Map;
 
 /**
@@ -82,17 +81,9 @@ public class StatementExpression extends BaseExpression {
 
   private Object executeStatement(final CommandContext context) {
     final ResultSet rs = statement.execute(context.getDatabase(), context.getInputParameters());
-    final List<Object> values = new ArrayList<>();
 
-    while (rs.hasNext()) {
-      final Result result = rs.next();
-      values.add(result);
-    }
-
-    rs.close();
-
-    // Always return the list to match JavaCC behavior
-    return values;
+    // Always return the list to match JavaCC behavior. Under both heap limits and closed whatever happens (issue #10080)
+    return OperationHeapLimit.materializeForExpression(context, "nested statement expression", rs);
   }
 
   @Override

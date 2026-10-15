@@ -59,6 +59,9 @@ class Issue9979HeapLimitCoverageTest extends TestHelper {
       // #9792
       "SELECT $x.size() AS s FROM D LET $x = (SELECT k FROM D) LIMIT 1",//
       "SELECT $x.size() AS s FROM D LET $x = (SELECT k FROM D WHERE k >= $parent.$current.k) WHERE k = 0",//
+      // #10080: the same subquery written inline, and with a modifier that moves the LET to the expression step
+      "SELECT (SELECT k FROM D).size() AS s FROM D LIMIT 1",//
+      "SELECT $x AS s FROM D LET $x = (SELECT k FROM D).size() LIMIT 1",//
       // #9793
       "SELECT list(k) FROM D",//
       "SELECT set(k) FROM D",//
