@@ -4031,8 +4031,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
   private ServerIsNotTheLeaderException schemaChangesNeedTheLeader() {
     final String leaderAddr = raftHAServer != null ? raftHAServer.getLeaderHttpAddress() : null;
+    // Holds on this node until leadership moves: a local retry would only repeat it (issue #9995)
     return new ServerIsNotTheLeaderException("Changes to the schema must be executed on the leader server",
-        leaderAddr != null ? leaderAddr : "");
+        leaderAddr != null ? leaderAddr : "", true);
   }
 
   /**
@@ -4808,7 +4809,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
               + "which is neither the leader nor the node that peer meant to reach, so the HTTP address that peer "
               + "resolved for the leader does not identify it. Declaring every node's HTTP port "
               + "('host:raftPort:httpPort') in " + GlobalConfiguration.HA_SERVER_LIST.getKey() + " prevents this",
-          raft.getLeaderName());
+          raft.getLeaderName(), true);
     }
 
     // During cluster startup or a leader change there is a window with no elected leader. Rather than failing
@@ -4884,7 +4885,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
           "Cannot forward the command: the HTTP address resolved for the leader (" + leaderHttpAddress
               + ") is this node's own, and this node is not the leader. Declare every node's HTTP port explicitly with "
               + "the 'host:raftPort:httpPort' syntax in " + GlobalConfiguration.HA_SERVER_LIST.getKey(),
-          raft.getLeaderName());
+          raft.getLeaderName(), true);
     }
 
     // Counted here, past every refusal above, so a forward that never leaves this node takes no ordinal.
