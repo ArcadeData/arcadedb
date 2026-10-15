@@ -227,19 +227,18 @@ public final class GrpcErrorMapper {
    * "server broke, safe to retry" to a driver's retry policy - when none of the four will ever succeed on retry,
    * and none but the first is actually the server's fault.
    * <p>
-   * Package-visible (not just used by {@link #toStatusRuntimeException}) for the handlers - {@code graphBatchLoad}
-   * is the current example - that must attach their own trailers (a partial-commit summary) alongside the
-   * classified code rather than the trailer set this class builds for {@code EXCEPTION_CLASS_KEY}/dup-key details;
-   * they reach it through {@link #toStatusException}.
+   * Private on purpose (issue #10090). It used to be package-visible for the handlers that must attach their own
+   * trailers (a partial-commit summary), but a handler that took the code from here alone lost everything else the
+   * mapper does around it - the {@code EXCEPTION_CLASS_KEY} trailer, the termination rewrite, the leader redirect - and
+   * {@code toSearchStatus} did exactly that for three RPCs. Those handlers reach the classification through
+   * {@link #toStatusException}, which layers their trailers onto the full answer.
    */
-  static Status.Code statusCodeFor(final Throwable cause) {
+  private static Status.Code statusCodeFor(final Throwable cause) {
     return switch (ErrorCategory.of(cause)) {
       case RETRY -> Status.Code.ABORTED;
       case ARITHMETIC -> Status.Code.OUT_OF_RANGE;
-      // Unreachable from toStatusRuntimeException/classifyAndAddTrailers, which both special-case
-      // DuplicatedKeyException before reaching here - but ArcadeDbGrpcService.toSearchStatus calls this
-      // method directly with no such pre-check, so this arm exists for that caller (and any future one),
-      // not just to keep the switch exhaustive over ErrorCategory.
+      // Unreachable from toStatusRuntimeException, which special-cases DuplicatedKeyException (it has trailers of its
+      // own to add) before reaching here: the arm only keeps the switch exhaustive over ErrorCategory.
       case DUPLICATED_KEY -> Status.Code.ALREADY_EXISTS;
       case NOT_FOUND, SCHEMA -> Status.Code.NOT_FOUND;
       case SECURITY -> Status.Code.PERMISSION_DENIED;

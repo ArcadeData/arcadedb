@@ -6086,8 +6086,15 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
    * reported as an {@link IllegalArgumentException} naming the offending argument, so it must reach the client as
    * INVALID_ARGUMENT with that message intact - a caller that crossed a documented limit has to be able to tell
    * that from a server fault, exactly as the HTTP surface distinguishes 400 from 500.
+   * <p>
+   * Everything else goes through {@link GrpcErrorMapper#toStatusException}, the same entry point {@code mapError} and
+   * {@code graphBatchLoad} answer through (issue #10090). The classification alone is not the answer: the mapper also
+   * attaches the {@code arcadedb-exception-class} trailer the driver rebuilds the engine's own type from, names a
+   * termination as {@link QueryTerminatedException} whatever wraps it (so the driver does not retry a search somebody
+   * stopped), and carries a leader refusal's {@code FAILED_PRECONDITION} and address. {@code GrpcErrorMapper.statusCodeFor}
+   * is private for that reason: a handler that takes the code without the rest has nowhere to take it from.
    */
-  private StatusException toSearchStatus(final String operation, final Exception e) {
+  StatusException toSearchStatus(final String operation, final Exception e) {
     if (e instanceof final StatusException se)
       return se;
     if (e instanceof final StatusRuntimeException sre)
@@ -6098,10 +6105,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     // every other wire protocol uses (issue #7123) instead of collapsing to INTERNAL.
     if (e instanceof ServerSecurityException)
       return Status.PERMISSION_DENIED.withDescription(operation + ": " + e.getMessage()).asException();
-    // THE CATCH-ALL CARRIES ENGINE TEXT - A SCHEMA NAME, A FILE PATH, AN INDEX - AND IS CONCEALED IN PRODUCTION
-    // LIKE EVERY OTHER FREE-FORM DESCRIPTION. THE ARM ABOVE IS NOT: A SECURITY REFUSAL IS A SENTENCE THIS SERVER
-    // WROTE ABOUT THE REQUEST, WHICH IS WHAT MAKES IT ACTIONABLE (PR #7755 REVIEW)
-    return GrpcErrorMapper.statusCodeFor(e).toStatus().withDescription(concealable(operation, e)).asException();
+    // THE MAPPER CONCEALS ENGINE TEXT - A SCHEMA NAME, A FILE PATH, AN INDEX - IN PRODUCTION LIKE EVERY OTHER FREE-FORM
+    // DESCRIPTION, AND LOGS IT. THE ARM ABOVE IS NOT CONCEALED: A SECURITY REFUSAL IS A SENTENCE THIS SERVER WROTE
+    // ABOUT THE REQUEST, WHICH IS WHAT MAKES IT ACTIONABLE (PR #7755 REVIEW)
+    return GrpcErrorMapper.toStatusException(e, operation, ha(), new Metadata(), concealErrors());
   }
 
   // Helper methods
