@@ -18,7 +18,9 @@
  */
 package com.arcadedb.server.grpc;
 
+import com.arcadedb.exception.ArithmeticErrorException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.opencypher.temporal.CypherDuration;
 import com.google.protobuf.Timestamp;
 
 import java.time.Instant;
@@ -34,7 +36,7 @@ import java.util.Date;
 import java.util.logging.Level;
 
 /**
- * The one encoder of {@code java.time} values onto a {@link GrpcValue}, shared by the server's two encoders
+ * The one encoder of {@code java.time} values and durations onto a {@link GrpcValue}, shared by the server's two encoders
  * ({@code GrpcTypeConverter}, {@code ArcadeDbGrpcService}) and the client's ({@code ProtoUtils}), so that a temporal type is
  * added once and the two ends of the wire cannot drift apart (issue #9969). It lives in the module that owns the proto, the
  * same arrangement {@link GraphBatchProtocol} and {@link TransactionProtocol} make.
@@ -47,10 +49,15 @@ import java.util.logging.Level;
  *   its ISO text tagged {@value #ZONED_DATETIME}, {@value #OFFSET_TIME} or {@value #LOCAL_TIME}. A {@code ZONED_DATETIME}
  *   compares by instant, then offset, then zone id, so a bare instant cannot be written back as a predicate that matches the
  *   stored value; the text is the shape the JSON and Bolt surfaces already carry.</li>
+ *   <li>A {@link CypherDuration} - months, days, seconds and nanoseconds, with no epoch form - as its ISO text tagged
+ *   {@value #DURATION} (issue #10034). The text is the storage encoding ({@code toString()} / {@code parse()}), which keeps
+ *   all four components apart and round-trips every value, including a negative number of seconds with a positive
+ *   nanosecond adjustment.</li>
  * </ul>
  * This is a wire change for {@link ZonedDateTime}: before issue #9969 it travelled as a {@code timestamp_value}, so a peer that
  * decodes it by kind now sees a {@code string_value}. A peer that ignores {@code logical_type} reads the ISO text as a plain
- * string. For {@link OffsetTime} and {@link LocalTime} the change is additive: they were already the same untagged text.
+ * string. For {@link OffsetTime} and {@link LocalTime} the change is additive: they were already the same untagged text, and so
+ * was a {@link CypherDuration}, which a peer that ignores {@code logical_type} still reads as its ISO text.
  * Tags are matched case-insensitively, as {@code ProtoUtils} matches {@value #DATE} and {@value #DATETIME}.
  */
 public final class GrpcTemporalCodec {
@@ -60,6 +67,7 @@ public final class GrpcTemporalCodec {
   public static final String ZONED_DATETIME = "zoned_datetime";
   public static final String OFFSET_TIME    = "offset_time";
   public static final String LOCAL_TIME     = "local_time";
+  public static final String DURATION       = "duration";
 
   private GrpcTemporalCodec() {
     // Utility class
@@ -84,6 +92,8 @@ public final class GrpcTemporalCodec {
       return text(DateTimeFormatter.ISO_OFFSET_TIME.format(ot), OFFSET_TIME);
     if (o instanceof LocalTime lt)
       return text(DateTimeFormatter.ISO_LOCAL_TIME.format(lt), LOCAL_TIME);
+    if (o instanceof CypherDuration duration)
+      return text(duration.toString(), DURATION);
     return null;
   }
 
@@ -102,8 +112,10 @@ public final class GrpcTemporalCodec {
         return OffsetTime.parse(text, DateTimeFormatter.ISO_OFFSET_TIME);
       if (LOCAL_TIME.equalsIgnoreCase(logicalType))
         return LocalTime.parse(text, DateTimeFormatter.ISO_LOCAL_TIME);
+      if (DURATION.equalsIgnoreCase(logicalType))
+        return CypherDuration.parse(text);
       return text;
-    } catch (final DateTimeParseException e) {
+    } catch (final DateTimeParseException | IllegalArgumentException | ArithmeticErrorException e) {
       // Logged so that a typed column rejecting the string later can be traced back to the tag that did not parse
       LogManager.instance().log(GrpcTemporalCodec.class, Level.FINE, "gRPC string_value tagged '%s' does not parse as one, kept as text: '%s'",
           logicalType, text.length() > 64 ? text.substring(0, 64) + "..." : text);
