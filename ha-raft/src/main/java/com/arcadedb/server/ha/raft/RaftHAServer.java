@@ -378,6 +378,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   private final    Map<RaftPeerId, Long>     misdirectedRecoveryQueuedAt    = new ConcurrentHashMap<>();
   private final    Map<RaftPeerId, Long>     misdirectedWarnedAt            = new ConcurrentHashMap<>();
   private final    AtomicLong                misdirectedChannelResets       = new AtomicLong();
+  // Issue #10088: the ids of the live Raft configuration as the last recovery task read it. The listener runs on the gRPC
+  // handler thread and may not read the live configuration itself (Ratis parks that read while a division initializes), so
+  // it consults this copy, written only by the recovery task and replaced as a whole. It starts empty: until a task has
+  // read the configuration, a peer joined after startup shares the not-a-peer slot, which costs it nothing but a turn.
+  private volatile Set<RaftPeerId>           misdirectedLiveMemberIds       = Set.of();
   // The one throttling slot every id outside the cluster shares, so a sender cannot grow the maps above.
   private static final RaftPeerId            UNKNOWN_MISDIRECTED_PEER       = RaftPeerId.valueOf("<not-a-peer>");
   // Short enough that the self-dial channel is rebuilt soon after the resolver changes its answer, long enough that the
@@ -960,6 +965,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * <b>A request from another peer can only be reported.</b> It means that peer's address for {@code addressedTo}
    * leads here; the channel to fix is on that peer, which logs nothing about it, so the WARNING here names the peer
    * that has to be looked at.
+   * <p>
+   * <b>This must not block</b> (issue #10088): it runs once per refused RPC on the handler thread, and the live Raft
+   * configuration is behind a division that Ratis parks its reader on while it initializes - every start and every
+   * in-place restart, which is when a node is being flooded with misdirected heartbeats. Nothing here reads it; the
+   * recovery task does.
    */
   void onMisdirectedRaftRequest(final String rpc, final RaftPeerId addressedTo, final RaftPeerId requestor) {
     misdirectedRaftRequestsRefused.incrementAndGet();
@@ -967,21 +977,25 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       return;
 
     // The id comes off the wire, so only a member of this cluster gets a slot of its own: anything else shares one,
-    // which keeps both throttling maps bounded by the cluster size whatever a sender writes in the request.
-    final boolean member = isKnownPeer(addressedTo);
-    final RaftPeerId slot = member ? addressedTo : UNKNOWN_MISDIRECTED_PEER;
+    // which keeps both throttling maps bounded by the cluster size whatever a sender writes in the request. Nothing that
+    // decides it here may block (issue #10088): this thread is the request's gRPC handler, and the live configuration
+    // is read through a division that Ratis parks the reader of for as long as it takes to initialize. So the slot comes
+    // from what needs no read - the declared list, and the live members the last recovery task saw - and the task
+    // settles whether the id is a member after all.
+    final RaftPeerId slot = isMemberWithoutReadingTheDivision(addressedTo) ? addressedTo : UNKNOWN_MISDIRECTED_PEER;
     if (!claimThrottleSlot(misdirectedRecoveryQueuedAt, slot, System.currentTimeMillis(),
         MISDIRECTED_RECOVERY_INTERVAL_MS))
       return;
 
-    // Only a member has a channel to repair: this node never dials an id outside its own configuration.
-    final boolean selfDial = member && localPeerId.equals(requestor);
     final String sender = requestor != null ? "'" + requestor + "'" : "<unknown>";
     try {
       channelRecoveryExecutor.execute(() -> {
+        final boolean member = isMisdirectedPeerMember(addressedTo);
+        // Only a member has a channel to repair: this node never dials an id outside its own configuration.
+        final boolean selfDial = member && localPeerId.equals(requestor);
         // Read here rather than when the task was queued: the worker may have been busy closing another channel.
-        final Level level = claimThrottleSlot(misdirectedWarnedAt, slot, System.currentTimeMillis(),
-            MISDIRECTED_WARNING_INTERVAL_MS) ? Level.WARNING : Level.FINE;
+        final Level level = claimThrottleSlot(misdirectedWarnedAt, member ? addressedTo : UNKNOWN_MISDIRECTED_PEER,
+            System.currentTimeMillis(), MISDIRECTED_WARNING_INTERVAL_MS) ? Level.WARNING : Level.FINE;
 
         if (!member) {
           LogManager.instance().log(this, level,
@@ -1020,9 +1034,37 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     }
   }
 
-  /** Whether {@code peerId} is declared in the server list or a member of the live Raft configuration. */
-  private boolean isKnownPeer(final RaftPeerId peerId) {
-    return isPeerInConfig(raftGroup.getPeers(), peerId) || isPeerInConfig(getLivePeers(), peerId);
+  /**
+   * Whether {@code peerId} is declared in the server list or was a member of the live Raft configuration when a recovery
+   * task last read it. Reads two in-memory copies and never the division, so it is safe on the gRPC handler thread (issue
+   * #10088). A false answer is "not known yet", not "not a member": {@link #isMisdirectedPeerMember} decides that.
+   */
+  private boolean isMemberWithoutReadingTheDivision(final RaftPeerId peerId) {
+    return isPeerInConfig(raftGroup.getPeers(), peerId) || misdirectedLiveMemberIds.contains(peerId);
+  }
+
+  /**
+   * Whether {@code peerId} is declared in the server list or a member of the live Raft configuration. Runs on the channel
+   * recovery worker, which is where a read that Ratis may park belongs (issue #10088). The declared list answers first, so
+   * the common case - a declared peer whose name resolves back to this node - never touches the division.
+   * <p>
+   * A configuration that cannot be read keeps the copy of the last one that could, and is reported at FINE: during an
+   * in-place restart Ratis raises {@code IllegalStateException} for the whole window by design, and the refusal this is
+   * annotating is already the one line the operator needs.
+   */
+  private boolean isMisdirectedPeerMember(final RaftPeerId peerId) {
+    if (isPeerInConfig(raftGroup.getPeers(), peerId))
+      return true;
+
+    final Collection<RaftPeer> live = readCommittedPeers(Level.FINE);
+    if (live == null)
+      return misdirectedLiveMemberIds.contains(peerId);
+
+    final Set<RaftPeerId> ids = new HashSet<>(live.size() * 2);
+    for (final RaftPeer peer : live)
+      ids.add(peer.getId());
+    misdirectedLiveMemberIds = Set.copyOf(ids);
+    return ids.contains(peerId);
   }
 
   /**
@@ -4388,6 +4430,15 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * Such a caller reads this and treats {@code null} as "no information this tick".
    */
   Collection<RaftPeer> getCommittedPeersOrNull() {
+    return readCommittedPeers(Level.WARNING);
+  }
+
+  /**
+   * {@link #getCommittedPeersOrNull()} reporting an unreadable configuration at {@code failureLevel}. A caller that reads
+   * on every refusal of an inbound RPC, and so would turn one restart window into a stack trace per heartbeat, passes a
+   * level below WARNING; everyone else wants the WARNING (see the comment on the catch).
+   */
+  private Collection<RaftPeer> readCommittedPeers(final Level failureLevel) {
     if (raftServer != null) {
       try {
         final var division = raftServer.getDivision(raftGroup.getGroupId());
@@ -4404,7 +4455,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         // WARNING, matching the sibling guards (isLeader, getLeaderId) rather than the FINE this used to log:
         // now that the catch is wide enough to swallow a genuine bug and not only the documented Ratis
         // IllegalStateException, a silent fallback to "no membership" is how such a bug would hide.
-        LogManager.instance().log(this, Level.WARNING,
+        LogManager.instance().log(this, failureLevel,
             "Cannot read the live Raft configuration this tick; returning no membership, and it is the caller's "
                 + "choice whether to substitute the declared server list", e);
       }
