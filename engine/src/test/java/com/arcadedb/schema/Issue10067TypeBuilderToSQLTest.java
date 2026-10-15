@@ -67,8 +67,8 @@ class Issue10067TypeBuilderToSQLTest extends TestHelper {
    */
   @Test
   void everyFieldOfTheBuilderIsAccountedFor() {
-    final Set<String> rendered = Set.of("type", "ignoreIfExists", "typeName", "superTypes", "bucketInstances", "buckets", "pageSize",
-        "edgeBidirectional", "edgeLightweight", "edgeUnique");
+    final Set<String> rendered = Set.of("type", "ignoreIfExists", "typeName", "superTypes", "bucketInstances", "buckets",
+        "bucketsChosen", "pageSize", "pageSizeChosen", "edgeBidirectional", "edgeLightweight", "edgeUnique");
     final Set<String> notPartOfTheDescription = Set.of("database");
 
     final Set<String> declared = new TreeSet<>();
@@ -128,12 +128,21 @@ class Issue10067TypeBuilderToSQLTest extends TestHelper {
   }
 
   @Test
-  void theBucketCountAndThePageSizeAreRenderedOnlyWhenTheyDifferFromTheDefaults() {
+  void theBucketCountAndThePageSizeAreRenderedWhenTheCallerChoseThem() {
     final int defaultBuckets = database.getConfiguration().getValueAsInteger(GlobalConfiguration.TYPE_DEFAULT_BUCKETS);
     final int defaultPageSize = database.getConfiguration().getValueAsInteger(GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE);
 
-    assertThat(database.getSchema().buildVertexType().withName("Defaults").withTotalBuckets(defaultBuckets)
-        .withPageSize(defaultPageSize).toSQL()).isEqualTo("CREATE VERTEX TYPE `Defaults`");
+    assertThat(database.getSchema().buildVertexType().withName("Defaults").toSQL()).as("not chosen: left to the node that runs it")
+        .isEqualTo("CREATE VERTEX TYPE `Defaults`");
+
+    // Chosen, even when it equals the default of THIS node: the node that runs the statement may have another default
+    assertThat(database.getSchema().buildVertexType().withName("Explicit").withTotalBuckets(defaultBuckets)
+        .withPageSize(defaultPageSize).toSQL()).isEqualTo(
+        "CREATE VERTEX TYPE `Explicit` BUCKETS " + defaultBuckets + " PAGESIZE " + defaultPageSize);
+    assertThat(database.getSchema().buildVertexType().withName("OnlyBuckets").withTotalBuckets(defaultBuckets).toSQL())
+        .isEqualTo("CREATE VERTEX TYPE `OnlyBuckets` BUCKETS " + defaultBuckets);
+    assertThat(database.getSchema().buildVertexType().withName("OnlyPage").withPageSize(defaultPageSize).toSQL())
+        .isEqualTo("CREATE VERTEX TYPE `OnlyPage` PAGESIZE " + defaultPageSize);
 
     final TypeBuilder<VertexType> custom = database.getSchema().buildVertexType().withName("Custom")
         .withTotalBuckets(defaultBuckets + 1).withPageSize(defaultPageSize * 2);

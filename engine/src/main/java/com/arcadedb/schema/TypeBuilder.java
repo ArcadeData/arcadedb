@@ -49,7 +49,9 @@ public class TypeBuilder<T> {
   List<LocalDocumentType> superTypes;
   List<Bucket>            bucketInstances   = Collections.emptyList();
   int                     buckets;
+  boolean                 bucketsChosen     = false;
   int                     pageSize;
+  boolean                 pageSizeChosen    = false;
   boolean                 edgeBidirectional = true;
   boolean                 edgeLightweight   = false;
   boolean                 edgeUnique        = false;
@@ -129,9 +131,10 @@ public class TypeBuilder<T> {
   /**
    * The {@code CREATE ... TYPE} statement that makes the type this builder describes, for a database that has to ask another
    * node to create it (issue #10067); {@code null} when the description has no SQL form, which is the case of a type built on
-   * bucket instances the caller already holds. The bucket count and the page size are rendered only when they differ from the
-   * configured defaults, so the node that runs the statement applies its own defaults to what the caller did not choose, as it
-   * would for a statement sent to it.
+   * bucket instances the caller already holds. The bucket count and the page size are rendered when the caller CHOSE them
+   * ({@link #withTotalBuckets}, {@link #withPageSize}), even if the value equals this node's default, so the node that runs the
+   * statement creates exactly what was asked; one the caller did not choose is left to that node's own default, as it would be for
+   * a statement sent to it.
    */
   public String toSQL() {
     return toSQL(ignoreIfExists);
@@ -173,9 +176,9 @@ public class TypeBuilder<T> {
         sql.append(" UNIQUE");
     }
 
-    if (buckets != database.getConfiguration().getValueAsInteger(GlobalConfiguration.TYPE_DEFAULT_BUCKETS))
+    if (bucketsChosen)
       sql.append(" BUCKETS ").append(buckets);
-    if (pageSize != database.getConfiguration().getValueAsInteger(GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE))
+    if (pageSizeChosen)
       sql.append(" PAGESIZE ").append(pageSize);
     return sql.toString();
   }
@@ -334,6 +337,7 @@ public class TypeBuilder<T> {
    */
   public TypeBuilder<T> withTotalBuckets(final int buckets) {
     this.buckets = buckets;
+    this.bucketsChosen = true;
     return this;
   }
 
@@ -374,6 +378,7 @@ public class TypeBuilder<T> {
 
   public TypeBuilder<T> withPageSize(final int pageSize) {
     this.pageSize = pageSize;
+    this.pageSizeChosen = true;
     return this;
   }
 }
