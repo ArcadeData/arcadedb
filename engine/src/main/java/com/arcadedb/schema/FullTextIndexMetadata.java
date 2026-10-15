@@ -131,6 +131,8 @@ public class FullTextIndexMetadata extends IndexMetadata {
   // Commits (and replicated applies) between the moment their pages become visible and the moment their delta reaches the counters.
   // A scan that overlaps one of them reads documents the counters do not hold yet, so its result is not exact
   private final AtomicInteger commitsApplying = new AtomicInteger(0);
+  // When a failure to apply a delta to these counters was last logged: one warning a minute per index of a database
+  private final AtomicLong lastFailureLogged = new AtomicLong(0L);
   // Full-type scans whose result was published here: lets a test, or an operator reading schema:index, tell a drift check that
   // found nothing to repair from one that scanned the whole type
   private final AtomicLong scans         = new AtomicLong(0L);
@@ -873,6 +875,15 @@ public class FullTextIndexMetadata extends IndexMetadata {
     synchronized (countersLock) {
       return new long[] { totalDocs.get(), sumDocLength.get() };
     }
+  }
+
+  /**
+   * Whether a failure concerning these counters may be logged now: true at most once per {@code throttleMs}, so a systematic cause
+   * does not flood the log of a busy node.
+   */
+  public boolean claimFailureLog(final long now, final long throttleMs) {
+    final long last = lastFailureLogged.get();
+    return now - last > throttleMs && lastFailureLogged.compareAndSet(last, now);
   }
 
   /**
