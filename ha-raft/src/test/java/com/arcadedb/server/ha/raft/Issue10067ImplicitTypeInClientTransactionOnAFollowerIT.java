@@ -35,6 +35,12 @@ import com.arcadedb.server.security.ServerSecurity;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -177,6 +183,59 @@ class Issue10067ImplicitTypeInClientTransactionOnAFollowerIT extends BaseRaftHAT
           "MATCH (n:V1) WHERE n.id IN [1001000, 1001001] RETURN count(n) AS c")) {
         assertThat(rs.next().<Number>getProperty("c").longValue()).as("server %d holds both nodes of the transaction", i).isEqualTo(2L);
       }
+  }
+
+  /**
+   * Two clients creating the SAME new label at the same time through the TWO followers: one has the leader create the type, for the
+   * other the leader's {@code IF NOT EXISTS} is a no-op, and both end with the type and their node. A refusal along the way may only be
+   * the retryable one (the two commits can meet on a page of the new type), and the retry goes through.
+   */
+  @Test
+  @Timeout(240)
+  void twoFollowersCreatingTheSameNewLabelAtOnceBothEndWithTheirNode() throws Exception {
+    final int leader = requireLeaderIndex();
+    final int[] followers = new int[2];
+    for (int i = 0, n = 0; i < getServerCount(); i++)
+      if (i != leader)
+        followers[n++] = i;
+
+    final CyclicBarrier together = new CyclicBarrier(2);
+    final ExecutorService pool = Executors.newFixedThreadPool(2);
+    try {
+      final List<Future<Boolean>> results = new ArrayList<>();
+      for (int f = 0; f < 2; f++) {
+        final int server = followers[f];
+        final int name = f;
+        results.add(pool.submit(() -> {
+          final Database db = getServerDatabase(server, getDatabaseName());
+          together.await(30, TimeUnit.SECONDS);
+          for (int attempt = 1; attempt <= 5; attempt++) {
+            db.begin();
+            try {
+              markClientManaged(db);
+              db.command("opencypher", "CREATE (n:Issue10067Race {name: 'client" + name + "'})").close();
+              db.commit();
+              return true;
+            } catch (final RuntimeException e) {
+              assertThat(CauseChain.find(e, NeedRetryException.class)).as("a refusal here must be the retryable one, got %s", messageChainOf(e))
+                  .isNotNull();
+            } finally {
+              if (db.isTransactionActive())
+                db.rollback();
+            }
+          }
+          return false;
+        }));
+      }
+      for (final Future<Boolean> result : results)
+        assertThat(result.get(180, TimeUnit.SECONDS)).as("each client's transaction commits, within its retries").isTrue();
+    } finally {
+      pool.shutdownNow();
+    }
+
+    awaitOnEveryServer("Issue10067Race", 2);
+    for (int i = 0; i < getServerCount(); i++)
+      assertThat(getServerDatabase(i, getDatabaseName()).getSchema().existsType("Issue10067Race")).as("server %d", i).isTrue();
   }
 
   /** A label with a back-tick and a space is quoted into the statement the leader runs, and names the type exactly. */

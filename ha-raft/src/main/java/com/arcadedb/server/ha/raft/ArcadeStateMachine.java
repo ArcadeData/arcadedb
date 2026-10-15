@@ -111,7 +111,6 @@ import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentSkipListSet;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -575,12 +574,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
   private final ConcurrentHashMap<String, AtomicLong> lastSchemaChangeIndex = new ConcurrentHashMap<>();
 
   /**
-   * Per database, the log indexes of the most recent schema-changing entries this node applied, newest {@link
-   * #RECENT_SCHEMA_CHANGES_KEPT} of them (issue #10067). {@link #lastSchemaChangeIndex} says WHEN the schema last changed, which is
-   * what the leader's check needs; this says HOW MANY changes landed in a stretch of the log, which is what a replica that asked the
-   * leader for one schema change needs to know it is the only one it has to account for.
+   * Per database, the most recent schema-changing entries this node applied, newest {@link #RECENT_SCHEMA_CHANGES_KEPT} of them (issue
+   * #10067); see {@link SchemaChangeLog}.
    */
-  private final ConcurrentHashMap<String, ConcurrentSkipListSet<Long>> recentSchemaChanges = new ConcurrentHashMap<>();
+  private final ConcurrentHashMap<String, SchemaChangeLog> recentSchemaChanges = new ConcurrentHashMap<>();
   private static final int RECENT_SCHEMA_CHANGES_KEPT = 256;
 
   /**
@@ -1644,11 +1641,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
     if (databaseName == null)
       return;
     lastSchemaChangeIndex.computeIfAbsent(databaseName, name -> new AtomicLong(-1L)).accumulateAndGet(index, Math::max);
-    final ConcurrentSkipListSet<Long> recent = recentSchemaChanges.computeIfAbsent(databaseName,
-        name -> new ConcurrentSkipListSet<>());
-    recent.add(index);
-    while (recent.size() > RECENT_SCHEMA_CHANGES_KEPT)
-      recent.pollFirst();
+    recentSchemaChanges.computeIfAbsent(databaseName, name -> new SchemaChangeLog(RECENT_SCHEMA_CHANGES_KEPT)).add(index);
   }
 
   /** Raises {@link #schemaHistoryFloor}: this instance cannot tell what the schema did up to {@code index}. Never lowered. */
@@ -1684,13 +1677,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
   int schemaChangesAppliedBetween(final String databaseName, final long fromExclusive, final long toInclusive) {
     if (!schemaHistoryCovers(fromExclusive))
       return Integer.MAX_VALUE;
-    final ConcurrentSkipListSet<Long> recent = databaseName != null ? recentSchemaChanges.get(databaseName) : null;
-    if (recent == null)
-      return 0;
-    // A full window that starts after the stretch may have dropped changes that belong to it
-    if (recent.size() >= RECENT_SCHEMA_CHANGES_KEPT && recent.first() > fromExclusive)
-      return Integer.MAX_VALUE;
-    return recent.subSet(fromExclusive, false, toInclusive, true).size();
+    final SchemaChangeLog recent = databaseName != null ? recentSchemaChanges.get(databaseName) : null;
+    return recent != null ? recent.countBetween(fromExclusive, toInclusive) : 0;
   }
 
   private static NeedRetryException exclusiveOperationRefusal(final String databaseName) {
