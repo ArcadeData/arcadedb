@@ -204,6 +204,13 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   /** Queued pages one allocation measures and lists again at most (#9694). */
   private static final   int                       MAX_RELISTS_PER_ALLOCATION       = 4;
   private static final   long                      MAX_TIMEOUT_GATHER_STATS         = 5000L;
+  /**
+   * Pages one gather scan reads at most (#9575). A scan that has not visited the whole file picks up where it stopped the next
+   * time it runs, so a gather costs the same whatever the size of the bucket: about 0.3 s of reads every
+   * {@value #MAX_TIMEOUT_GATHER_STATS} ms on a disk that serves 300 us per uncached page, where reading every page of a 3M-page
+   * bucket stopped the writer for 20 minutes.
+   */
+  private static final   int                       GATHER_STATS_MAX_PAGES_PER_SCAN  = 1024;
   private static final   int                       GATHER_STATS_MIN_SPACE_PERC      = 10;
   /**
    * Whether the free-space claims the write paths make are held against the commit-time measurement (#6396). On
@@ -295,9 +302,16 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   // `freeSpaceInPages` monitor (gatherTruncated is also read outside it, hence volatile).
   private                int                       gatherResumePage                 = 0;
   private volatile       boolean                   gatherTruncated                  = false;
+  // #9575: the gather goes round the file in slices of at most gatherPagesPerScan pages, starting at gatherResumePage. This
+  // is what is left of the lap the last change asked for: while it is above 0 the next slice is due once the timeout is over,
+  // with or without a new change. Guarded by the `freeSpaceInPages` monitor (also read outside it, hence volatile).
+  private volatile       int                       gatherPagesLeftInLap             = 0;
+  private                int                       gatherPagesPerScan               = GATHER_STATS_MAX_PAGES_PER_SCAN;
   private final          AtomicLong                changesFromLastStats             = new AtomicLong();
   // how many gather scans ran (not how many were asked for): lets a test pin that a bulk write does not rescan the bucket per record
   private final          AtomicLong                gatherScans                      = new AtomicLong();
+  // how many pages those scans read: what a scan costs is the pages it reads, which a count of scans cannot show (#9575)
+  private final          AtomicLong                gatherPagesRead                  = new AtomicLong();
 
   private enum REUSE_SPACE_MODE {
     LOW, MEDIUM, HIGH
@@ -582,6 +596,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     freeSpaceInPages.clear();
     gatherTruncated = false;
     gatherResumePage = 0;
+    gatherPagesLeftInLap = 0;
     insertReservations.clear();
     inFlightNewPages.clear();
     pagesToRelist.clear();
@@ -7187,7 +7202,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
                       avoidPageNumber);
           }
 
-          if (bestPageAnalysis == null && gatherTruncated && freeSpaceInPages.size() < MAX_PAGES_GATHER_STATS) {
+          if (bestPageAnalysis == null && (gatherTruncated || gatherPagesLeftInLap > 0)
+              && freeSpaceInPages.size() < MAX_PAGES_GATHER_STATS) {
             // #8660: NOTHING THE MAP HOLDS FITS, AND THE LAST GATHER LEFT PART OF THE FILE UNVISITED: LOOK THERE BEFORE GROWING
             gatherPageStatistics();
             if (!freeSpaceInPages.isEmpty()) {
@@ -7335,6 +7351,16 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     return gatherScans.get();
   }
 
+  /** How many pages the gather scans of this bucket read since it was opened. Package-private: for tests only. */
+  long getGatherPagesReadForTesting() {
+    return gatherPagesRead.get();
+  }
+
+  /** Overrides how many pages one gather scan reads at most. Package-private: for tests only. */
+  void setGatherPagesPerScanForTesting(final int pages) {
+    gatherPagesPerScan = pages;
+  }
+
   /**
    * Makes the throttle between two gather scans count as over, so a test can ask whether a scan would run now without
    * sleeping {@value #MAX_TIMEOUT_GATHER_STATS} ms. A bucket that never scanned keeps its first-run state. Package-private:
@@ -7357,40 +7383,52 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
   /**
    * Gather statistics about the free space in pages. Algorithm:
-   * 1. browse all the pages but the latest, and add in a tree map the pages with enough free space (>GATHER_STATS_MIN_SPACE_PERC)
+   * 1. browse the pages but the latest, and add in a tree map the pages with enough free space (>GATHER_STATS_MIN_SPACE_PERC)
    * 2. save in the map recordCountInPage and freeSpaceInPage
    * 3. if the tree map is full (size > MAX_PAGES_GATHER_STATS), stop
+   * 4. stop anyway after {@link #GATHER_STATS_MAX_PAGES_PER_SCAN} pages (#9575): the next scan carries on from there, until a
+   * whole lap of the file has been visited since the last change
    */
   public void gatherPageStatistics() {
     final boolean firstRun = timeOfLastStats == 0L;
     // #8660: a scan cut short by the entry cap left pages unvisited, so the next one is due whatever the clock and the change
-    // counter say. It cannot loop on a bucket with nothing to offer: the cursor moves on, and only a scan that reaches the
-    // end of the file without filling the map goes back to being throttled.
+    // counter say. It cannot loop on a bucket with nothing to offer: the cursor moves on, and a scan that stops without filling
+    // the map (at the end of its lap, or on its page budget) goes back to being throttled.
     final boolean resuming = gatherTruncated;
     if (!firstRun && !resuming && System.currentTimeMillis() - timeOfLastStats <= MAX_TIMEOUT_GATHER_STATS)
       return;
 
+    // #9575: a lap a previous slice left unfinished is due like a change is
+    final boolean lapOpen = gatherPagesLeftInLap > 0;
+
     // #9575: nothing to consume is the common answer during an append-only load, asked on every allocation made while
     // the map is empty. A plain read settles it without the atomic write below.
-    if (!firstRun && !resuming && changesFromLastStats.get() == 0L)
+    if (!firstRun && !resuming && !lapOpen && changesFromLastStats.get() == 0L)
       return;
 
     // #5063: consume the change counter atomically at the decision point. The previous
     // get() > 0 check paired with a set(0L) at the end of the scan wiped any increment landing while the
     // scan ran; getAndSet(0L) carries those increments into the next cycle instead of losing them.
     final long consumedChanges = changesFromLastStats.getAndSet(0L);
-    if (consumedChanges > 0 || firstRun || resuming)
+    if (consumedChanges > 0 || firstRun || resuming || lapOpen)
       try {
         int txPageCount = getTotalPages();
 
         synchronized (freeSpaceInPages) {
           gatherScans.incrementAndGet();
           final int pagesToScan = Math.max(0, txPageCount - 2);
-          final int startPage = gatherTruncated && gatherResumePage < pagesToScan ? gatherResumePage : 0;
+          // #9575: a change can be on any page, the ones this lap has already visited included, so it asks for a whole lap
+          // from wherever the cursor is. Without one, the lap that is open goes on.
+          if (consumedChanges > 0 || firstRun)
+            gatherPagesLeftInLap = pagesToScan;
+          else if (gatherPagesLeftInLap > pagesToScan)
+            gatherPagesLeftInLap = pagesToScan;
+          final int pagesThisScan = Math.min(gatherPagesLeftInLap, gatherPagesPerScan);
           gatherTruncated = false;
 
-          int pageId = startPage;
-          for (int scanned = 0; scanned < pagesToScan; ++scanned) {
+          int pageId = gatherResumePage < pagesToScan ? gatherResumePage : 0;
+          int scanned = 0;
+          while (scanned < pagesThisScan) {
             final BasePage page = database.getTransaction().getPage(new PageId(database, file.getFileId(), pageId), pageSize);
             final short recordCountInPage = page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
             final List<int[]> orderedRecordContentInPage = getOrderedRecordsInPage(page, recordCountInPage);
@@ -7414,17 +7452,20 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
               // cannot take a record, or it holds one of the MAX_PAGES_GATHER_STATS slots for nothing
               freeSpaceInPages.remove(pageId, -1);
 
-            ++pageId;
+            ++scanned;
+            if (++pageId >= pagesToScan)
+              pageId = 0;
             if (freeSpaceInPages.size() >= MAX_PAGES_GATHER_STATS) {
-              // #8660: THE MAP IS FULL. REMEMBER WHERE TO PICK UP WHEN IT DRAINS
-              gatherTruncated = scanned + 1 < pagesToScan;
-              gatherResumePage = pageId < pagesToScan ? pageId : 0;
+              // #8660: THE MAP IS FULL. PICK UP FROM HERE, WITHOUT WAITING FOR THE TIMEOUT, WHEN IT DRAINS
+              gatherTruncated = scanned < gatherPagesLeftInLap;
               break;
             }
-            if (pageId >= pagesToScan)
-              pageId = 0;
           }
 
+          // #9575: WHERE THE NEXT SLICE STARTS, AND WHAT IS LEFT OF THE LAP
+          gatherResumePage = pageId;
+          gatherPagesLeftInLap -= scanned;
+          gatherPagesRead.addAndGet(scanned);
           timeOfLastStats = System.currentTimeMillis();
         }
       } catch (Exception e) {
