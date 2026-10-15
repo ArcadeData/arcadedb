@@ -99,6 +99,7 @@ class Issue10051ReplicatedCorpusDeltaTest extends TestHelper {
     assertThat(applied).isTrue();
     assertThat(metadata().getTotalDocs()).isEqualTo(DOCS + 4L);
     assertThat(metadata().getSumDocLength()).isEqualTo(DOCS * 3L + 20);
+    assertThat(metadata().isCommitApplying()).as("the apply left nothing marked as being applied").isFalse();
   }
 
   @Test

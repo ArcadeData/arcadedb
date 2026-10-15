@@ -2621,6 +2621,20 @@ public class TransactionContext implements Transaction {
    * record before the locks are released.
    */
   public void publishCommittedPages(final TransactionPhase1 changes) {
+    // The pages become visible before the delta reaches the BM25 counters: a scan that overlaps that window reads documents the
+    // counters do not hold yet, and must not call its result exact (see FullTextIndexMetadata#commitApplyStarted)
+    final FullTextCorpusDeltas corpusDeltas = FullTextCorpusDeltas.peek(this);
+    if (corpusDeltas != null)
+      corpusDeltas.commitApplyStarted();
+    try {
+      publishCommittedPagesInternal(changes);
+    } finally {
+      if (corpusDeltas != null)
+        corpusDeltas.commitApplyFinished();
+    }
+  }
+
+  private void publishCommittedPagesInternal(final TransactionPhase1 changes) {
     try {
       if (database.getMode() == ComponentFile.MODE.READ_ONLY)
         throw new TransactionException("Cannot commit changes because the database is open in read-only mode");

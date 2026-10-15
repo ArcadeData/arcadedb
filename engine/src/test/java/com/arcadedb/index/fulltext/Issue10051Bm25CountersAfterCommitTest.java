@@ -69,6 +69,7 @@ class Issue10051Bm25CountersAfterCommitTest extends TestHelper {
   @Test
   void committedInsertsMoveTheCounters() {
     createAndFill();
+    assertThat(metadata().isCommitApplying()).as("nothing is left marked as being applied").isFalse();
 
     assertThat(metadata().getTotalDocs()).isEqualTo(DOCS);
     assertThat(metadata().getSumDocLength()).isEqualTo(DOCS * 3L);
@@ -243,6 +244,41 @@ class Issue10051Bm25CountersAfterCommitTest extends TestHelper {
 
     assertThat(metadata().getCountersEpoch()).isEqualTo(1L);
     assertThat(metadata().getTotalDocs()).isEqualTo(DOCS + 1L);
+  }
+
+  /**
+   * A scan that overlaps a commit between making its pages visible and applying its delta reads documents the counters do not
+   * hold yet, and would count them twice once the delta lands: it must not call its result exact, or the drift check is spent and
+   * the error stays until the next explicit recompute. The commit marks itself, and the scan arms the check.
+   */
+  @Test
+  void aScanOverlappingACommitThatIsApplyingItsDeltaIsNotCalledExact() {
+    createAndFill();
+    reopenDatabase();
+    final FullTextIndexMetadata m = metadata();
+    m.applyCorpusDelta(5, 20); // a drift, so the first search scans
+
+    // The marker is held for the whole search here, so every scan the search runs (one per bucket index) overlaps it; a real
+    // window lasts microseconds and only the first scan can meet it
+    m.commitApplyStarted();
+    try {
+      database.query("sql", "SELECT FROM Doc WHERE SEARCH_INDEX('Doc[content]', 'alpha') = true").close();
+    } finally {
+      m.commitApplyFinished();
+    }
+    final long scansWhileApplying = m.getScans();
+    assertThat(scansWhileApplying).isGreaterThanOrEqualTo(1L);
+    assertThat(m.isStaleCheckDone()).as("the result was not exact: the check stays armed").isFalse();
+
+    database.query("sql", "SELECT FROM Doc WHERE SEARCH_INDEX('Doc[content]', 'alpha') = true").close();
+    assertThat(m.getScans()).as("with no commit in flight it rescans, even though the counts agree")
+        .isGreaterThan(scansWhileApplying);
+    assertThat(m.isStaleCheckDone()).isTrue();
+
+    final long settled = m.getScans();
+    database.query("sql", "SELECT FROM Doc WHERE SEARCH_INDEX('Doc[content]', 'alpha') = true").close();
+    assertThat(m.getScans()).as("then it settles").isEqualTo(settled);
+    assertThat(m.getTotalDocs()).isEqualTo(DOCS);
   }
 
   /** The same scan, but the transaction is then rolled back: the scan result must describe the committed data only. */

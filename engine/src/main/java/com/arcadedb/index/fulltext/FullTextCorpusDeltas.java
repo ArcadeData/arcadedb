@@ -26,6 +26,7 @@ import com.arcadedb.schema.Schema;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 
 /**
@@ -59,6 +60,10 @@ public final class FullTextCorpusDeltas {
    */
   public record CorpusDelta(String indexName, long docs, long length) {
   }
+
+  // A systematic cause (a schema that does not hold the index) would fail every delta of every transaction: one warning a minute
+  private static final long       FAILURE_LOG_THROTTLE_MS = 60_000L;
+  private static final AtomicLong LAST_FAILURE_LOG        = new AtomicLong(0L);
 
   private final List<Entry> entries = new ArrayList<>(2);
   // Every document of a bulk load lands on the same index: remember it, so the common case costs a reference comparison
@@ -150,8 +155,51 @@ public final class FullTextCorpusDeltas {
   public List<CorpusDelta> snapshot() {
     final List<CorpusDelta> result = new ArrayList<>(entries.size());
     for (final Entry e : entries)
-      result.add(new CorpusDelta(e.indexName, e.docs, e.length));
+      // an insert and a delete of the same length in one transaction net to nothing: there is nothing for another node to apply
+      if (e.docs != 0 || e.length != 0)
+        result.add(new CorpusDelta(e.indexName, e.docs, e.length));
     return result;
+  }
+
+  /** The commit is about to make the pages of this transaction visible, see {@link FullTextIndexMetadata#commitApplyStarted}. */
+  public void commitApplyStarted() {
+    for (final Entry e : entries)
+      e.metadata.commitApplyStarted();
+  }
+
+  /** The delta has reached the counters, or the commit gave up: pairs {@link #commitApplyStarted}. */
+  public void commitApplyFinished() {
+    for (final Entry e : entries)
+      e.metadata.commitApplyFinished();
+  }
+
+  /**
+   * The counters a replicated entry is about to move, marked as being applied (see {@link FullTextIndexMetadata#commitApplyStarted})
+   * before its pages are written. Pair it with {@link #replicatedApplyFinished} in a {@code finally}.
+   *
+   * @return the marked counters, empty when the entry carries no delta
+   */
+  public static List<FullTextIndexMetadata> replicatedApplyStarted(final Schema schema, final List<CorpusDelta> deltas) {
+    if (deltas == null || deltas.isEmpty())
+      return List.of();
+    final List<FullTextIndexMetadata> marked = new ArrayList<>(deltas.size());
+    for (final CorpusDelta delta : deltas)
+      try {
+        final FullTextIndexMetadata metadata = metadataOf(schema, delta.indexName());
+        if (metadata != null) {
+          metadata.commitApplyStarted();
+          marked.add(metadata);
+        }
+      } catch (final RuntimeException e) {
+        // the apply of the delta reports it
+      }
+    return marked;
+  }
+
+  /** @see #replicatedApplyStarted */
+  public static void replicatedApplyFinished(final List<FullTextIndexMetadata> marked) {
+    for (final FullTextIndexMetadata metadata : marked)
+      metadata.commitApplyFinished();
   }
 
   /**
@@ -176,7 +224,14 @@ public final class FullTextCorpusDeltas {
    */
   public void applyCommitted() {
     for (final Entry e : entries)
-      e.metadata.applyCorpusDelta(e.docs, e.length);
+      try {
+        e.metadata.applyCorpusDelta(e.docs, e.length);
+      } catch (final RuntimeException ex) {
+        // The pages are published: a commit past that point cannot be reported as failed because of an estimate. The counters are
+        // armed to be checked against the live data instead, as for a replicated delta that cannot be applied
+        e.metadata.requireRescan();
+        logFailure(e.indexName, ex);
+      }
   }
 
   /**
@@ -201,11 +256,18 @@ public final class FullTextCorpusDeltas {
         // the first search
         if (metadata != null)
           metadata.requireRescan();
-        LogManager.instance().log(FullTextCorpusDeltas.class, Level.WARNING,
-            "Cannot apply the BM25 corpus counters of full-text index '%s' carried by a replicated transaction", e,
-            delta.indexName());
+        logFailure(delta.indexName(), e);
       }
     }
+  }
+
+  private static void logFailure(final String indexName, final RuntimeException e) {
+    final long now = System.currentTimeMillis();
+    final long last = LAST_FAILURE_LOG.get();
+    if (now - last > FAILURE_LOG_THROTTLE_MS && LAST_FAILURE_LOG.compareAndSet(last, now))
+      LogManager.instance().log(FullTextCorpusDeltas.class, Level.WARNING,
+          "Cannot apply the BM25 corpus counters of full-text index '%s' (further failures are not logged for a minute)", e,
+          indexName);
   }
 
   /**
