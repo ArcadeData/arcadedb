@@ -304,7 +304,9 @@ public class GraphEngine {
    * raises a {@link RecordVetoedException}, because this method has to return an edge and cannot answer "none": a caller that
    * counts the edges it wrote must use {@link #newEdgeReportingVeto(Vertex, String, Identifiable, Object...)} instead (issue
    * #10085). {@code fromVertex} is taken as it is: the {@link Vertex} accessors resolve its most recent version in the transaction
-   * before calling, while {@code newEdgeReportingVeto} does that itself because its callers hold any {@link Vertex}.
+   * before calling, while {@code newEdgeReportingVeto} does that itself because its callers hold any {@link Vertex}. Only an edge with a
+   * record can be refused: a lightweight edge type owns no record, so no record listener is consulted for it and its edges are always
+   * created.
    *
    * @throws RecordVetoedException if a before-create listener vetoed the edge, in which case nothing was stored or wired
    */
@@ -338,7 +340,8 @@ public class GraphEngine {
    * {@code initializer} sets them on the new edge before it is saved, so they are part of the CREATE: a listener's veto and a unique
    * index that refuses one of them both refuse the whole edge, and nothing is left wired the way a create followed by an update
    * would leave it (issue #10085). A lightweight edge type has no record to initialize, but the initializer still sees the edge so that
-   * naming a property on it is refused as it is by {@code set()}.
+   * naming a property on it is refused as it is by {@code set()}; its uniqueness check runs before the initializer, so a duplicate edge is
+   * refused first.
    *
    * @param initializer receives the new, unsaved edge; {@code null} for none
    *
