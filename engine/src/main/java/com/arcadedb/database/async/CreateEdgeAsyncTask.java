@@ -63,9 +63,10 @@ public class CreateEdgeAsyncTask implements DatabaseAsyncTask {
           .newLightEdge((VertexInternal) sourceVertex.getRecord(), edgeType, destinationVertex.getIdentity());
     else
       edge = database.getGraphEngine()
-          .newEdge((VertexInternal) sourceVertex.getRecord(), edgeType, destinationVertex.getIdentity(), edgeAttributes);
+          .newEdgeReportingVeto((VertexInternal) sourceVertex.getRecord(), edgeType, destinationVertex.getIdentity(), edgeAttributes);
 
-    if (callback != null)
+    // AN EDGE A BeforeRecordCreateListener VETOED IS NOT AN ERROR AND CREATED NOTHING: NO CALLBACK, AS FOR A VETOED DOCUMENT (issue #10085)
+    if (edge != null && callback != null)
       callback.call(edge, createdSourceVertex, createdDestinationVertex);
   }
 

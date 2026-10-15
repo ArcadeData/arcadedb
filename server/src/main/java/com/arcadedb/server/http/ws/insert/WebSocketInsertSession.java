@@ -793,10 +793,8 @@ public class WebSocketInsertSession {
     try {
       switch (options.conflictMode) {
       case UPDATE -> {
-        if (updateExisting(typeName, properties)) {
-          counts.updated++;
+        if (counts.upserted(updateExisting(typeName, properties)))
           return;
-        }
       }
       case IGNORE -> {
         if (findByKey(typeName, properties) != null) {
@@ -814,8 +812,7 @@ public class WebSocketInsertSession {
       }
       }
 
-      insert(type, typeName, properties, from, to);
-      counts.inserted++;
+      counts.inserted(insert(type, typeName, properties, from, to));
     } catch (final DuplicatedKeyException dup) {
       switch (options.conflictMode) {
       case IGNORE -> counts.ignored++;
@@ -823,9 +820,7 @@ public class WebSocketInsertSession {
       // it rather than lose the row. If the match is gone again (a transient window), or a third writer races
       // the retry too, it is a retriable CONFLICT. Anything else is a real failure, not a conflict.
       case UPDATE -> {
-        if (updateExisting(typeName, properties))
-          counts.updated++;
-        else
+        if (!counts.upserted(updateExisting(typeName, properties)))
           throw dup;
       }
       case ERROR, ABORT -> throw dup;
@@ -833,7 +828,11 @@ public class WebSocketInsertSession {
     }
   }
 
-  private void insert(final DocumentType type, final String typeName, final Map<String, Object> properties,
+  /**
+   * @return {@code true} when the record was created, {@code false} when a before-create listener vetoed it: the engine's answer,
+   * which {@code save()} and {@code newEdge()} do not give, so a refused row is not counted as written (issue #10084)
+   */
+  private boolean insert(final DocumentType type, final String typeName, final Map<String, Object> properties,
       final String from, final String to) {
     if (type instanceof EdgeType) {
       final Vertex fromVertex = database.lookupByRID(database.newRID(from), false).asVertex(false);
@@ -842,16 +841,18 @@ public class WebSocketInsertSession {
       // refuses one of them refuses the CREATE - which LocalDatabase now undoes whole. Created and then updated,
       // the refusal arrived at the update, leaving a property-less edge already wired into both vertices and
       // acknowledged to the client as not written.
-      fromVertex.newEdge(typeName, database.newRID(to), properties);
-    } else if (type instanceof VertexType) {
+      return database.getGraphEngine().newEdgeReportingVeto(fromVertex, typeName, database.newRID(to), properties) != null;
+    }
+
+    if (type instanceof VertexType) {
       final MutableVertex vertex = database.newVertex(typeName);
       vertex.set(properties);
-      vertex.save();
-    } else {
-      final MutableDocument document = database.newDocument(typeName);
-      document.set(properties);
-      document.save();
+      return vertex.saveReportingVeto();
     }
+
+    final MutableDocument document = database.newDocument(typeName);
+    document.set(properties);
+    return document.saveReportingVeto();
   }
 
   /**
@@ -864,16 +865,17 @@ public class WebSocketInsertSession {
    * {@code updateColumnsOnConflict} finds no value and is skipped like any absent column. The same rules as
    * gRPC's {@code applyConflictUpdates}.
    *
-   * @return {@code false} when no record matched, in which case the caller inserts
+   * @return {@link UpsertOutcome#NO_MATCH} when no record matched, in which case the caller inserts. A veto is not "no match", or
+   * the caller would insert a second record for the key (issue #10084)
    */
-  private boolean updateExisting(final String typeName, final Map<String, Object> properties) {
+  private UpsertOutcome updateExisting(final String typeName, final Map<String, Object> properties) {
     try (final ResultSet rs = lookupByKey(typeName, properties)) {
       if (!rs.hasNext())
-        return false;
+        return UpsertOutcome.NO_MATCH;
 
       final Result match = rs.next();
       if (!match.isElement())
-        return false;
+        return UpsertOutcome.NO_MATCH;
 
       final MutableDocument existing = match.getElement().get().asDocument().modify();
       // The upsert writes the client's values, not values computed from the record read: no stale-read refusal (#8610)
@@ -891,8 +893,8 @@ public class WebSocketInsertSession {
           continue;
         existing.set(column, value);
       }
-      existing.save();
-      return true;
+      // an update a BeforeRecordUpdateListener vetoed is not counted as one
+      return existing.saveReportingVeto() ? UpsertOutcome.UPDATED : UpsertOutcome.VETOED;
     }
   }
 
@@ -951,6 +953,9 @@ public class WebSocketInsertSession {
     return second != null && !second.isBlank() ? second : null;
   }
 
+  /** What an upsert by key did: a veto is not "no match", or the caller would insert a second record for the key. */
+  private enum UpsertOutcome {NO_MATCH, UPDATED, VETOED}
+
   /** Per-chunk tallies, the shape of the gRPC {@code BatchAck} counters. */
   private static final class ChunkCounts {
     private final boolean   concealErrors;
@@ -965,6 +970,29 @@ public class WebSocketInsertSession {
 
     private ChunkCounts(final boolean concealErrors) {
       this.concealErrors = concealErrors;
+    }
+
+    /**
+     * Counts the outcome of an upsert by key, answering whether a record matched (so nothing is to be inserted). A write a
+     * listener vetoed is counted as ignored: the row was refused on purpose, not applied and not failed (issue #10084).
+     */
+    private boolean upserted(final UpsertOutcome outcome) {
+      switch (outcome) {
+      case UPDATED -> updated++;
+      case VETOED -> ignored++;
+      case NO_MATCH -> {
+        return false;
+      }
+      }
+      return true;
+    }
+
+    /** Counts a create, which a {@code BeforeRecordCreateListener} may have vetoed (issue #10084). */
+    private void inserted(final boolean created) {
+      if (created)
+        inserted++;
+      else
+        ignored++;
     }
 
     /** Adds the tallies of a committed attempt to the chunk's running totals. */
