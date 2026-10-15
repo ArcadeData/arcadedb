@@ -78,6 +78,20 @@ class Issue10055DurationParseTest {
   }
 
   @Test
+  void aFractionDoesNotRoundTheWholeCountsThroughADouble() {
+    // 2^53 + 1 months: a double holds 2^53, so reading the whole text through doubles lost a month
+    final CypherDuration duration = CypherDuration.parse("P9007199254740993M0.5D");
+    assertThat(duration.getMonths()).isEqualTo(9_007_199_254_740_993L);
+    assertThat(duration.getDays()).isZero();
+    assertThat(duration.getSeconds()).isEqualTo(12 * 3600L);
+
+    // The whole part of the fractional component itself stays exact too
+    assertThat(CypherDuration.parse("P9007199254740993.5D").getDays()).isEqualTo(9_007_199_254_740_993L);
+    assertThat(CypherDuration.parse("P9007199254740993.5D").getSeconds()).isEqualTo(12 * 3600L);
+    assertThat(CypherDuration.parse("-P9007199254740993.5D").getDays()).isEqualTo(-9_007_199_254_740_993L);
+  }
+
+  @Test
   void validTextsStillParse() {
     assertThat(CypherDuration.parse("PT0S").toString()).isEqualTo("PT0S");
     assertThat(CypherDuration.parse("P1Y").toString()).isEqualTo("P1Y");
