@@ -24,6 +24,7 @@ import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.ast.PathMode;
+import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.utility.RidHashSet;
 
 import java.util.ArrayDeque;
@@ -98,6 +99,9 @@ public class BreadthFirstTraverser extends GraphTraverser {
     private final boolean readEdges = (edgePropertyFilters != null && !edgePropertyFilters.isEmpty()) || edgePredicate != null;
     private final boolean startIsEndOnReturn = minHops == 1 && pathMode != PathMode.ACYCLIC;
     private final ArrayDeque<Vertex> ready = new ArrayDeque<>();
+    // A level can be the whole graph, and it is expanded inside one hasNext(): the command deadline and a terminated statement must still stop it
+    private final WorkGuard guard = WorkGuard.forCommandDeadline(context);
+    private int visits;
     private List<Vertex> level = new ArrayList<>();
     private int depth;
     private boolean startReported;
@@ -128,6 +132,7 @@ public class BreadthFirstTraverser extends GraphTraverser {
     private void expandLevel() {
       final List<Vertex> next = new ArrayList<>();
       for (final Vertex vertex : level) {
+        guard.checkPeriodically(visits++);
         if (readEdges) {
           for (final Edge edge : getEdges(vertex)) {
             try {
