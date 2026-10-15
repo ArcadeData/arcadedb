@@ -6093,6 +6093,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
    * termination as {@link QueryTerminatedException} whatever wraps it (so the driver does not retry a search somebody
    * stopped), and carries a leader refusal's {@code FAILED_PRECONDITION} and address. {@code GrpcErrorMapper.statusCodeFor}
    * is private for that reason: a handler that takes the code without the rest has nowhere to take it from.
+   * <p>
+   * Package-private only so the unit test can drive it without a running server.
    */
   StatusException toSearchStatus(final String operation, final Exception e) {
     if (e instanceof final StatusException se)

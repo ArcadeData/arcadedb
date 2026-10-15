@@ -87,9 +87,11 @@ class Issue10088MisdirectedListenerDoesNotBlockTest {
         raft.getLocalPeerId()));
 
     assertThat(raft.getMisdirectedRaftRequestsRefused()).isEqualTo(1L);
-    // Neither the handler thread nor the recovery task has a reason to ask: the declared list answers
-    Awaitility.await().pollDelay(200, TimeUnit.MILLISECONDS).atMost(5, TimeUnit.SECONDS)
-        .until(() -> divisionReads.get() == 0);
+    // Neither the handler thread nor the recovery task has a reason to ask: the declared list answers. The task is waited
+    // for, or the count would be read before it had a chance to ask
+    Awaitility.await("the recovery task completed").atMost(10, TimeUnit.SECONDS)
+        .until(() -> log.countFormattedContaining("This node sent a Raft appendEntries meant for peer 'localhost_2435'") == 1);
+    assertThat(divisionReads.get()).isZero();
   }
 
   /** An id nobody declared is the case the live read existed for: it must not park the handler thread either. */
@@ -143,6 +145,30 @@ class Issue10088MisdirectedListenerDoesNotBlockTest {
   }
 
   /**
+   * The repair of this node's own channel to a peer it has not yet learnt as a member must not wait behind a stranger. Both
+   * are outside the declared list until a recovery task has read the live configuration, so they would share one throttling
+   * slot, and whichever came first would drop the other for the whole interval. The division is parked until both have been
+   * refused, which fixes the order the shared slot would have been claimed in.
+   */
+  @Test
+  void aStrangersRefusalsDoNotDelayTheRepairOfAPeerOnlyTheLiveConfigurationKnows() throws Exception {
+    final RaftPeer joined = RaftPeer.newBuilder().setId("joined_peer").setAddress("localhost:2439").build();
+    final RaftHAServer raft = detachedServer(ratis((method, args) -> {
+      divisionReads.incrementAndGet();
+      divisionGate.await();
+      return liveDivision(List.of(joined));
+    }));
+
+    returnsWhileTheDivisionIsParked(
+        () -> raft.onMisdirectedRaftRequest("requestVote", RaftPeerId.valueOf("stranger"), RaftPeerId.valueOf("localhost_2435")));
+    returnsWhileTheDivisionIsParked(() -> raft.onMisdirectedRaftRequest("appendEntries", joined.getId(), raft.getLocalPeerId()));
+    divisionGate.countDown();
+
+    Awaitility.await("the self-dialled channel is looked at").atMost(10, TimeUnit.SECONDS)
+        .until(() -> log.countFormattedContaining("This node sent a Raft appendEntries meant for peer 'joined_peer'") == 1);
+  }
+
+  /**
    * Runs {@code call} on a thread of its own and fails when it has not returned after a generous bound. The division is
    * parked for the whole test, so a call that waits for it never returns at all: the bound is a tripwire between a handler
    * that does not wait and one that waits forever.
@@ -175,11 +201,16 @@ class Issue10088MisdirectedListenerDoesNotBlockTest {
   private RaftServer ratisWithLivePeers(final List<RaftPeer> extraPeers) {
     return ratis((method, args) -> {
       divisionReads.incrementAndGet();
-      final RaftConfiguration conf = (RaftConfiguration) Proxy.newProxyInstance(getClass().getClassLoader(),
-          new Class<?>[] { RaftConfiguration.class }, (p, m, a) -> "getCurrentPeers".equals(m.getName()) ? extraPeers : null);
-      return Proxy.newProxyInstance(getClass().getClassLoader(), new Class<?>[] { RaftServer.Division.class },
-          (p, m, a) -> "getRaftConf".equals(m.getName()) ? conf : null);
+      return liveDivision(extraPeers);
     });
+  }
+
+  /** A division whose live configuration lists {@code peers}. */
+  private Object liveDivision(final List<RaftPeer> peers) {
+    final RaftConfiguration conf = (RaftConfiguration) Proxy.newProxyInstance(getClass().getClassLoader(),
+        new Class<?>[] { RaftConfiguration.class }, (p, m, a) -> "getCurrentPeers".equals(m.getName()) ? peers : null);
+    return Proxy.newProxyInstance(getClass().getClassLoader(), new Class<?>[] { RaftServer.Division.class },
+        (p, m, a) -> "getRaftConf".equals(m.getName()) ? conf : null);
   }
 
   @FunctionalInterface

@@ -381,10 +381,15 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   // Issue #10088: the ids of the live Raft configuration as the last recovery task read it. The listener runs on the gRPC
   // handler thread and may not read the live configuration itself (Ratis parks that read while a division initializes), so
   // it consults this copy, written only by the recovery task and replaced as a whole. It starts empty: until a task has
-  // read the configuration, a peer joined after startup shares the not-a-peer slot, which costs it nothing but a turn.
+  // read the configuration, a peer joined after startup shares a not-a-peer slot, which costs it nothing but a turn.
+  // A member removed since keeps its own slot until the next successful read drops it from the copy, and the slots it
+  // took stay in the maps: bounded by the number of peers the cluster has ever had, like the declared ones.
   private volatile Set<RaftPeerId>           misdirectedLiveMemberIds       = Set.of();
-  // The one throttling slot every id outside the cluster shares, so a sender cannot grow the maps above.
+  // The slots every id outside the cluster shares, so a sender cannot grow the maps above: at most these two entries.
+  // A request this node addressed to itself has its own, so a stranger's refusals cannot hold the slot that a repair of
+  // the sender's own channel to a peer it has not yet learnt as a member (one joined after start) needs (issue #10088).
   private static final RaftPeerId            UNKNOWN_MISDIRECTED_PEER       = RaftPeerId.valueOf("<not-a-peer>");
+  private static final RaftPeerId            UNKNOWN_MISDIRECTED_SELF_DIAL  = RaftPeerId.valueOf("<not-a-peer-self-dial>");
   // Short enough that the self-dial channel is rebuilt soon after the resolver changes its answer, long enough that the
   // single channel-recovery worker, whose channel close can block for seconds, is never kept busy by it.
   static final     long                      MISDIRECTED_RECOVERY_INTERVAL_MS = 5_000L;
@@ -982,7 +987,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     // is read through a division that Ratis parks the reader of for as long as it takes to initialize. So the slot comes
     // from what needs no read - the declared list, and the live members the last recovery task saw - and the task
     // settles whether the id is a member after all.
-    final RaftPeerId slot = isMemberWithoutReadingTheDivision(addressedTo) ? addressedTo : UNKNOWN_MISDIRECTED_PEER;
+    final RaftPeerId slot = isMemberWithoutReadingTheDivision(addressedTo) ? addressedTo
+        : localPeerId.equals(requestor) ? UNKNOWN_MISDIRECTED_SELF_DIAL : UNKNOWN_MISDIRECTED_PEER;
     if (!claimThrottleSlot(misdirectedRecoveryQueuedAt, slot, System.currentTimeMillis(),
         MISDIRECTED_RECOVERY_INTERVAL_MS))
       return;
@@ -1063,7 +1069,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     final Set<RaftPeerId> ids = new HashSet<>(live.size() * 2);
     for (final RaftPeer peer : live)
       ids.add(peer.getId());
-    misdirectedLiveMemberIds = Set.copyOf(ids);
+    // Published as a view of a set nothing mutates again: readers on the handler threads see all of it or none of it
+    misdirectedLiveMemberIds = Collections.unmodifiableSet(ids);
     return ids.contains(peerId);
   }
 
