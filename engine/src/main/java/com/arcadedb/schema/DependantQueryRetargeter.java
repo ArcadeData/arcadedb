@@ -87,9 +87,14 @@ final class DependantQueryRetargeter {
     }
   }
 
-  /** The name as one identifier token, plain or between back-ticks, and not as a part of a longer name or of a path. */
+  /**
+   * The name as one identifier token, plain or between back-ticks, and not as a part of a longer name or of a path. Unicode aware:
+   * a type name may hold letters outside ASCII, and the longer name {@code CittàX} must not be taken for an occurrence of
+   * {@code Città} just because its last letter is not an ASCII word character.
+   */
   private static Pattern occurrencesOf(final String name) {
-    return Pattern.compile("(?<![\\w$`.])" + Pattern.quote(name) + "(?![\\w$`])|" + Pattern.quote(Identifier.quote(name)));
+    return Pattern.compile("(?<![\\w$`.])" + Pattern.quote(name) + "(?![\\w$`])|" + Pattern.quote(Identifier.quote(name)),
+        Pattern.UNICODE_CHARACTER_CLASS);
   }
 
   private static boolean namesSourceType(final SelectStatement select, final String typeName) {
