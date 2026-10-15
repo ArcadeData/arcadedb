@@ -93,6 +93,14 @@ updates:
       # Dependabot PR that touches native/pom.xml.
       - dependency-name: "org.apache.groovy:*"
         update-types: ["version-update:semver-major"]
+      # Maven 3.10 (the wrapper's org.apache.maven:apache-maven) breaks the release:
+      # central-publishing-maven-plugin stages through a local install, and under 3.10
+      # that install also writes maven-metadata-local.xml and _remote.repositories into
+      # the Central bundle, which the Portal rejects ("Bundle has content that does NOT
+      # have a .pom file"), failing the 26.10.2 release. mvn-release.yml runs through the
+      # wrapper, so keep it on 3.9.x until a 3.10 release bundle is proven clean.
+      - dependency-name: "org.apache.maven:apache-maven"
+        versions: [">= 3.10.0"]
 
   - package-ecosystem: "github-actions"
     directory: "/"
