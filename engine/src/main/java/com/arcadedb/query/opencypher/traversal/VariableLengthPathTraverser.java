@@ -96,6 +96,20 @@ public class VariableLengthPathTraverser extends GraphTraverser {
   }
 
   /**
+   * Answers each end vertex of the pattern once, however many paths lead to it, for a caller that reads nothing of the path (the
+   * relationship and path variables unused, a lower bound of 0 or 1). Always walks breadth first with a visited set:
+   * {@code useBFS} only chooses the order in which paths are enumerated. See {@link BreadthFirstTraverser#traverseDistinctEndpoints}.
+   */
+  public Iterator<Vertex> traverseDistinctEndpoints(final Vertex startVertex) {
+    final BreadthFirstTraverser strategy = new BreadthFirstTraverser(direction, relationshipTypes, edgePropertyFilters, minHops,
+        maxHops, trackPaths, pathMode);
+    strategy.withEdgePredicate(edgePredicate);
+    strategy.withEdgesUnread(edgesUnread);
+    strategy.withContext(context);
+    return strategy.traverseDistinctEndpoints(startVertex);
+  }
+
+  /**
    * Builds the strategy this traverser delegates to. The inline {@code WHERE} predicate, and whether the edges are read, are forwarded
    * to it: the delegate does the per-edge walking, so a predicate left behind here would be silently
    * dropped for every variable-length pattern.

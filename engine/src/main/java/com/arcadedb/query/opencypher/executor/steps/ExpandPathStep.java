@@ -82,6 +82,12 @@ public class ExpandPathStep extends AbstractExecutionStep {
   private final Direction directionOverride;
   private final boolean reverseResultPath;
   /**
+   * Set by the planner when nothing downstream can tell two paths between the same pair of vertices apart (see
+   * {@link com.arcadedb.query.opencypher.executor.VariableLengthDistinctEndpoints}): the step then reports each end vertex
+   * once per start vertex, found with a visited set, instead of one row per path.
+   */
+  private boolean distinctEndpoints;
+  /**
    * Created only when the target node pattern carries Cypher 25 dynamic {@code $(expression)}
    * labels: every other pattern shape resolves its labels statically and must not pay for it.
    */
@@ -121,6 +127,12 @@ public class ExpandPathStep extends AbstractExecutionStep {
         new ExpressionEvaluator(new CypherFunctionFactory(DefaultSQLFunctionFactory.getInstance())) : null;
   }
 
+  /** Reports each end vertex once per start vertex instead of one row per path; the planner decides when that is safe. */
+  public ExpandPathStep withDistinctEndpoints() {
+    this.distinctEndpoints = true;
+    return this;
+  }
+
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     checkForPrevious("ExpandPathStep requires a previous step");
@@ -135,6 +147,7 @@ public class ExpandPathStep extends AbstractExecutionStep {
       private ResultSet prevResults = null;
       private Result lastResult = null;
       private Iterator<TraversalPath> currentPaths = null;
+      private Iterator<Vertex> currentEndpoints = null;
       private Vertex boundTarget = null;
       private final List<Result> buffer = new ArrayList<>();
       private int bufferIndex = 0;
@@ -169,8 +182,27 @@ public class ExpandPathStep extends AbstractExecutionStep {
 
         while (buffer.size() < n) {
           guard.check();
-          // Always use path traversal for correct Cypher edge-based relationship uniqueness
-          if (currentPaths != null && currentPaths.hasNext()) {
+          if (currentEndpoints != null && currentEndpoints.hasNext()) {
+            final long begin = context.isProfiling() ? System.nanoTime() : 0;
+            try {
+              if (context.isProfiling())
+                rowCount++;
+
+              final Vertex targetVertex = currentEndpoints.next();
+              if (!acceptsTarget(targetVertex, lastResult, boundTarget))
+                continue;
+
+              final ResultInternal result = new ResultInternal();
+              for (final String prop : lastResult.getPropertyNames())
+                result.setProperty(prop, lastResult.getProperty(prop));
+              result.setProperty(targetVariable, targetVertex);
+              buffer.add(result);
+            } finally {
+              if (context.isProfiling())
+                cost += System.nanoTime() - begin;
+            }
+          } else if (currentPaths != null && currentPaths.hasNext()) {
+            // Always use path traversal for correct Cypher edge-based relationship uniqueness
             final long begin = context.isProfiling() ? System.nanoTime() : 0;
             try {
               if (context.isProfiling())
@@ -180,24 +212,8 @@ public class ExpandPathStep extends AbstractExecutionStep {
               final Vertex targetVertex = traversedPath.getEndVertex();
               final TraversalPath path = reverseResultPath ? traversedPath.reversed() : traversedPath;
 
-              // Filter by target node label if specified
-              if (targetNodePattern != null && (targetNodePattern.hasLabels() || targetNodePattern.hasDynamicLabels())) {
-                if (!matchesTargetLabel(targetVertex, lastResult))
-                  continue;
-              }
-
-              // Filter by target node properties if specified
-              if (targetNodePattern != null && targetNodePattern.hasProperties()) {
-                if (!matchesTargetProperties(targetVertex, lastResult))
-                  continue;
-              }
-
-              // If the target variable is already bound from a previous step,
-              // only accept paths that end at the bound vertex
-              if (boundTarget != null) {
-                if (!targetVertex.getIdentity().equals(boundTarget.getIdentity()))
-                  continue;
-              }
+              if (!acceptsTarget(targetVertex, lastResult, boundTarget))
+                continue;
 
               // Relationship uniqueness: check if any edge in this path is
               // already used by a relationship variable in the current result
@@ -255,7 +271,10 @@ public class ExpandPathStep extends AbstractExecutionStep {
               // A relationship list an earlier clause bound to this variable is the whole path: expanding the
               // graph instead ignored the binding and returned every walk the pattern allows (issue #9828)
               final VariableLengthPathTraverser traverser = createTraverser(lastResult);
-              if (GraphTraverser.isBoundRelationshipList(lastResult, relationshipVariable)) {
+              if (distinctEndpoints && !GraphTraverser.isBoundRelationshipList(lastResult, relationshipVariable)) {
+                currentPaths = null;
+                currentEndpoints = traverser.traverseDistinctEndpoints(sourceVertex);
+              } else if (GraphTraverser.isBoundRelationshipList(lastResult, relationshipVariable)) {
                 final TraversalPath bound = traverser.matchBoundPath(sourceVertex,
                     lastResult.getProperty(relationshipVariable), reverseResultPath, relationshipVariable);
                 currentPaths = bound != null ? List.of(bound).iterator() : null;
@@ -263,6 +282,7 @@ public class ExpandPathStep extends AbstractExecutionStep {
                 currentPaths = traverser.traversePaths(sourceVertex);
             } else {
               currentPaths = null;
+              currentEndpoints = null;
             }
           }
         }
@@ -273,6 +293,27 @@ public class ExpandPathStep extends AbstractExecutionStep {
         ExpandPathStep.this.close();
       }
     };
+  }
+
+  /**
+   * Whether a vertex the traversal ended at satisfies the target node pattern (labels, inline properties) and, when the target
+   * variable is already bound by an earlier step, is that very vertex.
+   */
+  private boolean acceptsTarget(final Vertex targetVertex, final Result row, final Vertex boundTarget) {
+    // Filter by target node label if specified
+    if (targetNodePattern != null && (targetNodePattern.hasLabels() || targetNodePattern.hasDynamicLabels())) {
+      if (!matchesTargetLabel(targetVertex, row))
+        return false;
+    }
+
+    // Filter by target node properties if specified
+    if (targetNodePattern != null && targetNodePattern.hasProperties()) {
+      if (!matchesTargetProperties(targetVertex, row))
+        return false;
+    }
+
+    // If the target variable is already bound from a previous step, only accept paths that end at the bound vertex
+    return boundTarget == null || targetVertex.getIdentity().equals(boundTarget.getIdentity());
   }
 
   /**
@@ -391,7 +432,7 @@ public class ExpandPathStep extends AbstractExecutionStep {
     builder.append("(").append(sourceVariable).append(")");
     builder.append(pattern);
     builder.append("(").append(targetVariable).append(")");
-    builder.append(" [").append(useBFS ? "BFS" : "DFS").append("]");
+    builder.append(" [").append(distinctEndpoints ? "DISTINCT ENDPOINTS" : useBFS ? "BFS" : "DFS").append("]");
     if (context.isProfiling()) {
       builder.append(" (").append(getCostFormatted());
       if (rowCount > 0)

@@ -26,6 +26,7 @@ import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.ast.PathMode;
 import com.arcadedb.utility.RidHashSet;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.LinkedList;
@@ -66,6 +67,98 @@ public class BreadthFirstTraverser extends GraphTraverser {
   @Override
   public Iterator<TraversalPath> traversePaths(final Vertex startVertex) {
     return new BFSPathIterator(startVertex);
+  }
+
+  /**
+   * Walks the pattern as a reachability search and answers each end vertex once, however many paths lead to it (issue #10062).
+   * <p>
+   * Only for a caller that needs the set of vertices some path of {@code minHops..maxHops} relationships reaches, and
+   * only for {@code minHops <= 1}: then the shortest walk to a vertex other than the start is a simple path, which is a
+   * trail and an acyclic path as well, so it exists exactly when the vertex is found at all, whatever the path mode. A vertex is
+   * expanded once, from its shallowest depth, where it has the most hops left to spend. The traversal is lazy and level by
+   * level, so a {@code LIMIT} stops it early and its memory is the widest level, not the number of paths.
+   * <p>
+   * The start vertex is the exception, because getting back to it means leaving along one relationship and returning along
+   * another. With a lower bound of 0 it is the first end vertex. With a lower bound of 1 it is an end vertex when a cycle leads
+   * back to it: any closed walk (WALK), never (ACYCLIC), and a shortest closed walk of a directed pattern is a simple cycle, which
+   * is a trail (TRAIL). An undirected TRAIL pattern is the one case a visited set cannot answer (the shortest way back is the
+   * relationship it left along, which a trail may not repeat), so the caller must not ask for it.
+   */
+  public Iterator<Vertex> traverseDistinctEndpoints(final Vertex startVertex) {
+    if (minHops > 1)
+      throw new IllegalStateException("A distinct-endpoint traversal needs a lower bound of 0 or 1, got " + minHops);
+    if (minHops == 1 && direction == Direction.BOTH && pathMode == PathMode.TRAIL)
+      throw new IllegalStateException("A distinct-endpoint traversal cannot decide an undirected trail pattern with a lower bound of 1");
+    return new DistinctEndpointIterator(startVertex);
+  }
+
+  private final class DistinctEndpointIterator implements Iterator<Vertex> {
+    private final RidHashSet seen = createVisitedSet();
+    private final Vertex start;
+    private final boolean readEdges = (edgePropertyFilters != null && !edgePropertyFilters.isEmpty()) || edgePredicate != null;
+    private final boolean startIsEndOnReturn = minHops == 1 && pathMode != PathMode.ACYCLIC;
+    private final ArrayDeque<Vertex> ready = new ArrayDeque<>();
+    private List<Vertex> level = new ArrayList<>();
+    private int depth;
+    private boolean startReported;
+
+    DistinctEndpointIterator(final Vertex start) {
+      this.start = start;
+      level.add(start);
+      // The start is never found as a new vertex: it is reported at depth 0 (lower bound 0) or when a cycle leads back to it
+      markVisited(start, seen);
+      if (minHops == 0)
+        ready.add(start);
+    }
+
+    @Override
+    public boolean hasNext() {
+      while (ready.isEmpty() && !level.isEmpty() && depth < maxHops)
+        expandLevel();
+      return !ready.isEmpty();
+    }
+
+    @Override
+    public Vertex next() {
+      if (!hasNext())
+        throw new NoSuchElementException();
+      return ready.poll();
+    }
+
+    private void expandLevel() {
+      final List<Vertex> next = new ArrayList<>();
+      for (final Vertex vertex : level) {
+        if (readEdges) {
+          for (final Edge edge : getEdges(vertex)) {
+            try {
+              if (matchesTypeFilter(edge) && matchesPropertyFilter(edge) && matchesEdgePredicate(edge))
+                reach(getOtherVertex(edge, vertex), next);
+            } catch (final RecordNotFoundException e) {
+              GhostEdgeReporter.reportSkipped(e);
+            }
+          }
+        } else
+          for (final Vertex neighbour : getNextVertices(vertex))
+            reach(neighbour, next);
+      }
+      level = next;
+      depth++;
+    }
+
+    private void reach(final Vertex vertex, final List<Vertex> next) {
+      if (isVisited(vertex, seen)) {
+        // A cycle back to the start makes it an end vertex of a pattern whose lower bound is 1, once; its neighbours were all
+        // explored from depth 0
+        if (startIsEndOnReturn && !startReported && vertex.getIdentity().equals(start.getIdentity())) {
+          startReported = true;
+          ready.add(vertex);
+        }
+        return;
+      }
+      markVisited(vertex, seen);
+      ready.add(vertex);
+      next.add(vertex);
+    }
   }
 
   /**
