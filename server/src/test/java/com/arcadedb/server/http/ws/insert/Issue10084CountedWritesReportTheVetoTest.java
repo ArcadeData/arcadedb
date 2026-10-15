@@ -38,7 +38,9 @@ class Issue10084CountedWritesReportTheVetoTest {
   @Test
   void theInsertSessionWritesOnlyThroughTheReportingForms() throws IOException {
     assertThat(CountedWriteScan.offendersIn("src/main/java/com/arcadedb/server/http/ws/insert/WebSocketInsertSession.java", null))
-        .as("lines of the /ws insert session that write through save() or newEdge(), which cannot report a veto").isEmpty();
+        .as("lines of the /ws insert session that write through save() or newEdge(), which cannot report a listener's veto: write through"
+            + " saveReportingVeto() or GraphEngine.newEdgeReportingVeto() and count the engine's answer (inserted, or ignored when false)")
+        .isEmpty();
   }
 
   @Test

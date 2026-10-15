@@ -46,11 +46,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class Issue10085EdgeCreateVetoTest extends TestHelper {
-  private static final String V        = "V10085";
-  private static final String E        = "E10085";
-  private static final String LIGHT    = "ELight10085";
-  private static final String REFUSED  = "refused";
-  private static final String KEPT     = "kept";
+  private static final String V = "V10085";
+  private static final String E = "E10085";
+  private static final String LIGHT = "ELight10085";
+  private static final String REFUSED = "refused";
+  private static final String KEPT = "kept";
 
   private RID source;
   private RID target;
@@ -145,16 +145,16 @@ class Issue10085EdgeCreateVetoTest extends TestHelper {
   void theBatchFormSkipsTheRefusedEdgesAndWiresTheOthers() {
     database.transaction(() -> source().newEdge(E, target, "tag", KEPT));
 
-    final List<Edge>[] created = new List[1];
+    final List<Edge> created = new ArrayList<>();
     database.transaction(() -> {
       final List<GraphEngine.CreateEdgeOperation> operations = new ArrayList<>();
       operations.add(new GraphEngine.CreateEdgeOperation(E, third, new Object[] { "tag", REFUSED }));
       operations.add(new GraphEngine.CreateEdgeOperation(E, target, new Object[] { "tag", KEPT }));
-      created[0] = ((DatabaseInternal) database).getGraphEngine().newEdges((VertexInternal) source().getRecord(), operations, true);
+      created.addAll(((DatabaseInternal) database).getGraphEngine().newEdges((VertexInternal) source().getRecord(), operations, true));
     });
 
-    assertThat(created[0]).hasSize(1);
-    assertThat(created[0].get(0).getIdentity()).isNotNull();
+    assertThat(created).hasSize(1);
+    assertThat(created.get(0).getIdentity()).isNotNull();
     assertThat(edgeCount(E)).isEqualTo(2L);
     assertThat(source().countEdges(Vertex.DIRECTION.OUT, E)).isEqualTo(2L);
     assertThat(third().countEdges(Vertex.DIRECTION.IN, E)).isZero();

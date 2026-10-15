@@ -22,6 +22,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.event.BeforeRecordCreateListener;
 import com.arcadedb.event.BeforeRecordUpdateListener;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.ResultSet;
 import io.grpc.CallOptions;
 import io.grpc.Channel;
@@ -57,6 +58,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 public class Issue10085GrpcEdgeVetoTest extends BaseGrpcServerTest {
   private static final String VERTEX = "VtxVeto10085";
   private static final String EDGE   = "EdgeVeto10085";
+  private static final String REFUSING_EDGE = "EdgeRefusing10085";
 
   private static final Metadata.Key<String> USER_HEADER     = Metadata.Key.of("x-arcade-user", Metadata.ASCII_STRING_MARSHALLER);
   private static final Metadata.Key<String> PASSWORD_HEADER = Metadata.Key.of("x-arcade-password", Metadata.ASCII_STRING_MARSHALLER);
@@ -136,13 +138,38 @@ public class Issue10085GrpcEdgeVetoTest extends BaseGrpcServerTest {
     assertThat(count(EDGE)).isEqualTo(2L);
   }
 
+  /**
+   * The unary call creates the edge and then sets its properties, which is an update: the create listener saw an edge without a name
+   * and let it through, the update listener refuses the name. The call fails as a client error and, in its own transaction, rolls the
+   * whole call back - no half-initialised edge is committed.
+   */
   @Test
-  void aRefusedEdgeInAUnaryCreateIsAClientErrorAndNotAnInternalOne() {
+  void aVetoedPropertyUpdateOfTheNewEdgeRollsTheWholeUnaryCallBack() {
     assertThatThrownBy(() -> stub.createRecord(CreateRecordRequest.newBuilder().setDatabase(getDatabaseName()).setCredentials(credentials())
         .setType(EDGE).setRecord(edgeRow("refused")).build()))
-        .isInstanceOfSatisfying(StatusRuntimeException.class, e -> assertThat(e.getStatus().getCode()).isEqualTo(Status.Code.INVALID_ARGUMENT));
+        .isInstanceOfSatisfying(StatusRuntimeException.class, e -> {
+          assertThat(e.getStatus().getCode()).isEqualTo(Status.Code.INVALID_ARGUMENT);
+          assertThat(e.getStatus().getDescription()).contains("beforeUpdate");
+        });
 
     assertThat(count(EDGE)).isEqualTo(1L);
+    assertThat(edgeCountOf(from)).isEqualTo(1L);
+  }
+
+  /** A listener that refuses the create itself: newEdge raises the refusal, which reaches the client as INVALID_ARGUMENT. */
+  @Test
+  void aVetoedCreateOfTheEdgeIsAClientErrorAndStoresNothing() {
+    getServerDatabase(0, getDatabaseName()).getSchema().createEdgeType(REFUSING_EDGE).getEvents()
+        .registerListener((BeforeRecordCreateListener) record -> false);
+
+    assertThatThrownBy(() -> stub.createRecord(CreateRecordRequest.newBuilder().setDatabase(getDatabaseName()).setCredentials(credentials())
+        .setType(REFUSING_EDGE).setRecord(edgeRow("kept").toBuilder().setType(REFUSING_EDGE).build()).build()))
+        .isInstanceOfSatisfying(StatusRuntimeException.class, e -> {
+          assertThat(e.getStatus().getCode()).isEqualTo(Status.Code.INVALID_ARGUMENT);
+          assertThat(e.getStatus().getDescription()).contains("vetoed");
+        });
+
+    assertThat(count(REFUSING_EDGE)).isZero();
   }
 
   @Test
@@ -201,6 +228,11 @@ public class Issue10085GrpcEdgeVetoTest extends BaseGrpcServerTest {
     try (final ResultSet rs = getServerDatabase(0, getDatabaseName()).query("sql", "select from " + EDGE + " limit 1")) {
       return rs.next().getIdentity().orElseThrow().toString();
     }
+  }
+
+  private long edgeCountOf(final String vertexRid) {
+    final Database database = getServerDatabase(0, getDatabaseName());
+    return database.lookupByRID(database.newRID(vertexRid), true).asVertex().countEdges(Vertex.DIRECTION.OUT, EDGE);
   }
 
   private long count(final String type) {
