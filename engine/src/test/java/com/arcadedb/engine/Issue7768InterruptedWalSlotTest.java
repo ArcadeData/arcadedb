@@ -330,6 +330,12 @@ class Issue7768InterruptedWalSlotTest extends TestHelper {
 
     assertThat(db.isFencedForRecovery()).isFalse();
 
+    // The capture below counts every SEVERE line in the JVM. Pages the setup dirtied and the background flusher has not
+    // written yet are refused once the database is fenced, adding a "Cannot flush page" line that only a loaded machine is
+    // slow enough to land inside the capture: drain them first, so the count measures the fence alone (as #9760 did for
+    // TransactionManagerWalFileLostFencesTest)
+    assertThat(db.getPageManager().waitAllPagesOfDatabaseAreFlushed(db)).isTrue();
+
     final WALFile dead = new DeadChannelWALFile(db.getDatabasePath() + "/txlog_7768_dead.wal");
     WALFile displaced = null;
     try {
