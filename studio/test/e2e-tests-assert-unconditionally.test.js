@@ -27,6 +27,9 @@
 // nesting level (not inside an if, try, catch, loop or callback) is a probe-then-skip test, and it is refused here, so the
 // shape cannot be added back. The suite itself needs Docker and a browser, this check needs neither.
 //
+// A helper that asserts on the test's behalf does not count: the expect() has to be written in the test body, so a test
+// that delegates all of its assertions to a helper adds one of its own (the filename, the content) after calling it.
+//
 // @author Luca Garulli (l.garulli@arcadedata.com)
 //
 // Run with:

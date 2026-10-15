@@ -25,7 +25,8 @@ function openRecordEditor(rid, type, properties, source) {
 
 // The text a stored value is shown as in the form. A null is an empty field, an object or an array is pretty-printed JSON.
 // Line breaks are normalized to LF because a field cannot hold anything else (a textarea turns CRLF and a lone CR into LF),
-// so an untouched multi-line value compares equal to what the field reads back and is not rewritten by a Save.
+// so an untouched multi-line value compares equal to what the field reads back and is not rewritten by a Save. Editing
+// such a value does save it with LF line endings: the field the user typed in cannot hold the CRLF it started with.
 function recordEditorDisplayValue(value) {
   if (value == null)
     return "";
@@ -360,8 +361,9 @@ function recordEditorSqlValue(current, original) {
   if (typeof original !== "string") {
     if (current === "true" || current === "false")
       return current;
-    if (!isNaN(current) && current.trim() !== "")
-      return current;
+    // a decimal number only: isNaN() also let Infinity and hex through, which are not SQL literals
+    if (/^-?(\d+(\.\d+)?|\.\d+)([eE][-+]?\d+)?$/.test(current.trim()))
+      return current.trim();
     if ((current.startsWith("{") && current.endsWith("}")) || (current.startsWith("[") && current.endsWith("]"))) {
       try {
         JSON.parse(current);
