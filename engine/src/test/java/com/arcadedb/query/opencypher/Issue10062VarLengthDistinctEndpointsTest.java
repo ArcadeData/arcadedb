@@ -27,6 +27,7 @@ import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
@@ -76,11 +77,7 @@ class Issue10062VarLengthDistinctEndpointsTest extends TestHelper {
             final String hop = dir[0] + "[:DEP*" + min + ".." + max + "]" + dir[1];
             final String eligible = "MATCH (a:Pkg)" + hop + "(b:Pkg) WHERE a.id = $key RETURN DISTINCT b.id AS v ORDER BY v";
             final String reference = "MATCH p = (a:Pkg)" + hop + "(b:Pkg) WHERE a.id = $key RETURN DISTINCT b.id AS v ORDER BY v";
-            // an undirected trail with a lower bound of 1 keeps enumerating paths: whether the start is its own end needs a cycle
-            if (dir[0].equals("-") && dir[1].equals("-") && min == 1)
-              assertThat(planOf(eligible)).as(eligible).doesNotContain(ENDPOINTS);
-            else
-              assertThat(planOf(eligible)).as(eligible).contains(ENDPOINTS);
+            assertThat(planOf(eligible)).as(eligible).contains(ENDPOINTS);
             assertThat(planOf(reference)).as(reference).doesNotContain(ENDPOINTS);
             assertThat(column(eligible, "v", Map.of("key", key))).as("%s key=%d", hop, key)
                 .isEqualTo(column(reference, "v", Map.of("key", key)));
@@ -130,6 +127,27 @@ class Issue10062VarLengthDistinctEndpointsTest extends TestHelper {
         assertThat(rows(eligible)).as(eligible).isEqualTo(rows(reference));
       }
     }
+  }
+
+  @Test
+  void aggregatesThatIgnoreRepeatedValuesAreEligible() {
+    final String keys = "WHERE a.id IN [0, 3, 12, 20, 30, 39] ";
+    for (final String hop : new String[] { "-[:DEP*1..4]->", "<-[:DEP*0..3]-", "-[:DEP|OTHER*1..3]-" })
+      for (final String form : new String[] {
+          "RETURN a.id AS s, collect(DISTINCT b.id) AS c ORDER BY s",
+          "RETURN a.id AS s, sum(DISTINCT b.id) AS c, avg(DISTINCT b.id) AS m ORDER BY s",
+          "RETURN a.id AS s, min(b.id) AS lo, max(b.id) AS hi ORDER BY s",
+          "RETURN a.id AS s, min(DISTINCT b.grp) AS lo, max(DISTINCT b.grp) AS hi, count(DISTINCT b) AS n ORDER BY s",
+          "RETURN collect(DISTINCT b.id) AS c, count(DISTINCT a) AS n" }) {
+        final String eligible = "MATCH (a:Pkg)" + hop + "(b:Pkg) " + keys + form;
+        final String reference = "MATCH p = (a:Pkg)" + hop + "(b:Pkg) " + keys + form;
+        assertThat(planOf(eligible)).as(eligible).contains(ENDPOINTS);
+        assertThat(sortedRows(eligible)).as(eligible).isEqualTo(sortedRows(reference));
+      }
+    // an aggregate that counts or adds up the repeats must keep seeing them
+    for (final String form : new String[] { "RETURN collect(b.id) AS c", "RETURN sum(b.id) AS c", "RETURN avg(b.id) AS c",
+        "RETURN count(b) AS c", "RETURN collect(DISTINCT b.id + 1) AS c", "RETURN collect(DISTINCT b.id) AS c, count(b) AS n" })
+      assertThat(planOf("MATCH (a:Pkg)-[:DEP*1..4]->(b:Pkg) WHERE a.id = 39 " + form)).as(form).doesNotContain(ENDPOINTS);
   }
 
   @Test
@@ -222,6 +240,30 @@ class Issue10062VarLengthDistinctEndpointsTest extends TestHelper {
         values.add(resultSet.next().<Object>getProperty(name));
     }
     return values;
+  }
+
+  /** Like {@link #rows}, with the elements of every list value sorted: a collected list has no order the statement promised. */
+  private List<String> sortedRows(final String query) {
+    final List<String> rows = new ArrayList<>();
+    try (final ResultSet resultSet = database.query("opencypher", query)) {
+      while (resultSet.hasNext()) {
+        final Result row = resultSet.next();
+        final List<String> cells = new ArrayList<>();
+        for (final String name : row.getPropertyNames()) {
+          final Object value = row.getProperty(name);
+          if (value instanceof List<?> list) {
+            final List<String> elements = new ArrayList<>();
+            for (final Object element : list)
+              elements.add(String.valueOf(element));
+            Collections.sort(elements);
+            cells.add(name + "=" + elements);
+          } else
+            cells.add(name + "=" + value);
+        }
+        rows.add(String.join(",", cells));
+      }
+    }
+    return rows;
   }
 
   private List<String> rows(final String query) {

@@ -20,12 +20,10 @@ package com.arcadedb.query.opencypher.executor;
 
 import com.arcadedb.query.opencypher.ast.ClauseEntry;
 import com.arcadedb.query.opencypher.ast.CypherStatement;
-import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.FunctionCallExpression;
 import com.arcadedb.query.opencypher.ast.MatchClause;
 import com.arcadedb.query.opencypher.ast.OrderByClause;
-import com.arcadedb.query.opencypher.ast.PathMode;
 import com.arcadedb.query.opencypher.ast.PathPattern;
 import com.arcadedb.query.opencypher.ast.PropertyAccessExpression;
 import com.arcadedb.query.opencypher.ast.QuantifiedPathPattern;
@@ -45,12 +43,13 @@ import java.util.Set;
  * <p>
  * The answer is yes only for a statement that is nothing but {@code MATCH (a)-[r*0..n]->(b) [WHERE ...] RETURN ...} and whose
  * RETURN cannot tell two paths between the same pair apart: it is {@code DISTINCT} over properties of the two end nodes, or it
- * groups by them and only counts {@code DISTINCT} values of them. The relationship and path variables must be unused, because
- * they are the only things that differ between two paths with the same ends. The lower bound must be 0 or 1: the shortest
- * walk to a node is a simple path, so a visited set finds every node some path of at most {@code n} relationships reaches,
- * whatever the path mode (the start node needs care, see {@code BreadthFirstTraverser#traverseDistinctEndpoints}). From a lower bound of 2 on, a node reached sooner than the
- * bound might be reachable at the bound only by a walk that repeats a relationship, which the TRAIL rule forbids, so those
- * patterns keep enumerating paths.
+ * groups by them and only aggregates them with a function that ignores repeated values ({@code count}, {@code collect},
+ * {@code sum} and {@code avg} of {@code DISTINCT} values, {@code min} and {@code max}). The relationship and path variables must
+ * be unused, because they are the only things that differ between two paths with the same ends. The lower bound must be 0 or 1:
+ * the shortest walk to a node is a simple path, so a visited set finds every node some path of at most {@code n} relationships
+ * reaches, whatever the path mode (the start node needs care, see {@code BreadthFirstTraverser#traverseDistinctEndpoints}). From
+ * a lower bound of 2 on, a node reached sooner than the bound might be reachable at the bound only by a walk that repeats a
+ * relationship, which the TRAIL rule forbids, so those patterns keep enumerating paths.
  * <p>
  * Everything the statement does with a row afterwards (the WHERE, the target label and property tests, the projection) reads only
  * the pair, so dropping the repeated rows for a pair cannot change any result.
@@ -66,24 +65,18 @@ public final class VariableLengthDistinctEndpoints {
    * @param sourceVariable the written variable of the hop's first node, null when anonymous
    * @param targetVariable the written variable of the hop's last node, null when anonymous
    * @param pathVariable   the named path the hop belongs to, null or empty when none
-   * @param pathMode       the hop's path mode, null for the default (TRAIL)
    *
-   * @return true if the hop may report each (start, end) pair once
+   * @return true if the hop may report each (start, end) pair once, whatever its path mode
    */
   public static boolean applies(final CypherStatement statement, final PathPattern pathPattern,
       final RelationshipPattern relationship, final String sourceVariable, final String targetVariable,
-      final String pathVariable, final PathMode pathMode) {
+      final String pathVariable) {
     if (!(statement instanceof SimpleCypherStatement simple))
       return false;
     if (relationship == null || relationship instanceof QuantifiedPathPattern || !relationship.isVariableLength()
         || relationship.getEffectiveMinHops() > 1)
       return false;
     if (pathVariable != null && !pathVariable.isEmpty())
-      return false;
-    // Undirected trails with a lower bound of 1: whether the start vertex is its own end depends on a cycle through it, which a
-    // visited set cannot tell from the way back along the relationship it left by (see BreadthFirstTraverser#traverseDistinctEndpoints)
-    if (relationship.getEffectiveMinHops() == 1 && relationship.getDirection() == Direction.BOTH
-        && (pathMode == null || pathMode == PathMode.TRAIL))
       return false;
     if (pathPattern != null && (pathPattern.hasPathVariable() || pathPattern.getRelationshipCount() != 1))
       return false;
@@ -124,14 +117,14 @@ public final class VariableLengthDistinctEndpoints {
         outputNames.add(item.getOutputName());
         continue;
       }
-      if (isDistinctCount(expression, ends)) {
+      if (isRepeatInsensitiveAggregate(expression, ends)) {
         aggregates = true;
         outputNames.add(item.getOutputName());
         continue;
       }
       return false;
     }
-    // Either DISTINCT over end values only, or end values (the grouping keys) with counts of DISTINCT end values
+    // Either DISTINCT over end values only, or end values (the grouping keys) with aggregates that ignore repeated end values
     if (aggregates ? returnClause.isDistinct() : !returnClause.isDistinct())
       return false;
 
@@ -159,9 +152,18 @@ public final class VariableLengthDistinctEndpoints {
     return false;
   }
 
-  private static boolean isDistinctCount(final Expression expression, final Set<String> ends) {
-    return expression instanceof FunctionCallExpression call && call.isDistinct()
-        && "count".equals(call.getFunctionName().toLowerCase(Locale.ROOT)) && call.getArguments().size() == 1
-        && isEndValue(call.getArguments().get(0), ends);
+  /**
+   * An aggregate of one start or end value that answers the same whether it sees a value once or many times: the {@code DISTINCT}
+   * forms of count, collect, sum and avg, and min and max, which ignore repeats with or without {@code DISTINCT}.
+   */
+  private static boolean isRepeatInsensitiveAggregate(final Expression expression, final Set<String> ends) {
+    if (!(expression instanceof FunctionCallExpression call) || call.getArguments().size() != 1
+        || !isEndValue(call.getArguments().get(0), ends))
+      return false;
+    return switch (call.getFunctionName().toLowerCase(Locale.ROOT)) {
+      case "count", "collect", "sum", "avg" -> call.isDistinct();
+      case "min", "max" -> true;
+      default -> false;
+    };
   }
 }

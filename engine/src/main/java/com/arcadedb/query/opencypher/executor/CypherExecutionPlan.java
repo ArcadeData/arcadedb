@@ -2705,8 +2705,7 @@ public class CypherExecutionPlan {
                 clauseRelVariables, directionOverride, reversed, context);
             // Nothing downstream can tell two paths between the same pair apart: report each end vertex once (#10062)
             if (VariableLengthDistinctEndpoints.applies(statement, pathPattern, relPattern,
-                pathPattern.getFirstNode().getVariable(), pathPattern.getLastNode().getVariable(), pathVariable,
-                pathPattern.getEffectivePathMode()))
+                pathPattern.getFirstNode().getVariable(), pathPattern.getLastNode().getVariable(), pathVariable))
               expandPath.withDistinctEndpoints();
             nextStep = expandPath;
           } else {
