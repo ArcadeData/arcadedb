@@ -2700,9 +2700,14 @@ public class CypherExecutionPlan {
             // can dequeue the first one - level-order expansion via a single FIFO queue offers no
             // way around that. A MATCH's result order is unspecified without ORDER BY, so this is
             // a pure implementation-strategy change, not a semantic one (#6097).
-            nextStep = new ExpandPathStep(effectiveSourceVar, pathVariable, relVar, effectiveTargetVar, relPattern,
-                false, effectiveTargetNode, pathPattern.getEffectivePathMode(), matchVariables,
+            final ExpandPathStep expandPath = new ExpandPathStep(effectiveSourceVar, pathVariable, relVar, effectiveTargetVar,
+                relPattern, false, effectiveTargetNode, pathPattern.getEffectivePathMode(), matchVariables,
                 clauseRelVariables, directionOverride, reversed, context);
+            // Nothing downstream can tell two paths between the same pair apart: report each end vertex once (#10062)
+            if (VariableLengthDistinctEndpoints.applies(statement, pathPattern, relPattern,
+                pathPattern.getFirstNode().getVariable(), pathPattern.getLastNode().getVariable(), pathVariable))
+              expandPath.withDistinctEndpoints();
+            nextStep = expandPath;
           } else {
             // #6311: the names a hop must identity-check its target against are the ones the row already
             // carries when the hop RUNS: everything bound before this MATCH plus everything this MATCH has

@@ -24,8 +24,11 @@ import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.ast.PathMode;
+import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.utility.RidHashSet;
+import com.arcadedb.utility.RidLongHashMap;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.LinkedList;
@@ -66,6 +69,139 @@ public class BreadthFirstTraverser extends GraphTraverser {
   @Override
   public Iterator<TraversalPath> traversePaths(final Vertex startVertex) {
     return new BFSPathIterator(startVertex);
+  }
+
+  /**
+   * Walks the pattern as a reachability search and answers each end vertex once, however many paths lead to it (issue #10062).
+   * <p>
+   * Only for a caller that needs the set of vertices some path of {@code minHops..maxHops} relationships reaches, and
+   * only for {@code minHops <= 1}: then the shortest walk to a vertex other than the start is a simple path, which is a
+   * trail and an acyclic path as well, so it exists exactly when the vertex is found at all, whatever the path mode. A vertex is
+   * expanded once, from its shallowest depth, where it has the most hops left to spend. The traversal is lazy and level by
+   * level, so a {@code LIMIT} stops it early and its memory is the widest level, not the number of paths.
+   * <p>
+   * The start vertex is the exception, because getting back to it means leaving along one relationship and returning along
+   * another. With a lower bound of 0 it is the first end vertex. With a lower bound of 1 it is an end vertex when a cycle leads
+   * back to it: any closed walk (WALK), never (ACYCLIC), and a shortest closed walk of a directed pattern is a simple cycle, which
+   * is a trail (TRAIL).
+   * <p>
+   * An undirected TRAIL pattern cannot read that off the first time the start is seen again: the shortest way back is the
+   * relationship it left along, which a trail may not repeat. It needs a simple cycle through the start of at most {@code maxHops}
+   * relationships (a closed trail holds one), and the same search finds it: every vertex is labelled with its depth and with the
+   * branch it was found in (the relationship of the start whose subtree holds it), and a relationship that was not used to find
+   * its end vertex and joins two different branches, or that leaves the start twice for the same vertex, closes a cycle through
+   * the start of {@code depth(u) + depth(w) + 1} relationships. A shortest cycle through the start always holds such a
+   * relationship, so the test is exact.
+   */
+  public Iterator<Vertex> traverseDistinctEndpoints(final Vertex startVertex) {
+    if (minHops > 1)
+      throw new IllegalStateException("A distinct-endpoint traversal needs a lower bound of 0 or 1, got " + minHops);
+    return new DistinctEndpointIterator(startVertex);
+  }
+
+  private final class DistinctEndpointIterator implements Iterator<Vertex> {
+    private final RidHashSet seen = createVisitedSet();
+    private final Vertex start;
+    private final boolean readEdges = (edgePropertyFilters != null && !edgePropertyFilters.isEmpty()) || edgePredicate != null;
+    // Only an undirected trail with a lower bound of 1 has to look for the cycle itself: every other pattern sees it when the start is reached again
+    private final boolean startNeedsCycle = minHops == 1 && direction == Direction.BOTH && pathMode == PathMode.TRAIL;
+    private final boolean startIsEndOnReturn = minHops == 1 && pathMode != PathMode.ACYCLIC && !startNeedsCycle;
+    // Depth (high 32 bits) and branch (low 32 bits) of every vertex found, kept only by the pattern that looks for the cycle
+    private final RidLongHashMap labels = startNeedsCycle ? new RidLongHashMap() : null;
+    private final ArrayDeque<Vertex> ready = new ArrayDeque<>();
+    // A level can be the whole graph, and it is expanded inside one hasNext(): the command deadline and a terminated statement must still stop it
+    private final WorkGuard guard = WorkGuard.forCommandDeadline(context);
+    private int visits;
+    private List<Vertex> level = new ArrayList<>();
+    private int depth;
+    private boolean startReported;
+    private int branches;
+
+    DistinctEndpointIterator(final Vertex start) {
+      this.start = start;
+      level.add(start);
+      // The start is never found as a new vertex: it is reported at depth 0 (lower bound 0) or when a cycle leads back to it
+      markVisited(start, seen);
+      if (minHops == 0)
+        ready.add(start);
+    }
+
+    @Override
+    public boolean hasNext() {
+      while (ready.isEmpty() && !level.isEmpty() && depth < maxHops)
+        expandLevel();
+      return !ready.isEmpty();
+    }
+
+    @Override
+    public Vertex next() {
+      if (!hasNext())
+        throw new NoSuchElementException();
+      return ready.poll();
+    }
+
+    private void expandLevel() {
+      final List<Vertex> next = new ArrayList<>();
+      for (final Vertex vertex : level) {
+        guard.checkPeriodically(visits++);
+        final long label = labels != null && depth > 0 ? labels.get(vertex.getIdentity(), 0L) : 0L;
+        if (readEdges) {
+          for (final Edge edge : getEdges(vertex)) {
+            try {
+              if (matchesTypeFilter(edge) && matchesPropertyFilter(edge) && matchesEdgePredicate(edge))
+                reach(label, getOtherVertex(edge, vertex), next);
+            } catch (final RecordNotFoundException e) {
+              GhostEdgeReporter.reportSkipped(e);
+            }
+          }
+        } else
+          for (final Vertex neighbour : getNextVertices(vertex))
+            reach(label, neighbour, next);
+      }
+      level = next;
+      depth++;
+    }
+
+    /**
+     * @param fromLabel the label of the vertex being expanded, at the current depth
+     * @param vertex    the vertex one of its relationships leads to
+     * @param next      the vertices found at the next depth
+     */
+    private void reach(final long fromLabel, final Vertex vertex, final List<Vertex> next) {
+      if (isVisited(vertex, seen)) {
+        // A cycle back to the start makes it an end vertex of a pattern whose lower bound is 1, once; its neighbours were all
+        // explored from depth 0
+        if (!startReported && (startNeedsCycle ? closesCycleThroughStart(fromLabel, vertex)
+            : startIsEndOnReturn && vertex.getIdentity().equals(start.getIdentity()))) {
+          startReported = true;
+          ready.add(start);
+        }
+        return;
+      }
+      markVisited(vertex, seen);
+      if (labels != null)
+        labels.put(vertex.getIdentity(), ((long) (depth + 1) << 32) | ((depth == 0 ? branches++ : (int) fromLabel) & 0xFFFFFFFFL));
+      ready.add(vertex);
+      next.add(vertex);
+    }
+
+    /**
+     * Whether a relationship from the expanded vertex to one already found closes a simple cycle through the start of at most
+     * {@code maxHops} relationships. The relationship that found the expanded vertex leads back to its parent, so it is not a
+     * second way to anything and must not count.
+     */
+    private boolean closesCycleThroughStart(final long fromLabel, final Vertex vertex) {
+      final boolean toStart = vertex.getIdentity().equals(start.getIdentity());
+      if (depth == 0)
+        // The start lists itself (a self loop) or a vertex it has already found (a parallel relationship, a cycle of two)
+        return toStart || maxHops >= 2;
+      if (toStart)
+        // Only a vertex next to the start lists it, through the relationship it was found by or a parallel one, which the start
+        // listed twice itself
+        return false;
+      final long found = labels.get(vertex.getIdentity(), 0L);
+      return (int) found != (int) fromLabel && depth + (int) (found >>> 32) + 1 <= maxHops;
+    }
   }
 
   /**

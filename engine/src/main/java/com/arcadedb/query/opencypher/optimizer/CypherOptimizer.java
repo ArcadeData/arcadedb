@@ -44,6 +44,7 @@ import com.arcadedb.query.opencypher.ast.VariableExpression;
 import com.arcadedb.query.opencypher.ast.WhereClause;
 import com.arcadedb.query.opencypher.ast.WithClause;
 import com.arcadedb.query.opencypher.executor.CypherVariableUsage;
+import com.arcadedb.query.opencypher.executor.VariableLengthDistinctEndpoints;
 import com.arcadedb.query.opencypher.executor.operators.ExpandAll;
 import com.arcadedb.query.opencypher.executor.operators.ExpandInto;
 import com.arcadedb.query.opencypher.executor.operators.FilterOperator;
@@ -1183,6 +1184,9 @@ public class CypherOptimizer {
         direction, reverseResultPath, relationship.getPathMode());
     final VarLengthExpand expand = new VarLengthExpand(input, variables, traversal, totalCost, outputCardinality);
     expand.setSameClausePrecedingRelVars(sameClausePrecedingRelVars);
+    // The hop's ends as written, whichever of them the plan starts from: the rule is the same in both directions
+    expand.setDistinctEndpoints(VariableLengthDistinctEndpoints.applies(statement, null, relationship.getPattern(),
+        relationship.getSourceVariable(), relationship.getTargetVariable(), relationship.getPathVariable()));
     return expand;
   }
 

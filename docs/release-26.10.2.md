@@ -201,6 +201,19 @@ Newly accepted, as in Neo4j: a sign before the `P` (`-P1Y2D` negates every compo
 
 ## Fixes
 
+- **A variable-length Cypher hop whose consumer cannot tell two paths between the same pair of vertices apart reports each end vertex once (#10062).**
+  `MATCH (a)-[:LINK*1..D]->(b) RETURN DISTINCT b` and `count(DISTINCT b)` walked every path, so the time grew with the number of
+  paths (about 3x to 8x per extra level on a dependency-like graph of 200,000 vertices and 1.8 million edges, where depth 9
+  did not finish in 120 s), while `TRAVERSE ... MAXDEPTH` answered the same question in constant time per level. The hop now
+  walks a breadth-first search with a visited set, lazily and level by level, so a `LIMIT` stops it early, and the same closure
+  at depth 12 takes about half a second. It applies to a statement that is one non-optional `MATCH` with one hop followed by
+  `RETURN`, with no named path, the relationship variable unused and a lower bound of 0 or 1, whose `RETURN` is `DISTINCT`
+  over the start and end vertices or their properties, or groups by them and aggregates them with `count`, `collect`, `sum` or
+  `avg` of `DISTINCT` values, or `min` / `max`. The answers are those of path enumeration in every direction and path mode (an
+  undirected `TRAIL` pattern with a lower bound of 1 reports the start vertex only when a cycle of at most the upper bound
+  passes through it). `EXPLAIN` shows `[DISTINCT ENDPOINTS]`. A plain `RETURN b`, `count(b)`, `size(r)`, a second `MATCH`, a
+  `WITH` or a lower bound of 2 or more keep enumerating paths. The order of the rows (and of a `collect(DISTINCT ...)` list),
+  which was never specified, now follows the breadth-first order.
 - **A schema change still pending when the database closes is saved (#10059).** A DDL inside an open transaction, or one
   postponed by a bulk schema change, is written when the database closes. That save ran once the database already reported
   itself closed, where an index cannot be serialized, so as soon as the schema held one index the save failed, was logged at
