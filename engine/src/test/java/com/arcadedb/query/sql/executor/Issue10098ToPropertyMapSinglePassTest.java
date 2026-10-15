@@ -183,6 +183,22 @@ class Issue10098ToPropertyMapSinglePassTest extends TestHelper {
     }
   }
 
+  /**
+   * {@code ImmutableDocument.toMap()} adds its metadata to the map the serializer answers, without a copy: that holds for a record
+   * with no properties too, whose map is the serializer's early-return one.
+   */
+  @Test
+  void aRecordWithoutPropertiesAnswersAMapTheMetadataCanBeAddedTo() {
+    final RID[] rid = new RID[1];
+    database.transaction(() -> rid[0] = database.newDocument("Doc10098").save().getIdentity());
+
+    final Document empty = database.lookupByRID(rid[0], true).asDocument();
+    assertThat(empty.toMap(false)).isEmpty();
+    assertThat(empty.toMap(true)).containsEntry("@type", "Doc10098").containsEntry("@cat", "d").containsEntry("@rid", rid[0].toString());
+    assertThat(new ResultInternal(empty).toPropertyMap(false)).isEmpty();
+    assertThat(new ResultInternal(empty).toPropertyMap(true)).containsEntry("@rid", rid[0].toString());
+  }
+
   @Test
   void aVertexRowIsOnePassToo() {
     final RID[] rid = new RID[1];
