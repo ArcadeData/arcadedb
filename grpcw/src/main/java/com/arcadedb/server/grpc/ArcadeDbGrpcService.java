@@ -1206,7 +1206,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         });
         final MutableEdge e = ((DatabaseInternal) db).getGraphEngine().newEdgeInitializedReportingVeto(outV, cls, inEl, setProperties);
         if (e == null)
-          throw vetoed(cls);
+          throw vetoed(cls, outStr, inStr);
 
         if (beganHere)
           db.commit();
@@ -1235,6 +1235,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   /** The refusal of a write that has to answer a record, which a listener's veto leaves without one (issue #10085). */
   private static RecordVetoedException vetoed(final String typeName) {
     return new RecordVetoedException("Cannot write a record of type '" + typeName + "': a listener vetoed it");
+  }
+
+  /** The same for an edge, which names the vertices it would have connected. */
+  private static RecordVetoedException vetoed(final String typeName, final String from, final String to) {
+    return new RecordVetoedException("Cannot create edge of type '" + typeName + "' from " + from + " to " + to + ": a listener vetoed it");
   }
 
   @Override

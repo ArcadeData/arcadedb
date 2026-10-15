@@ -213,6 +213,30 @@ public class Issue10085GrpcEdgeVetoTest extends BaseGrpcServerTest {
   }
 
   /**
+   * An initializer that fails part way (a property the schema type cannot convert) leaves nothing in an externally managed
+   * transaction either: the edge is neither saved nor wired, so the client's commit afterwards carries nothing of it.
+   */
+  @Test
+  void aFailingPropertyLeavesNothingInAnExternalTransaction() {
+    getServerDatabase(0, getDatabaseName()).getSchema().getType(EDGE).createProperty("count", Type.INTEGER);
+
+    final String txId = stub.beginTransaction(BeginTransactionRequest.newBuilder().setDatabase(getDatabaseName())
+        .setCredentials(credentials()).build()).getTransactionId();
+    final TransactionContext transaction = TransactionContext.newBuilder().setTransactionId(txId).setDatabase(getDatabaseName()).build();
+
+    final GrpcRecord row = edgeRow("kept").toBuilder().putProperties("count", string("not-a-number")).build();
+    assertThatThrownBy(() -> stub.createRecord(CreateRecordRequest.newBuilder().setDatabase(getDatabaseName()).setCredentials(credentials())
+        .setType(EDGE).setRecord(row).setTransaction(transaction).build())).isInstanceOf(StatusRuntimeException.class);
+
+    assertThat(stub.commitTransaction(CommitTransactionRequest.newBuilder().setCredentials(credentials()).setTransaction(transaction).build())
+        .getCommitted()).isTrue();
+
+    assertThat(count(EDGE)).isEqualTo(1L);
+    assertThat(edgeCountOf(from)).isEqualTo(1L);
+    assertThat(edgeCountOfIn(to)).isEqualTo(1L);
+  }
+
+  /**
    * The properties are converted on the edge BEFORE it is saved: a LINK needs nothing of it, an EMBEDDED document is created on its
    * owner, which has no identity yet. Both must land on the edge the call creates.
    */
