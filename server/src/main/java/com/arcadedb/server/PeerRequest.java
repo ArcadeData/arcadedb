@@ -118,7 +118,8 @@ public final class PeerRequest {
    * header is stateless and the leader can check it itself, and an API token carries scopes that resolving the user by name on the
    * leader would silently discard. No principal header is attached, deliberately; see the class note.
    * <p>
-   * The same notice as {@link #newRequest} when the dial is plain HTTP on an SSL cluster and the token is attached.
+   * The same notice as {@link #newRequest} when the dial is plain HTTP on an SSL cluster and the token or the relayed credential
+   * goes out with it.
    *
    * @param clusterToken        this node's cluster token, or {@code null}/blank when the cluster has none (then only the relayed
    *                            credential, if any, is attached)
@@ -128,7 +129,8 @@ public final class PeerRequest {
       final String what, final String clusterToken, final String clientAuthorization) {
     final URI uri = URI.create(url);
     final boolean hasToken = hasToken(clusterToken);
-    noticePlainFallback(sslEnabled, hasToken, uri, dial, what);
+    // The token OR the client's own credential: either one goes out in clear text over a plain dial on an SSL cluster
+    noticePlainFallback(sslEnabled, hasToken || clientAuthorization != null, uri, dial, what);
     final HttpRequest.Builder builder = HttpRequest.newBuilder().uri(uri);
     if (hasToken)
       builder.header(CLUSTER_TOKEN_HEADER, clusterToken);
@@ -194,9 +196,9 @@ public final class PeerRequest {
     if (!WARNED.compareAndSet(false, true))
       return false;
     LogManager.instance().log(dial, Level.WARNING,
-        "SSL is enabled but no HTTPS address is known for a peer; %s over plain HTTP, which puts the cluster token "
-            + "on the wire in clear text. Declare each node's 'https' port in %s to avoid it. This notice is logged "
-            + "once per JVM, and covers every peer-to-peer dial that falls back the same way.",
+        "SSL is enabled but no HTTPS address is known for a peer; %s over plain HTTP, which puts the cluster token (or the "
+            + "credential a forward relays for its client) on the wire in clear text. Declare each node's 'https' port in %s "
+            + "to avoid it. This notice is logged once per JVM, and covers every peer-to-peer dial that falls back the same way.",
         what, GlobalConfiguration.HA_SERVER_LIST.getKey());
     return true;
   }

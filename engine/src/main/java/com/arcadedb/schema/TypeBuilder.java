@@ -87,10 +87,12 @@ public class TypeBuilder<T> {
       final String statement = toSQL();
       if (statement != null && database.getWrappedDatabaseInstance().createMissingTypeOnTheLeader(typeName, statement)) {
         // Not the "already exists" refusal of a create() that finds the type: the type did not exist when this call began, and
-        // the leader made it on this call's behalf
+        // the leader made it on this call's behalf. Its buckets are not counted against this builder's: a count the caller chose
+        // was rendered into the statement, and one it did not is the leader's own default, which may differ from this node's
+        // (counting it would send a type the leader just made back to a local schema change this node cannot make)
         final T createdByTheLeader = database.executeInReadLock(() -> {
           final LocalDocumentType created = schema.typeMap().get(typeName);
-          return created != null && isComplete(created) ? (T) checkIsOfTheRequestedKind(created) : null;
+          return created != null && hasEverySuperType(created) ? (T) checkIsOfTheRequestedKind(created) : null;
         });
         if (createdByTheLeader != null)
           return createdByTheLeader;
@@ -166,8 +168,10 @@ public class TypeBuilder<T> {
    * of buckets and every requested super type.
    */
   private boolean isComplete(final LocalDocumentType t) {
-    if (t.buckets.size() < buckets)
-      return false;
+    return t.buckets.size() >= buckets && hasEverySuperType(t);
+  }
+
+  private boolean hasEverySuperType(final LocalDocumentType t) {
     if (superTypes != null)
       for (final LocalDocumentType sup : superTypes)
         if (!t.getSuperTypes().contains(sup))

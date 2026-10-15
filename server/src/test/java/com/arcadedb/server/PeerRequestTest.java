@@ -214,16 +214,26 @@ class PeerRequestTest {
     }
   }
 
-  /** The relay is a plain dial like any other: on an SSL cluster it says the notice, once, when it puts the token on the wire. */
+  /**
+   * The relay is a plain dial like any other: on an SSL cluster it says the notice, once, when it puts the token OR the client's own
+   * credential on the wire in clear text. A Basic header relayed with no cluster token configured is just as exposed.
+   */
   @Test
   void aPlainRelayOnAnSslClusterSaysTheNotice() {
     PeerRequest.newRelayRequest(ENCRYPTED_URL, true, PeerRequestTest.class, "testing", "s3cr3t", "Basic x");
-    assertThat(PeerRequest.saidForTests()).isFalse();
+    assertThat(PeerRequest.saidForTests()).as("encrypted: nothing in clear").isFalse();
+
+    PeerRequest.newRelayRequest(PLAIN_URL, true, PeerRequestTest.class, "testing", null, null);
+    assertThat(PeerRequest.saidForTests()).as("neither a token nor a credential: nothing to leak").isFalse();
+
+    PeerRequest.newRelayRequest(PLAIN_URL, false, PeerRequestTest.class, "testing", "s3cr3t", "Basic x");
+    assertThat(PeerRequest.saidForTests()).as("the cluster never asked for SSL").isFalse();
 
     PeerRequest.newRelayRequest(PLAIN_URL, true, PeerRequestTest.class, "testing", null, "Basic x");
-    assertThat(PeerRequest.saidForTests()).as("no token, none to leak").isFalse();
+    assertThat(PeerRequest.saidForTests()).as("no token, but the client's credential goes out in clear").isTrue();
 
-    PeerRequest.newRelayRequest(PLAIN_URL, true, PeerRequestTest.class, "testing", "s3cr3t", "Basic x");
-    assertThat(PeerRequest.saidForTests()).isTrue();
+    PeerRequest.rearmForTests();
+    PeerRequest.newRelayRequest(PLAIN_URL, true, PeerRequestTest.class, "testing", "s3cr3t", null);
+    assertThat(PeerRequest.saidForTests()).as("the token alone").isTrue();
   }
 }
