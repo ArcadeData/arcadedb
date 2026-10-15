@@ -158,6 +158,31 @@ class Issue10098ToPropertyMapSinglePassTest extends TestHelper {
     assertThat(map.get("status")).isEqualTo("new");
   }
 
+  /** Every shape of record a row can carry answers, by name, exactly what its property map holds: mutable, vertex, edge, detached. */
+  @Test
+  void everyRecordShapeAgreesWithItsGettersByName() {
+    database.getSchema().createEdgeType("Edge10098");
+    final RID[] rids = new RID[3];
+    database.transaction(() -> {
+      final MutableVertex a = database.newVertex("Vtx10098").set("name", "a").set("n", 1).set("nothing", null).save();
+      final MutableVertex b = database.newVertex("Vtx10098").set("name", "b").save();
+      rids[0] = a.getIdentity();
+      rids[1] = a.newEdge("Edge10098", b, "weight", 2.5, "label", "x").getIdentity();
+      rids[2] = createDocument(3);
+    });
+
+    final List<Document> shapes = List.of(database.lookupByRID(rids[0], true).asDocument(),
+        database.lookupByRID(rids[1], true).asDocument(), database.lookupByRID(rids[2], true).asDocument(),
+        database.lookupByRID(rids[2], true).asDocument().modify(), database.lookupByRID(rids[2], true).asDocument().detach());
+
+    for (final Document shape : shapes) {
+      final Map<String, Object> map = new ResultInternal(shape).toPropertyMap(false);
+      assertThat(map.keySet()).as(shape.getClass().getSimpleName()).containsExactlyInAnyOrderElementsOf(shape.getPropertyNames());
+      for (final String name : shape.getPropertyNames())
+        assertThat(map.get(name)).as(shape.getClass().getSimpleName() + "." + name).isEqualTo(shape.get(name));
+    }
+  }
+
   @Test
   void aVertexRowIsOnePassToo() {
     final RID[] rid = new RID[1];
