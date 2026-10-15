@@ -33,6 +33,7 @@ import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.index.vector.LSMVectorIndexCompacted;
 import com.arcadedb.index.vector.LSMVectorIndexMutable;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.schema.FullTextIndexMetadata;
 import com.arcadedb.utility.IntHashSet;
 import com.arcadedb.utility.LockException;
 import com.arcadedb.utility.LockManager;
@@ -1087,6 +1088,18 @@ public class TransactionManager {
   }
 
   private boolean applyChangesInternal(final WALFile.WALTransaction tx, final Map<Integer, Integer> bucketRecordDelta,
+      final List<FullTextCorpusDeltas.CorpusDelta> corpusDeltas, final boolean ignoreErrors) {
+    // The pages written below become visible before the delta reaches the BM25 counters: a scan overlapping that window must not
+    // call its result exact (see FullTextIndexMetadata#commitApplyStarted)
+    final List<FullTextIndexMetadata> applying = FullTextCorpusDeltas.replicatedApplyStarted(database.getSchema(), corpusDeltas);
+    try {
+      return applyChangesPages(tx, bucketRecordDelta, corpusDeltas, ignoreErrors);
+    } finally {
+      FullTextCorpusDeltas.replicatedApplyFinished(applying);
+    }
+  }
+
+  private boolean applyChangesPages(final WALFile.WALTransaction tx, final Map<Integer, Integer> bucketRecordDelta,
       final List<FullTextCorpusDeltas.CorpusDelta> corpusDeltas, final boolean ignoreErrors) {
     final boolean recovery = Thread.currentThread().equals(ownWALReplayThread);
     boolean changed = false;

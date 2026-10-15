@@ -27,6 +27,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -124,8 +125,12 @@ public class FullTextIndexMetadata extends IndexMetadata {
   // Held by the two writers that move BOTH counters as a pair and are not on the per-document path: a commit applying its delta, and
   // the adoption of a persisted pair. Without it a commit landing between the two absolute writes of an adoption is half
   // overwritten, and the pair drifts by more than one transaction when documents and lengths diverge. The per-document writers
-  // (addDocument/removeDocument, no transaction) and the readers stay lock-free
+  // (addDocument/removeDocument, no transaction) and the readers stay lock-free. Held for a few atomic updates, or for the three
+  // puts of a serialization: once per commit that wrote a full-text index, never per document
   private final Object     countersLock  = new Object();
+  // Commits (and replicated applies) between the moment their pages become visible and the moment their delta reaches the counters.
+  // A scan that overlaps one of them reads documents the counters do not hold yet, so its result is not exact
+  private final AtomicInteger commitsApplying = new AtomicInteger(0);
   // Full-type scans whose result was published here: lets a test, or an operator reading schema:index, tell a drift check that
   // found nothing to repair from one that scanned the whole type
   private final AtomicLong scans         = new AtomicLong(0L);
@@ -833,6 +838,41 @@ public class FullTextIndexMetadata extends IndexMetadata {
    */
   private static boolean addClamped(final AtomicLong counter, final long delta) {
     return counter.getAndUpdate(v -> Math.max(0L, v + delta)) + delta < 0L;
+  }
+
+  /**
+   * A commit, or the apply of a replicated entry, is about to make pages visible that its delta has not reached the counters for
+   * yet. Counted as a mutation, so a scan that started before it is not called exact. Always paired with
+   * {@link #commitApplyFinished} in a {@code finally}.
+   */
+  public void commitApplyStarted() {
+    mutations.incrementAndGet();
+    commitsApplying.incrementAndGet();
+  }
+
+  /** The delta of the commit started with {@link #commitApplyStarted} has reached the counters, or the commit gave up. */
+  public void commitApplyFinished() {
+    commitsApplying.decrementAndGet();
+  }
+
+  /**
+   * Whether a commit is between making its pages visible and applying its delta. A scan that started or ended while one was, may
+   * have read its documents without the counters holding them (or counted them twice once the delta lands), and must not call its
+   * result exact.
+   */
+  public boolean isCommitApplying() {
+    return commitsApplying.get() > 0;
+  }
+
+  /**
+   * The two counters as one pair: no commit's delta and no adoption is half applied in what this returns.
+   *
+   * @return {@code {totalDocs, sumDocLength}}
+   */
+  public long[] getCountersPair() {
+    synchronized (countersLock) {
+      return new long[] { totalDocs.get(), sumDocLength.get() };
+    }
   }
 
   /**

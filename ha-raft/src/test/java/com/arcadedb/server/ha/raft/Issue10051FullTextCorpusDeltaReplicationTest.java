@@ -248,6 +248,18 @@ class Issue10051FullTextCorpusDeltaReplicationTest {
     assertThat(carriedDeltas()).containsExactly(new CorpusDelta(INDEX, 0, 2));
   }
 
+  /** A rewrite that keeps the number of tokens nets to nothing: there is nothing for another node to apply, so nothing is shipped. */
+  @Test
+  void anUpdateThatKeepsItsTokenLengthShipsNothing() {
+    raftServer.fullTextCorpusDeltaCapable(true);
+
+    database.begin();
+    proxied.iterateType(TYPE, false).next().asDocument().modify().set("content", "delta epsilon zeta").save();
+    database.commit();
+
+    assertThat(carriedDeltas()).isEmpty();
+  }
+
   @Test
   void aCommitRefusedByTheClusterNeverTouchesTheCounters() {
     raftServer.fullTextCorpusDeltaCapable(true);

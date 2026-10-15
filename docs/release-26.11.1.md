@@ -135,22 +135,23 @@ the parameters of the branches that are not taken. A `LET` that names a variable
 
 ## Fixes
 
-- **The BM25 corpus counters of a `FULL_TEXT` index move when the transaction commits, on every node (#10051).** They used to be
+- **The BM25 corpus counters of a `FULL_TEXT` index move when the transaction commits, on every node (#10018).** They used to be
   bumped while the document was being indexed and never undone, so a rolled-back insert, or one retried after a
   `ConcurrentModificationException`, inflated `totalDocs` and `sumDocLength`, and the next search paid a whole-type scan to
   repair them. A transaction now accumulates its effect and the commit applies it with the record counts. On an HA cluster
-  the transaction carries that effect to the other nodes (once every peer advertises `tx-fulltext-corpus-deltas`; until then
-  the leader logs a warning and the other nodes repair their counters with their own drift check), so replicas no longer
-  score the same query with different corpus statistics, and a `REBUILD INDEX ... WITH statsOnly = true` run on the leader
-  reaches the followers. The repair made by the first search is kept: it is written with the schema, at the next schema save
-  or when the database closes, so it is paid once and not after every clean restart. After a crash, or a process that is
-  killed, the pages are restored from the log but the counters can lag them until the first search's drift check repairs them,
-  as before. The drift warning names the logical index
-  and the exact `REBUILD INDEX` statement to run, and ``SELECT FROM schema:index:`<name>` `` now carries a `bm25` map
+  the transaction carries that effect to the other nodes, so replicas no longer score the same query with different corpus
+  statistics, and a `REBUILD INDEX ... WITH statsOnly = true` run on the leader reaches the followers (a schema reload on a
+  follower keeps its live counters unless the persisted ones carry a newer `ft_countersEpoch`, which a recompute on the leader
+  advances). A node that does not advertise `tx-fulltext-corpus-deltas` makes the leader withhold the new `TX_ENTRY` section
+  and log a warning, and the other nodes repair their counters with their own drift check: a rolling upgrade behaves as it
+  did until every node is upgraded.
+- **The repair of the BM25 corpus counters made by a search is kept, and the counters can be inspected (#10019).** The repair
+  made by the first search is written with the schema, at the next schema save or when the database closes, so it is paid once
+  and not after every clean restart. After a crash, or a process that is killed, the pages are restored from the log but the
+  counters can lag them until the first search's drift check repairs them, as before. The drift warning names the logical
+  index and the exact `REBUILD INDEX` statement to run, and ``SELECT FROM schema:index:`<name>` `` now carries a `bm25` map
   (`totalDocs`, `sumDocLength`, `avgDocLength`, `countersValid`, `staleCheckDone`, `scans`, `epoch`) that reads the counters
-  without running the drift check. A schema reload on a follower keeps its live counters unless the persisted ones carry a
-  newer `ft_countersEpoch` (a recompute on the leader). Mixed-version note: a node that does not advertise the capability
-  makes the leader withhold the new `TX_ENTRY` section, so a rolling upgrade behaves as before until every node is upgraded.
+  without running the drift check.
 - **`vector.sum`, `vector.avg`, `vector.min` and `vector.max` aggregate when written with the dotted name (#9768).** In SQL
   they answered one NULL row per record (`vectorSum(...)` and `` `vector.sum`(...) `` were fine) and in openCypher
   (`RETURN vector.sum(d.v)`) they had no working spelling at all. A dotted call is now a function call exactly when the

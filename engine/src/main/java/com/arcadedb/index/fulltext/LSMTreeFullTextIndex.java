@@ -947,9 +947,11 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     if (metadata == null || !metadata.isBM25())
       return null;
     final Map<String, Object> result = new LinkedHashMap<>();
-    result.put("totalDocs", metadata.getTotalDocs());
-    result.put("sumDocLength", metadata.getSumDocLength());
-    result.put("avgDocLength", metadata.avgDocLength());
+    // One pair, not two reads: no commit's delta is half applied in what is reported
+    final long[] pair = metadata.getCountersPair();
+    result.put("totalDocs", pair[0]);
+    result.put("sumDocLength", pair[1]);
+    result.put("avgDocLength", pair[0] > 0 ? (double) pair[1] / pair[0] : 1.0);
     result.put("countersValid", metadata.isCountersValid());
     result.put("staleCheckDone", metadata.isStaleCheckDone());
     result.put("scans", metadata.getScans());
@@ -1017,6 +1019,7 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     final long docsAtStart = ftMetadata.getTotalDocs();
     final long lenAtStart = ftMetadata.getSumDocLength();
     final long mutationsAtStart = ftMetadata.getMutations();
+    final boolean commitApplyingAtStart = ftMetadata.isCommitApplying();
     final Iterator<Record> it = db.iterateType(typeName, true);
     while (it.hasNext()) {
       final Record record = it.next();
@@ -1034,7 +1037,8 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
 
     // The scan reads this transaction's own uncommitted writes, whose effect the commit applies to the counters: leave them out
     // of the result, or they are counted twice (and counted at all if the transaction rolls back). Only while the transaction is
-    // BEGUN: from the publish of its pages the effect is already in the counters, and what the scan reads is counted
+    // BEGUN: from the publish of its pages the effect is already in the counters, and what the scan reads is counted. A transaction
+    // is confined to the thread that runs the scan, so its status cannot change while the scan reads it
     final TransactionContext tx = db.getTransaction();
     final FullTextCorpusDeltas pending = tx.getStatus() == TransactionContext.STATUS.BEGUN ? FullTextCorpusDeltas.peek(tx) : null;
     if (pending != null) {
@@ -1058,6 +1062,10 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
       ftMetadata.publishScannedCounters(scannedDocs, scannedLen, docsAtStart, lenAtStart, mutationsAtStart);
       schema.markDirty();
     }
+    // A commit between making its pages visible and applying its delta, at either end of the scan, leaves documents the scan read
+    // out of the counters (or about to be counted twice): the result is not exact, and the drift check is armed to find out
+    if (commitApplyingAtStart || ftMetadata.isCommitApplying())
+      ftMetadata.requireRescan();
     // Report the result so operators can correlate the cold-start latency above with the corpus size that drove it.
     LogManager.instance().log(this, Level.INFO,
         "Recomputed BM25 corpus statistics for type '%s': %d documents, %d total tokens (avgdl=%.2f)", null, typeName, docs,
