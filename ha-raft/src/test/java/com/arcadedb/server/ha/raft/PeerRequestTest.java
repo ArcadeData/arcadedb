@@ -26,6 +26,7 @@ import java.net.HttpURLConnection;
 import java.net.http.HttpRequest;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * The one builder every peer-to-peer dial starts its request from (code review on PR #7854, issue #9999).
@@ -140,6 +141,34 @@ class PeerRequestTest {
     PeerRequest.openConnection(PLAIN_URL, true, PeerRequestTest.class, "testing", "s3cr3t", "root").disconnect();
 
     assertThat(PeerRequest.saidForTests()).isTrue();
+  }
+
+  /**
+   * A token with no principal is refused, never sent as half a pair nor patched up as root: a dial relaying a caller's
+   * identity that lost it must fail rather than act with more authority (PR #10069 review). Without a token the user is
+   * not sent at all, so its absence is not an error.
+   */
+  @Test
+  void aTokenWithNoPrincipalIsRefused() throws Exception {
+    for (final String noUser : new String[] { null, "", "   " }) {
+      assertThatThrownBy(() -> PeerRequest.newRequest(PLAIN_URL, false, PeerRequestTest.class, "testing", "s3cr3t", noUser))
+          .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("principal");
+      assertThatThrownBy(() -> PeerRequest.openConnection(PLAIN_URL, false, PeerRequestTest.class, "testing", "s3cr3t", noUser))
+          .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("principal");
+
+      final HttpRequest built = PeerRequest.newRequest(PLAIN_URL, false, PeerRequestTest.class, "testing", null, noUser)
+          .GET().build();
+      assertThat(built.headers().firstValue(PeerRequest.FORWARDED_USER_HEADER)).isEmpty();
+    }
+  }
+
+  /** The notice is about the token on the wire: a plain dial with no token has none to leak (PR #10069 review). */
+  @Test
+  void aPlainDialWithNoTokenSaysNothing() throws Exception {
+    PeerRequest.newRequest(PLAIN_URL, true, PeerRequestTest.class, "testing", null);
+    PeerRequest.openConnection(PLAIN_URL, true, PeerRequestTest.class, "testing", "  ", "root").disconnect();
+
+    assertThat(PeerRequest.saidForTests()).isFalse();
   }
 
   /** Nothing to say when the dial is encrypted, or when the cluster never asked for SSL. */

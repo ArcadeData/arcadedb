@@ -91,9 +91,10 @@ final class PeerRequest {
   static HttpRequest.Builder newRequest(final String url, final boolean sslEnabled, final Class<?> dial,
       final String what, final String clusterToken, final String forwardedUser) {
     final URI uri = URI.create(url);
-    noticePlainFallback(sslEnabled, uri.getScheme(), dial, what);
+    final boolean credentials = carriesCredentials(clusterToken, forwardedUser, url);
+    noticePlainFallback(sslEnabled, credentials, uri, dial, what);
     final HttpRequest.Builder builder = HttpRequest.newBuilder().uri(uri);
-    if (hasToken(clusterToken)) {
+    if (credentials) {
       builder.header(CLUSTER_TOKEN_HEADER, clusterToken);
       builder.header(FORWARDED_USER_HEADER, forwardedUser);
     }
@@ -113,9 +114,10 @@ final class PeerRequest {
     } catch (final URISyntaxException e) {
       throw new IOException("Invalid peer URL: " + url, e);
     }
-    noticePlainFallback(sslEnabled, uri.getScheme(), dial, what);
+    final boolean credentials = carriesCredentials(clusterToken, forwardedUser, url);
+    noticePlainFallback(sslEnabled, credentials, uri, dial, what);
     final HttpURLConnection connection = (HttpURLConnection) uri.toURL().openConnection();
-    if (hasToken(clusterToken)) {
+    if (credentials) {
       connection.setRequestProperty(CLUSTER_TOKEN_HEADER, clusterToken);
       connection.setRequestProperty(FORWARDED_USER_HEADER, forwardedUser);
     }
@@ -127,10 +129,24 @@ final class PeerRequest {
     return clusterToken != null && !clusterToken.isBlank();
   }
 
-  private static void noticePlainFallback(final boolean sslEnabled, final String scheme, final Class<?> dial,
-      final String what) {
-    if (sslEnabled && "http".equalsIgnoreCase(scheme))
-      sayOnce(dial, what);
+  /**
+   * Whether the request carries the pair. A token with no principal is refused rather than sent as half a pair or
+   * patched up as root: a dial that relays a caller's identity and lost it must fail, never act with more authority.
+   */
+  private static boolean carriesCredentials(final String clusterToken, final String forwardedUser, final String url) {
+    if (!hasToken(clusterToken))
+      return false;
+    if (forwardedUser == null || forwardedUser.isBlank())
+      throw new IllegalArgumentException(
+          "A peer request carrying the cluster token must name the principal it acts for (" + url + ")");
+    return true;
+  }
+
+  /** Said only when there is a token to leak: a plain dial with no credentials puts no shared secret on the wire. */
+  private static void noticePlainFallback(final boolean sslEnabled, final boolean credentials, final URI uri,
+      final Class<?> dial, final String what) {
+    if (sslEnabled && credentials && "http".equalsIgnoreCase(uri.getScheme()))
+      sayOnce(dial, what + " (peer at " + uri.getAuthority() + ")");
   }
 
   /**
