@@ -1,9 +1,9 @@
 """Engine findings about openCypher counts over light edges and over Graph Analytical Views that
-reach Python users (known-issues.md), both fixed in ArcadeDB 26.11.1.
+reach Python users (known-issues.md), both fixed in ArcadeDB 26.10.2.
 
 Each finding has plain tests of its documented workarounds, which must keep passing, plain tests of
 the cases that are not affected, and plain regression tests of the engine behavior itself. They pass
-on the engine the suite builds against (upstream's 26.11.1 snapshot, which has the fix) and fail on
+on the engine the suite builds against (upstream's 26.10.2 snapshot, which has the fix) and fail on
 the 26.10.1 wheel; known-issues.md says so. While the bugs were open the regression tests were strict
 `xfail` tripwires, as in `test_count_pushdown_known_issues.py`: they started passing when the fix
 reached the snapshot, and the suite failed until they were converted.
@@ -82,7 +82,7 @@ def _require_the_edges_are_there(db):
 
 
 def test_light_edges_for_an_undeclared_edge_type_are_refused(temp_db_path):
-    """#9378, fixed in 26.11.1 (#9383): a batch with `light_edges=True` refuses to write an edge
+    """#9378, fixed in 26.10.2 (#9383): a batch with `light_edges=True` refuses to write an edge
     without properties into a type that does not declare `LIGHTWEIGHT`. `new_edge` raises
     `ArcadeDBError` that names the type and the two ways out, and no edge is written."""
     with arcadedb.create_database(temp_db_path) as db:
@@ -250,7 +250,7 @@ def _require_view_plan(db, query):
 def test_pattern_predicate_over_an_edge_type_the_view_does_not_list(
     temp_db_path, where, aggregate
 ):
-    """#9377, fixed in 26.11.1 (#9383): only the pair (x, y) has an F edge, so the negated form keeps the pair (y, z) and the
+    """#9377, fixed in 26.10.2 (#9383): only the pair (x, y) has an F edge, so the negated form keeps the pair (y, z) and the
     positive form keeps (x, y): the count is 1 either way, as with no view."""
     with arcadedb.create_database(temp_db_path) as db:
         _view_graph(db, "E")
