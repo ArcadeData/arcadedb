@@ -123,6 +123,11 @@ public class ArcadeGremlinAuthorizer implements Authorizer {
     if (securityUser == null)
       throw new AuthorizationException("Unknown or disabled user '" + user.getName() + "'");
     GremlinAuthContext.set(securityUser);
+    // The connection of the request travels with its user (issue #10105), on the same thread and for the same pool task, so it
+    // does not depend on the channelizer that carries the connection to publish it. A user this server did not authenticate on a
+    // connection carries none, and what the previous request left on the thread must not be taken for its client. The
+    // channelizer's own publication, downstream of this one, replaces it with the more precise channel and port
+    GremlinAuthContext.setClient(user instanceof ClientAuthenticatedUser connection ? connection.getClient() : null);
     return securityUser;
   }
 

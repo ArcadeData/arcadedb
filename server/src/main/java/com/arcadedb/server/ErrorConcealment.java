@@ -84,10 +84,12 @@ public final class ErrorConcealment {
    */
   public static String clientMessage(final boolean conceal, final Object requester, final String surface, final String message,
       final Throwable cause, final Level clientCausedLevel, final boolean traceServerFault) {
+    // A CALLER THAT PASSES THE RAW getMessage() OF A FAILURE WITH NONE HANDS THE CLIENT, AND THE LOG, THE WORD "null" (issue #10092)
+    final String text = message != null ? message : describe(cause);
     if (!conceal)
-      return message;
+      return text;
     // THE TEXT CAN CARRY CLIENT DATA (A DUPLICATED KEY'S VALUES): ONE LINE, SO IT CANNOT FORGE ENTRIES IN A LINE-ORIENTED LOG
-    final String logged = singleLine(message);
+    final String logged = singleLine(text);
     if (traceServerFault && ErrorCategory.of(cause) == ErrorCategory.SERVER)
       LogManager.instance().log(requester, Level.SEVERE, "%s: %s (concealed from the client in production mode)", cause, surface,
           logged);
@@ -95,6 +97,20 @@ public final class ErrorConcealment {
       LogManager.instance().log(requester, clientCausedLevel, "%s: %s (concealed from the client in production mode)", null, surface,
           logged);
     return ArcadeDBServer.CONCEALED_ERROR_MESSAGE;
+  }
+
+  /**
+   * What a surface tells a client about {@code cause} when it words nothing of its own: the failure's message, or, when it
+   * has none (a {@code ConcurrentModificationException}, a no-arg {@code IllegalStateException}, an {@code EOFException}),
+   * its simple class name. A message that reads {@code null} - or, in a JSON answer, is JSON null - names the failure less
+   * well than its type does, and a strict client rejects the block that carries it (issue #10092). The rule the gRPC
+   * surface already applied in three places, in one place beside {@link #clientMessage}.
+   */
+  public static String describe(final Throwable cause) {
+    if (cause == null)
+      return "unknown error";
+    final String message = cause.getMessage();
+    return message != null && !message.isBlank() ? message : cause.getClass().getSimpleName();
   }
 
   /**

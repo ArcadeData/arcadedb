@@ -26,6 +26,7 @@ import com.arcadedb.exception.QueryTerminatedException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.ErrorConcealment;
 import com.arcadedb.server.HAServerPlugin;
 import io.grpc.Metadata;
 import io.grpc.Status;
@@ -105,7 +106,8 @@ public final class GrpcErrorMapper {
    * An already-mapped gRPC status (e.g. the security status produced by {@code getDatabase}) is passed
    * through unchanged so it is never masked as {@code INTERNAL}.
    * <p>
-   * When the cause is a {@link ServerIsNotTheLeaderException} - whether raised by an explicit leadership check
+   * When the cause is a {@link ServerIsNotTheLeaderException}, or carries one anywhere along its cause chain (the
+   * engine wraps what it raises, issue #10089) - whether raised by an explicit leadership check
    * or by the replicated database refusing a schema change on a follower - the answer additionally names where
    * the caller should go, on the {@link LeaderRedirectProtocol} trailers (issue #6183), instead of only the one
    * RPC that happened to build the trailers by hand.
@@ -168,20 +170,27 @@ public final class GrpcErrorMapper {
       return new StatusRuntimeException(se.getStatus(), se.getTrailers());
 
     final Metadata trailers = new Metadata();
-    // A termination is named as one whatever wraps it, so the driver rebuilds the type that tells it not to retry (#9689)
-    trailers.put(EXCEPTION_CLASS_KEY, ErrorCategory.of(cause) == ErrorCategory.TERMINATED ?
-        QueryTerminatedException.class.getName() :
-        cause.getClass().getName());
+    // Found anywhere along the cause chain, because the engine wraps what it raises (a commit failure, a record-event listener,
+    // a trigger), like every other transport does (issue #10089). A test of the head alone answered ABORTED with no leader
+    // address for a refusal one frame down, and the driver retried the same follower until its retries ran out
+    final ServerIsNotTheLeaderException refusal = ServerIsNotTheLeaderException.refusalIn(cause);
+    // A termination and a refusal are named as such whatever wraps them, so the driver rebuilds the type it must act on:
+    // the one that tells it not to retry (#9689), the one that tells it where to go (#10089)
+    trailers.put(EXCEPTION_CLASS_KEY, refusal != null ?
+        refusal.getClass().getName() :
+        ErrorCategory.of(cause) == ErrorCategory.TERMINATED ?
+            QueryTerminatedException.class.getName() :
+            cause.getClass().getName());
 
     final Status.Code code;
     String redirect = null;
-    if (cause instanceof ServerIsNotTheLeaderException notTheLeader) {
+    if (refusal != null) {
       // FAILED_PRECONDITION, not the ABORTED its NeedRetryException ancestry would earn: retrying this call
       // as it stands means asking the same follower again. It is the leader-only work that is impossible
       // here, not a conflict that another attempt could win - the same reading the HTTP protocol takes when
       // it answers 400 rather than 503. What makes it actionable is the address, not a retry.
       code = Status.Code.FAILED_PRECONDITION;
-      redirect = attachLeaderRedirect(trailers, ha, notTheLeader);
+      redirect = attachLeaderRedirect(trailers, ha, refusal);
     } else if (cause instanceof DuplicatedKeyException dup) {
       code = Status.Code.ALREADY_EXISTS;
       addDuplicatedKeyTrailers(trailers, dup, conceal);
@@ -286,8 +295,8 @@ public final class GrpcErrorMapper {
       final boolean conceal) {
     if (!conceal)
       // THE CLASS NAME WHEN THERE IS NO MESSAGE, LIKE insertErrorMessage AND Importer.describe: A LINK THAT READS
-      // "null" NAMES THE FAILURE LESS WELL THAN ITS TYPE DOES
-      return prefix + ": " + (e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName());
+      // "null" NAMES THE FAILURE LESS WELL THAN ITS TYPE DOES. THE RULE LIVES IN ErrorConcealment (issue #10092)
+      return prefix + ": " + ErrorConcealment.describe(e);
 
     logConcealed(requester, prefix, e);
     return prefix + ": " + CONCEALED_DESCRIPTION;
