@@ -180,7 +180,8 @@ final class GrpcClientErrorMapper {
 
   /**
    * The typed exception for a failure {@link #isNameTaken} recognised, carrying the server's own sentence
-   * ({@code User 'x' already exists}) as its message.
+   * ({@code User 'x' already exists}) as its message. {@code RemoteGrpcServer.createDatabase} words its own instead,
+   * keeping the {@code Failed to create database: ALREADY_EXISTS: ...} text its callers already match on.
    */
   static RemoteAlreadyExistsException toNameTakenException(final Throwable e) {
     final Status status = Status.fromThrowable(e);
