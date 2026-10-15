@@ -145,6 +145,18 @@ class Issue10105GremlinConnectionClientTest extends AbstractGremlinServerIT {
   }
 
   @Test
+  void anIpv6PeerKeepsItsBracketsAndPort() throws Exception {
+    final AuthenticatedUser http = authenticator().authenticate(Map.of("username", "root", "password",
+        BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS, "address", "[::1]:1234"));
+    authorizer().authorize(http, new Bytecode(), Map.of());
+    assertThat(GremlinAuthContext.getClient().address()).isEqualTo("/[::1]:1234");
+
+    // SASL passes the address only
+    authorizer().authorize(saslLogin("::1"), new Bytecode(), Map.of());
+    assertThat(GremlinAuthContext.getClient().address()).startsWith("/").contains(":");
+  }
+
+  @Test
   void aRequestWhosePeerIsUnknownStillGetsAClientOfItsOwn() throws Exception {
     final AuthenticatedUser user = authenticator().authenticate(
         Map.of("username", "root", "password", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS));

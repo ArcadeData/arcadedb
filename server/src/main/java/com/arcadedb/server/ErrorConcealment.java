@@ -66,7 +66,8 @@ public final class ErrorConcealment {
    * @param conceal           whether the server runs in production mode
    * @param requester         the logging context
    * @param surface           the wire surface, prefixed to the log entry ("Bolt", "Redis", ...)
-   * @param message           the text the client gets when nothing is concealed
+   * @param message           the text the client gets when nothing is concealed; a null or blank one is replaced by
+   *                          {@link #describe} of {@code cause}, so a caller may pass the raw {@code getMessage()}
    * @param cause             the failure, which picks the log level
    * @param clientCausedLevel the level a failure the client caused is logged at: {@code FINE} on a path that reports one
    *                          entry per row of a bulk load, where conflicts are routine and plentiful
