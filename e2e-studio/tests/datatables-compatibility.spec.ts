@@ -335,54 +335,31 @@ test.describe('DataTables Compatibility Suite', () => {
       // Click on Events subtab
       await page.locator('#tab-server-events-sel').click();
 
-      // Wait for events table to load
-      await page.waitForTimeout(2000); // Events may take time to load
-
-      // Check if events table exists and is visible
+      // The events table and its type filter are part of the Events subtab: both must be there
       const eventsTable = page.locator('#serverEvents');
-      if (await eventsTable.isVisible()) {
-        // Table wrapper may not have specific .dt-container class
-        await expect(eventsTable).toBeVisible();
+      await expect(eventsTable).toBeVisible({ timeout: 10000 });
 
-        // Check if filtering controls work
-        const typeFilter = page.locator('#serverEventsType');
-        if (await typeFilter.isVisible()) {
-          await typeFilter.selectOption('ALL');
-        }
-      }
+      const typeFilter = page.locator('#serverEventsType');
+      await expect(typeFilter).toBeVisible();
+      await typeFilter.selectOption('ALL');
+      await expect(typeFilter).toHaveValue('ALL');
+      await expect(eventsTable).toBeVisible();
     });
   });
 
   test.describe('Cluster Management Tables', () => {
-    test('should render cluster replica tables if cluster is configured', async ({ page }) => {
+    test('should render the cluster overview', async ({ page }) => {
       await studioHelper.login('Beer');
 
       // Navigate to Cluster tab (icon-only navigation)
       await page.locator('#tab-cluster-sel').click();
-      await page.waitForTimeout(1000); // Wait for tab to load
 
-      // Wait for cluster interface
-      await page.waitForTimeout(1000);
-
-      // Check for online replica table (may not exist if not clustered)
-      const replicaTable = page.locator('#serverOnlineReplicaTable');
-      if (await replicaTable.isVisible()) {
-        await expect(replicaTable).toBeVisible();
-
-        // Verify table columns
-        await expect(page.locator('#serverOnlineReplicaTable thead th:has-text("Server Name")')).toBeVisible();
-        await expect(page.locator('#serverOnlineReplicaTable thead th:has-text("Status")')).toBeVisible();
-      }
-
-      // Check for replicated databases table
-      const databasesTable = page.locator('#replicatedDatabasesTable');
-      if (await databasesTable.isVisible()) {
-        await expect(databasesTable).toBeVisible();
-
-        // Verify table columns
-        await expect(page.locator('#replicatedDatabasesTable thead th:has-text("Database Name")')).toBeVisible();
-        await expect(page.locator('#replicatedDatabasesTable thead th:has-text("Quorum")')).toBeVisible();
-      }
+      // The overview is part of the Cluster tab, clustered or not. This test used to look for #serverOnlineReplicaTable and
+      // #replicatedDatabasesTable, which no longer exist anywhere in Studio, so it asserted nothing.
+      await expect(page.locator('#tab-cluster')).toBeVisible();
+      await expect(page.locator('#tab-cluster-overview')).toBeVisible();
+      await expect(page.locator('#clusterLeaderName')).toBeVisible();
+      await expect(page.locator('#clusterServerCount')).toBeVisible();
     });
   });
 
@@ -527,24 +504,15 @@ test.describe('DataTables Compatibility Suite', () => {
     test('should handle empty result sets gracefully', async ({ page }) => {
       await studioHelper.login('Beer');
 
-      // Execute query that returns no results
+      // Execute query that returns no results (executeQuery waits for the result summary to appear)
       await studioHelper.executeQuery('SELECT * FROM Beer WHERE name = "NonExistentBeer"', false);
       // Switch to Table tab - use simple approach that works
       await page.locator('a[href="#tab-table"]').click();
       await page.waitForTimeout(500);
 
-      // Verify empty result handling - table may be hidden or show no data
-      const resultTable = page.locator('#result');
-      const isTableVisible = await resultTable.isVisible();
-
-      if (isTableVisible) {
-        // If table is visible, it should show no data
-        const rowCount = await page.locator('#result tbody tr').count();
-        expect(rowCount).toBe(0);
-      } else {
-        // If table is hidden, that's also valid for empty results
-        expect(isTableVisible).toBe(false);
-      }
+      // Nothing to show: the summary says so and no row is rendered
+      await expect(page.locator('.result-stats')).toContainText(/Returned\s+0\b/);
+      await expect(page.locator('#result tbody tr')).toHaveCount(0);
     });
 
     test('should handle malformed data gracefully', async ({ page }) => {

@@ -25,7 +25,12 @@ import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -55,6 +60,9 @@ class StudioBinaryResourceIntegrityTest {
       "static/dist/webfonts/fa-regular-400.woff2",
       "static/dist/webfonts/fa-solid-900.woff2",
       "static/dist/webfonts/fa-v4compatibility.woff2");
+
+  /** The extensions that are text, which the build may legitimately filter. Everything else must arrive unchanged. */
+  private static final Set<String> TEXT_EXTENSIONS = Set.of("html", "htm", "js", "mjs", "css", "json", "map", "txt", "md");
 
   @Test
   void everyWebfontIsAWellFormedWoff2() throws IOException {
@@ -104,6 +112,36 @@ class StudioBinaryResourceIntegrityTest {
     for (final String resource : WEBFONTS)
       assertThat(getClass().getClassLoader().getResource(resource))
           .as("%s is missing from the build output entirely", resource).isNotNull();
+  }
+
+  /**
+   * The checks above name their files, so they do not grow with the tree: a {@code .webp}, {@code .avif} or {@code .wasm}
+   * added later was filtered into garbage unnoticed while the root POM's carve-out lacked it (issue #10103). This walks
+   * what Studio ships instead, and compares each binary on the classpath to its source byte for byte. A file is a binary
+   * unless its extension is listed as text, so a new kind of file is checked by default instead of exempted by omission.
+   */
+  @Test
+  void everyBinaryAssetIsCopiedByteForByte() throws IOException {
+    final Path sources = Path.of(System.getProperty("basedir", "."), "src", "main", "resources", "static");
+    assertThat(sources).as("Studio's sources are read").isDirectory();
+
+    final List<Path> files;
+    try (final Stream<Path> walk = Files.walk(sources)) {
+      files = walk.filter(Files::isRegularFile).toList();
+    }
+
+    final List<String> binaries = new ArrayList<>();
+    for (final Path file : files) {
+      final String name = file.getFileName().toString();
+      if (TEXT_EXTENSIONS.contains(name.substring(name.lastIndexOf('.') + 1).toLowerCase()))
+        continue;
+
+      final String resource = "static/" + sources.relativize(file).toString().replace('\\', '/');
+      assertThat(read(resource)).as("%s was altered on its way to the classpath: it is a binary that went through resource "
+          + "filtering, add its extension to the carve-out of the root pom.xml", resource).isEqualTo(Files.readAllBytes(file));
+      binaries.add(resource);
+    }
+    assertThat(binaries).as("Studio ships binary assets: the walk is not vacuous").contains("static/favicon.ico");
   }
 
   private byte[] read(final String resource) throws IOException {
