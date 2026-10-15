@@ -174,6 +174,25 @@ class Issue10104DateImplementationRoutesTest extends TestHelper {
     assertThat(warnings).noneMatch(w -> w.contains("R1.d"));
   }
 
+  /** The class has already changed when the listener runs, so a listener that fails must not reach the caller of the setter. */
+  @Test
+  void aListenerThatFailsDoesNotBreakTheSetter() {
+    final List<String> warnings = WarningCapture.captureWarnings(() -> {
+      serializer().setImplementationChangeListener(() -> {
+        throw new IllegalStateException("a listener that fails");
+      });
+      try {
+        serializer().setDateImplementation(Date.class);
+        assertThat(serializer().getDateImplementation()).isEqualTo(Date.class);
+      } finally {
+        serializer().setImplementationChangeListener(null);
+        serializer().setDateImplementation(LocalDate.class);
+      }
+    });
+
+    assertThat(warnings).as("the failure is reported, not swallowed silently").anyMatch(w -> w.contains("date implementation"));
+  }
+
   private void declareIsoPattern() {
     database.command("sql", "CREATE VERTEX TYPE R1");
     database.command("sql", "CREATE PROPERTY R1.d DATE (regexp '" + ISO_DATE + "')");
