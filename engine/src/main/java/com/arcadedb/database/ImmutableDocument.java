@@ -30,7 +30,6 @@ import com.arcadedb.serializer.json.JSONObject;
 import java.io.IOException;
 import java.lang.reflect.Array;
 import java.util.Collections;
-import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
 import java.util.logging.Level;
@@ -434,8 +433,10 @@ public class ImmutableDocument extends BaseDocument {
   public Map<String, Object> toMap(final boolean includeMetadata) {
     checkForLazyLoading();
     final Binary content = requireBuffer("convert to a map");
-    final Map<String, Object> result = new LinkedHashMap<>(
-        database.getSerializer().deserializeProperties(database, content, new EmbeddedModifierObject(this), rid));
+    // THE SERIALIZER ALWAYS ANSWERS A NEW LinkedHashMap OF ITS OWN (EVEN FOR A RECORD WITHOUT PROPERTIES): COPYING IT AGAIN COST A
+    // SECOND MAP PER RECORD ON EVERY toMap() (issue #10098)
+    final Map<String, Object> result = database.getSerializer()
+        .deserializeProperties(database, content, new EmbeddedModifierObject(this), rid);
     if (includeMetadata) {
       result.put(CAT_PROPERTY, "d");
       result.put(TYPE_PROPERTY, type.getName());

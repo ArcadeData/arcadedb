@@ -139,21 +139,43 @@ public class Issue10085GrpcEdgeVetoTest extends BaseGrpcServerTest {
   }
 
   /**
-   * The unary call creates the edge and then sets its properties, which is an update: the create listener saw an edge without a name
-   * and let it through, the update listener refuses the name. The call fails as a client error and, in its own transaction, rolls the
-   * whole call back - no half-initialised edge is committed.
+   * The properties are part of the create, so the create listener sees the name it refuses: the call fails as a client error and
+   * nothing is stored or linked.
    */
   @Test
-  void aVetoedPropertyUpdateOfTheNewEdgeRollsTheWholeUnaryCallBack() {
+  void aRefusedEdgeInAUnaryCreateIsAClientErrorAndStoresNothing() {
     assertThatThrownBy(() -> stub.createRecord(CreateRecordRequest.newBuilder().setDatabase(getDatabaseName()).setCredentials(credentials())
         .setType(EDGE).setRecord(edgeRow("refused")).build()))
         .isInstanceOfSatisfying(StatusRuntimeException.class, e -> {
           assertThat(e.getStatus().getCode()).isEqualTo(Status.Code.INVALID_ARGUMENT);
-          assertThat(e.getStatus().getDescription()).contains("beforeUpdate");
+          assertThat(e.getStatus().getDescription()).contains("vetoed");
         });
 
     assertThat(count(EDGE)).isEqualTo(1L);
     assertThat(edgeCountOf(from)).isEqualTo(1L);
+  }
+
+  /**
+   * Under an externally managed transaction nothing of the refused edge is left in it: the create is atomic, so the client's commit
+   * afterwards does not carry a half-initialised edge wired to the vertices.
+   */
+  @Test
+  void aRefusedEdgeLeavesNothingInAnExternalTransaction() {
+    final String txId = stub.beginTransaction(BeginTransactionRequest.newBuilder().setDatabase(getDatabaseName())
+        .setCredentials(credentials()).build()).getTransactionId();
+    final TransactionContext transaction = TransactionContext.newBuilder().setTransactionId(txId).setDatabase(getDatabaseName()).build();
+
+    assertThatThrownBy(() -> stub.createRecord(CreateRecordRequest.newBuilder().setDatabase(getDatabaseName()).setCredentials(credentials())
+        .setType(EDGE).setRecord(edgeRow("refused")).setTransaction(transaction).build()))
+        .isInstanceOfSatisfying(StatusRuntimeException.class,
+            e -> assertThat(e.getStatus().getCode()).isEqualTo(Status.Code.INVALID_ARGUMENT));
+
+    assertThat(stub.commitTransaction(CommitTransactionRequest.newBuilder().setCredentials(credentials()).setTransaction(transaction).build())
+        .getCommitted()).isTrue();
+
+    assertThat(count(EDGE)).isEqualTo(1L);
+    assertThat(edgeCountOf(from)).isEqualTo(1L);
+    assertThat(edgeCountOfIn(to)).isEqualTo(1L);
   }
 
   /** A listener that refuses the create itself: newEdge raises the refusal, which reaches the client as INVALID_ARGUMENT. */
@@ -233,6 +255,11 @@ public class Issue10085GrpcEdgeVetoTest extends BaseGrpcServerTest {
   private long edgeCountOf(final String vertexRid) {
     final Database database = getServerDatabase(0, getDatabaseName());
     return database.lookupByRID(database.newRID(vertexRid), true).asVertex().countEdges(Vertex.DIRECTION.OUT, EDGE);
+  }
+
+  private long edgeCountOfIn(final String vertexRid) {
+    final Database database = getServerDatabase(0, getDatabaseName());
+    return database.lookupByRID(database.newRID(vertexRid), true).asVertex().countEdges(Vertex.DIRECTION.IN, EDGE);
   }
 
   private long count(final String type) {
