@@ -24,6 +24,12 @@
 // the vendor bundles webpack copies into dist/ included, since the build runs this after webpack: a new kind of file
 // added later (.webp, .map, .avif) fails here instead of being served as text.
 //
+// Issue #10103: the same list decides a second thing, whether Maven copies a binary asset byte for byte or through a
+// text Reader that turns it into garbage (fa-solid-900.woff2 arrived as 215,949 bytes instead of 119,488). The parent
+// POM's resource carve-out is that second list, and it was widened by hand and separately: webp, avif and wasm were
+// served with the right type and still filtered, bmp, eot and swf were protected from the filter and still served as
+// text/plain. The last tests of this file read the POM and assert the two lists are the same set.
+//
 // @author Luca Garulli (l.garulli@arcadedata.com)
 //
 // Run with:
@@ -36,6 +42,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const STATIC_DIR = path.join(__dirname, "..", "src", "main", "resources", "static");
+const ROOT_POM = path.join(__dirname, "..", "..", "pom.xml");
 const HANDLER = path.join(__dirname, "..", "..", "server", "src", "main", "java", "com", "arcadedb", "server", "http",
   "handler", "GetDynamicContentHandler.java");
 
@@ -94,4 +101,76 @@ test("every extension Studio ships has a Content-Type, and only pages are templa
     assert.ok(spec, `.${ext} (${example}) has no entry in GetDynamicContentHandler.CONTENT_TYPES: it would be served as text/plain`);
     assert.equal(spec.templated, ext === "html" || ext === "htm", `only a page is templated: .${ext}`);
   }
+});
+
+// --- Issue #10103: the server's table and the POM's binary carve-out are one list ----------------------------------
+
+// What is NOT a binary: text and JSON, which the build may legitimately filter. Everything else the server serves is a
+// binary, so a type added to the table later is covered by default instead of being exempted by omission.
+function isTextContentType(contentType) {
+  return contentType.startsWith("text/") || contentType === "application/json";
+}
+
+function binaryExtensionsOfTable() {
+  const binaries = new Set();
+  for (const [ext, spec] of readContentTypeTable()) if (!isTextContentType(spec.contentType)) binaries.add(ext);
+  return binaries;
+}
+
+// <exclude>**/*.png</exclude> -> png
+function extensionsOf(xml, tag) {
+  const set = new Set();
+  const re = new RegExp("<" + tag + ">\\*\\*/\\*\\.([a-z0-9]+)</" + tag + ">", "g");
+  let m;
+  while ((m = re.exec(xml)) !== null) set.add(m[1]);
+  return set;
+}
+
+function between(text, open, close) {
+  const start = text.indexOf(open);
+  const end = text.indexOf(close, start);
+  assert.ok(start >= 0 && end > start, `${open} ... ${close} is in the root pom.xml`);
+  return text.substring(start, end);
+}
+
+function readPomLists() {
+  const pom = fs.readFileSync(ROOT_POM, "utf8");
+  const build = pom.substring(pom.indexOf("<build>"));
+  const resources = between(build, "<resources>", "</resources>");
+  const plugin = /<nonFilteredFileExtensions>([^<]*)<\/nonFilteredFileExtensions>/.exec(build);
+  assert.ok(plugin, "the root POM declares nonFilteredFileExtensions");
+  return {
+    excludes: extensionsOf(between(resources, "<excludes>", "</excludes>"), "exclude"),
+    includes: extensionsOf(between(resources, "<includes>", "</includes>"), "include"),
+    nonFiltered: new Set(plugin[1].split(",").map((e) => e.trim()).filter((e) => e.length > 0)),
+  };
+}
+
+const sorted = (set) => [...set].sort();
+
+test("the POM's three binary lists are read", () => {
+  const pom = readPomLists();
+  for (const list of [pom.excludes, pom.includes, pom.nonFiltered])
+    assert.ok(list.has("png") && list.has("woff2"), "the list holds the shipped binaries: " + sorted(list));
+});
+
+test("the POM's three binary lists agree with each other", () => {
+  const pom = readPomLists();
+  assert.deepEqual(sorted(pom.includes), sorted(pom.excludes), "<includes> of the unfiltered resource vs <excludes> of the filtered one");
+  assert.deepEqual(sorted(pom.nonFiltered), sorted(pom.excludes), "nonFilteredFileExtensions vs the resource carve-out");
+});
+
+test("every binary the server serves is carved out of Maven's resource filtering", () => {
+  const pom = readPomLists();
+  const missing = sorted(binaryExtensionsOfTable()).filter((ext) => !pom.nonFiltered.has(ext));
+  assert.deepEqual(missing, [], `served with a binary Content-Type but not in the root pom.xml carve-out, so Maven would copy `
+    + `it through a text Reader and corrupt it: add ${missing.join(", ")} to the <excludes>, the <includes> and nonFilteredFileExtensions`);
+});
+
+test("every extension carved out of Maven's resource filtering has a binary Content-Type on the server", () => {
+  const pom = readPomLists();
+  const binaries = binaryExtensionsOfTable();
+  const missing = sorted(pom.nonFiltered).filter((ext) => !binaries.has(ext));
+  assert.deepEqual(missing, [], `carved out of filtering as binary but not served with a binary Content-Type, so the server `
+    + `would send it as text/plain: add ${missing.join(", ")} to GetDynamicContentHandler.CONTENT_TYPES`);
 });

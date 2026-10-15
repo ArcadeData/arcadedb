@@ -23,6 +23,18 @@ function openRecordEditor(rid, type, properties, source) {
     showGraphRecordEditor();
 }
 
+// The text a stored value is shown as in the form. A null is an empty field, an object or an array is pretty-printed JSON.
+// Line breaks are normalized to LF because a field cannot hold anything else (a textarea turns CRLF and a lone CR into LF),
+// so an untouched multi-line value compares equal to what the field reads back and is not rewritten by a Save. Editing
+// such a value does save it with LF line endings: the field the user typed in cannot hold the CRLF it started with.
+function recordEditorDisplayValue(value) {
+  if (value == null)
+    return "";
+  if (typeof value === "object")
+    return JSON.stringify(value, null, 2);
+  return String(value).replace(/\r\n?/g, "\n");
+}
+
 function getRecordEditorTarget() {
   if (globalRecordEditorState.source === "table")
     return "#tableRecordEditorContent";
@@ -53,8 +65,8 @@ function renderRecordEditorContent() {
       continue;
 
     var value = properties[p];
-    var isComplex = (Array.isArray(value) || typeof value === "object");
-    var displayValue = isComplex ? JSON.stringify(value, null, 2) : (value != null ? String(value) : "");
+    var isComplex = (value != null && typeof value === "object");
+    var displayValue = recordEditorDisplayValue(value);
     var isMetadata = p.charAt(0) === "@";
     var isBinary = (!isComplex && typeof displayValue === "string" && /^\[B@[0-9a-fA-F]+$/.test(displayValue));
 
@@ -68,10 +80,11 @@ function renderRecordEditorContent() {
       var sizeInfo = properties["contentLength"] || properties[p + "Length"] || "";
       var sizeLabel = sizeInfo ? " (" + Number(sizeInfo).toLocaleString() + " bytes)" : "";
       html += "<input type='text' class='form-control' value='binary" + escapeHtml(sizeLabel) + "' disabled />";
-    } else if (isComplex || displayValue.length > 80)
-      html += "<textarea class='form-control record-editor-field' data-prop='" + escapeHtml(p) + "' data-original='" + escapeHtml(displayValue) + "' rows='3'" + (isMetadata ? " disabled" : "") + ">" + escapeHtml(displayValue) + "</textarea>";
+    } else if (isComplex || displayValue.length > 80 || displayValue.indexOf("\n") >= 0)
+      // the HTML parser drops ONE line feed right after <textarea>, so a value that starts with one needs this extra
+      html += "<textarea class='form-control record-editor-field' data-prop='" + escapeHtml(p) + "' rows='3'" + (isMetadata ? " disabled" : "") + ">\n" + escapeHtml(displayValue) + "</textarea>";
     else
-      html += "<input type='text' class='form-control record-editor-field' data-prop='" + escapeHtml(p) + "' data-original='" + escapeHtml(displayValue) + "' value='" + escapeHtml(displayValue) + "'" + (isMetadata ? " disabled" : "") + " />";
+      html += "<input type='text' class='form-control record-editor-field' data-prop='" + escapeHtml(p) + "' value='" + escapeHtml(displayValue) + "'" + (isMetadata ? " disabled" : "") + " />";
     html += "</div>";
   }
   html += "<button class='btn btn-sm btn-outline-secondary w-100 mt-1'" + studioAction("addPropertyToRecord") + "><i class='fa fa-plus'></i> Add Property</button>";
@@ -338,63 +351,76 @@ function toggleGraphAppearanceSection() {
   globalStorageSave("graphAppearanceCollapsed", isVisible ? "true" : "false");
 }
 
-function saveRecordEditor() {
-  var rid = globalRecordEditorState.rid;
-  var setParts = [];
-  var removeParts = [];
+// The SQL literal of a field the user changed. A property that is stored as text stays text: "12345", "01234" or "true"
+// edited must not be retyped to a number or a boolean (and 01234 would lose its zero). Anything else is typed by its look.
+function recordEditorSqlValue(current, original) {
+  // an empty field and the text "null" both mean SQL null, whatever the property held: there is no way to store the string "null"
+  if (current === "" || current === "null")
+    return "null";
 
-  // Collect field changes (SET)
-  $(getRecordEditorTarget() + " .record-editor-field").each(function () {
-    if ($(this).prop("disabled"))
-      return;
-
-    var prop = $(this).data("prop");
-    var original = $(this).data("original");
-    var current = $(this).val();
-
-    if (current === original)
-      return;
-
-    var sqlValue;
-    if (current === "")
-      sqlValue = "null";
-    else if (current === "null")
-      sqlValue = "null";
-    else if (current === "true" || current === "false")
-      sqlValue = current;
-    else if (!isNaN(current) && current.trim() !== "")
-      sqlValue = current;
-    else if ((current.startsWith("{") && current.endsWith("}")) || (current.startsWith("[") && current.endsWith("]"))) {
+  if (typeof original !== "string") {
+    if (current === "true" || current === "false")
+      return current;
+    // a decimal number only: isNaN() also let Infinity and hex through, which are not SQL literals
+    if (/^-?(\d+(\.\d+)?|\.\d+)([eE][-+]?\d+)?$/.test(current.trim()))
+      return current.trim();
+    if ((current.startsWith("{") && current.endsWith("}")) || (current.startsWith("[") && current.endsWith("]"))) {
       try {
         JSON.parse(current);
-        sqlValue = current;
+        return current;
       } catch (e) {
-        sqlValue = "'" + current.replace(/\\/g, "\\\\").replace(/'/g, "\\'") + "'";
+        // not JSON: it is text
       }
-    } else
-      sqlValue = "'" + current.replace(/\\/g, "\\\\").replace(/'/g, "\\'") + "'";
+    }
+  }
+  return "'" + current.replace(/\\/g, "\\\\").replace(/'/g, "\\'") + "'";
+}
 
-    setParts.push(quoteSqlName(prop) + " = " + sqlValue);
-  });
+// The UPDATE that takes the record as loaded (originalProperties) to the form as it is now (properties, after
+// syncRecordEditorFields), or null when there is nothing to write. Both halves derive from the same baseline, so the
+// statement does not depend on how many times the form was re-rendered in between.
+function buildRecordEditorUpdate(rid, originalProperties, properties) {
+  var setParts = [];
+  var removeParts = [];
+  var has = Object.prototype.hasOwnProperty;
 
-  // Collect deleted properties (REMOVE)
-  var orig = globalRecordEditorState.originalProperties;
-  var curr = globalRecordEditorState.properties;
-  for (var p in orig) {
-    if (!curr.hasOwnProperty(p))
-      removeParts.push(quoteSqlName(p));
+  for (var p in properties) {
+    if (p.charAt(0) === "@" || !has.call(properties, p))
+      continue;
+
+    // a property that was not loaded (added in this session) starts empty
+    var hadOriginal = has.call(originalProperties, p);
+    var current = recordEditorDisplayValue(properties[p]);
+    if (current === (hadOriginal ? recordEditorDisplayValue(originalProperties[p]) : ""))
+      continue;
+
+    setParts.push(quoteSqlName(p) + " = " + recordEditorSqlValue(current, hadOriginal ? originalProperties[p] : undefined));
   }
 
-  if (setParts.length === 0 && removeParts.length === 0) {
-    globalNotify("Info", "No changes to save", "warning");
-    return;
+  for (var o in originalProperties) {
+    if (o.charAt(0) !== "@" && has.call(originalProperties, o) && !has.call(properties, o))
+      removeParts.push(quoteSqlName(o));
   }
+
+  if (setParts.length === 0 && removeParts.length === 0)
+    return null;
 
   var sql = "UPDATE " + rid;
   if (setParts.length > 0)
     sql += " SET " + setParts.join(", ");
   if (removeParts.length > 0)
     sql += " REMOVE " + removeParts.join(", ");
+  return sql;
+}
+
+function saveRecordEditor() {
+  syncRecordEditorFields();
+
+  var sql = buildRecordEditorUpdate(globalRecordEditorState.rid, globalRecordEditorState.originalProperties, globalRecordEditorState.properties);
+  if (sql == null) {
+    globalNotify("Info", "No changes to save", "warning");
+    return;
+  }
 
   var database = getCurrentDatabase();
 
@@ -437,6 +463,7 @@ function refreshRecordAfterSave() {
       }
 
       globalRecordEditorState.properties = newProps;
+      globalRecordEditorState.originalProperties = JSON.parse(JSON.stringify(newProps));
 
       // Update Cytoscape node data if in graph
       if (globalCy) {
@@ -517,9 +544,13 @@ function addPropertyToRecord() {
       globalNotify("Error", "Property already exists", "danger");
       return;
     }
+    // the form holds edits that are not in the state yet: take them before the re-render replaces the fields
+    syncRecordEditorFields();
     globalRecordEditorState.properties[propName] = "";
     renderRecordEditorContent();
-    $(getRecordEditorTarget() + " .record-editor-field[data-prop='" + propName + "']").focus();
+    $(getRecordEditorTarget() + " .record-editor-field").filter(function () {
+      return $(this).attr("data-prop") === propName;
+    }).focus();
   });
 }
 
@@ -527,9 +558,8 @@ function syncRecordEditorFields() {
   $(getRecordEditorTarget() + " .record-editor-field").each(function () {
     if ($(this).prop("disabled"))
       return;
-    var prop = $(this).data("prop");
-    var current = $(this).val();
-    globalRecordEditorState.properties[prop] = current;
+    // .attr(), not .data(): data() coerces "123" or "true" into a number or a boolean
+    globalRecordEditorState.properties[$(this).attr("data-prop")] = $(this).val();
   });
 }
 

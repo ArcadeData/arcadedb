@@ -307,8 +307,6 @@ test.describe('ArcadeDB Studio Graph Performance Tests', () => {
       const budget = getPerformanceBudget(size);
 
       const memoryUsage = await page.evaluate(() => {
-        if (!globalCy) return null;
-
         const start = performance.now();
 
         // Force some graph operations to test memory
@@ -334,28 +332,24 @@ test.describe('ArcadeDB Studio Graph Performance Tests', () => {
       console.log(`Memory usage for ${size} nodes:`, memoryUsage);
       memoryResults.push({ size, ...memoryUsage });
 
-      if (memoryUsage) {
-        // Use performance budget for validation
-        expect(memoryUsage.operationTime).toBeLessThan(budget.maxTime);
-        expect(memoryUsage.nodeCount).toBeGreaterThan(0);
-      }
+      // Use performance budget for validation
+      expect(memoryUsage.operationTime).toBeLessThan(budget.maxTime);
+      expect(memoryUsage.nodeCount).toBeGreaterThan(0);
     }
 
-    // Analyze memory growth pattern
-    if (memoryResults.length > 1) {
-      const firstResult = memoryResults[0];
-      const lastResult = memoryResults[memoryResults.length - 1];
+    // Every size was measured, and the browser (Chromium) reports its heap
+    expect(memoryResults).toHaveLength(memorySizes.length);
+    expect(memoryResults.length).toBeGreaterThan(1);
+    const firstResult = memoryResults[0];
+    const lastResult = memoryResults[memoryResults.length - 1];
+    expect(firstResult.memoryInfo).not.toBeNull();
+    expect(lastResult.memoryInfo).not.toBeNull();
 
-      if (firstResult.memoryInfo && lastResult.memoryInfo) {
-        const memoryGrowth = lastResult.memoryInfo.used - firstResult.memoryInfo.used;
-        const nodeGrowth = lastResult.nodeCount - firstResult.nodeCount;
-
-        console.log(`Memory growth: ${memoryGrowth} bytes for ${nodeGrowth} additional nodes`);
-
-        // Memory growth should be within environment-aware threshold
-        expect(memoryGrowth).toBeLessThan(thresholds.maxMemoryGrowth);
-      }
-    }
+    // Memory growth should be within environment-aware threshold
+    const memoryGrowth = lastResult.memoryInfo.used - firstResult.memoryInfo.used;
+    const nodeGrowth = lastResult.nodeCount - firstResult.nodeCount;
+    console.log(`Memory growth: ${memoryGrowth} bytes for ${nodeGrowth} additional nodes`);
+    expect(memoryGrowth).toBeLessThan(thresholds.maxMemoryGrowth);
   });
 
   test('should handle rapid user interactions without lag', async ({ authenticatedHelper }) => {
@@ -504,17 +498,12 @@ test.describe('ArcadeDB Studio Graph Performance Tests', () => {
 
       const totalTime = Date.now() - startTime;
 
-      // Verify concurrent operations completed successfully
-      expect(concurrentOperations).toBeTruthy();
-
-      if (concurrentOperations.success) {
-        expect(concurrentOperations.operations).toHaveLength(3);
-        expect(concurrentOperations.nodeCount).toBeGreaterThan(0);
-        expect(totalTime).toBeLessThan(thresholds.layoutTime * 0.5); // Concurrent should be faster
-      } else {
-        // Log error but don't fail test if it's the iconpicker issue
-        console.log('Concurrent operations failed:', concurrentOperations.error);
-        expect(concurrentOperations.nodeCount).toBeGreaterThanOrEqual(0);
-      }
+      // Verify concurrent operations completed successfully: a failure inside the page (an exception, an unavailable graph)
+      // comes back as `error` and fails here instead of being logged away
+      expect(concurrentOperations.error).toBeUndefined();
+      expect(concurrentOperations.success).toBe(true);
+      expect(concurrentOperations.operations).toHaveLength(3);
+      expect(concurrentOperations.nodeCount).toBeGreaterThan(0);
+      expect(totalTime).toBeLessThan(thresholds.layoutTime * 0.5); // Concurrent should be faster
     });
 });

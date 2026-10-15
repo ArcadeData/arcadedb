@@ -59,91 +59,26 @@ test.describe('ArcadeDB Studio Graph Context Menu Tests', () => {
     // Context menu visibility is optional depending on graph state
   });
 
- test('should expand vertex using context menu "both" direction', async ({ graphReady }) => {
-    const { helper, canvas: graphCanvas } = graphReady;
+ test('should expand vertex using context menu "both" direction', async ({ authenticatedHelper }) => {
+    const helper = authenticatedHelper;
     const page = helper.page;
 
-    // Get initial graph stats
-    const initialStats = page.locator('text=Displayed').locator('..');
-    const initialStatsText = await initialStats.textContent();
-    console.log('Initial graph state:', initialStatsText);
+    // Beers that have relationships, so that expanding them has something to bring in
+    await helper.executeQuery('SELECT FROM Beer WHERE both().size() > 0 LIMIT 3');
+    await helper.waitForGraphReady();
 
-    // First, select a vertex by clicking on the canvas
-    const canvasBox = await graphCanvas.boundingBox();
-    const centerX = canvasBox.x + canvasBox.width / 2;
-    const centerY = canvasBox.y + canvasBox.height / 2;
+    const countElements = () => page.evaluate(() => globalCy.elements().length);
+    const before = await countElements();
+    expect(before).toBeGreaterThan(0);
 
-    await page.mouse.click(centerX, centerY);
-    await page.waitForLoadState('networkidle');
+    // Select a vertex: the panel it opens offers the expansion in every direction
+    await page.evaluate(() => globalCy.nodes().first().select());
+    const both = page.locator('#graphRecordEditorContent [data-on-click="loadNodeNeighbors"][data-args*="both"]');
+    await expect(both).toBeVisible();
 
-    // Use the actual ArcadeDB Studio expansion workflow
-    try {
-      // Method 1: Try using the expand functionality through the UI
-      const expandButton = page.locator('button:has-text("Expand"), .fa-expand, .fa-plus');
-      if (await expandButton.isVisible({ timeout: 2000 })) {
-        await expandButton.first().click();
-        await page.waitForLoadState('networkidle');
-        await expect(page.locator('.result-stats').getByText('Returned')).toBeVisible({ timeout: 10000 }).catch(() => {});
-      } else {
-        // Method 2: Use programmatic expansion via cytoscape API
-        await page.evaluate(() => {
-          if (typeof globalCy !== 'undefined' && globalCy !== null) {
-            const nodes = globalCy.nodes();
-            if (nodes.length > 0) {
-              const firstNode = nodes.first();
-              firstNode.select();
-
-              if (typeof loadNodeNeighbors === 'function') {
-                loadNodeNeighbors(firstNode.id(), 'both');
-              }
-            }
-          }
-        });
-        await page.waitForLoadState('networkidle');
-        await page.waitForFunction(() => {
-          return typeof globalCy !== 'undefined' && globalCy !== null;
-        }, { timeout: 5000 }).catch(() => {});
-      }
-    } catch (error) {
-      console.log('Expansion attempt failed:', error.message);
-
-      // Method 3: Use a different query that includes relationships
-      await page.evaluate(() => {
-        (window as any).editor.setValue('SELECT FROM Beer WHERE out().size() > 0 LIMIT 3');
-      });
-      await page.locator('[data-testid="execute-query-button"]').click();
-      await expect(page.locator('.result-stats').getByText('Returned')).toBeVisible({ timeout: 15000 });
-      await page.waitForLoadState('networkidle');
-    }
-
-    // Verify expansion occurred - be more flexible with the assertion
-    const finalStats = page.locator('text=Displayed').locator('..');
-    const finalStatsText = await finalStats.textContent();
-    console.log('Final graph state:', finalStatsText);
-
-    // Check if either vertex count increased OR edges appeared OR query returned connected data
-    const hasMoreElements = !finalStatsText.includes('5 vertices and 0 edges') ||
-                           finalStatsText.includes('edges') ||
-                           finalStatsText.includes('Returned') &&
-                           !finalStatsText.includes('0 records');
-
-    // If expansion still didn't work, that's ok - some datasets don't have connections
-    if (!hasMoreElements) {
-      console.log('No expansion occurred - this may be expected if Beer vertices have no connections');
-      // Verify graph is still functional even without expansion
-      const graphInfo = await helper.page.evaluate(() => {
-        return {
-          cytoscapeResponsive: typeof globalCy !== 'undefined' && globalCy !== null,
-          nodeCount: globalCy ? globalCy.nodes().length : 0
-        };
-      });
-      expect(graphInfo.cytoscapeResponsive).toBe(true,
-        'Cytoscape should remain functional even when expansion fails');
-      expect(graphInfo.nodeCount).toBeGreaterThan(0,
-        'Graph should still contain nodes after expansion attempt');
-    } else {
-      expect(hasMoreElements).toBe(true);
-    }
+    // Expanding "both" directions brings the neighbours into the graph
+    await both.click();
+    await expect.poll(countElements, { timeout: 15000 }).toBeGreaterThan(before);
   });
 
   test('should handle vertex context menu on mobile touch devices', async ({ graphReady }) => {

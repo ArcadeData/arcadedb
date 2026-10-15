@@ -30,24 +30,20 @@ test.describe('Debug DataTables Version', () => {
     // Wait for DataTable to be initialized
     await page.waitForSelector('#result');
 
-    // Check what DataTables version is actually loaded
+    // The version of the global DataTable
     const dtVersion = await page.evaluate(() => {
       // @ts-ignore
       return window.DataTable ? window.DataTable.version : 'Not found';
     });
 
-    console.log(`DataTables version in window: ${dtVersion}`);
-
-    // Check if the file itself was loaded correctly
-    const fileContent = await page.evaluate(() => {
+    // Where the library was loaded from
+    const scriptSrc = await page.evaluate(() => {
       const scripts = Array.from(document.scripts);
       const dtScript = scripts.find(s => s.src && s.src.includes('dataTables'));
       return dtScript ? dtScript.src : 'Not found';
     });
 
-    console.log(`DataTables script src: ${fileContent}`);
-
-    // Get the actual version from the loaded DataTable API
+    // The version the jQuery plugin entry point reports
     const apiVersion = await page.evaluate(() => {
       try {
         // @ts-ignore
@@ -61,23 +57,22 @@ test.describe('Debug DataTables Version', () => {
       }
     });
 
-    console.log(`DataTables API version: ${apiVersion}`);
-
-    // Check if the DataTable was actually initialized on the result table
+    // Whether the result table is an instance of it
     const tableInfo = await page.evaluate(() => {
       try {
         // @ts-ignore
         const table = window.$('#result').DataTable();
-        // @ts-ignore
-        return {
-          hasTable: !!table,
-          version: table.version ? table.version : 'no version on instance'
-        };
+        return { hasTable: !!table, rows: table.rows().count() };
       } catch (e) {
         return { error: e.message };
       }
     });
 
-    console.log(`Table instance info:`, tableInfo);
+    // A modern DataTables (v2 or newer) is loaded, from the vendored bundle, behind both of its entry points
+    expect(dtVersion).toMatch(/^\d+\.\d+/);
+    expect(parseInt(dtVersion.split('.')[0], 10)).toBeGreaterThanOrEqual(2);
+    expect(scriptSrc).toContain('dataTables');
+    expect(apiVersion).toBe(dtVersion);
+    expect(tableInfo).toEqual({ hasTable: true, rows: 5 });
   });
 });

@@ -234,109 +234,24 @@ test.describe('Cytoscape 3.33.1 Validation Tests', () => {
   });
 
   test('should maintain graph state during tab navigation', async ({ graphReady }) => {
-    const { helper, canvas } = graphReady;
+    const { helper } = graphReady;
     const page = helper.page;
 
-    // Get initial graph state
-    const initialState = await page.evaluate(() => {
-      if (!globalCy) return null;
-      return {
-        nodeCount: globalCy.nodes().length,
-        zoom: globalCy.zoom()
-      };
-    });
+    const graphState = () => page.evaluate(() => ({
+      nodeCount: globalCy.nodes().length,
+      edgeCount: globalCy.edges().length
+    }));
 
-    // Navigate between available tabs instead of non-existent "Database Schema"
-    try {
-      // Try to find and click on different result view tabs (Table, JSON, etc.)
-      const tableTab = page.getByRole('tab', { name: /Table/i });
-      const jsonTab = page.getByRole('tab', { name: /Json/i });
-      const graphTab = page.getByRole('tab', { name: /Graph/i });
+    const before = await graphState();
+    expect(before.nodeCount).toBeGreaterThan(0);
 
-      // Navigate to Table tab if available
-      if (await tableTab.isVisible({ timeout: 2000 })) {
-        await tableTab.click();
-        await page.waitForLoadState('networkidle');
+    // Leave the graph for the result table and come back, through the real result tabs
+    await page.locator('#tab-table-sel').click();
+    await expect(page.locator('#tab-table')).toBeVisible();
+    await page.locator('#tab-graph-sel').click();
+    await expect(page.locator('#tab-graph')).toBeVisible();
 
-        // Navigate back to Graph tab
-        if (await graphTab.isVisible({ timeout: 2000 })) {
-          await graphTab.click();
-          await page.waitForLoadState('networkidle');
-        }
-      } else if (await jsonTab.isVisible({ timeout: 2000 })) {
-        // Alternative: navigate to JSON tab and back
-        await jsonTab.click();
-        await page.waitForLoadState('networkidle');
-
-        if (await graphTab.isVisible({ timeout: 2000 })) {
-          await graphTab.click();
-          await page.waitForLoadState('networkidle');
-        }
-      } else {
-        // Fallback: verify current graph state when no tabs available
-        console.log('No alternative tabs found - validating current graph state instead');
-        const currentGraphState = await page.evaluate(() => {
-          return {
-            hasGraph: typeof globalCy !== 'undefined' && globalCy !== null,
-            nodeCount: globalCy ? globalCy.nodes().length : 0,
-            isStable: true
-          };
-        });
-
-        expect(currentGraphState.hasGraph).toBe(true,
-          'Graph should be present and accessible when tabs are not available');
-        expect(currentGraphState.nodeCount).toBeGreaterThan(0,
-          'Graph should contain nodes even without tab navigation');
-        return;
-      }
-    } catch (error) {
-      console.log('Tab navigation failed:', error.message);
-      // Skip navigation but verify graph stability after failed attempt
-      const graphStateAfterError = await page.evaluate(() => {
-        return {
-          graphAccessible: typeof globalCy !== 'undefined' && globalCy !== null,
-          nodeCount: globalCy ? globalCy.nodes().length : 0,
-          errorRecovered: true
-        };
-      });
-
-      expect(graphStateAfterError.graphAccessible).toBe(true,
-        'Graph should remain accessible even after navigation errors');
-      expect(graphStateAfterError.nodeCount).toBeGreaterThan(0,
-        'Graph nodes should be preserved despite navigation failures');
-      return;
-    }
-
-    // Verify graph state is maintained after navigation
-    const finalState = await page.evaluate(() => {
-      if (!globalCy) return null;
-      return {
-        nodeCount: globalCy.nodes().length,
-        zoom: globalCy.zoom(),
-        stillActive: true
-      };
-    });
-
-    // Verify graph state is maintained or graph is still functional
-    if (initialState && finalState) {
-      // Graph should either maintain state or be re-rendered with same data
-      expect(finalState.stillActive).toBe(true);
-      expect(finalState.nodeCount).toBeGreaterThanOrEqual(0);
-    } else {
-      // If states aren't available, verify basic graph functionality
-      const basicGraphCheck = await page.evaluate(() => {
-        return {
-          graphExists: typeof globalCy !== 'undefined' && globalCy !== null,
-          basicFunctionality: globalCy ? (globalCy.nodes().length >= 0) : false,
-          noErrors: true
-        };
-      });
-
-      expect(basicGraphCheck.graphExists).toBe(true,
-        'Graph should exist even when state comparison is not possible');
-      expect(basicGraphCheck.basicFunctionality).toBe(true,
-        'Graph should maintain basic functionality regardless of navigation state');
-    }
+    expect(await graphState()).toEqual(before);
   });
 
   test('should handle cytoscape extensions correctly', async ({ graphReady }) => {

@@ -199,6 +199,12 @@
              carve-out here, in the resource definition itself, is what makes every consumer of this POM get
              it right. Keep the two lists identical.
 
+             They are also one list with the Content-Type table of the server (GetDynamicContentHandler.CONTENT_TYPES):
+             every extension the server serves as anything but text or JSON is a binary and belongs here, and every
+             extension here must be served with its own type or it goes out as text/plain. A binary added to one place
+             and not the other is corrupted by the build or mislabeled on the wire (issue #10103);
+             studio/test/static-content-types.test.js fails on that edit, so widen all of them together.
+
              <resources> is NOT merged between a parent and a child: a module that declares its own list REPLACES
              this one wholesale and loses the carve-out (issue #8058). No module may redeclare <resources>;
              a module that needs extra resource directories must copy BOTH entries into its own list. -->
@@ -207,6 +213,7 @@
                 <directory>${basedir}/src/main/resources</directory>
                 <filtering>true</filtering>
                 <excludes>
+                    <exclude>**/*.avif</exclude>
                     <exclude>**/*.bmp</exclude>
                     <exclude>**/*.eot</exclude>
                     <exclude>**/*.gif</exclude>
@@ -218,6 +225,8 @@
                     <exclude>**/*.svg</exclude>
                     <exclude>**/*.swf</exclude>
                     <exclude>**/*.ttf</exclude>
+                    <exclude>**/*.wasm</exclude>
+                    <exclude>**/*.webp</exclude>
                     <exclude>**/*.woff</exclude>
                     <exclude>**/*.woff2</exclude>
                 </excludes>
@@ -226,6 +235,7 @@
                 <directory>${basedir}/src/main/resources</directory>
                 <filtering>false</filtering>
                 <includes>
+                    <include>**/*.avif</include>
                     <include>**/*.bmp</include>
                     <include>**/*.eot</include>
                     <include>**/*.gif</include>
@@ -237,6 +247,8 @@
                     <include>**/*.svg</include>
                     <include>**/*.swf</include>
                     <include>**/*.ttf</include>
+                    <include>**/*.wasm</include>
+                    <include>**/*.webp</include>
                     <include>**/*.woff</include>
                     <include>**/*.woff2</include>
                 </includes>
@@ -248,11 +260,12 @@
                 <artifactId>maven-resources-plugin</artifactId>
                 <version>${maven-resources-plugin.version}</version>
                 <configuration>
-                    <!-- Kept in step with the <resources> carve-out above; 'ico' and the two remaining font
-                         types were missing here, which left Studio's favicon and any .eot/.otf asset copied
-                         through the filter. Maven's text copy happens to be lossless for them today, so the
-                         released artifacts are unaffected - but the safety of a binary must not rest on that. -->
-                    <nonFilteredFileExtensions>bmp,eot,gif,ico,jpeg,jpg,otf,png,svg,swf,ttf,woff,woff2</nonFilteredFileExtensions>
+                    <!-- Kept in step with the <resources> carve-out above and the server's Content-Type table;
+                         'ico' and the two remaining font types were missing here, which left Studio's favicon
+                         and any .eot/.otf asset copied through the filter. Maven's text copy happens to be
+                         lossless for them today, so the released artifacts are unaffected - but the safety of
+                         a binary must not rest on that. -->
+                    <nonFilteredFileExtensions>avif,bmp,eot,gif,ico,jpeg,jpg,otf,png,svg,swf,ttf,wasm,webp,woff,woff2</nonFilteredFileExtensions>
                     <propertiesEncoding>${project.build.sourceEncoding}</propertiesEncoding>
                 </configuration>
             </plugin>

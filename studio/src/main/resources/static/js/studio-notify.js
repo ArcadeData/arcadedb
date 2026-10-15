@@ -17,6 +17,13 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+// jQuery 3 → 4 Compatibility Shim
+// jQuery 4 removed $.isArray, a plain alias of Array.isArray, and the cytoscape-graphml plugin still calls it: with it
+// missing, Export > GraphML threw "e.isArray is not a function" and downloaded nothing (issue #10101). Needed for
+// cytoscape-graphml 1.0.6; drop it when that plugin stops calling $.isArray
+if (typeof $.isArray !== "function")
+  $.isArray = Array.isArray;
+
 // Bootstrap 4 → 5 Compatibility Shims
 $(document).ready(function() {
   $('[data-toggle]').each(function() {
