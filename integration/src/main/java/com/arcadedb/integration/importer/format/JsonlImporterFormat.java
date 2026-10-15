@@ -32,6 +32,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.engine.timeseries.DownsamplingTier;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
+import com.arcadedb.engine.timeseries.TimeSeriesGateway;
 import com.arcadedb.engine.timeseries.TimeSeriesStorableRows;
 import com.arcadedb.engine.timeseries.codec.TimeSeriesCodec;
 import com.arcadedb.index.CompressedRID2RIDIndex;
@@ -734,36 +735,56 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
             + " value(s) but the type declares " + columns.size() + " column(s)");
     }
 
+    // The timestamp is a column like the others (position 0 of the sample - see the engine-row note on this method): converted
+    // through its column, so text of digits or a date is read as the instant it names, and a sample whose timestamp the column
+    // cannot store is refused ALONE, named like any other refused value, instead of taking its chunk with it
+    final ColumnDefinition timestampColumn = timestampColumnOf(columns);
+    final Set<String> unreadable = new LinkedHashSet<>();
     final long[] timestamps = new long[rows];
+    final int[] sampleOfRow = new int[rows];
+    int kept = 0;
     for (int r = 0; r < rows; r++) {
-      // Position 0 is the timestamp - see the engine-row note on this method
-      if (!(samples.getJSONArray(r).get(0) instanceof Number timestamp))
-        throw new ImportException("TIMESERIES sample " + r + " of type '" + typeName + "' has a timestamp that is not a number");
-      timestamps[r] = timestamp.longValue();
+      try {
+        if (!(timestampColumn.storableValue(database, samples.getJSONArray(r).get(0)) instanceof Number timestamp))
+          throw new IllegalArgumentException("The sample has no timestamp");
+        timestamps[kept] = timestamp.longValue();
+        sampleOfRow[kept++] = r;
+      } catch (final IllegalArgumentException e) {
+        if (unreadable.size() < TimeSeriesGateway.MAX_REPORTED_UNREADABLE_VALUES)
+          unreadable.add(typeName + "." + timestampColumn.getName() + " (timestamp): " + e.getMessage());
+      }
     }
+    final int refusedTimestamps = rows - kept;
 
     // The values follow the timestamp in non-timestamp schema order, which is the order of the converted grid's columns: the
     // value column `valueColumn` is at position `valueColumn + 1` of the sample
-    final Set<String> unreadable = new LinkedHashSet<>();
-    final TimeSeriesStorableRows converted = TimeSeriesStorableRows.convert(database, typeName, columns, timestamps, rows, false,
-        (row, valueColumn, column) -> decodeSampleValue(samples.getJSONArray(row).get(valueColumn + 1), column.getDataType()),
-        unreadable);
+    final TimeSeriesStorableRows converted = TimeSeriesStorableRows.convert(database, typeName, columns, timestamps, kept, false,
+        (row, valueColumn, column) -> decodeSampleValue(samples.getJSONArray(sampleOfRow[row]).get(valueColumn + 1),
+            column.getDataType()), unreadable);
 
-    if (converted.refused() > 0) {
+    final int refused = refusedTimestamps + converted.refused();
+    if (refused > 0) {
       if (!skipOnRowError)
-        throw new ImportException("TIMESERIES type '" + typeName + "': " + converted.refused() + " of " + rows + " sample(s) hold "
+        throw new ImportException("TIMESERIES type '" + typeName + "': " + refused + " of " + rows + " sample(s) hold "
             + "a value their column cannot store - " + String.join("; ", unreadable) + ". Nothing of this chunk was imported; fix "
             + "the source, or import with -onRowError skip to drop those samples and keep the others");
 
-      context.errors.addAndGet(converted.refused());
+      context.errors.addAndGet(refused);
       LogManager.instance().log(this, Level.SEVERE,
-          "Skipped %d TIMESERIES sample(s) of type '%s' holding a value their column cannot store: %s", converted.refused(),
-          typeName, String.join("; ", unreadable));
+          "Skipped %d TIMESERIES sample(s) of type '%s' holding a value their column cannot store: %s", refused, typeName,
+          String.join("; ", unreadable));
     }
 
     converted.appendTo(engine);
     context.createdTimeSeriesSamples.addAndGet(converted.size());
     timeSeriesSamplesSinceCommit += converted.size();
+  }
+
+  private static ColumnDefinition timestampColumnOf(final List<ColumnDefinition> columns) {
+    for (final ColumnDefinition column : columns)
+      if (column.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
+        return column;
+    throw new ImportException("The TIMESERIES type has no TIMESTAMP column");
   }
 
   /**

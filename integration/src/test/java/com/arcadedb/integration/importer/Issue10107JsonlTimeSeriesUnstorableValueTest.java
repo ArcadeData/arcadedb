@@ -88,11 +88,15 @@ class Issue10107JsonlTimeSeriesUnstorableValueTest {
     exportThreeSamples();
     // sample layout is the engine row: [ts, host, port, up, v]
     rewrite(sample -> {
-      if (sample.getLong(0) == TS)
+      final long timestamp = sample.getLong(0);
+      if (timestamp == TS) {
         sample.put(2, "80");
-      if (sample.getLong(0) == TS + 1_000)
+        // THE TIMESTAMP IS A COLUMN LIKE THE OTHERS: TEXT OF DIGITS IS THE INSTANT IT NAMES
+        sample.put(0, String.valueOf(TS));
+      }
+      if (timestamp == TS + 1_000)
         sample.put(3, "false");
-      if (sample.getLong(0) == TS + 2_000)
+      if (timestamp == TS + 2_000)
         sample.put(4, "2.75");
     });
 
@@ -139,6 +143,27 @@ class Issue10107JsonlTimeSeriesUnstorableValueTest {
       final List<Object[]> rows = rowsOf(target);
       assertThat(rows).hasSize(2);
       assertThat(rows).extracting(row -> ((Number) row[0]).longValue()).containsExactly(TS, TS + 1_000);
+    }
+  }
+
+  /** A timestamp the column cannot store refuses its sample alone, like any other value: the chunk is not lost with it. */
+  @Test
+  void aTimestampNoColumnCanStoreRefusesOnlyItsSample() throws Exception {
+    exportThreeSamples();
+    rewrite(sample -> {
+      if (sample.getLong(0) == TS + 1_000)
+        sample.put(0, "not-a-time");
+    });
+
+    assertThatThrownBy(() -> new Importer(importArguments(false)).load()).isInstanceOf(ImportException.class)
+        .satisfies(e -> assertThat(messagesOf(e)).contains("T.ts (timestamp)"));
+
+    final Map<String, Object> report = new Importer(importArguments(true)).load();
+
+    assertThat(report).as("one sample refused, the other two of its chunk kept").containsEntry("errors", 1L)
+        .containsEntry("createdTimeSeriesSamples", 2L);
+    try (final Database target = new DatabaseFactory(TARGET_PATH).open()) {
+      assertThat(rowsOf(target)).extracting(row -> ((Number) row[0]).longValue()).containsExactly(TS, TS + 2_000);
     }
   }
 
