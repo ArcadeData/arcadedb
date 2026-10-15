@@ -8,13 +8,20 @@ from arcadedb_embedded.transactions import TransactionContext
 
 
 class _FakeDatabase:
-    """Stands in for the database; the interrupt lands right after begin() has opened the transaction."""
+    """Stands in for the database; the interrupt lands right after begin() has opened the transaction.
+
+    Mirrors LocalDatabase's stack: begin() with no active transaction reuses the base level, with one active it pushes
+    a nested level (``depth``), and rollback() pops the top level.
+    """
 
     def __init__(self):
         self.active = False
+        self.depth = 0
         self.rollbacks = 0
 
     def begin(self):
+        if self.active:
+            self.depth += 1
         self.active = True
         raise KeyboardInterrupt()
 
@@ -22,11 +29,24 @@ class _FakeDatabase:
         return self.active
 
     def rollback(self):
-        self.active = False
+        if self.depth > 0:
+            self.depth -= 1
+        else:
+            self.active = False
         self.rollbacks += 1
 
     def commit(self):
         self.active = False
+
+    def _transaction_stack_mark(self):
+        return self.active, self.depth
+
+    def _end_transactions_opened_since(self, mark):
+        was_active, depth_before = mark
+        for _ in range(self.depth - depth_before):
+            self.rollback()
+        if not was_active and self.active:
+            self.rollback()
 
 
 def test_interrupt_after_begin_rolls_back():
@@ -66,3 +86,14 @@ def test_normal_flow_commits():
     with TransactionContext(db):
         assert db.active is True
     assert db.active is False
+
+
+def test_interrupted_nested_begin_pops_only_its_own_level():
+    db = _FakeDatabase()
+    db.active = True
+    with pytest.raises(KeyboardInterrupt):
+        with TransactionContext(db):
+            pytest.fail("the body must not run")
+    assert db.active is True
+    assert db.depth == 0
+    assert db.rollbacks == 1
