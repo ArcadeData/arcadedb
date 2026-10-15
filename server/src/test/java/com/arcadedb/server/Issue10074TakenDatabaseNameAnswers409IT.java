@@ -127,7 +127,11 @@ class Issue10074TakenDatabaseNameAnswers409IT extends BaseGraphServerTest {
   /** The other half of the contract: 400 still means a malformed request. */
   @Test
   void aMalformedNameStillAnswers400() throws Exception {
-    assertThat(postCommand("create database ../escape").statusCode()).isEqualTo(400);
+    final HttpResponse<String> refused = postCommand("create database ../escape");
+
+    assertThat(refused.statusCode()).isEqualTo(400);
+    // Refused by the name check, not by anything else that happens to answer 400
+    assertThat(refused.body()).contains("Database name '../escape'").doesNotContain("already exists");
   }
 
   private void dropIfPresent(final String name) throws Exception {
