@@ -1,5 +1,5 @@
 """Engine findings about openCypher count push-downs and BYTE aggregates that reach Python users
-(known-issues.md), now all fixed in ArcadeDB 26.11.1.
+(known-issues.md), now all fixed in ArcadeDB 26.10.2.
 
 Each finding has a test of its documented workaround, which must keep passing, and a test of the
 engine behavior itself that asserts the answer the row pipeline gives. While an engine bug is open
@@ -8,7 +8,7 @@ reaches the wheel it starts passing and the suite fails, and the test is then co
 one.
 
 #9277, #9278 and #9281 (ArcadeData/arcadedb#9288) and #9290 (ArcadeData/arcadedb#9299) are fixed in
-26.11.1, which is the engine this tree builds against, so their tests are plain regression tests
+26.10.2, which is the engine this tree builds against, so their tests are plain regression tests
 now. They fail on the 26.10.1 engine, the one in the released wheel; known-issues.md says so.
 
 Where a query is still answered by the `COUNT ANTI-JOIN CHAIN` push-down (the LSQB Q9 shape, the
@@ -31,7 +31,7 @@ import arcadedb_embedded as arcadedb
 import pytest
 
 # ---------------------------------------------------------------------------------------------
-# #9277: another label at the far end of the chain (fixed in 26.11.1, #9288)
+# #9277: another label at the far end of the chain (fixed in 26.10.2, #9288)
 # ---------------------------------------------------------------------------------------------
 
 CROSS_CHAIN = "MATCH (p1:Person)-[:KNOWS]-(p2:Person)-[:KNOWS]-(p3:Employee)-[:HAS_INTEREST]->(t:Tag) "
@@ -150,7 +150,7 @@ def test_a_chain_with_the_same_label_throughout_is_not_affected(temp_db_path):
 
 
 # ---------------------------------------------------------------------------------------------
-# #9278: the property map of the negated pattern's relationship (fixed in 26.11.1, #9288)
+# #9278: the property map of the negated pattern's relationship (fixed in 26.10.2, #9288)
 # ---------------------------------------------------------------------------------------------
 
 EDGE_CHAIN = "MATCH (x:P)-[:K]->(y:P)-[:K]->(z:P)-[:L]->(t:Q) "
@@ -234,7 +234,7 @@ def test_negated_pattern_the_map_does_not_change_is_counted_right(temp_db_path, 
 
 
 # ---------------------------------------------------------------------------------------------
-# #9281: sum() and avg() over a BYTE property (fixed in 26.11.1, #9288)
+# #9281: sum() and avg() over a BYTE property (fixed in 26.10.2, #9288)
 # ---------------------------------------------------------------------------------------------
 
 
@@ -316,7 +316,7 @@ def test_converting_a_byte_to_an_integer_before_the_aggregate_works(
 
 
 # ---------------------------------------------------------------------------------------------
-# #9290: other shapes of the chain (fixed in 26.11.1, #9299)
+# #9290: other shapes of the chain (fixed in 26.10.2, #9299)
 # ---------------------------------------------------------------------------------------------
 
 _P3 = "MATCH (p0:Person)-[:KNOWS]-(p1:Person)-[:KNOWS]-(p2:Person)-[:HAS_INTEREST]->(t:Tag) "

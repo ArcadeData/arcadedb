@@ -77,10 +77,10 @@ public class BinaryTypes {
   public final static byte TYPE_COMPRESSED_GEOMETRY = 28; // @SINCE 26.2.1 - Binary geometry storage (Point, Circle, Rectangle, etc.)
   public final static byte TYPE_EXTERNAL                 = 29; // @SINCE 26.5.1 - Property value stored uncompressed in a paired external bucket. Followed by [bucketIdVarint][positionVarint].
   public final static byte TYPE_EXTERNAL_COMPRESSED_FAST = 30; // @SINCE 26.5.1 - Same as TYPE_EXTERNAL but the value bytes in the external blob are LZ4-fast-compressed; the type byte is the dispatcher (no per-blob algo marker needed).
-  public final static byte TYPE_OFFSET_TIME              = 32; // @SINCE 26.11.1 - OffsetTime: nanoOfDay, offsetSeconds (Cypher time())
-  public final static byte TYPE_LOCAL_TIME               = 33; // @SINCE 26.11.1 - LocalTime: nanoOfDay (Cypher localtime())
-  public final static byte TYPE_ZONED_DATETIME           = 34; // @SINCE 26.11.1 - ZonedDateTime: epochSecond, nano, zone (Cypher datetime())
-  public final static byte TYPE_DURATION                 = 35; // @SINCE 26.11.1 - months, days, seconds, nanos (Cypher duration())
+  public final static byte TYPE_OFFSET_TIME              = 32; // @SINCE 26.10.2 - OffsetTime: nanoOfDay, offsetSeconds (Cypher time())
+  public final static byte TYPE_LOCAL_TIME               = 33; // @SINCE 26.10.2 - LocalTime: nanoOfDay (Cypher localtime())
+  public final static byte TYPE_ZONED_DATETIME           = 34; // @SINCE 26.10.2 - ZonedDateTime: epochSecond, nano, zone (Cypher datetime())
+  public final static byte TYPE_DURATION                 = 35; // @SINCE 26.10.2 - months, days, seconds, nanos (Cypher duration())
   public final static byte TYPE_EXTERNAL_COMPRESSED_MAX  = 31; // @SINCE 26.5.1 - Same as TYPE_EXTERNAL_COMPRESSED_FAST but compressed with LZ4 HC (high compression, ~10pp smaller output, 8-20x slower compress; decompression is identical to FAST since LZ4 HC uses the same format).
 
   // Geometry subtypes for TYPE_COMPRESSED_GEOMETRY

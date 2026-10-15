@@ -1588,10 +1588,10 @@ class Database:
             expected_edge_count: Hint for auto-tuning batch size when not set.
             edge_list_initial_size: Initial edge-segment size in bytes.
             light_edges: Create property-less edges as light edges when True. From engine
-                26.11.1 ``new_edge`` raises ArcadeDBError for an edge type that is not declared
+                26.10.2 ``new_edge`` raises ArcadeDBError for an edge type that is not declared
                 LIGHTWEIGHT; declare the type or leave this unset. On 26.10.1 and earlier the load
                 succeeds, but an openCypher one-hop ``count(*)`` over those edges answers 0
-                (ArcadeData/arcadedb#9378, fixed in 26.11.1), and a graph loaded that way stays
+                (ArcadeData/arcadedb#9378, fixed in 26.10.2), and a graph loaded that way stays
                 wrong.
             bidirectional: Connect incoming edges as well as outgoing edges (the
                 default). Pass False only for an edge type declared UNIDIRECTIONAL. From

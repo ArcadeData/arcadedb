@@ -201,7 +201,7 @@ class Issue9612TimeWindowAggregatePushDownTest extends TestHelper {
       assertThat(plan(byHost.replace(" X", " T"))).contains("group by host");
       assertThat(types(byHost.replace(" X", " T"))).isEqualTo(types(byHost.replace(" X", " D")));
 
-      // the time-bucket push-down answered Doubles before 26.11.1; it answers the generic plan's types too now
+      // the time-bucket push-down answered Doubles before 26.10.2; it answers the generic plan's types too now
       final String byHour = "SELECT ts.timeBucket('1h', ts) AS h, " + projection + " FROM X WHERE " + RANGE + " GROUP BY h";
       assertThat(plan(byHour.replace(" X", " T"))).contains("bucket=3600000ms");
       final List<String> typesOfTheBucket = types(byHour.replace(" X", " T"));

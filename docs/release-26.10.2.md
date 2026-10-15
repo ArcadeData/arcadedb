@@ -1,7 +1,7 @@
-# ArcadeDB v.26.11.1 Release Highlights
+# ArcadeDB v.26.10.2 Release Highlights
 
 This is a living document: fixes, improvements, new features, and breaking changes are collected here as
-they land during the 26.11.1 development cycle, so the release notes are ready at tag time.
+they land during the 26.10.2 development cycle, so the release notes are ready at tag time.
 
 ## Breaking Changes (migration notes)
 

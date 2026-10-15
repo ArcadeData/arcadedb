@@ -276,7 +276,7 @@ so the Dockerfiles can be validated end to end from any branch without publishin
 
 # the Java e2e battery against any image, JVM or native
 ./mvnw install -DskipTests -pl e2e -am
-./mvnw verify -Pintegration -pl e2e -Darcadedb.test.image=arcadedb:26.11.1-SNAPSHOT-native-arm64-local
+./mvnw verify -Pintegration -pl e2e -Darcadedb.test.image=arcadedb:26.10.2-SNAPSHOT-native-arm64-local
 ```
 
 `native/scripts/build-native-docker.sh` produces the same per-arch image the workflow publishes,

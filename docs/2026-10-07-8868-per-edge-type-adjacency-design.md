@@ -3,7 +3,7 @@
 - Issue: #9264 (design step of the #9269 roadmap, problem statement #8868)
 - Status: **PROPOSED, awaiting maintainer sign-off**. Nothing in this document is implemented. No code may depend on it
   until it is merged.
-- Release of this document: 26.11.1. Implementation: read support 26.12.1 (#9267), opt-in writer 27.1.1 (#9268),
+- Release of this document: 26.10.2. Implementation: read support 26.12.1 (#9267), opt-in writer 27.1.1 (#9268),
   default ON later (#9263).
 
 ## 1. Problem
@@ -313,7 +313,7 @@ The maintenance walks (count, removal, checker, export) concatenate, as today.
 | Release | Reads type 8 | Writes type 8 | Issue |
 |---|---|---|---|
 | 26.10.1 | no (fails closed) | no | #9211: validates type-7 `HASH_VERSION` |
-| 26.11.1 | no (fails closed) | no | #9264 (this document), #9265 fixtures, #9266 |
+| 26.10.2 | no (fails closed) | no | #9264 (this document), #9265 fixtures, #9266 |
 | 26.12.1 | **yes** | never converts a vertex; maintains vertices already converted (D3) | #9267 |
 | 27.1.1 | yes | **opt-in**, default OFF | #9268 |
 | later | yes | **default ON**, FORWARD-INCOMPATIBLE release note | #9263 |
