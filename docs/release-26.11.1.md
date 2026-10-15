@@ -201,23 +201,19 @@ Newly accepted, as in Neo4j: a sign before the `P` (`-P1Y2D` negates every compo
 
 ## Fixes
 
-- **A schema change still pending when the database closes is saved (#10059).** A DDL inside an open transaction, or one
-  postponed by a bulk schema change, is written when the database closes. That save ran once the database already reported
-  itself closed, where an index cannot be serialized, so as soon as the schema held one index the save failed, was logged at
-  `SEVERE` (`Error saving schema configuration during close`) and the change was lost: after a reopen the type, or the index,
-  was gone. The save now runs as the last step before the database is marked closed, together with the BM25 corpus counters.
-- **A follower's refusal of leader-only work is answered at once (#9995).** `Database.transaction()` and `COMMIT RETRY` retried
-  every retryable error, so a follower refusing a schema change (or another leader-only operation) and naming the leader went
-  through every `txRetries` attempt and retry delay before the caller learnt where to send it, on every transport that runs work
-  through `Database.transaction()` (the HTTP auto-commit retry, the MCP tools). Such a refusal is now rethrown on the first
-  attempt; one raised while no leader is known is still retried, since this node may win the election. A Java caller can tell
-  the two apart with the new `NeedRetryException.isRetryableOnThisNode()`.
-- **`CHECK DATABASE` reads each record of a type with a `MANDATORY` or `NOTNULL` property once (#7981).** The existence
-  constraint check added in 26.10.1 walked and deserialised every record of those types a second time. A run that only
-  reports now asks the question while it decodes the record content, which every run does anyway, so the report has no
-  `Checking existence constraints` step of its own. `FIX DELETE INVALID RECORDS` keeps that step: its delete passes need a scan
-  of their own. The findings are unchanged.
-
+- **A variable-length Cypher hop whose consumer cannot tell two paths between the same pair of vertices apart reports each end vertex once (#10062).**
+  `MATCH (a)-[:LINK*1..D]->(b) RETURN DISTINCT b` and `count(DISTINCT b)` walked every path, so the time grew with the number of
+  paths (about 3x to 8x per extra level on a dependency-like graph of 200,000 vertices and 1.8 million edges, where depth 9
+  did not finish in 120 s), while `TRAVERSE ... MAXDEPTH` answered the same question in constant time per level. The hop now
+  walks a breadth-first search with a visited set, lazily and level by level, so a `LIMIT` stops it early, and the same closure
+  at depth 12 takes about half a second. It applies to a statement that is one non-optional `MATCH` with one hop followed by
+  `RETURN`, with no named path, the relationship variable unused and a lower bound of 0 or 1, whose `RETURN` is `DISTINCT`
+  over the start and end vertices or their properties, or groups by them and aggregates them with `count`, `collect`, `sum` or
+  `avg` of `DISTINCT` values, or `min` / `max`. The answers are those of path enumeration in every direction and path mode (an
+  undirected `TRAIL` pattern with a lower bound of 1 reports the start vertex only when a cycle of at most the upper bound
+  passes through it). `EXPLAIN` shows `[DISTINCT ENDPOINTS]`. A plain `RETURN b`, `count(b)`, `size(r)`, a second `MATCH`, a
+  `WITH` or a lower bound of 2 or more keep enumerating paths. The order of the rows (and of a `collect(DISTINCT ...)` list),
+  which was never specified, now follows the breadth-first order.
 - **The BM25 corpus counters of a `FULL_TEXT` index move when the transaction commits, on every node (#10018).** They used to be
   bumped while the document was being indexed and never undone, so a rolled-back insert, or one retried after a
   `ConcurrentModificationException`, inflated `totalDocs` and `sumDocLength`, and the next search paid a whole-type scan to

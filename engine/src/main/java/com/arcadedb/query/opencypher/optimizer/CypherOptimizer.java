@@ -44,6 +44,7 @@ import com.arcadedb.query.opencypher.ast.VariableExpression;
 import com.arcadedb.query.opencypher.ast.WhereClause;
 import com.arcadedb.query.opencypher.ast.WithClause;
 import com.arcadedb.query.opencypher.executor.CypherVariableUsage;
+import com.arcadedb.query.opencypher.executor.VariableLengthDistinctEndpoints;
 import com.arcadedb.query.opencypher.executor.operators.ExpandAll;
 import com.arcadedb.query.opencypher.executor.operators.ExpandInto;
 import com.arcadedb.query.opencypher.executor.operators.FilterOperator;
@@ -55,7 +56,6 @@ import com.arcadedb.query.opencypher.executor.operators.NodeByLabelScan;
 import com.arcadedb.query.opencypher.executor.operators.NodeIndexSeek;
 import com.arcadedb.query.opencypher.executor.operators.NodeIndexRangeScan;
 import com.arcadedb.query.opencypher.executor.operators.PhysicalOperator;
-import com.arcadedb.query.opencypher.executor.VariableLengthDistinctEndpoints;
 import com.arcadedb.query.opencypher.executor.operators.VarLengthExpand;
 import com.arcadedb.query.opencypher.parser.FunctionValidator;
 import com.arcadedb.query.opencypher.optimizer.plan.AnchorSelection;
@@ -1186,8 +1186,7 @@ public class CypherOptimizer {
     expand.setSameClausePrecedingRelVars(sameClausePrecedingRelVars);
     // The hop's ends as written, whichever of them the plan starts from: the rule is the same in both directions
     expand.setDistinctEndpoints(VariableLengthDistinctEndpoints.applies(statement, null, relationship.getPattern(),
-        relationship.getSourceVariable(), relationship.getTargetVariable(), relationship.getPathVariable(),
-        relationship.getPathMode()));
+        relationship.getSourceVariable(), relationship.getTargetVariable(), relationship.getPathVariable()));
     return expand;
   }
 
