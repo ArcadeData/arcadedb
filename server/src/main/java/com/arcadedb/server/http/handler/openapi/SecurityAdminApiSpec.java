@@ -281,7 +281,10 @@ public class SecurityAdminApiSpec implements OpenApiContributor {
     postOp.addTagsItem("Security");
     postOp.setRequestBody(SpecBuilders.jsonBody(
         "User creation request with name, password, and optional databases", "CreateUserRequest", true));
-    postOp.setResponses(forwardedToLeaderResponses("User created", "201", "SecurityAdminResult"));
+    final ApiResponses createUserResponses = forwardedToLeaderResponses("User created", "201", "SecurityAdminResult");
+    createUserResponses.addApiResponse("409", SpecBuilders.errorResponse(
+        "Conflict - a user with this name already exists. 403 is kept for a caller who is not root"));
+    postOp.setResponses(createUserResponses);
     pathItem.setPost(postOp);
 
     final Operation putOp = new Operation();
