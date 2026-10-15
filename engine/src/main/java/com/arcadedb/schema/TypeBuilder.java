@@ -38,6 +38,9 @@ import java.util.logging.Level;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class TypeBuilder<T> {
+  // EVERY field below that describes the type must be rendered by toSQL(), which a replica sends to the leader in place of creating
+  // the type itself (issue #10067): a field left out would make the leader create a different type than the caller asked for, with no
+  // compile-time signal. Issue10067TypeBuilderToSQLTest fails when a field is added here without being listed there.
   final DatabaseInternal database;
   final Class<T>         type;
   boolean                 ignoreIfExists    = false;
@@ -83,8 +86,13 @@ public class TypeBuilder<T> {
     // for the statement: asked BEFORE the schema write lock is taken, because the replica has to apply the leader's schema entry
     // before the statement goes on, and that apply needs the same lock (issue #10067). Only a type that is missing altogether:
     // completing a half-built one changes a type that exists, which has no such form.
+    // The lookup is not under the read lock, deliberately: it is a pre-check, and a type created by someone else in between only
+    // makes the leader's statement a no-op (it is rendered IF NOT EXISTS), after which the type is read under the lock below.
     if (!schema.typeMap().containsKey(typeName)) {
-      final String statement = toSQL();
+      // IF NOT EXISTS whatever this builder says: a create() that found the type already there is an error for its caller, but here
+      // the type was missing when the call began and a racing creation by another client (the same new label, through another
+      // replica) must leave it with the type, as it does on a node that creates types itself and finds it complete afterwards
+      final String statement = toSQL(true);
       if (statement != null && database.getWrappedDatabaseInstance().createMissingTypeOnTheLeader(typeName, statement)) {
         // Not the "already exists" refusal of a create() that finds the type: the type did not exist when this call began, and
         // the leader made it on this call's behalf. Its buckets are not counted against this builder's: a count the caller chose
@@ -124,6 +132,13 @@ public class TypeBuilder<T> {
    * would for a statement sent to it.
    */
   public String toSQL() {
+    return toSQL(ignoreIfExists);
+  }
+
+  /**
+   * As {@link #toSQL()}, with {@code IF NOT EXISTS} rendered or not whatever {@link #withIgnoreIfExists} said.
+   */
+  public String toSQL(final boolean ifNotExists) {
     if (typeName == null || typeName.isEmpty() || !bucketInstances.isEmpty())
       return null;
 
@@ -135,7 +150,7 @@ public class TypeBuilder<T> {
     else
       sql.append("DOCUMENT");
     sql.append(" TYPE ").append(Identifier.quote(typeName));
-    if (ignoreIfExists)
+    if (ifNotExists)
       sql.append(" IF NOT EXISTS");
 
     if (superTypes != null && !superTypes.isEmpty()) {

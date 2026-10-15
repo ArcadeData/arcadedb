@@ -70,6 +70,23 @@ class Issue10064TimeSeriesInsertStorableValueTest extends TestHelper {
     assertThat(rows("Range")).hasSize(1);
   }
 
+  /**
+   * A fractional number into an integral column keeps its integral part, as it always did: the contract is a RANGE check, not a
+   * rounding rule, and the private conversion this replaced ({@code longValue()}, {@code intValue()}, {@code shortValue()}) agreed.
+   */
+  @Test
+  void aFractionalNumberIntoAnIntegralColumnKeepsItsIntegralPart() throws Exception {
+    database.command("sql", "CREATE TIMESERIES TYPE Fractional TIMESTAMP ts FIELDS (l LONG, i INTEGER, s SHORT) SHARDS 1");
+
+    database.command("sql", "INSERT INTO Fractional SET ts = " + BASE_TS + ", l = 3.7, i = 3.7, s = -3.7");
+
+    assertThat(rows("Fractional")).singleElement().satisfies(row -> {
+      assertThat(((Number) row[1]).longValue()).isEqualTo(3L);
+      assertThat(((Number) row[2]).intValue()).isEqualTo(3);
+      assertThat(((Number) row[3]).shortValue()).isEqualTo((short) -3);
+    });
+  }
+
   /** A FLOAT literal into a DOUBLE column reads as its decimal, not as the single precision rounding error (issue #7609). */
   @Test
   void aFloatIntoADoubleColumnWidensThroughItsDecimalForm() throws Exception {

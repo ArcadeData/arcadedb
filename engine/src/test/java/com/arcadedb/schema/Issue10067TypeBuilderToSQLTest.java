@@ -23,6 +23,11 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.engine.PaginatedComponent;
 import org.junit.jupiter.api.Test;
 
+import java.lang.reflect.Field;
+import java.lang.reflect.Modifier;
+import java.util.Set;
+import java.util.TreeSet;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -38,6 +43,42 @@ class Issue10067TypeBuilderToSQLTest extends TestHelper {
   void aPlainVertexTypeRendersOnlyWhatWasChosen() {
     final TypeBuilder<VertexType> builder = database.getSchema().buildVertexType().withName("Person").withIgnoreIfExists(true);
     assertThat(builder.toSQL()).isEqualTo("CREATE VERTEX TYPE `Person` IF NOT EXISTS");
+  }
+
+  /** The statement a replica forwards for an implicit type is idempotent whatever the builder said, so a racing creation is no error. */
+  @Test
+  void ifNotExistsCanBeForcedEitherWay() {
+    final TypeBuilder<VertexType> strict = database.getSchema().buildVertexType().withName("Racing");
+    assertThat(strict.toSQL()).isEqualTo("CREATE VERTEX TYPE `Racing`");
+    assertThat(strict.toSQL(true)).isEqualTo("CREATE VERTEX TYPE `Racing` IF NOT EXISTS");
+
+    final TypeBuilder<VertexType> lenient = database.getSchema().buildVertexType().withName("Racing").withIgnoreIfExists(true);
+    assertThat(lenient.toSQL(false)).isEqualTo("CREATE VERTEX TYPE `Racing`");
+
+    database.command("sql", strict.toSQL(true));
+    database.command("sql", strict.toSQL(true));
+    assertThat(database.getSchema().existsType("Racing")).isTrue();
+  }
+
+  /**
+   * {@link TypeBuilder#toSQL()} is what a replica sends the leader in place of creating the type itself, so a field of the builder it
+   * does not render would make the leader create a different type than the caller asked for, silently. Adding a field to the builder
+   * fails this test until the field is rendered by {@code toSQL()} (and covered above) and listed here.
+   */
+  @Test
+  void everyFieldOfTheBuilderIsAccountedFor() {
+    final Set<String> rendered = Set.of("type", "ignoreIfExists", "typeName", "superTypes", "bucketInstances", "buckets", "pageSize",
+        "edgeBidirectional", "edgeLightweight", "edgeUnique");
+    final Set<String> notPartOfTheDescription = Set.of("database");
+
+    final Set<String> declared = new TreeSet<>();
+    for (final Field field : TypeBuilder.class.getDeclaredFields())
+      if (!Modifier.isStatic(field.getModifiers()) && !field.isSynthetic())
+        declared.add(field.getName());
+
+    final Set<String> accountedFor = new TreeSet<>(rendered);
+    accountedFor.addAll(notPartOfTheDescription);
+    assertThat(declared).as("a field of TypeBuilder that toSQL() does not render makes a replica create a different type").isEqualTo(accountedFor);
   }
 
   @Test
