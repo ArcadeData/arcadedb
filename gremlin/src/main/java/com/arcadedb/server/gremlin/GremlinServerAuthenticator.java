@@ -39,7 +39,11 @@ public class GremlinServerAuthenticator implements Authenticator {
    */
   static final String ADDRESS_CREDENTIAL = "address";
 
-  /** Numbers the connections that authenticate once and live on (SASL), so two clients of one credential are two clients (issue #10105). */
+  /**
+   * Numbers the connections that authenticate once and live on (SASL), so two clients of one credential are two clients
+   * (issue #10105). Unique within the process, which is what {@code list queries} needs: the numbering restarts at 1 with
+   * the JVM, so it is not an identity to correlate across restarts.
+   */
   private static final AtomicLong CONNECTIONS = new AtomicLong();
 
   private ArcadeDBServer server;
@@ -65,7 +69,9 @@ public class GremlinServerAuthenticator implements Authenticator {
   @Override
   public AuthenticatedUser authenticate(final Map<String, String> credentials) throws AuthenticationException {
     // The HTTP basic authentication handler authenticates EVERY request and has no connection to number: it passes the peer of
-    // the channel, "host:port", which is what ties the requests of one keep-alive connection together and tells two apart
+    // the channel, "host:port", which is what ties the requests of one keep-alive connection together and tells two apart.
+    // The handler fills this member itself, after it has parsed the credentials out of the Authorization header (exactly
+    // user:password), so a client cannot supply it. It is attribution for "list queries", never an authorization input
     final String peer = peer(credentials.get(ADDRESS_CREDENTIAL));
     return authenticate(credentials, peer != null ?
         new RunningQuery.Client(null, peer) :
@@ -122,7 +128,7 @@ public class GremlinServerAuthenticator implements Authenticator {
         throw new AuthenticationException("SASL negotiation not complete");
       } else {
         try {
-          final Map<String, String> credentials = new HashMap();
+          final Map<String, String> credentials = new HashMap<>();
           credentials.put("username", this.username);
           credentials.put("password", this.password);
           return GremlinServerAuthenticator.this.authenticate(credentials, client);
