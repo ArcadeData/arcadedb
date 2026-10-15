@@ -91,8 +91,13 @@ function parseFields(html) {
     const attrRe = /([\w-]+)='([^']*)'/g;
     let a;
     while ((a = attrRe.exec(attrText)) !== null) attrs[a[1]] = a[2];
-    // <input type=text> strips line breaks from its value, a <textarea> keeps them
-    const raw = textarea ? unescapeHtml(m[3]) : unescapeHtml(attrs.value || "").replace(/[\r\n]/g, "");
+    // <input type=text> strips line breaks from its value. A <textarea> keeps them, but the parser normalizes CRLF and a lone CR
+    // to LF and drops ONE line feed that directly follows the start tag
+    let raw;
+    if (textarea) {
+      raw = unescapeHtml(m[3]).replace(/\r\n?/g, "\n");
+      if (raw.startsWith("\n")) raw = raw.substring(1);
+    } else raw = unescapeHtml(attrs.value || "").replace(/[\r\n]/g, "");
     fields.push({ attrs, disabled: /\sdisabled(\s|\/|$)/.test(attrText), value: raw });
   }
   return fields;
@@ -262,6 +267,31 @@ test("Save without any edit writes nothing for typed values of every shape", () 
   });
   assert.equal(save(), null);
   assert.equal(statements.length, 0);
+});
+
+test("Save without any edit writes nothing for values the browser rewrites on the way into a field", () => {
+  open({
+    crlf: "line one\r\nline two",
+    lone: "line one\rline two",
+    leading: "\nstarts with a line break",
+    leadingCrlf: "\r\nstarts with a line break",
+    trailing: "ends with a line break\n",
+    blank: "\n\n",
+  });
+  assert.equal(save(), null);
+  assert.equal(statements.length, 0);
+});
+
+test("editing one property of a multi-line record does not drag its line breaks into the statement", () => {
+  open({ name: "Lager", notes: "one\r\ntwo\r\nthree", leading: "\nfirst" });
+  type("name", "Stout");
+  assert.equal(save(), "UPDATE #1:0 SET `name` = 'Stout'");
+});
+
+test("editing a multi-line value writes it with the line breaks the field holds", () => {
+  open({ notes: "one\r\ntwo" });
+  type("notes", "one\ntwo\nthree");
+  assert.equal(save(), "UPDATE #1:0 SET `notes` = 'one\ntwo\nthree'");
 });
 
 test("editing one property does not drag the untouched ones into the statement", () => {

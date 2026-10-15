@@ -41,8 +41,8 @@ async function serverCommand(request: APIRequestContext, command: string, failOn
     expect(response.ok(), `${command}: ${await response.text()}`).toBeTruthy();
 }
 
-async function sql(request: APIRequestContext, command: string): Promise<any[]> {
-  const response = await request.post(`/api/v1/command/${DATABASE}`, { headers: authHeader(), data: { language: 'sql', command } });
+async function sql(request: APIRequestContext, command: string, params?: Record<string, unknown>): Promise<any[]> {
+  const response = await request.post(`/api/v1/command/${DATABASE}`, { headers: authHeader(), data: { language: 'sql', command, params } });
   expect(response.ok(), `${command}: ${await response.text()}`).toBeTruthy();
   return (await response.json()).result;
 }
@@ -84,6 +84,9 @@ test.describe('Studio record editor', () => {
     // Schemaless on purpose: these text values look like a number, a boolean and JSON
     await sql(request, "INSERT INTO Beer SET code = 'probe', name = 'Lager', style = 'Pale', zip = '12345', active = 'true', "
       + "lead = '01234', pi = 3.14, nested = {'a': 1}");
+    // Values a <textarea> rewrites on the way in: CRLF becomes LF and a line feed right after the start tag is dropped
+    await sql(request, "UPDATE Beer SET crlf = :crlf, leading = :leading WHERE code = 'probe'",
+      { crlf: 'line one\r\nline two', leading: '\nstarts with a line break' });
   });
 
   test.afterEach(async ({ request }) => {
@@ -100,6 +103,7 @@ test.describe('Studio record editor', () => {
 
     await expect(page.locator('#toastContainer')).toContainText('No changes to save');
     expect(await storedBeer(request)).toEqual(before);
+    expect(before.crlf).toBe('line one\r\nline two');
     expect(typeof before.zip).toBe('string');
     expect(typeof before.active).toBe('string');
   });

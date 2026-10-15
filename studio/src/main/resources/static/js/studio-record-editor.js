@@ -24,12 +24,14 @@ function openRecordEditor(rid, type, properties, source) {
 }
 
 // The text a stored value is shown as in the form. A null is an empty field, an object or an array is pretty-printed JSON.
+// Line breaks are normalized to LF because a field cannot hold anything else (a textarea turns CRLF and a lone CR into LF),
+// so an untouched multi-line value compares equal to what the field reads back and is not rewritten by a Save.
 function recordEditorDisplayValue(value) {
   if (value == null)
     return "";
   if (typeof value === "object")
     return JSON.stringify(value, null, 2);
-  return String(value);
+  return String(value).replace(/\r\n?/g, "\n");
 }
 
 function getRecordEditorTarget() {
@@ -78,7 +80,8 @@ function renderRecordEditorContent() {
       var sizeLabel = sizeInfo ? " (" + Number(sizeInfo).toLocaleString() + " bytes)" : "";
       html += "<input type='text' class='form-control' value='binary" + escapeHtml(sizeLabel) + "' disabled />";
     } else if (isComplex || displayValue.length > 80 || displayValue.indexOf("\n") >= 0)
-      html += "<textarea class='form-control record-editor-field' data-prop='" + escapeHtml(p) + "' rows='3'" + (isMetadata ? " disabled" : "") + ">" + escapeHtml(displayValue) + "</textarea>";
+      // the HTML parser drops ONE line feed right after <textarea>, so a value that starts with one needs this extra
+      html += "<textarea class='form-control record-editor-field' data-prop='" + escapeHtml(p) + "' rows='3'" + (isMetadata ? " disabled" : "") + ">\n" + escapeHtml(displayValue) + "</textarea>";
     else
       html += "<input type='text' class='form-control record-editor-field' data-prop='" + escapeHtml(p) + "' value='" + escapeHtml(displayValue) + "'" + (isMetadata ? " disabled" : "") + " />";
     html += "</div>";
@@ -350,6 +353,7 @@ function toggleGraphAppearanceSection() {
 // The SQL literal of a field the user changed. A property that is stored as text stays text: "12345", "01234" or "true"
 // edited must not be retyped to a number or a boolean (and 01234 would lose its zero). Anything else is typed by its look.
 function recordEditorSqlValue(current, original) {
+  // an empty field and the text "null" both mean SQL null, whatever the property held: there is no way to store the string "null"
   if (current === "" || current === "null")
     return "null";
 
