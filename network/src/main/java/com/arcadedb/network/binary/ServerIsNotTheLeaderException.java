@@ -27,6 +27,10 @@ public class ServerIsNotTheLeaderException extends NeedRetryException {
   private final String  leaderURL;
   private final boolean holdsOnThisNode;
 
+  /**
+   * A refusal a retry on this node can get past (a forward that failed on the way, one rebuilt from a peer's answer): it stays
+   * retryable here. A refusal that holds on this node uses {@link #ServerIsNotTheLeaderException(String, String, boolean)}.
+   */
   public ServerIsNotTheLeaderException(final String message, final String leaderURL) {
     this(message, leaderURL, false);
   }

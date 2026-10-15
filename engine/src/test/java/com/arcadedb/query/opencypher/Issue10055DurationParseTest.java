@@ -100,6 +100,10 @@ class Issue10055DurationParseTest {
     assertThat(CypherDuration.parse("PT-0.5S").toString()).isEqualTo("PT-0.5S");
     assertThat(CypherDuration.parse("-P1Y2DT3.5S")).isEqualTo(CypherDuration.parse("P-1Y-2DT-3.5S"));
     assertThat(CypherDuration.parse("-P1Y2DT3.5S").toString()).isEqualTo("P-1Y-2DT-3.5S");
+    // The negated nanoseconds fold back into the seconds
+    assertThat(CypherDuration.parse("-P1DT0.000000001S")).isEqualTo(CypherDuration.parse("P-1DT-0.000000001S"));
+    assertThat(CypherDuration.parse("-P1DT0.000000001S").getNanosAdjustment()).isEqualTo(999_999_999);
+    assertThat(CypherDuration.parse("-P1DT0.000000001S").getSeconds()).isEqualTo(-1L);
   }
 
   @Test
