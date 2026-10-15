@@ -112,6 +112,7 @@ import java.time.Instant;
 import java.time.ZonedDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Date;
@@ -1201,9 +1202,12 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           if (!"out".equals(k) && !"in".equals(k))
             e.set(k, toJavaForProperty(db, e, dt, k, val));
         });
-        // newEdge() raised a RecordVetoedException if a listener refused the create; this save is an update of the created edge
+        // newEdge() raised a RecordVetoedException if a listener refused the create; this save is an UPDATE of the created edge, so
+        // the refusal it reports is a BeforeRecordUpdateListener's. Under an externally managed transaction the edge stays wired in it
+        // until the client rolls back, as after any other error of the call.
         if (!e.saveReportingVeto())
-          throw vetoed(cls);
+          throw new RecordVetoedException("Cannot set the properties of the new edge " + e.getIdentity() + " of type '" + cls
+              + "': a beforeUpdate listener vetoed the update");
 
         if (beganHere)
           db.commit();
@@ -5267,7 +5271,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   /** The properties of an edge row, as the name/value pairs {@code newEdge()} takes, system fields left out. */
   private Object[] edgeProperties(final GrpcRecord r) {
     final Map<String, GrpcValue> properties = r.getPropertiesMap();
-    final List<Object> pairs = new ArrayList<>(properties.size() * 2);
+    // Filled by index, once per edge row of a bulk insert: trimmed only when a system field was skipped
+    final Object[] pairs = new Object[properties.size() * 2];
+    int used = 0;
     for (final Map.Entry<String, GrpcValue> entry : properties.entrySet()) {
       // Skip system fields
       if (entry.getKey().startsWith("@"))
@@ -5276,10 +5282,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       if (LogManager.instance().isLoggable(this, Level.FINE))
         LogManager.instance().log(this, Level.FINE, "APPLY-EDGE %s <= %s -> %s", entry.getKey(), summarizeGrpc(entry.getValue()),
             summarizeJava(javaVal));
-      pairs.add(entry.getKey());
-      pairs.add(javaVal);
+      pairs[used++] = entry.getKey();
+      pairs[used++] = javaVal;
     }
-    return pairs.toArray();
+    return used == pairs.length ? pairs : Arrays.copyOf(pairs, used);
   }
 
   private Object fromGrpcValue(GrpcValue v) {

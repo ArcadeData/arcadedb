@@ -301,7 +301,8 @@ public class GraphEngine {
    * Creates the edge and wires it into the adjacency lists of the two vertices. A before-create listener that refuses the edge
    * raises a {@link RecordVetoedException}, because this method has to return an edge and cannot answer "none": a caller that
    * counts the edges it wrote must use {@link #newEdgeReportingVeto(Vertex, String, Identifiable, Object...)} instead (issue
-   * #10085).
+   * #10085). {@code fromVertex} is taken as it is: the {@link Vertex} accessors resolve its most recent version in the transaction
+   * before calling, while {@code newEdgeReportingVeto} does that itself because its callers hold any {@link Vertex}.
    *
    * @throws RecordVetoedException if a before-create listener vetoed the edge, in which case nothing was stored or wired
    */
