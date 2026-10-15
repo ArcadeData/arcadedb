@@ -20,9 +20,9 @@ package com.arcadedb.query.opencypher.executor;
 
 import com.arcadedb.query.opencypher.ast.ClauseEntry;
 import com.arcadedb.query.opencypher.ast.CypherStatement;
+import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.FunctionCallExpression;
-import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.ast.MatchClause;
 import com.arcadedb.query.opencypher.ast.OrderByClause;
 import com.arcadedb.query.opencypher.ast.PathMode;
@@ -48,8 +48,9 @@ import java.util.Set;
  * groups by them and only counts {@code DISTINCT} values of them. The relationship and path variables must be unused, because
  * they are the only things that differ between two paths with the same ends. The lower bound must be 0 or 1: the shortest
  * walk to a node is a simple path, so a visited set finds every node some path of at most {@code n} relationships reaches,
- * whatever the path mode (the start node needs care, see below); from a lower bound of 2 on, a node reached sooner than the bound might be reachable at the bound only
- * by a walk that repeats a relationship, which the TRAIL rule forbids, so those patterns keep enumerating paths.
+ * whatever the path mode (the start node needs care, see {@code BreadthFirstTraverser#traverseDistinctEndpoints}). From a lower bound of 2 on, a node reached sooner than the
+ * bound might be reachable at the bound only by a walk that repeats a relationship, which the TRAIL rule forbids, so those
+ * patterns keep enumerating paths.
  * <p>
  * Everything the statement does with a row afterwards (the WHERE, the target label and property tests, the projection) reads only
  * the pair, so dropping the repeated rows for a pair cannot change any result.
