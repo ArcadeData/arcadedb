@@ -1767,7 +1767,8 @@ public class BinarySerializer {
    * REGEXP of such a property is matched against the text of that class, so a change can leave a pattern that no value satisfies;
    * a statement that changes the class can refuse that change beforehand, but this setter is also reached by routes that cannot
    * (the configuration an open reads, a replicated setting, any other caller), and the owner of the database registers here so
-   * that none of them is silent. Not told when the class is set to the one already in force.
+   * that none of them is silent. Not told when the class is set to the one already in force. The listener runs after the class has
+   * changed, so an exception it throws is logged and not rethrown: the caller of the setter could not undo the change anyway.
    */
   public void setImplementationChangeListener(final Runnable listener) {
     this.implementationChangeListener = listener;
@@ -1775,8 +1776,13 @@ public class BinarySerializer {
 
   private void implementationChanged() {
     final Runnable listener = implementationChangeListener;
-    if (listener != null)
+    if (listener == null)
+      return;
+    try {
       listener.run();
+    } catch (final RuntimeException e) {
+      LogManager.instance().log(this, Level.WARNING, "A listener of the date implementation change failed", e);
+    }
   }
 
   public Class<?> getDateTimeImplementation() {

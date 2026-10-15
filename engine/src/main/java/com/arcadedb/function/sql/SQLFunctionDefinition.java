@@ -81,10 +81,12 @@ public class SQLFunctionDefinition implements FunctionDefinition {
     if (rows.size() == 1)
       return extractResult(rows.getFirst());
 
-    final List<Object> list = new ArrayList<>(rows.size());
-    for (final Result row : rows)
-      list.add(extractResult(row));
-    return list;
+    // The list is ours and nothing else holds it: the rows are replaced by what they stand for in place, instead of copying them
+    // into a second list for every call of a function that is often called per row
+    @SuppressWarnings("unchecked") final List<Object> values = (List<Object>) (List<?>) rows;
+    for (int i = 0; i < rows.size(); i++)
+      values.set(i, extractResult(rows.get(i)));
+    return values;
   }
 
   private static Object extractResult(Object first) {

@@ -3167,10 +3167,19 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    * Warns, naming the property, about a REGEXP on a DATE or DATETIME property that the class in force holds no value of (issue
    * #10104). Reached when the database opens and whenever the serializer's class changes, which is where a statement that can refuse
    * is not the one changing it. Skipped while there is no loaded schema to walk.
+   * <p>
+   * Never throws: it is a diagnostic, run by an open that must not fail over a constraint and by a setter that has already changed
+   * the class, so a failure to check is reported and does not take either of them down.
    */
   private void warnAboutUnsatisfiableDateRegexps(final String cause) {
-    if (schema != null && open)
+    if (schema == null || !open)
+      return;
+    try {
       DocumentValidator.warnAboutUnsatisfiableDateRegexps(this, cause);
+    } catch (final RuntimeException e) {
+      LogManager.instance().log(this, Level.WARNING, "Cannot check the REGEXP of the DATE and DATETIME properties of database '%s' after %s",
+          e, name, cause);
+    }
   }
 
   /** Re-derives what {@link #open()} derives from the configuration, after it changed in memory (issue #9763). */
