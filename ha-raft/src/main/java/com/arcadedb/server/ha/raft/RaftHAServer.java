@@ -486,6 +486,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   // Completed in-place restarts, by kind (issue #8900): a RECOVER restart keeps the Raft log, a FORMAT restart (the
   // divergence reformat) throws it away. Read by tests that must tell a recovery from a reformat.
   private final    AtomicInteger             recoverRestartCount   = new AtomicInteger();
+  // Full schema loads the apply thread ran in place of the incremental refresh (issue #10020). Owned here and not by the
+  // state machine because createStateMachine() builds a new one on every in-place restart, and the counts are cumulative
+  // since the process started, like the restart counts above
+  private final    SchemaFullLoadRecorder    schemaFullLoadRecorder = new SchemaFullLoadRecorder();
   private final    AtomicInteger             formatRestartCount    = new AtomicInteger();
   private volatile BootstrapElection         bootstrapElection;
   private final    UnverifiedClosedCopyCheck unverifiedClosedCopyCheck;
@@ -2587,6 +2591,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     final ArcadeStateMachine sm = new ArcadeStateMachine();
     sm.setServer(arcadeServer);
     sm.setRaftHAServer(this);
+    sm.setSchemaFullLoadRecorder(schemaFullLoadRecorder);
     sm.setRuntimeJoinDetector(runtimeJoinDetector);
     sm.setLocalDropVerbs(localDropVerbs);
     return sm;
@@ -2917,6 +2922,14 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    */
   public HAReplicationStatsProvider.InPlaceRestartStats getInPlaceRestartStats() {
     return new HAReplicationStatsProvider.InPlaceRestartStats(recoverRestartCount.get(), formatRestartCount.get());
+  }
+
+  /**
+   * Full schema loads this node's apply thread ran in place of the incremental refresh, by reason (issue #10020):
+   * published by the metrics as {@code arcadedb.ha.schema.full_load}.
+   */
+  public HAReplicationStatsProvider.SchemaFullLoadStats getSchemaFullLoadStats() {
+    return schemaFullLoadRecorder.snapshot();
   }
 
   /** Completed in-place restarts that kept the Raft log ({@code RECOVER}). Package-private: tests (issue #8900). */

@@ -84,17 +84,65 @@ test("a missing name yields an empty segment rather than the string 'null'", () 
   assert.equal(encodeDatabaseName(undefined), "");
 });
 
-// Every endpoint whose path template carries a `{database}` segment: the ones HttpServer.setupRoutes()
-// registers, then the three RaftHAPlugin.registerAPI() adds. The alternation is the whole point of this
-// file's invariant: #6830 fixed the `command`/`query` sites and #6947 found that `ts` - a prefix nobody
-// had listed here - was still concatenating the name raw in studio-timeseries.js, invisible to the test
-// that was supposed to prevent exactly that. So the list is kept exhaustive rather than trimmed to what
-// the Studio calls today: `ha/snapshot` has no Studio call site yet, and listing it is what stops the
-// first one from repeating #6947. Add an entry whenever a route gains a `{database}` segment.
-const DATABASE_SEGMENT_ENDPOINTS = [
-  "batch", "begin", "command", "commit", "exists", "progress", "query", "rollback", "ts", // HttpServer
-  "cluster/resync", "cluster/verify", "ha/snapshot",                                      // RaftHAPlugin
-];
+// Every endpoint whose path template carries a `{database}` segment. The list is NOT maintained by hand: it is
+// read off the server's own route declarations, so a route that gains a `{database}` segment is guarded the
+// moment it is declared. #6830 fixed the `command`/`query` sites, #6947 found that `ts` - a prefix nobody had
+// listed - was still concatenating the name raw in studio-timeseries.js, and #10000 found that `vector`,
+// `cluster/accept-copy` and `cluster/accept-diverged` had gone unlisted the same way, which a hand-kept list
+// can only ever repeat. The two sources scanned are exhaustive by construction:
+//
+//   - HttpServer.setupRoutes(): the routes the server itself registers, `.post("/vector/{database}/search", ...)`.
+//   - the openapi/*ApiSpec.java path literals, `"/api/v1/cluster/accept-copy/{database}"`: the plugin routes
+//     (RaftHAPlugin.registerAPI() registers them with addPrefixPath, so the `{database}` never appears in the
+//     registration) are declared there because the plugin module cannot declare its own OpenAPI paths, and
+//     RaftHAPluginRegisteredRoutesMatchApiSpecTest fails the build when registerAPI() and that list disagree.
+//
+// Scanning source text breaks silently if a route is ever declared in a shape the scanner does not read, which
+// would turn this guard into the vacuous test it replaced. So every non-comment line that mentions
+// `{database}` must be accounted for (declaredDatabaseSegmentEndpoints().unparsed) or the test below fails.
+const SERVER_JAVA_DIR = path.join(__dirname, "..", "..", "server", "src", "main", "java", "com", "arcadedb", "server", "http");
+const HTTP_SERVER_SRC = path.join(SERVER_JAVA_DIR, "HttpServer.java");
+const API_SPEC_DIR = path.join(SERVER_JAVA_DIR, "handler", "openapi");
+
+// `.post("/vector/{database}/search", ...)`, `.get("/ts/{database}/prom/api/v1/query", ...)`, `.add("HEAD", "/x/{database}", ...)`
+const ROUTE_REGISTRATION_RE = /\.(?:get|post|put|delete|add)\(\s*(?:"[A-Z]+",\s*)?"\/([a-z][a-z0-9\/-]*)\/\{database\}/;
+// `"/api/v1/cluster/accept-copy/{database}"`, `"/api/v1/ha/snapshot/{database}/checksums"`
+const SPEC_PATH_RE = /"\/api\/v1\/([a-z][a-z0-9\/-]*)\/\{database\}/g;
+
+// Reads the route declarations out of the given Java sources. `unparsed` collects every code line that names a
+// `{database}` segment in a shape neither pattern recognises, so the scanner cannot go blind without saying so.
+function declaredDatabaseSegmentEndpoints(httpServerSrc, specSrcs) {
+  const endpoints = new Set();
+  const unparsed = [];
+  httpServerSrc.split("\n").forEach((line, i) => {
+    if (isComment(line) || !line.includes("{database}")) return;
+    const m = ROUTE_REGISTRATION_RE.exec(line);
+    if (m) endpoints.add(m[1]);
+    else unparsed.push("HttpServer.java:" + (i + 1) + " -> " + line.trim());
+  });
+  for (const [file, src] of Object.entries(specSrcs))
+    src.split("\n").forEach((line, i) => {
+      if (isComment(line) || !line.includes("{database}")) return;
+      let found = false;
+      for (const m of line.matchAll(SPEC_PATH_RE)) {
+        endpoints.add(m[1]);
+        found = true;
+      }
+      // Javadoc and prose in a spec's description text (`through /api/v1/command/{database}.`) mention routes
+      // without declaring one; only a quoted path literal can, and one of those that does not parse is reported.
+      if (!found && /"\/api\/v1\/[^"]*\{database\}/.test(line)) unparsed.push(file + ":" + (i + 1) + " -> " + line.trim());
+    });
+  return { endpoints: [...endpoints].sort(), unparsed };
+}
+
+function readServerRouteDeclarations() {
+  const specSrcs = {};
+  for (const f of fs.readdirSync(API_SPEC_DIR).filter((n) => n.endsWith("ApiSpec.java")).sort())
+    specSrcs[f] = fs.readFileSync(path.join(API_SPEC_DIR, f), "utf8");
+  return declaredDatabaseSegmentEndpoints(fs.readFileSync(HTTP_SERVER_SRC, "utf8"), specSrcs);
+}
+
+const DATABASE_SEGMENT_ENDPOINTS = readServerRouteDeclarations().endpoints;
 // The trailing slash is required: it is what keeps a hypothetical `api/v1/tsdb/` from matching `ts`.
 const DATABASE_SEGMENT_RE = new RegExp("api/v1/(?:" + DATABASE_SEGMENT_ENDPOINTS.join("|") + ")/");
 
@@ -114,18 +162,66 @@ function buildsDatabaseSegment(line) {
   return false;
 }
 
+// The lines of one Studio source that build a `{database}` path segment without the helper.
+function offendersIn(file, src) {
+  const offenders = [];
+  src.split("\n").forEach((line, i) => {
+    if (buildsDatabaseSegment(line) && !isComment(line) && !line.includes("encodeDatabaseName"))
+      offenders.push(file + ":" + (i + 1) + " -> " + line.trim());
+  });
+  return offenders;
+}
+
+test("the endpoint list is read off the server's route declarations, not kept by hand (#10000)", () => {
+  const { endpoints, unparsed } = readServerRouteDeclarations();
+
+  // A route declared in a shape the scanner cannot read would silently shrink the guard back to a stale list.
+  assert.deepEqual(unparsed, [], "a route names {database} in a shape declaredDatabaseSegmentEndpoints() does not read");
+
+  // The three prefixes #10000 found missing, plus one from each source, so the scanner reading nothing - a renamed
+  // file, a reworded registration - fails here instead of passing the call-site test below against an empty list.
+  for (const expected of ["vector", "cluster/accept-copy", "cluster/accept-diverged", "command", "query", "ts", "cluster/resync",
+    "cluster/verify", "ha/snapshot"])
+    assert.ok(endpoints.includes(expected), "the scanner no longer finds the `" + expected + "` route; found: " + endpoints.join(", "));
+});
+
+test("a route gaining a {database} segment is guarded without anyone editing a list (#10000)", () => {
+  // A route nobody has heard of, declared the way HttpServer declares its own, and a plugin route declared the way
+  // PluginApiSpec declares the ones RaftHAPlugin registers.
+  const httpServer = '        .post("/brandnew/{database}/search", new Handler(this))\n        .get("/other", new Other(this))\n';
+  const spec = '    openAPI.getPaths().addPathItem("/api/v1/cluster/brand-new-action/{database}", createPath());\n';
+  const { endpoints, unparsed } = declaredDatabaseSegmentEndpoints(httpServer, { "PluginApiSpec.java": spec });
+  assert.deepEqual(unparsed, []);
+  assert.deepEqual(endpoints, ["brandnew", "cluster/brand-new-action"]);
+
+  // A declaration in a shape the scanner does not read is reported rather than skipped.
+  const odd = declaredDatabaseSegmentEndpoints('        .post(PREFIX + "/{database}/x", new Handler(this))\n', {});
+  assert.equal(odd.unparsed.length, 1);
+
+  // Prose that merely mentions a route is not a declaration.
+  const prose = declaredDatabaseSegmentEndpoints("", { "Spec.java": '    through /api/v1/command/{database}.""");\n     * POST /api/v1/x/{database}\n' });
+  assert.deepEqual(prose, { endpoints: [], unparsed: [] });
+});
+
+test("the call sites #10000 found unguarded are caught: vector, cluster/accept-copy, cluster/accept-diverged", () => {
+  // The mutation the issue reports: studio-vector.js concatenating the raw database name. Before the list was read
+  // off the server this produced no offender, because `vector` was not on it.
+  assert.equal(offendersIn("studio-vector.js", 'url: "api/v1/vector/" + database + "/" + request.path,').length, 1);
+  assert.equal(offendersIn("x.js", 'url: "api/v1/cluster/accept-copy/" + database,').length, 1);
+  assert.equal(offendersIn("x.js", "url: `api/v1/cluster/accept-diverged/${database}`,").length, 1);
+
+  // The correct form, as the real call sites write it, is not reported.
+  assert.deepEqual(offendersIn("studio-vector.js", 'url: "api/v1/vector/" + encodeDatabaseName(database) + "/" + request.path,'), []);
+  assert.deepEqual(offendersIn("x.js", 'url: "api/v1/cluster/accept-copy/" + encodeDatabaseName(database),'), []);
+});
+
 test("every api/v1 URL in the Studio builds its database segment with encodeDatabaseName", () => {
   // Match the endpoint prefix in ANY form - string concatenation, a template literal, a parenthesized
   // expression - and require the helper on the same line, rather than matching only the `"..." + identifier`
   // shape that happens to be written today. The point of this test is the call sites nobody has written yet.
   const offenders = [];
-  for (const file of fs.readdirSync(JS_DIR).filter((f) => f.endsWith(".js"))) {
-    const src = fs.readFileSync(path.join(JS_DIR, file), "utf8");
-    src.split("\n").forEach((line, i) => {
-      if (buildsDatabaseSegment(line) && !isComment(line) && !line.includes("encodeDatabaseName"))
-        offenders.push(file + ":" + (i + 1) + " -> " + line.trim());
-    });
-  }
+  for (const file of fs.readdirSync(JS_DIR).filter((f) => f.endsWith(".js")))
+    offenders.push(...offendersIn(file, fs.readFileSync(path.join(JS_DIR, file), "utf8")));
   assert.deepEqual(offenders, [], "these call sites build the URL path segment without encodeDatabaseName");
 });
 

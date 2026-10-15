@@ -202,6 +202,25 @@ public interface IndexInternal extends Index {
   }
 
   /**
+   * Whether this instance holds in-memory state that took work to build and that a freshly built successor would start
+   * without (issue #10021): for an LSM vector index, the resident graph. A schema reload replaces every instance, and this is
+   * how it tells the ones whose first search is about to become expensive from the ones that were never used. Most indexes
+   * hold nothing of the sort and answer {@code false}.
+   */
+  default boolean isWarm() {
+    return false;
+  }
+
+  /**
+   * Loads now what the first search of this instance would otherwise load on its own thread (issue #10021). Called in the
+   * background on the successor of an index that {@link #isWarm()} when a schema reload published it. Safe to call from any
+   * thread and concurrently with searches, and a no-op where there is nothing to load.
+   */
+  default void warmUp() {
+    // No-op: an index with nothing resident to load has nothing to warm.
+  }
+
+  /**
    * Asks the index to hold off the maintenance it starts on its own initiative, for the duration of a bulk load.
    * <p>
    * "On its own initiative" is the whole distinction: work a read or a write NEEDS is not affected, and neither is

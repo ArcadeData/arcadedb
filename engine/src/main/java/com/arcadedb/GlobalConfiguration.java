@@ -1508,6 +1508,18 @@ public enum GlobalConfiguration {
       Set to 0 to retry as soon as the next trigger fires.""",
       Integer.class, 30_000),
 
+  VECTOR_INDEX_WARM_UP_AFTER_SCHEMA_RELOAD_DELAY_MS("arcadedb.vectorIndex.warmUpAfterSchemaReloadDelayMs", SCOPE.DATABASE,
+      """
+      A schema reload (on an HA replica, every schema entry the incremental refresh declines) replaces every index with \
+      a freshly built instance, and a vector index starts out with nothing resident: the next search reads all of its \
+      pages to rebuild the location map, then loads or rebuilds the graph on the query thread. This is how long, in \
+      milliseconds, the database waits after a reload, with no further reload, before warming in the background - on \
+      one thread, one index after the other - the vector indexes whose replaced instance had a graph resident. The wait \
+      is what makes a burst of DDL statements cost one warm-up and not one per statement. A search that arrives meanwhile \
+      joins the load in progress. Indexes that were never searched are not warmed. \
+      Set to 0 to start right after the reload, or to -1 to disable and leave it to the first search.""",
+      Integer.class, 1_000),
+
   VECTOR_INDEX_REBUILD_PERMIT_TIMEOUT_MS("arcadedb.vectorIndex.rebuildPermitTimeoutMs", SCOPE.JVM,
       """
       Maximum time in milliseconds an async vector index rebuild waits to acquire a JVM-wide rebuild permit \

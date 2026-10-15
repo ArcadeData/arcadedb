@@ -18,6 +18,8 @@
  */
 package com.arcadedb.server.monitor;
 
+import com.arcadedb.schema.FullSchemaLoadReason;
+
 import java.util.List;
 
 /**
@@ -127,10 +129,49 @@ public interface HAReplicationStatsProvider {
   }
 
   /**
+   * How often this replica fell back from the incremental schema refresh to a full {@code LocalSchema.load()} on its apply
+   * thread since the process started, and what that cost, by {@link FullSchemaLoadReason} (issue #10020). A full load
+   * re-instantiates every component of the database, so a count that keeps climbing is the answer to "why does my replica
+   * lag after DDL" and "why do searches rebuild after DDL".
+   * <p>
+   * Three parallel arrays indexed by {@link FullSchemaLoadReason#ordinal()}, so a scrape allocates nothing per reason.
+   * {@code completed} and {@code totalNanos} only move for a load that finished; {@code fallbacks} also counts one that
+   * threw, which is the difference between the two.
+   *
+   * @param fallbacks  full loads started
+   * @param completed  full loads that finished
+   * @param totalNanos wall-clock nanoseconds spent in the loads that finished
+   */
+  record SchemaFullLoadStats(long[] fallbacks, long[] completed, long[] totalNanos) {
+    public static final SchemaFullLoadStats NONE = new SchemaFullLoadStats(new long[FullSchemaLoadReason.values().length],
+        new long[FullSchemaLoadReason.values().length], new long[FullSchemaLoadReason.values().length]);
+
+    public long fallbacks(final FullSchemaLoadReason reason) {
+      return fallbacks[reason.ordinal()];
+    }
+
+    public long completed(final FullSchemaLoadReason reason) {
+      return completed[reason.ordinal()];
+    }
+
+    public long totalNanos(final FullSchemaLoadReason reason) {
+      return totalNanos[reason.ordinal()];
+    }
+  }
+
+  /**
    * Returns a live snapshot of replication health. Called on each metrics scrape, so implementations
    * must be cheap and non-blocking.
    */
   HAReplicationStats getHAReplicationStats();
+
+  /**
+   * Returns this node's full-schema-load fallback counts (issue #10020): a few atomic reads, so cheap enough for every
+   * scrape. Defaults to none for implementations without a replicated schema apply.
+   */
+  default SchemaFullLoadStats getSchemaFullLoadStats() {
+    return SchemaFullLoadStats.NONE;
+  }
 
   /**
    * Returns the in-flight phase-2 hold state. Cheap and non-blocking - it scans a map sized by

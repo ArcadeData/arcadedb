@@ -44,6 +44,8 @@ import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.WALVersionGapException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
+import com.arcadedb.schema.FullSchemaLoadReason;
+import com.arcadedb.schema.IncrementalLoadRefusal;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.serializer.json.JSONObject;
@@ -276,6 +278,13 @@ public class ArcadeStateMachine extends BaseStateMachine {
 
   private volatile ArcadeDBServer server;
   private volatile RaftHAServer   raftHAServer;
+
+  /**
+   * Counts the full schema loads this node's apply thread ran in place of the incremental refresh (issue #10020). Shared
+   * with the {@link RaftHAServer}, which builds a new state machine on every in-place restart and must not reset it; a
+   * state machine wired to no server (a unit test) keeps its own.
+   */
+  private volatile SchemaFullLoadRecorder schemaFullLoadRecorder = new SchemaFullLoadRecorder();
 
   /**
    * The first persistent Raft log write failure Ratis reported through {@link #notifyLogFailed}, or {@code null}
@@ -1031,6 +1040,15 @@ public class ArcadeStateMachine extends BaseStateMachine {
 
   public void setRaftHAServer(final RaftHAServer raftHAServer) {
     this.raftHAServer = raftHAServer;
+  }
+
+  // @VisibleForTesting - and RaftHAServer, which hands every state machine it builds the one recorder it owns
+  void setSchemaFullLoadRecorder(final SchemaFullLoadRecorder schemaFullLoadRecorder) {
+    this.schemaFullLoadRecorder = schemaFullLoadRecorder;
+  }
+
+  SchemaFullLoadRecorder getSchemaFullLoadRecorder() {
+    return schemaFullLoadRecorder;
   }
 
   /** Owning Raft HA server. Package-private: used by the recovery-rewiring regression test (issue #4839). */
@@ -4060,13 +4078,21 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // dictionary), which is what keeps the ordering guarantees of #4743 and #5443 on the full-rebuild path.
       if (!sealedOnlyEntry && !deliveryOnlyEntry && !walOnlyEntry) {
         final LocalSchema schema = db.getSchema().getEmbedded();
-        // A rename re-keys components the incremental refresh would look up by their old names (issue #9762): it takes
-        // the full rebuild, which re-reads every component under the name its file now carries
-        final boolean incremental = incrementalSchemaApplyEnabled() && isEmptyMap(decoded.filesToRename())
-            && schema.loadIncremental(ComponentFile.MODE.READ_WRITE, keysOrNull(decoded.filesToRemove()),
-            walTouchedFileIds);
-        if (!incremental)
-          schema.load(ComponentFile.MODE.READ_WRITE, true);
+        final IncrementalLoadRefusal refusal;
+        if (!incrementalSchemaApplyEnabled())
+          refusal = IncrementalLoadRefusal.of(FullSchemaLoadReason.INCREMENTAL_DISABLED,
+              GlobalConfiguration.HA_SCHEMA_INCREMENTAL_APPLY.getKey() + "=false");
+        else if (!isEmptyMap(decoded.filesToRename()))
+          // A rename re-keys components the incremental refresh would look up by their old names (issue #9762): it takes
+          // the full rebuild, which re-reads every component under the name its file now carries
+          refusal = IncrementalLoadRefusal.of(FullSchemaLoadReason.FILE_RENAMED,
+              decoded.filesToRename().size() + " file(s) renamed");
+        else
+          refusal = schema.tryLoadIncremental(ComponentFile.MODE.READ_WRITE, keysOrNull(decoded.filesToRemove()),
+              walTouchedFileIds);
+
+        if (refusal != null)
+          loadSchemaInFull(schema, decoded, entryIndex, refusal);
       }
 
     } catch (final IOException e) {
@@ -4074,6 +4100,36 @@ public class ArcadeStateMachine extends BaseStateMachine {
     }
 
     HALog.log(this, HALog.DETAILED, "Applied schema change to database '%s'", decoded.databaseName());
+  }
+
+  /**
+   * The full {@code LocalSchema.load()} a replica falls back to when the incremental refresh declines an entry (issue
+   * #10020). It re-instantiates every component of the database on the single Ratis apply thread, so it is the event behind
+   * an apply-lag spike after DDL, and behind every vector index searching cold afterwards (issue #10021). It is therefore
+   * never silent: the reason and the entry go to the log at INFO with the duration, and the reason-tagged counter and timer
+   * ({@code arcadedb.ha.schema.full_load}) are what a dashboard alerts on.
+   */
+  private void loadSchemaInFull(final LocalSchema schema, final RaftLogEntryCodec.DecodedEntry decoded, final long entryIndex,
+      final IncrementalLoadRefusal refusal) throws IOException {
+    final SchemaFullLoadRecorder recorder = schemaFullLoadRecorder;
+    // Counted before the load, so one that throws is still seen
+    recorder.started(refusal.reason());
+
+    final long startNanos = System.nanoTime();
+    schema.load(ComponentFile.MODE.READ_WRITE, true);
+    final long elapsedNanos = System.nanoTime() - startNanos;
+    recorder.completed(refusal.reason(), elapsedNanos);
+
+    LogManager.instance().log(this, Level.INFO,
+        "Applied schema entry %d of database '%s' with a FULL schema load instead of the incremental refresh, which was "
+            + "declined because %s [%s] (filesToAdd=%d, filesToRemove=%d, filesToRename=%d): every component of the database "
+            + "was re-instantiated on the apply thread in %d ms",
+        entryIndex, decoded.databaseName(), refusal.reason().getDescription(), refusal, sizeOf(decoded.filesToAdd()),
+        sizeOf(decoded.filesToRemove()), sizeOf(decoded.filesToRename()), TimeUnit.NANOSECONDS.toMillis(elapsedNanos));
+  }
+
+  private static int sizeOf(final Map<?, ?> map) {
+    return map == null ? 0 : map.size();
   }
 
   /**
