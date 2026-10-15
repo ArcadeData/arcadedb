@@ -72,10 +72,11 @@ jobs:
       # snapshot deploy in mvn-deploy.yml. A release bundle goes through the Central Portal API instead,
       # which reads the server entry directly, but any transfer to a Sonatype URL under that id would
       # fail with the same 401 - and this workflow only runs on a release, where that costs the release.
-      # ./mvnw, not the runner's mvn: the runner image moved to Maven 3.10.0, under which
-      # central-publishing-maven-plugin 0.11.0 put maven-metadata-local.xml and _remote.repositories
-      # into the bundle and the Central Portal rejected the whole 26.10.2 deployment. The wrapper pins
-      # the Maven that actually publishes, so a runner image update cannot change it again.
+      # ./mvnw, not the runner's mvn: the runner image moved to Maven 3.10.0 underneath this workflow,
+      # and central-publishing-maven-plugin 0.11.0 then put maven-metadata-local.xml and
+      # _remote.repositories into the bundle, so the Central Portal rejected the whole 26.10.2
+      # deployment (fixed in plugin 0.12.0). The wrapper pins the Maven that actually publishes, so a
+      # Maven upgrade arrives as a reviewable wrapper bump, not silently with a runner image.
       - name: Publish package
         run: |
           export MAVEN_OPTS="--add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.text=ALL-UNNAMED --add-opens=java.desktop/java.awt.font=ALL-UNNAMED"
