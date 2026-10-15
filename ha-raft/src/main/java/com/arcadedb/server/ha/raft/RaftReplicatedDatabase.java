@@ -1740,7 +1740,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * so a position read afterwards stands for a schema that includes the type.
    */
   private void awaitTypeApplied(final RaftHAServer raft, final String typeName, final long leaderApplied) {
-    final long timeoutMs = server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_QUORUM_TIMEOUT);
+    final long timeoutMs = raft.getQuorumTimeout();
     final boolean applied;
     try {
       applied = raft.awaitApplied(() -> (leaderApplied < 0 || raft.getTrustedAppliedIndex(getName()) >= leaderApplied)
