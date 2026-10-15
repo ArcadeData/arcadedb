@@ -4475,6 +4475,9 @@ public class LocalSchema implements Schema {
    * postponed - the close is the point where that save is owed, whatever is still open - and the BM25 corpus counters the
    * commits since the last save moved, which a commit changes without dirtying the schema, because that would rewrite
    * {@code schema.json} after every commit (#10051).
+   * <p>
+   * Called under the database write lock, then taking this schema's monitor: the order every schema save made under
+   * {@code recordFileChanges} already takes, and the one {@link #close()} took when it saved, so no new lock order is added.
    *
    * @throws IOException when the schema file cannot be written: the caller logs it and carries on with the close
    */
