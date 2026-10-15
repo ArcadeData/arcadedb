@@ -220,11 +220,14 @@ public class Issue10085GrpcEdgeVetoTest extends BaseGrpcServerTest {
         .setCredentials(credentials()).setRid(rid).setPartial(PropertiesUpdate.newBuilder().putProperties("name", string("refused")).build())
         .build());
     assertThat(refused.getUpdated()).isFalse();
+    // the clients read success as "the record was updated" (RemoteGrpcDatabase.updateRecord() returns it)
+    assertThat(refused.getSuccess()).isFalse();
 
     final UpdateRecordResponse kept = stub.updateRecord(UpdateRecordRequest.newBuilder().setDatabase(getDatabaseName())
         .setCredentials(credentials()).setRid(rid).setPartial(PropertiesUpdate.newBuilder().putProperties("name", string("renamed")).build())
         .build());
     assertThat(kept.getUpdated()).isTrue();
+    assertThat(kept.getSuccess()).isTrue();
 
     try (final ResultSet rs = getServerDatabase(0, getDatabaseName()).query("sql", "select name from " + EDGE)) {
       assertThat(rs.next().<String>getProperty("name")).isEqualTo("renamed");
