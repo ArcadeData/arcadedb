@@ -278,6 +278,8 @@ public interface DatabaseAsyncExecutor {
 
   /**
    * Schedules the creation of an edge between two vertices. If the edge is created successfully, the callback @{@link NewEdgeCallback} is executed.
+   * An edge that a {@code BeforeRecordCreateListener} vetoed is not an error and created nothing: neither the callback nor the error
+   * callback fires for it, as for an asynchronous create of a vetoed record (issue #10085).
    *
    * @param sourceVertex         Source vertex instance
    * @param edgeType             Type of the edge to create. The type must be defined in the schema beforehand
