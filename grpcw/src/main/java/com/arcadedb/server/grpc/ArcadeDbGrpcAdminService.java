@@ -34,6 +34,7 @@ import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.HAServerPlugin;
+import com.arcadedb.server.DatabaseAlreadyExistsException;
 import com.arcadedb.server.ServerControlPlane;
 import com.arcadedb.server.ServerPlugin;
 import com.arcadedb.server.http.HttpAuthSession;
@@ -1197,8 +1198,11 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
       return Status.NOT_FOUND.withDescription(e.getMessage()).asException();
     // A token name already issued: HTTP's 409 on this transport, and distinct from INVALID_ARGUMENT
     // because the request is well formed - it is the identity that is taken.
-    // A user name already taken is the same conflict (issue #10073), and not a ServerSecurityException.
-    if (e instanceof ServerControlPlane.AlreadyExistsException || e instanceof UserAlreadyExistsException)
+    // A user or database name already taken is the same conflict (issues #10073, #10074), and not a ServerSecurityException
+    // nor a malformed argument. The restore routes raise a plain IllegalArgumentException for a taken target and keep
+    // INVALID_ARGUMENT below (issue #7395).
+    if (e instanceof ServerControlPlane.AlreadyExistsException || e instanceof UserAlreadyExistsException
+        || e instanceof DatabaseAlreadyExistsException)
       return Status.ALREADY_EXISTS.withDescription(e.getMessage()).asException();
     // A backup, restore or import already running on the same database is HTTP's 409 on the other
     // transport: the request is well formed and authorized, and retrying once the other operation
