@@ -542,11 +542,12 @@ public class ResultInternal implements Result {
   public Map<String, Object> toPropertyMap(final boolean includeMetadata) {
     // getPropertyNames() and getProperty() inlined, with their precedence: once content is present the element is never
     // consulted. Walking the store directly spares the name set and the second lookup per name, on a path that runs once per
-    // row of an INSERT ... FROM SELECT
+    // row of an INSERT ... FROM SELECT. A record is read ONCE, whole: ImmutableDocument.get(name) walks the record header from
+    // its first byte until it meets the name, so reading it a property at a time cost N+1 passes (issue #10098)
     final boolean fromContent = content != null && !content.isEmpty();
-    final Set<String> elementNames = !fromContent && element != null ? element.getPropertyNames() : Collections.emptySet();
+    final Map<String, Object> stored = !fromContent && element != null ? element.toMap(false) : Collections.emptyMap();
     final Map<String, Object> map = new LinkedHashMap<>(
-        (fromContent ? content.size() : elementNames.size()) + (includeMetadata ? 5 : 0));
+        (fromContent ? content.size() : stored.size()) + (includeMetadata ? 5 : 0));
     if (includeMetadata && element != null)
       putStructuralAttributes(map::put);
 
@@ -556,9 +557,9 @@ public class ResultInternal implements Result {
         map.put(name, tombstones != null && tombstones.contains(name) ? null : toPropertyValue(entry.getValue()));
       }
     } else
-      for (final String name : elementNames)
-        if (tombstones == null || !tombstones.contains(name))
-          map.put(name, toPropertyValue(element.get(name)));
+      for (final Map.Entry<String, Object> entry : stored.entrySet())
+        if (tombstones == null || !tombstones.contains(entry.getKey()))
+          map.put(entry.getKey(), toPropertyValue(entry.getValue()));
     return map;
   }
 

@@ -54,6 +54,7 @@ import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.QueryTerminatedException;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.exception.RecordVetoedException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GraphBatch;
@@ -1162,7 +1163,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       if (dt instanceof VertexType) {
         final MutableVertex v = db.newVertex(cls);
         props.forEach((k, val) -> v.set(k, toJavaForProperty(db, v, dt, k, val)));
-        v.save();
+        // The reply names the record, so a create a listener vetoed is a refusal and not a RID that was never assigned (issue #10085)
+        if (!v.saveReportingVeto())
+          throw vetoed(cls);
 
         if (beganHere)
           db.commit();
@@ -1198,7 +1201,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           if (!"out".equals(k) && !"in".equals(k))
             e.set(k, toJavaForProperty(db, e, dt, k, val));
         });
-        e.save();
+        // newEdge() raised a RecordVetoedException if a listener refused the create; this save is an update of the created edge
+        if (!e.saveReportingVeto())
+          throw vetoed(cls);
 
         if (beganHere)
           db.commit();
@@ -1209,7 +1214,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       // --- Document ---
       final MutableDocument d = db.newDocument(cls);
       props.forEach((k, val) -> d.set(k, toJavaForProperty(db, d, dt, k, val)));
-      d.save();
+      if (!d.saveReportingVeto())
+        throw vetoed(cls);
 
       if (beganHere)
         db.commit();
@@ -1221,6 +1227,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       }
       throw e;
     }
+  }
+
+  /** The refusal of a write that has to answer a record, which a listener's veto leaves without one (issue #10085). */
+  private static RecordVetoedException vetoed(final String typeName) {
+    return new RecordVetoedException("Cannot write a record of type '" + typeName + "': a listener vetoed it");
   }
 
   @Override
@@ -1367,6 +1378,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       var el = db.lookupByRID(new RID(ridStr), true);
 
       final var dbRef = db;
+      // What the engine answered to the save: false when a BeforeRecordUpdateListener vetoed it (issue #10084)
+      boolean applied = true;
 
       // THE RECORD BY ITS IDENTITY, NOT ITS CONTENT: SEE LOG_SHOW_VALUES (#9984)
       LogManager.instance().log(this, Level.FINE, "updateRecord(): el = %s; type = %s", summarizeJava(el), el.getRecordType());
@@ -1409,7 +1422,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           mvertex.set(k, toJavaForProperty(dbRef, mvertex, dtype, k, v));
         });
 
-        mvertex.save();
+        applied = mvertex.saveReportingVeto();
       } else if (el instanceof Document elAsDocument) {
 
         LogManager.instance().log(this, Level.FINE, "updateRecord(): Processing Document ...");
@@ -1447,7 +1460,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           mdoc.set(k, toJavaForProperty(dbRef, mdoc, dtype, k, v));
         });
 
-        mdoc.save();
+        applied = mdoc.saveReportingVeto();
       }
 
       // Commit/rollback with proper precedence (only for per-call transactions, not external)
@@ -1458,7 +1471,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           db.commit();
       }
 
-      return UpdateRecordResponse.newBuilder().setUpdated(true).setSuccess(true).build();
+      return UpdateRecordResponse.newBuilder().setUpdated(applied).setSuccess(true).build();
     } catch (RecordNotFoundException e) {
       if (beganHere) {
         try { db.rollback(); } catch (Exception ignore) { }
@@ -5149,9 +5162,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
               final var outV = ctx.db.lookupByRID(new RID(outRid), false).asVertex(false);
 
               // Create edge from the OUT vertex. The `in` RID is stored in the edge record; use DatabaseRID so edge.getIn() resolves across threads.
-              final MutableEdge e = outV.newEdge(ctx.opts.getTargetClass(), ctx.db.newRID(inRid));
-              applyGrpcRecord(e, r); // sets edge properties
-              c.inserted(e.saveReportingVeto());
+              // The properties go INTO the creation, so one a unique index refuses refuses the create and a listener's veto is the answer
+              // to the whole edge: created and then updated, a refusal arrived at the update with the edge already wired (issue #10085)
+              c.inserted(((DatabaseInternal) ctx.db).getGraphEngine()
+                  .newEdgeReportingVeto(outV, ctx.opts.getTargetClass(), ctx.db.newRID(inRid), edgeProperties(r)) != null);
             }
           }
         } else {
@@ -5250,17 +5264,22 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     });
   }
 
-  private void applyGrpcRecord(MutableEdge edge, GrpcRecord r) {
-    r.getPropertiesMap().forEach((k, grpcVal) -> {
+  /** The properties of an edge row, as the name/value pairs {@code newEdge()} takes, system fields left out. */
+  private Object[] edgeProperties(final GrpcRecord r) {
+    final Map<String, GrpcValue> properties = r.getPropertiesMap();
+    final List<Object> pairs = new ArrayList<>(properties.size() * 2);
+    for (final Map.Entry<String, GrpcValue> entry : properties.entrySet()) {
       // Skip system fields
-      if (k.startsWith("@"))
-        return;
-      Object javaVal = fromGrpcValue(grpcVal);
+      if (entry.getKey().startsWith("@"))
+        continue;
+      final Object javaVal = fromGrpcValue(entry.getValue());
       if (LogManager.instance().isLoggable(this, Level.FINE))
-        LogManager.instance().log(this, Level.FINE, "APPLY-EDGE %s <= %s -> %s", k, summarizeGrpc(grpcVal),
+        LogManager.instance().log(this, Level.FINE, "APPLY-EDGE %s <= %s -> %s", entry.getKey(), summarizeGrpc(entry.getValue()),
             summarizeJava(javaVal));
-      edge.set(k, javaVal);
-    });
+      pairs.add(entry.getKey());
+      pairs.add(javaVal);
+    }
+    return pairs.toArray();
   }
 
   private Object fromGrpcValue(GrpcValue v) {
