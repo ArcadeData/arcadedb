@@ -4494,6 +4494,10 @@ public class LocalSchema implements Schema {
    * <p>
    * Called under the database write lock, then taking this schema's monitor: the order every schema save made under
    * {@code recordFileChanges} already takes, and the one {@link #close()} took when it saved, so no new lock order is added.
+   * <p>
+   * It writes the file and records the saved generation, and nothing else {@link #saveConfiguration} does: the postponement
+   * it applies is what this save exists to override, and refreshing the bucket map, the modification counter and the
+   * security file map serves readers of a database that is about to stop having any.
    *
    * @throws IOException when the schema file cannot be written: the caller logs it and carries on with the close
    */

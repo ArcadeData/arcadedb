@@ -361,6 +361,11 @@ public class CypherDuration implements CypherTemporalValue {
     }
   }
 
+  /**
+   * This duration with every component negated: what a leading minus sign does to an ISO text ({@code -P1Y2D}).
+   *
+   * @throws ArithmeticErrorException when a component is {@code Long.MIN_VALUE} and has no negation
+   */
   public CypherDuration negate() {
     try {
       // nanosAdjustment is 0..999_999_999, so its negation cannot overflow: the constructor folds it back into seconds
