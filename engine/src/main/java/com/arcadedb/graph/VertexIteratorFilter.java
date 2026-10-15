@@ -20,6 +20,7 @@ package com.arcadedb.graph;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.Record;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.log.LogManager;
 
@@ -47,6 +48,11 @@ public class VertexIteratorFilter extends IteratorFilterBase<Vertex> {
 
     entryReturned();
     try {
+      final Record validated = validatedVertex;
+      validatedVertex = null;
+      if (validated instanceof Vertex vertex && next.equals(validated.getIdentity()))
+        // THE LOOKUP hasNext() DID TO VALIDATE THE RID IS THE ONE THIS CALL WOULD DO AGAIN
+        return vertex;
       return (Vertex) database.lookupByRID(next, false);
     } catch (final SchemaException e) {
       LogManager.instance().log(this, Level.WARNING, "Error on loading vertex %s from edge %s", e, next, nextEdge);
