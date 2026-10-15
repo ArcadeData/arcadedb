@@ -87,6 +87,24 @@ class Issue10064TimeSeriesInsertStorableValueTest extends TestHelper {
     });
   }
 
+  /**
+   * A batch {@code INSERT} with a value the column cannot hold is refused at that row, naming the column, and the value is not stored:
+   * the refusal is the statement's, as it is for a single row. A time series append commits on its own, so a row before the refused
+   * one may stay.
+   */
+  @Test
+  void aBatchInsertRefusesTheRowWithAValueTheColumnCannotHold() throws Exception {
+    database.command("sql", "CREATE TIMESERIES TYPE BatchRows TIMESTAMP ts FIELDS (i INTEGER) SHARDS 1");
+
+    assertThatThrownBy(() -> database.command("sql", "INSERT INTO BatchRows CONTENT [{\"ts\": " + BASE_TS + ", \"i\": 1}, {\"ts\": "
+        + (BASE_TS + 1) + ", \"i\": 1e12}]")).isInstanceOf(RuntimeException.class).hasMessageContaining("'i'");
+
+    final List<Object[]> rows = rows("BatchRows");
+    assertThat(rows.size()).as("at most the row before the refused one").isLessThanOrEqualTo(1);
+    for (final Object[] row : rows)
+      assertThat(((Number) row[1]).longValue()).as("only the row that was fine is stored").isEqualTo(1L);
+  }
+
   /** A FLOAT literal into a DOUBLE column reads as its decimal, not as the single precision rounding error (issue #7609). */
   @Test
   void aFloatIntoADoubleColumnWidensThroughItsDecimalForm() throws Exception {
