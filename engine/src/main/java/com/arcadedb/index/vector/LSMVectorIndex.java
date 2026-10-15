@@ -18,6 +18,7 @@
  */
 package com.arcadedb.index.vector;
 
+import com.arcadedb.utility.VectorApiSupport;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Binary;
@@ -88,7 +89,6 @@ import io.github.jbellis.jvector.quantization.PQVectors;
 import io.github.jbellis.jvector.quantization.ProductQuantization;
 import io.github.jbellis.jvector.util.Bits;
 import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
-import io.github.jbellis.jvector.vector.VectorizationProvider;
 import io.github.jbellis.jvector.vector.types.ByteSequence;
 import io.github.jbellis.jvector.vector.types.VectorFloat;
 import io.github.jbellis.jvector.vector.types.VectorTypeSupport;
@@ -151,7 +151,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
   public static final  String            FILE_EXT        = "lsmvecidx";
   public static final  int               CURRENT_VERSION = 0;
   public static final  int               DEF_PAGE_SIZE   = 262_144;
-  private static final VectorTypeSupport vts             = VectorizationProvider.getInstance().getVectorTypeSupport();
+  private static final VectorTypeSupport vts             = VectorApiSupport.jvectorProvider().getVectorTypeSupport();
 
   // JVM-wide semaphore limiting the number of concurrent graph rebuilds across all indexes and databases.
   // Multiple concurrent rebuilds are extremely memory-intensive and can cause OOM kills (issue #3868). The permit

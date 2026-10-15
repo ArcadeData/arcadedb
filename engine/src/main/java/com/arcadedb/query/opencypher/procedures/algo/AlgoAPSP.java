@@ -35,7 +35,7 @@ import java.util.stream.Stream;
  * Procedure: algo.apsp(relTypes?, weightProperty?)
  * <p>
  * The relationship types come first and the weight property second, as in every other weighted {@code algo.*}
- * procedure. Before 26.11.1 this procedure took them the other way round; a call still written in that order names a
+ * procedure. Before 26.10.2 this procedure took them the other way round; a call still written in that order names a
  * property where the relationship types go and is refused, since no edge type carries that name (issue #9769).
  * </p>
  * <p>

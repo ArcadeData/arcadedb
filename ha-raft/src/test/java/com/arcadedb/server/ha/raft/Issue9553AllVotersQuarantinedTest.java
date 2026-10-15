@@ -103,15 +103,15 @@ class Issue9553AllVotersQuarantinedTest {
   void theRegistryRemembersWhatEachPeerHoldsQuarantined() {
     final PeerCapabilityRegistry registry = new PeerCapabilityRegistry();
     final long generation = registry.generation();
-    registry.record(generation, B.toString(), Set.of(), "26.11.1", false, Set.of(DB));
-    registry.record(generation, C.toString(), Set.of(), "26.11.1", false, Set.of());
+    registry.record(generation, B.toString(), Set.of(), "26.10.2", false, Set.of(DB));
+    registry.record(generation, C.toString(), Set.of(), "26.10.2", false, Set.of());
 
     assertThat(registry.reportsQuarantined(B.toString(), DB)).isTrue();
     assertThat(registry.reportsQuarantined(B.toString(), OTHER)).isFalse();
     assertThat(registry.reportsQuarantined(C.toString(), DB)).isFalse();
     assertThat(registry.reportsQuarantined("never-asked", DB)).as("unknown is not quarantined").isFalse();
 
-    registry.record(generation, B.toString(), Set.of(), "26.11.1", false, Set.of());
+    registry.record(generation, B.toString(), Set.of(), "26.10.2", false, Set.of());
     assertThat(registry.reportsQuarantined(B.toString(), DB)).as("the resync landed, the next poll says so").isFalse();
   }
 
@@ -120,7 +120,7 @@ class Issue9553AllVotersQuarantinedTest {
     final AtomicLong clock = new AtomicLong(1_000L);
     final PeerCapabilityRegistry registry = new PeerCapabilityRegistry(5_000L);
     registry.setClock(clock::get);
-    registry.record(registry.generation(), B.toString(), Set.of(), "26.11.1", false, Set.of(DB));
+    registry.record(registry.generation(), B.toString(), Set.of(), "26.10.2", false, Set.of(DB));
 
     clock.addAndGet(5_001L);
     assertThat(registry.reportsQuarantined(B.toString(), DB)).isFalse();
@@ -145,7 +145,7 @@ class Issue9553AllVotersQuarantinedTest {
   @Test
   void aVoterThatDidNotAnswerKeepsTheDatabaseOut() {
     final PeerCapabilityRegistry registry = new PeerCapabilityRegistry();
-    registry.record(registry.generation(), B.toString(), Set.of(), "26.11.1", false, Set.of(DB));
+    registry.record(registry.generation(), B.toString(), Set.of(), "26.10.2", false, Set.of(DB));
     // C never answered: it may hold the only good copy, and "unknown" must not read as "quarantined"
 
     assertThat(RaftHAServer.quarantinedOnEveryVoter(Set.of(DB), voters(), SELF, registry)).isEmpty();
@@ -154,7 +154,7 @@ class Issue9553AllVotersQuarantinedTest {
   @Test
   void aVoterOnABuildThatDoesNotReportQuarantinesKeepsTheDatabaseOut() {
     final PeerCapabilityRegistry registry = new PeerCapabilityRegistry();
-    registry.record(registry.generation(), B.toString(), Set.of(), "26.11.1", false, Set.of(DB));
+    registry.record(registry.generation(), B.toString(), Set.of(), "26.10.2", false, Set.of(DB));
     registry.record(registry.generation(), C.toString(), Set.of(), "26.10.1", false);
 
     assertThat(RaftHAServer.quarantinedOnEveryVoter(Set.of(DB), voters(), SELF, registry)).isEmpty();
@@ -317,7 +317,7 @@ class Issue9553AllVotersQuarantinedTest {
   @Test
   void theDatabasesTheLeaderHoldsQuarantinedAreLeftOutOfTheResync() {
     final PeerCapabilityRegistry registry = new PeerCapabilityRegistry();
-    registry.record(registry.generation(), B.toString(), Set.of(), "26.11.1", false, Set.of(DB));
+    registry.record(registry.generation(), B.toString(), Set.of(), "26.10.2", false, Set.of(DB));
 
     assertThat(ArcadeStateMachine.resyncableFromLeader(Set.of(DB, OTHER), B.toString(), registry))
         .containsExactly(OTHER);
@@ -332,14 +332,14 @@ class Issue9553AllVotersQuarantinedTest {
     final ArcadeStateMachine sm = newStateMachine();
     try {
       final PeerCapabilityRegistry registry = new PeerCapabilityRegistry();
-      registry.record(registry.generation(), B.toString(), Set.of(), "26.11.1", false, Set.of(DB));
+      registry.record(registry.generation(), B.toString(), Set.of(), "26.10.2", false, Set.of(DB));
       sm.setRaftHAServer(followerOf(B, registry));
       sm.markStateDiverged(DB, DivergenceCause.APPLY_ERROR);
 
       sm.retryUnfilledSnapshotGap();
       assertThat(readLastRetryMs(sm)).as("nothing a resync from this leader could restore").isZero();
 
-      registry.record(registry.generation(), B.toString(), Set.of(), "26.11.1", false, Set.of());
+      registry.record(registry.generation(), B.toString(), Set.of(), "26.10.2", false, Set.of());
       sm.retryUnfilledSnapshotGap();
       assertThat(readLastRetryMs(sm)).as("the leader serves it again: the very next tick retries").isNotZero();
     } finally {
@@ -352,8 +352,8 @@ class Issue9553AllVotersQuarantinedTest {
   /** A registry in which B answered {@code quarantinedOnB} and C answered {@code quarantinedOnC}. */
   private static PeerCapabilityRegistry registryWhere(final Set<String> quarantinedOnB, final Set<String> quarantinedOnC) {
     final PeerCapabilityRegistry registry = new PeerCapabilityRegistry();
-    registry.record(registry.generation(), B.toString(), Set.of(), "26.11.1", false, quarantinedOnB);
-    registry.record(registry.generation(), C.toString(), Set.of(), "26.11.1", false, quarantinedOnC);
+    registry.record(registry.generation(), B.toString(), Set.of(), "26.10.2", false, quarantinedOnB);
+    registry.record(registry.generation(), C.toString(), Set.of(), "26.10.2", false, quarantinedOnC);
     return registry;
   }
 
