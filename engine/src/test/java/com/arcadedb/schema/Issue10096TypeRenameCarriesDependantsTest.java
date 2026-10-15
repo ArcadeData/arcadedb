@@ -200,6 +200,26 @@ class Issue10096TypeRenameCarriesDependantsTest extends TestHelper {
     assertNoSchemaObjectNamesAnUnresolvableType();
   }
 
+  /** A new name that is not a plain identifier is spelled between back-ticks in the query, which has to parse back to the same statement. */
+  @Test
+  void aNewNameWithLettersOutsideAsciiIsQuotedInTheRewrittenQuery() {
+    database.getSchema().buildMaterializedView().withName("MV").withQuery("SELECT FROM Src WHERE name <> 'z'").create();
+
+    database.command("sql", "ALTER TYPE Src NAME `Città`");
+
+    final MaterializedView view = database.getSchema().getMaterializedView("MV");
+    assertThat(view.getSourceTypeNames()).containsExactly("Città");
+    assertThat(view.getQuery()).isEqualTo("SELECT FROM `Città` WHERE name <> 'z'");
+    view.refresh();
+    assertThat(count("MV")).isEqualTo(2);
+    assertNoSchemaObjectNamesAnUnresolvableType();
+
+    // AND BACK: A NAME WITH A NON-ASCII LETTER IS FOUND AS ONE TOKEN, NOT AS THE PREFIX OF A LONGER ONE
+    database.command("sql", "ALTER TYPE `Città` NAME Src");
+    assertThat(database.getSchema().getMaterializedView("MV").getQuery()).isEqualTo("SELECT FROM Src WHERE name <> 'z'");
+    assertNoSchemaObjectNamesAnUnresolvableType();
+  }
+
   /** A string literal that holds the name is not told apart from a second reference without a parser: refused, and the message says so. */
   @Test
   void aStringLiteralHoldingTheTypeNameRefusesTheRenameAndTheMessageSaysSo() {
