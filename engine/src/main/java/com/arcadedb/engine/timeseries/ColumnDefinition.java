@@ -344,9 +344,10 @@ public final class ColumnDefinition {
       return null;
     // The common case, a number into a numeric column (every kind up to BYTE, the datetimes among them), answers before any dispatch
     if (kind <= TimeSeriesBatch.KIND_BYTE && value instanceof Number number) {
+      // A Float widens through its decimal form, as Type.convert() does: the primitive widening would persist the single
+      // precision rounding error into a DOUBLE column, where it outlives the write (issue #7609). KIND_DOUBLE is 0, so the
+      // other kinds pay one compare
       if (fits(number))
-        // A Float widens through its decimal form, as Type.convert() does: the primitive widening would persist the single precision
-        // rounding error into a DOUBLE column, where it outlives the write (issue #7609). KIND_DOUBLE is 0, so the other kinds pay one compare
         return kind == TimeSeriesBatch.KIND_DOUBLE && number instanceof Float floatValue ? Type.widenFloat(floatValue) : value;
       throw new IllegalArgumentException("Cannot convert a value of type " + value.getClass().getSimpleName() + " to the " + dataType
           + " column '" + name + "': the number is out of range");

@@ -19,12 +19,17 @@
 package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.CauseChain;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.security.ServerSecurity;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -214,6 +219,83 @@ class Issue10067ImplicitTypeInClientTransactionOnAFollowerIT extends BaseRaftHAT
         followerDb.rollback();
     }
     awaitOnEveryServer("Issue10067Overtaken", 1);
+  }
+
+  /**
+   * The type is created for the USER of the statement, not for the cluster: a user whose group grants records and not the schema is
+   * refused (no forward is sent, no type appears anywhere), and the same statement succeeds once the group grants
+   * {@code updateSchema} - which is what decides it.
+   */
+  @Test
+  @Timeout(240)
+  void aUserWithoutTheSchemaPermissionCannotHaveATypeCreatedForIt() {
+    final int leader = requireLeaderIndex();
+    final int follower = firstFollowerOf(leader);
+    final ServerSecurity leaderSecurity = getServer(leader).getSecurity();
+    final String group = "issue10067writers";
+    final String user = "issue10067writer";
+
+    leaderSecurity.saveGroupClusterWide(getDatabaseName(), group, recordsOnlyGroup(false));
+    leaderSecurity.createUserClusterWide(new JSONObject().put("name", user).put("password", leaderSecurity.encodePassword("issue10067pwd"))
+        .put("databases", new JSONObject().put(getDatabaseName(), new JSONArray().put(group))));
+    await().atMost(60, TimeUnit.SECONDS).pollInterval(200, TimeUnit.MILLISECONDS).untilAsserted(() -> {
+      assertThat(getServer(follower).getSecurity().existsUser(user)).isTrue();
+      assertThat(groupOf(getServer(follower).getSecurity(), group)).isNotNull();
+    });
+
+    final DatabaseInternal followerDb = (DatabaseInternal) getServerDatabase(follower, getDatabaseName());
+    final SecurityDatabaseUser restricted = getServer(follower).getSecurity().getUser(user).getDatabaseUser(followerDb);
+    final SecurityDatabaseUser root = getServer(follower).getSecurity().getUser("root").getDatabaseUser(followerDb);
+    try {
+      DatabaseContext.INSTANCE.init(followerDb).setCurrentUser(restricted);
+      followerDb.begin();
+      try {
+        markClientManaged(followerDb);
+        final Throwable refused = catchThrowable(
+            () -> followerDb.command("opencypher", "CREATE (n:Issue10067Denied {name: 'denied'})").close());
+        assertThat(refused).as("a user without updateSchema must be refused").isNotNull();
+        assertThat(messageChainOf(refused)).contains("is not allowed to update schema");
+      } finally {
+        if (followerDb.isTransactionActive())
+          followerDb.rollback();
+      }
+      for (int i = 0; i < getServerCount(); i++)
+        assertThat(getServerDatabase(i, getDatabaseName()).getSchema().existsType("Issue10067Denied"))
+            .as("server %d must not hold a type created for a user who may not create it", i).isFalse();
+
+      // The same user, once the group grants the schema: the statement goes through and the type is created for it
+      leaderSecurity.saveGroupClusterWide(getDatabaseName(), group, recordsOnlyGroup(true));
+      await().atMost(60, TimeUnit.SECONDS).pollInterval(200, TimeUnit.MILLISECONDS).untilAsserted(() ->
+          assertThat(groupOf(getServer(follower).getSecurity(), group).getJSONArray("access").toList()).contains("updateSchema"));
+      final SecurityDatabaseUser granted = getServer(follower).getSecurity().getUser(user).getDatabaseUser(followerDb);
+      DatabaseContext.INSTANCE.init(followerDb).setCurrentUser(granted);
+      followerDb.begin();
+      try {
+        markClientManaged(followerDb);
+        followerDb.command("opencypher", "CREATE (n:Issue10067Granted {name: 'granted'})").close();
+        followerDb.commit();
+      } finally {
+        if (followerDb.isTransactionActive())
+          followerDb.rollback();
+      }
+    } finally {
+      DatabaseContext.INSTANCE.init(followerDb).setCurrentUser(root);
+    }
+    awaitOnEveryServer("Issue10067Granted", 1);
+  }
+
+  private JSONObject recordsOnlyGroup(final boolean withSchema) {
+    final JSONArray access = new JSONArray();
+    if (withSchema)
+      access.put("updateSchema");
+    return new JSONObject().put("resultSetLimit", -1L).put("readTimeout", -1L).put("access", access)
+        .put("types", new JSONObject().put("*", new JSONObject().put("access",
+            new JSONArray().put("createRecord").put("readRecord").put("updateRecord").put("deleteRecord"))));
+  }
+
+  private JSONObject groupOf(final ServerSecurity security, final String group) {
+    return security.groupsToJSON().getJSONObject("databases", new JSONObject()).getJSONObject(getDatabaseName(), new JSONObject())
+        .getJSONObject("groups", new JSONObject()).getJSONObject(group, null);
   }
 
   /** {@code MERGE} reaches the same place as {@code CREATE}. */

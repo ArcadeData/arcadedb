@@ -20,6 +20,7 @@ package com.arcadedb.schema;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
+import com.arcadedb.engine.PaginatedComponent;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -84,6 +85,33 @@ class Issue10067TypeBuilderToSQLTest extends TestHelper {
 
     database.command("sql", custom.toSQL());
     assertThat(database.getSchema().getType("Custom").getBuckets(false)).hasSize(defaultBuckets + 1);
+  }
+
+  /** The statement is executed on another node, so what it creates has to be what the builder described - the page size included. */
+  @Test
+  void aCustomPageSizeReachesTheBucketsOfTheCreatedType() {
+    final int pageSize = database.getConfiguration().getValueAsInteger(GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE) * 2;
+    final TypeBuilder<VertexType> builder = database.getSchema().buildVertexType().withName("Paged").withPageSize(pageSize);
+
+    database.command("sql", builder.toSQL());
+
+    final VertexType created = (VertexType) database.getSchema().getType("Paged");
+    assertThat(created.getBuckets(false)).isNotEmpty().allSatisfy(bucket -> assertThat(((PaginatedComponent) bucket).getPageSize())
+        .isEqualTo(pageSize));
+  }
+
+  /** A name with spaces, a keyword or quotes is quoted, and the statement creates the type of exactly that name. */
+  @Test
+  void namesWithSpacesKeywordsAndQuotesRoundTrip() {
+    for (final String name : new String[] { "my type", "select", "FROM", "order by", "A B~C", "it's", "say \"hi\"", "semi;colon",
+        "dash-and.dot", "ünïcödé" }) {
+      final TypeBuilder<VertexType> builder = database.getSchema().buildVertexType().withName(name).withIgnoreIfExists(true);
+
+      database.command("sql", builder.toSQL());
+
+      assertThat(database.getSchema().existsType(name)).as("type '%s' created through %s", name, builder.toSQL()).isTrue();
+      assertThat(database.getSchema().getType(name).getName()).isEqualTo(name);
+    }
   }
 
   @Test
