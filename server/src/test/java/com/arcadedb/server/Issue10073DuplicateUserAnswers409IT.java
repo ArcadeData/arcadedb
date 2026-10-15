@@ -23,6 +23,7 @@ import com.arcadedb.remote.RemoteServer;
 import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
 
+import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
@@ -127,7 +128,9 @@ class Issue10073DuplicateUserAnswers409IT extends BaseGraphServerTest {
     connection.setRequestProperty("Authorization", authorization);
     connection.setRequestProperty("Content-Type", "application/json");
     connection.setDoOutput(true);
-    connection.getOutputStream().write(body.getBytes(StandardCharsets.UTF_8));
+    try (final OutputStream out = connection.getOutputStream()) {
+      out.write(body.getBytes(StandardCharsets.UTF_8));
+    }
     connection.connect();
     return connection;
   }
