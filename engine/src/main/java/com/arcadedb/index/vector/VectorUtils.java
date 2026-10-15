@@ -18,6 +18,7 @@
  */
 package com.arcadedb.index.vector;
 
+import com.arcadedb.utility.VectorApiSupport;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.log.LogManager;
 import io.github.jbellis.jvector.vector.VectorUtil;
@@ -476,7 +477,7 @@ public final class VectorUtils {
     if (isZeroVector(v1) || isZeroVector(v2))
       return 0.0f;
     try {
-      final VectorizationProvider vp = VectorizationProvider.getInstance();
+      final VectorizationProvider vp = VectorApiSupport.jvectorProvider();
       final VectorFloat<?> jv1 = vp.getVectorTypeSupport().createFloatVector(v1);
       final VectorFloat<?> jv2 = vp.getVectorTypeSupport().createFloatVector(v2);
       return cosine(jv1, jv2);
@@ -511,7 +512,7 @@ public final class VectorUtils {
   public static float dotProduct(final float[] v1, final float[] v2) {
     if (v1.length >= 4096) {
       try {
-        final VectorizationProvider vp = VectorizationProvider.getInstance();
+        final VectorizationProvider vp = VectorApiSupport.jvectorProvider();
         final VectorFloat<?> jv1 = vp.getVectorTypeSupport().createFloatVector(v1);
         final VectorFloat<?> jv2 = vp.getVectorTypeSupport().createFloatVector(v2);
         return VectorUtil.dotProduct(jv1, jv2);
@@ -536,7 +537,7 @@ public final class VectorUtils {
    */
   public static float l2Distance(final float[] v1, final float[] v2) {
     try {
-      final VectorizationProvider vp = VectorizationProvider.getInstance();
+      final VectorizationProvider vp = VectorApiSupport.jvectorProvider();
       final VectorFloat<?> jv1 = vp.getVectorTypeSupport().createFloatVector(v1);
       final VectorFloat<?> jv2 = vp.getVectorTypeSupport().createFloatVector(v2);
       final float squaredDistance = squareL2Distance(jv1, jv2);

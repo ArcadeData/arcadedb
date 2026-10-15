@@ -19,6 +19,7 @@
 package com.arcadedb.engine.timeseries.simd;
 
 import com.arcadedb.log.LogManager;
+import com.arcadedb.utility.VectorApiSupport;
 
 import java.util.logging.Level;
 
@@ -35,23 +36,35 @@ public final class TimeSeriesVectorOpsProvider {
   private static final TimeSeriesVectorOps INSTANCE;
 
   static {
-    TimeSeriesVectorOps ops;
+    INSTANCE = select(VectorApiSupport.isVectorApiCompiled());
+    if (INSTANCE instanceof SimdTimeSeriesVectorOps)
+      startWarmUp(INSTANCE);
+  }
+
+  /**
+   * Picks the SIMD ops when the Vector API is compiled to SIMD instructions and passes its smoke test, the scalar ops
+   * otherwise. A native image gets the scalar ops: it runs the Vector API through Java lane loops, slower than they are.
+   */
+  static TimeSeriesVectorOps select(final boolean vectorApiCompiled) {
+    if (!vectorApiCompiled) {
+      LogManager.instance().log(TimeSeriesVectorOpsProvider.class, Level.INFO,
+          "TimeSeries SIMD disabled: the Vector API is not compiled to SIMD in a native image, using scalar ops");
+      return new ScalarTimeSeriesVectorOps();
+    }
     try {
-      ops = new SimdTimeSeriesVectorOps();
+      final TimeSeriesVectorOps ops = new SimdTimeSeriesVectorOps();
       // Quick smoke test — verify the implementation returns correct results
       final double smokeResult = ops.sum(new double[] { 1.0, 2.0 }, 0, 2);
       if (smokeResult != 3.0)
         throw new IllegalStateException("SIMD smoke test failed: expected 3.0 but got " + smokeResult);
       LogManager.instance().log(TimeSeriesVectorOpsProvider.class, Level.INFO, "TimeSeries SIMD vector ops enabled");
+      return ops;
     } catch (final Exception | LinkageError t) {
-      ops = new ScalarTimeSeriesVectorOps();
       LogManager.instance()
           .log(TimeSeriesVectorOpsProvider.class, Level.INFO, "TimeSeries SIMD not available, using scalar fallback: %s",
               t.getMessage());
+      return new ScalarTimeSeriesVectorOps();
     }
-    INSTANCE = ops;
-    if (ops instanceof SimdTimeSeriesVectorOps)
-      startWarmUp(ops);
   }
 
   private static void startWarmUp(final TimeSeriesVectorOps ops) {
