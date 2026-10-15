@@ -19,6 +19,7 @@
 package com.arcadedb.server.http.handler;
 
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.PeerRequest;
 import com.arcadedb.server.http.HttpAuthSession;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
@@ -37,7 +38,7 @@ import io.undertow.server.HttpServerExchange;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class PostClusterAuthSessionHandler extends AbstractServerHttpHandler {
-  static final String CLUSTER_TOKEN_HEADER = "X-ArcadeDB-Cluster-Token";
+  static final String CLUSTER_TOKEN_HEADER = PeerRequest.CLUSTER_TOKEN_HEADER;
 
   public PostClusterAuthSessionHandler(final HttpServer httpServer) {
     super(httpServer);

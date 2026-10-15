@@ -107,6 +107,7 @@ class Issue6183LeaderRedirectMapperTest {
     final HAServerPlugin ha = mock(HAServerPlugin.class);
     when(ha.getRoutingTable(HAServerPlugin.ROUTING_PROTOCOL.GRPC)).thenReturn(null);
     when(ha.getLeaderAddress()).thenReturn("db0:2480");
+    when(ha.getLeaderForRefusal()).thenCallRealMethod();
 
     final StatusRuntimeException sre = GrpcErrorMapper.toStatusRuntimeException(
         new ServerIsNotTheLeaderException("schema changes must run on the leader", null), "ExecuteCommand", ha);
@@ -148,6 +149,8 @@ class Issue6183LeaderRedirectMapperTest {
     when(ha.getRoutingTable(HAServerPlugin.ROUTING_PROTOCOL.GRPC)).thenReturn(
         new HAServerPlugin.RoutingTable(HAServerPlugin.ROUTING_PROTOCOL.GRPC, grpcWriter, List.of()));
     when(ha.getLeaderAddress()).thenReturn(httpLeader);
+    // The leader as a refusal names it (issue #10066) is a default method of the interface, which a mock does not run
+    when(ha.getLeaderForRefusal()).thenCallRealMethod();
     return ha;
   }
 }

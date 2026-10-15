@@ -19,7 +19,6 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
@@ -40,7 +39,6 @@ import com.arcadedb.schema.ContinuousAggregateImpl;
 import com.arcadedb.schema.ContinuousAggregateRefresher;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.schema.LocalTimeSeriesType;
-import com.arcadedb.schema.Type;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.utility.DateUtils;
 
@@ -278,7 +276,13 @@ public class SaveElementStep extends AbstractExecutionStep {
       if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP) {
         timestamps[0] = toEpochMs(value, zoneId);
       } else {
-        columnValues[colIdx][0] = convertValue(context.getDatabase(), col.getName(), value, col.getDataType());
+        // The one conversion contract every ingestion surface shares (issue #10064): the line protocol, gRPC and Prometheus remote
+        // write read a value through it too. Here the refusal is the statement's, where a batch drops the row and reports it.
+        try {
+          columnValues[colIdx][0] = col.storableValue(context.getDatabase(), value);
+        } catch (final IllegalArgumentException e) {
+          throw new CommandExecutionException(e.getMessage(), e);
+        }
         colIdx++;
       }
     }
@@ -340,61 +344,6 @@ public class SaveElementStep extends AbstractExecutionStep {
       }
     }
     throw new CommandExecutionException("Cannot convert to timestamp: " + (value != null ? value.getClass().getName() : "null"));
-  }
-
-  private static Object convertValue(final Database database, final String columnName, final Object value,
-      final Type targetType) {
-    if (value == null)
-      return null;
-    final Type targetType = column.getDataType();
-    return switch (targetType) {
-      // A Float widens through its decimal form, as Type.convert() already does: .doubleValue() would persist the
-      // single precision rounding error into the DOUBLE property, where it outlives the statement (issue #7609).
-      case DOUBLE -> value instanceof Float f ?
-          Type.widenFloat(f) :
-          value instanceof Number n ? n.doubleValue() : Double.parseDouble(value.toString());
-      case LONG -> value instanceof Number n ? n.longValue() : Long.parseLong(value.toString());
-      case INTEGER -> value instanceof Number n ? n.intValue() : Integer.parseInt(value.toString());
-      case FLOAT -> value instanceof Number n ? n.floatValue() : Float.parseFloat(value.toString());
-      case SHORT -> value instanceof Number n ? n.shortValue() : Short.parseShort(value.toString());
-      // The engine stores a datetime column as an epoch count in the column's own unit and casts it to Number, while
-      // the document layer has already turned the property into the temporal object its declared type calls for
-      // (issue #9643). Encode it exactly as the binary serializer encodes the same value on a document property:
-      // DATE as epoch days, the DATETIME family in the precision the type names. The same literal therefore means the
-      // same instant on a TimeSeries column as on a document property, numbers included: those are epoch MILLIS for
-      // every DATETIME precision and epoch DAYS for a DATE, as Type.convert reads them (issue #9324).
-      case DATETIME, DATETIME_SECOND, DATETIME_MICROS, DATETIME_NANOS -> {
-        final Long epoch;
-        try {
-          epoch = DateUtils.dateTimeToTimestamp(database, value, DateUtils.getPrecisionFromType(targetType));
-        } catch (final IllegalArgumentException e) {
-          throw unconvertibleDateTime(columnName, value, targetType, e);
-        }
-        // dateTimeToTimestamp answers null for a type it cannot read: refuse it rather than store the absent marker
-        if (epoch == null)
-          throw unconvertibleDateTime(columnName, value, targetType, null);
-        yield epoch;
-      }
-      case DATE -> {
-        try {
-          // dateToEpochDays reads every temporal and Number but not text, which dateTimeToTimestamp parses itself:
-          // a String is parsed to a LocalDate first, through the same chain the document layer uses
-          yield DateUtils.dateToEpochDays(value instanceof String ? Type.convert(database, value, LocalDate.class) : value);
-        } catch (final IllegalArgumentException e) {
-          throw unconvertibleDateTime(columnName, value, targetType, e);
-        }
-      }
-      // DECIMAL needs no branch of its own: Type.convert()'s BigDecimal case already builds it with
-      // new BigDecimal(value.toString()), so it reads the float's decimal rather than its bits and never
-      // carried the error this DOUBLE case had to be fixed for (issue #7609).
-      default -> value;
-    };
-  }
-
-  private static CommandExecutionException unconvertibleDateTime(final String columnName, final Object value,
-      final Type targetType, final Exception cause) {
-    return new CommandExecutionException("Cannot convert a value of type " + value.getClass().getName() + " to the " + targetType
-        + " TimeSeries column '" + columnName + "'", cause);
   }
 
   @Override

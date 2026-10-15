@@ -106,6 +106,7 @@ import com.arcadedb.server.ForwardedRequestIdContext;
 import com.arcadedb.server.HAReplicatedDatabase;
 import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.LeaderForwardContext;
+import com.arcadedb.server.PeerRequest;
 import com.arcadedb.server.http.handler.AbstractServerHttpHandler;
 import com.arcadedb.server.http.IdempotencyCache;
 import com.arcadedb.server.http.RequestStillInFlightException;
@@ -1619,6 +1620,96 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
           + "its writes would commit outside the transaction. Run it outside the transaction, or send its schema changes "
           + "as separate commands");
     return false;
+  }
+
+  /**
+   * The type a statement running in the client's transaction on this replica needs is created by the leader (issue #10067).
+   * Since issue #10040 such a statement runs here instead of being forwarded, and an openCypher {@code CREATE}/{@code MERGE} of a
+   * label no type exists for yet creates that type while it executes: a schema change a replica cannot make, which used to be
+   * forwarded with the rest of the statement and so succeeded.
+   * <p>
+   * What goes to the leader is the type alone, as the idempotent DDL the schema is everywhere - a ROLLBACK does not take a type
+   * back, on the leader or here. The DATA write stays in the client's transaction, which is the whole point of #10040, and the type
+   * is applied here before this returns, so the statement finds it as if it had been there all along. The command is this node's
+   * own and not the client's request ({@code clientRequest=false}): nothing of the client's idempotency key or termination travels
+   * with it, and the statement keeps its admission slot.
+   * <p>
+   * <b>The transaction was prepared under the schema without the type</b> (issue #8686): the leader refuses an entry prepared before
+   * a schema change this node has since applied, because its pages were built against a schema that no longer holds. A transaction
+   * that has written nothing yet has nothing built against anything, so it is re-based on the position that includes the type, as
+   * if it began now. One that has already written is re-based too when the type is the only schema change since it was prepared (a
+   * new type changes nothing a record already saved depended on); when somebody else's DDL landed meanwhile it would be refused at
+   * its commit, after the rest of its work, so it fails here, at once, with the retryable error the retry succeeds after: the type
+   * exists now.
+   * <p>
+   * Only inside a transaction the client opened: anywhere else a replica is refused a schema change, as before. The permission is
+   * checked here first, as the builder would on the node that creates the type; the leader checks it again for the user it is
+   * forwarded as.
+   *
+   * @return true when the type exists here now
+   */
+  @Override
+  public boolean createMissingTypeOnTheLeader(final String typeName, final String createStatement) {
+    if (isLeader())
+      return false;
+    final TransactionContext tx = proxied.getTransactionIfExists();
+    final RaftHAServer raft = raftHAServer;
+    if (raft == null || tx == null || !tx.isActive() || !tx.isClientManaged())
+      return false;
+
+    checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
+
+    // Read before the request leaves, so everything the schema does from here on is counted, ours included
+    final ArcadeStateMachine stateMachine = raft.getStateMachine();
+    final long preparedAt = tx.getReplicationBasePosition();
+    final boolean hadWritten = tx.hasChanges();
+    final long appliedBefore = raft.getTrustedAppliedIndex(getName());
+    final boolean schemaUnchangedSincePrepared = stateMachine != null && stateMachine.lastSchemaChangeIndexOf(getName()) <= preparedAt;
+
+    final AtomicLong leaderApplied = new AtomicLong(-1L);
+    forwardCommandToLeaderViaRaft("sql", createStatement, null, null, false, leaderApplied).close();
+    awaitTypeApplied(raft, typeName, leaderApplied.get());
+
+    // Nothing to account for when the leader will not ask: no position was stated for this transaction
+    if (preparedAt < 0)
+      return true;
+
+    final long appliedNow = raft.getTrustedAppliedIndex(getName());
+    // A transaction that wrote nothing has nothing built against any schema, so it is simply prepared from here. One that did is
+    // prepared from here too when the type is the ONLY schema change since it was: a new type changes nothing a record already
+    // saved depended on - not a page, not an index of a type that existed - so the leader's check, which cannot tell a new type from
+    // a change to an old one, has nothing to protect it from. Any other change in between (anybody else's DDL, a second entry of
+    // this one) keeps the leader's verdict, and the transaction is told to retry now instead of at its commit.
+    if (!hadWritten || (schemaUnchangedSincePrepared && stateMachine.schemaChangesAppliedBetween(getName(), appliedBefore, appliedNow) == 1))
+      stampReplicationBase(appliedNow);
+    else
+      // Fully qualified, as the rest of this file does: the JDK type of the same name is deliberately not imported
+      throw new com.arcadedb.exception.ConcurrentModificationException("Type '" + typeName + "' was created on the leader for this "
+          + "statement, but this transaction had already written under a schema that is not the current one (it was prepared at "
+          + "Raft index " + preparedAt + ", and another schema change was applied since), so it could not commit. The type exists "
+          + "now: retry the transaction");
+    return true;
+  }
+
+  /**
+   * Waits until this node has applied the entry that created the type: the index the leader answered with (its last applied one,
+   * which is at or past that entry), and the type itself, read under the read lock the apply's write lock excludes so it is seen
+   * whole and not half built. The applied index advances past a schema entry only after the entry is recorded as a schema change,
+   * so a position read afterwards stands for a schema that includes the type.
+   */
+  private void awaitTypeApplied(final RaftHAServer raft, final String typeName, final long leaderApplied) {
+    final long timeoutMs = server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_QUORUM_TIMEOUT);
+    final boolean applied;
+    try {
+      applied = raft.awaitApplied(() -> (leaderApplied < 0 || raft.getTrustedAppliedIndex(getName()) >= leaderApplied)
+          && proxied.executeInReadLock(() -> proxied.getSchema().existsType(typeName)), timeoutMs);
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new NeedRetryException("Interrupted while waiting for type '" + typeName + "' to be applied on this replica", e);
+    }
+    if (!applied)
+      throw new NeedRetryException("Type '" + typeName + "' was created on the leader for this statement but this replica has not "
+          + "applied it within " + timeoutMs + "ms (" + GlobalConfiguration.HA_QUORUM_TIMEOUT.getKey() + "): retry the transaction");
   }
 
   @Override
@@ -4029,20 +4120,15 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   }
 
   /**
-   * The refusal names the leader by its HTTP address, unless that address is this node's own: what a cluster whose peers
-   * share a host and declare no HTTP port resolves for every peer (issue #6191). Named that way, the refusal would send
-   * the client back to the follower that just refused it, so it names the leader by its server name instead, as the
-   * forwarding refusals do in the same state (issue #10060). No address at all still names nobody: the refusal stays the
-   * retryable one an election in flight gets.
+   * The refusal names the leader the way every leader refusal does ({@link RaftHAServer#getLeaderForRefusal}): by its HTTP
+   * address, or by its server name when that address is this node's own, so it never sends the client back to the follower that
+   * just refused it (issues #6191, #10060). No address at all still names nobody: the refusal stays the retryable one an
+   * election in flight gets.
    */
   private ServerIsNotTheLeaderException schemaChangesNeedTheLeader() {
     final RaftHAServer raft = raftHAServer;
-    String leader = null;
-    if (raft != null) {
-      leader = raft.getLeaderHttpAddress();
-      if (leader != null && raft.isOwnHttpAddress(leader))
-        leader = raft.getLeaderName();
-    }
+    final String leader = raft != null ? raft.getLeaderForRefusal() : null;
+    // Holds on this node until leadership moves: a local retry would only repeat it (issue #9995)
     return new ServerIsNotTheLeaderException("Changes to the schema must be executed on the leader server",
         leader != null ? leader : "");
   }
@@ -4757,11 +4843,27 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    */
   private ResultSet forwardCommandToLeaderViaRaft(final String language, final String query,
       final Map<String, Object> mapArgs, final Object[] positionalArgs) {
+    return forwardCommandToLeaderViaRaft(language, query, mapArgs, positionalArgs, true, null);
+  }
+
+  /**
+   * @param clientRequest {@code true} when the forward IS the client's request (every statement a follower hands to the
+   *                      leader), {@code false} for a command this node issues on its own account while it goes on running the
+   *                      client's statement (the creation of a type that statement needs, issue #10067). The second kind
+   *                      relays nothing of the client's request - not its idempotency key, not its termination - and keeps
+   *                      the statement's admission slot, since the statement carries on here afterwards.
+   * @param commitIndexOut when not {@code null}, receives the read-your-writes bookmark the leader answered with: the last index
+   *                      it had applied, which is at or past the entry of the command it just ran
+   */
+  private ResultSet forwardCommandToLeaderViaRaft(final String language, final String query,
+      final Map<String, Object> mapArgs, final Object[] positionalArgs, final boolean clientRequest,
+      final AtomicLong commitIndexOut) {
     final RaftHAServer raft = requireRaftServer();
 
     // The request waits on the leader from here on and does no work on this node: its query admission slot goes back now
     // (issue #9518), so it is not held for as long as the leader takes, nor taken from a leader sharing this JVM
-    QueryAdmissionGate.getInstance().releaseCurrentSlot();
+    if (clientRequest)
+      QueryAdmissionGate.getInstance().releaseCurrentSlot();
 
     // This request is already the result of a peer redirecting it to what it believed was the leader, and it
     // arrived on a node that is not the leader either. Redirecting it once more sends it round the cycle the
@@ -4900,7 +5002,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     }
 
     // Counted here, past every refusal above, so a forward that never leaves this node takes no ordinal.
-    final int forwardOrdinal = ForwardedRequestIdContext.nextForwardOrdinal();
+    final int forwardOrdinal = clientRequest ? ForwardedRequestIdContext.nextForwardOrdinal() : 0;
     final String clusterToken = raftHAServer.getClusterToken();
     final boolean ordinalTrusted = PeerRequest.hasToken(clusterToken);
     final boolean relaysRequestId = forwardOrdinal > 0 && !postsToItself && (forwardOrdinal == 1 || ordinalTrusted);
@@ -5053,7 +5155,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     // so a terminate here reaches the work there: relayed as "terminate query <this id>", which the leader resolves to
     // its own entry. Listed meanwhile as forwarded to the leader, and the client's tag travels with it. Under the cluster
     // token only, the one form in which the leader honours the id
-    final RunningQuery runningQuery = RunningQuery.current();
+    final RunningQuery runningQuery = clientRequest ? RunningQuery.current() : null;
     RunningQuery.Registration terminationRelay = null;
     if (runningQuery != null && ordinalTrusted && !postsToItself) {
       builder.header(LeaderForwardContext.FORWARDED_QUERY_HEADER, runningQuery.getId());
@@ -5086,6 +5188,15 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
           runningQuery.checkNotTerminated("the command forwarded to the leader");
         throw refusal;
       }
+
+      if (commitIndexOut != null)
+        response.headers().firstValue(AbstractServerHttpHandler.COMMIT_INDEX_HEADER_NAME).ifPresent(bookmark -> {
+          try {
+            commitIndexOut.set(Long.parseLong(bookmark.trim()));
+          } catch (final NumberFormatException e) {
+            // A bookmark this build cannot read is no bookmark: the caller treats it as absent
+          }
+        });
 
       final ResultSet resultSet = parseResultSetFromJson(response.body());
       // The answer to the client's own body, in the rendering it asked for (issue #8359): the handler sends it as it is.

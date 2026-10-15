@@ -347,7 +347,7 @@ public final class GrpcErrorMapper {
       // leader the rest of the answer is about.
       final HAServerPlugin.RoutingTable routing = ha.getRoutingTable(HAServerPlugin.ROUTING_PROTOCOL.GRPC);
       grpcLeader = blankToNull(routing != null ? routing.writer() : null);
-      httpLeader = blankToNull(ha.getLeaderAddress());
+      httpLeader = blankToNull(ha.getLeaderForRefusal());
     }
     if (httpLeader == null)
       httpLeader = blankToNull(cause.getLeaderAddress());

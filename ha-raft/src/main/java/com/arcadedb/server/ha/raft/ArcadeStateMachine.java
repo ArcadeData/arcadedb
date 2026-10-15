@@ -111,6 +111,7 @@ import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentSkipListSet;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -572,6 +573,15 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * it was before the check existed. Only ever moves forward.
    */
   private final ConcurrentHashMap<String, AtomicLong> lastSchemaChangeIndex = new ConcurrentHashMap<>();
+
+  /**
+   * Per database, the log indexes of the most recent schema-changing entries this node applied, newest {@link
+   * #RECENT_SCHEMA_CHANGES_KEPT} of them (issue #10067). {@link #lastSchemaChangeIndex} says WHEN the schema last changed, which is
+   * what the leader's check needs; this says HOW MANY changes landed in a stretch of the log, which is what a replica that asked the
+   * leader for one schema change needs to know it is the only one it has to account for.
+   */
+  private final ConcurrentHashMap<String, ConcurrentSkipListSet<Long>> recentSchemaChanges = new ConcurrentHashMap<>();
+  private static final int RECENT_SCHEMA_CHANGES_KEPT = 256;
 
   /**
    * Per database, the Raft term the schema session currently open on this leader was bound to (issue #9547): the DDL or
@@ -1620,8 +1630,39 @@ public class ArcadeStateMachine extends BaseStateMachine {
   /** Records that a schema-changing entry was applied at {@code index}; the position only moves forward. */
   // @VisibleForTesting
   void recordSchemaChangeApplied(final String databaseName, final long index) {
-    if (databaseName != null)
-      lastSchemaChangeIndex.computeIfAbsent(databaseName, name -> new AtomicLong(-1L)).accumulateAndGet(index, Math::max);
+    if (databaseName == null)
+      return;
+    lastSchemaChangeIndex.computeIfAbsent(databaseName, name -> new AtomicLong(-1L)).accumulateAndGet(index, Math::max);
+    final ConcurrentSkipListSet<Long> recent = recentSchemaChanges.computeIfAbsent(databaseName,
+        name -> new ConcurrentSkipListSet<>());
+    recent.add(index);
+    while (recent.size() > RECENT_SCHEMA_CHANGES_KEPT)
+      recent.pollFirst();
+  }
+
+  /** The log index of the last schema-changing entry this node applied on the database, or {@code -1} when it recorded none. */
+  long lastSchemaChangeIndexOf(final String databaseName) {
+    final AtomicLong last = databaseName != null ? lastSchemaChangeIndex.get(databaseName) : null;
+    return last != null ? last.get() : -1L;
+  }
+
+  /**
+   * How many schema-changing entries this node applied on the database with a log index in {@code (fromExclusive, toInclusive]}
+   * (issue #10067). A replica that asked the leader for ONE schema change reads it over the stretch from before the request to the
+   * moment the change was applied here: one means that change was the only one, and so the transaction it is running was not
+   * overtaken by anybody else's.
+   *
+   * @return the count, or {@link Integer#MAX_VALUE} when the retained history does not reach back to {@code fromExclusive} and so
+   * cannot vouch for the stretch
+   */
+  int schemaChangesAppliedBetween(final String databaseName, final long fromExclusive, final long toInclusive) {
+    final ConcurrentSkipListSet<Long> recent = databaseName != null ? recentSchemaChanges.get(databaseName) : null;
+    if (recent == null)
+      return 0;
+    // A full window that starts after the stretch may have dropped changes that belong to it
+    if (recent.size() >= RECENT_SCHEMA_CHANGES_KEPT && recent.first() > fromExclusive)
+      return Integer.MAX_VALUE;
+    return recent.subSet(fromExclusive, false, toInclusive, true).size();
   }
 
   private static NeedRetryException exclusiveOperationRefusal(final String databaseName) {
@@ -7172,6 +7213,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // persisted applied index above), and a database recreated under the same name starts from a clean ledger.
     pageVersions.clear(databaseName);
     lastSchemaChangeIndex.remove(databaseName);
+    recentSchemaChanges.remove(databaseName);
     // Nor a compaction hold-off (issue #9558): it described a payload of the database being dropped
     clearCompactionHoldOff(databaseName);
     // The copy the served index described is going away with it (issue #8579): a database recreated under the same

@@ -40,6 +40,7 @@ import com.arcadedb.server.ForwardedRequestIdContext;
 import com.arcadedb.server.HAReplicatedDatabase;
 import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.LeaderForwardContext;
+import com.arcadedb.server.PeerRequest;
 import com.arcadedb.server.http.ClusterAuthSessionResolver;
 import com.arcadedb.server.http.HttpAuthSession;
 import com.arcadedb.server.http.HttpServer;
@@ -155,7 +156,9 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   private static final HttpString SESSION_ID_HEADER = HttpString.tryFromString(HttpSessionManager.ARCADEDB_SESSION_ID);
   // The read-your-writes bookmark echo, cached for the same reason and because it is now looked up as well as
   // written: the response-commit listener of issue #7351 has to ask whether the eager emission already set it.
-  private static final HttpString COMMIT_INDEX_HEADER = HttpString.tryFromString("X-ArcadeDB-Commit-Index");
+  /** The read-your-writes bookmark a response carries: the last Raft index the answering node had applied (issue #5845). */
+  public static final String COMMIT_INDEX_HEADER_NAME = "X-ArcadeDB-Commit-Index";
+  private static final HttpString COMMIT_INDEX_HEADER = HttpString.tryFromString(COMMIT_INDEX_HEADER_NAME);
   // Bounded wait for a concurrent identical retry to observe the in-flight winner's result. Caps worker-thread
   // blocking so a slow request cannot pile up retries: when the winner is still running at the end of it, the
   // retry is answered 409 + Retry-After instead of executing the request a second time (issue #8324).
@@ -685,7 +688,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       // the client sends straight to this node - with its own body, not the forward's - finds it. Same gate as the
       // ordinal: from a client it would let a request settle a key that names another request.
       String trustedClientKey = null;
-      final HeaderValues clusterTokenHeader = exchange.getRequestHeaders().get("X-ArcadeDB-Cluster-Token");
+      final HeaderValues clusterTokenHeader = exchange.getRequestHeaders().get(PeerRequest.CLUSTER_TOKEN_HEADER);
       if (clusterTokenHeader != null && !clusterTokenHeader.isEmpty()) {
         if (!isValidClusterToken(clusterTokenHeader.getFirst())) {
           exchange.setStatusCode(401);
@@ -720,7 +723,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
         if (isForwardedQueryId(forwardedQuery))
           exchange.putAttachment(FORWARDED_QUERY_ID, forwardedQuery.strip());
 
-        final HeaderValues forwardedUserValues = exchange.getRequestHeaders().get("X-ArcadeDB-Forwarded-User");
+        final HeaderValues forwardedUserValues = exchange.getRequestHeaders().get(PeerRequest.FORWARDED_USER_HEADER);
         if (forwardedUserValues != null && !forwardedUserValues.isEmpty()) {
           user = resolveForwardedUser(exchange, forwardedUserValues.getFirst());
           if (user == null)

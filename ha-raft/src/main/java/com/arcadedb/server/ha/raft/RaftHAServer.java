@@ -26,6 +26,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.HAServerPlugin;
+import com.arcadedb.server.PeerRequest;
 import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.server.ha.raft.ratis.GuardedRaftServer;
 import com.arcadedb.server.ha.raft.ratis.RatisMisdirectedRequestFilter;
@@ -164,7 +165,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   // so the coupling is visible rather than scattered as a string literal.
   // Package-private so other cluster-internal RPC callers (e.g. LeaderDatabaseQuery) reuse the same constant
   // instead of re-inlining the "root" literal.
-  static final String FORWARDED_ROOT_USER = "root";
+  static final String FORWARDED_ROOT_USER = PeerRequest.FORWARDED_ROOT_USER;
 
   /**
    * Suffix of the file that records a crash-loop escalation across process restarts (issue #7736). It is a sibling
@@ -3187,6 +3188,19 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    */
   public String getLeaderHttpAddress() {
     return resolveHttpAddress(getLeaderId());
+  }
+
+  /**
+   * The leader as a refusal should name it (issues #10060, #10066): its HTTP address, unless that is this node's own, which is what a
+   * cluster whose peers share a host and declare no HTTP port resolves for every peer (issue #6191) and would send the client back
+   * to the node that is refusing it; then its server name, as the forwarding refusals name it. {@code null} when no leader is known,
+   * which keeps the refusal the retryable one an election in flight gets.
+   */
+  public String getLeaderForRefusal() {
+    final String address = getLeaderHttpAddress();
+    if (address == null || address.isBlank())
+      return null;
+    return isOwnHttpAddress(address) ? getLeaderName() : address;
   }
 
   /**

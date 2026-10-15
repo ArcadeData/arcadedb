@@ -26,6 +26,7 @@ import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.PeerRequest;
 import com.arcadedb.server.ha.raft.PostSecuritySeedHandler.DeclaredPeerHttpAddress;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.HAServerPlugin;
@@ -1071,6 +1072,11 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
   @Override
   public String getLeaderAddress() {
     return raftHAServer != null ? raftHAServer.getLeaderHttpAddress() : null;
+  }
+
+  @Override
+  public String getLeaderForRefusal() {
+    return raftHAServer != null ? raftHAServer.getLeaderForRefusal() : null;
   }
 
   /**
