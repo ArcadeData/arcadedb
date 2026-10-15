@@ -1472,7 +1472,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           db.commit();
       }
 
-      return UpdateRecordResponse.newBuilder().setUpdated(applied).setSuccess(true).build();
+      // Both false for a vetoed update: the clients read success (RemoteGrpcDatabase.updateRecord() returns it) as "the record was updated"
+      return UpdateRecordResponse.newBuilder().setUpdated(applied).setSuccess(applied).build();
     } catch (RecordNotFoundException e) {
       if (beganHere) {
         try { db.rollback(); } catch (Exception ignore) { }
