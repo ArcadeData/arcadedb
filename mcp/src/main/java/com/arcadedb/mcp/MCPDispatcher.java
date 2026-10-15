@@ -515,9 +515,9 @@ public class MCPDispatcher {
     else {
       // The trace when the message cannot say where it came from: a failure with none, or a fault of the server's own
       final boolean named = e.getMessage() != null && !e.getMessage().isBlank();
-      LogManager.instance().log(this, Level.WARNING, "MCP[%s] %s -> error: %s",
-          !named || ErrorCategory.of(e) == ErrorCategory.SERVER ? e : null, transport, operation,
-          named ? detail : e.getClass().getName());
+      final Throwable trace = !named || ErrorCategory.of(e) == ErrorCategory.SERVER ? e : null;
+      final String logged = named ? detail : e.getClass().getName();
+      LogManager.instance().log(this, Level.WARNING, "MCP[%s] %s -> error: %s", trace, transport, operation, logged);
       text = detail;
     }
     return ServerIsNotTheLeaderException.withLeaderSentence(text, e);
