@@ -169,6 +169,39 @@ class Issue10051Bm25CounterRepairTest extends TestHelper {
         bucketIndex -> assertThat(LSMTreeFullTextIndex.metadataOf(bucketIndex)).isSameAs(viaType));
   }
 
+  /**
+   * A crash between commits and the close: the schema was last written before the inserts, the WAL replay restores the pages but
+   * carries no corpus deltas, so the counters read from the schema lag the data. The first search finds the live count disagrees
+   * and repairs them.
+   */
+  @Test
+  void afterACrashTheFirstSearchRepairsTheCountersTheLogDoesNotCarry() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Doc BUCKETS 3");
+      database.command("sql", "CREATE PROPERTY Doc.content STRING");
+      database.command("sql", "CREATE PROPERTY Doc.questions STRING");
+      database.command("sql", "CREATE INDEX ON Doc (content) FULL_TEXT METADATA {\"similarity\": \"BM25\"}");
+    });
+    database.transaction(() -> {
+      for (int i = 0; i < DOCS; i++)
+        database.command("sql", "INSERT INTO Doc SET content = 'alpha beta gamma'");
+    });
+    assertThat(metadata("Doc[content]").getTotalDocs()).isEqualTo(DOCS);
+
+    ((DatabaseInternal) database).kill();
+    database.close(); // unregisters the killed instance, as the ACID crash tests do
+    database = factory.open();
+
+    assertThat(database.countType("Doc", false)).as("the pages were restored").isEqualTo(DOCS);
+    assertThat(metadata("Doc[content]").getTotalDocs()).as("the counters come from the last schema write").isLessThan(DOCS);
+
+    search();
+
+    assertThat(metadata("Doc[content]").getScans()).isEqualTo(1L);
+    assertThat(metadata("Doc[content]").getTotalDocs()).isEqualTo(DOCS);
+    assertThat(metadata("Doc[content]").getSumDocLength()).isEqualTo(DOCS * 3L);
+  }
+
   /** A database opened read-only repairs its counters in memory and never writes its schema. */
   @Test
   void aRepairOnAReadOnlyDatabaseWritesNothing() throws IOException {
