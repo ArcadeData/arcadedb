@@ -254,6 +254,12 @@ public class CoreApiSpec implements OpenApiContributor {
     postOp.addTagsItem("Server");
     postOp.setRequestBody(SpecBuilders.jsonBody("Command request with command and optional parameters", "CommandRequest", true));
     postOp.setResponses(createCommandResponses());
+    // Besides the 'Query terminated' the shared set declares, 'create database' and 'import database' answer 409 for a
+    // name that is already taken (issue #10074). 'restore database' and 'restore backup' keep their 400 for a taken
+    // target (issue #7395).
+    postOp.getResponses().addApiResponse("409", SpecBuilders.errorResponse(
+        QUERY_TERMINATED_409_DESCRIPTION + ". Also 'create database' and 'import database' on a database name that is "
+            + "already taken (detail names the database)"));
     // Only this operation forwards to the HA leader, so the 504 is added here rather than in the shared
     // createCommandResponses() that POST /api/v1/command/{database} also uses (issue #7507).
     postOp.getResponses().addApiResponse("504", SpecBuilders.errorResponse(SpecBuilders.LEADER_FORWARD_TIMEOUT_DESCRIPTION));
