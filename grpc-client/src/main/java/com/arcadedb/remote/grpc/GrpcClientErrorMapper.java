@@ -27,6 +27,7 @@ import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
+import com.arcadedb.remote.RemoteAlreadyExistsException;
 import com.arcadedb.remote.RemoteException;
 import com.arcadedb.server.grpc.LeaderRedirectProtocol;
 import io.grpc.Metadata;
@@ -158,6 +159,33 @@ final class GrpcClientErrorMapper {
         + "': the connection failed while the stream was open (" + describe(e)
         + "), so the server may already have applied some or all of it: the stream commits as it goes and may be "
         + "partially applied. It is not reported as retryable, because a replay could apply the applied part twice", e);
+  }
+
+  /**
+   * Whether an admin RPC failed because the name it creates is taken: a user, an API token or a database (issue #10075).
+   * The server answers all three {@code ALREADY_EXISTS} with no exception-class trailer, which {@link #toException} reads as
+   * the data plane's duplicate-key answer, so the admin calls ask this first. Only the trailer-less shape is a taken name:
+   * an {@code ALREADY_EXISTS} that names its exception (a duplicate key, or any typed conflict a later server sends) keeps
+   * the type that trailer names.
+   */
+  static boolean isNameTaken(final Throwable e) {
+    if (Status.fromThrowable(e).getCode() != Status.Code.ALREADY_EXISTS)
+      return false;
+    final Metadata trailers = Status.trailersFromThrowable(e);
+    if (trailers == null)
+      return true;
+    final String exceptionClass = trailers.get(EXCEPTION_CLASS_KEY);
+    return exceptionClass == null || exceptionClass.isEmpty();
+  }
+
+  /**
+   * The typed exception for a failure {@link #isNameTaken} recognised, carrying the server's own sentence
+   * ({@code User 'x' already exists}) as its message. {@code RemoteGrpcServer.createDatabase} words its own instead,
+   * keeping the {@code Failed to create database: ALREADY_EXISTS: ...} text its callers already match on.
+   */
+  static RemoteAlreadyExistsException toNameTakenException(final Throwable e) {
+    final Status status = Status.fromThrowable(e);
+    return new RemoteAlreadyExistsException(status.getDescription() != null ? status.getDescription() : status.getCode().name(), e);
   }
 
   /**

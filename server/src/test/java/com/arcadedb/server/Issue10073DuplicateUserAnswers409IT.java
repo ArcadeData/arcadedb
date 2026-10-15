@@ -18,7 +18,7 @@
  */
 package com.arcadedb.server;
 
-import com.arcadedb.remote.RemoteException;
+import com.arcadedb.remote.RemoteAlreadyExistsException;
 import com.arcadedb.remote.RemoteServer;
 import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
@@ -91,16 +91,16 @@ class Issue10073DuplicateUserAnswers409IT extends BaseGraphServerTest {
 
   /**
    * The Java remote client used to surface the duplicate as a {@code SecurityException}, the type it gives a 403. It
-   * now arrives as a conflict, which the client has no dedicated type for: a {@code RemoteException} carrying the
-   * server's sentence, so a caller can still tell it apart from a refusal.
+   * arrives as a conflict instead, with its own type ({@link RemoteAlreadyExistsException}, issue #10075), so a caller can
+   * tell it apart from a refusal without matching on the message.
    */
   @Test
-  void theRemoteClientNoLongerReportsATakenNameAsASecurityFailure() {
+  void theRemoteClientReportsATakenNameAsAnAlreadyExistsConflict() {
     final RemoteServer remote = new RemoteServer("127.0.0.1", getServerHttpPort(0), "root", DEFAULT_PASSWORD_FOR_TESTS);
     remote.createUser("dup_remote_user", PASSWORD, List.of());
 
     assertThatThrownBy(() -> remote.createUser("dup_remote_user", PASSWORD, List.of()))
-        .isInstanceOf(RemoteException.class)
+        .isInstanceOf(RemoteAlreadyExistsException.class)
         .isNotInstanceOf(SecurityException.class)
         .hasMessageContaining("already exists");
   }

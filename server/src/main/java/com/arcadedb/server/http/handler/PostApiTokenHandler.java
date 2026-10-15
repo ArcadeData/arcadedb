@@ -119,7 +119,10 @@ public class PostApiTokenHandler extends AbstractServerHttpHandler {
           payload.getLong("expiresAt", 0),
           payload.getJSONObject("permissions", new JSONObject()));
     } catch (final ServerControlPlane.AlreadyExistsException e) {
-      return new ExecutionResponse(409, new JSONObject().put("error", e.getMessage()).toString());
+      // Names the exception like every other error body does: 409 alone cannot tell a taken name from a lost update, so
+      // without it a remote client has nothing to type the conflict from (issue #10075)
+      return new ExecutionResponse(409, new JSONObject().put("error", e.getMessage()).put("detail", e.getMessage())
+          .put("exception", e.getClass().getName()).toString());
     } catch (final IllegalArgumentException e) {
       return new ExecutionResponse(400, new JSONObject().put("error", e.getMessage()).toString());
     }

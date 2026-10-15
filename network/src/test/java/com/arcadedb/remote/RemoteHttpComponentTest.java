@@ -575,6 +575,53 @@ class RemoteHttpComponentTest {
     assertThat(result).isInstanceOf(SecurityException.class);
   }
 
+  // Issue #10075: a taken user, database or API token name arrives as a 409 naming a server-side class this client does
+  // not depend on, so it is matched by name and rebuilt as ONE typed exception a caller can catch.
+
+  @Test
+  void manageExceptionTakenUserNameIsTypedAlreadyExists() {
+    final Exception result = component.manageException(createMockResponse(409,
+        alreadyExistsBody("com.arcadedb.server.security.UserAlreadyExistsException", "User 'bob' already exists")), "create user");
+
+    assertThat(result).isInstanceOf(RemoteAlreadyExistsException.class)
+        .isInstanceOf(RemoteException.class)
+        .isNotInstanceOf(SecurityException.class)
+        .isNotInstanceOf(DuplicatedKeyException.class);
+    assertThat(result.getMessage()).isEqualTo("User 'bob' already exists");
+  }
+
+  @Test
+  void manageExceptionTakenDatabaseNameIsTypedAlreadyExists() {
+    final Exception result = component.manageException(createMockResponse(409,
+        alreadyExistsBody("com.arcadedb.server.DatabaseAlreadyExistsException", "Database 'db' already exists")), "create database");
+
+    assertThat(result).isInstanceOf(RemoteAlreadyExistsException.class);
+    assertThat(result.getMessage()).isEqualTo("Database 'db' already exists");
+  }
+
+  @Test
+  void manageExceptionTakenApiTokenNameIsTypedAlreadyExists() {
+    final Exception result = component.manageException(createMockResponse(409,
+        alreadyExistsBody("com.arcadedb.server.ServerControlPlane$AlreadyExistsException", "A token with name 'ci' already exists")),
+        "create api token");
+
+    assertThat(result).isInstanceOf(RemoteAlreadyExistsException.class);
+    assertThat(result.getMessage()).isEqualTo("A token with name 'ci' already exists");
+  }
+
+  @Test
+  void manageExceptionOtherConflictsAreNotAlreadyExists() {
+    // 409 is also a lost update, a duplicate key and a running backup: the type comes from the exception name, never the status
+    final Exception result = component.manageException(createMockResponse(409,
+        alreadyExistsBody("com.arcadedb.server.SomeOtherConflictException", "Cannot execute command")), "test");
+
+    assertThat(result).isInstanceOf(RemoteException.class).isNotInstanceOf(RemoteAlreadyExistsException.class);
+  }
+
+  private static String alreadyExistsBody(final String exception, final String detail) {
+    return new JSONObject().put("error", "Already exists").put("detail", detail).put("exception", exception).toString();
+  }
+
   @Test
   void manageExceptionConnectException() {
     final JSONObject json = new JSONObject();
