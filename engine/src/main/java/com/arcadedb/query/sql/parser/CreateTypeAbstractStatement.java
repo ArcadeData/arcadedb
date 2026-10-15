@@ -23,6 +23,7 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.TypeAlreadyExistsException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -113,18 +114,10 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
 
     final Schema schema = context.getDatabase().getSchema();
     if (schema.existsType(typeName)) {
-      if (ifNotExists) {
-        // One row, exactly as the creating branch below, with created=false telling the two apart. IF NOT
-        // EXISTS is there to make a retry safe, so answering an empty result set the second time - which a
-        // client checking the row count reads as failure - defeated its purpose (issue #7143).
-        final ResultInternal existing = new ResultInternal(context.getDatabase());
-        existing.setProperty("operation", commandType());
-        existing.setProperty("typeName", typeName);
-        existing.setProperty("created", false);
-        return new InternalResultSet(existing);
-      } else {
+      if (ifNotExists)
+        return alreadyThere(context, typeName);
+      else
         throw new CommandExecutionException("Type " + typeName + " already exists");
-      }
     }
     checkSuperTypes(schema, context);
 
@@ -138,7 +131,17 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
     // Refused here, before anything is created, whenever the statement can already tell (#9846)
     checkSuperTypesBeforeCreate(typeName, superclasses);
 
-    final DocumentType type = createType(schema, typeName);
+    final DocumentType type;
+    try {
+      type = createType(schema, typeName);
+    } catch (final TypeAlreadyExistsException e) {
+      // The check above and the create are two steps: another statement created the type in between, which is the only way
+      // they can disagree. IF NOT EXISTS has to hold against that too (issue #10067: two replicas asking the leader for the
+      // same new label at the same time), and the type that statement made is the answer
+      if (ifNotExists)
+        return alreadyThere(context, typeName);
+      throw e;
+    }
 
     try {
       for (final DocumentType c : superclasses)
@@ -170,6 +173,19 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
     }
 
     return new InternalResultSet(result);
+  }
+
+  /**
+   * The answer of {@code IF NOT EXISTS} for a type that is there: one row, exactly as the creating branch, with {@code created=false}
+   * telling the two apart. IF NOT EXISTS is there to make a retry safe, so answering an empty result set the second time - which a
+   * client checking the row count reads as failure - defeated its purpose (issue #7143).
+   */
+  private ResultSet alreadyThere(final CommandContext context, final String typeName) {
+    final ResultInternal existing = new ResultInternal(context.getDatabase());
+    existing.setProperty("operation", commandType());
+    existing.setProperty("typeName", typeName);
+    existing.setProperty("created", false);
+    return new InternalResultSet(existing);
   }
 
   /**

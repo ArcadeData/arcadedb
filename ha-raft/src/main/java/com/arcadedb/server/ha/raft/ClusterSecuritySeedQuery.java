@@ -24,6 +24,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.PeerRequest;
 import com.arcadedb.server.ha.raft.PostSecuritySeedHandler.DeclaredPeerHttpAddress;
 import com.arcadedb.server.http.handler.LeaderDial;
 import com.arcadedb.server.security.ReplicatedSecurityFingerprintRepository;

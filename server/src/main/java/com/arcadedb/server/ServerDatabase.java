@@ -77,6 +77,7 @@ import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.concurrent.Callable;
+import java.util.function.Supplier;
 import java.util.function.UnaryOperator;
 
 /**
@@ -786,6 +787,11 @@ public class ServerDatabase implements DatabaseInternal {
   @Override
   public void checkFileRenamesCanBePublished() {
     current().checkFileRenamesCanBePublished();
+  }
+
+  @Override
+  public boolean createMissingTypeOnTheLeader(final String typeName, final Supplier<String> createStatement) {
+    return current().createMissingTypeOnTheLeader(typeName, createStatement);
   }
 
   @Override

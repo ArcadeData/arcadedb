@@ -574,6 +574,22 @@ public class ArcadeStateMachine extends BaseStateMachine {
   private final ConcurrentHashMap<String, AtomicLong> lastSchemaChangeIndex = new ConcurrentHashMap<>();
 
   /**
+   * Per database, the most recent schema-changing entries this node applied, newest {@link #RECENT_SCHEMA_CHANGES_KEPT} of them (issue
+   * #10067); see {@link SchemaChangeLog}.
+   */
+  private final ConcurrentHashMap<String, SchemaChangeLog> recentSchemaChanges = new ConcurrentHashMap<>();
+  private static final int RECENT_SCHEMA_CHANGES_KEPT = 256;
+
+  /**
+   * The highest log index up to which this instance cannot tell what the schema did (issue #10067): the position it was seeded at
+   * when it started (a new instance after a restart, or {@link #reinitialize()} after an install) and the one a snapshot install or
+   * a resync jumped to. The entries up to there were not applied here one by one, so no schema change among them is in
+   * {@link #lastSchemaChangeIndex} or {@link #recentSchemaChanges}; reading those as "nothing changed" would be reading an absence
+   * of memory as an absence of change. A stretch of the log is vouched for only from this index on.
+   */
+  private final AtomicLong schemaHistoryFloor = new AtomicLong(-1L);
+
+  /**
    * Per database, the Raft term the schema session currently open on this leader was bound to (issue #9547): the DDL or
    * compaction whose {@code SCHEMA_ENTRY} may be appended right now. Registered by
    * {@code RaftReplicatedDatabase} once it holds the database's file recording session, which is exclusive per database,
@@ -1232,6 +1248,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
       lastAppliedIndex.set(-1);
       staleSnapshotAppliedFloor.set(-1);
     }
+    // What the schema did up to the seeded position is not in this instance's memory (issue #10067)
+    schemaHistoryIncompleteUpTo(lastAppliedIndex.get());
 
     // When called from StateMachineUpdater.reload() after a snapshot install, the lifecycle is
     // PAUSED (pause() was called by SnapshotInstallationHandler). Transition back to RUNNING so
@@ -1620,8 +1638,47 @@ public class ArcadeStateMachine extends BaseStateMachine {
   /** Records that a schema-changing entry was applied at {@code index}; the position only moves forward. */
   // @VisibleForTesting
   void recordSchemaChangeApplied(final String databaseName, final long index) {
-    if (databaseName != null)
-      lastSchemaChangeIndex.computeIfAbsent(databaseName, name -> new AtomicLong(-1L)).accumulateAndGet(index, Math::max);
+    if (databaseName == null)
+      return;
+    lastSchemaChangeIndex.computeIfAbsent(databaseName, name -> new AtomicLong(-1L)).accumulateAndGet(index, Math::max);
+    recentSchemaChanges.computeIfAbsent(databaseName, name -> new SchemaChangeLog(RECENT_SCHEMA_CHANGES_KEPT)).add(index);
+  }
+
+  /** Raises {@link #schemaHistoryFloor}: this instance cannot tell what the schema did up to {@code index}. Never lowered. */
+  // @VisibleForTesting
+  void schemaHistoryIncompleteUpTo(final long index) {
+    schemaHistoryFloor.accumulateAndGet(index, Math::max);
+  }
+
+  /**
+   * Whether every schema change applied after log index {@code fromExclusive} is in this instance's memory, so that an absence of
+   * one is an absence of change (issue #10067). False for a position before what this instance was seeded at, or before an install
+   * or a resync jumped past it: a restart, an in-place Ratis restart or an install replaces what was remembered with nothing.
+   */
+  boolean schemaHistoryCovers(final long fromExclusive) {
+    return fromExclusive >= schemaHistoryFloor.get();
+  }
+
+  /** The log index of the last schema-changing entry this node applied on the database, or {@code -1} when it recorded none. */
+  long lastSchemaChangeIndexOf(final String databaseName) {
+    final AtomicLong last = databaseName != null ? lastSchemaChangeIndex.get(databaseName) : null;
+    return last != null ? last.get() : -1L;
+  }
+
+  /**
+   * How many schema-changing entries this node applied on the database with a log index in {@code (fromExclusive, toInclusive]}
+   * (issue #10067). A replica that asked the leader for ONE schema change reads it over the stretch from before the request to the
+   * moment the change was applied here: one means that change was the only one, and so the transaction it is running was not
+   * overtaken by anybody else's.
+   *
+   * @return the count, or {@link Integer#MAX_VALUE} when the retained history does not reach back to {@code fromExclusive} and so
+   * cannot vouch for the stretch
+   */
+  int schemaChangesAppliedBetween(final String databaseName, final long fromExclusive, final long toInclusive) {
+    if (!schemaHistoryCovers(fromExclusive))
+      return Integer.MAX_VALUE;
+    final SchemaChangeLog recent = databaseName != null ? recentSchemaChanges.get(databaseName) : null;
+    return recent != null ? recent.countBetween(fromExclusive, toInclusive) : 0;
   }
 
   private static NeedRetryException exclusiveOperationRefusal(final String databaseName) {
@@ -2988,6 +3045,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
       synchronized (appliedPositionLock) {
         recordInstalledRaftBoundary(snapshotIndex);
         lastAppliedIndex.set(snapshotIndex);
+        // An install skips the entries up to the snapshot: any schema change among them was never applied here one by one
+        schemaHistoryIncompleteUpTo(snapshotIndex);
         updateLastAppliedTermIndex(snapshotTerm, snapshotIndex);
         // The applied positions, the healed diverged marks and read floors of every database the install refreshed, and
         // the re-armed ones of those it did not reinstall, all in ONE durable write (issues #6760, #8137): a crash between
@@ -7172,6 +7231,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // persisted applied index above), and a database recreated under the same name starts from a clean ledger.
     pageVersions.clear(databaseName);
     lastSchemaChangeIndex.remove(databaseName);
+    recentSchemaChanges.remove(databaseName);
     // Nor a compaction hold-off (issue #9558): it described a payload of the database being dropped
     clearCompactionHoldOff(databaseName);
     // The copy the served index described is going away with it (issue #8579): a database recreated under the same
@@ -8445,6 +8505,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // Accumulate rather than set: this runs on the lifecycleExecutor while the Ratis apply thread may
       // already have replayed past the marker, and the counter must never regress under it.
       lastAppliedIndex.accumulateAndGet(snapshotInfo.getIndex(), Math::max);
+      // The resync reinstalled databases at the marker: the entries before it were not applied here one by one
+      schemaHistoryIncompleteUpTo(snapshotInfo.getIndex());
     }
     clearStaleSnapshotFloor();
     final RaftHAServer raftHA = this.raftHAServer;

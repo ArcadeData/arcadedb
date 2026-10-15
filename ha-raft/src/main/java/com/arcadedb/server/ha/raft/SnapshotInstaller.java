@@ -29,6 +29,7 @@ import com.arcadedb.engine.WALFile;
 import com.arcadedb.exception.DatabaseNotAvailableException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.PeerRequest;
 import com.arcadedb.server.backup.BackupCoordinator;
 import com.arcadedb.utility.FileUtils;
 

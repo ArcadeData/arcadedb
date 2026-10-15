@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.server.PeerRequest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -40,16 +41,19 @@ import static org.assertj.core.api.Assertions.assertThat;
  * HTTP on an SSL cluster without a word, the follower's write forward among them.
  * <p>
  * The two helpers are now one builder, {@link PeerRequest}, and the guarantee is a scan of this module's main sources:
- * no request is built, and neither header is spelled, anywhere else. A helper with two adopters reads the same as a
+ * no request is built, and neither header is spelled, anywhere in them. A helper with two adopters reads the same as a
  * helper with eleven in a diff; this is the form of the fix the twelfth dial cannot quietly bypass.
+ * <p>
+ * The builder lives in the {@code server} module since issue #10068, which brought that module's own dials onto it too and
+ * scans its sources with {@code Issue10068ServerPeerDialsGoThroughOneBuilderTest}. This module therefore holds no builder
+ * source at all: every hit of the scan is a bypass.
  * <p>
  * It is a tripwire, not a proof: a text scan cannot see a header name assembled at runtime or a call split across lines.
  * It catches the shape every dial in this module has actually taken, which is the shape the next one will copy.
  */
 class Issue9999PeerDialsGoThroughOneBuilderTest {
 
-  private static final Path   MAIN_SOURCES = Path.of("src", "main", "java");
-  private static final String BUILDER      = "PeerRequest.java";
+  private static final Path MAIN_SOURCES = Path.of("src", "main", "java");
 
   /** Every shape a peer dial in this module could take to bypass the builder. */
   private static final String[] BYPASSES = {
@@ -71,29 +75,20 @@ class Issue9999PeerDialsGoThroughOneBuilderTest {
     assertThat(MAIN_SOURCES).as("the scan runs from the ha-raft module directory").isDirectory();
 
     final List<String> offenders = new ArrayList<>();
-    final int[] builderHits = new int[BYPASSES.length];
     int scanned = 0;
     try (final Stream<Path> files = Files.walk(MAIN_SOURCES)) {
       for (final Path file : files.filter(f -> f.toString().endsWith(".java")).toList()) {
         scanned++;
-        final boolean isBuilder = file.getFileName().toString().equals(BUILDER);
         final List<String> lines = Files.readAllLines(file, StandardCharsets.UTF_8);
         for (int i = 0; i < lines.size(); i++)
-          for (int b = 0; b < BYPASSES.length; b++)
-            if (lines.get(i).contains(BYPASSES[b])) {
-              if (isBuilder)
-                builderHits[b]++;
-              else
-                offenders.add(file.getFileName() + ":" + (i + 1) + "  " + lines.get(i).strip());
-            }
+          for (final String bypass : BYPASSES)
+            if (lines.get(i).contains(bypass))
+              offenders.add(file.getFileName() + ":" + (i + 1) + "  " + lines.get(i).strip());
       }
     }
 
     assertThat(scanned).as("the scan reached this module's sources, so an empty offender list means something")
         .isGreaterThan(50);
-    for (int b = 0; b < BYPASSES.length; b++)
-      assertThat(builderHits[b]).as("the builder itself is where '%s' lives - if not, the scan is looking for the wrong text",
-          BYPASSES[b]).isPositive();
     assertThat(offenders)
         .as("every peer-to-peer dial starts its request from PeerRequest.newRequest/openConnection, which attaches the "
             + "cluster token and forwarded user together and says the plain-HTTP fallback notice (issue #9999)")

@@ -16,7 +16,7 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.server.ha.raft;
+package com.arcadedb.server;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -58,7 +58,7 @@ class PeerRequestTest {
 
     assertThat(built.uri().toString()).isEqualTo(PLAIN_URL);
     assertThat(built.headers().firstValue(PeerRequest.CLUSTER_TOKEN_HEADER)).hasValue("s3cr3t");
-    assertThat(built.headers().firstValue(PeerRequest.FORWARDED_USER_HEADER)).hasValue(RaftHAServer.FORWARDED_ROOT_USER);
+    assertThat(built.headers().firstValue(PeerRequest.FORWARDED_USER_HEADER)).hasValue(PeerRequest.FORWARDED_ROOT_USER);
     assertThat(built.headers().firstValue("Authorization"))
         .as("a cluster token is not a credential that scheme can carry - this is issue #7837")
         .isEmpty();
@@ -104,10 +104,10 @@ class PeerRequestTest {
   @Test
   void theConnectionFormCarriesThePairOrNothing() throws Exception {
     final HttpURLConnection withToken = PeerRequest.openConnection(PLAIN_URL, false, PeerRequestTest.class, "testing",
-        "s3cr3t", RaftHAServer.FORWARDED_ROOT_USER);
+        "s3cr3t", PeerRequest.FORWARDED_ROOT_USER);
     try {
       assertThat(withToken.getRequestProperty(PeerRequest.CLUSTER_TOKEN_HEADER)).isEqualTo("s3cr3t");
-      assertThat(withToken.getRequestProperty(PeerRequest.FORWARDED_USER_HEADER)).isEqualTo(RaftHAServer.FORWARDED_ROOT_USER);
+      assertThat(withToken.getRequestProperty(PeerRequest.FORWARDED_USER_HEADER)).isEqualTo(PeerRequest.FORWARDED_ROOT_USER);
     } finally {
       withToken.disconnect();
     }
@@ -179,5 +179,61 @@ class PeerRequestTest {
     PeerRequest.openConnection(PLAIN_URL, false, PeerRequestTest.class, "testing", "s3cr3t", "root").disconnect();
 
     assertThat(PeerRequest.saidForTests()).isFalse();
+  }
+
+  // ------------------------------------------------------------------ the one other shape: a forward that relays the client's own credential
+
+  /**
+   * The forward of a Basic or API-token request (issue #7516): the token proves the hop and the client's own header is relayed
+   * unchanged, so the leader validates what the client actually sent. The principal header is deliberately absent - asserting a
+   * name would make the leader resolve the user by name and silently discard an API token's scopes.
+   */
+  @Test
+  void aRelayedClientCredentialTravelsWithTheHopProofAndNoPrincipal() {
+    final HttpRequest built = PeerRequest.newRelayRequest(PLAIN_URL, false, PeerRequestTest.class, "testing", "s3cr3t",
+        "Basic cm9vdDpwYXNz").GET().build();
+
+    assertThat(built.headers().firstValue(PeerRequest.CLUSTER_TOKEN_HEADER)).hasValue("s3cr3t");
+    assertThat(built.headers().firstValue("Authorization")).hasValue("Basic cm9vdDpwYXNz");
+    assertThat(built.headers().firstValue(PeerRequest.FORWARDED_USER_HEADER))
+        .as("the client's own credential carries the identity, so no principal is asserted beside it").isEmpty();
+  }
+
+  /** Without a token there is no hop to prove: only what the client sent goes, and with nothing to relay, nothing. */
+  @Test
+  void aRelayWithoutATokenCarriesOnlyTheClientCredential() {
+    for (final String noToken : new String[] { null, "", "   " }) {
+      final HttpRequest relayed = PeerRequest.newRelayRequest(PLAIN_URL, false, PeerRequestTest.class, "testing", noToken,
+          "Bearer abc").GET().build();
+      assertThat(relayed.headers().firstValue(PeerRequest.CLUSTER_TOKEN_HEADER)).isEmpty();
+      assertThat(relayed.headers().firstValue("Authorization")).hasValue("Bearer abc");
+
+      final HttpRequest bare = PeerRequest.newRelayRequest(PLAIN_URL, false, PeerRequestTest.class, "testing", noToken, null)
+          .GET().build();
+      assertThat(bare.headers().map()).as("nothing to prove and nothing to relay").isEmpty();
+    }
+  }
+
+  /**
+   * The relay is a plain dial like any other: on an SSL cluster it says the notice, once, when it puts the token OR the client's own
+   * credential on the wire in clear text. A Basic header relayed with no cluster token configured is just as exposed.
+   */
+  @Test
+  void aPlainRelayOnAnSslClusterSaysTheNotice() {
+    PeerRequest.newRelayRequest(ENCRYPTED_URL, true, PeerRequestTest.class, "testing", "s3cr3t", "Basic x");
+    assertThat(PeerRequest.saidForTests()).as("encrypted: nothing in clear").isFalse();
+
+    PeerRequest.newRelayRequest(PLAIN_URL, true, PeerRequestTest.class, "testing", null, null);
+    assertThat(PeerRequest.saidForTests()).as("neither a token nor a credential: nothing to leak").isFalse();
+
+    PeerRequest.newRelayRequest(PLAIN_URL, false, PeerRequestTest.class, "testing", "s3cr3t", "Basic x");
+    assertThat(PeerRequest.saidForTests()).as("the cluster never asked for SSL").isFalse();
+
+    PeerRequest.newRelayRequest(PLAIN_URL, true, PeerRequestTest.class, "testing", null, "Basic x");
+    assertThat(PeerRequest.saidForTests()).as("no token, but the client's credential goes out in clear").isTrue();
+
+    PeerRequest.rearmForTests();
+    PeerRequest.newRelayRequest(PLAIN_URL, true, PeerRequestTest.class, "testing", "s3cr3t", null);
+    assertThat(PeerRequest.saidForTests()).as("the token alone").isTrue();
   }
 }

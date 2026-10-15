@@ -502,6 +502,22 @@ public interface HAServerPlugin extends ServerPlugin {
   String getLeaderAddress();
 
   /**
+   * The leader as a refusal should name it (issue #10066): its HTTP address when that identifies it, its server name when it does
+   * not, and {@code null} when there is no leader to name (a refusal raised mid-election, which stays the ordinary retryable one).
+   * <p>
+   * {@link #getLeaderAddress()} is not safe to put in a refusal as it is. On a cluster whose peers share a host and declare no HTTP
+   * port, a follower resolves every peer's HTTP address, the leader's included, to its OWN (issue #6191), so a refusal naming it sends
+   * the client back to the node that has just refused it. The forwarding refusals and the schema refusal already name the leader by
+   * its server name in that state (issue #10060); every refusal that names the leader goes through here so they cannot drift.
+   */
+  default String getLeaderForRefusal() {
+    final String address = getLeaderAddress();
+    if (address == null || address.isBlank())
+      return null;
+    return isOwnHttpAddress(address) ? getLeaderName() : address;
+  }
+
+  /**
    * The HTTPS endpoint (host:port) a forward to the leader should be dialled on in preference to
    * {@link #getLeaderAddress()}, or {@code null} when there is none to prefer.
    * <p>

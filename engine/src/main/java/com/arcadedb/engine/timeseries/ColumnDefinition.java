@@ -326,7 +326,9 @@ public final class ColumnDefinition {
    * of digits is that same count, the rule {@link #coerceValue} applies to a tag filter, and any other date or instant is read by
    * {@link #epochOf}, the conversion {@code INSERT} uses, so the same text names the same instant on every surface</li>
    * <li>any other numeric column keeps a number that its type can hold (a {@code 300} is refused by a BYTE column, where the append
-   * would store {@code 44}) and parses text, as {@code INSERT} does</li>
+   * would store {@code 44}) and parses text, as {@code INSERT} does; a {@code Float} given to a DOUBLE column is widened through its
+   * decimal form ({@link Type#widenFloat}, issue #7609), so {@code 0.05f} is stored as {@code 0.05} and not as its single precision
+   * rounding error</li>
    * <li>a BOOLEAN column keeps a boolean and parses {@code true} / {@code false} (any case), so a typed tag sent as {@code "true"} is
    * not stored as {@code false}; any other text, and a number, is refused rather than stored as {@code false}</li>
    * <li>a STRING column keeps a string of at most {@link TimeSeriesBucket#MAX_STRING_BYTES} UTF-8 bytes, the limit the row refuses
@@ -342,8 +344,11 @@ public final class ColumnDefinition {
       return null;
     // The common case, a number into a numeric column (every kind up to BYTE, the datetimes among them), answers before any dispatch
     if (kind <= TimeSeriesBatch.KIND_BYTE && value instanceof Number number) {
+      // A Float widens through its decimal form, as Type.convert() does: the primitive widening would persist the single
+      // precision rounding error into a DOUBLE column, where it outlives the write (issue #7609). KIND_DOUBLE is 0, so the
+      // other kinds pay one compare
       if (fits(number))
-        return value;
+        return kind == TimeSeriesBatch.KIND_DOUBLE && number instanceof Float floatValue ? Type.widenFloat(floatValue) : value;
       throw new IllegalArgumentException("Cannot convert a value of type " + value.getClass().getSimpleName() + " to the " + dataType
           + " column '" + name + "': the number is out of range");
     }

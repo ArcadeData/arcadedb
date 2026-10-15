@@ -1315,7 +1315,7 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
     final HAServerPlugin ha = ha();
     if (ha != null && !ha.isLeader())
       throw new ServerIsNotTheLeaderException(rpc + " must run on the cluster leader and this server is not it",
-          ha.getLeaderAddress(), true);
+          ha.getLeaderForRefusal(), true);
   }
 
   /** This server's HA plugin, or null when HA is inactive: the source of the leader address on a refusal. */

@@ -305,3 +305,39 @@ Newly accepted, as in Neo4j: a sign before the `P` (`-P1Y2D` negates every compo
   too). It is now streamed, still preferred as a starting point over a scan of a large type. An equality on an indexed
   property now also helps MATCH choose its starting point (the index count used to be computed and discarded), so
   `SEARCH_INDEX(...) AND code = 'X'` is bounded by the index on `code`.
+- **`INSERT INTO` a TIMESERIES type reads its values as every other ingestion surface does (#10064).** The SQL path converted each
+  value with a routine of its own, so one value written to one column was stored, or refused, depending on whether it came over SQL
+  or over the line protocol, gRPC or Prometheus remote write. `INSERT` now goes through the conversion those share
+  (`ColumnDefinition.storableValue`): a text longer than a row can hold is refused by the statement, naming the column, instead of
+  failing inside the append; and a `Float` sent to a `DOUBLE` column over the line protocol, gRPC or Prometheus is stored as its
+  decimal (`0.05f` as `0.05`, as `INSERT` has stored it since #7609), not as its single precision rounding error
+  (`0.05000000074505806`). An out-of-range number into an `INTEGER`, `SHORT` or `BYTE` column was already refused by the property
+  conversion of the document the statement builds, and still is.
+- **A leader refusal never names the node that is refusing (#10066).** On a cluster whose peers share a host and declare no HTTP
+  port a follower resolves every peer's HTTP address, the leader's included, to its own (#6191), so the refusal of a
+  `SecurityManager` user mutation on a follower and of a gRPC admin RPC (`CreateUser`, `SaveGroup`, `CreateDatabase`, ...) sent the
+  client back to the node that had just refused it. They now name the leader as the schema and forwarding refusals do: its
+  HTTP address when that identifies it, its server name when it does not. The `arcadedb-leader-http-address` trailer of a gRPC
+  refusal and the redirect sentence of a Gremlin one follow the same rule. A correctly configured cluster is unaffected.
+- **A Cypher `CREATE` / `MERGE` with a new label or relationship type inside a client transaction on a follower works again (#10067).**
+  Since #10040 such a write runs in the transaction the client opened (Bolt or Postgres `BEGIN`, an HTTP session) instead of being
+  forwarded to the leader, and a label with no type yet is a schema change only the leader may make: the first use of a new label
+  inside an explicit transaction on a connection to a follower was refused with `Changes to the schema must be executed on the
+  leader server`, where it succeeded before #10040. The follower now has the leader create the type (an idempotent
+  `CREATE ... TYPE IF NOT EXISTS`) and carries on once it has applied it: the data stays in the client's transaction and commits or
+  rolls back with it, while the type, as everywhere, outlives a rollback. A transaction that had already written commits too when the
+  new type was the only schema change since it began; otherwise (someone else's DDL landed meanwhile, a type that takes several schema
+  entries such as one extending an indexed type, or a replica that did not apply the type within `arcadedb.ha.quorumTimeout`) that
+  statement fails with a retryable error, the type exists by then, and the retry goes through. A schema change made any other way on
+  a follower (embedded code outside a client transaction) is still refused.
+- **`CREATE ... TYPE ... IF NOT EXISTS` holds against a concurrent creation (#10067).** It checked that the type was missing and then
+  created it, two steps, so two statements racing on one name had the loser fail with `Cannot create type '...' because already
+  exists`. The loser now gets the same answer as a statement that finds the type there (`created: false`), and exactly one statement
+  reports `created: true`. Without `IF NOT EXISTS` a type that is already there is still an error.
+- **The cluster credential is built in one place for every peer dial (#10068).** The follower's command forward
+  (`LeaderCommandForwarder`), its batch forward (`PostBatchHandler`) and the support peer query spelled `X-ArcadeDB-Cluster-Token`
+  and `X-ArcadeDB-Forwarded-User` by hand, outside the guard #9999 put on the `ha-raft` dials. They now build their request with
+  the same `PeerRequest` those use (moved to the `server` module), so the pair always travels together or not at all, and the
+  forward that relays a client's Basic or API-token credential (#7516) is an explicit second shape of it. All three also say the
+  once-per-JVM warning that an SSL cluster logs when a peer without a declared `https` port is dialled over plain HTTP, which puts
+  the cluster token on the wire in clear text; nothing changes on the wire.

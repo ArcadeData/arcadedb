@@ -21,13 +21,14 @@ package com.arcadedb.server.http.handler;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.PeerRequest;
 import com.arcadedb.server.http.FakeLeader;
 import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.io.OutputStream;
-import java.net.URI;
+import java.net.http.HttpRequest;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 
@@ -72,7 +73,7 @@ class Issue7507LeaderForwardTimeoutTest {
 
       final StallAwareStopwatch watch = StallAwareStopwatch.start();
       final ExecutionResponse response = transport.send(transport.client(),
-          transport.newRequest(URI.create("http://" + leader.address() + "/api/v1/server"), "POST", "{}", false).build(),
+          transport.newRequest(plainRequest("http://" + leader.address() + "/api/v1/server"), "POST", "{}", false).build(),
           leader.address(), false);
       watch.assertGaveUpWithin(GAVE_UP_BOUND_MS,
           "a 1s forward deadline from the unbounded wait a leader that never answers used to produce");
@@ -103,7 +104,7 @@ class Issue7507LeaderForwardTimeoutTest {
 
       final StallAwareStopwatch watch = StallAwareStopwatch.start();
       final ExecutionResponse response = transport.send(transport.client(),
-          transport.newRequest(URI.create("http://" + leader.address() + "/api/v1/server"), "POST", "{}", false).build(),
+          transport.newRequest(plainRequest("http://" + leader.address() + "/api/v1/server"), "POST", "{}", false).build(),
           leader.address(), false);
       watch.assertGaveUpWithin(GAVE_UP_BOUND_MS,
           "a 1s forward deadline from the unbounded wait a body that stalls after the headers used to produce");
@@ -122,11 +123,11 @@ class Issue7507LeaderForwardTimeoutTest {
     final LeaderCommandForwarder.Transport transport =
         new LeaderCommandForwarder.Transport(configuration(7_000L, 60_000L, 5_000L));
 
-    assertThat(transport.newRequest(URI.create("http://leader:2480/api/v1/server/users?name=bob"), "DELETE", null, false)
+    assertThat(transport.newRequest(plainRequest("http://leader:2480/api/v1/server/users?name=bob"), "DELETE", null, false)
         .build().timeout()).contains(Duration.ofMillis(7_000L));
-    assertThat(transport.newRequest(URI.create("http://leader:2480/api/v1/server/users"), "POST", "{\"name\":\"bob\"}", false)
+    assertThat(transport.newRequest(plainRequest("http://leader:2480/api/v1/server/users"), "POST", "{\"name\":\"bob\"}", false)
         .build().timeout()).contains(Duration.ofMillis(7_000L));
-    assertThat(transport.newRequest(URI.create("http://leader:2480/api/v1/server/users"), "PUT", "{\"name\":\"bob\"}", false)
+    assertThat(transport.newRequest(plainRequest("http://leader:2480/api/v1/server/users"), "PUT", "{\"name\":\"bob\"}", false)
         .build().timeout()).contains(Duration.ofMillis(7_000L));
   }
 
@@ -139,7 +140,7 @@ class Issue7507LeaderForwardTimeoutTest {
     final LeaderCommandForwarder.Transport transport =
         new LeaderCommandForwarder.Transport(configuration(7_000L, 600_000L, 5_000L));
 
-    assertThat(transport.newRequest(URI.create("http://leader:2480/api/v1/server"), "POST", "{}", true)
+    assertThat(transport.newRequest(plainRequest("http://leader:2480/api/v1/server"), "POST", "{}", true)
         .build().timeout()).contains(Duration.ofMillis(600_000L));
     assertThat(transport.responseTimeout(true)).isGreaterThan(transport.responseTimeout(false));
   }
@@ -223,8 +224,13 @@ class Issue7507LeaderForwardTimeoutTest {
     assertThat(transport.client().connectTimeout()).isPresent();
     assertThat(transport.client().connectTimeout().get()).isPositive();
     // and a request can actually be built from it - Duration.ZERO would throw
-    assertThat(transport.newRequest(URI.create("http://leader:2480/api/v1/server"), "POST", "{}", false)
+    assertThat(transport.newRequest(plainRequest("http://leader:2480/api/v1/server"), "POST", "{}", false)
         .build().timeout()).isPresent();
+  }
+
+  /** The request {@code LeaderCommandForwarder} hands the transport: the leader's URL, no credential (issue #10068). */
+  private static HttpRequest.Builder plainRequest(final String url) {
+    return PeerRequest.newRequest(url, false, Issue7507LeaderForwardTimeoutTest.class, "testing", null);
   }
 
   /**

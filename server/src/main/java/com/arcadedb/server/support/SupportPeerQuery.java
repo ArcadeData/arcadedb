@@ -24,11 +24,11 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.HAServerPlugin.ClusterPeer;
 import com.arcadedb.server.LeaderForwardContext;
+import com.arcadedb.server.PeerRequest;
 import com.arcadedb.server.http.handler.LeaderDial;
 
 import java.io.IOException;
 import java.io.InputStream;
-import java.net.URI;
 import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpConnectTimeoutException;
@@ -199,13 +199,11 @@ public final class SupportPeerQuery {
         https = true;
       }
 
-      final HttpRequest request = HttpRequest.newBuilder()
-          .uri(URI.create((https ? "https" : "http") + "://" + endpoint + "/api/v1/query/"
-              + URLEncoder.encode(database, StandardCharsets.UTF_8)))
+      final HttpRequest request = PeerRequest.newRequest((https ? "https" : "http") + "://" + endpoint + "/api/v1/query/"
+              + URLEncoder.encode(database, StandardCharsets.UTF_8), cluster.useSsl(), SupportPeerQuery.class,
+              "asking a peer to run a support query", token, user)
           .version(HttpClient.Version.HTTP_1_1)
           .header("Content-Type", "application/json")
-          .header("X-ArcadeDB-Cluster-Token", token)
-          .header("X-ArcadeDB-Forwarded-User", user)
           .header(LeaderForwardContext.FORWARDED_TO_LEADER_HEADER, "true")
           .timeout(Duration.ofMillis(deadlineMs))
           .POST(HttpRequest.BodyPublishers.ofString(body))
