@@ -46,7 +46,7 @@ class Issue7837ShutdownRequestCredentialTest {
   /** The regression: the cluster token travels in the header that authenticates it, paired with a principal. */
   @Test
   void theClusterTokenIsSentInTheHeaderThatAuthenticatesIt() {
-    final HttpRequest request = RaftHAPlugin.shutdownRequest(URL, "s3cr3t-cluster-token");
+    final HttpRequest request = RaftHAPlugin.shutdownRequest(URL, false, "s3cr3t-cluster-token");
 
     assertThat(request.headers().firstValue("X-ArcadeDB-Cluster-Token"))
         .as("the cluster token is recognised only through its own header")
@@ -62,7 +62,7 @@ class Issue7837ShutdownRequestCredentialTest {
   /** The route and the body are the ones {@code PostServerCommandHandler} answers. */
   @Test
   void theRequestIsAPostOfTheShutdownCommandToTheServerRoute() {
-    final HttpRequest request = RaftHAPlugin.shutdownRequest(URL, "token");
+    final HttpRequest request = RaftHAPlugin.shutdownRequest(URL, false, "token");
 
     assertThat(request.method()).isEqualTo("POST");
     assertThat(request.uri().getPath()).isEqualTo(RaftHAPlugin.SERVER_COMMAND_ROUTE);
@@ -78,7 +78,7 @@ class Issue7837ShutdownRequestCredentialTest {
   @Test
   void aClusterWithoutATokenSendsNeitherHeader() {
     for (final String noToken : new String[] { null, "" }) {
-      final HttpRequest request = RaftHAPlugin.shutdownRequest(URL, noToken);
+      final HttpRequest request = RaftHAPlugin.shutdownRequest(URL, false, noToken);
 
       assertThat(request.headers().firstValue("X-ArcadeDB-Cluster-Token")).isEmpty();
       assertThat(request.headers().firstValue("X-ArcadeDB-Forwarded-User")).isEmpty();

@@ -45,7 +45,6 @@ import com.arcadedb.database.DatabaseInternal;
 
 import java.io.Closeable;
 import java.io.IOException;
-import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
@@ -1190,11 +1189,9 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
 
     final boolean useSSL = configuration.getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL);
     final String url = shutdownUrl(dial, useSSL);
-    if (useSSL && url.startsWith("http://"))
-      // Same fallback as every sibling dial, and said out loud for the same reason: the command below carries
-      // the cluster token, so an operator who set arcadedb.ssl.enabled should not have to guess (issue #7546).
-      PlainHttpFallbackNotice.sayOnce(RaftHAPlugin.class, "sending it the shutdown command");
-    final HttpRequest request = shutdownRequest(url, raft.getClusterToken());
+    // Same fallback as every sibling dial, and said out loud by PeerRequest for the same reason: the command carries
+    // the cluster token, so an operator who set arcadedb.ssl.enabled should not have to guess (issue #7546).
+    final HttpRequest request = shutdownRequest(url, useSSL, raft.getClusterToken());
 
     // One client per call, closed with the request: a remote shutdown is an operator action, not a hot path,
     // and a cached client would outlive the peer it was built to reach. The connect timeout is the same one
@@ -1232,7 +1229,7 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
    * <p>
    * The credential the peer does authenticate is the {@code X-ArcadeDB-Cluster-Token} +
    * {@code X-ArcadeDB-Forwarded-User} pair every other peer-to-peer dial in this module sends, attached by
-   * {@link PeerCredentials} so this site cannot spell it differently from the others. The forwarded user is
+   * {@link PeerRequest} so this site cannot spell it differently from the others. The forwarded user is
    * {@code root} because {@code PostServerCommandHandler.execute} answers {@code shutdown} only to a root
    * principal.
    * <p>
@@ -1240,11 +1237,10 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
    * this request ends in the target node's exit.
    */
   // @VisibleForTesting
-  static HttpRequest shutdownRequest(final String url, final String clusterToken) {
-    return PeerCredentials.attach(HttpRequest.newBuilder()
-        .uri(URI.create(url))
+  static HttpRequest shutdownRequest(final String url, final boolean sslEnabled, final String clusterToken) {
+    return PeerRequest.newRequest(url, sslEnabled, RaftHAPlugin.class, "sending it the shutdown command", clusterToken)
         .header("Content-Type", "application/json")
-        .POST(HttpRequest.BodyPublishers.ofString(SHUTDOWN_COMMAND_BODY, StandardCharsets.UTF_8)), clusterToken)
+        .POST(HttpRequest.BodyPublishers.ofString(SHUTDOWN_COMMAND_BODY, StandardCharsets.UTF_8))
         .build();
   }
 

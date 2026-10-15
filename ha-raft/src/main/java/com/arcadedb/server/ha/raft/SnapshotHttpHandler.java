@@ -773,7 +773,7 @@ public class SnapshotHttpHandler implements HttpHandler {
 
   private ServerSecurityUser authenticate(final HttpServerExchange exchange) {
     // Cluster token auth (inter-node communication)
-    final HeaderValues clusterTokenHeader = exchange.getRequestHeaders().get("X-ArcadeDB-Cluster-Token");
+    final HeaderValues clusterTokenHeader = exchange.getRequestHeaders().get(PeerRequest.CLUSTER_TOKEN_HEADER);
     if (clusterTokenHeader != null && !clusterTokenHeader.isEmpty()) {
       final var server = httpServer.getServer();
       // The helper every other cluster-token check uses (issue #9554): read through server.getHA() alone, the token was

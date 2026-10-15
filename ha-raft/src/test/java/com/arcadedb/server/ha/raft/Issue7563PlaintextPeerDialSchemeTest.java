@@ -88,7 +88,7 @@ class Issue7563PlaintextPeerDialSchemeTest {
   @Test
   void theEncryptedProbeCarriesExactlyTheCredentialsThePlainOneDid() {
     final HttpRequest request = BootstrapElection.bootstrapStateRequestTo(
-        BootstrapElection.chooseUrl(HTTP_ADDR, HTTPS_ADDR, true), "the-token", 1234L);
+        BootstrapElection.chooseUrl(HTTP_ADDR, HTTPS_ADDR, true), true, "the-token", 1234L);
 
     assertThat(request.uri().getScheme()).isEqualTo("https");
     assertThat(request.method()).isEqualTo("POST");

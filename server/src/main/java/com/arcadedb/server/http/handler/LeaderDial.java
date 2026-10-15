@@ -186,9 +186,8 @@ public record LeaderDial(String address, boolean https, HttpClient client, Strin
   /**
    * Said once per JVM: a cluster that names an HTTPS leader endpoint but cannot hand out a client for it has a
    * configuration fault worth naming in the log of the node that found it, not only in the answer its client gets.
-   * One latch per JVM rather than per server, matching {@code PLAIN_HTTP_FALLBACK_WARNED} in
-   * {@code SnapshotInstaller}, {@code PeerCapabilityQuery} and {@code LeaderDatabaseQuery} - the three other
-   * one-time notices about an SSL cluster's peer transport.
+   * One latch per JVM rather than per server, matching the plain-HTTP fallback notice every ha-raft peer dial shares
+   * ({@code PeerRequest}) - the other one-time notice about an SSL cluster's peer transport.
    */
   private static final AtomicBoolean HTTPS_CLIENT_UNAVAILABLE_WARNED = new AtomicBoolean(false);
 

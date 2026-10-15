@@ -6234,7 +6234,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
     final HttpClient client =
         url.startsWith("https://") ? raftHA.getHttpsClients().clientFor(localServer) : BootstrapElection.HTTP;
     final CompletableFuture<Boolean> answer =
-        UnverifiedClosedCopyCheck.askWhetherServed(client, leaderId.toString(), url, dbName, clusterToken);
+        UnverifiedClosedCopyCheck.askWhetherServed(client, leaderId.toString(), url, useSSL, dbName, clusterToken);
     try {
       return answer.get(UnverifiedClosedCopyCheck.ROUND_TIMEOUT_MS, TimeUnit.MILLISECONDS);
     } catch (final ExecutionException e) {
