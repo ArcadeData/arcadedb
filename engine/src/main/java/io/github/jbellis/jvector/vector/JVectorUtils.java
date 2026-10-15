@@ -1,5 +1,6 @@
 package io.github.jbellis.jvector.vector;
 
+import com.arcadedb.utility.VectorApiSupport;
 import io.github.jbellis.jvector.vector.types.VectorFloat;
 
 /*
@@ -26,6 +27,6 @@ import io.github.jbellis.jvector.vector.types.VectorFloat;
  */
 public class JVectorUtils {
   public static VectorFloat<?> createVectorFloat(final int dimension) {
-    return VectorizationProvider.getInstance().getVectorTypeSupport().createFloatVector(dimension);
+    return VectorApiSupport.jvectorProvider().getVectorTypeSupport().createFloatVector(dimension);
   }
 }

@@ -18,6 +18,7 @@
  */
 package com.arcadedb.utility;
 
+import io.github.jbellis.jvector.vector.VectorizationProvider;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -50,5 +51,29 @@ class VectorApiSupportTest {
   void theTestJvmIsNotANativeImageAndCompilesTheVectorApi() {
     assertThat(VectorApiSupport.isNativeImage()).isFalse();
     assertThat(VectorApiSupport.isVectorApiCompiled()).isTrue();
+  }
+
+  @Test
+  void configuringOnAJvmLeavesTheJVectorPropertyAlone() {
+    final String before = System.getProperty(VectorApiSupport.JVECTOR_PROVIDER_PROPERTY);
+    try {
+      System.clearProperty(VectorApiSupport.JVECTOR_PROVIDER_PROPERTY);
+      VectorApiSupport.configureJVectorProvider();
+      assertThat(System.getProperty(VectorApiSupport.JVECTOR_PROVIDER_PROPERTY)).isNull();
+
+      System.setProperty(VectorApiSupport.JVECTOR_PROVIDER_PROPERTY, "panama");
+      VectorApiSupport.configureJVectorProvider();
+      assertThat(System.getProperty(VectorApiSupport.JVECTOR_PROVIDER_PROPERTY)).isEqualTo("panama");
+    } finally {
+      if (before == null)
+        System.clearProperty(VectorApiSupport.JVECTOR_PROVIDER_PROPERTY);
+      else
+        System.setProperty(VectorApiSupport.JVECTOR_PROVIDER_PROPERTY, before);
+    }
+  }
+
+  @Test
+  void everyCallSiteGetsJVectorsOwnProvider() {
+    assertThat(VectorApiSupport.jvectorProvider()).isSameAs(VectorizationProvider.getInstance());
   }
 }

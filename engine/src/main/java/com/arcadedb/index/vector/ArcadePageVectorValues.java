@@ -18,6 +18,7 @@
  */
 package com.arcadedb.index.vector;
 
+import com.arcadedb.utility.VectorApiSupport;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
@@ -28,7 +29,6 @@ import com.arcadedb.log.LogManager;
 import io.github.jbellis.jvector.graph.ImmutableGraphIndex;
 import io.github.jbellis.jvector.graph.RandomAccessVectorValues;
 import io.github.jbellis.jvector.graph.disk.OnDiskGraphIndex;
-import io.github.jbellis.jvector.vector.VectorizationProvider;
 import io.github.jbellis.jvector.vector.types.VectorFloat;
 import io.github.jbellis.jvector.vector.types.VectorTypeSupport;
 
@@ -48,7 +48,7 @@ import java.util.logging.Level;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class ArcadePageVectorValues implements RandomAccessVectorValues {
-  private static final VectorTypeSupport vts = VectorizationProvider.getInstance().getVectorTypeSupport();
+  private static final VectorTypeSupport vts = VectorApiSupport.jvectorProvider().getVectorTypeSupport();
   public static final int DEFAULT_CACHE_SIZE = 100_000;
 
   private final DatabaseInternal    database;
