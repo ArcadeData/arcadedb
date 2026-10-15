@@ -24,6 +24,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
 import com.arcadedb.engine.timeseries.TimeSeriesGateway;
+import com.arcadedb.engine.timeseries.TimeSeriesStorableRows;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.security.SecurityDatabaseUser;
@@ -43,7 +44,6 @@ import io.undertow.server.HttpServerExchange;
 import io.undertow.util.Headers;
 import io.undertow.util.HttpString;
 
-import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
@@ -254,86 +254,31 @@ public class PostPrometheusWriteHandler extends AbstractBinaryHttpHandler {
         if (count == 0)
           continue;
 
-        long[] timestamps = new long[count];
+        final long[] timestamps = new long[count];
         for (int s = 0; s < count; s++)
           timestamps[s] = tsSamples.get(s).timestampMs();
 
-        // Fill the value grid column by column, matching its column-major layout. A TAG value comes from
-        // the series labels, which are per-series and not per-sample, so it is resolved ONCE and broadcast
-        // down the column: findLabelValue is a linear scan that re-sanitizes every label name it visits,
-        // so resolving it per sample would repeat identical work for every sample of every tag column.
-        //
-        // Every value goes through ColumnDefinition.storableValue before it enters the grid, as it does in
-        // TimeSeriesGateway.write (issue #9972): a label is always text, so a type declaring a tag as INTEGER,
-        // BOOLEAN or DATE used to reach the storage layer with a String and fail the whole request with a 500 (or,
-        // for BOOLEAN, store false). A tag the column cannot hold drops the series; a sample value a field cannot
-        // hold drops that sample alone. Both are named in unreadableValues and answered 400 below.
-        final Object[][] columnValues = new Object[columns.size() - 1][count];
-        // Allocated on the first refused sample, so a clean series pays nothing for it
-        boolean[] refusedSamples = null;
-        int refusedCount = 0;
-        boolean seriesRefused = false;
+        // Every value goes through the conversion TimeSeriesGateway.write uses for the line protocol and gRPC, the one engine-level
+        // implementation of it (issues #9972, #10030): a label is always text, so a type declaring a tag as INTEGER, BOOLEAN or DATE
+        // used to reach the storage layer with a String and fail the whole request with a 500 (or, for BOOLEAN, store false). The
+        // labels belong to the series, not to the sample, so the tags are SHARED: each is resolved and converted once and broadcast
+        // down its column - findLabelValue is a linear scan that re-sanitizes every label name it visits, so resolving it per
+        // sample would repeat identical work for every sample of every tag column. A tag the column cannot hold drops the series; a
+        // sample value a field cannot hold drops that sample alone. Both are named in unreadableValues and answered 400 below.
+        final List<Label> labels = ts.getLabels();
+        final TimeSeriesStorableRows rows = TimeSeriesStorableRows.convert(database, typeName, columns, timestamps, count, true,
+            (row, valueColumn, col) -> col.getRole() == ColumnDefinition.ColumnRole.TAG ?
+                findLabelValue(labels, col.getName()) :
+                tsSamples.get(row).value(), // the "value" field
+            unreadableValues);
 
-        int colIdx = 0;
-        for (final ColumnDefinition col : columns) {
-          if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
-            continue;
-
-          if (col.getRole() == ColumnDefinition.ColumnRole.TAG) {
-            final Object tagValue;
-            try {
-              tagValue = col.storableValue(database, findLabelValue(ts.getLabels(), col.getName()));
-            } catch (final IllegalArgumentException e) {
-              addUnreadable(unreadableValues, typeName, col, "tag", e);
-              seriesRefused = true;
-              break;
-            }
-            Arrays.fill(columnValues[colIdx], tagValue);
-          } else
-            for (int s = 0; s < count; s++) {
-              if (refusedSamples != null && refusedSamples[s])
-                continue;
-              try {
-                columnValues[colIdx][s] = col.storableValue(database, tsSamples.get(s).value()); // the "value" field
-              } catch (final IllegalArgumentException e) {
-                addUnreadable(unreadableValues, typeName, col, "field", e);
-                if (refusedSamples == null)
-                  refusedSamples = new boolean[count];
-                refusedSamples[s] = true;
-                ++refusedCount;
-              }
-            }
-
-          colIdx++;
-        }
-
-        if (seriesRefused) {
+        if (rows.sharedValueRefused())
           ++droppedSeries;
-          droppedSamples += count;
+        droppedSamples += rows.refused();
+        if (rows.size() == 0)
           continue;
-        }
 
-        if (refusedCount > 0) {
-          droppedSamples += refusedCount;
-          final int valid = count - refusedCount;
-          if (valid == 0)
-            continue;
-          // Compacts only when a sample was refused, so the copy is paid by the failing request and never by a clean one
-          final long[] keptTimestamps = new long[valid];
-          for (int c = 0; c < columnValues.length; c++) {
-            final Object[] kept = new Object[valid];
-            for (int s = 0, k = 0; s < count; s++)
-              if (!refusedSamples[s])
-                kept[k++] = columnValues[c][s];
-            columnValues[c] = kept;
-          }
-          for (int s = 0, k = 0; s < count; s++)
-            if (!refusedSamples[s])
-              keptTimestamps[k++] = timestamps[s];
-          timestamps = keptTimestamps;
-        }
-
-        engine.appendBatch(timestamps, columnValues);
+        engine.appendBatch(rows.timestamps(), rows.columnValues());
       }
       if (ownTransaction)
         database.commit();
@@ -365,17 +310,6 @@ public class PostPrometheusWriteHandler extends AbstractBinaryHttpHandler {
     }
 
     return new ExecutionResponse(204, "");
-  }
-
-  /**
-   * Names a value {@code col} refused as {@code metric.column (role): reason}, the shape {@code TimeSeriesGateway.write} reports
-   * for the line protocol, up to {@link TimeSeriesGateway#MAX_REPORTED_UNREADABLE_VALUES}. The reason names the column and its
-   * type, never the value, which comes from the client.
-   */
-  private static void addUnreadable(final Set<String> unreadable, final String typeName, final ColumnDefinition col,
-      final String role, final IllegalArgumentException e) {
-    if (unreadable.size() < TimeSeriesGateway.MAX_REPORTED_UNREADABLE_VALUES)
-      unreadable.add(typeName + "." + col.getName() + " (" + role + "): " + e.getMessage());
   }
 
   private static Set<String> tagNamesOf(final List<ColumnDefinition> columns) {

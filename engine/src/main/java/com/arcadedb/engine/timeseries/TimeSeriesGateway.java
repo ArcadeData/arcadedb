@@ -28,7 +28,6 @@ import com.arcadedb.security.SecurityDatabaseUser;
 
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -296,56 +295,23 @@ public final class TimeSeriesGateway {
           // Every sample of this measurement was dropped for an undeclared key
           continue;
 
-        long[] timestamps = new long[count];
-        final Object[][] columnValues = new Object[columns.size() - 1][count]; // exclude timestamp
+        final long[] timestamps = new long[count];
+        for (int s = 0; s < count; s++)
+          timestamps[s] = group.get(s).getTimestampMs();
 
         // A sample whose value a column cannot store is left out HERE, before anything of it reaches the engine, and named: the
-        // storage layer would otherwise cast it in the middle of the append and fail the whole request (issue #9809). `valid`
-        // is the next free row, so a refused sample leaves a partial row that the next sample overwrites in full: that holds only
-        // because every column is assigned on every pass, a null included, so keep it so
-        int valid = 0;
-        for (int s = 0; s < count; s++) {
-          final Sample sample = group.get(s);
-          boolean refused = false;
-          int colIdx = 0;
-          for (int i = 0; i < columns.size(); i++) {
-            final ColumnDefinition col = columns.get(i);
-            if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
-              continue;
+        // storage layer would otherwise cast it in the middle of the append and fail the whole request (issue #9809). The
+        // conversion is the one the Prometheus remote write shares (issue #10030)
+        final TimeSeriesStorableRows rows = TimeSeriesStorableRows.convert(database, group.getFirst().getMeasurement(), columns, timestamps,
+            count, false, (row, valueColumn, col) -> col.getRole() == ColumnDefinition.ColumnRole.TAG ?
+                group.get(row).getTags().get(col.getName()) :
+                group.get(row).getFields().get(col.getName()), unreadableValues);
 
-            final Object value;
-            if (col.getRole() == ColumnDefinition.ColumnRole.TAG)
-              value = sample.getTags().get(col.getName());
-            else
-              value = sample.getFields().get(col.getName());
-
-            // Only the conversion is guarded: an IllegalArgumentException from anywhere else is not a column problem
-            try {
-              columnValues[colIdx][valid] = col.storableValue(database, value);
-            } catch (final IllegalArgumentException e) {
-              if (unreadableValues.size() < MAX_REPORTED_UNREADABLE_VALUES)
-                unreadableValues.add(sample.getMeasurement() + "." + col.getName() + " ("
-                    + (col.getRole() == ColumnDefinition.ColumnRole.TAG ? "tag" : "field") + "): " + e.getMessage());
-              refused = true;
-              break;
-            }
-            colIdx++;
-          }
-          if (!refused)
-            timestamps[valid++] = sample.getTimestampMs();
-        }
-
-        if (valid == 0)
+        if (rows.size() == 0)
           continue;
-        if (valid < count) {
-          // Only when a sample was refused, so the copy is paid by the failing request and never by a clean one
-          timestamps = Arrays.copyOf(timestamps, valid);
-          for (int c = 0; c < columnValues.length; c++)
-            columnValues[c] = Arrays.copyOf(columnValues[c], valid);
-        }
 
-        engine.appendBatch(timestamps, columnValues);
-        inserted += valid;
+        engine.appendBatch(rows.timestamps(), rows.columnValues());
+        inserted += rows.size();
       }
       if (beganHere)
         database.commit();
