@@ -260,10 +260,11 @@
                 <artifactId>maven-resources-plugin</artifactId>
                 <version>${maven-resources-plugin.version}</version>
                 <configuration>
-                    <!-- Kept in step with the <resources> carve-out above and the server's Content-Type table; 'ico' and the two remaining font
-                         types were missing here, which left Studio's favicon and any .eot/.otf asset copied
-                         through the filter. Maven's text copy happens to be lossless for them today, so the
-                         released artifacts are unaffected - but the safety of a binary must not rest on that. -->
+                    <!-- Kept in step with the <resources> carve-out above and the server's Content-Type table;
+                         'ico' and the two remaining font types were missing here, which left Studio's favicon
+                         and any .eot/.otf asset copied through the filter. Maven's text copy happens to be
+                         lossless for them today, so the released artifacts are unaffected - but the safety of
+                         a binary must not rest on that. -->
                     <nonFilteredFileExtensions>avif,bmp,eot,gif,ico,jpeg,jpg,otf,png,svg,swf,ttf,wasm,webp,woff,woff2</nonFilteredFileExtensions>
                     <propertiesEncoding>${project.build.sourceEncoding}</propertiesEncoding>
                 </configuration>

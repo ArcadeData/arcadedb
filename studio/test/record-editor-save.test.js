@@ -316,6 +316,23 @@ test("an edited number, boolean or object keeps being written as such", () => {
   assert.equal(save(), "UPDATE #1:0 SET `count` = 6, `active` = false, `nested` = {\"a\":2}");
 });
 
+test("only a decimal number is written bare: Infinity, NaN and hex are text, not SQL literals", () => {
+  open({ a: 1, b: 1, c: 1, d: 1, e: 1, f: 1, g: 1, h: 1, i: 1 });
+  type("a", "Infinity");
+  type("b", "NaN");
+  type("c", "0x10");
+  type("d", "1e3");
+  type("e", "-2.5");
+  type("f", ".5");
+  type("g", " 7 ");
+  type("h", "+5");
+  type("i", "12abc");
+  assert.equal(
+    save(),
+    "UPDATE #1:0 SET `a` = 'Infinity', `b` = 'NaN', `c` = '0x10', `d` = 1e3, `e` = -2.5, `f` = .5, `g` = 7, `h` = '+5', `i` = '12abc'"
+  );
+});
+
 test("clearing a property writes null, and so does typing null", () => {
   open({ name: "Lager", style: "Pale", count: 5 });
   type("name", "");
