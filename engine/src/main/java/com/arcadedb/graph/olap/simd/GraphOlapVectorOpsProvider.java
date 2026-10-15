@@ -19,6 +19,7 @@
 package com.arcadedb.graph.olap.simd;
 
 import com.arcadedb.log.LogManager;
+import com.arcadedb.utility.VectorApiSupport;
 
 import java.util.logging.Level;
 
@@ -32,10 +33,22 @@ public final class GraphOlapVectorOpsProvider {
   private static final boolean            SIMD_ENABLED;
 
   static {
-    GraphOlapVectorOps ops;
-    boolean simd = false;
+    INSTANCE = select(VectorApiSupport.isVectorApiCompiled());
+    SIMD_ENABLED = INSTANCE instanceof SimdGraphOlapVectorOps;
+  }
+
+  /**
+   * Picks the SIMD ops when the Vector API is compiled to SIMD instructions and passes its smoke test, the scalar ops
+   * otherwise. A native image gets the scalar ops: it runs the Vector API through Java lane loops, slower than they are.
+   */
+  static GraphOlapVectorOps select(final boolean vectorApiCompiled) {
+    if (!vectorApiCompiled) {
+      LogManager.instance().log(GraphOlapVectorOpsProvider.class, Level.INFO,
+          "Graph-OLAP SIMD disabled: the Vector API is not compiled to SIMD in a native image, using scalar ops");
+      return new ScalarGraphOlapVectorOps();
+    }
     try {
-      ops = new SimdGraphOlapVectorOps();
+      final GraphOlapVectorOps ops = new SimdGraphOlapVectorOps();
       // Quick smoke test — verify gather returns correct results
       final int[] src = { 10, 20, 30, 40, 50 };
       final int[] idx = { 4, 2, 0 };
@@ -49,19 +62,17 @@ public final class GraphOlapVectorOpsProvider {
       if (sumResult != 6.0)
         throw new IllegalStateException("SIMD sum smoke test failed: expected 6.0 but got " + sumResult);
 
-      simd = true;
       LogManager.instance().log(GraphOlapVectorOpsProvider.class, Level.INFO, "Graph-OLAP SIMD vector ops enabled");
+      return ops;
     } catch (final Exception | LinkageError t) {
-      ops = new ScalarGraphOlapVectorOps();
       LogManager.instance()
           .log(GraphOlapVectorOpsProvider.class, Level.WARNING,
               """
               Graph-OLAP SIMD not available, using scalar fallback (reason: %s). \
               For better performance, add '--add-modules jdk.incubator.vector' to JVM flags""",
               t.getMessage());
+      return new ScalarGraphOlapVectorOps();
     }
-    INSTANCE = ops;
-    SIMD_ENABLED = simd;
   }
 
   private GraphOlapVectorOpsProvider() {

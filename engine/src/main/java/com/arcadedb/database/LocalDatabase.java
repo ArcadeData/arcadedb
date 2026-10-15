@@ -116,6 +116,7 @@ import com.arcadedb.utility.LockException;
 import com.arcadedb.utility.MultiIterator;
 import com.arcadedb.utility.RWLockContext;
 import com.arcadedb.utility.RetryBackoff;
+import com.arcadedb.utility.VectorApiSupport;
 
 import java.io.File;
 import java.io.IOException;
@@ -182,6 +183,11 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    * spelled out at each use so the snapshot's t0 configuration capture (#6114) and this class agree by construction.
    */
   public static final String CONFIGURATION_FILE_NAME = "configuration.json";
+
+  static {
+    // BEFORE ANY JVECTOR CLASS RESOLVES ITS PROVIDER: A NATIVE IMAGE RUNS THE VECTOR API WITHOUT SIMD (#10072)
+    VectorApiSupport.configureJVectorProvider();
+  }
 
   /** What {@link #quiesceAsync()} hands back on a database that never created an async executor: nothing to park. */
   private static final AsyncQuiesce NO_ASYNC_TO_QUIESCE = () -> {

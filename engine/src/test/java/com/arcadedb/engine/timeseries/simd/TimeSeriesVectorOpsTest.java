@@ -252,6 +252,17 @@ class TimeSeriesVectorOpsTest {
   }
 
   @Test
+  void providerPicksScalarWhenTheVectorApiIsNotCompiled() {
+    // issue #10072: a native image runs the Vector API through its Java lane loops, slower than the scalar ops
+    assertThat(TimeSeriesVectorOpsProvider.select(false)).isInstanceOf(ScalarTimeSeriesVectorOps.class);
+  }
+
+  @Test
+  void providerPicksSimdWhenTheVectorApiIsCompiled() {
+    assertThat(TimeSeriesVectorOpsProvider.select(true)).isInstanceOf(SimdTimeSeriesVectorOps.class);
+  }
+
+  @Test
   void providerReturnsInstance() {
     final TimeSeriesVectorOps ops = TimeSeriesVectorOpsProvider.getInstance();
     assertThat(ops).isNotNull();
