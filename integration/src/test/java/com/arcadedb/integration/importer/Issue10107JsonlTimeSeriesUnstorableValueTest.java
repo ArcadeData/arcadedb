@@ -142,6 +142,19 @@ class Issue10107JsonlTimeSeriesUnstorableValueTest {
     }
   }
 
+  /** A sample shorter than the type is a malformed chunk, refused by name before a value is read, whatever the row-error policy. */
+  @Test
+  void aSampleShorterThanTheTypeIsRefusedByNameBeforeAnythingIsRead() throws Exception {
+    exportThreeSamples();
+    rewrite(sample -> {
+      if (sample.getLong(0) == TS + 1_000)
+        sample.remove(4);
+    });
+
+    assertThatThrownBy(() -> new Importer(importArguments(false)).load()).isInstanceOf(ImportException.class)
+        .satisfies(e -> assertThat(messagesOf(e)).contains("TIMESERIES sample 1 of type 'T' has 4 value(s)"));
+  }
+
   private void exportThreeSamples() {
     try (final Database source = new DatabaseFactory(SOURCE_PATH).create()) {
       source.command("sql", "CREATE TIMESERIES TYPE T TAGS (host STRING, port INTEGER, up BOOLEAN) TIMESTAMP ts FIELDS (v DOUBLE)");

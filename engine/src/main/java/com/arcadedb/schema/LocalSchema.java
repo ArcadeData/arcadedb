@@ -3180,8 +3180,9 @@ public class LocalSchema implements Schema {
   private static SchemaException cannotRepointQuery(final String oldName, final String newName, final String kind,
       final String dependantName, final String dropStatement) {
     return new SchemaException("Cannot rename type '" + oldName + "' to '" + newName + "' because it is a source type for the "
-        + kind + " '" + dependantName + "' and its query cannot be re-pointed at the new name with certainty (it names the type "
-        + "more than once, or in a form that is not rewritten). Drop the " + kind + " first with: " + dropStatement
+        + kind + " '" + dependantName + "' and its query cannot be re-pointed at the new name with certainty (the name appears "
+        + "more than once in the query - a subquery, a join, but also a string literal or a comment that holds it - or in a form "
+        + "that is not rewritten). Drop the " + kind + " first with: " + dropStatement
         + ", rename the type, and create the " + kind + " again");
   }
 

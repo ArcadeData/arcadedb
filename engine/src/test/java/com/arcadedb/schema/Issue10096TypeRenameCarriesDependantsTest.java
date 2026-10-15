@@ -200,6 +200,18 @@ class Issue10096TypeRenameCarriesDependantsTest extends TestHelper {
     assertNoSchemaObjectNamesAnUnresolvableType();
   }
 
+  /** A string literal that holds the name is not told apart from a second reference without a parser: refused, and the message says so. */
+  @Test
+  void aStringLiteralHoldingTheTypeNameRefusesTheRenameAndTheMessageSaysSo() {
+    database.getSchema().buildMaterializedView().withName("MV").withQuery("SELECT FROM Src WHERE name <> 'Src'").create();
+
+    assertThatThrownBy(() -> database.command("sql", "ALTER TYPE Src NAME Renamed")).isInstanceOf(SchemaException.class)
+        .hasMessageContaining("string literal or a comment");
+
+    assertThat(database.getSchema().existsType("Src")).isTrue();
+    assertThat(database.getSchema().existsType("Renamed")).isFalse();
+  }
+
   @Test
   void aViewDefinedThroughAnAliasKeepsResolvingAfterTheRename() {
     database.command("sql", "ALTER TYPE Src ALIASES SrcAlias");
