@@ -26,10 +26,10 @@ import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InsertExecutionPlan;
 import com.arcadedb.query.sql.executor.InternalExecutionPlan;
+import com.arcadedb.query.sql.executor.OperationHeapLimit;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -72,13 +72,9 @@ public class ParenthesisExpression extends MathExpression {
       if (executionPlan instanceof InsertExecutionPlan plan)
         plan.executeInternal();
 
-      final LocalResultSet rs = new LocalResultSet(executionPlan);
-      final List<Result> result = new ArrayList<>();
-      while (rs.hasNext())
-        result.add(rs.next());
-
-//      List<OResult> result = rs.stream().collect(Collectors.toList());//TODO streamed...
-      rs.close();
+      // Under both heap limits and closed whatever happens (issue #10080)
+      final List<Result> result = OperationHeapLimit.materializeForExpression(context, "parenthesised subquery",
+          new LocalResultSet(executionPlan));
 
       if (!context.isProfiling())
         executionPlan = null;

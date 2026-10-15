@@ -1853,8 +1853,6 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
   }
 
   protected RID saveRecord(final MutableDocument record) {
-    stats.createRecord.incrementAndGet();
-
     RID rid = record.getIdentity();
     final JSONObject json = record.toJSON();
     json.remove(RID_PROPERTY);  // Remove @rid to avoid SQL parsing issues
@@ -1866,18 +1864,19 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
       final long updated = result.hasNext() ? result.next().<Number>getProperty("count").longValue() : 0;
       if (updated == 0)
         throw new RecordNotFoundException("Record " + rid + " not found", rid);
+      // each arm counts its own statistic, and only once the server confirmed the write (issue #10095)
+      stats.updateRecord.incrementAndGet();
     } else {
       final ResultSet result = command("sql",
           "insert into " + Identifier.quote(record.getTypeName()) + " content " + json);
       rid = result.next().getIdentity().get();
       trackCreatedRecord(record);
+      stats.createRecord.incrementAndGet();
     }
     return rid;
   }
 
   protected RID saveRecord(final MutableDocument record, final String bucketName) {
-    stats.createRecord.incrementAndGet();
-
     RID rid = record.getIdentity();
     if (rid != null)
       throw new IllegalStateException("Cannot update a record in a custom bucket");
@@ -1891,6 +1890,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
             + " content " + json);
     final RID newRID = result.next().getIdentity().get();
     trackCreatedRecord(record);
+    stats.createRecord.incrementAndGet();
     return newRID;
   }
 

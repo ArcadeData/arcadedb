@@ -19,8 +19,8 @@ package com.arcadedb.function.sql;/*
 
 import com.arcadedb.database.Database;
 import com.arcadedb.function.FunctionDefinition;
+import com.arcadedb.query.sql.executor.OperationHeapLimit;
 import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.util.*;
 
@@ -72,23 +72,19 @@ public class SQLFunctionDefinition implements FunctionDefinition {
       }
     }
 
-    try (final ResultSet result = database.command("sqlscript", implementation, paramMap)) {
-      Object first = null;
-      if (result.hasNext()) {
-        first = result.next();
-        first = extractResult(first);
+    // The rows of the body are held in a list, so they are under the element cap like any other sub-plan materialised (issue #10080)
+    final List<Result> rows = OperationHeapLimit.of(database, "SQL function '" + functionName + "'")
+        .materialize(database.command("sqlscript", implementation, paramMap));
 
-        if (result.hasNext()) {
-          final List list = new ArrayList<>();
-          list.add(first);
-          while (result.hasNext())
-            list.add(extractResult(result.next()));
+    if (rows.isEmpty())
+      return null;
+    if (rows.size() == 1)
+      return extractResult(rows.getFirst());
 
-          return list;
-        }
-      }
-      return first;
-    }
+    final List<Object> list = new ArrayList<>(rows.size());
+    for (final Result row : rows)
+      list.add(extractResult(row));
+    return list;
   }
 
   private static Object extractResult(Object first) {

@@ -101,6 +101,17 @@ public final class OperationHeapLimit {
   }
 
   /**
+   * Like {@link #of(CommandContext, String, String)}, for code that holds no command context: only the element cap applies, as read
+   * from {@code database}'s configuration, and no bytes are charged, as there is no query to charge them to.
+   */
+  public static OperationHeapLimit of(final Database database, final String operation) {
+    final long maxElements = database == null ?
+        GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP.getValueAsLong() :
+        database.getConfiguration().getValueAsLong(GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP);
+    return new OperationHeapLimit(maxElements, "elements", operation, null, null);
+  }
+
+  /**
    * An operation nested in this one, under the same element cap, whose bytes are charged to this one and released with
    * it: the list a collect() gathers for one group of a GROUP BY.
    */
@@ -189,6 +200,29 @@ public final class OperationHeapLimit {
       source.close();
     }
     return rows;
+  }
+
+  /**
+   * {@link #materialize} for a sub-plan an EXPRESSION evaluates - a {@code (SELECT ...)} written in a projection, a function
+   * argument, a SET value or a {@code CREATE EDGE} endpoint - rather than a step (issue #10080). The element cap and the heap
+   * budget apply as they do to the LET of the same subquery, and the source is closed whatever happens.
+   * <p>
+   * What differs is who owns the list afterwards. A step holds the rows it materialised for as long as it serves them, and releases
+   * them when it moves on or closes. An expression has no such lifetime: the list is its value, handed to whatever evaluated it,
+   * which drops it at once ({@code .size()}, {@code [0]}) or puts it in a row, whose buffering steps charge what they hold from then
+   * on. So the bytes are held while the list is BUILT, which is where a subquery over a large table fails the budget, and given back
+   * when it is returned - a correlated subquery evaluated for every outer row would otherwise charge them all and refuse a query that
+   * never held more than one list at a time. The element cap does not need that: it counts the rows of one materialisation.
+   *
+   * @param operation what is materialised, as the error messages name it (e.g. "subquery expression")
+   */
+  public static List<Result> materializeForExpression(final CommandContext context, final String operation, final ResultSet source) {
+    final OperationHeapLimit limit = of(context, operation);
+    try {
+      return limit.materialize(source);
+    } finally {
+      limit.release();
+    }
   }
 
   /**

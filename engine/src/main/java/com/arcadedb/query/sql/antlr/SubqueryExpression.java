@@ -20,13 +20,12 @@ package com.arcadedb.query.sql.antlr;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.OperationHeapLimit;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.parser.BaseExpression;
 import com.arcadedb.query.sql.parser.SelectStatement;
 
-import java.util.ArrayList;
-import java.util.List;
 import java.util.Map;
 
 /**
@@ -68,20 +67,15 @@ public class SubqueryExpression extends BaseExpression {
 
   private Object executeSubquery(final CommandContext context) {
     final ResultSet rs = statement.execute(context.getDatabase(), context.getInputParameters(), context);
-    final List<Object> values = new ArrayList<>();
 
-    while (rs.hasNext()) {
-      final Result result = rs.next();
-      // Always keep Result objects so that modifiers (field access) work correctly.
-      // For example: (SELECT name FROM doc).name should extract the name field from each Result.
-      // If we extract values early, modifiers can't access fields.
-      values.add(result);
-    }
-
+    // Always keep Result objects so that modifiers (field access) work correctly.
+    // For example: (SELECT name FROM doc).name should extract the name field from each Result.
+    // If we extract values early, modifiers can't access fields.
     // Always return the list to match JavaCC behavior
     // Note: This is used in INSERT SET field = (SELECT ...) contexts where
     // the list is expected even for single results
-    return values;
+    // Under both heap limits, like the LET of the same subquery (issue #10080), and closed whatever happens
+    return OperationHeapLimit.materializeForExpression(context, "subquery expression", rs);
   }
 
   @Override
