@@ -535,8 +535,8 @@ class BootstrapElection {
     }
 
     // The fallback is the rule, but it is not silent: these probes carry the cluster token, and an operator who
-    // set arcadedb.ssl.enabled has no other way to learn that some of them went out in the clear (issue #7546).
-    // Said by PeerRequest as each probe is built (issue #9999).
+    // set arcadedb.ssl.enabled has no other way to learn that some of them went out in the clear (issue #7546). It is
+    // said by PeerRequest as each probe is built, in queryPeer (issue #9999).
 
     // One client for the whole fan-out, closed when it has finished. collectRemoteStatesWithRetry cancels a
     // timed-out future rather than waiting on it, so a send CAN still be running when close() is reached;
@@ -897,7 +897,10 @@ class BootstrapElection {
     return queryPeer(peerId, url, dbFilter, attemptTimeoutMs, httpsClient, "{}");
   }
 
-  /** This node's {@code arcadedb.ssl.enabled}: under it a probe to a plain URL is a fallback (issue #9999). */
+  /**
+   * This node's {@code arcadedb.ssl.enabled}: under it a probe to a plain URL is a fallback (issue #9999). {@code false}
+   * with no server, which only a unit test that builds the election without one has.
+   */
   private boolean sslEnabled() {
     return server != null && server.getConfiguration().getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL);
   }

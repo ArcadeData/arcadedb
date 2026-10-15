@@ -4999,7 +4999,6 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         builder.header(LeaderForwardContext.FORWARDED_COMMAND_TIMEOUT_HEADER, Long.toString(configuredCommandTimeout));
     }
 
-
     // The client's request id, so the leader executes this write inside its own idempotency cache (issue #8323). The
     // HTTP handler that served the request on this node reserves the id too, but it caches only what the leader
     // answered: without the relay a retry after a lost answer - above all after the deadline below expires - that

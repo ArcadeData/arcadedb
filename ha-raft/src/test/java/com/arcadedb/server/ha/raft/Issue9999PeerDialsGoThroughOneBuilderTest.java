@@ -54,6 +54,7 @@ class Issue9999PeerDialsGoThroughOneBuilderTest {
       "\"X-ArcadeDB-Forwarded-User\"",  // the principal, spelled by hand
       "HttpRequest.newBuilder(",        // a request built without the credential and the notice
       ".openConnection()",              // the same, in the HttpURLConnection form
+      "toURL()",                        // any URL-level dial (openConnection, openStream) starts from one
   };
 
   @BeforeEach

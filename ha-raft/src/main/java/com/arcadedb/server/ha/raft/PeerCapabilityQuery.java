@@ -185,11 +185,8 @@ public final class PeerCapabilityQuery {
     final String url = chooseUrl(httpAddr, httpsAddr, useSSL);
     if (url == null)
       throw new IOException("no peer address available for a capability query");
-    // A plain URL under SSL is said once, by the latch every peer dial shares, and it matters MORE here: this query
-    // repeats every PeerCapabilityRegistry.REFRESH_PERIOD_MS for as long as the node leads, so on a cluster that enables
-    // SSL but declares no 'https' ports the cluster token would otherwise go out in clear text on this RPC indefinitely
-    // with nothing in the log to point at it. Named for the peer that first hit it, because the remedy is per-peer
-    // configuration (issue #9999 moved it off a latch of its own).
+    // A plain URL under SSL is said by PeerRequest, and matters most here: this query repeats for as long as the node
+    // leads (issue #9999 moved it off a latch of its own).
     final HttpRequest.Builder builder = PeerRequest.newRequest(url, useSSL, PeerCapabilityQuery.class,
             "asking '" + (expectedPeerId != null ? expectedPeerId : httpAddr) + "' for its capabilities", clusterToken)
         .timeout(Duration.ofMillis(timeoutMs))
