@@ -43,6 +43,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.math.BigDecimal;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
@@ -146,6 +147,35 @@ public class Issue10085GrpcEdgeVetoTest extends BaseGrpcServerTest {
    * The properties are part of the create, so the create listener sees the name it refuses: the call fails as a client error and
    * nothing is stored or linked.
    */
+  /**
+   * The streaming insert hands the edge properties to the create as name/value pairs instead of setting them one by one afterwards:
+   * a null, an int and a decimal property land on the edge exactly as before, and nothing but the row's own properties is stored.
+   */
+  @Test
+  void theStreamingInsertStoresNullIntegerAndDecimalPropertiesOnTheEdge() {
+    final Database database = getServerDatabase(0, getDatabaseName());
+    database.getSchema().getType(EDGE).createProperty("count", Type.INTEGER);
+    database.getSchema().getType(EDGE).createProperty("amount", Type.DECIMAL);
+
+    final GrpcRecord row = edgeRow("typed").toBuilder().putProperties("count", GrpcValue.newBuilder().setInt32Value(7).build())
+        .putProperties("amount", GrpcValue.newBuilder().setDecimalValue(GrpcDecimal.newBuilder().setUnscaled(1234).setScale(2)).build())
+        .putProperties("note", GrpcValue.getDefaultInstance()).build();
+
+    final InsertSummary summary = stub.bulkInsert(BulkInsertRequest.newBuilder().setOptions(InsertOptions.newBuilder()
+        .setDatabase(getDatabaseName()).setCredentials(credentials()).setTargetClass(EDGE)
+        .setTransactionMode(InsertOptions.TransactionMode.PER_BATCH).build()).addRows(row).build());
+    assertThat(summary.getInserted()).isEqualTo(1);
+    assertThat(summary.getFailed()).isZero();
+
+    try (final ResultSet rs = database.query("sql", "select from " + EDGE + " where name = 'typed'")) {
+      final Edge edge = rs.next().getEdge().orElseThrow();
+      assertThat(edge.get("count")).isEqualTo(7);
+      assertThat(edge.get("amount")).isEqualTo(new BigDecimal("12.34"));
+      assertThat(edge.getPropertyNames()).contains("name", "count", "amount", "note");
+      assertThat(edge.get("note")).isNull();
+    }
+  }
+
   @Test
   void aRefusedEdgeInAUnaryCreateIsAClientErrorAndStoresNothing() {
     assertThatThrownBy(() -> stub.createRecord(CreateRecordRequest.newBuilder().setDatabase(getDatabaseName()).setCredentials(credentials())
