@@ -1169,7 +1169,8 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
     // LeaderRedirectProtocol trailers (issue #6183) and a client can redirect itself, rather than reading prose:
     // gRPC has no equivalent of the HTTP handler's forwardToLeaderIfReplica, which proxies the request body to
     // the leader, so naming the leader is how this transport reproduces that gate.
-    if (e instanceof ServerIsNotTheLeaderException) {
+    // Found along the cause chain, as the mapper does: the engine wraps what it raises (issue #10089)
+    if (ServerIsNotTheLeaderException.refusalIn(e) != null) {
       final StatusRuntimeException mapped = GrpcErrorMapper.toStatusRuntimeException(e, operation, ha(), concealErrors());
       return new StatusException(mapped.getStatus(), mapped.getTrailers());
     }

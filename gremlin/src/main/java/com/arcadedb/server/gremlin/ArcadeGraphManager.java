@@ -449,8 +449,10 @@ public class ArcadeGraphManager implements GraphManager {
     // scans and its adjacency steps check the entry. The script or bytecode is described only if somebody lists it
     final ArcadeDBServer server = serverInstance;
     if (server != null) {
-      // The connection, carried to this thread with the user (issue #9962). None when the request did not come through the
-      // pipeline that publishes it: a custom channelizer, or a session, whose pool is not the one that carries it
+      // The connection, carried to this thread with the user (issue #9962): published by the channelizer's own handler, or, with
+      // any other channelizer, by the authorizer from the connection's authenticated user (issue #10105). A session never gets
+      // here: the authorizer refuses it, as its pool is not the one that binds the principal (GHSA-c287-v325-j5jx). None only
+      // for a request that carries no authenticated user of this server's, which authentication being required rules out
       final RunningQuery.Client client = GremlinAuthContext.getClient();
       final RunningQuery runningQuery = server.getRunningQueries()
           .register(databaseOf(msg), USER.get(), "gremlin", null, null, client != null ? client : RunningQuery.Client.NONE);

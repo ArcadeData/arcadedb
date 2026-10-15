@@ -82,10 +82,23 @@ public class ServerIsNotTheLeaderException extends NeedRetryException {
    * gives is the right one, which is what the HTTP handler does for that case too.
    */
   public static ServerIsNotTheLeaderException redirectIn(final Throwable error) {
+    final ServerIsNotTheLeaderException refusal = refusalIn(error);
+    return refusal != null && refusal.namesLeader() ? refusal : null;
+  }
+
+  /**
+   * The leader refusal {@code error} carries, whether or not it names a leader, or {@code null} when it is anything else
+   * (issue #10089): {@link #redirectIn} without the condition on the address, for a transport that can find the leader
+   * some other way than the refusal itself (gRPC asks the cluster's routing table) and so can redirect a refusal that
+   * names none. Found anywhere along the cause chain, and only when {@link ErrorCategory#of} reads the chain as
+   * {@link ErrorCategory#RETRY}, so a statement terminated on request keeps that verdict. A transport asks the question
+   * here or through {@link #redirectIn}, never with its own {@code instanceof}, which sees one frame of a chain the engine
+   * wraps at will.
+   */
+  public static ServerIsNotTheLeaderException refusalIn(final Throwable error) {
     if (ErrorCategory.of(error) != ErrorCategory.RETRY)
       return null;
-    final ServerIsNotTheLeaderException refusal = CauseChain.find(error, ServerIsNotTheLeaderException.class);
-    return refusal != null && refusal.namesLeader() ? refusal : null;
+    return CauseChain.find(error, ServerIsNotTheLeaderException.class);
   }
 
   /**
