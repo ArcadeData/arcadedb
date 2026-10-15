@@ -1066,7 +1066,9 @@ public class RemoteGrpcServer implements AutoCloseable {
     try {
       return body.run(withDeadline(adminServiceBlockingV2Stub(), defaultTimeoutMs));
     } catch (final StatusException e) {
-      // A TAKEN USER, TOKEN OR DATABASE NAME HAS ITS OWN TYPE; THE GENERIC MAPPING WOULD READ THE SAME STATUS AS A DUPLICATE KEY (#10075)
+      // A taken user, token or database name has its own type; the generic mapping would read the same status as a
+      // duplicate key (#10075). Every admin call is checked because the admin service sends a trailer-less
+      // ALREADY_EXISTS for a taken name only: a new RPC that sends it for anything else must add a trailer
       if (GrpcClientErrorMapper.isNameTaken(e))
         throw GrpcClientErrorMapper.toNameTakenException(e);
       final RuntimeException mapped = write ?

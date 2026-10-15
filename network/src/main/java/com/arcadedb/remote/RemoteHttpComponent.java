@@ -89,8 +89,8 @@ public class RemoteHttpComponent extends RWLockContext {
 
   /**
    * What the server calls a create that found its name taken: a user, a database and an API token (issue #10075). Matched
-   * by name for the same reason as above. The database name is sent by a server that has #10074; an older one answers a
-   * taken database with a plain IllegalArgumentException, which stays an untyped RemoteException. Every one of them is answered 409, which is also a lost update, a duplicate key
+   * by name for the same reason as above. The database name is sent by a server that has #10074; an older one
+   * answers a taken database with a plain IllegalArgumentException, which stays an untyped RemoteException. Every one of them is answered 409, which is also a lost update, a duplicate key
    * and a running backup, so the status alone cannot say it: the exception name has to.
    */
   private static final String USER_ALREADY_EXISTS_EXCEPTION     = "com.arcadedb.server.security.UserAlreadyExistsException";

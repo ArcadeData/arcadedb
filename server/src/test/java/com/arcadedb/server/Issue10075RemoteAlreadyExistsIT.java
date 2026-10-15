@@ -59,6 +59,21 @@ class Issue10075RemoteAlreadyExistsIT extends BaseGraphServerTest {
   }
 
   @Test
+  void aTakenDatabaseNameIsATypedAlreadyExistsException() {
+    final RemoteServer remote = remote();
+    final String name = "dup_typed_db_10075";
+    remote.create(name);
+    try {
+      assertThatThrownBy(() -> remote.create(name))
+          .isInstanceOf(RemoteAlreadyExistsException.class)
+          .hasMessageContaining("already exists")
+          .hasMessageContaining(name);
+    } finally {
+      remote.drop(name);
+    }
+  }
+
+  @Test
   void aTakenApiTokenNameIsATypedAlreadyExistsException() {
     final RemoteServer remote = remote();
     remote.createApiToken("dup_typed_token", "graph", 0, new JSONObject());
