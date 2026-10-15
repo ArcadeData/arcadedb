@@ -26,6 +26,7 @@ import com.arcadedb.schema.Schema;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 
@@ -62,8 +63,9 @@ public final class FullTextCorpusDeltas {
   }
 
   // A systematic cause (a schema that does not hold the index) would fail every delta of every transaction: one warning a minute
-  private static final long       FAILURE_LOG_THROTTLE_MS = 60_000L;
-  private static final AtomicLong LAST_FAILURE_LOG        = new AtomicLong(0L);
+  // PER INDEX, so a failure on one index does not hide the failure of another
+  private static final long                              FAILURE_LOG_THROTTLE_MS = 60_000L;
+  private static final ConcurrentHashMap<String, AtomicLong> LAST_FAILURE_LOG        = new ConcurrentHashMap<>();
 
   private final List<Entry> entries = new ArrayList<>(2);
   // Every document of a bulk load lands on the same index: remember it, so the common case costs a reference comparison
@@ -191,7 +193,10 @@ public final class FullTextCorpusDeltas {
           marked.add(metadata);
         }
       } catch (final RuntimeException e) {
-        // the apply of the delta reports it
+        // The apply of the delta runs the same lookup and reports the failure; said here too, so a scan that ran unmarked during
+        // that apply can be explained
+        LogManager.instance().log(FullTextCorpusDeltas.class, Level.FINE,
+            "Cannot mark the BM25 corpus counters of full-text index '%s' as being applied", e, delta.indexName());
       }
     return marked;
   }
@@ -263,8 +268,9 @@ public final class FullTextCorpusDeltas {
 
   private static void logFailure(final String indexName, final RuntimeException e) {
     final long now = System.currentTimeMillis();
-    final long last = LAST_FAILURE_LOG.get();
-    if (now - last > FAILURE_LOG_THROTTLE_MS && LAST_FAILURE_LOG.compareAndSet(last, now))
+    final AtomicLong lastLogged = LAST_FAILURE_LOG.computeIfAbsent(indexName, name -> new AtomicLong(0L));
+    final long last = lastLogged.get();
+    if (now - last > FAILURE_LOG_THROTTLE_MS && lastLogged.compareAndSet(last, now))
       LogManager.instance().log(FullTextCorpusDeltas.class, Level.WARNING,
           "Cannot apply the BM25 corpus counters of full-text index '%s' (further failures are not logged for a minute)", e,
           indexName);
