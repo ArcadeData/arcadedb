@@ -1199,10 +1199,12 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
         // The properties are set on the edge BEFORE it is saved, so they are part of the create: a listener's veto and a unique index
         // that refuses one of them refuse the whole edge, and nothing is left wired in an externally managed transaction (issue #10085)
-        final MutableEdge e = ((DatabaseInternal) db).getGraphEngine().newEdgeReportingVeto(outV, cls, inEl, edge -> props.forEach((k, val) -> {
+        // (an embedded property is created on its owner, which is why the values cannot be converted before the edge exists)
+        final Consumer<MutableEdge> setProperties = edge -> props.forEach((k, val) -> {
           if (!"out".equals(k) && !"in".equals(k))
             edge.set(k, toJavaForProperty(db, edge, dt, k, val));
-        }));
+        });
+        final MutableEdge e = ((DatabaseInternal) db).getGraphEngine().newEdgeInitializedReportingVeto(outV, cls, inEl, setProperties);
         if (e == null)
           throw vetoed(cls);
 

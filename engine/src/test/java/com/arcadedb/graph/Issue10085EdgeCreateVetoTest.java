@@ -140,6 +140,41 @@ class Issue10085EdgeCreateVetoTest extends TestHelper {
     assertThat(third().countEdges(Vertex.DIRECTION.IN, E)).isEqualTo(1L);
   }
 
+  /** The initializer sets the properties BEFORE the save, so the listener sees them and the veto refuses the whole create. */
+  @Test
+  void theInitializedFormSetsThePropertiesBeforeTheSaveSoTheListenerSeesThem() {
+    database.transaction(() -> source().newEdge(E, target, "tag", KEPT));
+
+    final MutableEdge[] answers = new MutableEdge[2];
+    database.transaction(() -> {
+      final GraphEngine engine = ((DatabaseInternal) database).getGraphEngine();
+      answers[0] = engine.newEdgeInitializedReportingVeto(source(), E, third, edge -> edge.set("tag", REFUSED));
+      answers[1] = engine.newEdgeInitializedReportingVeto(source(), E, third, edge -> edge.set("tag", KEPT));
+    });
+
+    assertThat(answers[0]).isNull();
+    assertThat(answers[1]).isNotNull();
+    assertThat(answers[1].getString("tag")).isEqualTo(KEPT);
+    assertThat(edgeCount(E)).isEqualTo(2L);
+    assertThat(third().countEdges(Vertex.DIRECTION.IN, E)).isEqualTo(1L);
+  }
+
+  /** An initializer that throws leaves nothing stored or wired, on a record-backed and on a lightweight edge type. */
+  @ParameterizedTest
+  @ValueSource(strings = { E, LIGHT })
+  void anInitializerThatThrowsLeavesNothingStoredOrWired(final String edgeType) {
+    final Throwable failure = attempt(() -> ((DatabaseInternal) database).getGraphEngine()
+        .newEdgeInitializedReportingVeto(source(), edgeType, third, edge -> {
+          throw new IllegalStateException("boom");
+        }));
+
+    assertThat(failure).isInstanceOf(IllegalStateException.class);
+    assertThat(source().countEdges(Vertex.DIRECTION.OUT, edgeType)).isZero();
+    assertThat(third().countEdges(Vertex.DIRECTION.IN, edgeType)).isZero();
+    if (E.equals(edgeType))
+      assertThat(edgeCount(E)).isZero();
+  }
+
   /** The batch form must not wire a refused edge, and answers only the edges it created. */
   @Test
   void theBatchFormSkipsTheRefusedEdgesAndWiresTheOthers() {

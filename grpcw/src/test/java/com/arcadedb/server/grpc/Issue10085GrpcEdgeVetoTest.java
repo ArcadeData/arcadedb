@@ -20,9 +20,12 @@ package com.arcadedb.server.grpc;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
+import com.arcadedb.database.Document;
 import com.arcadedb.event.BeforeRecordCreateListener;
 import com.arcadedb.event.BeforeRecordUpdateListener;
+import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.schema.Type;
 import com.arcadedb.query.sql.executor.ResultSet;
 import io.grpc.CallOptions;
 import io.grpc.Channel;
@@ -59,6 +62,7 @@ public class Issue10085GrpcEdgeVetoTest extends BaseGrpcServerTest {
   private static final String VERTEX = "VtxVeto10085";
   private static final String EDGE   = "EdgeVeto10085";
   private static final String REFUSING_EDGE = "EdgeRefusing10085";
+  private static final String META          = "Meta10085";
 
   private static final Metadata.Key<String> USER_HEADER     = Metadata.Key.of("x-arcade-user", Metadata.ASCII_STRING_MARSHALLER);
   private static final Metadata.Key<String> PASSWORD_HEADER = Metadata.Key.of("x-arcade-password", Metadata.ASCII_STRING_MARSHALLER);
@@ -176,6 +180,29 @@ public class Issue10085GrpcEdgeVetoTest extends BaseGrpcServerTest {
     assertThat(count(EDGE)).isEqualTo(1L);
     assertThat(edgeCountOf(from)).isEqualTo(1L);
     assertThat(edgeCountOfIn(to)).isEqualTo(1L);
+  }
+
+  /**
+   * The properties are converted on the edge BEFORE it is saved: a LINK needs nothing of it, an EMBEDDED document is created on its
+   * owner, which has no identity yet. Both must land on the edge the call creates.
+   */
+  @Test
+  void embeddedAndLinkPropertiesAreSetOnTheUnsavedEdge() {
+    final Database database = getServerDatabase(0, getDatabaseName());
+    database.getSchema().createDocumentType(META);
+    database.getSchema().getType(EDGE).createProperty("meta", Type.EMBEDDED).setOfType(META);
+    database.getSchema().getType(EDGE).createProperty("ref", Type.LINK);
+
+    final GrpcRecord row = edgeRow("kept").toBuilder()
+        .putProperties("meta", GrpcValue.newBuilder().setEmbeddedValue(GrpcEmbedded.newBuilder().setType(META).putFields("note", string("hello"))).build())
+        .putProperties("ref", GrpcValue.newBuilder().setLinkValue(GrpcLink.newBuilder().setRid(to)).build()).build();
+
+    final String rid = stub.createRecord(CreateRecordRequest.newBuilder().setDatabase(getDatabaseName()).setCredentials(credentials())
+        .setType(EDGE).setRecord(row).build()).getRid();
+
+    final Edge edge = database.lookupByRID(database.newRID(rid), true).asEdge();
+    assertThat(((Document) edge.get("meta")).getString("note")).isEqualTo("hello");
+    assertThat(edge.get("ref").toString()).isEqualTo(to);
   }
 
   /** A listener that refuses the create itself: newEdge raises the refusal, which reaches the client as INVALID_ARGUMENT. */
