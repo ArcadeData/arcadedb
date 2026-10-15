@@ -19,6 +19,7 @@
 package com.arcadedb.server.monitor;
 
 import com.arcadedb.ContextConfiguration;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.event.ServerEventLog;
 import com.arcadedb.utility.FileUtils;
@@ -32,7 +33,6 @@ import java.lang.management.MemoryUsage;
 import java.util.Locale;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
-import java.util.logging.Logger;
 
 /**
  * Monitor ArcadeDB's server health: free disk space on the databases' filesystem, available heap, and the
@@ -49,7 +49,6 @@ import java.util.logging.Logger;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class ServerMonitor {
-	private static final Logger LOGGER = Logger.getLogger(ServerMonitor.class.getName());
 	private static final int INTERVAL_TIME = 10_000;
 	private static final int MINS_30 = 30 * 60 * 1_000;
 	private static final int HOURS_24 = 24 * 60 * 60 * 1_000;
@@ -90,15 +89,15 @@ public class ServerMonitor {
 				hotspotRuntimeMBean = new ObjectName("sun.management:type=HotspotRuntime");
 				if (mBeanServer.isRegistered(hotspotRuntimeMBean)) {
 					safepointMonitoringAvailable = true;
-					LOGGER.log(Level.FINE, "HotSpot safepoint monitoring is available");
+					LogManager.instance().log(this, Level.FINE, "HotSpot safepoint monitoring is available");
 				}
 			}
 			catch (Exception e) {
-				LOGGER.log(Level.FINE, "HotSpot safepoint monitoring is not available: " + e.getMessage());
+				LogManager.instance().log(this, Level.FINE, "HotSpot safepoint monitoring is not available: %s", e.getMessage());
 			}
 		}
 		catch (Exception e) {
-			LOGGER.log(Level.WARNING, "Failed to initialize JMX monitoring: " + e.getMessage(), e);
+			LogManager.instance().log(this, Level.WARNING, "Failed to initialize JMX monitoring: %s", e, e.getMessage());
 		}
 	}
 
@@ -125,7 +124,7 @@ public class ServerMonitor {
 			}
 			catch (Exception e) {
 				// Log the error but continue monitoring
-				LOGGER.log(Level.WARNING, "Error during server monitoring", e);
+				LogManager.instance().log(this, Level.WARNING, "Error during server monitoring", e);
 			}
 		}
 	}
@@ -152,7 +151,7 @@ public class ServerMonitor {
 			}
 		}
 		catch (SecurityException e) {
-			LOGGER.log(Level.FINE, "Cannot check disk space due to security restrictions", e);
+			LogManager.instance().log(this, Level.FINE, "Cannot check disk space due to security restrictions", e);
 		}
 	}
 
@@ -227,12 +226,12 @@ public class ServerMonitor {
 					// server is already under memory pressure can cascade into HA election timeouts. Log the
 					// critical condition and leave heap management to the JVM collector.
 					if (heapAvailablePerc < 10)
-						LOGGER.log(Level.WARNING, "Available heap RAM is critically low; relying on the JVM garbage collector");
+						LogManager.instance().log(this, Level.WARNING, "Available heap RAM is critically low; relying on the JVM garbage collector");
 				}
 			}
 		}
 		catch (Exception e) {
-			LOGGER.log(Level.FINE, "Error checking heap memory", e);
+			LogManager.instance().log(this, Level.FINE, "Error checking heap memory", e);
 		}
 	}
 
@@ -260,7 +259,7 @@ public class ServerMonitor {
 		catch (Exception e) {
 			// If we can't access safepoint metrics, disable future attempts
 			safepointMonitoringAvailable = false;
-			LOGGER.log(Level.FINE, "Cannot access HotSpot safepoint metrics, disabling this monitoring", e);
+			LogManager.instance().log(this, Level.FINE, "Cannot access HotSpot safepoint metrics, disabling this monitoring", e);
 		}
 	}
 
@@ -274,7 +273,7 @@ public class ServerMonitor {
 			}
 			catch (InterruptedException e) {
 				Thread.currentThread().interrupt();
-				LOGGER.log(Level.FINE, "Interrupted while stopping monitor thread", e);
+				LogManager.instance().log(this, Level.FINE, "Interrupted while stopping monitor thread", e);
 			}
 		}
 	}

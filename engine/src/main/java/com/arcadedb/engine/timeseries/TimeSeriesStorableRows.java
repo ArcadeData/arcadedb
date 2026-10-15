@@ -20,6 +20,7 @@ package com.arcadedb.engine.timeseries;
 
 import com.arcadedb.database.Database;
 
+import java.io.IOException;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Set;
@@ -38,6 +39,12 @@ import java.util.Set;
  * <p>
  * A row is refused at its FIRST unreadable column, in schema order, and the columns after it are not read: one reason per refused
  * row.
+ * <p>
+ * <b>This is the only way the client-facing paths reach the engine's raw-grid {@code appendBatch}</b> (issue #10107): the grid
+ * {@link #convert} builds is appended with {@link #appendTo}, and no production code outside this class and the engine calls
+ * {@code appendBatch(long[], Object[][])} with a grid of its own. The JSONL importer was the third caller and the only one that
+ * handed the engine the raw values of its source, so text for a typed column aborted the whole import; a fourth path would have
+ * been in the same position, which {@code Issue10107AppendBatchCallersConvertTest} now rules out.
  * <p>
  * <b>Shared tags.</b> A caller whose TAG values are the same on every row of the batch - Prometheus, where the labels belong to the
  * series and not to the sample - says so with {@code sharedTags}. Each TAG column is then read and converted once, from row 0, and
@@ -163,6 +170,16 @@ public final class TimeSeriesStorableRows {
     if (unreadable.size() < TimeSeriesGateway.MAX_REPORTED_UNREADABLE_VALUES)
       unreadable.add(measurement + "." + col.getName() + " (" + (col.getRole() == ColumnDefinition.ColumnRole.TAG ? "tag" : "field")
           + "): " + e.getMessage());
+  }
+
+  /**
+   * Appends the rows kept to {@code engine}. A batch with nothing kept appends nothing.
+   *
+   * @throws IOException when the engine cannot append the rows
+   */
+  public void appendTo(final TimeSeriesEngine engine) throws IOException {
+    if (size > 0)
+      engine.appendBatch(timestamps, columnValues);
   }
 
   /** The timestamps of the rows kept, {@link #size()} long. */

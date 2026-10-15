@@ -38,7 +38,6 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.logging.Level;
-import java.util.logging.Logger;
 
 public class FileManager {
   private final        ComponentFile.MODE                        mode;
@@ -202,7 +201,7 @@ public class FileManager {
   public synchronized boolean startRecordingChanges() {
     if (recordedChanges != null) {
       // Level-guarded because a contended HA caller polls this method until the session frees up.
-      if (Logger.getLogger(getClass().getName()).isLoggable(Level.FINE))
+      if (LogManager.instance().isLoggable(this, Level.FINE))
         LogManager.instance().log(this, Level.FINE,
             "startRecordingChanges denied: a session is already active with %d entries",
             null, recordedChanges.size());
@@ -263,7 +262,7 @@ public class FileManager {
   }
 
   public synchronized void stopRecordingChanges() {
-    if (recordedChanges != null && Logger.getLogger(getClass().getName()).isLoggable(Level.FINE)) {
+    if (recordedChanges != null && LogManager.instance().isLoggable(this, Level.FINE)) {
       final StringBuilder dump = new StringBuilder();
       for (final FileChange c : recordedChanges) {
         if (!dump.isEmpty())

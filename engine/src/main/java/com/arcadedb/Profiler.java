@@ -47,7 +47,7 @@ public class Profiler {
    */
   private static final String[] DB_STAT_KEYS = { "writeTx", "readTx", "txRollbacks", "createRecord", "readRecord",
       "updateRecord", "deleteRecord", "queries", "commands", "scanType", "scanBucket", "iterateType", "iterateBucket",
-      "countType", "countBucket", "indexCompactions", "recountPublishesRefused" };
+      "countType", "countBucket", "indexCompactions", "recountPublishesRefused", "lightEdgeCensusFallbacks" };
 
   // Indexes into the per-database accumulator array. Entries [0, MONOTONIC_STATS) are the ones carried across a
   // database close (see retainedStats); the rest are instantaneous and are re-read from the open databases only.
@@ -71,22 +71,25 @@ public class Profiler {
   // the scan (#8649). Monotonic, and inside the retained range: a follower whose counters keep being refused is
   // exactly the one an operator alerts on, and a close must not make that history disappear.
   private static final int STAT_RECOUNT_PUBLISHES_REFUSED = 16;
-  private static final int STAT_WAL_PAGES_WRITTEN = 17;
-  private static final int STAT_WAL_BYTES_WRITTEN = 18;
+  // #10100: lightweight-edge census builds that failed, each leaving every edge of one list to walk it alone. Monotonic and
+  // inside the retained range, for the reason above: the databases that keep failing are the ones an operator alerts on.
+  private static final int STAT_LIGHT_EDGE_CENSUS_FALLBACKS = 17;
+  private static final int STAT_WAL_PAGES_WRITTEN = 18;
+  private static final int STAT_WAL_BYTES_WRITTEN = 19;
   // #6526: monotonic, and it belongs INSIDE the retained range - a durability-flag flipper is exactly the kind of
   // caller (a bulk load through GraphBatch) that opens a database, does its work and closes it, so a counter that
   // went back to zero on that close would be zero every time anybody looked at it.
-  private static final int STAT_ASYNC_BOUNDARY_COMMITS = 19;
-  private static final int MONOTONIC_STATS        = 20;
-  private static final int STAT_WAL_TOTAL_FILES   = 20;
-  private static final int STAT_OPEN_FILES        = 21;
-  private static final int STAT_MAX_OPEN_FILES    = 22;
-  private static final int STAT_ASYNC_QUEUE       = 23;
-  private static final int STAT_ASYNC_PARALLEL    = 24;
+  private static final int STAT_ASYNC_BOUNDARY_COMMITS = 20;
+  private static final int MONOTONIC_STATS        = 21;
+  private static final int STAT_WAL_TOTAL_FILES   = 21;
+  private static final int STAT_OPEN_FILES        = 22;
+  private static final int STAT_MAX_OPEN_FILES    = 23;
+  private static final int STAT_ASYNC_QUEUE       = 24;
+  private static final int STAT_ASYNC_PARALLEL    = 25;
   // #6526 review round 4: instantaneous, and firmly on this side of MONOTONIC_STATS - it returns to zero as the
   // retired workers finish, so carrying it across a close would make a gauge that only ever grows.
-  private static final int STAT_ASYNC_RETIRING    = 25;
-  private static final int STATS_COUNT            = 26;
+  private static final int STAT_ASYNC_RETIRING    = 26;
+  private static final int STATS_COUNT            = 27;
 
   /**
    * Registered database INSTANCES, compared by identity.
@@ -324,6 +327,7 @@ public class Profiler {
     final long countBucket = dbStats[STAT_COUNT_BUCKET];
     final long indexCompactions = dbStats[STAT_INDEX_COMPACTIONS];
     final long recountPublishesRefused = dbStats[STAT_RECOUNT_PUBLISHES_REFUSED];
+    final long lightEdgeCensusFallbacks = dbStats[STAT_LIGHT_EDGE_CENSUS_FALLBACKS];
 
     // PageManager is a JVM-wide singleton; counters are global, not per-DB.
     // Reading them once outside the loop avoids multiplying by databases.size().
@@ -427,6 +431,8 @@ public class Profiler {
     json.put("indexCompactions", new JSONObject().put("count", indexCompactions));
     // #9235: a follower whose count(*) keeps being a full scan shows up here as a steadily climbing rate (#8649)
     json.put("recountPublishesRefused", new JSONObject().put("count", recountPublishesRefused));
+    // #10100: a climbing rate is a database whose super-node lists are being walked edge by edge instead of counted once
+    json.put("lightEdgeCensusFallbacks", new JSONObject().put("count", lightEdgeCensusFallbacks));
 
     // #6116: the point-in-time snapshot windows of #6075. The five instantaneous readings are per-window state and
     // go back to zero when the last window closes (so they must never be read as counters, #5636); the three totals
@@ -663,6 +669,7 @@ public class Profiler {
       final long countBucket = dbStats[STAT_COUNT_BUCKET];
       final long indexCompactions = dbStats[STAT_INDEX_COMPACTIONS];
       final long recountPublishesRefused = dbStats[STAT_RECOUNT_PUBLISHES_REFUSED];
+      final long lightEdgeCensusFallbacks = dbStats[STAT_LIGHT_EDGE_CENSUS_FALLBACKS];
 
       // PageManager is a JVM-wide singleton; read once, not per-DB.
       final PageManager.PPageManagerStats pStats = PageManager.INSTANCE.getStats();
@@ -740,6 +747,8 @@ public class Profiler {
           iterateBucket, countType, countBucket));
       // #9235: recomputes of a bucket counter that could not be cached because a replicated apply ran under the scan
       buffer.append("%n    recountPublishesRefused=%d".formatted(recountPublishesRefused));
+      // #10100: lightweight-edge lists the census could not count, so that each of their edges walks the list alone
+      buffer.append("%n    lightEdgeCensusFallbacks=%d".formatted(lightEdgeCensusFallbacks));
 
       buffer.append("%n QUERY-HEAP reserved=%s peak=%s budget=%s refusals=%d scanShrinks=%d".formatted(
           FileUtils.getSizeAsString(QueryHeapBudget.getReservedBytes()), FileUtils.getSizeAsString(QueryHeapBudget.getPeakReservedBytes()),

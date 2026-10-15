@@ -31,7 +31,8 @@ public class TriggerImpl implements Trigger {
   private final String name;
   private final TriggerTiming timing;
   private final TriggerEvent event;
-  private final String typeName;
+  // volatile, not final: a rename of the type rewrites it in place (#10096), see retargetType()
+  private volatile String typeName;
   private final ActionType actionType;
   private final String actionCode;
 
@@ -76,6 +77,16 @@ public class TriggerImpl implements Trigger {
   @Override
   public String getTypeName() {
     return typeName;
+  }
+
+  /**
+   * The type this trigger is bound to was renamed (issue #10096). Done in place because the listener adapter registered on the
+   * type holds THIS instance, and the name is what the schema persists (a reload binds the trigger by it) and what unregistering
+   * its listener looks the type up by: left on the old name, {@code DROP TRIGGER} could not find the type and the listener kept
+   * firing.
+   */
+  void retargetType(final String newTypeName) {
+    typeName = newTypeName;
   }
 
   @Override

@@ -23,7 +23,19 @@ import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 import java.util.logging.Level;
 
 /**
- * Logger interface that avoids using varargs to remove garbage on the GC
+ * Logger interface that avoids using varargs to remove garbage on the GC.
+ * <p>
+ * The two {@code log} forms are ONE operation with two ways for the arguments to arrive (issues #9967, #10106), and they
+ * agree on what makes a message a format string: the caller supplying arguments, never the values supplied.
+ * <ul>
+ *   <li>the fixed-arity form is reached with at least {@code arg1} supplied, and the slots after the last argument the
+ *   call passed are {@code null} padding. A {@code null} {@code arg1} is an argument like any other and renders as
+ *   {@code null}; an implementation must not infer "no arguments" from every slot being null;</li>
+ *   <li>the varargs form is reached with no argument (an empty array) or with more than the fixed-arity form takes. An
+ *   empty or {@code null} array is a message without arguments, published as written; any element, null or not, makes it a
+ *   format string.</li>
+ * </ul>
+ * {@link LogManager} is the only producer of the fixed-arity call and keeps to this contract.
  */
 @ExcludeFromJacocoGeneratedReport
 public interface Logger {

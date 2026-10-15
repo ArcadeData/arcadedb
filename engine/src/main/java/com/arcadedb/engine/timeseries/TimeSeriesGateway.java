@@ -310,7 +310,7 @@ public final class TimeSeriesGateway {
         if (rows.size() == 0)
           continue;
 
-        engine.appendBatch(rows.timestamps(), rows.columnValues());
+        rows.appendTo(engine);
         inserted += rows.size();
       }
       if (beganHere)

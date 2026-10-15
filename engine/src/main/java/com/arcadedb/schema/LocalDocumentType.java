@@ -452,6 +452,9 @@ public class LocalDocumentType implements DocumentType {
    */
   private void renameAndPublish(final String newName) {
     final String oldName = name;
+    // BEFORE ANYTHING MOVES: A VIEW OR AN AGGREGATE THAT THE RENAME WOULD LEAVE NAMING A TYPE THAT NO LONGER EXISTS REFUSES IT (#10096)
+    schema.checkTypeRenameKeepsDependants(this, newName);
+
     final DatabaseInternal database = ((DatabaseInternal) schema.getDatabase()).getWrappedDatabaseInstance();
     // Best effort: leadership or the peer set can still change before the session opens. A refusal from the session is
     // then met by the rollback below; this check only keeps the common refusal from moving any file at all.
@@ -465,6 +468,8 @@ public class LocalDocumentType implements DocumentType {
     try {
       schema.recordFileChanges(() -> {
         sessionStarted[0] = true;
+        // THE DEPENDANTS FOLLOW THE NEW NAME HERE, UNDER THE WRITE LOCK AND BEFORE THE SESSION SAVES THE SCHEMA (#10096)
+        schema.carryTypeRenameToDependants(oldName, newName);
         final FileManager fileManager = database.getFileManager();
         // The type's files as they are NOW, not only the ones listed before the move: a component attached to the type
         // in between (an index built concurrently) was moved with the others but has no "before" name. Recording a file
