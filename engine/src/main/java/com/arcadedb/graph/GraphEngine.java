@@ -332,7 +332,8 @@ public class GraphEngine {
   }
 
   /**
-   * {@link #newEdgeReportingVeto(Vertex, String, Identifiable, Object...)} for a caller that cannot name the edge's properties as
+   * {@link #newEdgeReportingVeto(Vertex, String, Identifiable, Object...)} (a distinct name, so a bare {@code null} or a callback
+   * variable is never read as an edge property) for a caller that cannot name the edge's properties as
    * values before the edge exists, because building them needs the edge itself (an embedded document is created on its owner).
    * {@code initializer} sets them on the new edge before it is saved, so they are part of the CREATE: a listener's veto and a unique
    * index that refuses one of them both refuse the whole edge, and nothing is left wired the way a create followed by an update
@@ -343,8 +344,8 @@ public class GraphEngine {
    *
    * @return the created edge, or {@code null} when a before-create listener vetoed it
    */
-  public MutableEdge newEdgeReportingVeto(final Vertex fromVertex, final String edgeTypeName, final Identifiable toVertex,
-                                          final Consumer<MutableEdge> initializer) {
+  public MutableEdge newEdgeInitializedReportingVeto(final Vertex fromVertex, final String edgeTypeName, final Identifiable toVertex,
+                                                     final Consumer<MutableEdge> initializer) {
     return createEdge(getMostUpdatedVertex(asVertexInternal(fromVertex)), edgeTypeName, toVertex, initializer, NO_PROPERTIES);
   }
 
