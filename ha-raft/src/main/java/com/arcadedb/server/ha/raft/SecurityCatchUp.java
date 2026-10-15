@@ -21,6 +21,7 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.HAServerPlugin;
+import com.arcadedb.server.PeerRequest;
 import com.arcadedb.server.monitor.PoolMetrics;
 import com.arcadedb.utility.DedicatedThreadPool.PoolStats;
 

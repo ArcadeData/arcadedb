@@ -26,6 +26,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ForwardedRequestIdContext;
 import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.LeaderForwardContext;
+import com.arcadedb.server.PeerRequest;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.IdempotencyCache;
 import com.arcadedb.server.security.ServerSecurityUser;
@@ -329,19 +330,35 @@ public final class LeaderCommandForwarder {
           .toString());
     }
 
-    // Transport.newRequest is the only way this class builds a request, and it attaches the response deadline
-    // unconditionally - so no call site can end up issuing an unbounded forward (issue #7507).
-    final HttpRequest.Builder builder = transport.newRequest(leaderUri, exchange.getRequestMethod().toString(), body,
-        longRunningCommand);
-
     // The secret cluster members authenticate to each other with, and the only thing that makes the one-hop
     // marker below believable on the far end. Resolved through the shared helper the receiving node uses, so
     // the two ends of the same hop cannot read different values - this used to read the raw
     // arcadedb.ha.clusterToken setting, which is empty on every cluster that did not declare a token
     // explicitly, while the receiver checked the token derived at startup (issue #7516).
     final String clusterToken = HAServerPlugin.effectiveClusterToken(httpServer.getServer());
-    if (clusterToken != null && !clusterToken.isBlank()) {
-      builder.header("X-ArcadeDB-Cluster-Token", clusterToken);
+
+    // The credential goes through PeerRequest, the one place every peer dial spells it (issue #10068), in the only two shapes this
+    // forward has. A per-node session token ("Bearer AU-") means nothing to the leader, so this node names the principal instead
+    // and the cluster token is what makes that substitution believable: the pair. Basic auth or an API token is stateless and the
+    // leader can check it itself, so it is relayed unchanged rather than swapped for a forwarded-user assertion - an API token
+    // carries scopes that resolving the user by name on the leader would silently discard - with the token proving the hop and
+    // deliberately no principal beside it, which is what keeps the leader validating what the client actually sent (issue #7516).
+    final boolean sessionToken = authHeader != null && authHeader.startsWith("Bearer AU-");
+    final String sessionUser = sessionToken && user != null ? user.getName() : null;
+    final String principal = sessionUser != null && !sessionUser.isBlank() ? sessionUser : null;
+    final boolean sslEnabled = httpServer.getServer().getConfiguration().getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL);
+    final HttpRequest.Builder start = principal != null ?
+        PeerRequest.newRequest(leaderUri.toString(), sslEnabled, LeaderCommandForwarder.class,
+            "forwarding a server command to the leader", clusterToken, principal) :
+        PeerRequest.newRelayRequest(leaderUri.toString(), sslEnabled, LeaderCommandForwarder.class,
+            "forwarding a server command to the leader", clusterToken, sessionToken ? null : authHeader);
+
+    // Transport.newRequest is the only way this class turns that start into a request, and it attaches the response deadline
+    // unconditionally - so no call site can end up issuing an unbounded forward (issue #7507).
+    final HttpRequest.Builder builder = transport.newRequest(start, exchange.getRequestMethod().toString(), body,
+        longRunningCommand);
+
+    if (PeerRequest.hasToken(clusterToken)) {
       // One hop only: whichever node this address really names refuses the command if it is not the leader,
       // instead of resolving the same address and forwarding it again (issue #6191). Set here, beside the
       // token and never without it, because that is the only form in which the receiving node trusts it - a
@@ -374,19 +391,6 @@ public final class LeaderCommandForwarder {
     relayHeader(exchange, builder, ACCEPT_HEADER);
     // The label the client gave the work, so the leader lists the statement it runs under it too (issue #9680)
     relayHeader(exchange, builder, AbstractServerHttpHandler.QUERY_TAG_HEADER);
-
-    if (authHeader != null && authHeader.startsWith("Bearer AU-")) {
-      // Per-node session token: the leader cannot resolve it, so this node names the principal instead. The
-      // cluster token above is what makes that substitution believable.
-      final String userName = user != null ? user.getName() : null;
-      if (userName != null)
-        builder.header("X-ArcadeDB-Forwarded-User", userName);
-    } else if (authHeader != null)
-      // Basic auth or an API token: stateless, and the leader can check them itself, so they are relayed
-      // unchanged rather than swapped for a forwarded-user assertion - an API token carries scopes that
-      // resolving the user by name on the leader would silently discard. Deliberately with no forwarded-user
-      // header, which is what keeps the leader validating what the client actually sent (issue #7516).
-      builder.header("Authorization", authHeader);
 
     // Sent on the client the dial chose - the plugin's trust-carrying one on an HTTPS cluster, this
     // transport's own bounded client otherwise - while the deadline and the 504 translation stay here, so
@@ -567,13 +571,13 @@ public final class LeaderCommandForwarder {
     /**
      * Builds the request to send to the leader, with the response deadline already attached.
      *
+     * @param start  the request as {@link PeerRequest} started it: the leader's URL and the credential (issue #10068)
      * @param method the HTTP method of the request being forwarded
      * @param body   the body to relay, or null for a request that has none
      */
-    HttpRequest.Builder newRequest(final URI leaderUri, final String method, final String body,
+    HttpRequest.Builder newRequest(final HttpRequest.Builder start, final String method, final String body,
         final boolean longRunningCommand) {
-      final HttpRequest.Builder builder = HttpRequest.newBuilder().uri(leaderUri)
-          .timeout(responseTimeout(longRunningCommand));
+      final HttpRequest.Builder builder = start.timeout(responseTimeout(longRunningCommand));
 
       if (body != null) {
         builder.header("Content-Type", "application/json");

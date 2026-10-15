@@ -789,6 +789,11 @@ public class ServerDatabase implements DatabaseInternal {
   }
 
   @Override
+  public boolean createMissingTypeOnTheLeader(final String typeName, final String createStatement) {
+    return current().createMissingTypeOnTheLeader(typeName, createStatement);
+  }
+
+  @Override
   public void saveConfiguration() throws IOException {
     current().saveConfiguration();
   }

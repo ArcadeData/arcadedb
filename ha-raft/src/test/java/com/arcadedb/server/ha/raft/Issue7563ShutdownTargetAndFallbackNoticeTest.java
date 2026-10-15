@@ -21,6 +21,7 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.PeerRequest;
 import com.arcadedb.server.ServerException;
 import com.arcadedb.server.TestServerHelper;
 

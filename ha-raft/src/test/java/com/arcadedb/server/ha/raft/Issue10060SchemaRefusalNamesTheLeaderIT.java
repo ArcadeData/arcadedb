@@ -19,7 +19,6 @@
 package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.CauseChain;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import org.junit.jupiter.api.Test;
@@ -34,9 +33,9 @@ import static org.assertj.core.api.Assertions.catchThrowable;
  * (issue #6191). The refusal then sent the client back to the node that had just refused it. The forwarding refusals
  * already fall back to the leader's server name in that state; the schema refusal now does the same.
  * <p>
- * Reached the way a Bolt or Postgres client reaches it since issue #10040: an openCypher {@code CREATE} with a label no
- * type exists for yet, inside a transaction the client opened on the follower. The statement runs in that transaction
- * instead of being forwarded, and creating the label's type is a schema change only the leader may make.
+ * Reached by an embedded caller that creates a type on the follower. An openCypher {@code CREATE} with a label no type exists
+ * for yet, inside a transaction the client opened on the follower, used to reach it too (issue #10040) and does not any more:
+ * the leader creates the type for the statement (issue #10067, {@link Issue10067ImplicitTypeInClientTransactionOnAFollowerIT}).
  */
 class Issue10060SchemaRefusalNamesTheLeaderIT extends BaseRaftHATest {
 
@@ -80,18 +79,10 @@ class Issue10060SchemaRefusalNamesTheLeaderIT extends BaseRaftHATest {
 
   private ServerIsNotTheLeaderException schemaRefusalOn(final int follower, final String label) {
     final Database db = getServerDatabase(follower, getDatabaseName());
-    db.begin();
-    try {
-      // What the Bolt and Postgres executors mark on the transaction a client opens with BEGIN (issue #10040)
-      ((DatabaseInternal) db).getTransaction().setClientManaged(true);
-      final Throwable error = catchThrowable(() -> db.command("opencypher", "CREATE (n:" + label + " {name: 'refused'})"));
-      final ServerIsNotTheLeaderException refusal = CauseChain.find(error, ServerIsNotTheLeaderException.class);
-      assertThat(refusal).as("creating a type on a follower must be refused as a leader refusal, got %s", error).isNotNull();
-      assertThat(refusal.getMessage()).contains("Changes to the schema must be executed on the leader server");
-      return refusal;
-    } finally {
-      if (db.isTransactionActive())
-        db.rollback();
-    }
+    final Throwable error = catchThrowable(() -> db.getSchema().createVertexType(label));
+    final ServerIsNotTheLeaderException refusal = CauseChain.find(error, ServerIsNotTheLeaderException.class);
+    assertThat(refusal).as("creating a type on a follower must be refused as a leader refusal, got %s", error).isNotNull();
+    assertThat(refusal.getMessage()).contains("Changes to the schema must be executed on the leader server");
+    return refusal;
   }
 }

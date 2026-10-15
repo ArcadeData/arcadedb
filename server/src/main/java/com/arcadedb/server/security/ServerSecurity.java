@@ -883,7 +883,7 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
       throw new ServerIsNotTheLeaderException("Security user mutation '" + operation
           + "' must run on the cluster leader and this server is not it: run it on the leader, or through a route that"
           + " forwards to it (the /api/v1/server/users REST routes, or openCypher CREATE/ALTER/DROP USER)",
-          ha.getLeaderAddress(), true);
+          ha.getLeaderForRefusal(), true);
   }
 
   /**

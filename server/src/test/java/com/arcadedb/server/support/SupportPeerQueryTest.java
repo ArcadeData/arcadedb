@@ -21,6 +21,7 @@ package com.arcadedb.server.support;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.HAServerPlugin.ClusterPeer;
+import com.arcadedb.server.PeerRequest;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -286,6 +287,43 @@ class SupportPeerQueryTest {
     assertThatThrownBy(() -> query.run("root", "orders", "sql", "SELECT 1", "bad\nname")).isInstanceOf(SupportException.class);
     assertThatThrownBy(() -> query.run("", "orders", "sql", "SELECT 1", "all")).isInstanceOf(SupportException.class);
     assertThat(seen).isEmpty();
+  }
+
+  /**
+   * A peer that declares no https endpoint is asked over the plain listener even on an SSL cluster, which puts the cluster token on
+   * the wire in clear text: the notice every peer dial owes the operator for that (issue #10068), said once, with the pair intact.
+   */
+  @Test
+  void aPlainPeerOnAnSslClusterIsAskedWithThePairAndSaysTheFallbackNotice() throws Exception {
+    PeerRequest.rearmForTests();
+    try {
+      final String a = start(b -> ok("b"));
+      final SupportPeerQuery query = new SupportPeerQuery(cluster(List.of(peer("b", a)), TOKEN, true));
+
+      final JSONObject result = query.run("root", "orders", "sql", "SELECT count(*) AS c FROM V", "all");
+
+      assertThat(byNode(result, "b").getString("status")).isEqualTo("ok");
+      assertThat(seen).singleElement().satisfies(s -> {
+        assertThat(s.token()).isEqualTo(TOKEN);
+        assertThat(s.user()).isEqualTo("root");
+      });
+      assertThat(PeerRequest.saidForTests()).isTrue();
+    } finally {
+      PeerRequest.rearmForTests();
+    }
+  }
+
+  @Test
+  void aPlainPeerOnAClusterWithoutSslSaysNothing() throws Exception {
+    PeerRequest.rearmForTests();
+    try {
+      final String a = start(b -> ok("b"));
+      new SupportPeerQuery(cluster(List.of(peer("b", a)), TOKEN, false)).run("root", "orders", "sql", "SELECT 1", "all");
+
+      assertThat(PeerRequest.saidForTests()).isFalse();
+    } finally {
+      PeerRequest.rearmForTests();
+    }
   }
 
   @Test

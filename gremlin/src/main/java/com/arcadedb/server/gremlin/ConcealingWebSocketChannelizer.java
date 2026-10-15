@@ -168,7 +168,7 @@ public class ConcealingWebSocketChannelizer extends WebSocketChannelizer {
    * names none either, and stays the ordinary retryable failure.
    */
   static String leaderAddress(final HAServerPlugin ha) {
-    final String address = ha != null ? ha.getLeaderAddress() : null;
+    final String address = ha != null ? ha.getLeaderForRefusal() : null;
     return address != null && !address.isBlank() ? address : null;
   }
 

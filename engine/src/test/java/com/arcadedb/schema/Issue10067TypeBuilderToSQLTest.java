@@ -1,0 +1,105 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package com.arcadedb.schema;
+
+import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.TestHelper;
+import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+/**
+ * Issue #10067: a replica that has to ask the leader to create a type renders the builder's description as the {@code CREATE ... TYPE}
+ * statement the leader runs. The rendering has to describe the same type the builder would create, so every statement here is also
+ * run, and the type it makes is compared with the one the builder makes.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
+class Issue10067TypeBuilderToSQLTest extends TestHelper {
+
+  @Test
+  void aPlainVertexTypeRendersOnlyWhatWasChosen() {
+    final TypeBuilder<VertexType> builder = database.getSchema().buildVertexType().withName("Person").withIgnoreIfExists(true);
+    assertThat(builder.toSQL()).isEqualTo("CREATE VERTEX TYPE `Person` IF NOT EXISTS");
+  }
+
+  @Test
+  void aTypeCreatedWithoutIgnoreIfExistsHasNoIfNotExists() {
+    assertThat(database.getSchema().buildVertexType().withName("Person").toSQL()).isEqualTo("CREATE VERTEX TYPE `Person`");
+    assertThat(database.getSchema().buildDocumentType().withName("Doc").toSQL()).isEqualTo("CREATE DOCUMENT TYPE `Doc`");
+  }
+
+  @Test
+  void aCompositeLabelTypeNamesItsSuperTypes() {
+    database.getSchema().createVertexType("A");
+    database.getSchema().createVertexType("B");
+    final TypeBuilder<VertexType> builder = database.getSchema().buildVertexType().withName("A~B").withSuperType("A").withSuperType("B");
+    assertThat(builder.toSQL()).isEqualTo("CREATE VERTEX TYPE `A~B` EXTENDS `A`, `B`");
+
+    database.command("sql", builder.toSQL());
+    assertThat(database.getSchema().getType("A~B").instanceOf("A")).isTrue();
+    assertThat(database.getSchema().getType("A~B").instanceOf("B")).isTrue();
+  }
+
+  @Test
+  void anEdgeTypeRendersItsFlags() {
+    final TypeBuilder<EdgeType> builder = database.getSchema().buildEdgeType().withName("Knows").withIgnoreIfExists(true)
+        .withBidirectional(false).withLightweight(true).withUnique(true);
+    assertThat(builder.toSQL()).isEqualTo("CREATE EDGE TYPE `Knows` IF NOT EXISTS UNIDIRECTIONAL LIGHTWEIGHT UNIQUE");
+
+    database.command("sql", builder.toSQL());
+    final EdgeType edge = (EdgeType) database.getSchema().getType("Knows");
+    assertThat(edge.isBidirectional()).isFalse();
+    assertThat(edge.isLightweight()).isTrue();
+    assertThat(edge.isUnique()).isTrue();
+  }
+
+  @Test
+  void theBucketCountAndThePageSizeAreRenderedOnlyWhenTheyDifferFromTheDefaults() {
+    final int defaultBuckets = database.getConfiguration().getValueAsInteger(GlobalConfiguration.TYPE_DEFAULT_BUCKETS);
+    final int defaultPageSize = database.getConfiguration().getValueAsInteger(GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE);
+
+    assertThat(database.getSchema().buildVertexType().withName("Defaults").withTotalBuckets(defaultBuckets)
+        .withPageSize(defaultPageSize).toSQL()).isEqualTo("CREATE VERTEX TYPE `Defaults`");
+
+    final TypeBuilder<VertexType> custom = database.getSchema().buildVertexType().withName("Custom")
+        .withTotalBuckets(defaultBuckets + 1).withPageSize(defaultPageSize * 2);
+    assertThat(custom.toSQL()).isEqualTo("CREATE VERTEX TYPE `Custom` BUCKETS " + (defaultBuckets + 1) + " PAGESIZE " + defaultPageSize * 2);
+
+    database.command("sql", custom.toSQL());
+    assertThat(database.getSchema().getType("Custom").getBuckets(false)).hasSize(defaultBuckets + 1);
+  }
+
+  @Test
+  void aNameThatNeedsQuotingIsEscaped() {
+    final TypeBuilder<VertexType> builder = database.getSchema().buildVertexType().withName("we`ird\\name");
+    assertThat(builder.toSQL()).isEqualTo("CREATE VERTEX TYPE `we\\`ird\\\\name`");
+
+    database.command("sql", builder.toSQL());
+    assertThat(database.getSchema().existsType("we`ird\\name")).isTrue();
+  }
+
+  @Test
+  void aTypeBuiltOnBucketInstancesHasNoSqlForm() {
+    database.getSchema().createBucket("Orphan_0");
+    final TypeBuilder<VertexType> builder = database.getSchema().buildVertexType().withName("OnBuckets")
+        .withBuckets(java.util.List.of(database.getSchema().getBucketByName("Orphan_0")));
+    assertThat(builder.toSQL()).isNull();
+  }
+}

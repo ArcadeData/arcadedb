@@ -23,6 +23,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.utility.FileUtils;
 
@@ -74,12 +75,27 @@ public class TypeBuilder<T> {
     // not here: a getOrCreate on a type that already exists as requested changes nothing, so a user holding only
     // record grants can run a Cypher CREATE (whose label resolution is a getOrCreateVertexType) on a declared type
     // exactly as they can run the equivalent SQL INSERT (issue #7368).
-    final T alreadyComplete = database.executeInReadLock(() -> {
-      final LocalDocumentType existing = schema.typeMap().get(typeName);
-      return existing != null && isComplete(existing) ? (T) checkExistingIsCompatible(existing) : null;
-    });
+    final T alreadyComplete = completeTypeIfPresent(schema);
     if (alreadyComplete != null)
       return alreadyComplete;
+
+    // A replica running a statement in a transaction its client opened cannot create the type itself, but the leader can do it
+    // for the statement: asked BEFORE the schema write lock is taken, because the replica has to apply the leader's schema entry
+    // before the statement goes on, and that apply needs the same lock (issue #10067). Only a type that is missing altogether:
+    // completing a half-built one changes a type that exists, which has no such form.
+    if (!schema.typeMap().containsKey(typeName)) {
+      final String statement = toSQL();
+      if (statement != null && database.getWrappedDatabaseInstance().createMissingTypeOnTheLeader(typeName, statement)) {
+        // Not the "already exists" refusal of a create() that finds the type: the type did not exist when this call began, and
+        // the leader made it on this call's behalf
+        final T createdByTheLeader = database.executeInReadLock(() -> {
+          final LocalDocumentType created = schema.typeMap().get(typeName);
+          return created != null && isComplete(created) ? (T) checkIsOfTheRequestedKind(created) : null;
+        });
+        if (createdByTheLeader != null)
+          return createdByTheLeader;
+      }
+    }
 
     final T created = database.executeInWriteLock(() -> createInternal(schema));
 
@@ -89,6 +105,60 @@ public class TypeBuilder<T> {
       LocalEdgeType.applyUniqueConstraint(schema, edgeType);
 
     return created;
+  }
+
+  private T completeTypeIfPresent(final LocalSchema schema) {
+    return database.executeInReadLock(() -> {
+      final LocalDocumentType existing = schema.typeMap().get(typeName);
+      return existing != null && isComplete(existing) ? (T) checkExistingIsCompatible(existing) : null;
+    });
+  }
+
+  /**
+   * The {@code CREATE ... TYPE} statement that makes the type this builder describes, for a database that has to ask another
+   * node to create it (issue #10067); {@code null} when the description has no SQL form, which is the case of a type built on
+   * bucket instances the caller already holds. The bucket count and the page size are rendered only when they differ from the
+   * configured defaults, so the node that runs the statement applies its own defaults to what the caller did not choose, as it
+   * would for a statement sent to it.
+   */
+  public String toSQL() {
+    if (typeName == null || typeName.isEmpty() || !bucketInstances.isEmpty())
+      return null;
+
+    final StringBuilder sql = new StringBuilder("CREATE ");
+    if (type.equals(VertexType.class))
+      sql.append("VERTEX");
+    else if (type.equals(EdgeType.class))
+      sql.append("EDGE");
+    else
+      sql.append("DOCUMENT");
+    sql.append(" TYPE ").append(Identifier.quote(typeName));
+    if (ignoreIfExists)
+      sql.append(" IF NOT EXISTS");
+
+    if (superTypes != null && !superTypes.isEmpty()) {
+      sql.append(" EXTENDS ");
+      for (int i = 0; i < superTypes.size(); i++) {
+        if (i > 0)
+          sql.append(", ");
+        sql.append(Identifier.quote(superTypes.get(i).getName()));
+      }
+    }
+
+    if (type.equals(EdgeType.class)) {
+      if (!edgeBidirectional)
+        sql.append(" UNIDIRECTIONAL");
+      if (edgeLightweight)
+        sql.append(" LIGHTWEIGHT");
+      if (edgeUnique)
+        sql.append(" UNIQUE");
+    }
+
+    if (buckets != database.getConfiguration().getValueAsInteger(GlobalConfiguration.TYPE_DEFAULT_BUCKETS))
+      sql.append(" BUCKETS ").append(buckets);
+    if (pageSize != database.getConfiguration().getValueAsInteger(GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE))
+      sql.append(" PAGESIZE ").append(pageSize);
+    return sql.toString();
   }
 
   /**
@@ -109,6 +179,10 @@ public class TypeBuilder<T> {
     if (!ignoreIfExists)
       throw new SchemaException("Cannot create type '" + typeName + "' because already exists");
 
+    return checkIsOfTheRequestedKind(t);
+  }
+
+  private LocalDocumentType checkIsOfTheRequestedKind(final LocalDocumentType t) {
     if (!type.isAssignableFrom(t.getClass())) {
       final String expectedType = type.isAssignableFrom(VertexType.class) ?
           "vertex" :

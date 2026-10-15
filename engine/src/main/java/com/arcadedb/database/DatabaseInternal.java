@@ -393,6 +393,26 @@ public interface DatabaseInternal extends Database {
   default void checkFileRenamesCanBePublished() {
   }
 
+  /**
+   * Asks the node that owns the schema to create a type that a statement running here needs and this node may not create itself
+   * (issue #10067). A replica runs a write in the transaction its client opened rather than forwarding it (issue #10040), and a
+   * statement that names a label no type exists for yet creates that type while it executes: a schema change only the leader may
+   * make. The leader creates it on the statement's behalf and this node applies it before returning, so the statement goes on and
+   * its DATA stays in the client's transaction. The schema is not transactional anywhere: a ROLLBACK does not take the type back.
+   * <p>
+   * Called by the type builder, before it takes the schema write lock, for a type that does not exist here. Nothing to do on an
+   * embedded database, and on a replicated one outside a client's transaction, where the refusal of a schema change stands.
+   *
+   * @param typeName        the type the statement needs
+   * @param createStatement the {@code CREATE ... TYPE} statement, in SQL, that makes it
+   *
+   * @return true when the type now exists here (the builder then reads it), false when this database does not create types that
+   * way and the builder goes on as it always did
+   */
+  default boolean createMissingTypeOnTheLeader(final String typeName, final String createStatement) {
+    return false;
+  }
+
   long getLastUpdatedOn();
 
   long getLastUsedOn();

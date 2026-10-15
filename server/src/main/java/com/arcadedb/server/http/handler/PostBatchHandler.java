@@ -32,6 +32,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.HAReplicatedDatabase;
 import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.LeaderForwardContext;
+import com.arcadedb.server.PeerRequest;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.HttpSession;
 import com.arcadedb.server.http.HttpSessionException;
@@ -63,7 +64,6 @@ import java.io.OutputStream;
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.VarHandle;
 import java.net.ConnectException;
-import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpConnectTimeoutException;
 import java.net.http.HttpRequest;
@@ -2070,7 +2070,8 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     // relay a replay of its own bytes on to the leader either (issue #6180).
     final HttpRequest request = buildForwardRequest(url, contentType, clusterToken, user.getName(),
         exchange.getRequestContentLength(), body, streaming ? NdJsonResultStream.CONTENT_TYPE : null,
-        streaming ? null : Duration.ofMillis(deadlineMs), intendedLeaderId);
+        streaming ? null : Duration.ofMillis(deadlineMs), intendedLeaderId,
+        httpServer.getServer().getConfiguration().getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL));
 
     try {
       if (streaming) {
@@ -2252,6 +2253,20 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
   static HttpRequest buildForwardRequest(final String url, final String contentType, final String clusterToken,
       final String userName, final long contentLength, final InputStream body, final String accept, final Duration timeout,
       final String intendedLeaderId) {
+    return buildForwardRequest(url, contentType, clusterToken, userName, contentLength, body, accept, timeout, intendedLeaderId,
+        false);
+  }
+
+  /**
+   * As above, and additionally says whether this node runs with {@code arcadedb.ssl.enabled}, so a forward that goes out over the
+   * plain listener of an SSL cluster owes the operator the cluster-wide notice (issue #10068). The credential and the notice come
+   * from {@link PeerRequest}, like every other peer dial.
+   *
+   * @param sslEnabled whether this node has SSL enabled
+   */
+  static HttpRequest buildForwardRequest(final String url, final String contentType, final String clusterToken,
+      final String userName, final long contentLength, final InputStream body, final String accept, final Duration timeout,
+      final String intendedLeaderId, final boolean sslEnabled) {
 
     final AtomicBoolean bodyTaken = new AtomicBoolean(false);
     final Supplier<InputStream> oneShotBody = () -> {
@@ -2270,12 +2285,10 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     else if (contentLength > 0)
       publisher = HttpRequest.BodyPublishers.fromPublisher(publisher, contentLength);
 
-    final HttpRequest.Builder forward = HttpRequest.newBuilder()
-        .uri(URI.create(url))
+    final HttpRequest.Builder forward = PeerRequest.newRequest(url, sslEnabled, PostBatchHandler.class,
+            "forwarding a batch load to the leader", clusterToken, userName)
         .version(HttpClient.Version.HTTP_1_1)
         .header("Content-Type", contentType)
-        .header("X-ArcadeDB-Cluster-Token", clusterToken)
-        .header("X-ArcadeDB-Forwarded-User", userName)
         // One hop only: a node that receives this and is not the leader refuses it rather than resolving the
         // same leader address - which may name nobody - and relaying it again (issue #6191).
         .header(LeaderForwardContext.FORWARDED_TO_LEADER_HEADER, "true")

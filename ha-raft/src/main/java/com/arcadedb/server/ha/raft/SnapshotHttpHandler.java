@@ -33,6 +33,7 @@ import com.arcadedb.engine.timeseries.TimeSeriesSealedStore;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.PageSnapshotException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.server.PeerRequest;
 import com.arcadedb.utility.CodeUtils;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.serializer.json.JSONArray;
