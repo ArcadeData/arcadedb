@@ -21,6 +21,7 @@ package com.arcadedb.remote.grpc;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.HostUtil;
+import com.arcadedb.remote.RemoteAlreadyExistsException;
 import com.arcadedb.remote.RemoteException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.grpc.AcceptDivergedDatabaseRequest;
@@ -487,6 +488,10 @@ public class RemoteGrpcServer implements AutoCloseable {
       // has always thrown, so a caller matching on it (e.g. an ALREADY_EXISTS refusal) sees no change (issue #8822)
       if (GrpcClientErrorMapper.outcomeUnknown(e))
         throw GrpcClientErrorMapper.toAutoCommitWriteException(e, "create database");
+      // A taken name is the one refusal with a type of its own (#10075): still a RuntimeException, and the message still
+      // carries the status name callers match on
+      if (GrpcClientErrorMapper.isNameTaken(e))
+        throw new RemoteAlreadyExistsException("Failed to create database: " + e.getMessage(), e);
       throw new RuntimeException("Failed to create database: " + e.getMessage(), e);
     }
   }
@@ -1061,6 +1066,9 @@ public class RemoteGrpcServer implements AutoCloseable {
     try {
       return body.run(withDeadline(adminServiceBlockingV2Stub(), defaultTimeoutMs));
     } catch (final StatusException e) {
+      // A TAKEN USER, TOKEN OR DATABASE NAME HAS ITS OWN TYPE; THE GENERIC MAPPING WOULD READ THE SAME STATUS AS A DUPLICATE KEY (#10075)
+      if (GrpcClientErrorMapper.isNameTaken(e))
+        throw GrpcClientErrorMapper.toNameTakenException(e);
       final RuntimeException mapped = write ?
           GrpcClientErrorMapper.toAutoCommitWriteException(e, operation) :
           GrpcClientErrorMapper.toException(e);
