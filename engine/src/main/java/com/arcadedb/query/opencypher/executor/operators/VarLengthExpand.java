@@ -68,6 +68,7 @@ public class VarLengthExpand extends AbstractPhysicalOperator {
   private String targetLabel;
   private Set<String> sameClausePrecedingRelVars;
   private String edgeTrackingVar;
+  private boolean distinctEndpoints;
 
   public VarLengthExpand(final PhysicalOperator child, final ExpansionVariables variables,
       final TraversalSpec traversal, final double estimatedCost, final long estimatedCardinality) {
@@ -97,6 +98,15 @@ public class VarLengthExpand extends AbstractPhysicalOperator {
     this.edgeTrackingVar = edgeTrackingVar;
   }
 
+  /**
+   * Reports each end vertex once per start vertex, found with a visited set, instead of one row per path. The optimizer sets it when
+   * nothing downstream can tell two paths between the same pair apart (see
+   * {@link com.arcadedb.query.opencypher.executor.VariableLengthDistinctEndpoints}).
+   */
+  public void setDistinctEndpoints(final boolean distinctEndpoints) {
+    this.distinctEndpoints = distinctEndpoints;
+  }
+
   public void setTargetLabel(final String targetLabel) {
     this.targetLabel = targetLabel;
   }
@@ -115,6 +125,7 @@ public class VarLengthExpand extends AbstractPhysicalOperator {
       private Result currentInput;
       private Vertex boundTarget;
       private Iterator<TraversalPath> currentPaths;
+      private Iterator<Vertex> currentEndpoints;
       private EdgeIdentitySet usedEdges;
       private final List<Result> buffer = new ArrayList<>();
       private int bufferIndex;
@@ -143,6 +154,17 @@ public class VarLengthExpand extends AbstractPhysicalOperator {
 
         while (buffer.size() < batchSize) {
           guard.check();
+          if (currentEndpoints != null && currentEndpoints.hasNext()) {
+            final Vertex traversedTarget = currentEndpoints.next();
+            if (targetLabel != null && !traversedTarget.getType().instanceOf(targetLabel))
+              continue;
+            if (boundTarget != null && !traversedTarget.getIdentity().equals(boundTarget.getIdentity()))
+              continue;
+            final ResultInternal result = VarLengthExpand.copy(currentInput);
+            result.setProperty(targetVariable, traversedTarget);
+            buffer.add(result);
+            continue;
+          }
           if (currentPaths != null && currentPaths.hasNext()) {
             final TraversalPath traversedPath = currentPaths.next();
             final Vertex traversedTarget = traversedPath.getEndVertex();
@@ -178,9 +200,13 @@ public class VarLengthExpand extends AbstractPhysicalOperator {
           final Object target = currentInput.getProperty(targetVariable);
           boundTarget = target instanceof Vertex vertex ? vertex : null;
           usedEdges = RelationshipBindings.collectEdgeIdentities(currentInput, sameClausePrecedingRelVars);
+          currentEndpoints = null;
           if (!(source instanceof Vertex vertex))
             currentPaths = null;
-          else if (GraphTraverser.isBoundRelationshipList(currentInput, relationshipVariable)) {
+          else if (distinctEndpoints && !GraphTraverser.isBoundRelationshipList(currentInput, relationshipVariable)) {
+            currentPaths = null;
+            currentEndpoints = createTraverser(currentInput, context).traverseDistinctEndpoints(vertex);
+          } else if (GraphTraverser.isBoundRelationshipList(currentInput, relationshipVariable)) {
             // A relationship list an earlier clause bound to this variable is the whole path (issue #9828)
             final TraversalPath bound = createTraverser(currentInput, context).matchBoundPath(vertex,
                 currentInput.getProperty(relationshipVariable), reverseResultPath, relationshipVariable);
@@ -254,7 +280,7 @@ public class VarLengthExpand extends AbstractPhysicalOperator {
     sb.append("(").append(targetVariable);
     if (targetLabel != null)
       sb.append(":").append(targetLabel);
-    sb.append(") [DFS, cost=").append(String.format(Locale.US, "%.2f", estimatedCost));
+    sb.append(distinctEndpoints ? ") [DISTINCT ENDPOINTS, cost=" : ") [DFS, cost=").append(String.format(Locale.US, "%.2f", estimatedCost));
     sb.append(", rows=").append(estimatedCardinality).append("]\n");
     if (child != null)
       sb.append(child.explain(depth + 1));
