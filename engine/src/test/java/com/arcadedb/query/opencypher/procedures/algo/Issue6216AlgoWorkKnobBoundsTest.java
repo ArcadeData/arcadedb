@@ -414,13 +414,18 @@ class Issue6216AlgoWorkKnobBoundsTest {
   void randomWalkHonoursTheCommandTimeoutEvenWithTheWalkMemoryBudgetDisabled() {
     // The budget is the only thing bounding `steps`, and it accepts "negative = no limit". With it disabled a
     // huge steps value is neither memory- nor - without a checkpoint in the step loop - time-bounded. The walk
-    // is a directed cycle, so it never dead-ends and would otherwise run all 500 million steps.
+    // is a directed cycle, so it never dead-ends and would otherwise run all 20 million steps.
+    //
+    // 20 million is "huge" for the deadline, not for the heap: the walk buffer is allocated up front at 4 bytes a
+    // step, so 500 million asked for a 2 GB contiguous array and the test died with an OutOfMemoryError on any heap
+    // that could not hand one over (a small -Xmx, or a fragmented one late in a full-suite run) instead of reaching
+    // the checkpoint. 20 million still takes far longer than the 1 ms deadline to walk.
     database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, -1L);
     database.getConfiguration().setValue(GlobalConfiguration.COMMAND_TIMEOUT, 1L);
 
     assertThatThrownBy(() -> drain("""
         MATCH (a:Node {name: 'A'}) \
-        CALL algo.randomWalk(a, 500000000) \
+        CALL algo.randomWalk(a, 20000000) \
         YIELD path, steps \
         RETURN path, steps"""))
         .as("a memory bound is not a time bound: the walk must still give up at the command deadline")
