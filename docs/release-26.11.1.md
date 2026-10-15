@@ -143,8 +143,10 @@ the parameters of the branches that are not taken. A `LET` that names a variable
   statistics, and a `REBUILD INDEX ... WITH statsOnly = true` run on the leader reaches the followers (a schema reload on a
   follower keeps its live counters unless the persisted ones carry a newer `ft_countersEpoch`, which a recompute on the leader
   advances). A node that does not advertise `tx-fulltext-corpus-deltas` makes the leader withhold the new `TX_ENTRY` section
-  and log a warning, and the other nodes repair their counters with their own drift check: a rolling upgrade behaves as it
-  did until every node is upgraded.
+  and log a warning: a rolling upgrade behaves as it did until every node is upgraded. In that window the other nodes do not
+  count those transactions. The first search of a node repairs a difference in the number of documents; a rewrite that keeps
+  the number of documents changes only the total length of the documents, which that check cannot see, so run
+  `REBUILD INDEX ... WITH statsOnly = true` on the leader once every node is upgraded.
 - **The repair of the BM25 corpus counters made by a search is kept, and the counters can be inspected (#10019).** The repair
   made by the first search is written with the schema, at the next schema save or when the database closes, so it is paid once
   and not after every clean restart. After a crash, or a process that is killed, the pages are restored from the log but the

@@ -26,7 +26,6 @@ import com.arcadedb.schema.Schema;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 
@@ -63,9 +62,9 @@ public final class FullTextCorpusDeltas {
   }
 
   // A systematic cause (a schema that does not hold the index) would fail every delta of every transaction: one warning a minute
-  // PER INDEX, so a failure on one index does not hide the failure of another
-  private static final long                              FAILURE_LOG_THROTTLE_MS = 60_000L;
-  private static final ConcurrentHashMap<String, AtomicLong> LAST_FAILURE_LOG        = new ConcurrentHashMap<>();
+  // per index of a database (the throttle lives on the counters of the index), and one for the deltas whose index cannot be resolved
+  private static final long       FAILURE_LOG_THROTTLE_MS = 60_000L;
+  private static final AtomicLong LAST_UNRESOLVED_LOG     = new AtomicLong(0L);
 
   private final List<Entry> entries = new ArrayList<>(2);
   // Every document of a bulk load lands on the same index: remember it, so the common case costs a reference comparison
@@ -187,7 +186,7 @@ public final class FullTextCorpusDeltas {
     final List<FullTextIndexMetadata> marked = new ArrayList<>(deltas.size());
     for (final CorpusDelta delta : deltas)
       try {
-        final FullTextIndexMetadata metadata = metadataOf(schema, delta.indexName());
+        final FullTextIndexMetadata metadata = resolveMetadata(schema, delta.indexName());
         if (metadata != null) {
           metadata.commitApplyStarted();
           marked.add(metadata);
@@ -235,7 +234,7 @@ public final class FullTextCorpusDeltas {
         // The pages are published: a commit past that point cannot be reported as failed because of an estimate. The counters are
         // armed to be checked against the live data instead, as for a replicated delta that cannot be applied
         e.metadata.requireRescan();
-        logFailure(e.indexName, ex);
+        logFailure(e.metadata, e.indexName, ex);
       }
   }
 
@@ -248,7 +247,7 @@ public final class FullTextCorpusDeltas {
     for (final CorpusDelta delta : deltas) {
       FullTextIndexMetadata metadata = null;
       try {
-        metadata = metadataOf(schema, delta.indexName());
+        metadata = resolveMetadata(schema, delta.indexName());
         if (metadata != null)
           metadata.applyCorpusDelta(delta.docs(), delta.length());
       } catch (final RuntimeException e) {
@@ -261,16 +260,21 @@ public final class FullTextCorpusDeltas {
         // the first search
         if (metadata != null)
           metadata.requireRescan();
-        logFailure(delta.indexName(), e);
+        logFailure(metadata, delta.indexName(), e);
       }
     }
   }
 
-  private static void logFailure(final String indexName, final RuntimeException e) {
+  private static void logFailure(final FullTextIndexMetadata metadata, final String indexName, final RuntimeException e) {
     final long now = System.currentTimeMillis();
-    final AtomicLong lastLogged = LAST_FAILURE_LOG.computeIfAbsent(indexName, name -> new AtomicLong(0L));
-    final long last = lastLogged.get();
-    if (now - last > FAILURE_LOG_THROTTLE_MS && lastLogged.compareAndSet(last, now))
+    final boolean mayLog;
+    if (metadata != null)
+      mayLog = metadata.claimFailureLog(now, FAILURE_LOG_THROTTLE_MS);
+    else {
+      final long last = LAST_UNRESOLVED_LOG.get();
+      mayLog = now - last > FAILURE_LOG_THROTTLE_MS && LAST_UNRESOLVED_LOG.compareAndSet(last, now);
+    }
+    if (mayLog)
       LogManager.instance().log(FullTextCorpusDeltas.class, Level.WARNING,
           "Cannot apply the BM25 corpus counters of full-text index '%s' (further failures are not logged for a minute)", e,
           indexName);
@@ -281,7 +285,7 @@ public final class FullTextCorpusDeltas {
    *
    * @return the counters of the index, or null when this node has no such full-text index
    */
-  private static FullTextIndexMetadata metadataOf(final Schema schema, final String indexName) {
+  private static FullTextIndexMetadata resolveMetadata(final Schema schema, final String indexName) {
     try {
       return LSMTreeFullTextIndex.metadataOf(schema.getIndexByName(indexName));
     } catch (final SchemaException e) {

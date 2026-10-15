@@ -164,11 +164,17 @@ class Issue10051FullTextCorpusCountersIT extends BaseRaftHATest {
     // A rewrite committed inside a schema session travels in the SCHEMA_ENTRY, which carries no corpus deltas: it keeps the number of
     // documents and changes only their token-length total, which a count cannot tell, so the followers must adopt the leader's counters
     final long lengthBeforeRewrite = metadata(leaderIndex).getSumDocLength();
-    leader.getSchema().bulkChange(() -> leader.transaction(() -> {
-      try (final ResultSet rs = leader.query("sql", "SELECT FROM Doc LIMIT 1")) {
-        rs.next().getRecord().get().asDocument().modify().set("content", "alpha beta gamma delta epsilon zeta eta theta").save();
+    // two transactions of ONE session: each marks the counters, and the schema serialized when the session ends carries the lot
+    leader.getSchema().bulkChange(() -> {
+      for (int rewrite = 0; rewrite < 2; rewrite++) {
+        final String name = "d" + rewrite;
+        leader.transaction(() -> {
+          try (final ResultSet rs = leader.query("sql", "SELECT FROM Doc WHERE name = '" + name + "'")) {
+            rs.next().getRecord().get().asDocument().modify().set("content", "alpha beta gamma delta epsilon zeta eta theta").save();
+          }
+        });
       }
-    }));
+    });
     for (int i = 0; i < getServerCount(); i++)
       waitForReplicationIsCompleted(i);
 
