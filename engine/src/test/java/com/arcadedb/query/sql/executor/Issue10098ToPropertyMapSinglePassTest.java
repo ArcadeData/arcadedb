@@ -24,8 +24,13 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
+import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 
@@ -108,6 +113,49 @@ class Issue10098ToPropertyMapSinglePassTest extends TestHelper {
       assertThat(map.get(name)).as(name).isEqualTo(row.getProperty(name));
     assertThat(map.get("link")).isEqualTo(link[0]);
     assertThat(map).containsKey("nothing");
+  }
+
+  /**
+   * The single pass decodes the same entries and value types as a read by name, on a schema with typed properties, a default value, an
+   * embedded document, temporal and decimal types, a list and a map.
+   */
+  @Test
+  void theMapHoldsTheSameEntriesAndTypesAsAReadByNameOnATypedSchema() {
+    database.getSchema().createDocumentType("Address10098");
+    final DocumentType mixed = database.getSchema().createDocumentType("Mixed10098");
+    mixed.createProperty("when", Type.DATETIME);
+    mixed.createProperty("day", Type.DATE);
+    mixed.createProperty("price", Type.DECIMAL);
+    mixed.createProperty("tags", Type.LIST);
+    mixed.createProperty("attributes", Type.MAP);
+    mixed.createProperty("home", Type.EMBEDDED).setOfType("Address10098");
+    mixed.createProperty("status", Type.STRING).setDefaultValue("'new'");
+
+    final RID[] rid = new RID[1];
+    database.transaction(() -> {
+      final MutableDocument doc = database.newDocument("Mixed10098");
+      doc.set("when", LocalDateTime.of(2026, 10, 15, 12, 30, 45)).set("day", LocalDate.of(2026, 10, 15))
+          .set("price", new BigDecimal("12.34")).set("tags", List.of("a", "b")).set("attributes", Map.of("k", 1));
+      doc.newEmbeddedDocument("Address10098", "home").set("city", "Rome").set("zip", 118);
+      rid[0] = doc.save().getIdentity();
+    });
+
+    final CountingImmutableDocument document = new CountingImmutableDocument(database, database.getSchema().getType("Mixed10098"), rid[0]);
+    final Map<String, Object> map = new ResultInternal(document).toPropertyMap(false);
+    assertThat(document.headerWalks()).isEqualTo(1);
+
+    final Document byName = database.lookupByRID(rid[0], true).asDocument();
+    assertThat(map.keySet()).containsExactlyInAnyOrderElementsOf(byName.getPropertyNames());
+    for (final String name : byName.getPropertyNames()) {
+      final Object expected = byName.get(name);
+      if (expected instanceof Document embedded)
+        assertThat(((Document) map.get(name)).toMap(false)).as(name).isEqualTo(embedded.toMap(false));
+      else
+        assertThat(map.get(name)).as(name).isEqualTo(expected);
+      assertThat(map.get(name) == null ? null : map.get(name).getClass()).as("type of " + name)
+          .isEqualTo(expected == null ? null : expected.getClass());
+    }
+    assertThat(map.get("status")).isEqualTo("new");
   }
 
   @Test

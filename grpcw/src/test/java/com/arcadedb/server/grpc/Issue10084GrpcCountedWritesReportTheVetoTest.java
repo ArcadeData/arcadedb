@@ -40,6 +40,9 @@ class Issue10084GrpcCountedWritesReportTheVetoTest {
   @Test
   void theServiceWritesOnlyThroughTheReportingForms() throws IOException {
     assertThat(CountedWriteScan.offendersIn("src/main/java/com/arcadedb/server/grpc/ArcadeDbGrpcService.java", DELIBERATE))
-        .as("lines of the gRPC service that write through save() or newEdge(), which cannot report a veto").isEmpty();
+        .as("lines of the gRPC service that write through save() or newEdge(), which cannot report a listener's veto: write through"
+            + " saveReportingVeto() or GraphEngine.newEdgeReportingVeto() and count the engine's answer, or throw RecordVetoedException where"
+            + " the reply must name a record; a deliberate bare call is added to DELIBERATE with the reason")
+        .isEmpty();
   }
 }
