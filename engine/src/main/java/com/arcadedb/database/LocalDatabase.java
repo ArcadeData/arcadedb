@@ -686,7 +686,13 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    */
   public boolean countLightEdgeCensusFallback(final RID owner, final Vertex.DIRECTION direction) {
     lightEdgeCensusFallbacks.incrementAndGet();
-    return lightEdgeCensusReported.size() < MAX_REPORTED_CENSUS_FAILURES && lightEdgeCensusReported.add(owner + "|" + direction);
+    // PAST THE BUDGET NOTHING IS BUILT: A DATABASE WHOSE LISTS KEEP FAILING PAYS A COUNTER INCREMENT AND A SIZE READ. UNDER IT
+    // THE CHECK AND THE ADD ARE ONE STEP, SO THE BUDGET IS EXACT UNDER CONCURRENCY; A FAILURE IS RARE, SO THE MONITOR IS NOT HOT
+    if (lightEdgeCensusReported.size() >= MAX_REPORTED_CENSUS_FAILURES)
+      return false;
+    synchronized (lightEdgeCensusReported) {
+      return lightEdgeCensusReported.size() < MAX_REPORTED_CENSUS_FAILURES && lightEdgeCensusReported.add(owner + "|" + direction);
+    }
   }
 
   @Override
