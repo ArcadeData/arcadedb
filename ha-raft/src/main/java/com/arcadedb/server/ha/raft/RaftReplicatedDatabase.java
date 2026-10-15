@@ -1637,10 +1637,10 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * <b>The transaction was prepared under the schema without the type</b> (issue #8686): the leader refuses an entry prepared before
    * a schema change this node has since applied, because its pages were built against a schema that no longer holds. A transaction
    * that has written nothing yet has nothing built against anything, so it is re-based on the position that includes the type, as
-   * if it began now. One that has already written is re-based too when the type is the only schema change since it was prepared (a
-   * new type changes nothing a record already saved depended on); when somebody else's DDL landed meanwhile it would be refused at
-   * its commit, after the rest of its work, so it fails here, at once, with the retryable error the retry succeeds after: the type
-   * exists now.
+   * if it began now. One that has already written is re-based too when the type is the only schema change since it was prepared and
+   * this very command made it (see {@link #transactionStaysValidPastTheType}); when somebody else's DDL landed meanwhile it would be
+   * refused at its commit, after the rest of its work, so it fails here, at once, with the retryable error the retry succeeds after:
+   * the type exists now.
    * <p>
    * Only inside a transaction the client opened: anywhere else a replica is refused a schema change, as before. The permission is
    * checked here first, as the builder would on the node that creates the type; the leader checks it again for the user it is
@@ -1667,7 +1667,11 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     final boolean schemaUnchangedSincePrepared = stateMachine != null && stateMachine.lastSchemaChangeIndexOf(getName()) <= preparedAt;
 
     final AtomicLong leaderApplied = new AtomicLong(-1L);
-    forwardCommandToLeaderViaRaft("sql", createStatement, null, null, false, leaderApplied).close();
+    final boolean createdByThisRequest;
+    try (final ResultSet answer = forwardCommandToLeaderViaRaft("sql", createStatement, null, null, false, leaderApplied)) {
+      // The row CREATE ... TYPE answers with says whether this very command made the type (created=false: it was there already)
+      createdByThisRequest = answer.hasNext() && Boolean.TRUE.equals(answer.next().<Boolean>getProperty("created"));
+    }
     awaitTypeApplied(raft, typeName, leaderApplied.get());
 
     // Nothing to account for when the leader will not ask: no position was stated for this transaction
@@ -1675,12 +1679,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       return true;
 
     final long appliedNow = raft.getTrustedAppliedIndex(getName());
-    // A transaction that wrote nothing has nothing built against any schema, so it is simply prepared from here. One that did is
-    // prepared from here too when the type is the ONLY schema change since it was: a new type changes nothing a record already
-    // saved depended on - not a page, not an index of a type that existed - so the leader's check, which cannot tell a new type from
-    // a change to an old one, has nothing to protect it from. Any other change in between (anybody else's DDL, a second entry of
-    // this one) keeps the leader's verdict, and the transaction is told to retry now instead of at its commit.
-    if (!hadWritten || (schemaUnchangedSincePrepared && stateMachine.schemaChangesAppliedBetween(getName(), appliedBefore, appliedNow) == 1))
+    if (transactionStaysValidPastTheType(hadWritten, schemaUnchangedSincePrepared, createdByThisRequest,
+        stateMachine != null ? stateMachine.schemaChangesAppliedBetween(getName(), appliedBefore, appliedNow) : Integer.MAX_VALUE))
       stampReplicationBase(appliedNow);
     else
       // Fully qualified, as the rest of this file does: the JDK type of the same name is deliberately not imported
@@ -1689,6 +1689,30 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
           + "Raft index " + preparedAt + ", and another schema change was applied since), so it could not commit. The type exists "
           + "now: retry the transaction");
     return true;
+  }
+
+  /**
+   * Whether a transaction can be prepared from the position that includes a type the leader created for it (issue #10067): the
+   * leader's check (#8686) refuses an entry prepared before a schema change, and cannot tell a new type from a change to a type the
+   * transaction wrote to.
+   * <p>
+   * A transaction that wrote nothing has nothing built against any schema, so it is simply prepared from here. One that did is
+   * prepared from here too only when everything below holds, because only then is the single schema entry applied since the request
+   * KNOWN to be the creation of that type, which changes nothing a record already saved depended on - not a page, not an index of a
+   * type that existed:
+   * <ul>
+   * <li>the schema had not changed since the transaction was prepared;</li>
+   * <li>the leader's answer says its command made the type ({@code created=true}); a type that was there already was made by an entry
+   * this replica had not applied yet, which may be a DDL that changed more than the type (a script that also adds an index);</li>
+   * <li>exactly one schema entry was applied in the stretch from before the request to now. More is somebody else's change; a
+   * history too short to vouch for the stretch counts as more.</li>
+   * </ul>
+   * Otherwise the leader's verdict stands, and the transaction is told to retry now instead of at its commit.
+   */
+  // @VisibleForTesting
+  static boolean transactionStaysValidPastTheType(final boolean hadWritten, final boolean schemaUnchangedSincePrepared,
+      final boolean createdByThisRequest, final int schemaChangesInTheStretch) {
+    return !hadWritten || (schemaUnchangedSincePrepared && createdByThisRequest && schemaChangesInTheStretch == 1);
   }
 
   /**
