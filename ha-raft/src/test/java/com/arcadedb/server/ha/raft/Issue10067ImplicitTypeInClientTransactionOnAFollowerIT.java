@@ -179,6 +179,30 @@ class Issue10067ImplicitTypeInClientTransactionOnAFollowerIT extends BaseRaftHAT
       }
   }
 
+  /** A label with a back-tick and a space is quoted into the statement the leader runs, and names the type exactly. */
+  @Test
+  @Timeout(180)
+  void aLabelWithQuotingCharactersCreatesExactlyThatType() {
+    final int leader = requireLeaderIndex();
+    final int follower = firstFollowerOf(leader);
+    final Database followerDb = getServerDatabase(follower, getDatabaseName());
+    final String label = "`Issue10067 we``ird`";
+
+    followerDb.begin();
+    try {
+      markClientManaged(followerDb);
+      followerDb.command("opencypher", "CREATE (n:" + label + " {name: 'quoted'})").close();
+      followerDb.commit();
+    } finally {
+      if (followerDb.isTransactionActive())
+        followerDb.rollback();
+    }
+
+    awaitOnEveryServer(label, 1);
+    for (int i = 0; i < getServerCount(); i++)
+      assertThat(getServerDatabase(i, getDatabaseName()).getSchema().existsType("Issue10067 we`ird")).as("server %d", i).isTrue();
+  }
+
   /**
    * A transaction overtaken by ANOTHER schema change cannot be vouched for, and the leader would refuse its commit after the rest of its
    * work. It is told so at once, with the retryable error, and the retry, which finds the type, goes through.

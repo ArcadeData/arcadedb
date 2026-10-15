@@ -47,6 +47,7 @@ import java.io.IOException;
 import java.util.Collection;
 import java.util.Map;
 import java.util.concurrent.Callable;
+import java.util.function.Supplier;
 import java.util.function.UnaryOperator;
 
 /**
@@ -404,12 +405,14 @@ public interface DatabaseInternal extends Database {
    * embedded database, and on a replicated one outside a client's transaction, where the refusal of a schema change stands.
    *
    * @param typeName        the type the statement needs
-   * @param createStatement the {@code CREATE ... TYPE} statement, in SQL, that makes it
+   * @param createStatement the {@code CREATE ... TYPE} statement, in SQL, that makes it; a supplier, so that it is built only by a
+   *                        database that is going to send it. It answers {@code null} for a description that has no SQL form, and
+   *                        then nothing is sent
    *
    * @return true when the type now exists here (the builder then reads it), false when this database does not create types that
    * way and the builder goes on as it always did
    */
-  default boolean createMissingTypeOnTheLeader(final String typeName, final String createStatement) {
+  default boolean createMissingTypeOnTheLeader(final String typeName, final Supplier<String> createStatement) {
     return false;
   }
 

@@ -1649,12 +1649,17 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * @return true when the type exists here now
    */
   @Override
-  public boolean createMissingTypeOnTheLeader(final String typeName, final String createStatement) {
+  public boolean createMissingTypeOnTheLeader(final String typeName, final Supplier<String> createStatementSupplier) {
     if (isLeader())
       return false;
     final TransactionContext tx = proxied.getTransactionIfExists();
     final RaftHAServer raft = raftHAServer;
     if (raft == null || tx == null || !tx.isActive() || !tx.isClientManaged())
+      return false;
+
+    // Built only now that this node is going to send it; a description with no SQL form is left to the refusal that stands
+    final String createStatement = createStatementSupplier.get();
+    if (createStatement == null)
       return false;
 
     checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
