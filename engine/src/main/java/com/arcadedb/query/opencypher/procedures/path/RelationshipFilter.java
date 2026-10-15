@@ -18,8 +18,10 @@
  */
 package com.arcadedb.query.opencypher.procedures.path;
 
+import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.procedures.ProcedureSchemaTypes;
+import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 
 import java.util.Arrays;
@@ -141,6 +143,20 @@ final class RelationshipFilter {
   String[] typesFor(final int depth, final Vertex.DIRECTION direction) {
     final String[][] byStep = direction == Vertex.DIRECTION.OUT ? outTypes : inTypes;
     return byStep[depth % byStep.length];
+  }
+
+  /** Whether the hop leaving a node at {@code depth} follows {@code edge}, by its type, in {@code direction}. */
+  boolean follows(final int depth, final Vertex.DIRECTION direction, final Edge edge) {
+    final String[] types = typesFor(depth, direction);
+    if (types == null)
+      return false;
+    if (types.length == 0)
+      return true;
+    final DocumentType edgeType = edge.getType();
+    for (final String type : types)
+      if (edgeType.instanceOf(type))
+        return true;
+    return false;
   }
 
   /**

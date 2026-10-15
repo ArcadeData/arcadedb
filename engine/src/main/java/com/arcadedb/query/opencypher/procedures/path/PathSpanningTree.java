@@ -18,25 +18,12 @@
  */
 package com.arcadedb.query.opencypher.procedures.path;
 
-import com.arcadedb.database.Database;
-import com.arcadedb.database.RID;
-import com.arcadedb.exception.RecordNotFoundException;
-import com.arcadedb.graph.Edge;
-import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.Vertex;
-import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
 
-import com.arcadedb.utility.NumberUtils;
-import com.arcadedb.utility.RidHashSet;
-
-import java.util.ArrayDeque;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.Queue;
 import java.util.stream.Stream;
 
 /**
@@ -87,110 +74,26 @@ public class PathSpanningTree extends AbstractPathProcedure {
     return List.of("path");
   }
 
+  /**
+   * The walk is {@link PathUniqueness#NODE_GLOBAL} whatever {@code uniqueness} says - APOC overwrites the option here - which
+   * is what makes the paths a tree: each node is reached once, along the first route to it.
+   */
   @Override
   public Stream<Result> execute(final Object[] args, final Result inputRow, final CommandContext context) {
     validateArgs(args);
 
     final Vertex startNode = extractVertex(args[0], "startNode");
-    final Database database = startNode.getDatabase();
     final Map<String, Object> config = optionalMapArg(args, 1, "config");
 
     final int minLevel = extractComponentMinLevel(config);
-    final int maxLevel = config.containsKey("maxLevel") ? NumberUtils.saturateToInt((Number) config.get("maxLevel")) : Integer.MAX_VALUE;
-    final Filters filters = extractFilters(config, database, minLevel);
-    final LabelFilter labels = filters.labels();
+    final int maxLevel = extractMaxLevel(config);
+    final int limit = extractLimit(config);
+    final boolean bfs = extractBoolean(config, "bfs", true);
+    final boolean optional = extractBoolean(config, "optional", false);
+    extractUniqueness(config, PathUniqueness.NODE_GLOBAL);
+    final Filters filters = extractFilters(config, startNode.getDatabase(), minLevel);
 
-    // BFS to build spanning tree
-    final List<List<Object>> allPaths = new ArrayList<>();
-    final RidHashSet visited = new RidHashSet();
-    final RidHashSet ghostNodes = new RidHashSet(16);
-    final Queue<PathLevel> queue = new ArrayDeque<>();
-
-    final LabelFilter.Verdict startVerdict = labels.evaluate(database, startNode.getIdentity(), 0);
-    if (startVerdict != LabelFilter.Verdict.EXCLUDE_AND_PRUNE) {
-      final List<Object> initialPath = new ArrayList<>();
-      initialPath.add(startNode);
-      visited.add(startNode.getIdentity());
-      if (startVerdict.continues)
-        queue.add(new PathLevel(initialPath, startNode, 0));
-
-      // Add root path. A path already in allPaths is never appended to again - an expansion builds a new list from it -
-      // so the defensive copies this used to make were copies of lists nobody could mutate (issue #7976)
-      if (startVerdict.includes && minLevel == 0)
-        allPaths.add(initialPath);
-    }
-
-    while (!queue.isEmpty()) {
-      final PathLevel current = queue.poll();
-
-      if (current.level >= maxLevel) {
-        continue;
-      }
-
-      final int depth = current.level + 1;
-
-      // Expand in both directions
-      for (int side = 0; side < 2; side++) {
-        final Vertex.DIRECTION direction = walkDirection(side);
-        final Iterable<Edge> edges = hopEdges(context, current.vertex, direction, filters.relationships(), current.level);
-        if (edges == null)
-          continue;
-
-        for (final Edge edge : edges) {
-          try {
-            // The neighbour is identified by its RID: a spanning tree rejects every edge that would close a cycle, so
-            // most entries never need the vertex record at all (issue #7976)
-            final RID neighborId = direction == Vertex.DIRECTION.OUT ? edge.getIn() : edge.getOut();
-            if (visited.contains(neighborId))
-              continue;
-
-            final LabelFilter.Verdict verdict = labels.evaluate(database, neighborId, depth);
-            if (verdict == LabelFilter.Verdict.EXCLUDE_AND_PRUNE)
-              continue;
-
-            // Resolved before the RID is marked visited: a RID marked visited by a load that then failed would make
-            // every later edge to the same ghost short-circuit, so only the first one would ever be reported
-            final Vertex neighbor = resolveNeighbor(neighborId, ghostNodes);
-            if (neighbor == null)
-              continue;
-
-            visited.add(neighborId);
-
-            final List<Object> newPath = new ArrayList<>(current.path.size() + 2);
-            newPath.addAll(current.path);
-            newPath.add(edge);
-            newPath.add(neighbor);
-
-            // A node the label filter walks through without reporting it still carries the paths that go past it
-            if (verdict.includes)
-              allPaths.add(newPath);
-            if (verdict.continues)
-              queue.add(new PathLevel(newPath, neighbor, depth));
-          } catch (final RecordNotFoundException e) {
-            GhostEdgeReporter.reportSkipped(e);
-          }
-        }
-      }
-    }
-
-    // Convert paths to results
-    return allPaths.stream().map(pathElements -> {
-      final TraversalPath path = buildPath(pathElements);
-      final ResultInternal result = new ResultInternal();
-      result.setProperty("path", path);
-      return (Result) result;
-    });
-  }
-
-  private static class PathLevel {
-    final List<Object> path;
-    final Vertex vertex;
-    final int level;
-
-    PathLevel(final List<Object> path, final Vertex vertex, final int level) {
-      this.path = path;
-      this.vertex = vertex;
-      this.level = level;
-    }
+    return pathRows(new PathExpansion(startNode, filters, PathUniqueness.NODE_GLOBAL, bfs, minLevel, maxLevel, limit, context),
+        optional);
   }
 }
