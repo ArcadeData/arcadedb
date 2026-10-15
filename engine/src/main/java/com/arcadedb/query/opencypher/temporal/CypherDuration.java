@@ -363,6 +363,7 @@ public class CypherDuration implements CypherTemporalValue {
 
   public CypherDuration negate() {
     try {
+      // nanosAdjustment is 0..999_999_999, so its negation cannot overflow: the constructor folds it back into seconds
       return new CypherDuration(Math.negateExact(months), Math.negateExact(days), Math.negateExact(seconds), -(long) nanosAdjustment);
     } catch (final ArithmeticException e) {
       throw new ArithmeticErrorException("Duration overflow: cannot negate " + this);
