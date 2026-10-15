@@ -356,6 +356,10 @@ public class DatabaseChecker {
       // for; an intersection would be a third semantics nobody asked for either. Refuse and say so.
       throw new IllegalArgumentException(RECORD_SCOPE_CONFLICT_ERROR);
 
+    // #7981: one answer for the whole run - it decides the step plan, whether the repair pass runs, and whether the record
+    // content pass asks the existence question instead, and the three must agree
+    final boolean repairsInvalidRecords = fix && deleteInvalidRecords;
+
     final boolean reclaimOrphanedSegments = fix && !recordScope //
         && (types == null || types.isEmpty()) && (buckets == null || buckets.isEmpty());
 
@@ -404,9 +408,10 @@ public class DatabaseChecker {
           // change the plan of every database that has none, which is what every existing progress expectation
           // was written against; a step that is not there costs nobody anything.
           + (timeSeriesTypes.isEmpty() ? 0 : 1)
-          // #7952: ONE step for the existence-constraint pass over every type that declares one, and only when the
-          // database declares any - same reasoning as the TimeSeries step just above.
-          + (constrainedTypes.isEmpty() ? 0 : 1)
+          // #7952: ONE step for the existence-constraint REPAIR pass over every type that declares one, and only when the
+          // database declares any - same reasoning as the TimeSeries step just above. A report-only run asks the question
+          // during the record-content step instead, so it has no step of its own (#7981)
+          + (constrainedTypes.isEmpty() || !repairsInvalidRecords ? 0 : 1)
           + (reclaimOrphanedSegments ? 1 : 0)
           + (fix ? 1 : 0) // rebuild affected indexes
           + (compress ? 1 : 0)
@@ -433,15 +438,17 @@ public class DatabaseChecker {
 
       // AFTER the three record passes above: a record they removed as corrupt is gone, so it is not reported a
       // second time here under a second vocabulary. BEFORE checkBuckets, which recomputes the record counters this
-      // pass's own removals change.
-      checkConstraints(constrainedTypes);
+      // pass's own removals change. Only a run that REMOVES the violating records walks the constrained types again:
+      // a report-only run asks the question in checkRecordContent below, during the read it makes anyway (#7981)
+      if (repairsInvalidRecords)
+        checkConstraints(constrainedTypes);
 
       checkBuckets(result);
 
       // AFTER the bucket pass: what a FIX repaired or removed is decoded in the shape it left. On every run, not only
       // DEEP: content that no longer decodes is the corruption nothing structural can see, and the cost is one read
       // of every record's properties - small next to the graph pass every run already makes.
-      checkRecordContent(edgeTypes, vertexTypes, documentTypes);
+      checkRecordContent(repairsInvalidRecords ? List.of() : constrainedTypes, edgeTypes, vertexTypes, documentTypes);
 
       checkExternalProperties();
 
@@ -753,9 +760,21 @@ public class DatabaseChecker {
    * record keeps when part of its chain was overwritten by another record's bytes (a chunk shared by two records, see
    * {@code LocalBucket.check}). Such records are counted as errors and listed, never deleted: part of their content
    * still reads, and nothing here can tell which part is wrong, so the answer is to restore them from their source.
+   * <p>
+   * The same read answers the existence-constraint question of a report-only run (issue #7981): {@code constrainedTypes}
+   * names the types with a {@code MANDATORY}/{@code NOTNULL} property, and each of their records that decodes is checked
+   * against them here, rather than by a second walk of every one of those records in {@link #checkConstraints}. That pass
+   * remains for the run that REMOVES what it finds, whose bounded delete passes need a scan they own, and this one is then
+   * handed no type, so a record is never reported twice. A record that does not decode is reported as undecodable and not
+   * asked the question too: one finding per record, in the vocabulary that tells the operator what to do about it.
    */
   @SafeVarargs
-  private void checkRecordContent(final List<DocumentType>... typeGroups) {
+  private void checkRecordContent(final List<ConstrainedType> constrainedTypes, final List<DocumentType>... typeGroups) {
+    // Keyed by NAME, for the reason checkScopedConstraints gives: two schema lookups need not hand back the same instance
+    final Map<String, Property[]> constraintsByType = new HashMap<>();
+    for (final ConstrainedType constrained : constrainedTypes)
+      constraintsByType.put(constrained.type().getName(), constrained.properties());
+
     long total = 0;
     for (final List<DocumentType> types : typeGroups)
       for (final DocumentType type : types)
@@ -766,9 +785,11 @@ public class DatabaseChecker {
     database.begin();
     try {
       for (final List<DocumentType> types : typeGroups)
-        for (final DocumentType type : types)
+        for (final DocumentType type : types) {
+          final Property[] constrained = constraintsByType.get(type.getName());
           for (final Bucket bucket : type.getBuckets(false))
             bucket.scan((rid, view) -> {
+              Document decoded = null;
               try {
                 final Document document = database.getRecordFactory().newImmutableRecord(database, type, rid, view, null)
                     .asDocument(true);
@@ -777,6 +798,7 @@ public class DatabaseChecker {
                   content.position(base.getPropertiesStartingPosition());
                   database.getSerializer().deserializePropertiesStrict(database, content, rid);
                 }
+                decoded = document;
               } catch (final Exception e) {
                 // A record an earlier pass already reported as corrupted is not reported again under a second name
                 if (!((Collection<RID>) result.get("corruptedRecords")).contains(rid)
@@ -788,14 +810,41 @@ public class DatabaseChecker {
                   addWarning("record " + rid + " cannot be decoded (" + e.getMessage() + "): restore it from its source");
                 }
               }
+              if (constrained != null && decoded != null)
+                checkExistenceConstraints(rid, decoded, constrained);
               stepTick();
               return true;
             }, null);
+        }
     } finally {
       database.commit();
     }
 
+    if (!constraintsByType.isEmpty() && (Long) result.get("totalConstraintViolations") > 0)
+      // The summary checkConstraints prints, for the same reason: nothing was removed, so every finding still stands
+      addWarning(CONSTRAINT_VIOLATIONS_REMAIN_WARNING);
+
     stepComplete();
+  }
+
+  /**
+   * Reports {@code record} when it does not satisfy one of the existence constraints {@code constrained} its type declares:
+   * ONE finding per record, like the write path, since a record missing two mandatory properties is one incomplete record.
+   */
+  private void checkExistenceConstraints(final RID rid, final Document record, final Property[] constrained) {
+    try {
+      for (final Property property : constrained) {
+        final String violation = DocumentValidator.describeUnmetExistenceConstraint(record, property);
+        if (violation != null) {
+          addConstraintViolation(rid, violation);
+          return;
+        }
+      }
+    } catch (final Exception e) {
+      // The content decoded a moment ago, so this is not expected; if it happens the record is left to the next run rather
+      // than reported in a vocabulary that would misdescribe it
+      LogManager.instance().log(this, Level.FINE, "Skipped %s in the existence-constraint check: it cannot be read", e, rid);
+    }
   }
 
   private void checkDocuments(final List<DocumentType> documentTypes) {
@@ -1651,8 +1700,8 @@ public class DatabaseChecker {
 
   /**
    * Reports every record that loads perfectly well but does not satisfy its own type's existence constraints
-   * ({@code MANDATORY}, {@code NOTNULL}), and - only under {@code FIX DELETE INVALID RECORDS} - removes it
-   * (issue #7952).
+   * ({@code MANDATORY}, {@code NOTNULL}), and removes it: the pass of a {@code FIX DELETE INVALID RECORDS} run
+   * (issue #7952). A run that only reports asks the same question in {@link #checkRecordContent} (issue #7981).
    * <p>
    * <b>Why this pass exists.</b> Until #7945 the state it looks for was structurally impossible: every write path
    * validated before committing, so a record violating its own type's constraints could not reach a bucket. Three
@@ -1682,12 +1731,11 @@ public class DatabaseChecker {
    * {@link #check()}, before a record is read: a type with no {@code MANDATORY}/{@code NOTNULL} property is not in
    * it, contributes no step to the plan, and costs nothing. A database with none runs no pass at all.
    * <p>
-   * What it is NOT free for, stated plainly: a type that DOES declare one is read and deserialised twice in the same
-   * run, because {@link #checkDocuments} and {@code GraphDatabaseChecker}'s vertex and edge arms have already walked
-   * every one of those records. Issue #7981 covers folding the question into those scans so the report-only run -
-   * the routine one - stops paying for the extra walk. It is not folded in here because the question would then be
-   * asked from two classes, and because the REPAIR cannot ride those scans anyway: the bounded delete passes below
-   * need a scan they own.
+   * <b>Only the repair walks the constrained types again</b> (issue #7981). A report-only run - the routine one - asks
+   * the question during {@link #checkRecordContent}, which decodes every record of every type on every full-scope run
+   * anyway, so it costs one property lookup per constrained property of a record already in memory rather than a second
+   * read-and-deserialise of every record of those types. The REPAIR cannot ride that read: the bounded delete passes
+   * below need a scan they own, and they run before {@link #checkBuckets}, which recomputes the counters they change.
    * <p>
    * <b>A finding is NOT corruption</b> and is deliberately kept out of {@code corruptedRecords}: that set feeds
    * {@code affectedBuckets}, so filing it there would drop and rebuild every index on the record's bucket for a

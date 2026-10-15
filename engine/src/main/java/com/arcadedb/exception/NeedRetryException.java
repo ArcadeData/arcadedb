@@ -43,4 +43,16 @@ public class NeedRetryException extends ArcadeDBException {
   public void setRetryAfterMs(final long retryAfterMs) {
     this.retryAfterMs = Math.max(0L, retryAfterMs);
   }
+
+  /**
+   * Whether running the same work again on THIS node can succeed. True for what this exception usually is, a conflict or a
+   * transient refusal that clears on its own. False for a refusal that holds on this node until something outside it
+   * changes, such as a follower refusing leader-only work and naming the leader to send it to: a local retry loop
+   * ({@code Database.transaction}, {@code COMMIT RETRY}) rethrows it at once rather than spending every attempt and
+   * every retry delay against the same answer before the caller can act on it (issue #9995). A caller that can go
+   * elsewhere, such as a client following the leader it names, still retries it there.
+   */
+  public boolean isRetryableOnThisNode() {
+    return true;
+  }
 }

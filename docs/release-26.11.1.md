@@ -186,6 +186,19 @@ rather than the hops of a `sequence`. A relationship type or a label that is not
 result), `minLevel` of `path.spanningtree`, `path.subgraphnodes` and `path.subgraphall` is 0 or 1 only, and a `config` that is not
 a map is refused.
 
+### An ISO duration text is read as Neo4j reads it (#10055)
+
+`duration('<text>')`, a `DURATION` property set from text and a gRPC value tagged `duration` parse the ISO 8601 form with the
+grammar Neo4j applies. Refused now, where they used to be accepted:
+
+- a text with no component, `P`, `PT`, and a `T` with no time component after it, `P1YT`, which were read as a zero
+  duration (or as `P1Y`);
+- a malformed number, such as `P.5Y`, `PT1.S` or `P-Y` (the last one used to be reported as an overflow);
+- a fraction on any component but the last one present: `P1.5Y2M` is refused, `P1.5Y` and `P1Y2M1.5W` are accepted.
+
+Newly accepted, as in Neo4j: a sign before the `P` (`-P1Y2D` negates every component, `+P1Y`), a sign on a component
+(`PT+1S`) and a decimal comma (`PT1,5S`). The text a stored `DURATION` is written as is unaffected.
+
 ## Fixes
 
 - **A variable-length Cypher hop whose consumer cannot tell two paths between the same pair of vertices apart reports each end vertex once (#10062).**
@@ -201,6 +214,23 @@ a map is refused.
   passes through it). `EXPLAIN` shows `[DISTINCT ENDPOINTS]`. A plain `RETURN b`, `count(b)`, `size(r)`, a second `MATCH`, a
   `WITH` or a lower bound of 2 or more keep enumerating paths. The order of the rows (and of a `collect(DISTINCT ...)` list),
   which was never specified, now follows the breadth-first order.
+- **A schema change still pending when the database closes is saved (#10059).** A DDL inside an open transaction, or one
+  postponed by a bulk schema change, is written when the database closes. That save ran once the database already reported
+  itself closed, where an index cannot be serialized, so as soon as the schema held one index the save failed, was logged at
+  `SEVERE` (`Error saving schema configuration during close`) and the change was lost: after a reopen the type, or the index,
+  was gone. The save now runs as the last step before the database is marked closed, together with the BM25 corpus counters.
+- **A follower's refusal of leader-only work is answered at once (#9995).** `Database.transaction()` and `COMMIT RETRY` retried
+  every retryable error, so a follower refusing a schema change (or another leader-only operation) and naming the leader went
+  through every `txRetries` attempt and retry delay before the caller learnt where to send it, on every transport that runs work
+  through `Database.transaction()` (the HTTP auto-commit retry, the MCP tools). Such a refusal is now rethrown on the first
+  attempt; one raised while no leader is known is still retried, since this node may win the election. A Java caller can tell
+  the two apart with the new `NeedRetryException.isRetryableOnThisNode()`.
+- **`CHECK DATABASE` reads each record of a type with a `MANDATORY` or `NOTNULL` property once (#7981).** The existence
+  constraint check added in 26.10.1 walked and deserialised every record of those types a second time. A run that only
+  reports now asks the question while it decodes the record content, which every run does anyway, so the report has no
+  `Checking existence constraints` step of its own. `FIX DELETE INVALID RECORDS` keeps that step: its delete passes need a scan
+  of their own. The findings are unchanged.
+
 - **The BM25 corpus counters of a `FULL_TEXT` index move when the transaction commits, on every node (#10018).** They used to be
   bumped while the document was being indexed and never undone, so a rolled-back insert, or one retried after a
   `ConcurrentModificationException`, inflated `totalDocs` and `sumDocLength`, and the next search paid a whole-type scan to

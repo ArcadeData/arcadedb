@@ -40,6 +40,7 @@ import com.arcadedb.server.http.HttpAuthSession;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
+import com.arcadedb.server.security.UserAlreadyExistsException;
 import com.arcadedb.server.security.credential.CredentialsValidator;
 import io.grpc.Status;
 import io.grpc.StatusException;
@@ -1196,7 +1197,8 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
       return Status.NOT_FOUND.withDescription(e.getMessage()).asException();
     // A token name already issued: HTTP's 409 on this transport, and distinct from INVALID_ARGUMENT
     // because the request is well formed - it is the identity that is taken.
-    if (e instanceof ServerControlPlane.AlreadyExistsException)
+    // A user name already taken is the same conflict (issue #10073), and not a ServerSecurityException.
+    if (e instanceof ServerControlPlane.AlreadyExistsException || e instanceof UserAlreadyExistsException)
       return Status.ALREADY_EXISTS.withDescription(e.getMessage()).asException();
     // A backup, restore or import already running on the same database is HTTP's 409 on the other
     // transport: the request is well formed and authorized, and retrying once the other operation
@@ -1309,7 +1311,7 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
     final HAServerPlugin ha = ha();
     if (ha != null && !ha.isLeader())
       throw new ServerIsNotTheLeaderException(rpc + " must run on the cluster leader and this server is not it",
-          ha.getLeaderAddress());
+          ha.getLeaderAddress(), true);
   }
 
   /** This server's HA plugin, or null when HA is inactive: the source of the leader address on a refusal. */

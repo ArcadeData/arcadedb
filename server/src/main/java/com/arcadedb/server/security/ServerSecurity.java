@@ -470,11 +470,11 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
   public synchronized ServerSecurityUser createUser(final JSONObject userConfiguration) {
     final String name = userConfiguration.getString("name");
     if (users.containsKey(name))
-      // ServerSecurityException, not java.lang.SecurityException: identical semantics must not be reported
-      // with two different exception types depending on whether the server happens to be in a cluster
-      // (createUserClusterWide's HA branch raises the same condition). Both already map to the same HTTP
-      // status through AbstractServerHttpHandler.isSecurityFailure().
-      throw new ServerSecurityException("User '" + name + "' already exists");
+      // A conflict, not a security failure (issue #10073): UserAlreadyExistsException does not extend
+      // ServerSecurityException, so it is answered 409 and not the 403 a non-root caller gets. The same type
+      // is raised by createUserClusterWide's HA branch, so the answer does not depend on whether the server
+      // happens to be in a cluster.
+      throw new UserAlreadyExistsException(name);
 
     final ServerSecurityUser user = new ServerSecurityUser(server, userConfiguration);
     // Persist BEFORE publishing: saveUsers() propagates an I/O failure so the request fails, and publishing
@@ -597,7 +597,7 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
         // ONE read of the volatile map: the payload and the precondition must describe the same document.
         final Map<String, ServerSecurityUser> current = this.users;
         if (current.containsKey(name))
-          throw new ServerSecurityException("User '" + name + "' already exists");
+          throw new UserAlreadyExistsException(name);
 
         applied = ha.replicateSecurityUsers(replicationPayloadWith(current, name, userConfiguration),
             usersFingerprintOf(current));
@@ -883,7 +883,7 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
       throw new ServerIsNotTheLeaderException("Security user mutation '" + operation
           + "' must run on the cluster leader and this server is not it: run it on the leader, or through a route that"
           + " forwards to it (the /api/v1/server/users REST routes, or openCypher CREATE/ALTER/DROP USER)",
-          ha.getLeaderAddress());
+          ha.getLeaderAddress(), true);
   }
 
   /**
