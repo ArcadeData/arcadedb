@@ -3189,8 +3189,14 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    * {@code change} runs under that lock, so it must only store the value and re-derive in-memory state from it: the
    * setting's {@link GlobalConfiguration} callback and the per-database side effects (serializer, statement caches),
    * as {@link #restoreSetting(String, Object)} already does under the same lock. Nothing that replicates or waits on
-   * the replication. That keeps the lock order acyclic: the Raft state machine takes this lock holding no database lock,
+   * the replication, and nothing that writes {@code configuration.json}: the caller saves once this returns, so a value
+   * this method puts back after a failed re-derivation never reached the file. That keeps the lock order acyclic: the Raft state machine takes this lock holding no database lock,
    * and under it only {@code configurationFileLock}.
+   * <p>
+   * The per-database state derived from the configuration is re-derived here once {@code change} has stored the value,
+   * so a writer that only stores it - {@code set database setting} over HTTP and gRPC - leaves the open database running
+   * with it too, not only once reopened (issue #9949). If that fails, the previous value goes back before the error is
+   * rethrown, so the configuration never names a value the database is not running with.
    */
   public SettingChange changeSetting(final String key, final Runnable change) {
     synchronized (configurationApplyLock) {
@@ -3199,6 +3205,19 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       final SettingToken previousToken = settingTokens.get(tokenKey);
       try {
         change.run();
+        try {
+          configurationChanged();
+        } catch (final RuntimeException | Error e) {
+          // null: the setting was not set, and setValue() then removes it rather than storing an explicit entry
+          configuration.setValue(key, previousValue);
+          try {
+            configurationChanged();
+          } catch (final RuntimeException | Error restoreFailure) {
+            // the failure that caused the restore is the one to report
+            e.addSuppressed(restoreFailure);
+          }
+          throw e;
+        }
       } catch (final RuntimeException | Error e) {
         // A change that fails puts the previous value back (restoreSetting(), which forgets the token): that value is
         // the previous change's again, so an undo of that change must still find it the latest (issue #9951)

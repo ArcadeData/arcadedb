@@ -492,6 +492,26 @@ public class DocumentValidator {
   }
 
   /**
+   * {@link #requireDateConstraintsSatisfiableUnder} for a change of {@code arcadedb.dateImplementation} or
+   * {@code arcadedb.dateTimeImplementation} to {@code implementation}, every other date setting staying as it is in force.
+   * Shared by {@code ALTER DATABASE} and the {@code set database setting} server command, so the two refuse the same
+   * changes (issues #9976, #9949). Any other setting is not checked. The caller holds the database's write lock, which
+   * {@code ALTER PROPERTY} takes too, so a pattern declared meanwhile is either checked here or checked against the new class.
+   *
+   * @param described the setting being changed and its new value, for the message
+   */
+  public static void requireDateImplementationChangeSatisfiable(final DatabaseInternal database,
+      final GlobalConfiguration setting, final Class<?> implementation, final String described) {
+    if (setting != GlobalConfiguration.DATE_IMPLEMENTATION && setting != GlobalConfiguration.DATE_TIME_IMPLEMENTATION)
+      return;
+    final BinarySerializer serializer = database.getSerializer();
+    requireDateConstraintsSatisfiableUnder(database, described,
+        setting == GlobalConfiguration.DATE_IMPLEMENTATION ? implementation : serializer.getDateImplementation(),
+        setting == GlobalConfiguration.DATE_TIME_IMPLEMENTATION ? implementation : serializer.getDateTimeImplementation(),
+        database.getSchema().getDateTimeFormat(), database.getSchema().getDateFormat());
+  }
+
+  /**
    * Refuses a change of how the database holds or reads dates that would leave a DATE or DATETIME property with a constraint
    * no value can satisfy (issue #9976). A REGEXP is matched against the text of the value, and that text is the
    * {@code toString()} of the class the database holds the value as, which {@code arcadedb.dateImplementation} and
