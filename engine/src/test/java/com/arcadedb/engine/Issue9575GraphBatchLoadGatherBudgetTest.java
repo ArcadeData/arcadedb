@@ -1,0 +1,189 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package com.arcadedb.engine;
+
+import com.arcadedb.TestHelper;
+import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.RID;
+import com.arcadedb.graph.GraphBatch;
+import com.arcadedb.serializer.json.JSONArray;
+import org.junit.jupiter.api.Test;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Random;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+/**
+ * Issue #9575, second report on discussion #9559: with the append fix of #9901 in, a GraphImporter load of 209M vertices still
+ * stopped for minutes at a time, every stall longer than the one before (3 minutes at 35M vertices, 20 at 209M), with the GC
+ * idle. That is the cost of reading every page of the vertex bucket once: something other than a plain append still arms the
+ * free-space gather, and a gather, once armed, read the whole file in one go on the writer's thread.
+ * <p>
+ * One such arming is a record larger than a page: the chunks of a multi-page record are not written by the hole-free append,
+ * so the commit measures their pages and every measurement counts as a change. A load of real-world rows meets one every few
+ * seconds. Chasing every arming path would leave the next one to be found the same way, so the scan itself is bounded: a gather
+ * reads at most a fixed number of pages and picks up where it stopped the next time it runs.
+ * <p>
+ * Counting pages needs no clock, so a stalled JVM cannot flip these tests; the 5 s throttle is expired through a hook instead
+ * of slept through.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
+class Issue9575GraphBatchLoadGatherBudgetTest extends TestHelper {
+  private static final int    BUDGET          = 64;
+  private static final String PAYLOAD         = "x".repeat(1_000);
+  private static final int    RECORDS         = 30_000;
+  private static final int    VERTICES        = 6_000;
+  private static final int    MAX_VERTEX_SIZE = 100_000;
+
+  /**
+   * The reporter's shape: a GraphBatch vertex pass whose rows vary in size, some of them larger than a page.
+   */
+  @Test
+  void aGraphBatchLoadWithRecordsLargerThanAPageNeverScansTheWholeBucket() {
+    database.getSchema().createVertexType("Work", 1);
+    final LocalBucket bucket = (LocalBucket) database.getSchema().getType("Work").getBuckets(false).get(0);
+    bucket.setGatherPagesPerScanForTesting(BUDGET);
+
+    final Random sizes = new Random(7);
+    try (final GraphBatch batch = database.batch().withBidirectional(false).withWAL(false).withPreAllocateEdgeChunks(false)
+        .withCommitEvery(0).build()) {
+      database.begin();
+      for (int i = 0; i < VERTICES; i++) {
+        batch.createVertex("Work", "id", i, "payload", "x".repeat(50 + sizes.nextInt(MAX_VERTEX_SIZE)));
+        if ((i + 1) % 200 == 0) {
+          database.commit();
+          bucket.expireGatherThrottleForTesting();
+          database.begin();
+        }
+      }
+      database.commit();
+    }
+
+    final long scans = bucket.getGatherScanCountForTesting();
+    // the premise: the load armed gathers past the first run, over a file many budgets long
+    assertThat(scans).isGreaterThan(2);
+    assertThat(bucket.getTotalPages()).isGreaterThan(BUDGET * 20);
+
+    assertThat(bucket.getGatherPagesReadForTesting())
+        .as("pages read by %d gather scans over a bucket of %d pages", scans, bucket.getTotalPages())
+        .isLessThanOrEqualTo(scans * BUDGET);
+  }
+
+  /**
+   * A bounded scan must still get round the whole file: space freed at its far end is found, one throttled slice at a time.
+   */
+  @Test
+  void freedSpaceAtTheEndOfALargeBucketIsStillFound() {
+    database.getSchema().createDocumentType("Wide", 1);
+    final LocalBucket bucket = wideBucket();
+    bucket.setGatherPagesPerScanForTesting(BUDGET);
+
+    final List<RID> rids = append(RECORDS);
+    final int pages = bucket.getTotalPages();
+    assertThat(pages).isGreaterThan(BUDGET * 5);
+
+    // free most of one page near the end of the file, the last place a scan starting at the head reaches
+    final int targetPage = pages - 10;
+    database.transaction(() -> {
+      for (final RID rid : rids)
+        if (rid.getPosition() / bucket.getMaxRecordsInPage() == targetPage && rid.getPosition() % 4 != 0)
+          database.deleteRecord(rid.asDocument());
+    });
+
+    // the commit lists the page it has just measured: forget it, so only a scan can find it again
+    bucket.setPageStatistics(new JSONArray());
+    assertThat(bucket.getListedFreeSpacePagesForTesting()).isEmpty();
+
+    final long readBefore = bucket.getGatherPagesReadForTesting();
+    int slices = 0;
+    while (!contains(bucket.getListedFreeSpacePagesForTesting(), targetPage) && slices < pages) {
+      final long readBeforeSlice = bucket.getGatherPagesReadForTesting();
+      bucket.expireGatherThrottleForTesting();
+      bucket.gatherPageStatistics();
+      assertThat(bucket.getGatherPagesReadForTesting() - readBeforeSlice).as("pages read by one gather").isLessThanOrEqualTo(BUDGET);
+
+      // between two slices the throttle holds: a gather asked again at once reads nothing
+      final long readAfterSlice = bucket.getGatherPagesReadForTesting();
+      bucket.gatherPageStatistics();
+      assertThat(bucket.getGatherPagesReadForTesting()).isEqualTo(readAfterSlice);
+      ++slices;
+    }
+
+    assertThat(bucket.getListedFreeSpacePagesForTesting()).as("pages listed after %d slices", slices).contains(targetPage);
+    assertThat(bucket.getGatherPagesReadForTesting() - readBefore).isLessThanOrEqualTo(pages + BUDGET);
+  }
+
+  /**
+   * Once a lap has visited every page, nothing is left to scan until a write arms the next one.
+   */
+  @Test
+  void aFinishedLapStopsScanning() {
+    database.getSchema().createDocumentType("Wide", 1);
+    final LocalBucket bucket = wideBucket();
+    bucket.setGatherPagesPerScanForTesting(BUDGET);
+
+    final List<RID> rids = append(RECORDS);
+    final int pages = bucket.getTotalPages();
+    database.transaction(() -> database.deleteRecord(rids.get(rids.size() / 2).asDocument()));
+
+    final long readBefore = bucket.getGatherPagesReadForTesting();
+    for (int i = 0; i < pages / BUDGET + 2; i++) {
+      bucket.expireGatherThrottleForTesting();
+      bucket.gatherPageStatistics();
+    }
+    final long lap = bucket.getGatherPagesReadForTesting() - readBefore;
+    assertThat(lap).isGreaterThan(0L).isLessThanOrEqualTo(pages);
+
+    for (int i = 0; i < 5; i++) {
+      bucket.expireGatherThrottleForTesting();
+      bucket.gatherPageStatistics();
+    }
+    assertThat(bucket.getGatherPagesReadForTesting() - readBefore).as("pages read after the lap was over").isEqualTo(lap);
+  }
+
+  private List<RID> append(final int count) {
+    final List<RID> rids = new ArrayList<>(count);
+    database.begin();
+    for (int i = 0; i < count; i++) {
+      final MutableDocument d = database.newDocument("Wide").set("i", i).set("payload", PAYLOAD);
+      d.save();
+      rids.add(d.getIdentity());
+      if ((i + 1) % 2_000 == 0) {
+        database.commit();
+        database.begin();
+      }
+    }
+    database.commit();
+    return rids;
+  }
+
+  private LocalBucket wideBucket() {
+    return (LocalBucket) database.getSchema().getType("Wide").getBuckets(false).get(0);
+  }
+
+  private static boolean contains(final int[] values, final int value) {
+    for (final int v : values)
+      if (v == value)
+        return true;
+    return false;
+  }
+}
