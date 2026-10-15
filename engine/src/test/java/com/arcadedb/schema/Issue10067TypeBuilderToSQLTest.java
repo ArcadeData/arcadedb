@@ -81,6 +81,21 @@ class Issue10067TypeBuilderToSQLTest extends TestHelper {
     assertThat(declared).as("a field of TypeBuilder that toSQL() does not render makes a replica create a different type").isEqualTo(accountedFor);
   }
 
+  /** The kind of the type is the kind the builder was made for: vertex, edge and document each create what they were asked to. */
+  @Test
+  void theKindOfTheTypeRoundTrips() {
+    database.command("sql", database.getSchema().buildVertexType().withName("AVertex").toSQL());
+    database.command("sql", database.getSchema().buildEdgeType().withName("AnEdge").toSQL());
+    database.command("sql", database.getSchema().buildDocumentType().withName("ADocument").toSQL());
+    database.command("sql", database.getSchema().buildVertexType().withName("ASubVertex").withSuperType("AVertex").toSQL());
+
+    assertThat(database.getSchema().getType("AVertex")).isInstanceOf(VertexType.class);
+    assertThat(database.getSchema().getType("AnEdge")).isInstanceOf(EdgeType.class);
+    assertThat(database.getSchema().getType("ADocument")).isNotInstanceOf(VertexType.class).isNotInstanceOf(EdgeType.class);
+    assertThat(database.getSchema().getType("ASubVertex")).as("a type with a super type keeps its kind").isInstanceOf(VertexType.class);
+    assertThat(database.getSchema().getType("ASubVertex").instanceOf("AVertex")).isTrue();
+  }
+
   @Test
   void aTypeCreatedWithoutIgnoreIfExistsHasNoIfNotExists() {
     assertThat(database.getSchema().buildVertexType().withName("Person").toSQL()).isEqualTo("CREATE VERTEX TYPE `Person`");

@@ -92,8 +92,8 @@ public class TypeBuilder<T> {
       // IF NOT EXISTS whatever this builder says: a create() that found the type already there is an error for its caller, but here
       // the type was missing when the call began and a racing creation by another client (the same new label, through another
       // replica) must leave it with the type, as it does on a node that creates types itself and finds it complete afterwards
-      final String statement = toSQL(true);
-      if (statement != null && database.getWrappedDatabaseInstance().createMissingTypeOnTheLeader(typeName, statement)) {
+      // A supplier: the string is built only by a database that is going to send it, never on an embedded one
+      if (database.getWrappedDatabaseInstance().createMissingTypeOnTheLeader(typeName, () -> toSQL(true))) {
         // Not the "already exists" refusal of a create() that finds the type: the type did not exist when this call began, and
         // the leader made it on this call's behalf. Its buckets are not counted against this builder's: a count the caller chose
         // was rendered into the statement, and one it did not is the leader's own default, which may differ from this node's
