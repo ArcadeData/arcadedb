@@ -39,7 +39,7 @@ public class GremlinServerAuthenticator implements Authenticator {
    */
   static final String ADDRESS_CREDENTIAL = "address";
 
-  /** Numbers the connections authenticated by this server, so two clients of one credential are two clients (issue #10105). */
+  /** Numbers the connections that authenticate once and live on (SASL), so two clients of one credential are two clients (issue #10105). */
   private static final AtomicLong CONNECTIONS = new AtomicLong();
 
   private ArcadeDBServer server;
@@ -55,16 +55,21 @@ public class GremlinServerAuthenticator implements Authenticator {
   }
 
   public Authenticator.SaslNegotiator newSaslNegotiator(final InetAddress remoteAddress) {
-    // The peer is known here, before the credentials are: the user that comes out of the negotiation carries it
-    return new GremlinServerAuthenticator.PlainTextSaslAuthenticator(
-        connection(remoteAddress != null ? "/" + remoteAddress.getHostAddress() : null));
+    // The peer is known here, before the credentials are: the user that comes out of the negotiation carries it. A WebSocket
+    // connection authenticates once and lives on, so the number is the connection: two of one credential are two clients.
+    // The port is missing, TinkerPop passes the address only
+    return new GremlinServerAuthenticator.PlainTextSaslAuthenticator(new RunningQuery.Client(newConnectionId(),
+        peer(remoteAddress != null ? remoteAddress.getHostAddress() : null)));
   }
 
   @Override
   public AuthenticatedUser authenticate(final Map<String, String> credentials) throws AuthenticationException {
-    // The HTTP basic authentication handler passes the peer of the channel, "host:port" without the leading slash
-    final String address = credentials.get(ADDRESS_CREDENTIAL);
-    return authenticate(credentials, connection(address != null && !address.isBlank() && !address.startsWith("/") ? "/" + address : address));
+    // The HTTP basic authentication handler authenticates EVERY request and has no connection to number: it passes the peer of
+    // the channel, "host:port", which is what ties the requests of one keep-alive connection together and tells two apart
+    final String peer = peer(credentials.get(ADDRESS_CREDENTIAL));
+    return authenticate(credentials, peer != null ?
+        new RunningQuery.Client(null, peer) :
+        new RunningQuery.Client(newConnectionId(), null));
   }
 
   private AuthenticatedUser authenticate(final Map<String, String> credentials, final RunningQuery.Client client) {
@@ -77,13 +82,18 @@ public class GremlinServerAuthenticator implements Authenticator {
     return new ClientAuthenticatedUser(user.getName(), client);
   }
 
+  private static String newConnectionId() {
+    return Long.toHexString(CONNECTIONS.incrementAndGet());
+  }
+
   /**
-   * The client of a connection authenticated now (issue #10105): numbered, so two connections of one credential are told
-   * apart, and with the peer address in the shape {@code SocketAddress.toString()} gives, which is what the channelizer's
-   * own publication carries. The port is missing on the SASL path, where TinkerPop passes the address only.
+   * The peer in the shape {@code SocketAddress.toString()} gives ({@code /host[:port]}), which is what the channelizer's own
+   * publication carries, or {@code null} when the transport reported none.
    */
-  private static RunningQuery.Client connection(final String address) {
-    return new RunningQuery.Client(Long.toHexString(CONNECTIONS.incrementAndGet()), address != null && !address.isBlank() ? address : null);
+  private static String peer(final String address) {
+    if (address == null || address.isBlank())
+      return null;
+    return address.startsWith("/") ? address : "/" + address;
   }
 
   private class PlainTextSaslAuthenticator implements Authenticator.SaslNegotiator {

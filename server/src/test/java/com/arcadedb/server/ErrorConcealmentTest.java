@@ -75,5 +75,8 @@ class ErrorConcealmentTest {
     assertThat(ErrorConcealment.clientMessage(false, this, "test", null, e)).isEqualTo("NoSuchElementException");
     assertThat(ErrorConcealment.clientMessage(true, this, "test", null, e)).isEqualTo(ArcadeDBServer.CONCEALED_ERROR_MESSAGE);
     assertThat(ErrorConcealment.clientMessage(false, this, "test", "kept", e, Level.INFO)).isEqualTo("kept");
+    // A blank message names the failure no better than none does, and describe() already reads it that way
+    assertThat(ErrorConcealment.clientMessage(false, this, "test", "", e)).isEqualTo("NoSuchElementException");
+    assertThat(ErrorConcealment.clientMessage(false, this, "test", "  ", e)).isEqualTo("NoSuchElementException");
   }
 }

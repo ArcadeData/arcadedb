@@ -85,7 +85,7 @@ public final class ErrorConcealment {
   public static String clientMessage(final boolean conceal, final Object requester, final String surface, final String message,
       final Throwable cause, final Level clientCausedLevel, final boolean traceServerFault) {
     // A CALLER THAT PASSES THE RAW getMessage() OF A FAILURE WITH NONE HANDS THE CLIENT, AND THE LOG, THE WORD "null" (issue #10092)
-    final String text = message != null ? message : describe(cause);
+    final String text = message != null && !message.isBlank() ? message : describe(cause);
     if (!conceal)
       return text;
     // THE TEXT CAN CARRY CLIENT DATA (A DUPLICATED KEY'S VALUES): ONE LINE, SO IT CANNOT FORGE ENTRIES IN A LINE-ORIENTED LOG
