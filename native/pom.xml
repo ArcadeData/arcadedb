@@ -217,6 +217,11 @@
     </dependencyManagement>
 
     <dependencies>
+        <!-- GraalVM hosted Feature API, for GrpcMessageReflectionFeature (already on the classpath through graal-sdk) -->
+        <dependency>
+            <groupId>org.graalvm.sdk</groupId>
+            <artifactId>nativeimage</artifactId>
+        </dependency>
         <dependency>
             <groupId>com.arcadedb</groupId>
             <artifactId>arcadedb-server</artifactId>
@@ -336,6 +341,9 @@
                         <buildArg>-H:+ReportExceptionStackTraces</buildArg>
                         <buildArg>--enable-url-protocols=http,https</buildArg>
                         <buildArg>--add-modules=jdk.incubator.vector</buildArg>
+                        <!-- The gRPC interceptors read request fields through the protobuf descriptor, which looks up the
+                             generated getters by reflection: register every gRPC message and builder for it. -->
+                        <buildArg>--features=com.arcadedb.nativeimage.GrpcMessageReflectionFeature</buildArg>
                         <!-- Undertow/XNIO: HostName reads the machine hostname eagerly; must be deferred to run time. -->
                         <buildArg>--initialize-at-run-time=org.wildfly.common.net.HostName</buildArg>
                         <!-- slf4j API, helpers, providers and the JUL binding must all initialize at build time,
