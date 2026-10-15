@@ -108,6 +108,8 @@ public class BinarySerializer {
   // is materialised as LocalDateTime under them - the class the write side already converts those columns to
   private       Class<?>         subMillisDateTimeImplementation;
   private       DataEncryption   dataEncryption;
+  // told when the class a DATE or DATETIME value is held as changes, whichever route changed it (issue #10104)
+  private volatile  Runnable         implementationChangeListener;
 
   // Cached WKT writer for fast Point serialization (avoid recreating writer for each Point)
   private static volatile ShapeWriter cachedWktWriter;
@@ -1754,7 +1756,33 @@ public class BinarySerializer {
    * infers {@code Class<?>} and inserts a cast that fails on the perfectly legal stored class NAME.
    */
   public void setDateImplementation(final Object dateImplementation) {
+    final Class<?> previous = this.dateImplementation;
     this.dateImplementation = toClass(dateImplementation);
+    if (previous != null && previous != this.dateImplementation)
+      implementationChanged();
+  }
+
+  /**
+   * Registers who is told, after the fact, that the class DATE or DATETIME values are held as has changed (issue #10104). The
+   * REGEXP of such a property is matched against the text of that class, so a change can leave a pattern that no value satisfies;
+   * a statement that changes the class can refuse that change beforehand, but this setter is also reached by routes that cannot
+   * (the configuration an open reads, a replicated setting, any other caller), and the owner of the database registers here so
+   * that none of them is silent. Not told when the class is set to the one already in force. The listener runs after the class has
+   * changed, so an exception it throws is logged and not rethrown: the caller of the setter could not undo the change anyway.
+   */
+  public void setImplementationChangeListener(final Runnable listener) {
+    this.implementationChangeListener = listener;
+  }
+
+  private void implementationChanged() {
+    final Runnable listener = implementationChangeListener;
+    if (listener == null)
+      return;
+    try {
+      listener.run();
+    } catch (final RuntimeException e) {
+      LogManager.instance().log(this, Level.WARNING, "A listener of the date implementation change failed", e);
+    }
   }
 
   public Class<?> getDateTimeImplementation() {
@@ -1771,8 +1799,11 @@ public class BinarySerializer {
 
   /** See {@link #setDateImplementation(Object)}. */
   public void setDateTimeImplementation(final Object dateTimeImplementation) {
+    final Class<?> previous = this.dateTimeImplementation;
     this.dateTimeImplementation = toClass(dateTimeImplementation);
     this.subMillisDateTimeImplementation = subMillisDateTimeImplementation(this.dateTimeImplementation);
+    if (previous != null && previous != this.dateTimeImplementation)
+      implementationChanged();
   }
 
   /**

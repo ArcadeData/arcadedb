@@ -1415,6 +1415,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       ((RecordInternal) record).unsetDirty();
 
       success = true;
+      countCreatedRecord(record);
 
       // INVOKE EVENT CALLBACKS
       events.onAfterCreate(record);
@@ -1430,6 +1431,20 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       }
     }
     return true;
+  }
+
+  /**
+   * Counts a record the database has just created (issue #10095). The create-side twin of the {@code deleteRecord} counter in
+   * {@link #deleteRecordNoLock(Record)} and of the {@code updateRecord} counter in {@code applyUpdate}: incremented by the single owner of the
+   * operation, after the write happened, so a record that was instantiated and discarded, refused by validation or vetoed by a
+   * listener is not counted, and an edge is, whichever API made it. Only the records of the user are counted: the edge segments and
+   * stripe directories the graph engine allocates through the same method are storage of the engine, not records created. Counted
+   * when the write is made, not when the transaction commits, so a transaction rolled back later still counts its creates, as it does
+   * its updates and deletes.
+   */
+  private void countCreatedRecord(final Record record) {
+    if (record instanceof Document)
+      stats.createRecord.incrementAndGet();
   }
 
   /**
@@ -1560,6 +1575,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
         final RID restoredRid = restoreRecordInTransaction(record, bucket, position);
         success = true;
+        countCreatedRecord(record);
 
         // INVOKE EVENT CALLBACKS - before the implicit commit, exactly where createRecordNoLock fires them.
         events.onAfterCreate(record);
@@ -2336,8 +2352,6 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       throw new IllegalArgumentException("Cannot create a document of type '" + typeName + "' because is not a " +
           "document type");
 
-    stats.createRecord.incrementAndGet();
-
     return new MutableDocument(wrappedDatabaseInstance, type, null);
   }
 
@@ -2364,8 +2378,6 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     if (!type.getClass().equals(LocalVertexType.class))
       throw new IllegalArgumentException("Cannot create a vertex of type '" + typeName + "' because is not a vertex " +
           "type");
-
-    stats.createRecord.incrementAndGet();
 
     return new MutableVertex(wrappedDatabaseInstance, (VertexType) type, null);
   }
@@ -2420,8 +2432,6 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     } else
       destinationVertex = v2Result.next().getIdentity().asVertex();
 
-    stats.createRecord.incrementAndGet();
-
     return sourceVertex.newEdge(edgeType, destinationVertex, properties);
   }
 
@@ -2467,8 +2477,6 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
                 destinationVertexKeyValues));
     } else
       destinationVertex = v2Result.next().getIdentity().asVertex();
-
-    stats.createRecord.incrementAndGet();
 
     return sourceVertex.newEdge(edgeType, destinationVertex, properties);
   }
@@ -3157,6 +3165,25 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     }
   }
 
+  /**
+   * Warns, naming the property, about a REGEXP on a DATE or DATETIME property that the class in force holds no value of (issue
+   * #10104). Reached when the database opens and whenever the serializer's class changes, which is where a statement that can refuse
+   * is not the one changing it. Skipped while there is no loaded schema to walk.
+   * <p>
+   * Never throws: it is a diagnostic, run by an open that must not fail over a constraint and by a setter that has already changed
+   * the class, so a failure to check is reported and does not take either of them down.
+   */
+  private void warnAboutUnsatisfiableDateRegexps(final String cause) {
+    if (schema == null || !open)
+      return;
+    try {
+      DocumentValidator.warnAboutUnsatisfiableDateRegexps(this, cause);
+    } catch (final RuntimeException e) {
+      LogManager.instance().log(this, Level.WARNING, "Cannot check the REGEXP of the DATE and DATETIME properties of database '%s' after %s",
+          e, name, cause);
+    }
+  }
+
   /** Re-derives what {@link #open()} derives from the configuration, after it changed in memory (issue #9763). */
   private void configurationChanged() {
     serializer.setDateImplementation(configuration.getValue(GlobalConfiguration.DATE_IMPLEMENTATION));
@@ -3696,6 +3723,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         }
 
       open = false;
+      // the serializer must not keep a lambda that references this instance once it is closed (issue #10104)
+      serializer.setImplementationChangeListener(null);
 
       // From here on the instance reports itself closed, so every step below must run whatever the one before it did
       // (issue #8316): the files, the WAL and the lock file are released at the end, and a failure that skipped them
@@ -3997,6 +4026,16 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
         serializer.setDateImplementation(configuration.getValue(GlobalConfiguration.DATE_IMPLEMENTATION));
         serializer.setDateTimeImplementation(configuration.getValue(GlobalConfiguration.DATE_TIME_IMPLEMENTATION));
+
+        // The configuration this open read may hold dates as another class than the one a REGEXP was declared against, and the
+        // schema load does not search the text forms (that is paid at the declaration, not at every open). An open must not fail
+        // over a constraint, so it warns (issue #10104)
+        warnAboutUnsatisfiableDateRegexps("opening the database with dates held as " + serializer.getDateImplementation().getSimpleName()
+            + " and datetimes as " + serializer.getDateTimeImplementation().getSimpleName());
+
+        // From here on the class can change by routes that cannot refuse (a replicated setting, any other caller of the setter), and
+        // none of them is silent. Registered after the two assignments above, which are the open's own and were just reported
+        serializer.setImplementationChangeListener(() -> warnAboutUnsatisfiableDateRegexps("the class dates are held as changed"));
 
         if (recoveryPending) {
           try {

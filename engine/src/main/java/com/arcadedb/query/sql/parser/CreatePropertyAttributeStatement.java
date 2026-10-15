@@ -20,15 +20,23 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
-import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.schema.Property;
 
+import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 
 public class CreatePropertyAttributeStatement extends SimpleNode {
+  /**
+   * Every attribute {@code CREATE PROPERTY ... ( <name> <value> )} accepts, in lower case. The regression test of issue #10099 walks
+   * this list to prove each one reads the SQL literal {@code null} as {@code ALTER PROPERTY} does.
+   */
+  public static final List<String> ATTRIBUTES = List.of("readonly", "mandatory", "notnull", "hidden", "external", "compression", "max",
+      "min", "default", "regexp");
+
   public Identifier settingName;
   public Expression settingValue;
 
@@ -53,40 +61,38 @@ public class CreatePropertyAttributeStatement extends SimpleNode {
 
   public Object setOnProperty(final Property internalProp, final CommandContext context) {
     final String attrName = settingName.getStringValue();
+    final String attribute = attrName.toLowerCase(Locale.ENGLISH);
+    if (!ATTRIBUTES.contains(attribute))
+      throw new CommandExecutionException("Invalid attribute definition: '" + attrName + "'");
+
     final Object attrValue;
     if (this.settingValue == null) {
       attrValue = true;
-    } else if ("default".equalsIgnoreCase(attrName)) {
+    } else if ("default".equals(attribute)) {
       attrValue = this.settingValue.toString();
     } else {
-      attrValue = this.settingValue.execute((Identifiable) null, context);
+      attrValue = PropertyAttributeValues.evaluate(attrName, this.settingValue, context);
     }
 
     try {
-      if ("readonly".equalsIgnoreCase(attrName)) {
-        internalProp.setReadonly((boolean) attrValue);
-      } else if ("mandatory".equalsIgnoreCase(attrName)) {
-        internalProp.setMandatory((boolean) attrValue);
-      } else if ("notnull".equalsIgnoreCase(attrName)) {
-        internalProp.setNotNull((boolean) attrValue);
-      } else if ("hidden".equalsIgnoreCase(attrName)) {
-        internalProp.setHidden((boolean) attrValue);
-      } else if ("external".equalsIgnoreCase(attrName)) {
-        internalProp.setExternal((boolean) attrValue);
-      } else if ("compression".equalsIgnoreCase(attrName)) {
-        internalProp.setCompression(String.valueOf(attrValue));
-      } else if ("max".equalsIgnoreCase(attrName)) {
-        internalProp.setMax("" + attrValue);
-      } else if ("min".equalsIgnoreCase(attrName)) {
-        internalProp.setMin("" + attrValue);
-      } else if ("default".equalsIgnoreCase(attrName)) {
+      switch (attribute) {
+      case "readonly" -> internalProp.setReadonly(PropertyAttributeValues.asBoolean(attrName, attrValue));
+      case "mandatory" -> internalProp.setMandatory(PropertyAttributeValues.asBoolean(attrName, attrValue));
+      case "notnull" -> internalProp.setNotNull(PropertyAttributeValues.asBoolean(attrName, attrValue));
+      case "hidden" -> internalProp.setHidden(PropertyAttributeValues.asBoolean(attrName, attrValue));
+      case "external" -> internalProp.setExternal(PropertyAttributeValues.asBoolean(attrName, attrValue));
+      // null clears, as ALTER PROPERTY does: the text "null" is not the value of anything (issue #10099)
+      case "compression" -> internalProp.setCompression(PropertyAttributeValues.asText(attrValue));
+      case "max" -> internalProp.setMax(PropertyAttributeValues.asText(attrValue));
+      case "min" -> internalProp.setMin(PropertyAttributeValues.asText(attrValue));
+      case "regexp" -> internalProp.setRegexp(PropertyAttributeValues.asText(attrValue));
+      case "default" -> {
         if (this.settingValue == null)
           throw new CommandExecutionException("Default value not set");
+        // kept as its text: the SQL null literal is how a default is taken back, and Property.fillsInAValue says it fills in nothing
         internalProp.setDefaultValue("" + attrValue);
-      } else if ("regexp".equalsIgnoreCase(attrName)) {
-        internalProp.setRegexp("" + attrValue);
-      } else {
-        throw new CommandExecutionException("Invalid attribute definition: '" + attrName + "'");
+      }
+      default -> throw new CommandExecutionException("Invalid attribute definition: '" + attrName + "'");
       }
     } catch (final Exception e) {
       // The cause's message is carried in the text and not just in the chain: this is what a client sees over HTTP,
