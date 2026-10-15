@@ -90,6 +90,7 @@ import com.arcadedb.query.select.Select;
 import com.arcadedb.query.sql.executor.CommandTimeoutOverride;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.QueryAdmissionGate;
+import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.parser.ExecutionPlanCache;
@@ -1677,7 +1678,13 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     final boolean createdByThisRequest;
     try (final ResultSet answer = forwardCommandToLeaderViaRaft("sql", createStatement, null, null, false, leaderApplied)) {
       // The row CREATE ... TYPE answers with says whether this very command made the type (created=false: it was there already)
-      createdByThisRequest = answer.hasNext() && Boolean.TRUE.equals(answer.next().<Boolean>getProperty("created"));
+      final Result row = answer.hasNext() ? answer.next() : null;
+      createdByThisRequest = row != null && Boolean.TRUE.equals(row.<Boolean>getProperty("created"));
+      if (row == null || row.getProperty("created") == null)
+        // A leader whose answer has another shape: the transaction is then never re-based past the type (it fails closed), said here
+        // so that a statement told to retry for no apparent reason can be explained
+        LogManager.instance().log(this, Level.FINE, "The leader's answer to '%s' carries no 'created' flag: a transaction that "
+            + "already wrote is not re-based past type '%s'", createStatement, typeName);
     }
     awaitTypeApplied(raft, typeName, leaderApplied.get());
 
@@ -1686,8 +1693,12 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       return true;
 
     final long appliedNow = raft.getTrustedAppliedIndex(getName());
-    if (transactionStaysValidPastTheType(hadWritten, schemaUnchangedSincePrepared, createdByThisRequest,
-        stateMachine != null ? stateMachine.schemaChangesAppliedBetween(getName(), appliedBefore, appliedNow) : Integer.MAX_VALUE))
+    // The count is the history of the instance the request started with: one that replaced it while the request was in flight (an
+    // in-place Ratis restart) has a history that starts later, and a stretch across the change is unknown, not empty
+    final int schemaChangesInTheStretch = stateMachine != null && stateMachine == raft.getStateMachine() ?
+        stateMachine.schemaChangesAppliedBetween(getName(), appliedBefore, appliedNow) :
+        Integer.MAX_VALUE;
+    if (transactionStaysValidPastTheType(hadWritten, schemaUnchangedSincePrepared, createdByThisRequest, schemaChangesInTheStretch))
       stampReplicationBase(appliedNow);
     else
       // Fully qualified, as the rest of this file does: the JDK type of the same name is deliberately not imported
