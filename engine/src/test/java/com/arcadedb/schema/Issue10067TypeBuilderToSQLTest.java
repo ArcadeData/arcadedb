@@ -27,6 +27,7 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
 import java.util.Set;
 import java.util.TreeSet;
+import java.util.concurrent.ConcurrentMap;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -79,6 +80,15 @@ class Issue10067TypeBuilderToSQLTest extends TestHelper {
     final Set<String> accountedFor = new TreeSet<>(rendered);
     accountedFor.addAll(notPartOfTheDescription);
     assertThat(declared).as("a field of TypeBuilder that toSQL() does not render makes a replica create a different type").isEqualTo(accountedFor);
+  }
+
+  /**
+   * {@link TypeBuilder#create()} looks the type up in the schema's type map without the read lock, as a pre-check, which is sound only
+   * because the map is a concurrent one whichever generation of the schema (published or staged) it answers for.
+   */
+  @Test
+  void theTypeMapTheUnlockedPreCheckReadsIsAConcurrentMap() {
+    assertThat(((LocalSchema) database.getSchema()).typeMap()).isInstanceOf(ConcurrentMap.class);
   }
 
   /** The kind of the type is the kind the builder was made for: vertex, edge and document each create what they were asked to. */
