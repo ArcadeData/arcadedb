@@ -43,6 +43,7 @@ import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.IndexReplayConclusion;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.index.fulltext.FullTextCorpusDeltas;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.RunningQuery;
@@ -2620,6 +2621,20 @@ public class TransactionContext implements Transaction {
    * record before the locks are released.
    */
   public void publishCommittedPages(final TransactionPhase1 changes) {
+    // The pages become visible before the delta reaches the BM25 counters: a scan that overlaps that window reads documents the
+    // counters do not hold yet, and must not call its result exact (see FullTextIndexMetadata#commitApplyStarted)
+    final FullTextCorpusDeltas corpusDeltas = FullTextCorpusDeltas.peek(this);
+    if (corpusDeltas != null)
+      corpusDeltas.commitApplyStarted();
+    try {
+      publishCommittedPagesInternal(changes);
+    } finally {
+      if (corpusDeltas != null)
+        corpusDeltas.commitApplyFinished();
+    }
+  }
+
+  private void publishCommittedPagesInternal(final TransactionPhase1 changes) {
     try {
       if (database.getMode() == ComponentFile.MODE.READ_ONLY)
         throw new TransactionException("Cannot commit changes because the database is open in read-only mode");
@@ -2691,6 +2706,12 @@ public class TransactionContext implements Transaction {
           // UPDATE THE CACHE COUNTER ONLY IF ALREADY COMPUTED
           bucket.setCachedRecordCount(bucket.getCachedRecordCount() + delta);
       });
+
+      // THE BM25 CORPUS COUNTERS OF THE FULL-TEXT INDEXES THIS TRANSACTION WROTE MOVE WITH ITS PAGES, LIKE THE RECORD COUNT ABOVE:
+      // A ROLLBACK NEVER REACHES THIS POINT (#10018)
+      final FullTextCorpusDeltas corpusDeltas = FullTextCorpusDeltas.peek(this);
+      if (corpusDeltas != null)
+        corpusDeltas.applyCommitted();
     } catch (final IOException | InterruptedException e) {
       fenceIfPastPointOfNoReturn(e);
       LogManager.instance()

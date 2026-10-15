@@ -7308,6 +7308,23 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     txPreparedAtCapability.invalidate();
   }
 
+  // The same short-lived, membership-aware verdict as the prepared-at one above, asked on every commit as well
+  private final TxPreparedAtCapabilityCache fullTextCorpusDeltaCapability = new TxPreparedAtCapabilityCache(
+      () -> allPeersSupport(PeerCapabilities.TX_FULLTEXT_CORPUS_DELTAS), System::currentTimeMillis, 1_000L);
+
+  /**
+   * Whether every peer can read the {@code tx-fulltext-corpus-deltas} section, so a transaction may carry the effect it had on
+   * the BM25 corpus counters (issue #10018).
+   */
+  public boolean canStateFullTextCorpusDeltas() {
+    return fullTextCorpusDeltaCapability.isCapable();
+  }
+
+  /** Drops the cached {@link #canStateFullTextCorpusDeltas} answer; called when the membership changes. */
+  void invalidateFullTextCorpusDeltaCapability() {
+    fullTextCorpusDeltaCapability.invalidate();
+  }
+
   /** Whether this node states the index a transaction was prepared at on the entries it replicates (issue #8686). */
   public boolean isTxSchemaCheckEnabled() {
     return configuration.getValueAsBoolean(GlobalConfiguration.HA_TX_SCHEMA_CHECK);

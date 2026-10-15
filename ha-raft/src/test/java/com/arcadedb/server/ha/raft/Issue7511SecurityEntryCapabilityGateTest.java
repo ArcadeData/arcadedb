@@ -81,7 +81,8 @@ class Issue7511SecurityEntryCapabilityGateTest {
     assertThat(PeerCapabilities.LOCAL).containsExactlyInAnyOrder(PeerCapabilities.SCHEMA_DELTA,
         PeerCapabilities.SECURITY_GROUPS_ENTRY, PeerCapabilities.SECURITY_API_TOKENS_ENTRY,
         PeerCapabilities.SECURITY_PRECONDITION, PeerCapabilities.TX_PREPARED_AT_INDEX,
-        PeerCapabilities.SCHEMA_FILE_RENAMES, PeerCapabilities.DATABASE_CONFIGURATION_ENTRY);
+        PeerCapabilities.SCHEMA_FILE_RENAMES, PeerCapabilities.DATABASE_CONFIGURATION_ENTRY,
+        PeerCapabilities.TX_FULLTEXT_CORPUS_DELTAS);
   }
 
   // -------------------------------------------------------------------------------------------------------

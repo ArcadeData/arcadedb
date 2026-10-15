@@ -75,6 +75,7 @@ import com.arcadedb.graph.GraphEngine;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.IndexCursor;
+import com.arcadedb.index.fulltext.FullTextCorpusDeltas;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.QuorumNotReachedException;
 import com.arcadedb.network.binary.ReplicatedEntryTooLargeException;
@@ -163,8 +164,14 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       TransactionContext tx,
       TransactionContext.TransactionPhase1 phase1,
       byte[] walData,
-      Map<Integer, Integer> bucketDeltas
+      Map<Integer, Integer> bucketDeltas,
+      List<FullTextCorpusDeltas.CorpusDelta> corpusDeltas
   ) {
+    /** A transaction that wrote no full-text index: no BM25 corpus counters to carry. */
+    ReplicationPayload(final TransactionContext tx, final TransactionContext.TransactionPhase1 phase1, final byte[] walData,
+        final Map<Integer, Integer> bucketDeltas) {
+      this(tx, phase1, walData, bucketDeltas, Collections.emptyList());
+    }
   }
 
   // Thread-local buffers used to accumulate WAL data when commit() is called inside
@@ -265,6 +272,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   private static final long                                              SCHEMA_DELTA_WITHHELD_LOG_THROTTLE_MS = 5 * 60_000L;
   private static final long                                              TX_PREPARED_AT_WITHHELD_LOG_THROTTLE_MS = 5 * 60_000L;
   private volatile long                                                  lastTxPreparedAtWithheldLog;
+  private static final long                                              CORPUS_DELTAS_WITHHELD_LOG_THROTTLE_MS = 5 * 60_000L;
+  private volatile long                                                  lastCorpusDeltasWithheldLog;
 
   /**
    * Throttle window for the "releasing entry unpublished" warning (issue #9411): during a prolonged in-place restart
@@ -648,7 +657,15 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
           requireReplicationBuffer(tx);
           final TransactionContext.TransactionPhase1 phase1 = tx.commit1stPhase(true);
           if (phase1 != null) {
+            // Read before the commit concludes: the accumulator is released with the transaction
+            final FullTextCorpusDeltas corpusDeltas = FullTextCorpusDeltas.peek(tx);
             tx.commit2ndPhase(phase1);
+            // This WAL ships inside the SCHEMA_ENTRY, which carries no corpus deltas (a TX_ENTRY would): a follower would keep
+            // the token-length total of a document this transaction rewrote, and a document count cannot tell. The entry does
+            // carry the schema, and with it the leader's counters, which hold the deltas now: a newer epoch makes a follower
+            // adopt them (see FullTextIndexMetadata.adoptPersistedCounters). The session serializes the schema after this
+            if (corpusDeltas != null)
+              corpusDeltas.advanceEpochs();
             final byte[] wal = phase1.result.toByteArray();
             schemaWalBuffer.get().add(wal);
             schemaBucketDeltaBuffer.get().add(new HashMap<>(tx.getBucketRecordDelta()));
@@ -709,7 +726,10 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         if (phase1 != null) {
           final byte[] walData = phase1.result.toByteArray();
           final Map<Integer, Integer> bucketDeltas = new HashMap<>(tx.getBucketRecordDelta());
-          return new ReplicationPayload(tx, phase1, walData, bucketDeltas);
+          // Read before the commit concludes: the accumulator is released with the transaction
+          final FullTextCorpusDeltas corpusDeltas = FullTextCorpusDeltas.peek(tx);
+          return new ReplicationPayload(tx, phase1, walData, bucketDeltas,
+              corpusDeltas != null ? corpusDeltas.snapshot() : Collections.emptyList());
         }
 
         // Read-only transaction: nothing to replicate, but still a commit - its after-commit callbacks fire and it is
@@ -835,9 +855,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       refuseWhileRemovedFromConfiguration("commit");
       final RaftTransactionBroker broker = RaftHAServer.requireTransactionBroker(raft);
       final long preparedAt = preparedAtIndexToState(raft, payload);
-      committedLogIndex = preparedAt >= 0 ?
-          broker.replicateTransaction(getName(), payload.walData(), payload.bucketDeltas(), preparedAt) :
-          broker.replicateTransaction(getName(), payload.walData(), payload.bucketDeltas());
+      committedLogIndex = broker.replicateTransaction(getName(), payload.walData(), payload.bucketDeltas(), preparedAt,
+          corpusDeltasToState(raft, payload));
     } catch (final MajorityCommittedAllFailedException e) {
       // MAJORITY committed but the ALL-quorum watch failed: the entry is durable cluster-wide, so the local commit is
       // completed before the failure is reported, to prevent a permanent divergence of this node. The MAJORITY
@@ -1160,6 +1179,30 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     return preparedAt;
   }
 
+  /**
+   * What the transaction did to the BM25 corpus counters, to be carried by its entry (issue #10018): nothing while a peer cannot
+   * read the section, because an older build halts on trailing bytes it does not know. Withholding costs the nodes that miss the
+   * deltas one repair by their own drift check, which is the behavior before the section existed.
+   */
+  private List<FullTextCorpusDeltas.CorpusDelta> corpusDeltasToState(final RaftHAServer raft, final ReplicationPayload payload) {
+    if (payload.corpusDeltas().isEmpty())
+      return Collections.emptyList();
+    if (!raft.canStateFullTextCorpusDeltas()) {
+      // The followers will not count these transactions, which is silent drift between nodes: said out loud, but not once per commit
+      final long now = System.currentTimeMillis();
+      if (now - lastCorpusDeltasWithheldLog > CORPUS_DELTAS_WITHHELD_LOG_THROTTLE_MS) {
+        lastCorpusDeltasWithheldLog = now;
+        LogManager.instance().log(this, Level.WARNING,
+            "Database '%s': transactions do not carry their effect on the BM25 corpus counters, so the other nodes do not count "
+                + "them. Some peer does not advertise '%s' (older build, not probed yet, or offline). Once every peer does, run "
+                + "REBUILD INDEX <name> WITH statsOnly = true on the leader to bring the counters of every node back in line",
+            getName(), PeerCapabilities.TX_FULLTEXT_CORPUS_DELTAS);
+      }
+      return Collections.emptyList();
+    }
+    return payload.corpusDeltas();
+  }
+
   /** Waits for the schema change the leader refused a transaction over to be applied locally, so the retry sees it. */
   private void awaitSchemaChange(final ReplicatedSchemaConflictException conflict) {
     final RaftHAServer raft = raftHAServer;
@@ -1433,7 +1476,11 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     // same page-level machinery recovery replay uses on reopen.
     try {
       final WALFile.WALTransaction walTx = ArcadeStateMachine.deserializeWalTransaction(payload.walData());
-      proxied.getTransactionManager().applyChanges(walTx, payload.bucketDeltas(), true);
+      // The BM25 corpus deltas ride with the bucket record counts and obey the same rule: applyChanges folds them only when it
+      // advances a page. The local commit folds both as the LAST step of publishing its pages, so a failure before that leaves a
+      // page to advance here, and one after it finds every page published and folds nothing (a fold counted twice would be
+      // silent; Issue10051ReplicatedCorpusDeltaTest pins the replay of an entry already applied)
+      proxied.getTransactionManager().applyChanges(walTx, payload.bucketDeltas(), payload.corpusDeltas(), true);
       LogManager.instance().log(this, Level.INFO,
           "Phase 2 failure: leader pages reconciled via WAL replay (db=%s, tx=%s)", getName(), payload.tx());
       return true;

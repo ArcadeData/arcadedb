@@ -121,12 +121,23 @@ public final class PeerCapabilities {
   public static final String DATABASE_CONFIGURATION_ENTRY = "database-configuration-entry";
 
   /**
+   * This node reads the {@code tx-fulltext-corpus-deltas} extension section of {@code TX_ENTRY} and applies what it carries to
+   * the BM25 corpus counters of its own full-text indexes (issue #10018).
+   * <p>
+   * The section is framed, so a build with the extension framing (issue #7138) skips it; a build older than that halts on any
+   * trailing bytes, which is why a writer emits it only when every peer advertises this token. Withholding it is harmless: the
+   * counters of a node that did not receive the deltas are repaired by its own drift check.
+   */
+  public static final String TX_FULLTEXT_CORPUS_DELTAS = "tx-fulltext-corpus-deltas";
+
+  /**
    * Everything this build can decode. Immutable, and deliberately a whitelist written out by hand rather than
    * derived from anything: a capability is a promise about the wire format, and the only thing that can make it
    * true is a human having checked that the decoder is present.
    */
   public static final Set<String> LOCAL = Set.of(SCHEMA_DELTA, SECURITY_PRECONDITION, SECURITY_GROUPS_ENTRY,
-      SECURITY_API_TOKENS_ENTRY, TX_PREPARED_AT_INDEX, SCHEMA_FILE_RENAMES, DATABASE_CONFIGURATION_ENTRY);
+      SECURITY_API_TOKENS_ENTRY, TX_PREPARED_AT_INDEX, SCHEMA_FILE_RENAMES, DATABASE_CONFIGURATION_ENTRY,
+      TX_FULLTEXT_CORPUS_DELTAS);
 
   private PeerCapabilities() {
     // utility class

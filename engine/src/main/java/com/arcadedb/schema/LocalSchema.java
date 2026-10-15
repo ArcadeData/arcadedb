@@ -4449,6 +4449,45 @@ public class LocalSchema implements Schema {
   }
 
   /**
+   * Marks the schema as having a change to write, which the next transaction end or the close does. For a change made
+   * outside a schema recording session that must still reach the file, e.g. the corpus counters repaired by a query.
+   */
+  public void markDirty() {
+    // A database opened read-only never writes its schema: the change stays in memory, as it did before it could be marked
+    if (database.getMode() == ComponentFile.MODE.READ_ONLY)
+      return;
+    dirtyGeneration.updateAndGet(cur -> Math.max(cur, savedGeneration + 1));
+  }
+
+  /**
+   * Runs {@code change} of the persisted statistics of an index inside a schema recording session, so that under HA it is
+   * shipped to the followers like any other schema change instead of existing in the leader's file alone.
+   */
+  public void recordIndexStatisticsChange(final Runnable change) {
+    recordChange(change);
+  }
+
+  /**
+   * Persists the BM25 corpus counters that the commits since the last schema save moved. A commit changes them without
+   * dirtying the schema, because that would rewrite {@code schema.json} after every commit, so the database close asks for
+   * this while it is still open: a schema serialized once the database has begun to close cannot resolve its buckets.
+   */
+  public void saveUnsavedFullTextCounters() {
+    if (database.getMode() == ComponentFile.MODE.READ_WRITE && hasUnsavedFullTextCounters())
+      saveConfiguration(true);
+  }
+
+  private boolean hasUnsavedFullTextCounters() {
+    // getIndexes() holds the bucket-level indexes (the LSMTreeFullTextIndex wrappers) next to the logical TypeIndex objects, and
+    // every bucket index of a logical index shares one metadata, so any of them answers for the lot
+    for (final Index index : getIndexes())
+      if (index instanceof LSMTreeFullTextIndex ftIndex && ftIndex.getFullTextMetadata() != null
+          && ftIndex.getFullTextMetadata().isCountersDirty())
+        return true;
+    return false;
+  }
+
+  /**
    * @param ignoreOpenTransaction {@code true} for the one caller that saves on purpose while a transaction is open: the
    *                              commit of the outermost transaction, right before its durable phase
    */
@@ -4493,7 +4532,14 @@ public class LocalSchema implements Schema {
    * the in-memory version equal to the one the file holds instead of a generation ahead of it (issue #7604).
    */
   private synchronized void writeNextGeneration() throws IOException {
+    // The generations are read BEFORE the document is serialized and recorded only once the file is on disk: a counter changed
+    // meanwhile, or a write that fails, leaves it unsaved
+    final Map<FullTextIndexMetadata, Long> counterGenerations = new IdentityHashMap<>();
+    for (final Index index : getIndexes())
+      if (index instanceof LSMTreeFullTextIndex ftIndex && ftIndex.getFullTextMetadata() != null)
+        counterGenerations.computeIfAbsent(ftIndex.getFullTextMetadata(), FullTextIndexMetadata::getCountersGeneration);
     update(toJSON(versionSerial.get() + 1));
+    counterGenerations.forEach(FullTextIndexMetadata::markCountersSaved);
   }
 
   public synchronized JSONObject toJSON() {
