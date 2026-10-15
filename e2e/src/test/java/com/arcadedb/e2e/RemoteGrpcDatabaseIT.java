@@ -32,12 +32,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class RemoteGrpcDatabaseIT extends ArcadeContainerTemplate {
 
+  private RemoteGrpcServer   server;
   private RemoteGrpcDatabase database;
 
   @BeforeEach
   void setUp() {
 
-    RemoteGrpcServer server = new RemoteGrpcServer(host, grpcPort, "root", "playwithdata", true, List.of());
+    server = new RemoteGrpcServer(host, grpcPort, "root", "playwithdata", true, List.of());
     database = new RemoteGrpcDatabase(server, host, grpcPort, httpPort, "beer", "root", "playwithdata");
     // ENLARGE THE TIMEOUT TO PASS THESE TESTS ON CI (GITHUB ACTIONS)
     database.setTimeout(60_000);
@@ -86,6 +87,16 @@ class RemoteGrpcDatabaseIT extends ArcadeContainerTemplate {
   void streamQueryWithOpenCypher() {
     final ResultSet result = database.queryStream("opencypher", "MATCH(p:Beer) RETURN p LIMIT 10");
     assertThat(CollectionUtils.countEntries(result)).isEqualTo(10);
+  }
+
+  /**
+   * The admin service authenticates the credentials of the request body, read through the protobuf descriptor. On a
+   * native image without reflection metadata for the gRPC messages that read fails, and the interceptor answers
+   * UNAUTHENTICATED without logging above FINE, so ServerLogIT cannot see it.
+   */
+  @Test
+  void listDatabasesThroughTheAdminService() {
+    assertThat(server.listDatabases()).contains("beer");
   }
 
 }
