@@ -312,6 +312,11 @@ public class BinarySerializer {
     return result;
   }
 
+  /**
+   * @return a NEW, mutable {@link java.util.LinkedHashMap} the caller owns, in the order the record stores its properties, empty when
+   * the record has none or cannot be read. Callers rely on it: {@code ImmutableDocument.toMap()} adds its metadata to the result
+   * as it is, without a defensive copy (issue #10098), so an answer that was cached or immutable would break them.
+   */
   public Map<String, Object> deserializeProperties(final Database database, final Binary buffer,
       final EmbeddedModifier embeddedModifier, final RID rid, final String... fieldNames) {
     return deserializeProperties(database, buffer, embeddedModifier, rid, false, fieldNames);
