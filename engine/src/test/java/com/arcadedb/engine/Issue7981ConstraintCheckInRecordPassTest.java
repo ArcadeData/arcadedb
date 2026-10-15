@@ -59,9 +59,9 @@ class Issue7981ConstraintCheckInRecordPassTest extends TestHelper {
 
   /** Steps the run announced, and the number of distinct step indexes against the total it declared. */
   private static final class StepRecorder implements ProgressCallback {
-    final Set<String>   names       = new HashSet<>();
-    final Set<Integer>  indexes     = new HashSet<>();
-    final AtomicInteger totalSteps  = new AtomicInteger(-1);
+    final Set<String>   names           = new HashSet<>();
+    final Set<Integer>  indexes         = new HashSet<>();
+    final AtomicInteger totalSteps      = new AtomicInteger(-1);
     final AtomicInteger constraintTicks = new AtomicInteger();
 
     @Override
