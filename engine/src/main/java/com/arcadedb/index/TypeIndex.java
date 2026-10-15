@@ -527,7 +527,9 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   @Override
   public void setNullStrategy(final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy) {
     checkIsValid();
-    getFirstUnderlyingIndex().setNullStrategy(nullStrategy);
+    // each bucket index enforces its own strategy, and the record lands in the bucket chosen by the bucket selection strategy
+    for (final IndexInternal index : indexesOnBuckets)
+      index.setNullStrategy(nullStrategy);
   }
 
   @Override
