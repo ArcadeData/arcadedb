@@ -143,6 +143,18 @@ class Issue7981ConstraintCheckInRecordPassTest extends TestHelper {
   }
 
   @Test
+  void aBucketScopedRunStillAsksTheQuestion() {
+    final RID[] rids = createViolatingDocumentVertexAndEdge();
+
+    // BUCKET narrows the bucket-level pass, not the record passes, so a report-only run under it still finds every record
+    final Map<String, Object> result = new DatabaseChecker(db())
+        .setBuckets(Set.<Object>of(database.getSchema().getType("Doc").getBuckets(false).getFirst().getName())).setVerboseLevel(0)
+        .check();
+
+    assertThat((Collection<RID>) result.get("constraintViolatingRecords")).containsExactlyInAnyOrder(rids);
+  }
+
+  @Test
   void aDatabaseWithoutExistenceConstraintsReportsNothing() {
     database.getSchema().createDocumentType("Free").createProperty("id", Type.INTEGER);
     database.transaction(() -> database.newDocument("Free").save());

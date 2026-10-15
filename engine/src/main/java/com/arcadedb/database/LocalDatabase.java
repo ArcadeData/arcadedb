@@ -3666,7 +3666,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
           schema.saveBeforeClose();
         } catch (final Exception e) {
           // THE CLOSE CARRIES ON: ONE THAT FAILS HERE WOULD LEAVE THE FILES OPEN
-          LogManager.instance().log(this, Level.SEVERE, "Error on saving the schema of database '%s' before closing it", e, name);
+          LogManager.instance().log(this, Level.SEVERE,
+              "Error on saving the schema of database '%s' before closing it: a schema change not saved yet may be lost", e, name);
         }
 
       open = false;

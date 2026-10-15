@@ -356,6 +356,10 @@ public class DatabaseChecker {
       // for; an intersection would be a third semantics nobody asked for either. Refuse and say so.
       throw new IllegalArgumentException(RECORD_SCOPE_CONFLICT_ERROR);
 
+    // #7981: one answer for the whole run - it decides the step plan, whether the repair pass runs, and whether the record
+    // content pass asks the existence question instead, and the three must agree
+    final boolean repairsInvalidRecords = fix && deleteInvalidRecords;
+
     final boolean reclaimOrphanedSegments = fix && !recordScope //
         && (types == null || types.isEmpty()) && (buckets == null || buckets.isEmpty());
 
@@ -407,7 +411,7 @@ public class DatabaseChecker {
           // #7952: ONE step for the existence-constraint REPAIR pass over every type that declares one, and only when the
           // database declares any - same reasoning as the TimeSeries step just above. A report-only run asks the question
           // during the record-content step instead, so it has no step of its own (#7981)
-          + (constrainedTypes.isEmpty() || !repairsInvalidRecords() ? 0 : 1)
+          + (constrainedTypes.isEmpty() || !repairsInvalidRecords ? 0 : 1)
           + (reclaimOrphanedSegments ? 1 : 0)
           + (fix ? 1 : 0) // rebuild affected indexes
           + (compress ? 1 : 0)
@@ -436,7 +440,7 @@ public class DatabaseChecker {
       // second time here under a second vocabulary. BEFORE checkBuckets, which recomputes the record counters this
       // pass's own removals change. Only a run that REMOVES the violating records walks the constrained types again:
       // a report-only run asks the question in checkRecordContent below, during the read it makes anyway (#7981)
-      if (repairsInvalidRecords())
+      if (repairsInvalidRecords)
         checkConstraints(constrainedTypes);
 
       checkBuckets(result);
@@ -444,7 +448,7 @@ public class DatabaseChecker {
       // AFTER the bucket pass: what a FIX repaired or removed is decoded in the shape it left. On every run, not only
       // DEEP: content that no longer decodes is the corruption nothing structural can see, and the cost is one read
       // of every record's properties - small next to the graph pass every run already makes.
-      checkRecordContent(repairsInvalidRecords() ? List.of() : constrainedTypes, edgeTypes, vertexTypes, documentTypes);
+      checkRecordContent(repairsInvalidRecords ? List.of() : constrainedTypes, edgeTypes, vertexTypes, documentTypes);
 
       checkExternalProperties();
 
@@ -841,11 +845,6 @@ public class DatabaseChecker {
       // than reported in a vocabulary that would misdescribe it
       LogManager.instance().log(this, Level.FINE, "Skipped %s in the existence-constraint check: it cannot be read", e, rid);
     }
-  }
-
-  /** Whether this run removes the records that violate an existence constraint, which takes a pass of its own. */
-  private boolean repairsInvalidRecords() {
-    return fix && deleteInvalidRecords;
   }
 
   private void checkDocuments(final List<DocumentType> documentTypes) {
