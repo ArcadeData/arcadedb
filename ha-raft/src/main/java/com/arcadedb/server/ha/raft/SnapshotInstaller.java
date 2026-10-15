@@ -44,8 +44,6 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.UncheckedIOException;
 import java.net.HttpURLConnection;
-import java.net.URI;
-import java.net.URISyntaxException;
 import java.nio.BufferUnderflowException;
 import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
@@ -205,12 +203,6 @@ public final class SnapshotInstaller {
    * trigger a zip-bomb defense exception. Package-private for unit testing.
    */
   static final long MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES = 10L * 1024 * 1024 * 1024;
-
-  /**
-   * Logged at most once: warns that SSL is enabled but the snapshot is being downloaded over plain
-   * HTTP because no HTTPS endpoint could be resolved for the leader.
-   */
-  private static final AtomicBoolean PLAIN_HTTP_FALLBACK_WARNED = new AtomicBoolean(false);
 
   /**
    * The lowest Raft applied index a snapshot this thread downloads may be served at (issue #8454), or {@code -1}
@@ -2088,15 +2080,9 @@ public final class SnapshotInstaller {
         if (endpoint != null)
           https = true;
       }
-      if (endpoint == null) {
+      // A plain endpoint under SSL is said once, by the latch every peer dial shares (PeerRequest, issue #9999)
+      if (endpoint == null)
         endpoint = leaderHttpAddrSupplier.get();
-        if (useSSL && endpoint != null && PLAIN_HTTP_FALLBACK_WARNED.compareAndSet(false, true))
-          LogManager.instance().log(SnapshotInstaller.class, Level.WARNING,
-              "SSL is enabled but no HTTPS endpoint is known for snapshot download of '%s'; falling back to plain HTTP on %s. "
-                  + "Declare an httpsPort (the optional 5th field 'host:raftPort:httpPort:priority:httpsPort') in '%s' to "
-                  + "transfer snapshots encrypted.",
-              null, databaseName, endpoint, GlobalConfiguration.HA_SERVER_LIST.getKey());
-      }
       if (endpoint == null) {
         lastException = new IOException("Leader HTTP address not yet known (Raft election in progress)");
         LogManager.instance().log(SnapshotInstaller.class, Level.WARNING,
@@ -2107,7 +2093,7 @@ public final class SnapshotInstaller {
 
       final String snapshotUrl = (https ? "https://" : "http://") + endpoint + "/api/v1/ha/snapshot/" + databaseName;
       try {
-        downloadSnapshot(databaseName, snapshotNewDir, snapshotUrl, clusterToken, https, server);
+        downloadSnapshot(databaseName, snapshotNewDir, snapshotUrl, clusterToken, https, useSSL, server);
         return; // Success
       } catch (final IOException e) {
         lastException = e;
@@ -2127,16 +2113,15 @@ public final class SnapshotInstaller {
   }
 
   private static void downloadSnapshot(final String databaseName, final Path targetDir, final String snapshotUrl,
-      final String clusterToken, final boolean https, final ArcadeDBServer server) throws IOException {
+      final String clusterToken, final boolean https, final boolean sslEnabled, final ArcadeDBServer server)
+      throws IOException {
 
     HALog.log(SnapshotInstaller.class, HALog.BASIC, "Downloading snapshot from %s", snapshotUrl);
 
-    final HttpURLConnection connection;
-    try {
-      connection = (HttpURLConnection) new URI(snapshotUrl).toURL().openConnection();
-    } catch (final URISyntaxException e) {
-      throw new IOException("Invalid snapshot URL: " + snapshotUrl, e);
-    }
+    // The token with the principal it stands for, like every other peer dial: the snapshot handler authenticates the
+    // token alone, but a credential that is half a pair here is a credential some later handler reads wrong (issue #9999)
+    final HttpURLConnection connection = PeerRequest.openConnection(snapshotUrl, sslEnabled, SnapshotInstaller.class,
+        "downloading the snapshot of database '" + databaseName + "'", clusterToken, RaftHAServer.FORWARDED_ROOT_USER);
 
     if (connection instanceof HttpsURLConnection) {
       if (!https)
@@ -2150,9 +2135,6 @@ public final class SnapshotInstaller {
     connection.setReadTimeout(
         server != null ? server.getConfiguration().getValueAsInteger(GlobalConfiguration.HA_SNAPSHOT_DOWNLOAD_TIMEOUT)
             : 300_000);
-
-    if (clusterToken != null && !clusterToken.isEmpty())
-      connection.setRequestProperty("X-ArcadeDB-Cluster-Token", clusterToken);
 
     try {
       final int responseCode = connection.getResponseCode();

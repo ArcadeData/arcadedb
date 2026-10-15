@@ -97,8 +97,6 @@ public class PostCapabilitiesHandler extends AbstractServerHttpHandler {
   /** Request header: the port the calling node's HTTP listener is bound to (issue #9255). */
   static final String CALLER_HTTP_PORT_HEADER    = "X-ArcadeDB-Caller-Http-Port";
 
-  private static final String CLUSTER_TOKEN_HEADER = "X-ArcadeDB-Cluster-Token";
-
   private final RaftHAPlugin plugin;
 
   public PostCapabilitiesHandler(final HttpServer httpServer, final RaftHAPlugin plugin) {
@@ -120,7 +118,7 @@ public class PostCapabilitiesHandler extends AbstractServerHttpHandler {
     // root user could plant through Basic auth would be a way to send the token somewhere. A peer holds it already, and
     // the header was validated before this method runs (an invalid one is refused with 401)
     final HeaderMap headers = exchange.getRequestHeaders();
-    if (headers.contains(CLUSTER_TOKEN_HEADER) && headers.contains(CALLER_PEER_ID_HEADER))
+    if (headers.contains(PeerRequest.CLUSTER_TOKEN_HEADER) && headers.contains(CALLER_PEER_ID_HEADER))
       try {
         final String port = headers.getFirst(CALLER_HTTP_PORT_HEADER);
         raftHAServer.offerCallerHttpAddress(headers.getFirst(CALLER_PEER_ID_HEADER), headers.getFirst(CALLER_HTTP_ADDRESS_HEADER),

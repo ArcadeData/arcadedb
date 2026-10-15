@@ -44,7 +44,6 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.net.HttpURLConnection;
-import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
@@ -344,7 +343,12 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
 
       final String url = (https ? "https" : "http") + "://" + endpoint
           + "/api/v1/cluster/verify/" + databaseName;
-      final var conn = (HttpURLConnection) new URI(url).toURL().openConnection();
+      // The initiating user's identity is forwarded so that authorization on the peer evaluates against the actual
+      // caller (the same substitution LeaderCommandForwarder makes for a session token), together with the token or not
+      // at all; and a plain dial on an SSL cluster is said, like every other peer dial (issue #9999).
+      final String clusterToken = raftHAServer.getClusterToken();
+      final HttpURLConnection conn = PeerRequest.openConnection(url, useSsl, PostVerifyDatabaseHandler.class,
+          "asking it to verify database '" + databaseName + "'", clusterToken, user.getName());
       // Validate the peer certificate against the configured trust store, consistent with the
       // snapshot download path.
       if (conn instanceof HttpsURLConnection httpsConn)
@@ -355,17 +359,11 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
         conn.setConnectTimeout(PEER_CONNECT_TIMEOUT_MS);
         conn.setReadTimeout(PEER_READ_TIMEOUT_MS);
 
-        final String clusterToken = raftHAServer.getClusterToken();
-        if (clusterToken != null) {
-          conn.setRequestProperty("X-ArcadeDB-Cluster-Token", clusterToken);
-          // Forward the initiating user's identity so that authorization on the peer evaluates
-          // against the actual caller (the same substitution LeaderCommandForwarder makes for a session token).
-          conn.setRequestProperty("X-ArcadeDB-Forwarded-User", user.getName());
+        if (PeerRequest.hasToken(clusterToken))
           // One hop, whatever this address turns out to name: the node that serves this query answers with its
-          // own checksums instead of fanning out again (issue #6221). Set inside the token branch because the
+          // own checksums instead of fanning out again (issue #6221). Set only with the token because the
           // marker is only honored on a token-authenticated request.
           conn.setRequestProperty(LeaderForwardContext.FORWARDED_TO_LEADER_HEADER, "true");
-        }
 
         conn.setDoOutput(true);
         try (final var os = conn.getOutputStream()) {

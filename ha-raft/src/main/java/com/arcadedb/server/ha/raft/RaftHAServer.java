@@ -83,7 +83,6 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.InetAddress;
-import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.URLEncoder;
 import java.net.UnknownHostException;
@@ -1501,7 +1500,12 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       final boolean https, final StalledResyncOrder order) throws IOException {
     final String url = (https ? "https://" : "http://") + followerAddr + "/api/v1/cluster/resync/"
         + URLEncoder.encode(databaseName, StandardCharsets.UTF_8);
-    final HttpURLConnection conn = (HttpURLConnection) URI.create(url).toURL().openConnection();
+    // The token with the root principal, together or not at all, and a plain dial on an SSL cluster said once like every
+    // other peer dial (issue #9999). Validated by AbstractServerHttpHandler before the handler runs; no operator
+    // credentials go over the wire.
+    final HttpURLConnection conn = PeerRequest.openConnection(url,
+        configuration.getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL), RaftHAServer.class,
+        "ordering a stalled replica to resync database '" + databaseName + "'", clusterToken, FORWARDED_ROOT_USER);
     try {
       if (conn instanceof final HttpsURLConnection httpsConn)
         httpsConn.setSSLSocketFactory(SnapshotInstaller.buildSSLContext(arcadeServer).getSocketFactory());
@@ -1512,13 +1516,6 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       conn.setReadTimeout(120_000);
       conn.setDoOutput(true);
       conn.setRequestProperty("Content-Type", "application/json");
-      // Inter-node forwarded auth: the cluster token plus the forwarded root user, validated by
-      // AbstractServerHttpHandler before the handler runs (same mechanism used for follower->leader
-      // request forwarding). No operator credentials are sent over the wire.
-      if (clusterToken != null && !clusterToken.isEmpty()) {
-        conn.setRequestProperty("X-ArcadeDB-Cluster-Token", clusterToken);
-        conn.setRequestProperty("X-ArcadeDB-Forwarded-User", FORWARDED_ROOT_USER);
-      }
       try (final OutputStream os = conn.getOutputStream()) {
         os.write((order != null ? order.toJSON().toString() : "{}").getBytes(StandardCharsets.UTF_8));
       }
@@ -4307,7 +4304,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
           return "voter '" + peerId + "' could not be asked over HTTPS: " + e.getMessage();
         }
         answers.put(peerId.toString(),
-            UnverifiedClosedCopyCheck.askWhetherServed(client, peerId.toString(), url, databaseName, clusterToken));
+            UnverifiedClosedCopyCheck.askWhetherServed(client, peerId.toString(), url, useSSL, databaseName,
+                clusterToken));
       }
 
       final long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(UnverifiedClosedCopyCheck.ROUND_TIMEOUT_MS);
