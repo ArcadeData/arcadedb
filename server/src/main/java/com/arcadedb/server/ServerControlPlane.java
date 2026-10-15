@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.DocumentValidator;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.MaintenanceCoordinator;
@@ -1204,7 +1205,11 @@ public class ServerControlPlane {
     final String storedKey = storedKey(key);
     final LocalDatabase local = database.getEmbedded() instanceof LocalDatabase l ? l : null;
     final LocalDatabase.SettingChange change;
-    if (local != null)
+    final GlobalConfiguration setting = GlobalConfiguration.findByKey(storedKey);
+    if (local != null && (setting == GlobalConfiguration.DATE_IMPLEMENTATION
+        || setting == GlobalConfiguration.DATE_TIME_IMPLEMENTATION))
+      change = changeDateImplementation(database, local, setting, value);
+    else if (local != null)
       change = local.changeSetting(storedKey, () -> applySetting(database.getConfiguration(), key, value));
     else {
       applySetting(database.getConfiguration(), key, value);
@@ -1229,6 +1234,24 @@ public class ServerControlPlane {
         local.undoSettingChange(change);
       throw e;
     }
+  }
+
+  /**
+   * Stores a new {@code arcadedb.dateImplementation} or {@code arcadedb.dateTimeImplementation} after the check
+   * {@code ALTER DATABASE} runs on the same setting (issue #9976), so this path cannot bypass it (issue #9949): a REGEXP
+   * on a DATE or DATETIME property that would match no value of the new class refuses the change before anything is
+   * stored. Checked and stored under the write lock, taken before the apply lock {@code changeSetting} takes, never after.
+   */
+  private static LocalDatabase.SettingChange changeDateImplementation(final DatabaseInternal database,
+      final LocalDatabase local, final GlobalConfiguration setting, final String value) {
+    // A Class-typed setting coerces to a Class or throws, so the value is refused here before any lock is taken
+    final Class<?> implementation = (Class<?>) coerceSetting(setting, value);
+    final String described = "'" + setting.getKey() + "' to '" + GlobalConfiguration.externalizeValue(implementation) + "'";
+    return database.executeInWriteLock(() -> {
+      DocumentValidator.requireDateImplementationChangeSatisfiable(database, setting, implementation, described);
+      // the class already coerced is what applySetting() would store: no second parse that could disagree with the check
+      return local.changeSetting(setting.getKey(), () -> database.getConfiguration().setValue(setting, implementation));
+    });
   }
 
   /**

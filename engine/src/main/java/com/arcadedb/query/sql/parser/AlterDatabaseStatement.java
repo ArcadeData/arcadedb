@@ -138,10 +138,22 @@ public class AlterDatabaseStatement extends DDLStatement {
       // captured and the new one stored in one step for the apply of a replicated change, so a change to the same
       // setting another node committed cannot land in between and be undone with a value it replaced (issue #9919).
       final Object valueToStore = finalValue;
-      final LocalDatabase.SettingChange change = changeSetting(db, cfg.getKey(), () -> {
-        db.getConfiguration().setValue(cfg, valueToStore);
-        applyDatabaseSideEffect(db, cfg, resolvedClass);
-      });
+      final Runnable store = () -> putInForce(db, cfg, valueToStore, resolvedClass);
+      final LocalDatabase.SettingChange change;
+      if (resolvedClass != null && (cfg == GlobalConfiguration.DATE_IMPLEMENTATION
+          || cfg == GlobalConfiguration.DATE_TIME_IMPLEMENTATION)) {
+        // A REGEXP on a DATE or DATETIME property is matched against the text of the class the value is held as, which this
+        // setting decides for the whole database: refused before anything changes when a pattern would match no value of
+        // the new class (issue #9976). Checked and put in force under the write lock, which ALTER PROPERTY takes too, so a
+        // pattern declared meanwhile is either checked here or checked against the new class. The database lock is taken
+        // before the apply lock changeSetting takes, never after: the apply of a replicated change holds no database lock
+        final String described = "'" + settingNameAsString + "' to '" + finalValue + "'";
+        change = db.executeInWriteLock(() -> {
+          DocumentValidator.requireDateImplementationChangeSatisfiable(db, cfg, resolvedClass, described);
+          return changeSetting(db, cfg.getKey(), store);
+        });
+      } else
+        change = changeSetting(db, cfg.getKey(), store);
 
       // The stored value is what the setting is now worth, which is not always what was asked for: a callback
       // reached through the overlay may normalise it (arcadedb.maxPageRAM clamps a page cache larger than 80%
