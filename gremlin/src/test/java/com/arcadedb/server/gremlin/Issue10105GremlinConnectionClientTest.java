@@ -121,7 +121,39 @@ class Issue10105GremlinConnectionClientTest extends AbstractGremlinServerIT {
     final RunningQuery.Client client = GremlinAuthContext.getClient();
     assertThat(client).isNotNull();
     assertThat(client.address()).isEqualTo("/10.0.0.7:52100");
-    assertThat(client.connectionId()).isNotBlank();
+    assertThat(client.connectionId()).as("HTTP basic has no connection to number: the peer is the identity").isNull();
+  }
+
+  @Test
+  void theRequestsOfOneHttpConnectionAreOneClientAndAnotherConnectionIsAnother() throws Exception {
+    // The HTTP basic handler authenticates every request: the peer (host:port) is what ties the requests of one keep-alive
+    // connection together, where a number per authentication would make every request a client of its own
+    final Map<String, String> first = Map.of("username", "root", "password", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS,
+        "address", "10.0.0.7:52100");
+    final Map<String, String> other = Map.of("username", "root", "password", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS,
+        "address", "10.0.0.7:52101");
+
+    authorizer().authorize(authenticator().authenticate(first), new Bytecode(), Map.of());
+    final RunningQuery.Client firstRequest = GremlinAuthContext.getClient();
+    authorizer().authorize(authenticator().authenticate(first), new Bytecode(), Map.of());
+    final RunningQuery.Client secondRequest = GremlinAuthContext.getClient();
+    authorizer().authorize(authenticator().authenticate(other), new Bytecode(), Map.of());
+    final RunningQuery.Client otherConnection = GremlinAuthContext.getClient();
+
+    assertThat(secondRequest).isEqualTo(firstRequest);
+    assertThat(otherConnection).isNotEqualTo(firstRequest);
+  }
+
+  @Test
+  void aRequestWhosePeerIsUnknownStillGetsAClientOfItsOwn() throws Exception {
+    final AuthenticatedUser user = authenticator().authenticate(
+        Map.of("username", "root", "password", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS));
+
+    authorizer().authorize(user, new Bytecode(), Map.of());
+
+    assertThat(GremlinAuthContext.getClient()).isNotEqualTo(RunningQuery.Client.NONE);
+    assertThat(GremlinAuthContext.getClient().connectionId()).isNotBlank();
+    assertThat(GremlinAuthContext.getClient().address()).isNull();
   }
 
   @Test
