@@ -193,6 +193,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   private static final AsyncQuiesce NO_ASYNC_TO_QUIESCE = () -> {
   };
 
+  /** The most lists whose census failure is reported at WARNING by one database; the counter is not bounded (#10100). */
+  private static final int MAX_REPORTED_CENSUS_FAILURES = 64;
+
   private static final Set<String> SUPPORTED_FILE_EXT = Set.of(
       Dictionary.DICT_EXT,
       LocalBucket.BUCKET_EXT,
@@ -229,8 +232,6 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   public final       AtomicLong                                indexCompactions          = new AtomicLong();
   // #8649: count() recomputes not cached because a replicated apply wrote the bucket without its lock during the scan
   public final       AtomicLong                                recountPublishesRefused   = new AtomicLong();
-  /** The most lists whose census failure is reported at WARNING by one database; the counter is not bounded (#10100). */
-  private static final int                                     MAX_REPORTED_CENSUS_FAILURES = 64;
   // #10100: lightweight-edge census builds that failed, so that every edge of the list walks it alone
   private final      AtomicLong                                lightEdgeCensusFallbacks  = new AtomicLong();
   private final      Set<String>                               lightEdgeCensusReported   = ConcurrentHashMap.newKeySet();

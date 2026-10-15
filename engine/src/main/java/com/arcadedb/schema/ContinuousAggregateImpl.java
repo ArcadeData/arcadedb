@@ -113,7 +113,8 @@ public class ContinuousAggregateImpl implements ContinuousAggregate {
   /**
    * The source type of this aggregate was renamed (issue #10096): the name that spells it, here and in the defining query,
    * becomes the new one. Done in place because the refresh state (watermark, status, metrics) and the schedulers hold THIS
-   * instance. The names are what the schema persists, so the caller saves the schema after.
+   * instance. The names are what the schema persists, so the caller saves the schema after. The two writes are not atomic for a
+   * refresh racing the rename, which fails once and succeeds on the next one: see {@link MaterializedViewImpl#retargetSourceType}.
    *
    * @param newQuery the defining query naming the type by its new name
    */

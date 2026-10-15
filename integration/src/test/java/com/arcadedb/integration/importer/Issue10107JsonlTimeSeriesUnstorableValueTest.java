@@ -92,6 +92,8 @@ class Issue10107JsonlTimeSeriesUnstorableValueTest {
         sample.put(2, "80");
       if (sample.getLong(0) == TS + 1_000)
         sample.put(3, "false");
+      if (sample.getLong(0) == TS + 2_000)
+        sample.put(4, "2.75");
     });
 
     final Map<String, Object> report = new Importer(importArguments(false)).load();
@@ -104,6 +106,8 @@ class Issue10107JsonlTimeSeriesUnstorableValueTest {
       assertThat(((Number) rows.get(0)[2]).intValue()).as("'80' in the INTEGER tag").isEqualTo(80);
       assertThat(rows.get(1)[3]).as("'false' in the BOOLEAN tag").isEqualTo(false);
       assertThat(rows.get(2)[3]).as("a value that was already typed is untouched").isEqualTo(true);
+      // THE PARSE THE IMPORTER USED TO DO ITSELF FOR A DOUBLE NOW BELONGS TO THE SHARED CONVERSION
+      assertThat(((Number) rows.get(2)[4]).doubleValue()).as("'2.75' in the DOUBLE field").isEqualTo(2.75);
     }
   }
 
