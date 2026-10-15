@@ -25,7 +25,7 @@
     <parent>
         <groupId>com.arcadedb</groupId>
         <artifactId>arcadedb-parent</artifactId>
-        <version>26.10.2-SNAPSHOT</version>
+        <version>26.11.1-SNAPSHOT</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
 
@@ -36,10 +36,8 @@
     <properties>
         <disruptor.version>1.2.21</disruptor.version>
         <gson.version>2.14.0</gson.version>
-        <lz4-java.version>1.11.1</lz4-java.version>
-        <!-- Kept on the 9.x line for JDK17 compatibility (java17 branch policy); do not follow
-             main's 10.x bump here. See CLAUDE.md's JDK17 adaptation catalog. -->
-        <lucene.version>9.12.2</lucene.version>
+        <lz4-java.version>1.12.0</lz4-java.version>
+        <lucene.version>10.5.2</lucene.version>
         <!--
             ONE GraalVM version, everywhere. This property, native/pom.xml's
             native.graalvm.version and native-image.yml's setup-graalvm java-version are all
@@ -83,10 +81,10 @@
               View.close() is a documented no-op as of 4.0.0-rc.9 - re-verify that close() still touches no
               live state before relying on it after a version bump.
         -->
-        <jvector.version>4.0.0-rc.9</jvector.version>
+        <jvector.version>4.0.1</jvector.version>
         <spatial4j.version>0.8</spatial4j.version>
         <jts-core.version>1.20.0</jts-core.version>
-        <buildnumber-maven-plugin.version>3.3.0</buildnumber-maven-plugin.version>
+        <buildnumber-maven-plugin.version>3.3.1</buildnumber-maven-plugin.version>
         <!-- Drives both the antlr4-maven-plugin that generates the engine's own grammar
              and the matching antlr4-runtime, so the generator and runtime versions must
              stay equal. Free to track the latest ANTLR and should keep doing so.
@@ -95,7 +93,7 @@
              converge. -->
         <antlr4.version>4.13.2</antlr4.version>
         <antlr4.visitor>true</antlr4.visitor>
-        <cucumber.version>7.34.3</cucumber.version>
+        <cucumber.version>8.0.4</cucumber.version>
         <jmh.version>1.37</jmh.version>
     </properties>
 
