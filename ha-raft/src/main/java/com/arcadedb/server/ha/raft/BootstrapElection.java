@@ -905,7 +905,10 @@ class BootstrapElection {
     return server != null && server.getConfiguration().getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL);
   }
 
-  /** As {@link #queryPeer(RaftPeerId, String, Set, long, HttpClient)}, with the probe carrying {@code body} - the pass's announce, from {@link #collectStates}. */
+  /**
+   * As {@link #queryPeer(RaftPeerId, String, Set, long, HttpClient)}, with the probe carrying {@code body} - the pass's
+   * announce, from {@link #collectStates}.
+   */
   CompletableFuture<ProbeOutcome> queryPeer(final RaftPeerId peerId, final String url, final Set<String> dbFilter,
       final long attemptTimeoutMs, final HttpClient httpsClient, final String body) {
     final boolean https = url.startsWith("https://");

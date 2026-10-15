@@ -146,7 +146,8 @@ final class PeerRequest {
   private static void noticePlainFallback(final boolean sslEnabled, final boolean credentials, final URI uri,
       final Class<?> dial, final String what) {
     if (sslEnabled && credentials && "http".equalsIgnoreCase(uri.getScheme()))
-      sayOnce(dial, what + " (peer at " + uri.getAuthority() + ")");
+      // Host and port only: never the authority, which would carry any user-info a URL held
+      sayOnce(dial, what + " (peer at " + uri.getHost() + ":" + uri.getPort() + ")");
   }
 
   /**

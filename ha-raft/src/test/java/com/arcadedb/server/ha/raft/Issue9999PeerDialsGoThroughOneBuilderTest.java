@@ -42,6 +42,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * The two helpers are now one builder, {@link PeerRequest}, and the guarantee is a scan of this module's main sources:
  * no request is built, and neither header is spelled, anywhere else. A helper with two adopters reads the same as a
  * helper with eleven in a diff; this is the form of the fix the twelfth dial cannot quietly bypass.
+ * <p>
+ * It is a tripwire, not a proof: a text scan cannot see a header name assembled at runtime or a call split across lines.
+ * It catches the shape every dial in this module has actually taken, which is the shape the next one will copy.
  */
 class Issue9999PeerDialsGoThroughOneBuilderTest {
 
