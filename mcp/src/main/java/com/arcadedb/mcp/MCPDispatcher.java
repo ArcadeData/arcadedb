@@ -21,6 +21,8 @@ package com.arcadedb.mcp;
 import com.arcadedb.Constants;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseContext;
+import com.arcadedb.database.ProtocolContext;
+import com.arcadedb.exception.ErrorCategory;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.query.RunningQuery;
@@ -59,6 +61,8 @@ import java.util.logging.Level;
  */
 public class MCPDispatcher {
   public static final  String    MCP_PROTOCOL_VERSION = "2025-03-26";
+  /** The wire this surface is in {@link ProtocolContext}, in {@code list queries} and in the per-protocol metrics. */
+  static final         String    MCP_PROTOCOL         = "mcp";
   private static final JSONArray TOOLS_LIST;
   // Package-private, not private: MCPPromptsTest asserts that every tool a prompt's text names is a tool
   // this server actually registers, which is what makes a rename or a removal fail a test instead of
@@ -237,6 +241,13 @@ public class MCPDispatcher {
 
     LogManager.instance().log(this, Level.INFO, "MCP[%s] %s (user=%s)", transport, method, user.getName());
 
+    // Tagged as the client request it is (issue #10094), here because both transports pass through this one method. The tag
+    // is what tells a client from the engine's own work: under HA, RaftReplicatedDatabase refuses a CLIENT request on a
+    // database whose directory is being replaced from the leader's snapshot, and an untagged thread reads as INTERNAL and is
+    // served from the copy the cluster is discarding. It is also what the per-protocol query metrics and the trace spans
+    // attribute the work to. The HTTP transport runs inside the "http" tag of its handler: put back, not cleared.
+    final String enclosingProtocol = ProtocolContext.get();
+    ProtocolContext.set(MCP_PROTOCOL);
     try {
       return switch (method) {
         case "initialize" -> result(id, initialize(effectiveProfile(user)));
@@ -254,8 +265,15 @@ public class MCPDispatcher {
       // permission gates enforce, see MCPToolUtils.bindCurrentUser / GHSA-6x73-v3rc-f57c). This transport runs on a
       // pooled worker thread, so the binding MUST be dropped here or it would leak onto the next request served by
       // the same thread. A no-op when nothing was bound (initialize/ping/tools-list). A one-way message returns
-      // before this block but binds nothing, so it has nothing to drop.
-      DatabaseContext.INSTANCE.removeCurrentThreadContexts();
+      // before this block but binds nothing, so it has nothing to drop. The protocol tag has the same requirement.
+      try {
+        DatabaseContext.INSTANCE.removeCurrentThreadContexts();
+      } finally {
+        if (ProtocolContext.INTERNAL.equals(enclosingProtocol))
+          ProtocolContext.clear();
+        else
+          ProtocolContext.set(enclosingProtocol);
+      }
     }
   }
 
@@ -305,10 +323,10 @@ public class MCPDispatcher {
     try {
       return result(id, MCPResources.read(server, user, config, uri));
     } catch (final SecurityException e) {
-      LogManager.instance().log(this, Level.INFO, "MCP[%s] resources/read -> permission denied: %s", transport, e.getMessage());
-      return error(id, -32600, e.getMessage(), 200);
+      LogManager.instance().log(this, Level.INFO, "MCP[%s] resources/read -> permission denied: %s", transport, ErrorConcealment.describe(e));
+      return error(id, -32600, ErrorConcealment.describe(e), 200);
     } catch (final MCPResourceNotFoundException e) {
-      return error(id, -32002, e.getMessage(), 200);
+      return error(id, -32002, ErrorConcealment.describe(e), 200);
     } catch (final Exception e) {
       return error(id, -32603, "Internal error: " + failureMessage("resources/read", e), 200);
     }
@@ -335,10 +353,10 @@ public class MCPDispatcher {
 
       return result(id, MCPPrompts.get(config, toolAllowed, name, args));
     } catch (final SecurityException e) {
-      LogManager.instance().log(this, Level.INFO, "MCP[%s] prompts/get -> permission denied: %s", transport, e.getMessage());
-      return error(id, -32600, e.getMessage(), 200);
+      LogManager.instance().log(this, Level.INFO, "MCP[%s] prompts/get -> permission denied: %s", transport, ErrorConcealment.describe(e));
+      return error(id, -32600, ErrorConcealment.describe(e), 200);
     } catch (final IllegalArgumentException | IllegalStateException | UnsupportedOperationException | JSONException e) {
-      return error(id, -32602, "Invalid params: " + e.getMessage(), 200);
+      return error(id, -32602, "Invalid params: " + ErrorConcealment.describe(e), 200);
     } catch (final Exception e) {
       return error(id, -32603, "Internal error: " + failureMessage("prompts/get", e), 200);
     }
@@ -376,7 +394,7 @@ public class MCPDispatcher {
     // read without coercion: a member of the wrong type is the tool's to refuse, with its own message. The client is
     // what tells two agents apart, since an MCP endpoint typically serves all of them as one principal (issue #9962)
     final RunningQuery entry = server.getRunningQueries()
-        .register(textMember(args, "database"), user.getName(), "mcp", null, null, client);
+        .register(textMember(args, "database"), user.getName(), MCP_PROTOCOL, null, null, client);
     final String text = "query".equals(toolName) ? textMember(args, "query") :
         "execute_command".equals(toolName) ? textMember(args, "command") : null;
     if (text != null) {
@@ -453,15 +471,15 @@ public class MCPDispatcher {
 
     } catch (final SecurityException e) {
       LogManager.instance()
-          .log(this, Level.INFO, "MCP[%s] tools/call '%s' -> permission denied: %s", transport, toolName, e.getMessage());
-      return toolError(id, e.getMessage());
+          .log(this, Level.INFO, "MCP[%s] tools/call '%s' -> permission denied: %s", transport, toolName, ErrorConcealment.describe(e));
+      return toolError(id, ErrorConcealment.describe(e));
     } catch (final MCPToolArgumentException e) {
       // The tools' own argument validation ("'database' is required", "Unknown tool"): text this server words about the
       // request, which the caller needs to correct it, so it is kept in every mode. An IllegalArgumentException of any
       // other origin - the engine's - is engine text, and goes through the concealment below (issue #8749)
       LogManager.instance()
-          .log(this, Level.WARNING, "MCP[%s] tools/call '%s' -> error: %s", transport, toolName, e.getMessage());
-      return toolError(id, e.getMessage());
+          .log(this, Level.WARNING, "MCP[%s] tools/call '%s' -> error: %s", transport, toolName, ErrorConcealment.describe(e));
+      return toolError(id, ErrorConcealment.describe(e));
     } catch (final Exception e) {
       return toolError(id, failureMessage("tools/call '" + toolName + "'", e));
     }
@@ -488,12 +506,19 @@ public class MCPDispatcher {
    * transport does: it is an address the cluster put there, not engine detail.
    */
   String failureMessage(final String operation, final Exception e) {
+    // The type when there is no message, like every other surface (issue #10092): a text block whose text is JSON null is
+    // rejected by a strict client and reads "null" to a lenient one, and the agent is told the tool failed and nothing about why
+    final String detail = ErrorConcealment.describe(e);
     final String text;
     if (ErrorConcealment.isConcealing(server))
-      text = clientMessage(operation + " -> " + e.getMessage(), e);
+      text = clientMessage(operation + " -> " + detail, e);
     else {
-      LogManager.instance().log(this, Level.WARNING, "MCP[%s] %s -> error: %s", transport, operation, e.getMessage());
-      text = e.getMessage();
+      // The trace when the message cannot say where it came from: a failure with none, or a fault of the server's own
+      final boolean named = e.getMessage() != null && !e.getMessage().isBlank();
+      final Throwable trace = !named || ErrorCategory.of(e) == ErrorCategory.SERVER ? e : null;
+      final String logged = named ? detail : e.getClass().getName();
+      LogManager.instance().log(this, Level.WARNING, "MCP[%s] %s -> error: %s", trace, transport, operation, logged);
+      text = detail;
     }
     return ServerIsNotTheLeaderException.withLeaderSentence(text, e);
   }

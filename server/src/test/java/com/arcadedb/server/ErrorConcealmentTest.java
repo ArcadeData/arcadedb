@@ -22,6 +22,9 @@ import com.arcadedb.database.RID;
 import com.arcadedb.exception.DuplicatedKeyException;
 import org.junit.jupiter.api.Test;
 
+import java.util.NoSuchElementException;
+import java.util.logging.Level;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -50,5 +53,30 @@ class ErrorConcealmentTest {
     final String plain = "no line break";
     assertThat(ErrorConcealment.singleLine(plain)).isSameAs(plain);
     assertThat(ErrorConcealment.singleLine(null)).isNull();
+  }
+
+  /**
+   * Issue #10092: a failure with no message was told to the client as the word {@code null} (or as a JSON null where the
+   * text is a member). The failure's type names it better than that, and the rule lives here, beside
+   * {@link ErrorConcealment#clientMessage}, so the next surface does not re-derive it.
+   */
+  @Test
+  void aFailureWithoutMessageIsDescribedByItsType() {
+    assertThat(ErrorConcealment.describe(new NoSuchElementException())).isEqualTo("NoSuchElementException");
+    assertThat(ErrorConcealment.describe(new IllegalStateException(""))).isEqualTo("IllegalStateException");
+    assertThat(ErrorConcealment.describe(new IllegalStateException("   "))).isEqualTo("IllegalStateException");
+    assertThat(ErrorConcealment.describe(new IllegalStateException("a real message"))).isEqualTo("a real message");
+    assertThat(ErrorConcealment.describe(null)).isEqualTo("unknown error");
+  }
+
+  @Test
+  void clientMessageNeverHandsOutANullText() {
+    final NoSuchElementException e = new NoSuchElementException();
+    assertThat(ErrorConcealment.clientMessage(false, this, "test", null, e)).isEqualTo("NoSuchElementException");
+    assertThat(ErrorConcealment.clientMessage(true, this, "test", null, e)).isEqualTo(ArcadeDBServer.CONCEALED_ERROR_MESSAGE);
+    assertThat(ErrorConcealment.clientMessage(false, this, "test", "kept", e, Level.INFO)).isEqualTo("kept");
+    // A blank message names the failure no better than none does, and describe() already reads it that way
+    assertThat(ErrorConcealment.clientMessage(false, this, "test", "", e)).isEqualTo("NoSuchElementException");
+    assertThat(ErrorConcealment.clientMessage(false, this, "test", "  ", e)).isEqualTo("NoSuchElementException");
   }
 }

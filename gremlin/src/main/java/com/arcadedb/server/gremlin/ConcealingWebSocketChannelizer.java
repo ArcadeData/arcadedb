@@ -56,7 +56,8 @@ import java.util.logging.Level;
  * other transport answers it: neither the refusal's message nor the placeholder says where to go, and a status code is
  * all the client has otherwise. The pipeline is also where the connection of a request is known, so this channelizer
  * publishes it for the {@code list queries} entry of the evaluation (issue #9962): TinkerPop's {@code RequestMessage}
- * carries no channel.
+ * carries no channel. That publication adds the channel and the port; the client itself does not depend on it, as the
+ * connection's authenticated user carries one to the authorizer under any channelizer (issue #10105).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
