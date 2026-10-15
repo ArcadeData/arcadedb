@@ -1438,7 +1438,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    * {@link #deleteRecordNoLock(Record)} and of the {@code updateRecord} counter in {@code applyUpdate}: incremented by the single owner of the
    * operation, after the write happened, so a record that was instantiated and discarded, refused by validation or vetoed by a
    * listener is not counted, and an edge is, whichever API made it. Only the records of the user are counted: the edge segments and
-   * stripe directories the graph engine allocates through the same method are storage of the engine, not records created.
+   * stripe directories the graph engine allocates through the same method are storage of the engine, not records created. Counted
+   * when the write is made, not when the transaction commits, so a transaction rolled back later still counts its creates, as it does
+   * its updates and deletes.
    */
   private void countCreatedRecord(final Record record) {
     if (record instanceof Document)
@@ -3721,6 +3723,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         }
 
       open = false;
+      // the serializer must not keep a lambda that references this instance once it is closed (issue #10104)
+      serializer.setImplementationChangeListener(null);
 
       // From here on the instance reports itself closed, so every step below must run whatever the one before it did
       // (issue #8316): the files, the WAL and the lock file are released at the end, and a failure that skipped them
