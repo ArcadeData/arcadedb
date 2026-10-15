@@ -66,7 +66,7 @@ import java.util.stream.Stream;
  * <p>
  * Run it with writers quiesced: a String written while it runs, with the shape of a temporal, on a property the schema
  * does not declare, is converted too - which is what the legacy reading already made of it. For the same reason a
- * database created by a 26.11.1 development build earlier than this procedure counts as legacy (its schema file has no
+ * database created by a 26.10.2 development build earlier than this procedure counts as legacy (its schema file has no
  * temporal storage setting either): its genuine Strings with a temporal shape on undeclared properties are read, and
  * converted, as temporals.
  */

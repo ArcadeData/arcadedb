@@ -18,6 +18,7 @@
  */
 package com.arcadedb.function.sql.vector;
 
+import com.arcadedb.utility.VectorApiSupport;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -88,7 +89,7 @@ public class SQLFunctionVectorAvg extends SQLFunctionVectorAbstract {
 
     // Use JVector's SIMD-optimized scaling for averaging (2-3x faster with Vector API)
     try {
-      final VectorizationProvider vp = VectorizationProvider.getInstance();
+      final VectorizationProvider vp = VectorApiSupport.jvectorProvider();
 
       // Create result as copy of sum vector
       final float[] avgVector = sumVector.clone();

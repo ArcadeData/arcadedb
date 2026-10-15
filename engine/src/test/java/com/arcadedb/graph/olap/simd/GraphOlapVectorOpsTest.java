@@ -431,6 +431,17 @@ class GraphOlapVectorOpsTest {
   }
 
   @Test
+  void providerPicksScalarWhenTheVectorApiIsNotCompiled() {
+    // issue #10072: a native image runs the Vector API through its Java lane loops, slower than the scalar ops
+    assertThat(GraphOlapVectorOpsProvider.select(false)).isInstanceOf(ScalarGraphOlapVectorOps.class);
+  }
+
+  @Test
+  void providerPicksSimdWhenTheVectorApiIsCompiled() {
+    assertThat(GraphOlapVectorOpsProvider.select(true)).isInstanceOf(SimdGraphOlapVectorOps.class);
+  }
+
+  @Test
   void providerReturnsInstance() {
     final GraphOlapVectorOps ops = GraphOlapVectorOpsProvider.getInstance();
     assertThat(ops).isNotNull();

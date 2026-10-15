@@ -269,6 +269,21 @@ class Issue7309GrpcSecurityControlPlaneIT extends BaseGrpcServerTest {
         .as("a token with no expiry is never expired").isFalse();
   }
 
+  /**
+   * Issue #10073: a taken user name is the same conflict a taken token name is. It answered PERMISSION_DENIED, the status
+   * a non-admin caller gets, because the duplicate was raised as a security failure.
+   */
+  @Test
+  void createUserRefusesATakenNameWithAlreadyExists() {
+    final CreateUserRequest request = CreateUserRequest.newBuilder().setCredentials(root())
+        .setUser("grpc_dup_user").setPassword("a-long-password").build();
+    admin.createUser(request);
+
+    final StatusRuntimeException failure = catchThrowableOfType(StatusRuntimeException.class, () -> admin.createUser(request));
+
+    assertThat(failure.getStatus().getCode()).isEqualTo(Status.Code.ALREADY_EXISTS);
+  }
+
   @Test
   void createApiTokenRefusesADuplicateNameWithAlreadyExists() {
     admin.createApiToken(CreateApiTokenRequest.newBuilder().setCredentials(root()).setName("unique").build());

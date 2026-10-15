@@ -36,6 +36,7 @@ import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ClusterCapabilityNotReadyException;
+import com.arcadedb.server.DatabaseAlreadyExistsException;
 import com.arcadedb.server.ForwardedRequestIdContext;
 import com.arcadedb.server.HAReplicatedDatabase;
 import com.arcadedb.server.HAServerPlugin;
@@ -56,6 +57,7 @@ import com.arcadedb.server.security.ApiTokenConfiguration;
 import com.arcadedb.server.ServerControlPlane;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
+import com.arcadedb.server.security.UserAlreadyExistsException;
 import io.micrometer.core.instrument.Metrics;
 import io.micrometer.core.instrument.Timer;
 import io.micrometer.observation.Observation;
@@ -1230,6 +1232,21 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     if (inProgress != null) {
       return new ErrorClassification(409, "Cannot execute command", inProgress, null, ErrorLogKind.USER);
     }
+
+    // 409 Conflict: the user name is taken (issue #10073). Not a security failure - it was answered 403 "Security error"
+    // before, the status a non-root caller gets, so a client could not tell the two apart without matching on the
+    // detail text. The label carries the fact for production mode, where 'detail' is concealed.
+    final UserAlreadyExistsException userExists = firstOf(e, cause, UserAlreadyExistsException.class);
+    if (userExists != null)
+      return new ErrorClassification(409, "User already exists", userExists, null, ErrorLogKind.USER);
+
+    // 409 Conflict: the database name is taken (issue #10074). It was a plain IllegalArgumentException, hence the 400 of
+    // a malformed request below, while a name reserved for a running restore already answered 409. Before the
+    // IllegalArgumentException arm because the type extends it, so embedded callers of the old type keep working. The
+    // label carries the fact for production mode, where 'detail' is concealed.
+    final DatabaseAlreadyExistsException databaseExists = firstOf(e, cause, DatabaseAlreadyExistsException.class);
+    if (databaseExists != null)
+      return new ErrorClassification(409, "Database already exists", databaseExists, null, ErrorLogKind.USER);
 
     // 409 Conflict (RFC 9110 15.5.10): a unique-constraint violation is a client data conflict, not a transient
     // server-availability problem. 503 told clients/load balancers the request was retry-worthy, amplifying the
