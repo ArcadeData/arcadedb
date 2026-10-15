@@ -4028,10 +4028,23 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     throw new ClusterCapabilityNotReadyException(message.toString(), PeerCapabilities.SCHEMA_FILE_RENAMES, missing);
   }
 
+  /**
+   * The refusal names the leader by its HTTP address, unless that address is this node's own: what a cluster whose peers
+   * share a host and declare no HTTP port resolves for every peer (issue #6191). Named that way, the refusal would send
+   * the client back to the follower that just refused it, so it names the leader by its server name instead, as the
+   * forwarding refusals do in the same state (issue #10060). No address at all still names nobody: the refusal stays the
+   * retryable one an election in flight gets.
+   */
   private ServerIsNotTheLeaderException schemaChangesNeedTheLeader() {
-    final String leaderAddr = raftHAServer != null ? raftHAServer.getLeaderHttpAddress() : null;
+    final RaftHAServer raft = raftHAServer;
+    String leader = null;
+    if (raft != null) {
+      leader = raft.getLeaderHttpAddress();
+      if (leader != null && raft.isOwnHttpAddress(leader))
+        leader = raft.getLeaderName();
+    }
     return new ServerIsNotTheLeaderException("Changes to the schema must be executed on the leader server",
-        leaderAddr != null ? leaderAddr : "");
+        leader != null ? leader : "");
   }
 
   /**

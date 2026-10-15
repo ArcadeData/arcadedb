@@ -97,6 +97,9 @@ class Issue9870BoltFollowerLeaderRefusalIT extends BaseRaftHATest {
     final int follower = firstFollowerOf(leader);
     final Runnable restore = refuseForwardedWritesOn(follower);
     try (final Session session = followerSession(follower)) {
+      // Since issue #10040 the write runs in the client's transaction on the follower rather than being forwarded, so the
+      // refusal is the schema one: the label has no type yet, and only the leader may create it. That refusal must name
+      // the leader too, not the follower's own address it resolved for it (issue #10060)
       final Throwable refused = catchThrowable(() -> {
         try (final Transaction tx = session.beginTransaction()) {
           tx.run("CREATE (n:Issue9870Explicit {name: 'refused'})").consume();
