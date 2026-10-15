@@ -2731,7 +2731,8 @@ public class LocalSchema implements Schema {
     indexWarmUp.close();
     // An open that failed before the replay finished leaves the engines it deferred behind
     timeSeriesEnginesAwaitingReplay = null;
-    // Save dirty configuration before clearing everything
+    // Save dirty configuration before clearing everything. The database's close has saved it already while it was still open
+    // (saveBeforeClose()): this only catches a schema closed some other way, e.g. by an open that failed
     if (dirtyGeneration.get() > savedGeneration) {
       try {
         // Force save even if transaction is active - this is the last chance to save
@@ -4468,13 +4469,36 @@ public class LocalSchema implements Schema {
   }
 
   /**
-   * Persists the BM25 corpus counters that the commits since the last schema save moved. A commit changes them without
-   * dirtying the schema, because that would rewrite {@code schema.json} after every commit, so the database close asks for
-   * this while it is still open: a schema serialized once the database has begun to close cannot resolve its buckets.
+   * The close's save, run by the database while it is still open, as the last step before it marks itself closed: a
+   * schema serialized once the database reports itself closed cannot resolve its buckets, because the indexes name theirs
+   * through the checked schema accessor (issue #10059). Writes a schema whose save a transaction or {@code multipleUpdate}
+   * postponed - the close is the point where that save is owed, whatever is still open - and the BM25 corpus counters the
+   * commits since the last save moved, which a commit changes without dirtying the schema, because that would rewrite
+   * {@code schema.json} after every commit (#10051).
+   * <p>
+   * Called under the database write lock, then taking this schema's monitor: the order every schema save made under
+   * {@code recordFileChanges} already takes, and the one {@link #close()} took when it saved, so no new lock order is added.
+   * <p>
+   * It writes the file and records the saved generation, and nothing else {@link #saveConfiguration} does: the postponement
+   * it applies is what this save exists to override, and refreshing the bucket map, the modification counter and the
+   * security file map serves readers of a database that is about to stop having any.
+   *
+   * @throws IOException when the schema file cannot be written: the caller logs it and carries on with the close
    */
-  public void saveUnsavedFullTextCounters() {
-    if (database.getMode() == ComponentFile.MODE.READ_WRITE && hasUnsavedFullTextCounters())
-      saveConfiguration(true);
+  public synchronized void saveBeforeClose() throws IOException {
+    // A schema still loading would be written half-restored over the complete file it is being read from
+    if (database.getMode() != ComponentFile.MODE.READ_WRITE || readingFromFile || !loadInRamCompleted)
+      return;
+
+    final boolean dirty = isDirty();
+    if (!dirty && !hasUnsavedFullTextCounters())
+      return;
+
+    if (dirty)
+      LogManager.instance().log(this, Level.INFO, "Saving dirty schema configuration before close");
+    final long capturedGeneration = dirtyGeneration.get();
+    writeNextGeneration();
+    savedGeneration = capturedGeneration;
   }
 
   private boolean hasUnsavedFullTextCounters() {

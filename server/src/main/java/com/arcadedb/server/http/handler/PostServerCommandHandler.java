@@ -831,6 +831,7 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
   private void checkServerIsLeaderIfInHA() {
     final HAServerPlugin ha = httpServer.getServer().getHA();
     if (ha != null && !ha.isLeader())
-      throw new ServerIsNotTheLeaderException("Creation of database can be executed only on the leader server", ha.getLeaderName());
+      throw new ServerIsNotTheLeaderException("Creation of database can be executed only on the leader server", ha.getLeaderName(),
+          true);
   }
 }

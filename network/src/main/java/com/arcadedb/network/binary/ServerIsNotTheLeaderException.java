@@ -24,11 +24,27 @@ import com.arcadedb.exception.NeedRetryException;
 
 public class ServerIsNotTheLeaderException extends NeedRetryException {
 
-  private final String leaderURL;
+  private final String  leaderURL;
+  private final boolean holdsOnThisNode;
 
+  /**
+   * A refusal a retry on this node can get past (a forward that failed on the way, one rebuilt from a peer's answer): it stays
+   * retryable here. A refusal that holds on this node uses {@link #ServerIsNotTheLeaderException(String, String, boolean)}.
+   */
   public ServerIsNotTheLeaderException(final String message, final String leaderURL) {
+    this(message, leaderURL, false);
+  }
+
+  /**
+   * @param holdsOnThisNode {@code true} when this node gives the same answer to the same work until something outside it
+   *                        changes - it refuses leader-only work (a schema change, a security mutation), or a forward it
+   *                        could only send back to itself - as opposed to a forward that failed transiently, which a
+   *                        retry on this node can get past. See {@link #isRetryableOnThisNode()}
+   */
+  public ServerIsNotTheLeaderException(final String message, final String leaderURL, final boolean holdsOnThisNode) {
     super(message);
     this.leaderURL = leaderURL;
+    this.holdsOnThisNode = holdsOnThisNode;
   }
 
   public String getLeaderAddress() {
@@ -42,6 +58,17 @@ public class ServerIsNotTheLeaderException extends NeedRetryException {
    */
   public boolean namesLeader() {
     return leaderURL != null && !leaderURL.isBlank();
+  }
+
+  /**
+   * {@code false} for a refusal that holds on this node and names the leader to send the work to: retrying it here would
+   * only repeat the answer, after the retry delays, before the caller learns where to go (issue #9995). A refusal that
+   * names no leader - one raised mid-election - stays retryable here, since this very node may win the election; so does
+   * one raised by a forward that failed on the way to the leader, which the next attempt dials again.
+   */
+  @Override
+  public boolean isRetryableOnThisNode() {
+    return !(holdsOnThisNode && namesLeader());
   }
 
   /**

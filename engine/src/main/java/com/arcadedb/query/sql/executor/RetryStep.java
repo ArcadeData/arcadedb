@@ -142,6 +142,11 @@ public class RetryStep extends AbstractExecutionStep {
                   + ctx.getCommandDeadlineDescription(), ex);
         if (partiallyCommitted(txAtStart, commitCountAtStart, attempt, ex))
           throw ex;
+        // A refusal this node repeats until something outside it changes (a follower naming the leader) is not a conflict
+        // that clears on its own: every remaining attempt would fail the same way, and an ELSE body would run on a block
+        // that never had a chance (issue #9995)
+        if (!ex.isRetryableOnThisNode())
+          throw ex;
 
         final ResultSet finished = giveUpOrBackOff(ctx, nRecords, attempt, ex);
         if (finished != null)

@@ -38,8 +38,14 @@ import static com.arcadedb.query.opencypher.temporal.CypherDate.toDouble;
  * Fractional values cascade: 1.5 years = 1 year + 6 months.
  */
 public class CypherDuration implements CypherTemporalValue {
+  // A component is a signed integer, with a fraction (dot or comma) allowed only on the last component the text carries
+  // (checked after the match). Group 1 is the sign of the whole duration, group 6 the time part, 'T' included.
+  private static final String  ISO_NUMBER  = "([-+]?\\d+(?:[.,]\\d+)?)";
   private static final Pattern ISO_PATTERN = Pattern.compile(
-      "P(?:([-\\d.]+)Y)?(?:([-\\d.]+)M)?(?:([-\\d.]+)W)?(?:([-\\d.]+)D)?(?:T(?:([-\\d.]+)H)?(?:([-\\d.]+)M)?(?:([-\\d.]+)S)?)?");
+      "([-+]?)P(?:" + ISO_NUMBER + "Y)?(?:" + ISO_NUMBER + "M)?(?:" + ISO_NUMBER + "W)?(?:" + ISO_NUMBER + "D)?(T(?:" + ISO_NUMBER
+          + "H)?(?:" + ISO_NUMBER + "M)?(?:" + ISO_NUMBER + "S)?)?");
+  // The groups of ISO_PATTERN holding a component, most significant first
+  private static final int[]   ISO_COMPONENT_GROUPS = { 2, 3, 4, 5, 7, 8, 9 };
   // Alternative date-based format: P<years>-<months>-<days>T<hours>:<minutes>:<seconds>[.fraction]
   private static final Pattern DATE_BASED_PATTERN = Pattern.compile(
       "P(\\d+)-(\\d+)-(\\d+)T(\\d+):(\\d+):(\\d+(?:\\.\\d+)?)");
@@ -84,26 +90,63 @@ public class CypherDuration implements CypherTemporalValue {
     }
 
     final Matcher m = ISO_PATTERN.matcher(str);
-    if (!m.matches())
+    if (!m.matches() || !isWellFormed(m))
       throw new IllegalArgumentException("Invalid duration string: " + str);
 
-    if (isIntegral(m.group(1)) && isIntegral(m.group(2)) && isIntegral(m.group(3)) && isIntegral(m.group(4))
-        && isIntegral(m.group(5)) && isIntegral(m.group(6)))
-      return parseExact(m);
+    final String[] c = new String[7];
+    for (int i = 0; i < c.length; i++)
+      c[i] = component(m, ISO_COMPONENT_GROUPS[i]);
 
-    final double years = m.group(1) != null ? Double.parseDouble(m.group(1)) : 0;
-    final double months = m.group(2) != null ? Double.parseDouble(m.group(2)) : 0;
-    final double weeks = m.group(3) != null ? Double.parseDouble(m.group(3)) : 0;
-    final double daysVal = m.group(4) != null ? Double.parseDouble(m.group(4)) : 0;
-    final double hours = m.group(5) != null ? Double.parseDouble(m.group(5)) : 0;
-    final double minutes = m.group(6) != null ? Double.parseDouble(m.group(6)) : 0;
-    final double secs = m.group(7) != null ? Double.parseDouble(m.group(7)) : 0;
+    // Only the last component may carry a fraction (isWellFormed), and a fraction of seconds is read exactly by parseExact. A
+    // fraction of any larger unit is split off its component: every whole count stays exact in long arithmetic, and only the
+    // fraction below one unit cascades through a double into the smaller units
+    int fractional = -1;
+    for (int i = 0; i < 6; i++)
+      if (!isIntegral(c[i]))
+        fractional = i;
 
-    return fromComponents(years, months, weeks, daysVal, hours, minutes, secs, 0);
+    final CypherDuration parsed;
+    if (fractional < 0)
+      parsed = parseExact(m, c);
+    else {
+      final String text = c[fractional];
+      final int dot = text.indexOf('.');
+      final double[] fraction = new double[6];
+      fraction[fractional] = Double.parseDouble((text.charAt(0) == '-' ? "-0" : "0") + text.substring(dot));
+      c[fractional] = text.substring(0, dot);
+      parsed = parseExact(m, c).add(
+          fromComponents(fraction[0], fraction[1], fraction[2], fraction[3], fraction[4], fraction[5], 0, 0));
+    }
+
+    return "-".equals(m.group(1)) ? parsed.negate() : parsed;
+  }
+
+  /**
+   * What the pattern alone cannot say, as Neo4j reads it (issue #10055): the text carries at least one component (no bare
+   * {@code P}), a {@code T} is followed by at least one time component (no {@code PT}, no {@code P1YT}), and only the last
+   * component carries a fraction ({@code P1.5Y2M} is refused: the fraction would cascade into a component written after it).
+   */
+  private static boolean isWellFormed(final Matcher m) {
+    int last = -1;
+    for (int i = 0; i < ISO_COMPONENT_GROUPS.length; i++)
+      if (m.group(ISO_COMPONENT_GROUPS[i]) != null) {
+        if (last >= 0 && !isIntegral(m.group(ISO_COMPONENT_GROUPS[last])))
+          return false;
+        last = i;
+      }
+    if (last < 0)
+      return false;
+    return m.group(6) == null || m.group(7) != null || m.group(8) != null || m.group(9) != null;
+  }
+
+  /** The component text with a decimal comma read as a dot, as ISO 8601 allows; {@code null} when the text has none. */
+  private static String component(final Matcher m, final int group) {
+    final String text = m.group(group);
+    return text != null && text.indexOf(',') >= 0 ? text.replace(',', '.') : text;
   }
 
   private static boolean isIntegral(final String component) {
-    return component == null || component.indexOf('.') < 0;
+    return component == null || (component.indexOf('.') < 0 && component.indexOf(',') < 0);
   }
 
   /**
@@ -111,14 +154,14 @@ public class CypherDuration implements CypherTemporalValue {
    * exact {@code long} arithmetic, reading the seconds fraction as a decimal rather than through a {@code double}, which
    * cannot hold a nanosecond past about 97 days (issue #9338).
    */
-  private static CypherDuration parseExact(final Matcher m) {
+  private static CypherDuration parseExact(final Matcher m, final String[] c) {
     try {
-      final long months = Math.addExact(Math.multiplyExact(longOf(m.group(1)), 12L), longOf(m.group(2)));
-      final long days = Math.addExact(Math.multiplyExact(longOf(m.group(3)), 7L), longOf(m.group(4)));
-      long seconds = Math.addExact(Math.multiplyExact(longOf(m.group(5)), 3600L), Math.multiplyExact(longOf(m.group(6)), 60L));
+      final long months = Math.addExact(Math.multiplyExact(longOf(c[0]), 12L), longOf(c[1]));
+      final long days = Math.addExact(Math.multiplyExact(longOf(c[2]), 7L), longOf(c[3]));
+      long seconds = Math.addExact(Math.multiplyExact(longOf(c[4]), 3600L), Math.multiplyExact(longOf(c[5]), 60L));
       long nanos = 0;
-      if (m.group(7) != null) {
-        final String text = m.group(7);
+      if (c[6] != null) {
+        final String text = c[6];
         if (text.indexOf('.') < 0)
           // The common stored shape ("PT30S"): no fraction, no BigDecimal
           seconds = Math.addExact(seconds, Long.parseLong(text));
@@ -325,6 +368,20 @@ public class CypherDuration implements CypherTemporalValue {
           Math.subtractExact(seconds, other.seconds), (long) nanosAdjustment - other.nanosAdjustment);
     } catch (final ArithmeticException e) {
       throw overflow("subtract", other);
+    }
+  }
+
+  /**
+   * This duration with every component negated: what a leading minus sign does to an ISO text ({@code -P1Y2D}).
+   *
+   * @throws ArithmeticErrorException when a component is {@code Long.MIN_VALUE} and has no negation
+   */
+  public CypherDuration negate() {
+    try {
+      // nanosAdjustment is 0..999_999_999, so its negation cannot overflow: the constructor folds it back into seconds
+      return new CypherDuration(Math.negateExact(months), Math.negateExact(days), Math.negateExact(seconds), -(long) nanosAdjustment);
+    } catch (final ArithmeticException e) {
+      throw new ArithmeticErrorException("Duration overflow: cannot negate " + this);
     }
   }
 
