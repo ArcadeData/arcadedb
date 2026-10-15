@@ -75,6 +75,10 @@ public class GetDynamicContentHandler extends AbstractServerHttpHandler {
   /**
    * The extensions served, lower case. A template is rendered on every request and interprets {@code ${...}} directives,
    * so only pages may be one: a stylesheet or a script run through it would have any {@code ${} sequence eaten.
+   * <p>
+   * Every type that is not text or JSON is a binary, and must also be carved out of Maven's resource filtering in the root
+   * {@code pom.xml} ({@code <resources>} and {@code nonFilteredFileExtensions}), or the build copies it through a text
+   * Reader and corrupts it (issue #10103). {@code studio/test/static-content-types.test.js} fails when the two disagree.
    */
   static final Map<String, ContentTypeSpec> CONTENT_TYPES = Map.ofEntries(//
       entry("html", new ContentTypeSpec("text/html", true)),//
@@ -91,12 +95,15 @@ public class GetDynamicContentHandler extends AbstractServerHttpHandler {
       entry("jpg", new ContentTypeSpec("image/jpeg", false)),//
       entry("jpeg", new ContentTypeSpec("image/jpeg", false)),//
       entry("gif", new ContentTypeSpec("image/gif", false)),//
+      entry("bmp", new ContentTypeSpec("image/bmp", false)),//
       entry("webp", new ContentTypeSpec("image/webp", false)),//
       entry("avif", new ContentTypeSpec("image/avif", false)),//
       entry("woff", new ContentTypeSpec("font/woff", false)),//
       entry("woff2", new ContentTypeSpec("font/woff2", false)),//
       entry("ttf", new ContentTypeSpec("font/ttf", false)),//
       entry("otf", new ContentTypeSpec("font/otf", false)),//
+      entry("eot", new ContentTypeSpec("application/vnd.ms-fontobject", false)),//
+      entry("swf", new ContentTypeSpec("application/x-shockwave-flash", false)),//
       entry("wasm", new ContentTypeSpec("application/wasm", false)));
 
   /** What an extension missing from {@link #CONTENT_TYPES} is served as. */

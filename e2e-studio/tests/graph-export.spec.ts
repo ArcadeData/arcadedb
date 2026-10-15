@@ -16,6 +16,7 @@
 */
 
 import { test, expect } from '../fixtures/test-fixtures';
+import type { Download, Page } from '@playwright/test';
 import * as fs from 'fs';
 import * as path from 'path';
 import { ArcadeStudioTestHelper, TEST_CONFIG } from '../utils';
@@ -23,204 +24,78 @@ import { ArcadeStudioTestHelper, TEST_CONFIG } from '../utils';
 test.describe('ArcadeDB Studio Graph Export Tests', () => {
   // Removed duplicated setup function - now using exportGraphReady fixture
 
+  // Opens the Export dropdown the way a user does, clicks the entry of a format and returns the file the browser downloads.
+  // None of this is optional: a missing menu, a missing entry or an export that downloads nothing fails the test.
+  async function exportViaMenu(page: Page, format: 'json' | 'graphml' | 'png' | 'jpeg'): Promise<Download> {
+    await page.locator('#tab-graph a.dropdown-toggle:has-text("Export")').click();
+    const entry = page.locator(`#tab-graph [data-on-click="exportGraph"][data-args='["${format}"]']`);
+    await expect(entry).toBeVisible();
+
+    const download = page.waitForEvent('download', { timeout: 15000 });
+    await entry.click();
+    return download;
+  }
+
+  const readDownload = async (download: Download): Promise<Buffer> => fs.readFileSync((await download.path())!);
+
   test('should export graph as JSON format', async ({ exportGraphReady }) => {
-    const { helper, canvas } = exportGraphReady;
-    const page = helper.page;
+    const page = exportGraphReady.helper.page;
 
-    // Look for export functionality - could be in a dropdown, button, or menu
-    // Try different possible export button locations
-    const exportButtonSelectors = [
-      'button:has-text("Export")',
-      '[title*="export" i]',
-      '.fa-download',
-      '.fa-file-export',
-      '[data-on-click="exportGraph"]',
-      '#exportGraph'
-    ];
+    const download = await exportViaMenu(page, 'json');
+    expect(download.suggestedFilename()).toBe('arcadedb-graph.json');
 
-    let exportButton = null;
-    for (const selector of exportButtonSelectors) {
-      const element = page.locator(selector).first();
-      if (await element.isVisible({ timeout: 1000 })) {
-        exportButton = element;
-        break;
-      }
-    }
+    const exported = JSON.parse((await readDownload(download)).toString('utf8'));
+    const shown = await page.evaluate(() => ({
+      vertices: globalResultset.vertices.length,
+      edges: globalResultset.edges.length,
+      nodes: globalCy.nodes().length
+    }));
 
-    if (exportButton) {
-      console.log('Found export button, testing JSON export');
-      await exportButton.click();
-      await page.waitForLoadState('networkidle');
-
-      // Look for JSON export option
-      const jsonOption = page.locator('text=JSON, button:has-text("JSON"), [value="json"]').first();
-      if (await jsonOption.isVisible({ timeout: 2000 })) {
-        await jsonOption.click();
-        await page.waitForLoadState('networkidle');
-
-        // Verify export functionality exists
-        const exportCapability = await page.evaluate(() => {
-          // Check if we can access graph data for export
-          if (typeof globalCy !== 'undefined' && globalCy !== null) {
-            return { hasGraphData: globalCy.nodes().length > 0, method: 'cytoscape' };
-          }
-          return { hasGraphData: false, method: 'none' };
-        });
-
-        expect(exportCapability.hasGraphData).toBe(true);
-      }
-    } else {
-      // Test programmatic JSON export
-      console.log('Testing programmatic JSON export');
-      const jsonExport = await page.evaluate(() => {
-        if (!globalCy) return null;
-
-        // Export current graph state as JSON
-        const graphData = {
-          nodes: globalCy.nodes().map(node => ({
-            id: node.id(),
-            data: node.data(),
-            position: node.position()
-          })),
-          edges: globalCy.edges().map(edge => ({
-            id: edge.id(),
-            source: edge.source().id(),
-            target: edge.target().id(),
-            data: edge.data()
-          }))
-        };
-
-        return graphData;
-      });
-
-      expect(jsonExport).toBeTruthy();
-      if (jsonExport && !jsonExport.error) {
-        expect(jsonExport.nodes.length).toBeGreaterThan(0);
-        console.log(`Exported ${jsonExport.nodes.length} nodes and ${jsonExport.edges.length} edges`);
-      }
-    }
+    // The file holds the graph on screen and the settings, and drops the raw records
+    expect(shown.vertices).toBeGreaterThan(0);
+    expect(exported.vertices).toHaveLength(shown.vertices);
+    expect(exported.edges).toHaveLength(shown.edges);
+    expect(exported.records).toEqual([]);
+    expect(exported.settings).toBeDefined();
   });
 
   test('should export graph as GraphML format', async ({ exportGraphReady }) => {
-    const { helper, canvas } = exportGraphReady;
-    const page = helper.page;
+    const page = exportGraphReady.helper.page;
 
-    // Test GraphML export capability with error handling
-    const graphMLSupported = await page.evaluate(() => {
-      try {
-        // Check if GraphML export is supported
-        return typeof globalCy !== 'undefined' &&
-               globalCy !== null &&
-               (typeof globalCy.graphml === 'function' || typeof exportGraphML === 'function');
-      } catch (error) {
-        return false;
-      }
-    });
+    const download = await exportViaMenu(page, 'graphml');
+    expect(download.suggestedFilename()).toBe('arcade.graphml');
 
-    console.log('GraphML export supported:', graphMLSupported);
+    const graphml = (await readDownload(download)).toString('utf8');
+    const shown = await page.evaluate(() => ({ nodes: globalCy.nodes().length, edges: globalCy.edges().length }));
 
-    if (graphMLSupported) {
-      const graphMLExport = await page.evaluate(() => {
-        if (typeof globalCy.graphml === 'function') {
-          try {
-            return globalCy.graphml().exportGraphML();
-          } catch (error) {
-            return { error: error.message };
-          }
-        } else if (typeof exportGraphML === 'function') {
-          try {
-            return exportGraphML();
-          } catch (error) {
-            return { error: error.message };
-          }
-        }
-        return null;
-      });
-
-      console.log('GraphML export result:', graphMLExport ? 'Success' : 'Failed');
-
-      // Verify export doesn't cause errors
-      expect(graphMLExport).toBeDefined();
-
-      // If export is a string, verify it contains GraphML content
-      if (typeof graphMLExport === 'string') {
-        expect(graphMLExport).toContain('graphml');
-      }
-    } else {
-      console.log('GraphML export not available, skipping detailed test');
-      // Verify basic graph functionality is still intact
-      const basicGraphState = await page.evaluate(() => {
-        return {
-          hasGraph: typeof globalCy !== 'undefined' && globalCy !== null,
-          nodeCount: globalCy ? globalCy.nodes().length : 0,
-          isResponsive: true
-        };
-      });
-
-      expect(basicGraphState.hasGraph).toBe(true,
-        'Graph should still be functional even without GraphML export');
-      expect(basicGraphState.nodeCount).toBeGreaterThan(0,
-        'Graph should contain nodes for potential export functionality');
-    }
+    expect(graphml).toContain('<graphml');
+    expect(shown.nodes).toBeGreaterThan(0);
+    expect(graphml.match(/<node\b/g) ?? []).toHaveLength(shown.nodes);
+    expect(graphml.match(/<edge\b/g) ?? []).toHaveLength(shown.edges);
   });
 
   test('should export graph as PNG image', async ({ exportGraphReady }) => {
-    const { helper, canvas } = exportGraphReady;
-    const page = helper.page;
+    const page = exportGraphReady.helper.page;
 
-    // Test image export functionality
-    const imageExportSupported = await page.evaluate(() => {
-      // Check if canvas-based image export is possible
-      const canvas = document.querySelector('#graph canvas');
-      return canvas && typeof canvas.toBlob === 'function';
-    });
+    const download = await exportViaMenu(page, 'png');
+    expect(download.suggestedFilename()).toBe('arcadedb-graph.png');
 
-    console.log('Image export supported:', imageExportSupported);
+    const png = await readDownload(download);
+    // PNG signature, then a picture with something in it
+    expect(png.subarray(0, 8).toString('hex')).toBe('89504e470d0a1a0a');
+    expect(png.length).toBeGreaterThan(1000);
+  });
 
-    if (imageExportSupported) {
-      // Test canvas image export
-      const imageExport = await page.evaluate(async () => {
-        const canvas = document.querySelector('#graph canvas');
-        if (!canvas) return null;
+  test('should export graph as JPEG image', async ({ exportGraphReady }) => {
+    const page = exportGraphReady.helper.page;
 
-        try {
-          // Test that canvas can be converted to blob
-          return new Promise((resolve) => {
-            canvas.toBlob((blob) => {
-              resolve({
-                success: blob !== null,
-                size: blob ? blob.size : 0,
-                type: blob ? blob.type : null
-              });
-            }, 'image/png');
-          });
-        } catch (error) {
-          return { error: error.message };
-        }
-      });
+    const download = await exportViaMenu(page, 'jpeg');
+    expect(download.suggestedFilename()).toBe('arcadedb-graph.jpg');
 
-      console.log('Image export result:', imageExport);
-      expect(imageExport).toBeTruthy();
-
-      if (imageExport && imageExport.success) {
-        expect(imageExport.size).toBeGreaterThan(0);
-        expect(imageExport.type).toBe('image/png');
-      }
-    }
-
-    // Alternative: Look for image export button in UI
-    const imageExportButton = page.locator('button:has-text("PNG"), button:has-text("Image"), .fa-image');
-    if (await imageExportButton.isVisible({ timeout: 2000 })) {
-      console.log('Found image export button in UI');
-      await imageExportButton.first().click();
-      await page.waitForLoadState('networkidle');
-
-      // Verify no errors occurred
-      const noErrors = await page.evaluate(() => {
-        return true; // Basic check that page is still responsive
-      });
-      expect(noErrors).toBe(true);
-    }
+    const jpeg = await readDownload(download);
+    // JPEG start-of-image marker, then a picture with something in it
+    expect(jpeg.subarray(0, 3).toString('hex')).toBe('ffd8ff');
+    expect(jpeg.length).toBeGreaterThan(1000);
   });
 
   test('should export graph with settings and layout information', async ({ exportGraphReady }) => {
