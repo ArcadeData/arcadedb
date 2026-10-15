@@ -97,12 +97,26 @@ public class CypherDuration implements CypherTemporalValue {
     for (int i = 0; i < c.length; i++)
       c[i] = component(m, ISO_COMPONENT_GROUPS[i]);
 
+    // Only the last component may carry a fraction (isWellFormed), and a fraction of seconds is read exactly by parseExact. A
+    // fraction of any larger unit is split off its component: every whole count stays exact in long arithmetic, and only the
+    // fraction below one unit cascades through a double into the smaller units
+    int fractional = -1;
+    for (int i = 0; i < 6; i++)
+      if (!isIntegral(c[i]))
+        fractional = i;
+
     final CypherDuration parsed;
-    if (isIntegral(c[0]) && isIntegral(c[1]) && isIntegral(c[2]) && isIntegral(c[3]) && isIntegral(c[4]) && isIntegral(c[5]))
+    if (fractional < 0)
       parsed = parseExact(m, c);
-    else
-      parsed = fromComponents(doubleOf(c[0]), doubleOf(c[1]), doubleOf(c[2]), doubleOf(c[3]), doubleOf(c[4]), doubleOf(c[5]),
-          doubleOf(c[6]), 0);
+    else {
+      final String text = c[fractional];
+      final int dot = text.indexOf('.');
+      final double[] fraction = new double[6];
+      fraction[fractional] = Double.parseDouble((text.charAt(0) == '-' ? "-0" : "0") + text.substring(dot));
+      c[fractional] = text.substring(0, dot);
+      parsed = parseExact(m, c).add(
+          fromComponents(fraction[0], fraction[1], fraction[2], fraction[3], fraction[4], fraction[5], 0, 0));
+    }
 
     return "-".equals(m.group(1)) ? parsed.negate() : parsed;
   }
@@ -129,10 +143,6 @@ public class CypherDuration implements CypherTemporalValue {
   private static String component(final Matcher m, final int group) {
     final String text = m.group(group);
     return text != null && text.indexOf(',') >= 0 ? text.replace(',', '.') : text;
-  }
-
-  private static double doubleOf(final String component) {
-    return component != null ? Double.parseDouble(component) : 0;
   }
 
   private static boolean isIntegral(final String component) {

@@ -95,9 +95,8 @@ class Issue7981ConstraintCheckInRecordPassTest extends TestHelper {
     assertThat(steps.indexes).as("the step plan announced is the one that ran").hasSize(steps.totalSteps.get());
 
     // NOTHING WAS REMOVED: A REPORT-ONLY RUN
-    assertThat(database.countType("Doc", false)).isEqualTo(2);
-    assertThat(database.countType("Person", false)).isEqualTo(2);
-    assertThat(database.countType("Knows", false)).isEqualTo(1);
+    for (final RID rid : rids)
+      assertThat(database.existsRecord(rid)).as("a report-only run keeps %s", rid).isTrue();
   }
 
   @Test
@@ -112,7 +111,8 @@ class Issue7981ConstraintCheckInRecordPassTest extends TestHelper {
     assertThat((Long) result.get("totalDeletedConstraintViolatingRecords")).isZero();
     assertThat(steps.names).doesNotContain(CONSTRAINT_STEP);
     assertThat(steps.indexes).hasSize(steps.totalSteps.get());
-    assertThat(database.countType("Doc", false)).isEqualTo(2);
+    for (final RID rid : rids)
+      assertThat(database.existsRecord(rid)).as("a plain FIX keeps %s", rid).isTrue();
   }
 
   @Test
@@ -129,7 +129,10 @@ class Issue7981ConstraintCheckInRecordPassTest extends TestHelper {
     assertThat(steps.names).contains(CONSTRAINT_STEP);
     assertThat(steps.constraintTicks.get()).isPositive();
     assertThat(steps.indexes).hasSize(steps.totalSteps.get());
-    assertThat(database.countType("Doc", false)).isEqualTo(1);
+    for (final RID rid : rids)
+      assertThat(database.existsRecord(rid)).as("the repair removed %s", rid).isFalse();
+    assertThat(database.query("sql", "SELECT count() AS c FROM Doc").next().<Long>getProperty("c")).as("the complete document stays")
+        .isEqualTo(1L);
     assertThat((Collection<String>) result.get("warnings")).noneMatch(w -> w.contains("CHECK DATABASE FIX DELETE INVALID RECORDS"));
   }
 
