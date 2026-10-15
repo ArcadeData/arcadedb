@@ -74,18 +74,20 @@ public class Slf4jLogger implements Logger {
 
   /**
    * Logs {@code message} at {@code level} for {@code requester}, through SLF4J. This fixed-arity
-   * overload (instead of varargs) keeps the common, no-parameter call path free of an {@code Object[]}
-   * allocation. When the level is disabled the message is neither formatted nor emitted. Non-null
-   * parameters are substituted printf-style ({@link String#formatted(Object...)}); a non-null
-   * {@code context} is prefixed as {@code <context> message}; and a non-null {@code exception} is
-   * passed to SLF4J as the throwable. A {@code null} message is ignored.
+   * overload (instead of varargs) keeps the call path with a handful of parameters free of an {@code Object[]}
+   * allocation. When the level is disabled the message is neither formatted nor emitted. The parameters are
+   * substituted printf-style ({@link String#formatted(Object...)}), a {@code null} one rendering as {@code null}: a call
+   * without parameters takes the varargs form instead (#10106). A non-null {@code context} is prefixed as
+   * {@code <context> message}; and a non-null {@code exception} is passed to SLF4J as the throwable. A {@code null}
+   * message is ignored.
    *
    * @param requester the object, class or name the log line is attributed to (resolves the logger name)
    * @param level     the {@link java.util.logging.Level}, mapped onto one of SLF4J's five levels
    * @param message   the message, optionally a printf-style format string
    * @param exception an optional throwable to log with the message
    * @param context   an optional context tag prefixed to the message
-   * @param arg1      the first format argument (through {@code arg17}); trailing {@code null}s are unused
+   * @param arg1      the first format argument, always supplied (through {@code arg17}); the slots after the last
+   *                  argument the call passed are {@code null} padding and are never read by the format string
    */
   @Override
   @SuppressWarnings("PMD.ExcessiveParameterList") // 17 args are mandated by the Logger interface (allocation-free path)
@@ -102,19 +104,15 @@ public class Slf4jLogger implements Logger {
     if (!isEnabled(log, slf4jLevel))
       return;
 
-    // Kept as an explicit 17-arg call (no Object[] wrapping) to preserve the interface's
-    // allocation-free path for the common, no-parameter case.
-    final boolean hasParams = anyNonNull(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12,
-        arg13, arg14, arg15, arg16, arg17);
-
+    // This form is only reached with arg1 supplied (a call without arguments takes the varargs form with an empty
+    // array), so the message always has arguments, whatever their values: a null one renders as "null" exactly as it
+    // does through the varargs form (#10106).
     String msg = withContext(context, message);
-    if (hasParams) {
-      try {
-        msg = msg.formatted(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12, arg13, arg14,
-            arg15, arg16, arg17);
-      } catch (final Exception e) {
-        // Best-effort: keep the raw message if the arguments do not match the format string.
-      }
+    try {
+      msg = msg.formatted(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12, arg13, arg14, arg15,
+          arg16, arg17);
+    } catch (final Exception e) {
+      // Best-effort: keep the raw message if the arguments do not match the format string.
     }
 
     write(log, slf4jLevel, msg, exception);
@@ -196,22 +194,6 @@ public class Slf4jLogger implements Logger {
   /** Prefixes the message with {@code <context> } when a context is set, otherwise returns it unchanged. */
   private static String withContext(final String context, final String message) {
     return context != null ? "<" + context + "> " + message : message;
-  }
-
-  /**
-   * Returns whether any of the (up to 17) format arguments is non-null, i.e. whether the message
-   * needs printf substitution. Extracted from the fixed-arity {@code log} overload to keep that
-   * method's complexity low; takes the arguments explicitly (no {@code Object[]}) so the
-   * no-parameter path stays allocation-free.
-   */
-  @SuppressWarnings("PMD.ExcessiveParameterList") // mirrors the 17-arg log() overload; no Object[] on purpose
-  private static boolean anyNonNull(final Object arg1, final Object arg2, final Object arg3, final Object arg4,
-      final Object arg5, final Object arg6, final Object arg7, final Object arg8, final Object arg9, final Object arg10,
-      final Object arg11, final Object arg12, final Object arg13, final Object arg14, final Object arg15,
-      final Object arg16, final Object arg17) {
-    return arg1 != null || arg2 != null || arg3 != null || arg4 != null || arg5 != null || arg6 != null || arg7 != null
-        || arg8 != null || arg9 != null || arg10 != null || arg11 != null || arg12 != null || arg13 != null
-        || arg14 != null || arg15 != null || arg16 != null || arg17 != null;
   }
 
   /**

@@ -3064,6 +3064,8 @@ public class LocalSchema implements Schema {
 
     synchronized (this) {
       for (final MaterializedViewImpl view : materializedViews.values()) {
+        checkDependantNamesResolve(typeName, "materialized view", view.getName(), "DROP MATERIALIZED VIEW " + view.getName(),
+            view.getBackingTypeName(), view.getSourceTypeNames());
         if (view.getBackingTypeName().equals(canonicalTypeName))
           throw new SchemaException(
               "Cannot drop type '" + typeName + "' because it is the backing type for materialized view '" + view.getName() + "'. " +
@@ -3074,11 +3076,13 @@ public class LocalSchema implements Schema {
                   "Drop the materialized view first with: DROP MATERIALIZED VIEW " + view.getName());
       }
       for (final ContinuousAggregateImpl ca : continuousAggregates.values()) {
+        checkDependantNamesResolve(typeName, "continuous aggregate", ca.getName(), "DROP CONTINUOUS AGGREGATE " + ca.getName(),
+            ca.getBackingTypeName(), ca.getSourceTypeName() != null ? List.of(ca.getSourceTypeName()) : List.of());
         if (ca.getBackingTypeName().equals(canonicalTypeName))
           throw new SchemaException(
               "Cannot drop type '" + typeName + "' because it is the backing type for continuous aggregate '" + ca.getName() + "'. " +
                   "Drop the continuous aggregate first with: DROP CONTINUOUS AGGREGATE " + ca.getName());
-        if (canonicalTypeName.equals(canonicalTypeNameOf(ca.getSourceTypeName())))
+        if (ca.getSourceTypeName() != null && canonicalTypeName.equals(canonicalTypeNameOf(ca.getSourceTypeName())))
           throw new SchemaException(
               "Cannot drop type '" + typeName + "' because it is the source type for continuous aggregate '" + ca.getName() + "'. " +
                   "Drop the continuous aggregate first with: DROP CONTINUOUS AGGREGATE " + ca.getName());
@@ -3102,6 +3106,128 @@ public class LocalSchema implements Schema {
   private String canonicalTypeNameOf(final String typeName) {
     final LocalDocumentType type = getTypeOrNull(typeName);
     return type != null ? type.getName() : typeName;
+  }
+
+  /**
+   * Fails safe on a dependant that names a type which does not exist (issue #10096). The guards of {@link #checkTypeHasNoDependants}
+   * compare the dropped type with what a view or an aggregate stores, and a stored name that resolves to no type matches nothing:
+   * that is what a type rename used to leave behind, and the drop was then let through by the guard whose whole purpose is to
+   * refuse it. Whether the dangling name is the OLD name of the type being dropped cannot be told - the type does not remember
+   * its names - so the drop is refused, saying which dependant is out of date and what to do about it. A dependant in that state
+   * cannot refresh anyway.
+   */
+  private void checkDependantNamesResolve(final String droppedTypeName, final String kind, final String dependantName,
+      final String dropStatement, final String backingTypeName, final Collection<String> sourceTypeNames) {
+    if (getTypeOrNull(backingTypeName) == null)
+      throw outOfDateDependant(droppedTypeName, kind, dependantName, dropStatement, backingTypeName);
+    for (final String sourceTypeName : sourceTypeNames)
+      if (getTypeOrNull(sourceTypeName) == null)
+        throw outOfDateDependant(droppedTypeName, kind, dependantName, dropStatement, sourceTypeName);
+  }
+
+  private static SchemaException outOfDateDependant(final String droppedTypeName, final String kind, final String dependantName,
+      final String dropStatement, final String missingTypeName) {
+    return new SchemaException("Cannot drop type '" + droppedTypeName + "' because the " + kind + " '" + dependantName
+        + "' names the type '" + missingTypeName + "', which does not exist (the type was probably renamed before a rename "
+        + "carried its views and aggregates), so it cannot be told whether this is a type the " + kind + " depends on. Drop the "
+        + kind + " first with: " + dropStatement + ", and create it again if it is still needed");
+  }
+
+  /**
+   * Decides, before a single file moves, whether the rename of {@code type} to {@code newName} can keep every materialized view
+   * and continuous aggregate that depends on it consistent (issue #10096).
+   * <ul>
+   *   <li>the BACKING type of a view or an aggregate is not renamed: a view is named after its backing type, which is the name
+   *   {@code SELECT FROM <view>} answers to and every record's {@code @type} reports, so a renamed backing type is a view that
+   *   no longer answers to its own name;</li>
+   *   <li>a SOURCE type is renamed, and its dependants follow ({@link #carryTypeRenameToDependants}), provided the defining query
+   *   can be re-pointed at the new name with certainty ({@link DependantQueryRetargeter}); otherwise the rename is refused rather
+   *   than leaving half of the dependants on a name that no longer resolves.</li>
+   * </ul>
+   * A dependant that stores the type by one of its ALIASES needs nothing: the alias stays in the type map across a rename, and the
+   * query that names it keeps resolving.
+   */
+  void checkTypeRenameKeepsDependants(final LocalDocumentType type, final String newName) {
+    // A NAME THAT IS TAKEN IS REFUSED BY THE RENAME ITSELF, WITH ITS OWN MESSAGE
+    if (existsType(newName))
+      return;
+
+    final String oldName = type.getName();
+    synchronized (this) {
+      for (final MaterializedViewImpl view : materializedViews.values()) {
+        if (view.getBackingTypeName().equals(oldName))
+          throw new SchemaException("Cannot rename type '" + oldName + "' because it is the backing type for materialized view '"
+              + view.getName() + "': a view is named after its backing type. Drop the materialized view first with: "
+              + "DROP MATERIALIZED VIEW " + view.getName());
+        if (view.getSourceTypeNames().contains(oldName)
+            && DependantQueryRetargeter.retarget(database, view.getQuery(), oldName, newName) == null)
+          throw cannotRepointQuery(oldName, newName, "materialized view", view.getName(),
+              "DROP MATERIALIZED VIEW " + view.getName());
+      }
+      for (final ContinuousAggregateImpl ca : continuousAggregates.values()) {
+        if (ca.getBackingTypeName().equals(oldName))
+          throw new SchemaException("Cannot rename type '" + oldName + "' because it is the backing type for continuous aggregate '"
+              + ca.getName() + "': an aggregate is named after its backing type. Drop the continuous aggregate first with: "
+              + "DROP CONTINUOUS AGGREGATE " + ca.getName());
+        if (oldName.equals(ca.getSourceTypeName())
+            && DependantQueryRetargeter.retarget(database, ca.getQuery(), oldName, newName) == null)
+          throw cannotRepointQuery(oldName, newName, "continuous aggregate", ca.getName(),
+              "DROP CONTINUOUS AGGREGATE " + ca.getName());
+      }
+    }
+  }
+
+  private static SchemaException cannotRepointQuery(final String oldName, final String newName, final String kind,
+      final String dependantName, final String dropStatement) {
+    return new SchemaException("Cannot rename type '" + oldName + "' to '" + newName + "' because it is a source type for the "
+        + kind + " '" + dependantName + "' and its query cannot be re-pointed at the new name with certainty (the name appears "
+        + "more than once in the query - a subquery, a join, but also a string literal or a comment that holds it - or in a form "
+        + "that is not rewritten). Drop the " + kind + " first with: " + dropStatement
+        + ", rename the type, and create the " + kind + " again");
+  }
+
+  /**
+   * The types a rename carries to its dependants (issue #10096): every materialized view and continuous aggregate that names the
+   * type {@code oldName} as a source has that name, and the defining query that spells it, rewritten to {@code newName}, in place,
+   * and so does every trigger bound to the type.
+   * Runs inside the schema recording session that publishes the rename, so under the database write lock that every view and
+   * aggregate registration takes too and before the session saves the schema: the names that reach {@code schema.json} are the
+   * new ones, and nothing can register a dependant between the carry and the save. {@link #checkTypeRenameKeepsDependants} already
+   * refused what cannot be carried, so this does not throw: the files have moved by now.
+   */
+  void carryTypeRenameToDependants(final String oldName, final String newName) {
+    synchronized (this) {
+      for (final MaterializedViewImpl view : materializedViews.values())
+        if (view.getSourceTypeNames().contains(oldName))
+          view.retargetSourceType(oldName, newName,
+              retargetedQuery("materialized view", view.getName(), view.getQuery(), oldName, newName));
+
+      for (final ContinuousAggregateImpl ca : continuousAggregates.values())
+        if (oldName.equals(ca.getSourceTypeName()))
+          ca.retargetSourceType(newName, retargetedQuery("continuous aggregate", ca.getName(), ca.getQuery(), oldName, newName));
+
+      // A TRIGGER IS BOUND TO ITS TYPE BY NAME TOO: PERSISTED, BOUND BY ON RELOAD, AND LOOKED UP BY WHEN IT IS DROPPED
+      for (final Trigger trigger : triggers.values())
+        if (trigger instanceof TriggerImpl impl && oldName.equals(impl.getTypeName()))
+          impl.retargetType(newName);
+    }
+  }
+
+  /**
+   * The query naming {@code newName}, or the query as it is when that cannot be done with certainty. Only a dependant registered
+   * AFTER the check of the rename can get here: its names follow all the same, so that the drop guard keeps protecting the type,
+   * and the refresh that fails on the old name says why.
+   */
+  private String retargetedQuery(final String kind, final String dependantName, final String query, final String oldName,
+      final String newName) {
+    final String retargeted = DependantQueryRetargeter.retarget(database, query, oldName, newName);
+    if (retargeted != null)
+      return retargeted;
+
+    LogManager.instance().log(this, Level.WARNING,
+        "The query of the %s '%s' still names the type '%s', renamed to '%s': it cannot be re-pointed with certainty, so its "
+            + "refresh will fail until the %s is dropped and created again", kind, dependantName, oldName, newName, kind);
+    return query;
   }
 
   @Override

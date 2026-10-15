@@ -31,7 +31,8 @@ import java.util.concurrent.atomic.AtomicLong;
 public class MaterializedViewImpl implements MaterializedView {
   private final Database database;
   private final String name;
-  private final String query;
+  // volatile, not final: a rename of a source type rewrites them in place (#10096), see retargetSourceType()
+  private volatile String query;
   private final String backingTypeName;
   /** No refresh running. */
   private static final int REFRESH_IDLE            = 0;
@@ -40,7 +41,7 @@ public class MaterializedViewImpl implements MaterializedView {
   /** A refresh is running and at least one more was requested while it ran. */
   private static final int REFRESH_RUNNING_PENDING = 2;
 
-  private final List<String> sourceTypeNames;
+  private volatile List<String> sourceTypeNames;
   private final MaterializedViewRefreshMode refreshMode;
   private final boolean simpleQuery;
   private final long refreshInterval;
@@ -119,6 +120,26 @@ public class MaterializedViewImpl implements MaterializedView {
 
   public long getRefreshInterval() {
     return refreshInterval;
+  }
+
+  /**
+   * A source type of this view was renamed (issue #10096): the name that spells it, here and in the defining query, becomes the
+   * new one. Done in place, not by building another view, because the incremental listener, the periodic scheduler entry and the
+   * refresh state all hold THIS instance. The names are what the schema persists, so the caller saves the schema after.
+   * <p>
+   * The names and the query are two writes, not one: the caller holds the database write lock, so no registration or schema save
+   * sees them apart, and a refresh that races the rename reads the old query against a type that was just renamed, fails once
+   * and succeeds on the next refresh. One immutable holder would close that window and cost every reader an indirection for a
+   * rename that happens once in the life of a database.
+   *
+   * @param newQuery the defining query naming the type by its new name
+   */
+  void retargetSourceType(final String oldName, final String newName, final String newQuery) {
+    final List<String> renamed = new ArrayList<>(sourceTypeNames.size());
+    for (final String sourceTypeName : sourceTypeNames)
+      renamed.add(sourceTypeName.equals(oldName) ? newName : sourceTypeName);
+    sourceTypeNames = List.copyOf(renamed);
+    query = newQuery;
   }
 
   public void setStatus(final MaterializedViewStatus status) {

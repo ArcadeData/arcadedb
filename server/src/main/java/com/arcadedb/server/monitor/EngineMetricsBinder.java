@@ -115,6 +115,11 @@ public final class EngineMetricsBinder implements MeterBinder {
     // follower on which every count(*) is a full scan.
     counter(registry, "arcadedb.engine.bucket.recount.publishes.refused",
         "Bucket count() recomputes not cached because a replicated apply ran under the scan", "recountPublishesRefused");
+    // #10100: a lightweight-edge list the census could not count, so every edge of it resolves its occurrence by walking the
+    // list alone (the per-vertex quadratic cost the census removes). The first of each list is logged at WARNING and the
+    // rest are not, so this is where a persistent failure shows: a rate that never returns to zero.
+    counter(registry, "arcadedb.engine.graph.light.edge.census.fallbacks",
+        "Lightweight-edge lists the census could not count, whose edges each walk the list alone", "lightEdgeCensusFallbacks");
     counter(registry, "arcadedb.engine.tx.write", "Write transactions", "writeTx");
     counter(registry, "arcadedb.engine.tx.read", "Read transactions", "readTx");
     counter(registry, "arcadedb.engine.tx.rollbacks", "Transaction rollbacks", "txRollbacks");
