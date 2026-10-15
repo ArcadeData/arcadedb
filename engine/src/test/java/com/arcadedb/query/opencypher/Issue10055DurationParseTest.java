@@ -95,6 +95,11 @@ class Issue10055DurationParseTest {
     assertThat(CypherDuration.parse("-P1Y2DT3S")).isEqualTo(CypherDuration.parse("P-1Y-2DT-3S"));
     assertThat(CypherDuration.parse("-PT0.5S").toString()).isEqualTo("PT-0.5S");
     assertThat(CypherDuration.parse("-P-1D").toString()).isEqualTo("P1D");
+    // A signed seconds component with a fraction takes the exact decimal path
+    assertThat(CypherDuration.parse("PT+1.5S").toString()).isEqualTo("PT1.5S");
+    assertThat(CypherDuration.parse("PT-0.5S").toString()).isEqualTo("PT-0.5S");
+    assertThat(CypherDuration.parse("-P1Y2DT3.5S")).isEqualTo(CypherDuration.parse("P-1Y-2DT-3.5S"));
+    assertThat(CypherDuration.parse("-P1Y2DT3.5S").toString()).isEqualTo("P-1Y-2DT-3.5S");
   }
 
   @Test
