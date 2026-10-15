@@ -1664,7 +1664,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     final long preparedAt = tx.getReplicationBasePosition();
     final boolean hadWritten = tx.hasChanges();
     final long appliedBefore = raft.getTrustedAppliedIndex(getName());
-    final boolean schemaUnchangedSincePrepared = stateMachine != null && stateMachine.lastSchemaChangeIndexOf(getName()) <= preparedAt;
+    // Unchanged is known only where this node remembers what the schema did: a restart or an install forgets (see the state machine)
+    final boolean schemaUnchangedSincePrepared = stateMachine != null && stateMachine.schemaHistoryCovers(preparedAt)
+        && stateMachine.lastSchemaChangeIndexOf(getName()) <= preparedAt;
 
     final AtomicLong leaderApplied = new AtomicLong(-1L);
     final boolean createdByThisRequest;

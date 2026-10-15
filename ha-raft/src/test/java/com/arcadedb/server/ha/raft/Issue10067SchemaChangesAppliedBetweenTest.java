@@ -65,6 +65,29 @@ class Issue10067SchemaChangesAppliedBetweenTest {
     assertThat(stateMachine.lastSchemaChangeIndexOf("db")).isEqualTo(10L);
   }
 
+  /**
+   * A restart, an in-place Ratis restart or a snapshot install replaces what the state machine remembered with nothing: no schema
+   * change before that point is in its history, and an absence of one there is not an absence of change. A stretch that starts before
+   * the point is not vouched for, whatever the history holds; one that starts at or after it is.
+   */
+  @Test
+  void aStretchBeforeWhatThisInstanceWasSeededAtIsNotVouchedFor() {
+    stateMachine.schemaHistoryIncompleteUpTo(100L);
+    stateMachine.recordSchemaChangeApplied("db", 120L);
+
+    assertThat(stateMachine.schemaHistoryCovers(99L)).isFalse();
+    assertThat(stateMachine.schemaHistoryCovers(100L)).as("changes after 100 are all in memory").isTrue();
+    assertThat(stateMachine.schemaChangesAppliedBetween("db", 50L, 130L)).isEqualTo(Integer.MAX_VALUE);
+    assertThat(stateMachine.schemaChangesAppliedBetween("db", 100L, 130L)).isEqualTo(1);
+
+    stateMachine.schemaHistoryIncompleteUpTo(40L);
+    assertThat(stateMachine.schemaHistoryCovers(99L)).as("the floor only ever rises").isFalse();
+
+    stateMachine.schemaHistoryIncompleteUpTo(200L);
+    assertThat(stateMachine.schemaHistoryCovers(150L)).as("an install jumped past it").isFalse();
+    assertThat(stateMachine.schemaChangesAppliedBetween("db", 150L, 250L)).isEqualTo(Integer.MAX_VALUE);
+  }
+
   /** The history is bounded: a stretch that starts before what it still holds cannot be vouched for, and says so. */
   @Test
   void aStretchTheRetainedHistoryDoesNotReachBackToIsNotVouchedFor() {

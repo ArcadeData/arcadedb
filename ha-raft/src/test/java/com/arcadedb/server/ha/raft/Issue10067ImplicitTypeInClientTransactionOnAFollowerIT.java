@@ -18,6 +18,8 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.ContextConfiguration;
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
@@ -296,6 +298,42 @@ class Issue10067ImplicitTypeInClientTransactionOnAFollowerIT extends BaseRaftHAT
   private JSONObject groupOf(final ServerSecurity security, final String group) {
     return security.groupsToJSON().getJSONObject("databases", new JSONObject()).getJSONObject(getDatabaseName(), new JSONObject())
         .getJSONObject("groups", new JSONObject()).getJSONObject(group, null);
+  }
+
+  /**
+   * The leader makes the type with ITS default bucket count unless the caller chose one: a follower configured with a different
+   * default must take the type the leader made, not count it against its own and fall back to a local schema change it cannot make.
+   */
+  @Test
+  @Timeout(180)
+  void aFollowerWhoseDefaultBucketCountDiffersTakesTheTypeTheLeaderMade() {
+    final int leader = requireLeaderIndex();
+    final int follower = firstFollowerOf(leader);
+    final Database followerDb = getServerDatabase(follower, getDatabaseName());
+    final ContextConfiguration followerConfig = ((DatabaseInternal) followerDb).getConfiguration();
+    final int leaderDefault = ((DatabaseInternal) getServerDatabase(leader, getDatabaseName())).getConfiguration()
+        .getValueAsInteger(GlobalConfiguration.TYPE_DEFAULT_BUCKETS);
+    final int followerDefault = leaderDefault + 3;
+
+    followerConfig.setValue(GlobalConfiguration.TYPE_DEFAULT_BUCKETS, followerDefault);
+    try {
+      followerDb.begin();
+      try {
+        markClientManaged(followerDb);
+        followerDb.command("opencypher", "CREATE (n:Issue10067Buckets {name: 'buckets'})").close();
+        followerDb.commit();
+      } finally {
+        if (followerDb.isTransactionActive())
+          followerDb.rollback();
+      }
+    } finally {
+      followerConfig.setValue(GlobalConfiguration.TYPE_DEFAULT_BUCKETS, leaderDefault);
+    }
+
+    awaitOnEveryServer("Issue10067Buckets", 1);
+    for (int i = 0; i < getServerCount(); i++)
+      assertThat(getServerDatabase(i, getDatabaseName()).getSchema().getType("Issue10067Buckets").getBuckets(false))
+          .as("server %d holds the type with the leader's bucket count", i).hasSize(leaderDefault);
   }
 
   /** {@code MERGE} reaches the same place as {@code CREATE}. */
