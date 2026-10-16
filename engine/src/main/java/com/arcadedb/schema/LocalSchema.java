@@ -5549,6 +5549,9 @@ public class LocalSchema implements Schema {
       // keeps the binding it has always had
       declaringType.addIndexInternal(index, bucketId, propertyNames, null);
     else
+      // The declaring type's wrapper is minted here when this sub-index is the first of its index to be read (they are read in
+      // name order, so the sub type's can come before the declaring type's own). It is staged by publishIndexDuringLoad like
+      // any wrapper minted during a load, so a reader never sees it before the load publishes the schema
       owner.addIndexInternal(index, bucketId, propertyNames, declaringType.typeIndexFor(index, propertyNames));
   }
 

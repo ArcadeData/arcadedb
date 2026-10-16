@@ -143,6 +143,32 @@ class Issue10108SettingValueSubmittedTest {
     assertThat(database.submitted.getFirst()).as("the value set was already the stored one").isNull();
   }
 
+  /** The value is compared with what the file holds by its text, so a type that renders differently once stored would resubmit. */
+  @Test
+  void aBooleanAnIntegerAndAStringAreEachTheSameAsTheFileOnceSaved() throws IOException {
+    final LocalDatabase.SettingChange flag = database.changeSetting(GlobalConfiguration.TX_WAL.getKey(),
+        () -> database.getConfiguration().setValue(GlobalConfiguration.TX_WAL, false));
+    final LocalDatabase.SettingChange number = database.changeSetting(GlobalConfiguration.TX_WAL_FLUSH.getKey(),
+        () -> database.getConfiguration().setValue(GlobalConfiguration.TX_WAL_FLUSH, 2));
+    final LocalDatabase.SettingChange text = database.changeSetting("custom", () -> database.getConfiguration().setValue("custom", "x"));
+
+    database.saveConfiguration(flag);
+    database.saveConfiguration(number);
+    database.saveConfiguration(text);
+
+    assertThat(new JSONObject(database.submitted.get(0)).getJSONObject("configuration")
+        .getBoolean(ContextConfiguration.jsonKey(GlobalConfiguration.TX_WAL.getKey()))).isFalse();
+    assertThat(new JSONObject(database.submitted.get(1)).getJSONObject("configuration").getInt("txWalFlush")).isEqualTo(2);
+    assertThat(new JSONObject(database.submitted.get(2)).getJSONObject("configuration").getString("custom")).isEqualTo("x");
+
+    // Written to the file the way an apply does, then submitted again: nothing is left to ship for any of them
+    database.saveConfiguration();
+    database.saveConfiguration(flag);
+    database.saveConfiguration(number);
+    database.saveConfiguration(text);
+    assertThat(database.submitted.subList(3, 6)).containsOnlyNulls();
+  }
+
   @Test
   void aChangeMadeWithoutTheApplyLockFallsBackToTheValueMemoryHolds() throws IOException {
     database.getConfiguration().setValue(GlobalConfiguration.TYPE_DEFAULT_BUCKETS, 5);
