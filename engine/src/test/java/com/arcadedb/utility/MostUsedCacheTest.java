@@ -59,6 +59,11 @@ class MostUsedCacheTest {
   /** Issue #10155: a cache of one kept one entry on eviction and then added the new one, so it held two. */
   @Test
   void aCacheNeverHoldsMoreThanItsMaximum() {
+    final MostUsedCache<Integer, Integer> unlimited = new MostUsedCache<>(0);
+    for (int i = 0; i < 200; i++)
+      unlimited.put(i, i);
+    assertThat(unlimited.size()).as("0 means unlimited").isEqualTo(200);
+
     for (final int maxSize : new int[] { 1, 2, 3, 4, 10 }) {
       final MostUsedCache<Integer, Integer> cache = new MostUsedCache<>(maxSize);
       for (int i = 0; i < 50; i++) {

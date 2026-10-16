@@ -68,7 +68,8 @@ public class CreateGraphAnalyticalViewStatement extends DDLStatement {
         result.add(r);
         return result;
       }
-      throw new AlreadyExistsException(AlreadyExistsException.Kind.GRAPH_ANALYTICAL_VIEW, "Graph Analytical View '" + viewName + "' already exists");
+      throw new AlreadyExistsException(AlreadyExistsException.Kind.GRAPH_ANALYTICAL_VIEW,
+          "Graph Analytical View '" + viewName + "' already exists");
     }
 
     final String[] vtArray = toStringArray(vertexTypes);

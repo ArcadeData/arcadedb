@@ -65,7 +65,8 @@ public class GraphAnalyticalViewRegistry {
           REGISTRY.computeIfAbsent(unwrap(database), k -> new HashMap<>());
       final GraphAnalyticalView existing = views.putIfAbsent(name, view);
       if (existing != null)
-        throw new AlreadyExistsException(AlreadyExistsException.Kind.GRAPH_ANALYTICAL_VIEW, "GraphAnalyticalView '" + name + "' is already registered");
+        throw new AlreadyExistsException(AlreadyExistsException.Kind.GRAPH_ANALYTICAL_VIEW,
+            "GraphAnalyticalView '" + name + "' is already registered");
     }
   }
 

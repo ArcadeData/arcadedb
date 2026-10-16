@@ -176,8 +176,7 @@ final class IndexWarmUpScheduler {
   }
 
   /**
-   * @return {@code true} when no worker is left running, {@code false} when it outlived {@code joinMs}, or was still running when
-   * an earlier call had closed the scheduler already
+   * @return whether no worker is left running. Only the first call waits up to {@code joinMs} for it
    */
   boolean close(final long joinMs) {
     final Thread toInterrupt;
