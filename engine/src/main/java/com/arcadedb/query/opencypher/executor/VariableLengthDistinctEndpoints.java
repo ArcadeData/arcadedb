@@ -45,14 +45,24 @@ import java.util.Set;
  * RETURN cannot tell two paths between the same pair apart: it is {@code DISTINCT} over properties of the two end nodes, or it
  * groups by them and only aggregates them with a function that ignores repeated values ({@code count}, {@code collect},
  * {@code sum} and {@code avg} of {@code DISTINCT} values, {@code min} and {@code max}). The relationship and path variables must
- * be unused, because they are the only things that differ between two paths with the same ends. The lower bound must be 0 or 1:
+ * be unused, because they are the only things that differ between two paths with the same ends.
+ * <p>
+ * "Ignores repeated values" is a statement about the SET of values the aggregate sees. For {@code collect} the list also carries an
+ * order, the order the walk met the values in: breadth first here, depth first when the paths are enumerated, so the same data can
+ * give the same values in another order depending on whether the planner took this shortcut (issue #10152). Cypher promises no
+ * order for {@code collect} without an {@code ORDER BY}, as it promises none for the rows of a {@code MATCH}, and the reference
+ * documentation says so. A statement that reads the order of the list ({@code head(collect(DISTINCT ...))},
+ * {@code collect(DISTINCT ...)[0]}) is not one of the shapes above, so it keeps the order of the enumeration. The differential
+ * tests compare the lists of a {@code collect} as sets of values, and everything else row by row.
+ * <p>
+ * The lower bound must be 0 or 1:
  * the shortest walk to a node is a simple path, so a visited set finds every node some path of at most {@code n} relationships
  * reaches, whatever the path mode (the start node needs care, see {@code BreadthFirstTraverser#traverseDistinctEndpoints}). From
  * a lower bound of 2 on, a node reached sooner than the bound might be reachable at the bound only by a walk that repeats a
  * relationship, which the TRAIL rule forbids, so those patterns keep enumerating paths.
  * <p>
  * Everything the statement does with a row afterwards (the WHERE, the target label and property tests, the projection) reads only
- * the pair, so dropping the repeated rows for a pair cannot change any result.
+ * the pair, so dropping the repeated rows for a pair cannot change any result - but for the order of a collected list, above.
  */
 public final class VariableLengthDistinctEndpoints {
   private VariableLengthDistinctEndpoints() {
@@ -153,8 +163,10 @@ public final class VariableLengthDistinctEndpoints {
   }
 
   /**
-   * An aggregate of one start or end value that answers the same whether it sees a value once or many times: the {@code DISTINCT}
-   * forms of count, collect, sum and avg, and min and max, which ignore repeats with or without {@code DISTINCT}.
+   * An aggregate of one start or end value whose set of values is the same whether it sees a value once or many times: the
+   * {@code DISTINCT} forms of count, collect, sum and avg, and min and max, which ignore repeats with or without {@code DISTINCT}.
+   * The list of a {@code collect} is the one result that also carries an order, which is the walk's and not a promise (see the
+   * class comment).
    */
   private static boolean isRepeatInsensitiveAggregate(final Expression expression, final Set<String> ends) {
     if (!(expression instanceof FunctionCallExpression call) || call.getArguments().size() != 1

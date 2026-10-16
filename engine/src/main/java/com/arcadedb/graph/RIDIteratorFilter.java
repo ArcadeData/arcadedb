@@ -29,9 +29,12 @@ import java.util.NoSuchElementException;
  * skips the {@code lookupByRID} validation call, making it significantly faster for bulk
  * neighbor enumeration where only RIDs are needed.
  */
-public class RIDIteratorFilter extends ResettableIteratorBase<RID> {
+public class RIDIteratorFilter extends ResettableIteratorBase<RID> implements EdgeEntryRIDIterator {
   private final EdgeBucketMask validBuckets;
   private       RID            next;
+  // WHERE THE ENTRY HELD IN next BEGINS: ITS EDGE POINTER IS SKIPPED ON THE RAW NUMBERS AND DECODED ONLY IF getEdgeRID() IS ASKED
+  private       EdgeSegment    nextContainer;
+  private       int            nextBegin;
 
   public RIDIteratorFilter(final DatabaseInternal database, final EdgeSegment current, final String[] edgeTypes) {
     super(database, current);
@@ -55,6 +58,8 @@ public class RIDIteratorFilter extends ResettableIteratorBase<RID> {
 
       if (position < used) {
         currentPosition.set(position);
+        nextContainer = currentContainer;
+        nextBegin = position;
         currentContainer.skipRID(currentPosition); // THE EDGE: ITS BUCKET ALREADY MATCHED, NOTHING ELSE OF IT IS NEEDED
         next = currentContainer.getRID(currentPosition);
         return true;
@@ -76,10 +81,16 @@ public class RIDIteratorFilter extends ResettableIteratorBase<RID> {
       throw new NoSuchElementException();
 
     try {
+      lastEntryAt(nextContainer, nextBegin);
       return next;
     } finally {
       next = null;
       ++browsed;
     }
+  }
+
+  @Override
+  public RID getEdgeRID() {
+    return lastEntryEdgeRID();
   }
 }

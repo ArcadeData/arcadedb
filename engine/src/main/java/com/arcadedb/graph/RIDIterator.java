@@ -26,7 +26,7 @@ import java.util.NoSuchElementException;
  * Iterator that returns connected vertex RIDs from edge segments without loading vertex records.
  * This is the fastest way to enumerate neighbor RIDs when no edge type filtering is needed.
  */
-public class RIDIterator extends ResettableIteratorBase<RID> {
+public class RIDIterator extends ResettableIteratorBase<RID> implements EdgeEntryRIDIterator {
 
   public RIDIterator(final EdgeSegment current) {
     super(null, current);
@@ -55,10 +55,16 @@ public class RIDIterator extends ResettableIteratorBase<RID> {
     if (!hasNext())
       throw new NoSuchElementException();
 
-    currentContainer.getRID(currentPosition); // skip edge RID
+    lastEntryAt(currentContainer, currentPosition.get());
+    currentContainer.skipRID(currentPosition); // the edge RID, decoded only if getEdgeRID() is asked
     final RID rid = currentContainer.getRID(currentPosition);
 
     ++browsed;
     return rid;
+  }
+
+  @Override
+  public RID getEdgeRID() {
+    return lastEntryEdgeRID();
   }
 }

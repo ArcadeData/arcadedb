@@ -26,6 +26,7 @@ import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Random;
 
@@ -70,6 +71,9 @@ class Issue10062VarLengthDistinctEndpointsFuzzTest extends TestHelper {
                     "RETURN DISTINCT a.id AS s, b.id AS v ORDER BY s, v",
                     "RETURN a.id AS s, count(DISTINCT b) AS c ORDER BY s",
                     "RETURN a.id AS s, sum(DISTINCT b.id) AS t, min(b.id) AS lo, max(b.id) AS hi ORDER BY s",
+                    // the list of a collect holds the same values either way, in the order the walk met them (issue #10152)
+                    "RETURN a.id AS s, collect(DISTINCT b.id) AS l ORDER BY s",
+                    "RETURN a.id AS s, collect(DISTINCT b.id) AS l, count(DISTINCT b) AS c ORDER BY s",
                     "RETURN DISTINCT b.id AS v ORDER BY v" }) {
                   final String eligible = "MATCH " + mode + "(a:V)" + hop + "(b:V) " + tail;
                   final String reference = "MATCH p = " + mode + "(a:V)" + hop + "(b:V) " + tail;
@@ -110,14 +114,24 @@ class Issue10062VarLengthDistinctEndpointsFuzzTest extends TestHelper {
     }
   }
 
+  /** The rows as text, with the elements of every list value sorted: a collected list has no order the statement promised. */
   private List<String> rows(final String query) {
     final List<String> rows = new ArrayList<>();
     try (final ResultSet resultSet = database.query("opencypher", query)) {
       while (resultSet.hasNext()) {
         final Result row = resultSet.next();
         final List<String> cells = new ArrayList<>();
-        for (final String name : row.getPropertyNames())
-          cells.add(name + "=" + row.<Object>getProperty(name));
+        for (final String name : row.getPropertyNames()) {
+          final Object value = row.getProperty(name);
+          if (value instanceof List<?> list) {
+            final List<String> elements = new ArrayList<>(list.size());
+            for (final Object element : list)
+              elements.add(String.valueOf(element));
+            Collections.sort(elements);
+            cells.add(name + "=" + elements);
+          } else
+            cells.add(name + "=" + value);
+        }
         rows.add(String.join(",", cells));
       }
     }

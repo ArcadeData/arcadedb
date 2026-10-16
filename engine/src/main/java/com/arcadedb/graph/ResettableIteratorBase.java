@@ -46,6 +46,9 @@ public abstract class ResettableIteratorBase<T> implements ResettableIterator<T>
   private         int              returnedEnd;
   private         RID              returnedEdge;
   private         RID              returnedVertex;
+  // WHERE THE EDGE POINTER OF THE ENTRY THE LAST next() RETURNED SITS, SEE lastEntryAt()
+  private         EdgeSegment      lastEntryContainer;
+  private         int              lastEntryPosition;
   // SET WHEN THE WALKED LIST WAS CHANGED BY SOMETHING ELSE DURING A remove(): THE ITERATOR'S VIEW OF IT IS STALE
   private         boolean          invalidated;
   // THE LIST THIS ITERATION READS, WHICH COUNTS THE TWINS OF ITS LIGHTWEIGHT EDGES WHEN ASKED (ISSUE #10008)
@@ -99,6 +102,24 @@ public abstract class ResettableIteratorBase<T> implements ResettableIterator<T>
     currentPosition.set(MutableEdgeSegment.CONTENT_START_POSITION);
     browsed = 0;
     returnedContainer = null;
+    lastEntryContainer = null;
+  }
+
+  /**
+   * Remembers where the entry {@code next()} is about to hand out begins, so its edge pointer can be decoded on demand by
+   * {@link #lastEntryEdgeRID()}. The iterators that walk the vertex pointers only skip the edge pointer on the raw numbers
+   * of the segment (issue #8417), and so pay for its decoding only when somebody asks for it (issue #10148).
+   */
+  protected final void lastEntryAt(final EdgeSegment container, final int entryBegin) {
+    lastEntryContainer = container;
+    lastEntryPosition = entryBegin;
+  }
+
+  /** The edge pointer of the entry registered by {@link #lastEntryAt}, decoded now. */
+  protected final RID lastEntryEdgeRID() {
+    if (lastEntryContainer == null)
+      throw new IllegalStateException("No entry: next() has not returned one yet");
+    return lastEntryContainer.getRID(new AtomicInteger(lastEntryPosition));
   }
 
   /**

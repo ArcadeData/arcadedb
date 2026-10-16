@@ -92,6 +92,8 @@ public class InterleavedIterator<T> implements ResettableIterator<T> {
   private       int           rotationsInRound;
   /** True once {@link #browsed} has reached {@link #degradeAfter}, i.e. once {@link #batch} may grow. */
   private       boolean       widening;
+  /** The source that produced the entry the last {@link #next()} returned, or null before the first one. */
+  private       Iterator<T>   lastSource;
 
   /**
    * Takes ownership of the given array (it is not copied): the caller must not touch it afterwards. The sources
@@ -180,7 +182,9 @@ public class InterleavedIterator<T> implements ResettableIterator<T> {
     if (!hasNext())
       throw new NoSuchElementException();
 
-    final T value = active[pending].next();
+    final Iterator<T> source = active[pending];
+    final T value = source.next();
+    lastSource = source;
     pending = -1;
     ++browsed;
 
@@ -224,8 +228,18 @@ public class InterleavedIterator<T> implements ResettableIterator<T> {
     activeCount = sources.length;
     turn = 0;
     pending = -1;
+    lastSource = null;
     browsed = 0L;
     armWidening();
+  }
+
+  /**
+   * The source that produced the entry the last {@link #next()} returned, for a caller that knows more about its sources than
+   * this class does (the edge list iterators can name the edge of the entry they returned). Valid until the following
+   * {@link #hasNext()} or {@link #next()}.
+   */
+  public Iterator<T> getLastSource() {
+    return lastSource;
   }
 
   /**
