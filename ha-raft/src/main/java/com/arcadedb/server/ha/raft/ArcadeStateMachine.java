@@ -2378,7 +2378,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // index, so an index that already covers a later entry is always read together with the floor below it. Read the
     // other way round, a checkpoint racing the apply thread could pair the old floor with the advanced index.
     final long appliedIndex = lastAppliedIndex.get();
-    // A security entry whose effects did not reach the disk is kept replayable the same way (issue #7752).
+    // A security entry whose effects did not reach the disk is kept replayable the same way (issue #7752). The same
+    // ordering argument holds: the apply pins the entry (SecurityDurabilityFloor.afterInstall) before lastAppliedIndex
+    // moves past it, so an applied index read first is never paired with a floor that does not yet cover it.
     final long floor = Math.min(replayFloor.get(), securityDurabilityFloor.floor());
     final long currentIndex = floor == Long.MAX_VALUE ? appliedIndex : Math.min(appliedIndex, floor - 1);
     if (currentIndex < 0)

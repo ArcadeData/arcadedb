@@ -130,6 +130,12 @@ final class SecurityDurabilityFloor {
   /**
    * Writes the pinned documents again from what is in force, at most once per {@link #RETRY_INTERVAL_MS}. Costs one
    * volatile read while nothing is pinned, which is always but during an incident, so it may run for every entry.
+   * <p>
+   * On the apply thread on purpose, blocking included. It is the single writer of these files - every replicated security
+   * document is written by the apply that installs it - and a retry from another thread would race those writes, with
+   * the record then naming a document that is not the last one installed. A volume that hangs this write hangs the
+   * apply of the next security entry just the same, so the retry adds one attempt per interval to a stall that is
+   * already the volume's, not a new one.
    */
   void retryIfDue(final ServerSecurity security) {
     if (!anyPinned || security == null)
