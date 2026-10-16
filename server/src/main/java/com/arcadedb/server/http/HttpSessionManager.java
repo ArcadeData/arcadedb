@@ -33,10 +33,26 @@ import java.util.logging.Level;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class HttpSessionManager extends RWLockContext {
-  public static final String                   ARCADEDB_SESSION_ID = "arcadedb-session-id";
-  private final       Map<String, HttpSession> sessions            = new HashMap<>();
-  private final       long                     transactionTimeoutInMs;
-  private final       Timer                    timer;
+  public static final String                                  ARCADEDB_SESSION_ID    = "arcadedb-session-id";
+  /**
+   * How many committed sessions {@link #recordCommitted} remembers at most: a few hundred KB at worst, whatever the commit
+   * rate, while a retry normally arrives within seconds of the answer it replaces (issue #10164).
+   */
+  static final        int                                     MAX_REMEMBERED_COMMITS = 10_000;
+  private final       Map<String, HttpSession>                sessions               = new HashMap<>();
+  /**
+   * The sessions a /commit ended, by id, with their owner's name and when they committed, oldest first: session ids are
+   * unique, so every put appends. Lets a retried commit of one of them still answer 204 while a commit naming any other
+   * unresolvable session answers 404 (issue #10164). Kept for {@link #transactionTimeoutInMs}, and never more than
+   * {@link #MAX_REMEMBERED_COMMITS} of them. Per server and in memory: a retry sent to another server, or after a restart,
+   * is not recognised.
+   */
+  private final       LinkedHashMap<String, CommittedSession> committedSessions      = new LinkedHashMap<>();
+  private final       long                                    transactionTimeoutInMs;
+  private final       Timer                                   timer;
+
+  private record CommittedSession(String userName, long committedAt) {
+  }
 
   public HttpSessionManager(final long transactionTimeoutInMs) {
     this.transactionTimeoutInMs = transactionTimeoutInMs;
@@ -70,11 +86,14 @@ public class HttpSessionManager extends RWLockContext {
 
     executeInWriteLock(() -> {
       sessions.clear();
+      committedSessions.clear();
       return null;
     });
   }
 
   public int checkSessionsValidity() {
+    pruneCommittedSessions(System.currentTimeMillis());
+
     if (executeInReadLock(sessions::isEmpty))
       return 0;
 
@@ -143,6 +162,63 @@ public class HttpSessionManager extends RWLockContext {
   }
 
   /**
+   * Remembers that a /commit ended the session {@code id} of {@code user}, so a retry of that commit - whose first answer
+   * may never have reached the client - can still be told it committed (issue #10164).
+   */
+  public void recordCommitted(final String id, final ServerSecurityUser user) {
+    if (id == null || user == null)
+      return;
+    final long now = System.currentTimeMillis();
+    executeInWriteLock(() -> {
+      committedSessions.put(id, new CommittedSession(user.getName(), now));
+      if (committedSessions.size() > MAX_REMEMBERED_COMMITS) {
+        // Oldest first, so the overflow is always the head
+        final Iterator<CommittedSession> it = committedSessions.values().iterator();
+        while (committedSessions.size() > MAX_REMEMBERED_COMMITS && it.hasNext()) {
+          it.next();
+          it.remove();
+        }
+      }
+      return null;
+    });
+  }
+
+  /**
+   * True when a /commit by the principal {@code user} ended the session {@code id} within the session timeout. Gated on the
+   * owner like {@link #getSessionById}, so nobody else learns that the session existed.
+   */
+  public boolean wasCommittedBy(final ServerSecurityUser user, final String id) {
+    if (user == null || id == null)
+      return false;
+    final long oldest = System.currentTimeMillis() - transactionTimeoutInMs;
+    return executeInReadLock(() -> {
+      final CommittedSession committed = committedSessions.get(id);
+      return committed != null && committed.committedAt >= oldest && committed.userName.equals(user.getName());
+    });
+  }
+
+  /** How many committed sessions are remembered right now. For tests. */
+  int getRememberedCommits() {
+    return executeInReadLock(committedSessions::size);
+  }
+
+  /** Forgets the commits older than the session timeout at {@code now}. Called by the idle sweep. */
+  void pruneCommittedSessions(final long now) {
+    if (executeInReadLock(committedSessions::isEmpty))
+      return;
+    final long oldest = now - transactionTimeoutInMs;
+    executeInWriteLock(() -> {
+      // Oldest first: stop at the first one still young enough
+      for (final Iterator<CommittedSession> it = committedSessions.values().iterator(); it.hasNext(); ) {
+        if (it.next().committedAt >= oldest)
+          break;
+        it.remove();
+      }
+      return null;
+    });
+  }
+
+  /**
    * Invalidates every live session owned by the named principal: the sessions are unregistered and their
    * open transactions rolled back. Called when a user is dropped or its password is changed so a stale (or
    * recreated same-name) principal cannot adopt a session opened by the previous principal.
@@ -164,6 +240,8 @@ public class HttpSessionManager extends RWLockContext {
           it.remove();
         }
       }
+      // A recreated same-name principal must not be told it committed the prior principal's sessions (issue #10164)
+      committedSessions.values().removeIf(committed -> userName.equals(committed.userName));
       return owned;
     });
 

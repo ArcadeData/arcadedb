@@ -226,9 +226,9 @@ class Issue5026TransactionSessionLifecycleIT extends BaseGraphServerTest {
       final HttpSessionManager manager = getServer(serverIndex).getHttpServer().getSessionManager();
       assertThat(manager.isSessionRegistered(rootSessionId)).isTrue();
 
-      // A different authenticated principal tries to /commit root's session id. It must be a benign no-op that
-      // does NOT evict (and orphan) root's session - removal is ownership-gated.
-      assertThat(post(serverIndex, "commit", otherAuth, rootSessionId)).isEqualTo(204);
+      // A different authenticated principal tries to /commit root's session id. It must NOT evict (and orphan) root's
+      // session - removal is ownership-gated - and is answered 404 like any session it does not hold (issue #10164).
+      assertThat(post(serverIndex, "commit", otherAuth, rootSessionId)).isEqualTo(404);
       assertThat(manager.isSessionRegistered(rootSessionId)).as("another user's commit must not remove root's session").isTrue();
 
       // root can still use and then commit its own session normally.
