@@ -26,6 +26,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.DocumentCallback;
 import com.arcadedb.database.DocumentIndexer;
 import com.arcadedb.database.EmbeddedModifier;
+import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.LocalTransactionExplicitLock;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.MutableEmbeddedDocument;
@@ -391,6 +392,11 @@ class SQLMethodTransformTest {
 
       @Override
       public void saveConfiguration() throws IOException {
+
+      }
+
+      @Override
+      public void saveConfiguration(final LocalDatabase.SettingChange change) throws IOException {
 
       }
 
