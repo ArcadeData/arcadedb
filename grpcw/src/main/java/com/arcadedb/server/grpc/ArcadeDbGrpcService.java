@@ -53,6 +53,7 @@ import com.arcadedb.engine.timeseries.TimeSeriesGateway.WriteReport;
 import com.arcadedb.exception.CauseChain;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.DuplicatedKeyException;
+import com.arcadedb.exception.ErrorCategory;
 import com.arcadedb.exception.QueryTerminatedException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.RecordVetoedException;
@@ -6112,8 +6113,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     // VALIDATION category already maps to INVALID_ARGUMENT - falls through to the same classification
     // every other wire protocol uses (issue #7123) instead of collapsing to INTERNAL. Found along the cause chain:
     // ErrorCategory reads a ServerSecurityException as a SERVER fault, so this arm is all that stands between a
-    // wrapped refusal and an INTERNAL that tells the client the server broke (issue #10158)
-    final ServerSecurityException refusal = CauseChain.find(e, ServerSecurityException.class);
+    // wrapped refusal and an INTERNAL that tells the client the server broke (issue #10158). Not for a search stopped on
+    // request, which the mapper answers CANCELLED whatever else its chain carries, as the admin service does (issue #9689)
+    final ServerSecurityException refusal =
+        ErrorCategory.of(e) != ErrorCategory.TERMINATED ? CauseChain.find(e, ServerSecurityException.class) : null;
     if (refusal != null)
       return Status.PERMISSION_DENIED.withDescription(operation + ": " + refusal.getMessage()).asException();
     // THE MAPPER CONCEALS ENGINE TEXT - A SCHEMA NAME, A FILE PATH, AN INDEX - IN PRODUCTION LIKE EVERY OTHER FREE-FORM
