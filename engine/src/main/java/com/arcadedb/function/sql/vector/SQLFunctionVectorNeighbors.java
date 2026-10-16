@@ -43,7 +43,6 @@ import com.arcadedb.utility.RidHashSet;
 
 import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -392,16 +391,9 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
 
       final float distance = neighbor.getSecond();
 
-      // Flatten document properties into the result map so they are accessible
-      // in outer queries after expand() (e.g., SELECT name, distance FROM (SELECT expand(...)))
-      final LinkedHashMap<String, Object> entry = new LinkedHashMap<>();
-      entry.put("record", record); // backward compatibility
-      for (final String prop : record.getPropertyNames())
-        entry.put(prop, record.get(prop));
-      entry.put("@rid", record.getIdentity());
-      entry.put("@type", record.getTypeName());
-      entry.put("distance", distance);
-      result.add(entry);
+      // The row exposes the record's properties so they are accessible in outer queries after expand() (e.g., SELECT
+      // name, distance FROM (SELECT expand(...))), reading them off the record on demand (issue #10129)
+      result.add(new ScoredRecordRow(record, "distance", distance));
     }
 
     return result;
