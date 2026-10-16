@@ -311,9 +311,60 @@ class CoreApiSpecTest {
     }
   }
 
+  /**
+   * Issue #10164: a commit naming a session the server does not hold answers 404, so its contract must say so - on the
+   * header a client sets and on the 404 it receives - and must not call it a no-op the way rollback's does.
+   */
   @Test
-  void commitAndRollbackWarnThatALostOrStaleSessionIdIsASilentNoOp() {
-    for (final String path : List.of("/api/v1/commit/{database}", "/api/v1/rollback/{database}")) {
+  void commitDeclaresThatAStaleSessionIdAnswers404() {
+    final Operation post = openAPI.getPaths().get("/api/v1/commit/{database}").getPost();
+    final Parameter header = post.getParameters().stream()
+        .filter(p -> "arcadedb-session-id".equals(p.getName()))
+        .findFirst()
+        .orElseThrow(() -> new AssertionError("no session header declared on commit"));
+
+    assertThat(header.getDescription()).contains("404").doesNotContain("no-op");
+    assertThat(post.getResponses().get("404").getDescription())
+        .contains("Remote transaction session not found or expired")
+        .contains("nothing was committed");
+    assertThat(openAPI.getPaths().get("/api/v1/rollback/{database}").getPost().getResponses().get("404").getDescription())
+        .as("rollback still answers 204 for a stale id: its 404 is a missing database only")
+        .isEqualTo("Database not found");
+  }
+
+  /** Issue #10164: 'terminate query', 'terminate queries tag' and 'terminate transaction' read 'wait' from the payload. */
+  @Test
+  void commandRequestDeclaresTheTerminateWait() {
+    final Schema<?> wait = (Schema<?>) openAPI.getComponents().getSchemas().get("CommandRequest").getProperties().get("wait");
+
+    assertThat(wait).as("CommandRequest.wait").isNotNull();
+    assertThat(wait.getType()).isEqualTo("integer");
+    assertThat(wait.getDescription()).contains("terminate transaction").contains("5000").contains("10000");
+  }
+
+  /** Issue #10164: POST /api/v1/server declared QueryResponse for every command, so the running-work answers were undescribed. */
+  @Test
+  void serverCommandDescribesTheRunningWorkAnswers() {
+    final Operation post = openAPI.getPaths().get("/api/v1/server").getPost();
+    assertThat(post.getResponses().get("200").getContent().get("application/json").getSchema().get$ref())
+        .isEqualTo("#/components/schemas/ServerCommandResponse");
+
+    final Map<String, Schema> schemas = openAPI.getComponents().getSchemas();
+    final Schema<?> result = (Schema<?>) schemas.get("ServerCommandResponse").getProperties().get("result");
+    assertThat(result.getAnyOf().stream().map(branch -> branch.get$ref() != null ? branch.get$ref()
+        : branch.getItems() != null && branch.getItems().get$ref() != null ? branch.getItems().get$ref() : String.valueOf(branch.getType())))
+        .contains("#/components/schemas/RunningQuery", "#/components/schemas/TransactionSession",
+            "#/components/schemas/TerminationStatus");
+
+    assertThat(schemas.get("RunningQuery").getProperties()).containsKeys("id", "text", "elapsedMs", "terminating", "sessionId", "tag");
+    assertThat(schemas.get("TransactionSession").getProperties()).containsKeys("id", "user", "idleMs", "busy", "runningQueries");
+    final Schema<?> status = (Schema<?>) schemas.get("TerminationStatus").getProperties().get("status");
+    assertThat(status.getEnum().stream().map(String::valueOf)).containsExactlyInAnyOrder("terminated", "completed", "terminating", "not found");
+  }
+
+  @Test
+  void rollbackWarnsThatALostOrStaleSessionIdIsASilentNoOp() {
+    for (final String path : List.of("/api/v1/rollback/{database}")) {
       final Operation post = openAPI.getPaths().get(path).getPost();
       final Parameter header = post.getParameters().stream()
           .filter(p -> "arcadedb-session-id".equals(p.getName()))
