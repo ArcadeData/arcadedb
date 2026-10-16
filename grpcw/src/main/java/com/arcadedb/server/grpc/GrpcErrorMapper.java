@@ -178,9 +178,13 @@ public final class GrpcErrorMapper {
     final ErrorCategory category = ErrorCategory.of(cause);
     // Every classified failure is looked for along the whole chain, never with an instanceof on its head: the engine wraps
     // what it raises, and a wrapper must not change the answer (issue #10158). The maintenance-slot conflict is not an
-    // ErrorCategory of its own, so it is found here, below the two verdicts that outrank everything else
+    // ErrorCategory of its own, so it is found here, below the two verdicts that outrank everything else; the duplicated
+    // key where ErrorCategory ranks it. Neither type takes a cause, so for one raised as itself this is the answer it
+    // always had
     final DatabaseOperationInProgressException inProgress =
         refusal == null && category != ErrorCategory.TERMINATED ? CauseChain.find(cause, DatabaseOperationInProgressException.class) : null;
+    final DuplicatedKeyException dup =
+        inProgress == null && category == ErrorCategory.DUPLICATED_KEY ? CauseChain.find(cause, DuplicatedKeyException.class) : null;
     // The failure is named by the frame that classified it, whatever wraps it, so the driver rebuilds the type it must act
     // on: the one that tells it not to retry (#9689), the one that tells it where to go (#10089), and every other typed
     // failure (#10158) - a SchemaException named by its wrapper is rebuilt from NOT_FOUND alone, as a missing record
@@ -205,11 +209,9 @@ public final class GrpcErrorMapper {
       // request is well formed and authorized, and retrying once the other operation finishes is the fix
       // (issue #7443). Without this arm it would read as INTERNAL - a server fault the caller cannot act on.
       code = Status.Code.ABORTED;
-    } else if (category == ErrorCategory.DUPLICATED_KEY) {
+    } else if (dup != null) {
       code = Status.Code.ALREADY_EXISTS;
-      final DuplicatedKeyException dup = CauseChain.find(cause, DuplicatedKeyException.class);
-      if (dup != null)
-        addDuplicatedKeyTrailers(trailers, dup, conceal);
+      addDuplicatedKeyTrailers(trailers, dup, conceal);
     } else {
       code = statusCodeFor(category);
     }
@@ -246,8 +248,8 @@ public final class GrpcErrorMapper {
     return switch (category) {
       case RETRY -> Status.Code.ABORTED;
       case ARITHMETIC -> Status.Code.OUT_OF_RANGE;
-      // Unreachable from toStatusRuntimeException, which special-cases DUPLICATED_KEY (it has trailers of its own to add)
-      // before reaching here: the arm only keeps the switch exhaustive over ErrorCategory.
+      // Unreachable from toStatusRuntimeException, which special-cases the duplicated key (it has trailers of its own to
+      // add) before reaching here: the arm only keeps the switch exhaustive over ErrorCategory.
       case DUPLICATED_KEY -> Status.Code.ALREADY_EXISTS;
       case NOT_FOUND, SCHEMA -> Status.Code.NOT_FOUND;
       case SECURITY -> Status.Code.PERMISSION_DENIED;

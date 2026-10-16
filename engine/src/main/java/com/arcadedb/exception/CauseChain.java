@@ -36,9 +36,10 @@ public final class CauseChain {
 
   /**
    * How far down a cause chain to look. Far deeper than any real wrapping (three levels is the most the engine
-   * produces), and small enough that a cyclic chain costs nothing.
+   * produces), and small enough that a cyclic chain costs nothing. Public for a caller that walks the chain itself
+   * because it tests several types per frame, so every walk stops at the same depth.
    */
-  private static final int MAX_DEPTH = 32;
+  public static final int MAX_DEPTH = 32;
 
   private CauseChain() {
     // utility class
