@@ -115,6 +115,52 @@ class Issue9575GraphBatchLoadGatherBudgetTest extends TestHelper {
   }
 
   /**
+   * An insert that lands on a page the full map does not list evicts the listed page with the least room. That page still has
+   * room the map no longer knows of, so the eviction arms a scan, whatever the write was: once the map has room again, the
+   * scan finds the page.
+   */
+  @Test
+  void aPageAnInsertEvictsFromAFullMapIsFoundAgain() {
+    database.getSchema().createDocumentType("Wide", 1);
+    final LocalBucket bucket = wideBucket();
+    bucket.setGatherPagesPerScanForTesting(BUDGET);
+
+    final List<RID> rids = append(RECORDS);
+    final int pages = bucket.getTotalPages();
+    finishLap(bucket, pages);
+
+    // a little room on just enough pages to fill the map: nothing is dropped
+    final int pagesToFree = 100 - bucket.getListedFreeSpacePagesForTesting().length;
+    database.transaction(() -> {
+      for (final RID rid : rids)
+        if (rid.getPosition() / bucket.getMaxRecordsInPage() < pagesToFree && rid.getPosition() % bucket.getMaxRecordsInPage() < 9)
+          database.deleteRecord(rid.asDocument());
+    });
+    final int[] listedBefore = bucket.getListedFreeSpacePagesForTesting();
+    assertThat(listedBefore).hasSize(100);
+    assertThat(pagesReadByOneGather(bucket)).as("pages read with every freed page listed").isZero();
+
+    // a record no listed page can take goes to a new page, which has more room than the page with the least: that one leaves
+    // the map
+    database.transaction(() -> database.newDocument("Wide").set("payload", "x".repeat(20_000)).save());
+    final int evicted = notIn(listedBefore, bucket.getListedFreeSpacePagesForTesting());
+    assertThat(evicted).as("the page the insert evicted").isNotNegative();
+
+    // records that fill listed pages give the map room again
+    database.transaction(() -> {
+      for (int i = 0; i < 5; i++)
+        database.newDocument("Wide").set("payload", "x".repeat(7_500)).save();
+    });
+    assertThat(bucket.getListedFreeSpacePagesForTesting()).hasSizeLessThan(100);
+
+    for (int i = 0; i < pages / BUDGET + 2 && !contains(bucket.getListedFreeSpacePagesForTesting(), evicted); i++) {
+      bucket.expireGatherThrottleForTesting();
+      bucket.gatherPageStatistics();
+    }
+    assertThat(bucket.getListedFreeSpacePagesForTesting()).as("pages listed once the map had room again").contains(evicted);
+  }
+
+  /**
    * A bounded scan must still get round the whole file: space freed at its far end is found, one throttled slice at a time.
    */
   @Test
@@ -231,6 +277,14 @@ class Issue9575GraphBatchLoadGatherBudgetTest extends TestHelper {
 
   private LocalBucket wideBucket() {
     return (LocalBucket) database.getSchema().getType("Wide").getBuckets(false).get(0);
+  }
+
+  /** The first value of {@code before} that {@code after} lacks, or -1. */
+  private static int notIn(final int[] before, final int[] after) {
+    for (final int v : before)
+      if (!contains(after, v))
+        return v;
+    return -1;
   }
 
   private static boolean contains(final int[] values, final int value) {

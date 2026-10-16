@@ -304,7 +304,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   private volatile       boolean                   gatherTruncated                  = false;
   // #9575: the gather goes round the file in slices of at most gatherPagesPerScan pages, starting at gatherResumePage. This
   // is what is left of the lap the last change asked for: while it is above 0 the next slice is due once the timeout is over,
-  // with or without a new change. Guarded by the `freeSpaceInPages` monitor (also read outside it, hence volatile).
+  // with or without a new change. A change restarts a whole lap from the cursor, because the page it touched may be one this
+  // lap has already passed: under a steady trickle of changes the lap never ends, and the scan keeps going round the file at
+  // one slice per timeout, which is the bound it is held to either way. Guarded by the `freeSpaceInPages` monitor (also read
+  // outside it, hence volatile).
   private volatile       int                       gatherPagesLeftInLap             = 0;
   // GATHER_STATS_MAX_PAGES_PER_SCAN, changed only by setGatherPagesPerScanForTesting (volatile: from the test's thread)
   private volatile       int                       gatherPagesPerScan               = GATHER_STATS_MAX_PAGES_PER_SCAN;
@@ -7511,8 +7514,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    *                       change to it (see {@link #accountCompressedPage}).
    */
   private void updatePageStatistics(final MutablePage page, final int availableSpace, final int delta) {
-    // #9575: what arms the next gather. A write that takes space (an insert, an enlargement) never does: it cannot leave a
-    // page with room a scan would list. Counting those armed a scan of EVERY page of the bucket each time the throttle ran
+    // #9575: what arms the next gather. A write that takes space (an insert, an enlargement) does only when it pushes a
+    // page out of a full map (see below): otherwise it cannot leave a page with room a scan would list. Counting those armed a scan of EVERY page of the bucket each time the throttle ran
     // out and an appended page had just filled up, so a bulk load got slower the more it had written (6 minutes of reads
     // per scan at 1.3M pages).
     //
@@ -7582,10 +7585,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
               freeSpaceInPages.remove(lowestPageId[0], -1);
               freeSpaceInPages.put(pageId, newSpace);
             }
-            // Either the evicted page or this one has room the map no longer lists: only a scan finds it again. Not for a
-            // write that takes space, which is an append filling the tail it keeps writing to (#9575, see above)
-            if (delta >= 0)
-              changesFromLastStats.incrementAndGet();
+            // Either the evicted page or this one has room the map no longer lists: only a scan finds it again, whatever the
+            // write was. Cheap while the map stays full: a gather stops at the first page then, and the slices of the lap
+            // only run once the map has room for what they find (#9575)
+            changesFromLastStats.incrementAndGet();
           } else
             freeSpaceInPages.put(pageId, newSpace);
         }
