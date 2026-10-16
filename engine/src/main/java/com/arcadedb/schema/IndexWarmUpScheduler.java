@@ -127,8 +127,8 @@ final class IndexWarmUpScheduler {
   }
 
   /**
-   * Waits until nothing is waiting and nothing is running, and, once closed, until the worker has left. For callers that need the indexes warm before they carry on
-   * (a test, a restart sequence): the warm-up exists so that nobody has to.
+   * Waits until nothing is waiting and nothing is running, and, once closed, until the worker has left. For callers that need
+   * the indexes warm before they carry on (a test, a restart sequence): the warm-up exists so that nobody has to.
    *
    * @return {@code false} when the timeout elapsed first
    */
