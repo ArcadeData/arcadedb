@@ -94,8 +94,8 @@ final class RecordPredicateRidSet extends AbstractSet<RID> {
   /**
    * Builds the allow-list of a {@code where} option, or answers {@code filter} as it is when there is none.
    *
-   * @param where      the option's value: a map of property to value, or a SQL condition; null when the option is absent
-   * @param filter     the RIDs of the {@code filter} option, or null when it is absent
+   * @param where        the option's value: a map of property to value, or a SQL condition; null when the option is absent
+   * @param filter       the RIDs of the {@code filter} option, or null when it is absent
    * @param functionName the function the option belongs to, for the error messages
    */
   static Set<RID> of(final Object where, final Set<RID> filter, final String functionName, final CommandContext context) {

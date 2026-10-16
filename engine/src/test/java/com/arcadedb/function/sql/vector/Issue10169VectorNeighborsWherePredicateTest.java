@@ -179,6 +179,7 @@ class Issue10169VectorNeighborsWherePredicateTest extends TestHelper {
         "a")).isInstanceOf(CommandSQLParsingException.class).hasMessageContaining("positional");
     assertThat(RecordPredicateRidSet.hasPositionalParameter("space = '?' AND `a?b` = \"x?\"")).isFalse();
     assertThat(RecordPredicateRidSet.hasPositionalParameter("space = 'it\\'s' AND year = ?")).isTrue();
+    assertThat(RecordPredicateRidSet.hasPositionalParameter("title = 'it\\'s ?'")).isFalse();
   }
 
   @Test
