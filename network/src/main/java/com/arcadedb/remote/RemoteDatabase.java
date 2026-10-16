@@ -1916,12 +1916,15 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
   /**
    * Whether {@code rid} names a record, asked on the refusal path of {@link #saveRecord(MutableDocument)} to tell a veto from a
    * missing record. Not counted in any statistic: the caller made no read, and the statistics count what the caller did (issue
-   * #10095). A record deleted by someone else between the UPDATE and this probe reads as missing, which is what it is by then.
+   * #10095). It runs in the caller's session, so inside a remote transaction it sees that transaction's records.
+   * <p>
+   * A heuristic, as an UPDATE that matched nothing says no more: a record deleted by someone else between the UPDATE and this
+   * probe reads as missing, which it is by then, and a record the UPDATE could not change for any other reason that leaves it
+   * readable and raises nothing reads as vetoed. A listener's veto is the one such reason the server has today.
    */
   private boolean recordExistsUncounted(final RID rid) {
-    try {
-      final ResultSet result = (ResultSet) databaseCommand("query", "sql", "select @rid from " + rid, null, false,
-          (connection, response) -> createResultSet(response));
+    try (final ResultSet result = (ResultSet) databaseCommand("query", "sql", "select @rid from " + rid, null, false,
+        (connection, response) -> createResultSet(response))) {
       return result.hasNext();
     } catch (final RecordNotFoundException e) {
       return false;
