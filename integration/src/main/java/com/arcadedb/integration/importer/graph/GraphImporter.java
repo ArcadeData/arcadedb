@@ -183,6 +183,8 @@ public class GraphImporter implements AutoCloseable {
 
   private long totalVertices;
   private long totalEdges;
+  // issue #9575: vertices the edge batches had to read to find the edge list they append to
+  private long vertexHeadReads;
   private long unresolvedEdges;
 
   private GraphImporter(final Database database, final List<VertexSourceDef> vertexSources,
@@ -1352,6 +1354,14 @@ public class GraphImporter implements AutoCloseable {
     return totalVertices;
   }
 
+  /**
+   * Vertices the edge passes read to find the edge list they append to (issue #9575). A vertex this import created is
+   * read only when an earlier edge of it was already handed to an edge batch, in the same direction.
+   */
+  public long getVertexHeadReads() {
+    return vertexHeadReads;
+  }
+
   public long getEdgeCount() {
     return totalEdges;
   }
@@ -1683,17 +1693,20 @@ public class GraphImporter implements AutoCloseable {
     final ProgressLog progress = new ProgressLog(edgeType, "edges");
 
     // A collected edge type knows its edge count: it touches at most two vertices an edge
-    try (final GraphBatch batch = newEdgeBatch(Math.min(endpointVertices(srcTs, dstTs), 2L * ec.srcIdx.size))) {
+    final GraphBatch batch = newEdgeBatch(Math.min(endpointVertices(srcTs, dstTs), 2L * ec.srcIdx.size));
+    try (batch) {
       final int[] sSrc = ec.srcIdx.data;
       final int[] sDst = ec.dstIdx.data;
       final int size = ec.srcIdx.size;
 
       // A vertex-derived edge carries no properties: only an edge source declares any
       for (int i = 0; i < size; i++) {
-        batch.newEdge(srcTs.rid(sSrc[i]), edgeType, dstTs.rid(sDst[i]));
+        batch.newEdgeWithHints(srcTs.rid(sSrc[i]), edgeType, dstTs.rid(sDst[i]), endpointHints(srcTs, sSrc[i], dstTs, sDst[i]));
         if ((i & PROGRESS_ROW_MASK) == 0)
           progress.report(i);
       }
+    } finally {
+      vertexHeadReads += batch.getVertexHeadReads();
     }
     totalEdges += ec.srcIdx.size;
     LogManager.instance().log(this, Level.INFO, "  %-12s %,8d (%s→%s, %,d ms)",
@@ -1726,7 +1739,8 @@ public class GraphImporter implements AutoCloseable {
     final ProgressLog progress = new ProgressLog(edgeType, "edge rows");
 
     final long touchable = endpointVertices(fromTs, toTs);
-    try (final GraphBatch batch = newEdgeBatch(limit > 0 ? Math.min(touchable, 2 * limit) : touchable)) {
+    final GraphBatch batch = newEdgeBatch(limit > 0 ? Math.min(touchable, 2 * limit) : touchable);
+    try (batch) {
       esd.source.forEach(record -> {
         if (limit > 0 && rows[0] >= limit)
           return;
@@ -1757,10 +1771,11 @@ public class GraphImporter implements AutoCloseable {
             props.add(value);
           }
         }
+        final int hints = endpointHints(fromTs, si, toTs, di);
         if (props.isEmpty())
-          batch.newEdge(fromTs.rid(si), edgeType, toTs.rid(di));
+          batch.newEdgeWithHints(fromTs.rid(si), edgeType, toTs.rid(di), hints);
         else
-          batch.newEdge(fromTs.rid(si), edgeType, toTs.rid(di), props.toArray());
+          batch.newEdgeWithHints(fromTs.rid(si), edgeType, toTs.rid(di), hints, props.toArray());
         created[0]++;
       });
     } catch (final Exception | Error e) {
@@ -1771,6 +1786,7 @@ public class GraphImporter implements AutoCloseable {
       throw e;
     } finally {
       totalEdges += created[0];
+      vertexHeadReads += batch.getVertexHeadReads();
     }
 
     final long unresolved = unresolvedEdges - unresolvedBefore;
@@ -1798,6 +1814,22 @@ public class GraphImporter implements AutoCloseable {
         .withCommitEvery(50_000)
         .withMaxVertices(maxVertices)
         .build();
+  }
+
+  /**
+   * What the edge batch may skip reading about the two endpoints (issue #9575): every vertex of this import is created
+   * without edges, so the first time one is handed to an edge batch in a direction, its edge list in that direction is known
+   * to be empty. Each later edge of it, in this batch or another, is left to the batch to find. A vertex is marked when its
+   * edge is handed over, not when the batch commits: if that batch fails, the later edges of the vertex go unhinted, which
+   * costs a read and never an edge.
+   */
+  private static int endpointHints(final TypeState srcTs, final int si, final TypeState dstTs, final int di) {
+    int hints = 0;
+    if (srcTs.firstOutEdge(si))
+      hints |= GraphBatch.SOURCE_HAS_NO_OUT_EDGES;
+    if (dstTs.firstInEdge(di))
+      hints |= GraphBatch.DESTINATION_HAS_NO_IN_EDGES;
+    return hints;
   }
 
   private static long endpointVertices(final TypeState srcTs, final TypeState dstTs) {
@@ -2091,9 +2123,41 @@ public class GraphImporter implements AutoCloseable {
     long[]  rids;
     int     count;
 
+    // Issue #9575: the vertices already handed to an edge batch, one bit each per direction, allocated by the first edge.
+    // Read and written only by the importer's thread, which hands every edge over (a batch's parallel flush, if any, runs
+    // after the hints are taken). Sized with an unsigned shift, so a count up to Integer.MAX_VALUE cannot overflow it
+    long[]  outEdgesGiven;
+    long[]  inEdgesGiven;
+
     RID rid(final int idx) {
       final long packed = rids[idx];
       return new RID((int) (packed >>> RID_POSITION_BITS), packed & RID_POSITION_MASK);
+    }
+
+    /** Whether this is the first outgoing edge of the vertex at {@code idx} handed to an edge batch, marking it handed. */
+    boolean firstOutEdge(final int idx) {
+      if (outEdgesGiven == null)
+        outEdgesGiven = new long[(count + 63) >>> 6];
+      return claim(outEdgesGiven, idx);
+    }
+
+    /** Whether this is the first incoming edge of the vertex at {@code idx} handed to an edge batch, marking it handed. */
+    boolean firstInEdge(final int idx) {
+      if (inEdgesGiven == null)
+        inEdgesGiven = new long[(count + 63) >>> 6];
+      return claim(inEdgesGiven, idx);
+    }
+
+    private static boolean claim(final long[] bits, final int idx) {
+      final int word = idx >>> 6;
+      if (word >= bits.length)
+        // not a vertex this import counted: nothing is known about it
+        return false;
+      final long mask = 1L << idx;
+      if ((bits[word] & mask) != 0)
+        return false;
+      bits[word] |= mask;
+      return true;
     }
   }
 

@@ -57,6 +57,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.LongAdder;
 import java.util.function.Consumer;
 import java.util.function.IntConsumer;
 import java.util.logging.Level;
@@ -140,6 +141,10 @@ import java.util.logging.Level;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class GraphBatch implements AutoCloseable {
+  /** {@link #newEdgeWithHints} hint: the source vertex had no outgoing edge when its first edge was handed to this batch. */
+  public static final int SOURCE_HAS_NO_OUT_EDGES     = 1;
+  /** {@link #newEdgeWithHints} hint: the destination had no incoming edge when its first edge was handed to this batch. */
+  public static final int DESTINATION_HAS_NO_IN_EDGES = 2;
 
   private final DatabaseInternal database;
 
@@ -252,6 +257,7 @@ public class GraphBatch implements AutoCloseable {
   private boolean[]  edgeHasProperties;
   private boolean[]  edgeIsLightweight;
   private boolean[]  edgeIsBidirectional; // the edge type's declaration: only a bidirectional type gets its incoming side
+  private byte[]     edgeEndpointHints;   // what the caller vouched for about the endpoints, see newEdgeWithHints (#9575)
   private long       duplicateLightEdges;
   private Object[][] edgeProperties;      // null for light edges
   private int        edgeCount;
@@ -264,6 +270,7 @@ public class GraphBatch implements AutoCloseable {
   private long[] inVertexPositions;   // source vertex RID position
   private int[]  inDstBucketIds;      // destination vertex RID bucket (the vertex that receives the incoming edge)
   private long[] inDstPositions;      // destination vertex RID position
+  private boolean[] inDstHasNoInEdges; // the caller vouched the destination had no incoming edge (#9575)
   private int    inEdgeCount;
 
   /**
@@ -366,6 +373,9 @@ public class GraphBatch implements AutoCloseable {
   // Plain LongHashSet (zero-boxing, ~7x less memory than ConcurrentHashMap.newKeySet()) is safe
   // because the only concurrent access is read-only after a publishing barrier.
   private final LongHashSet knownNewVertexKeys = new LongHashSet();
+  // #9575: vertices a flush had to read to find the edge list it appends to. An adder: the parallel flush counts from its
+  // workers, and only a test or a diagnostic reads it
+  private final LongAdder   vertexHeadReads    = new LongAdder();
 
   // --- Statistics ---
   private long totalVerticesCreated;
@@ -454,6 +464,7 @@ public class GraphBatch implements AutoCloseable {
     edgeHasProperties = new boolean[batchSize];
     edgeIsLightweight = new boolean[batchSize];
     edgeIsBidirectional = new boolean[batchSize];
+    edgeEndpointHints = new byte[batchSize];
     edgeProperties = new Object[batchSize][];
     sortIndex = new int[batchSize];
     mergeTmp = new int[batchSize / 2 + 1];
@@ -468,6 +479,7 @@ public class GraphBatch implements AutoCloseable {
       inVertexPositions = new long[initialInCapacity];
       inDstBucketIds = new int[initialInCapacity];
       inDstPositions = new long[initialInCapacity];
+      inDstHasNoInEdges = new boolean[initialInCapacity];
     }
     inEdgeCount = 0;
 
@@ -787,10 +799,30 @@ public class GraphBatch implements AutoCloseable {
    */
   public void newEdge(final RID sourceVertexRID, final String edgeTypeName, final RID destVertexRID,
       final Object... edgeProperties) {
+    newEdgeWithHints(sourceVertexRID, edgeTypeName, destVertexRID, 0, edgeProperties);
+  }
+
+  /**
+   * {@link #newEdge} for a caller that knows the edge lists of its endpoints are still empty, typically because it created
+   * those vertices itself without edges and has not handed this or an earlier batch any edge of them since (#9575). The
+   * batch then starts their edge lists without reading the vertex to look for an existing one: on a graph larger than
+   * the memory, that read is one random disk access per distinct vertex and flush, which made the edge pass of a 209M
+   * vertex import stop for 15 minutes every 500,000 edges.
+   * <p>
+   * A hint is a promise about the vertex, not about the edge, and a wrong one is not detected: a vertex that had edges
+   * gets a new edge list that does not link the old one, and the edges it had are no longer reachable from it. Pass 0 when
+   * in doubt, which is exactly {@link #newEdge}.
+   *
+   * @param endpointHints {@link #SOURCE_HAS_NO_OUT_EDGES} and/or {@link #DESTINATION_HAS_NO_IN_EDGES}, or 0
+   */
+  public void newEdgeWithHints(final RID sourceVertexRID, final String edgeTypeName, final RID destVertexRID,
+      final int endpointHints, final Object... edgeProperties) {
     if (sourceVertexRID == null)
       throw new IllegalArgumentException("Source vertex RID is null");
     if (destVertexRID == null)
       throw new IllegalArgumentException("Destination vertex RID is null");
+    if ((endpointHints & ~(SOURCE_HAS_NO_OUT_EDGES | DESTINATION_HAS_NO_IN_EDGES)) != 0)
+      throw new IllegalArgumentException("Unknown endpoint hints " + endpointHints);
 
     // Cached edge type bucket ID lookup
     final int typeBucketId = edgeTypeFirstBucketCache.computeIfAbsent(edgeTypeName,
@@ -852,6 +884,7 @@ public class GraphBatch implements AutoCloseable {
     this.edgeProperties[idx] = hasProps ? propertyPairs(edgeProperties) : null;
     edgeIsLightweight[idx] = isLightweight;
     edgeIsBidirectional[idx] = typeIsBidirectional;
+    edgeEndpointHints[idx] = (byte) endpointHints;
 
     edgeCount++;
 
@@ -1761,6 +1794,15 @@ public class GraphBatch implements AutoCloseable {
   }
 
   /**
+   * Vertices a flush read to find the edge list it appends to: one per distinct vertex and flush that this batch neither
+   * created nor was told has no edges ({@link #newEdgeWithHints}). On a graph larger than the memory each one is a random
+   * disk read (#9575).
+   */
+  public long getVertexHeadReads() {
+    return vertexHeadReads.sum();
+  }
+
+  /**
    * Edge records this batch created, failed to connect to any vertex, and deleted again (issue #6083 item 2).
    * Non-zero only after a flush failed part-way.
    */
@@ -1989,8 +2031,11 @@ public class GraphBatch implements AutoCloseable {
         final int groupSize = j - i;
         ensureTmpArrays(groupSize);
         int totalBytesNeeded = 0;
+        // OR-ed over the group: a caller hints the FIRST edge of a vertex it hands over, and that edge can sort anywhere in it
+        boolean hasNoOutEdges = false;
         for (int k = 0; k < groupSize; k++) {
           final int kIdx = sortIndex[i + k];
+          hasNoOutEdges |= (edgeEndpointHints[kIdx] & SOURCE_HAS_NO_OUT_EDGES) != 0;
           tmpEdgeBucketIds[k] = edgeRIDs[kIdx].getBucketId();
           tmpEdgePositions[k] = edgeRIDs[kIdx].getPosition();
           tmpVertexBucketIds[k] = edgeDstBucketIds[kIdx];
@@ -2005,7 +2050,7 @@ public class GraphBatch implements AutoCloseable {
         // vertex (below) touches neither map, so the snapshot is harmlessly unused in that case.
         if (!outHeadUndoLog.containsKey(vertexKey))
           outHeadUndoLog.put(vertexKey, deferredHeads.getOut(vertexKey));
-        final EdgeSegment outChunk = getOrCreateOutSegmentDeferred(srcBucket, srcPos, vertexKey, totalBytesNeeded);
+        final EdgeSegment outChunk = getOrCreateOutSegmentDeferred(srcBucket, srcPos, vertexKey, totalBytesNeeded, hasNoOutEdges);
 
         // NOTE (edge-append merge): this bulk path intentionally neither tracks (trackEdgeAppend) nor poisons its
         // chunk pages. Since #5596 that needs no side condition: the merge accepts a page only when EVERY byte this
@@ -2110,6 +2155,7 @@ public class GraphBatch implements AutoCloseable {
       inVertexPositions = new long[initialInCapacity];
       inDstBucketIds = new int[initialInCapacity];
       inDstPositions = new long[initialInCapacity];
+      inDstHasNoInEdges = new boolean[initialInCapacity];
     }
 
     final int needed = inEdgeCount + (to - from);
@@ -2127,6 +2173,7 @@ public class GraphBatch implements AutoCloseable {
       inVertexPositions[pos] = edgeSrcPositions[i];
       inDstBucketIds[pos] = edgeDstBucketIds[i];      // destination = the vertex receiving the incoming edge
       inDstPositions[pos] = edgeDstPositions[i];
+      inDstHasNoInEdges[pos] = (edgeEndpointHints[i] & DESTINATION_HAS_NO_IN_EDGES) != 0;
       inEdgeCount++;
     }
   }
@@ -2142,6 +2189,7 @@ public class GraphBatch implements AutoCloseable {
     inVertexPositions = Arrays.copyOf(inVertexPositions, newCap);
     inDstBucketIds = Arrays.copyOf(inDstBucketIds, newCap);
     inDstPositions = Arrays.copyOf(inDstPositions, newCap);
+    inDstHasNoInEdges = Arrays.copyOf(inDstHasNoInEdges, newCap);
   }
 
   /**
@@ -2203,6 +2251,7 @@ public class GraphBatch implements AutoCloseable {
     inVertexPositions = null;
     inDstBucketIds = null;
     inDstPositions = null;
+    inDstHasNoInEdges = null;
   }
 
   /**
@@ -2219,6 +2268,7 @@ public class GraphBatch implements AutoCloseable {
       System.arraycopy(inVertexPositions, prefix, inVertexPositions, 0, remaining);
       System.arraycopy(inDstBucketIds, prefix, inDstBucketIds, 0, remaining);
       System.arraycopy(inDstPositions, prefix, inDstPositions, 0, remaining);
+      System.arraycopy(inDstHasNoInEdges, prefix, inDstHasNoInEdges, 0, remaining);
     }
     inEdgeCount = remaining;
   }
@@ -2270,8 +2320,10 @@ public class GraphBatch implements AutoCloseable {
         final int groupSize = j - i;
         ensureTmpArrays(groupSize);
         int totalBytesNeeded = 0;
+        boolean hasNoInEdges = false;
         for (int k = 0; k < groupSize; k++) {
           final int kIdx = inSortIndex[i + k];
+          hasNoInEdges |= inDstHasNoInEdges[kIdx];
           tmpEdgeBucketIds[k] = inEdgeBucketIds[kIdx];
           tmpEdgePositions[k] = inEdgePositions[kIdx];
           tmpVertexBucketIds[k] = inVertexBucketIds[kIdx];
@@ -2286,7 +2338,7 @@ public class GraphBatch implements AutoCloseable {
         // the IN side of deferredHeads/inChunkRIDCache, so this snapshot is harmlessly unused in that case.
         if (!inHeadUndoLog.containsKey(vertexKey))
           inHeadUndoLog.put(vertexKey, deferredHeads.getIn(vertexKey));
-        final EdgeSegment inChunk = getOrCreateInSegmentDeferred(dstBucket, dstPos, vertexKey, totalBytesNeeded);
+        final EdgeSegment inChunk = getOrCreateInSegmentDeferred(dstBucket, dstPos, vertexKey, totalBytesNeeded, hasNoInEdges);
 
         if (lastSegmentPromoted) {
           // #5667: the vertex is already a promoted super-node - route through StripedEdgeList.
@@ -2460,8 +2512,10 @@ public class GraphBatch implements AutoCloseable {
 
       // Fill local tmp arrays and compute total bytes
       int totalBytesNeeded = 0;
+      boolean hasNoInEdges = false;
       for (int k = 0; k < groupSize; k++) {
         final int kIdx = inSortIndex[i + k];
+        hasNoInEdges |= inDstHasNoInEdges[kIdx];
         localTmpEdgeBucketIds[k] = inEdgeBucketIds[kIdx];
         localTmpEdgePositions[k] = inEdgePositions[kIdx];
         localTmpVertexBucketIds[k] = inVertexBucketIds[kIdx];
@@ -2492,11 +2546,13 @@ public class GraphBatch implements AutoCloseable {
         inChunkRIDCache.put(vertexKey, deferredChunkRID);
         inChunk = (EdgeSegment) database.lookupByRID(deferredChunkRID, true);
         isNew = false;
-      } else if (knownNewVertexKeys.contains(vertexKey)) {
+      } else if (hasNoInEdges || knownNewVertexKeys.contains(vertexKey)) {
+        assert !hasNoInEdges || knownNewVertexKeys.contains(vertexKey) || hintHolds(dstBucket, dstPos, false);
         final int segmentSize = MutableEdgeSegment.CONTENT_START_POSITION + totalBytesNeeded;
         inChunk = new MutableEdgeSegment(database, segmentSize);
         isNew = true;
       } else {
+        vertexHeadReads.increment();
         final MutableVertex dstVertex = ((Vertex) database.lookupByRID(new RID(dstBucket, dstPos), true)).modify();
         // #5667: check for an already-promoted super-node BEFORE assuming a plain segment, with purely
         // local variables - this method runs concurrently across async-executor threads (one per bucket slot),
@@ -2684,13 +2740,26 @@ public class GraphBatch implements AutoCloseable {
   private StripeDirectory lastPromotedDirectory;
 
   /**
+   * Under {@code -ea} only, so the test suites catch a wrong {@link #newEdgeWithHints} caller before it orphans anything:
+   * whether the vertex really has no edge list in that direction. Pays the very read the hint exists to save.
+   */
+  private boolean hintHolds(final int bucketId, final long position, final boolean out) {
+    final VertexInternal vertex = (VertexInternal) database.lookupByRID(new RID(bucketId, position), true);
+    final RID head = out ? vertex.getOutEdgesHeadChunk() : vertex.getInEdgesHeadChunk();
+    if (head != null)
+      throw new AssertionError("Vertex " + vertex.getIdentity() + " was hinted to have no " + (out ? "outgoing" : "incoming")
+          + " edges, but its edge list starts at " + head);
+    return true;
+  }
+
+  /**
    * Gets or creates an OUT segment for a vertex without loading the vertex record.
    * For known-new vertices (from createVertices()), skips the vertex load entirely.
    * Sets lastSegmentIsNew=true if a new segment was created (not yet persisted — caller
    * must fill it and call createRecord). Sets false if an existing segment was found.
    */
   private EdgeSegment getOrCreateOutSegmentDeferred(final int bucketId, final long position,
-      final long vertexKey, final int dataBytesNeeded) {
+      final long vertexKey, final int dataBytesNeeded, final boolean hasNoOutEdges) {
 
     lastSegmentPromoted = false;
 
@@ -2717,7 +2786,9 @@ public class GraphBatch implements AutoCloseable {
     }
 
     // For known-new vertices with no deferred head yet, skip loading — we know there's no existing segment
-    if (!knownNewVertexKeys.contains(vertexKey)) {
+    assert !hasNoOutEdges || knownNewVertexKeys.contains(vertexKey) || hintHolds(bucketId, position, true);
+    if (!hasNoOutEdges && !knownNewVertexKeys.contains(vertexKey)) {
+      vertexHeadReads.increment();
       final VertexInternal vertex = (VertexInternal) database.lookupByRID(new RID(bucketId, position), true);
       final RID headChunk = vertex.getOutEdgesHeadChunk();
       if (headChunk != null) {
@@ -2748,7 +2819,7 @@ public class GraphBatch implements AutoCloseable {
    * Same contract as getOrCreateOutSegmentDeferred regarding lastSegmentIsNew.
    */
   private EdgeSegment getOrCreateInSegmentDeferred(final int bucketId, final long position,
-      final long vertexKey, final int dataBytesNeeded) {
+      final long vertexKey, final int dataBytesNeeded, final boolean hasNoInEdges) {
 
     lastSegmentPromoted = false;
 
@@ -2767,7 +2838,9 @@ public class GraphBatch implements AutoCloseable {
       return (EdgeSegment) database.lookupByRID(deferredRID, true);
     }
 
-    if (!knownNewVertexKeys.contains(vertexKey)) {
+    assert !hasNoInEdges || knownNewVertexKeys.contains(vertexKey) || hintHolds(bucketId, position, false);
+    if (!hasNoInEdges && !knownNewVertexKeys.contains(vertexKey)) {
+      vertexHeadReads.increment();
       final VertexInternal vertex = (VertexInternal) database.lookupByRID(new RID(bucketId, position), true);
       final RID headChunk = vertex.getInEdgesHeadChunk();
       if (headChunk != null) {
@@ -3364,8 +3437,10 @@ public class GraphBatch implements AutoCloseable {
 
       // Fill local tmp arrays and compute total bytes
       int totalBytesNeeded = 0;
+      boolean hasNoOutEdges = false;
       for (int k = 0; k < groupSize; k++) {
         final int kIdx = sortIndex[i + k];
+        hasNoOutEdges |= (edgeEndpointHints[kIdx] & SOURCE_HAS_NO_OUT_EDGES) != 0;
         final RID edgeRID = edgeRIDs[kIdx];
         localTmpEdgeBucketIds[k] = edgeRID.getBucketId();
         localTmpEdgePositions[k] = edgeRID.getPosition();
@@ -3397,11 +3472,13 @@ public class GraphBatch implements AutoCloseable {
         outChunkRIDCache.put(vertexKey, deferredChunkRID);
         outChunk = (EdgeSegment) database.lookupByRID(deferredChunkRID, true);
         isNew = false;
-      } else if (knownNewVertexKeys.contains(vertexKey)) {
+      } else if (hasNoOutEdges || knownNewVertexKeys.contains(vertexKey)) {
+        assert !hasNoOutEdges || knownNewVertexKeys.contains(vertexKey) || hintHolds(srcBucket, srcPos, true);
         final int segmentSize = MutableEdgeSegment.CONTENT_START_POSITION + totalBytesNeeded;
         outChunk = new MutableEdgeSegment(database, segmentSize);
         isNew = true;
       } else {
+        vertexHeadReads.increment();
         final MutableVertex srcVertex = ((Vertex) database.lookupByRID(new RID(srcBucket, srcPos), true)).modify();
         // #5667: check locally for an already-promoted super-node BEFORE assuming a plain segment; this
         // method runs concurrently across async-executor threads, so a shared instance field would race.
