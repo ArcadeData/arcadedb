@@ -135,6 +135,9 @@ final class SecurityCatchUp implements AutoCloseable {
 
   static final String THREAD_NAME = "arcadedb-raft-security-catchup";
 
+  /** The file a pending forced seed is kept in across restarts (issue #7752), in the state-machine directory. */
+  static final String FORCED_SEED_MARKER = "security-reseed-required";
+
   /**
    * The once-per-start latch, as the token of the request that currently holds it, or {@link #FREE}.
    * <p>
@@ -378,9 +381,6 @@ final class SecurityCatchUp implements AutoCloseable {
     // without asking anybody releases it again (issue #8034), this trigger's own leader arm included.
     submit(takeOverRequest(), server, raft, "a snapshot install, which carries no security document", false);
   }
-
-  /** The file a pending forced seed is kept in across restarts (issue #7752), in the state-machine directory. */
-  static final String FORCED_SEED_MARKER = "security-reseed-required";
 
   /**
    * Keeps the pending forced seed in {@code directory} from now on, and restores one a previous run of this node left
