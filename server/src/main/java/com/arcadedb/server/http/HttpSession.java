@@ -104,6 +104,11 @@ public class HttpSession implements QuerySession {
     return lock.isLocked();
   }
 
+  /** Whether a request is waiting for the request running in the session to finish. A snapshot, for tests. */
+  boolean hasWaitingRequests() {
+    return lock.hasQueuedThreads();
+  }
+
   public long elapsedFromLastUpdate() {
     return System.currentTimeMillis() - lastUpdate;
   }
@@ -292,7 +297,8 @@ public class HttpSession implements QuerySession {
         // CALLBACK NOW WOULD OPERATE ON A ROLLED-BACK TRANSACTION AND LEAK A FRESH ONE (NOTHING WOULD EVER
         // COMMIT/ROLL IT BACK, SINCE THE SESSION IS ALREADY UNTRACKED)
         if (!manager.isSessionRegistered(id))
-          throw new HttpSessionException("Remote transaction '" + id + "' not found or expired");
+          // A route that ends the session can still have an answer for it (a retried /commit of a session that committed, issue #10171)
+          throw new HttpSessionEndedException(id);
 
         if (rolledBackByFailure && joinsTransaction && !endsSession)
           throw new HttpSessionException("Remote transaction '" + id
