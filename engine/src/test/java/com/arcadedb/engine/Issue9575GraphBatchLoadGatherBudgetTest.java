@@ -37,10 +37,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  * idle. That is the cost of reading every page of the vertex bucket once: something other than a plain append still arms the
  * free-space gather, and a gather, once armed, read the whole file in one go on the writer's thread.
  * <p>
- * One such arming is a record larger than a page: the chunks of a multi-page record are not written by the hole-free append,
- * so the commit measures their pages and every measurement counts as a change. A load of real-world rows meets one every few
- * seconds. Chasing every arming path would leave the next one to be found the same way, so the scan itself is bounded: a gather
- * reads at most a fixed number of pages and picks up where it stopped the next time it runs.
+ * The arming was a record larger than a page: the chunks of a multi-page record are not written by the hole-free append, so
+ * the commit measures their pages, and every measurement counted as a change. A load of real-world rows meets one every few
+ * seconds. A measurement states the page's room in the free-space map itself, so it now arms a scan only when the map is full
+ * and cannot keep it. And because the next arming path would otherwise be found the same way, the scan itself is bounded too:
+ * a gather reads at most a fixed number of pages and picks up where it stopped the next time it runs.
  * <p>
  * Counting pages needs no clock, so a stalled JVM cannot flip these tests; the 5 s throttle is expired through a hook instead
  * of slept through.
@@ -55,10 +56,11 @@ class Issue9575GraphBatchLoadGatherBudgetTest extends TestHelper {
   private static final int    MAX_VERTEX_SIZE = 100_000;
 
   /**
-   * The reporter's shape: a GraphBatch vertex pass whose rows vary in size, some of them larger than a page.
+   * The reporter's shape: a GraphBatch vertex pass whose rows vary in size, some of them larger than a page. The commits
+   * measure the pages the chunks land on, and none of those measurements arms a scan.
    */
   @Test
-  void aGraphBatchLoadWithRecordsLargerThanAPageNeverScansTheWholeBucket() {
+  void aGraphBatchLoadWithRecordsLargerThanAPageArmsNoScan() {
     database.getSchema().createVertexType("Work", 1);
     final LocalBucket bucket = (LocalBucket) database.getSchema().getType("Work").getBuckets(false).get(0);
     bucket.setGatherPagesPerScanForTesting(BUDGET);
@@ -78,14 +80,38 @@ class Issue9575GraphBatchLoadGatherBudgetTest extends TestHelper {
       database.commit();
     }
 
-    final long scans = bucket.getGatherScanCountForTesting();
-    // the premise: the load armed gathers past the first run, over a file many budgets long
-    assertThat(scans).isGreaterThan(2);
+    // the premise: a file many budgets long, so one armed scan would show
     assertThat(bucket.getTotalPages()).isGreaterThan(BUDGET * 20);
 
-    assertThat(bucket.getGatherPagesReadForTesting())
-        .as("pages read by %d gather scans over a bucket of %d pages", scans, bucket.getTotalPages())
-        .isLessThanOrEqualTo(scans * BUDGET);
+    assertThat(bucket.getGatherScanCountForTesting()).as("gather scans run by the load, the first one included")
+        .isLessThanOrEqualTo(1L);
+    assertThat(bucket.getGatherPagesReadForTesting()).isLessThanOrEqualTo(BUDGET);
+  }
+
+  /**
+   * A delete lists the room it frees itself, so it arms no scan, until the free-space map is full and drops what it is told:
+   * that room is known to nothing else, and only a scan finds it again.
+   */
+  @Test
+  void aDeleteArmsAScanOnlyWhenTheMapCannotListItsRoom() {
+    database.getSchema().createDocumentType("Wide", 1);
+    final LocalBucket bucket = wideBucket();
+    bucket.setGatherPagesPerScanForTesting(BUDGET);
+
+    final List<RID> rids = append(RECORDS);
+    final int pages = bucket.getTotalPages();
+    assertThat(pages).isGreaterThan(220);
+    finishLap(bucket, pages);
+
+    // 20 pages: the map has room for them all
+    freeMostOfPages(bucket, rids, 0, 20);
+    assertThat(bucket.getListedFreeSpacePagesForTesting()).contains(0, 10, 19);
+    assertThat(pagesReadByOneGather(bucket)).as("pages read after deletes the map listed").isZero();
+
+    // 200 more: the map holds 100, the rest is dropped
+    freeMostOfPages(bucket, rids, 20, 220);
+    assertThat(pagesReadByOneGather(bucket)).as("pages read after deletes the map could not list")
+        .isPositive().isLessThanOrEqualTo(BUDGET);
   }
 
   /**
@@ -141,9 +167,10 @@ class Issue9575GraphBatchLoadGatherBudgetTest extends TestHelper {
     final LocalBucket bucket = wideBucket();
     bucket.setGatherPagesPerScanForTesting(BUDGET);
 
-    final List<RID> rids = append(RECORDS);
+    append(RECORDS);
     final int pages = bucket.getTotalPages();
-    database.transaction(() -> database.deleteRecord(rids.get(rids.size() / 2).asDocument()));
+    // a map replaced wholesale, as an open loads it: what it no longer lists, only a scan can find
+    bucket.setPageStatistics(new JSONArray());
 
     final long readBefore = bucket.getGatherPagesReadForTesting();
     for (int i = 0; i < pages / BUDGET + 2; i++) {
@@ -174,6 +201,32 @@ class Issue9575GraphBatchLoadGatherBudgetTest extends TestHelper {
     }
     database.commit();
     return rids;
+  }
+
+  /** Deletes three records out of four on pages {@code [from, to)}, in one transaction. */
+  private void freeMostOfPages(final LocalBucket bucket, final List<RID> rids, final int from, final int to) {
+    database.transaction(() -> {
+      for (final RID rid : rids) {
+        final long page = rid.getPosition() / bucket.getMaxRecordsInPage();
+        if (page >= from && page < to && rid.getPosition() % 4 != 0)
+          database.deleteRecord(rid.asDocument());
+      }
+    });
+  }
+
+  /** Runs throttled gathers until the open lap, if any, has visited every page. */
+  private static void finishLap(final LocalBucket bucket, final int pages) {
+    for (int i = 0; i < pages / BUDGET + 2; i++) {
+      bucket.expireGatherThrottleForTesting();
+      bucket.gatherPageStatistics();
+    }
+  }
+
+  private static long pagesReadByOneGather(final LocalBucket bucket) {
+    final long before = bucket.getGatherPagesReadForTesting();
+    bucket.expireGatherThrottleForTesting();
+    bucket.gatherPageStatistics();
+    return bucket.getGatherPagesReadForTesting() - before;
   }
 
   private LocalBucket wideBucket() {
