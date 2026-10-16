@@ -29,12 +29,12 @@ import com.arcadedb.query.sql.executor.QueryOperatorEquals;
 import com.arcadedb.query.sql.parser.WhereClause;
 
 import java.util.AbstractSet;
-import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * The allow-list of the {@code where} option of {@code vector.neighbors} / {@code vector.sparseNeighbors} (issue #10169): the
@@ -52,17 +52,27 @@ import java.util.Set;
  * reported as unbounded, which never qualifies for that plan, and {@link #iterator()} refuses. With a {@code filter} its size is
  * the filter's, an upper bound, and enumerating it tests each member of the filter.
  * <p>
- * Safe for the concurrent searches of a sparse fan-out: the evaluation and its memo are guarded by this set.
+ * Safe for the concurrent searches of a sparse fan-out: the memo is concurrent and the records are loaded outside any lock,
+ * so a slow load holds no other worker back. Only a SQL condition is evaluated under this set's lock, because it evaluates in
+ * the caller's {@link CommandContext}, which is not meant to be shared between threads. Two workers meeting the same candidate
+ * may both test it; the answer is the same. The memo holds one entry per candidate the search met, which the search itself
+ * bounds (its beam, its fetch budget), and lives as long as the call.
+ * <p>
+ * Records are read with the caller's permissions, as every other read of the search: a candidate the caller may not read is
+ * not accepted, so the predicate can neither reveal it nor fail the search over it.
+ * <p>
+ * Only {@link #contains}, {@link #isEmpty}, {@link #size} and, with a {@code filter}, {@link #iterator} are meaningful.
+ * {@link #equals}, {@link #hashCode} and {@link #toString} are identity-based and never enumerate the set.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 final class RecordPredicateRidSet extends AbstractSet<RID> {
-  private final BasicDatabase        database;
-  private final CommandContext       context;
-  private final Map<String, Object>  equalities;
-  private final WhereClause          condition;
-  private final Set<RID>             restrictTo;
-  private final HashMap<RID, Boolean> decided = new HashMap<>();
+  private final BasicDatabase                       database;
+  private final CommandContext                      context;
+  private final Map<String, Object>                 equalities;
+  private final WhereClause                         condition;
+  private final Set<RID>                            restrictTo;
+  private final ConcurrentHashMap<RID, Boolean>     decided = new ConcurrentHashMap<>();
 
   private RecordPredicateRidSet(final CommandContext context, final Map<String, Object> equalities, final WhereClause condition,
       final Set<RID> restrictTo) {
@@ -118,14 +128,12 @@ final class RecordPredicateRidSet extends AbstractSet<RID> {
       return false;
     if (restrictTo != null && !restrictTo.contains(rid))
       return false;
-    synchronized (this) {
-      final Boolean known = decided.get(rid);
-      if (known != null)
-        return known;
-      final boolean accepted = test(rid);
-      decided.put(rid, accepted);
-      return accepted;
-    }
+    final Boolean known = decided.get(rid);
+    if (known != null)
+      return known;
+    final boolean accepted = test(rid);
+    decided.putIfAbsent(rid, accepted);
+    return accepted;
   }
 
   private boolean test(final RID rid) {
@@ -135,15 +143,34 @@ final class RecordPredicateRidSet extends AbstractSet<RID> {
       if (!(database.lookupByRID(rid, true) instanceof Document document))
         return false;
       record = document;
-    } catch (final RecordNotFoundException e) {
+    } catch (final RecordNotFoundException | SecurityException e) {
+      // gone, or not readable by the caller: not a candidate the caller may be answered
       return false;
     }
     if (condition != null)
-      return Boolean.TRUE.equals(condition.matchesFilters(record, context));
+      synchronized (this) {
+        return Boolean.TRUE.equals(condition.matchesFilters(record, context));
+      }
     for (final Map.Entry<String, Object> e : equalities.entrySet())
       if (!QueryOperatorEquals.equals(SQLFunctionVectorAbstract.readNestedField(record, e.getKey()), e.getValue()))
         return false;
     return true;
+  }
+
+  @Override
+  public boolean equals(final Object o) {
+    return this == o;
+  }
+
+  @Override
+  public int hashCode() {
+    return System.identityHashCode(this);
+  }
+
+  @Override
+  public String toString() {
+    return "where(" + (condition != null ? condition : equalities) + (restrictTo != null ? ", filter of " + restrictTo.size() : "")
+        + ", " + decided.size() + " decided)";
   }
 
   /** Never empty: an empty allow-list reads as "no filter" to the indexes. */
