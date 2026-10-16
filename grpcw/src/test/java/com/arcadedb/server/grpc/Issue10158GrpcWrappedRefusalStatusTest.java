@@ -180,13 +180,36 @@ class Issue10158GrpcWrappedRefusalStatusTest {
   }
 
   @Test
-  void aRetryableConflictBelowARejectedArgumentIsStillRetryable() {
-    // The HTTP classifier ranks NeedRetryException above IllegalArgumentException, and so does ErrorCategory: walking the
-    // chain makes the arm order a priority between categories, and the retry is the verdict a client has to act on
-    final StatusException mapped = adminService(false).toStatus("createDatabase",
-        new IllegalArgumentException("Cannot create database", new QuorumNotReachedException("Quorum not reached")));
+  void aClassifiedFailureKeepsItsOwnAnswerWhateverItsCauseCarriesAndAWrapperChangesNothing() {
+    // The first frame an arm classifies decides, so a typed failure raised as itself is answered by its own arm - as it
+    // always was, and as the HTTP control plane answers it - and the same failure under a wrapper is answered alike
+    final ArcadeDbGrpcAdminService service = adminService(false);
+    final Exception rejected = new IllegalArgumentException("Cannot create database 'x'",
+        new QuorumNotReachedException("Quorum not reached"));
+    final Exception refused = new ServerSecurityException("Password too short", new SecurityException("policy"));
 
-    assertThat(mapped.getStatus().getCode()).isEqualTo(Status.Code.UNAVAILABLE);
+    for (final Exception failure : List.of(rejected, refused)) {
+      final StatusException bare = service.toStatus("createDatabase", failure);
+      for (final Map.Entry<String, Function<Exception, Exception>> wrapper : WRAPPERS.entrySet()) {
+        final StatusException wrapped = service.toStatus("createDatabase", wrapper.getValue().apply(failure));
+        assertThat(wrapped.getStatus().getCode()).as("%s inside %s", failure, wrapper.getKey()).isEqualTo(bare.getStatus().getCode());
+        assertThat(wrapped.getStatus().getDescription()).as("%s inside %s", failure, wrapper.getKey())
+            .isEqualTo(bare.getStatus().getDescription());
+      }
+    }
+    assertThat(service.toStatus("createDatabase", rejected).getStatus().getCode()).isEqualTo(Status.Code.INVALID_ARGUMENT);
+    assertThat(service.toStatus("createUser", refused).getStatus().getCode()).isEqualTo(Status.Code.PERMISSION_DENIED);
+  }
+
+  @Test
+  void aDuplicatedKeyThatRanIntoAConflictIsRetryableAsErrorCategoryRanksIt() {
+    // Pinned on purpose (PR #10174 review): the data-plane mapper answers by ErrorCategory, where RETRY outranks
+    // DUPLICATED_KEY whatever the depth. DuplicatedKeyException takes no cause, so the engine never builds this chain
+    final DuplicatedKeyException duplicate = new DuplicatedKeyException("User[email]", "[x]", null);
+    duplicate.initCause(new ConcurrentModificationException("conflict"));
+
+    assertThat(GrpcErrorMapper.toStatusRuntimeException(duplicate, "ctx", null, false).getStatus().getCode())
+        .isEqualTo(Status.Code.ABORTED);
   }
 
   @Test
