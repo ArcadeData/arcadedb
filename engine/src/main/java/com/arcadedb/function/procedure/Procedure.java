@@ -117,6 +117,13 @@ public interface Procedure {
    * build the stream from a precomputed array of ids rather than a {@code filter()}, which loses it.
    * </p>
    *
+   * <p>
+   * The caller closes the stream: Cypher's {@code CALL} step closes it when its rows run out or fail, and when the
+   * query's result set is closed with rows still unread (a {@code LIMIT}, a client that stops early; issue #10150). A
+   * procedure that holds something while its rows are read - heap charged to the query, a cursor, a lock - gives it
+   * back in {@link Stream#onClose(Runnable)}, which then runs whatever way the query ends.
+   * </p>
+   *
    * @param args     the procedure arguments (already evaluated)
    * @param inputRow the current input row (may be null for standalone CALL)
    * @param context  the command execution context
