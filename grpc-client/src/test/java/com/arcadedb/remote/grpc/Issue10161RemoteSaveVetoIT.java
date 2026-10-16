@@ -213,6 +213,28 @@ public class Issue10161RemoteSaveVetoIT extends BaseGrpcClientServerTest {
     assertThatThrownBy(edge::save).isInstanceOf(RecordNotFoundException.class);
   }
 
+  /** Inside a remote transaction the veto is told apart in the caller's session, which sees the transaction's own records. */
+  @ParameterizedTest
+  @EnumSource(Driver.class)
+  void aVetoInsideATransactionIsRaisedAndAMissingRecordIsNot(final Driver driver) {
+    final RemoteDatabase db = db(driver);
+    db.begin();
+    try {
+      // CREATED IN THIS TRANSACTION: ONLY THE TRANSACTION'S OWN SESSION CAN SEE IT
+      final RID rid = db.newDocument(TYPE).set("v", "original").save().getIdentity();
+      final MutableDocument refused = db.lookupByRID(rid).asDocument().modify();
+      refused.set("v", "refused");
+      assertThatThrownBy(refused::save).isInstanceOf(RecordVetoedException.class);
+
+      final MutableDocument deleted = db.lookupByRID(rid).asDocument().modify();
+      db.command("sql", "DELETE FROM " + rid);
+      deleted.set("v", "changed");
+      assertThatThrownBy(deleted::save).isInstanceOf(RecordNotFoundException.class);
+    } finally {
+      db.rollback();
+    }
+  }
+
   @ParameterizedTest
   @EnumSource(Driver.class)
   void anExistingEdgeStillCannotBeSavedIntoABucket(final Driver driver) {
