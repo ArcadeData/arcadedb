@@ -56,8 +56,8 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.LongAdder;
 import java.util.function.Consumer;
 import java.util.function.IntConsumer;
 import java.util.logging.Level;
@@ -373,8 +373,9 @@ public class GraphBatch implements AutoCloseable {
   // Plain LongHashSet (zero-boxing, ~7x less memory than ConcurrentHashMap.newKeySet()) is safe
   // because the only concurrent access is read-only after a publishing barrier.
   private final LongHashSet knownNewVertexKeys = new LongHashSet();
-  // #9575: vertices a flush had to read to find the edge list it appends to. Atomic: the parallel flush counts from its workers
-  private final AtomicLong  vertexHeadReads    = new AtomicLong();
+  // #9575: vertices a flush had to read to find the edge list it appends to. An adder: the parallel flush counts from its
+  // workers, and only a test or a diagnostic reads it
+  private final LongAdder   vertexHeadReads    = new LongAdder();
 
   // --- Statistics ---
   private long totalVerticesCreated;
@@ -1798,7 +1799,7 @@ public class GraphBatch implements AutoCloseable {
    * disk read (#9575).
    */
   public long getVertexHeadReads() {
-    return vertexHeadReads.get();
+    return vertexHeadReads.sum();
   }
 
   /**
@@ -2551,7 +2552,7 @@ public class GraphBatch implements AutoCloseable {
         inChunk = new MutableEdgeSegment(database, segmentSize);
         isNew = true;
       } else {
-        vertexHeadReads.incrementAndGet();
+        vertexHeadReads.increment();
         final MutableVertex dstVertex = ((Vertex) database.lookupByRID(new RID(dstBucket, dstPos), true)).modify();
         // #5667: check for an already-promoted super-node BEFORE assuming a plain segment, with purely
         // local variables - this method runs concurrently across async-executor threads (one per bucket slot),
@@ -2787,7 +2788,7 @@ public class GraphBatch implements AutoCloseable {
     // For known-new vertices with no deferred head yet, skip loading — we know there's no existing segment
     assert !hasNoOutEdges || knownNewVertexKeys.contains(vertexKey) || hintHolds(bucketId, position, true);
     if (!hasNoOutEdges && !knownNewVertexKeys.contains(vertexKey)) {
-      vertexHeadReads.incrementAndGet();
+      vertexHeadReads.increment();
       final VertexInternal vertex = (VertexInternal) database.lookupByRID(new RID(bucketId, position), true);
       final RID headChunk = vertex.getOutEdgesHeadChunk();
       if (headChunk != null) {
@@ -2839,7 +2840,7 @@ public class GraphBatch implements AutoCloseable {
 
     assert !hasNoInEdges || knownNewVertexKeys.contains(vertexKey) || hintHolds(bucketId, position, false);
     if (!hasNoInEdges && !knownNewVertexKeys.contains(vertexKey)) {
-      vertexHeadReads.incrementAndGet();
+      vertexHeadReads.increment();
       final VertexInternal vertex = (VertexInternal) database.lookupByRID(new RID(bucketId, position), true);
       final RID headChunk = vertex.getInEdgesHeadChunk();
       if (headChunk != null) {
@@ -3477,7 +3478,7 @@ public class GraphBatch implements AutoCloseable {
         outChunk = new MutableEdgeSegment(database, segmentSize);
         isNew = true;
       } else {
-        vertexHeadReads.incrementAndGet();
+        vertexHeadReads.increment();
         final MutableVertex srcVertex = ((Vertex) database.lookupByRID(new RID(srcBucket, srcPos), true)).modify();
         // #5667: check locally for an already-promoted super-node BEFORE assuming a plain segment; this
         // method runs concurrently across async-executor threads, so a shared instance field would race.

@@ -161,6 +161,43 @@ class Issue9575GraphBatchLoadGatherBudgetTest extends TestHelper {
   }
 
   /**
+   * A map that stays full keeps dropping the pages that writes tell it of, and each drop arms a gather. That must not turn
+   * into a gather per allocation: the allocator does not ask for one while the map has a page that fits, and the throttle
+   * holds the rest.
+   */
+  @Test
+  void aMapKeptFullRunsNoGatherPerAllocation() {
+    database.getSchema().createDocumentType("Wide", 1);
+    final LocalBucket bucket = wideBucket();
+    bucket.setGatherPagesPerScanForTesting(BUDGET);
+
+    final List<RID> rids = append(RECORDS);
+    finishLap(bucket, bucket.getTotalPages());
+
+    // the map is full, and 200 more pages with room are dropped
+    freeMostOfPages(bucket, rids, 0, 300);
+    assertThat(bucket.getListedFreeSpacePagesForTesting()).hasSize(100);
+
+    final long scansBefore = bucket.getGatherScanCountForTesting();
+    final long readBefore = bucket.getGatherPagesReadForTesting();
+    int allocations = 0;
+    for (int round = 0; round < 20; round++) {
+      // every round frees room on pages the full map cannot list (each drop arms a gather), then allocates
+      freeMostOfPages(bucket, rids, 300 + round * 5, 305 + round * 5);
+      database.begin();
+      for (int i = 0; i < 100; i++) {
+        database.newDocument("Wide").set("payload", PAYLOAD).save();
+        ++allocations;
+      }
+      database.commit();
+    }
+
+    assertThat(bucket.getGatherScanCountForTesting() - scansBefore).as("gathers run by %d allocations", allocations)
+        .isLessThanOrEqualTo(1L);
+    assertThat(bucket.getGatherPagesReadForTesting() - readBefore).isLessThanOrEqualTo(BUDGET);
+  }
+
+  /**
    * A bounded scan must still get round the whole file: space freed at its far end is found, one throttled slice at a time.
    */
   @Test

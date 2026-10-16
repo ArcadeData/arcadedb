@@ -1819,7 +1819,9 @@ public class GraphImporter implements AutoCloseable {
   /**
    * What the edge batch may skip reading about the two endpoints (issue #9575): every vertex of this import is created
    * without edges, so the first time one is handed to an edge batch in a direction, its edge list in that direction is known
-   * to be empty. Each later edge of it, in this batch or another, is left to the batch to find.
+   * to be empty. Each later edge of it, in this batch or another, is left to the batch to find. A vertex is marked when its
+   * edge is handed over, not when the batch commits: if that batch fails, the later edges of the vertex go unhinted, which
+   * costs a read and never an edge.
    */
   private static int endpointHints(final TypeState srcTs, final int si, final TypeState dstTs, final int di) {
     int hints = 0;
