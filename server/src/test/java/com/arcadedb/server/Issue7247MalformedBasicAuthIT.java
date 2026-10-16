@@ -32,7 +32,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * trace per request would be a log flood an anonymous caller controls.
  * <p>
  * A header that cannot be Base64-decoded is now answered where it happens, exactly as a header that decodes to
- * something other than {@code user:password} already was - 403, no exception raised. What still reaches the catch
+ * something other than {@code user:password} already was - 401 since issue #10109 (403 before), no exception raised. What still reaches the catch
  * is an internal fault, which is why that arm can now log its cause and chain it.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -40,20 +40,20 @@ import static org.assertj.core.api.Assertions.assertThat;
 class Issue7247MalformedBasicAuthIT extends BaseGraphServerTest {
 
   @Test
-  void aBasicHeaderThatIsNotBase64Is403() throws Exception {
-    assertThat(statusForAuthorizationHeader("Basic !!!not-base64!!!")).isEqualTo(403);
+  void aBasicHeaderThatIsNotBase64Is401() throws Exception {
+    assertThat(statusForAuthorizationHeader("Basic !!!not-base64!!!")).isEqualTo(401);
   }
 
   @Test
-  void aBasicHeaderWithNoPayloadIs403() throws Exception {
-    assertThat(statusForAuthorizationHeader("Basic")).isEqualTo(403);
+  void aBasicHeaderWithNoPayloadIs401() throws Exception {
+    assertThat(statusForAuthorizationHeader("Basic")).isEqualTo(401);
   }
 
   @Test
-  void aBasicHeaderDecodingToSomethingElseIsStill403() throws Exception {
+  void aBasicHeaderDecodingToSomethingElseIsStill401() throws Exception {
     // The pre-existing sibling of the two above: valid Base64 that is not 'user:password'.
     assertThat(statusForAuthorizationHeader(
-        "Basic " + Base64.getEncoder().encodeToString("nocolon".getBytes()))).isEqualTo(403);
+        "Basic " + Base64.getEncoder().encodeToString("nocolon".getBytes()))).isEqualTo(401);
   }
 
   /**
