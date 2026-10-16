@@ -42,7 +42,6 @@ import com.arcadedb.utility.IntHashSet;
 import com.arcadedb.utility.RidHashSet;
 
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -378,14 +377,7 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
           continue;
       }
 
-      final LinkedHashMap<String, Object> entry = new LinkedHashMap<>();
-      entry.put("record", record);
-      for (final String prop : record.getPropertyNames())
-        entry.put(prop, record.get(prop));
-      entry.put("@rid", record.getIdentity());
-      entry.put("@type", record.getTypeName());
-      entry.put("score", neighbor.score());
-      result.add(entry);
+      result.add(new ScoredRecordRow(record, "score", neighbor.score()));
     }
 
     return result;
