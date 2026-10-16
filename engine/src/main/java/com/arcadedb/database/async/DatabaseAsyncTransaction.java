@@ -154,7 +154,10 @@ public class DatabaseAsyncTransaction implements DatabaseAsyncTask {
           break;
         }
 
-      } catch (final Exception e) {
+      } catch (final Exception | Error e) {
+        // An Error too (#9575): the worker loop catches it and rolls back, but only this callback tells the submitter, and
+        // a caller that waits for completion and then asks the callback what failed - the parallel GraphBatch flush -
+        // otherwise takes a task that never committed for one that did
         if (database.getTransaction().isActive())
           database.rollback();
 

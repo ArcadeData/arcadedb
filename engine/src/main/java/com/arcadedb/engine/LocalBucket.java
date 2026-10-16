@@ -306,7 +306,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   // is what is left of the lap the last change asked for: while it is above 0 the next slice is due once the timeout is over,
   // with or without a new change. Guarded by the `freeSpaceInPages` monitor (also read outside it, hence volatile).
   private volatile       int                       gatherPagesLeftInLap             = 0;
-  private                int                       gatherPagesPerScan               = GATHER_STATS_MAX_PAGES_PER_SCAN;
+  // GATHER_STATS_MAX_PAGES_PER_SCAN, changed only by setGatherPagesPerScanForTesting (volatile: from the test's thread)
+  private volatile       int                       gatherPagesPerScan               = GATHER_STATS_MAX_PAGES_PER_SCAN;
   private final          AtomicLong                changesFromLastStats             = new AtomicLong();
   // how many gather scans ran (not how many were asked for): lets a test pin that a bulk write does not rescan the bucket per record
   private final          AtomicLong                gatherScans                      = new AtomicLong();
@@ -3359,9 +3360,13 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       // Dropped rather than kept queued when there is nothing to do now - already listed, the map full, or the page
       // still being created by another transaction (whose own writes list it): it is a hint, and the next gather
       // measures every page anyway
-      if (freeSpaceInPages.containsKey(pageNumber) || freeSpaceInPages.size() >= MAX_PAGES_GATHER_STATS
-              || isNewPageOfAnotherTransaction(pageNumber, tx))
+      if (freeSpaceInPages.containsKey(pageNumber) || isNewPageOfAnotherTransaction(pageNumber, tx))
         continue;
+      if (freeSpaceInPages.size() >= MAX_PAGES_GATHER_STATS) {
+        // the room it hid is known to nothing else now: a measurement no longer arms a gather by itself (#9575)
+        changesFromLastStats.incrementAndGet();
+        continue;
+      }
       ++measured;
       try {
         final BasePage page = tx.getPage(new PageId(database, file.getFileId(), pageNumber), pageSize);
@@ -3765,7 +3770,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         //
         // Kept rather than left to the compressPage the commit runs on this page a moment later (which measures the
         // same thing), because the walk is already done here and dropping the call would also drop the
-        // changesFromLastStats increment that schedules the next full statistics gather.
+        // changesFromLastStats increment it makes when the map is full (#9575), the one case a later gather has to
+        // find this page.
         //
         // #8401: measured with findContentInsertionOffset, NOT with the allocator's getFreeSpaceInPage. That one
         // answers a different question - "can a NEW record go here?" - and on a page whose slot table is full it gives
@@ -7505,16 +7511,22 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    *                       change to it (see {@link #accountCompressedPage}).
    */
   private void updatePageStatistics(final MutablePage page, final int availableSpace, final int delta) {
-    // #9575: only a write that gives space back, or measures a page, arms the next gather. One that takes space (an insert,
-    // an enlargement) cannot leave a page with room a scan would list, and the pages it fills are tracked by the code below.
-    // Counting them armed a scan of EVERY page of the bucket each time the throttle ran out and an appended page had just
-    // filled up (the map is empty then), so a bulk load got slower the more it had written: 6 minutes of reads per scan at
-    // 1.3M pages.
-    if (delta >= 0)
-      changesFromLastStats.incrementAndGet();
-
-    if (reuseSpaceMode.ordinal() < REUSE_SPACE_MODE.HIGH.ordinal())
+    // #9575: what arms the next gather. A write that takes space (an insert, an enlargement) never does: it cannot leave a
+    // page with room a scan would list. Counting those armed a scan of EVERY page of the bucket each time the throttle ran
+    // out and an appended page had just filled up, so a bulk load got slower the more it had written (6 minutes of reads
+    // per scan at 1.3M pages).
+    //
+    // A write that gives space back, or measures a page, arms it below HIGH, where the writes keep no map and the scan is
+    // the only way the space is ever listed. In HIGH such a write states the page's room in the map itself, exactly, and a
+    // scan would only list the same value again, so it arms one only when the map could not keep what the write said (the
+    // map was full, see below). Arming on every measurement made each commit of a record larger than a page schedule a scan
+    // of the whole bucket, because the commit measures the pages its chunks landed on: 20 minutes of reads per scan at
+    // 209M vertices.
+    if (reuseSpaceMode.ordinal() < REUSE_SPACE_MODE.HIGH.ordinal()) {
+      if (delta >= 0)
+        changesFromLastStats.incrementAndGet();
       return;
+    }
 
     final int pageId = page.getPageId().getPageNumber();
 
@@ -7570,6 +7582,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
               freeSpaceInPages.remove(lowestPageId[0], -1);
               freeSpaceInPages.put(pageId, newSpace);
             }
+            // Either the evicted page or this one has room the map no longer lists: only a scan finds it again. Not for a
+            // write that takes space, which is an append filling the tail it keeps writing to (#9575, see above)
+            if (delta >= 0)
+              changesFromLastStats.incrementAndGet();
           } else
             freeSpaceInPages.put(pageId, newSpace);
         }
@@ -7593,6 +7609,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   }
 
   public void setPageStatistics(final JSONArray pages) {
+    // the pages the map listed and the new list does not are known to nothing else: a gather has to find them (#9575)
+    changesFromLastStats.incrementAndGet();
     synchronized (freeSpaceInPages) {
       freeSpaceInPages.clear();
       for (int i = 0; i < pages.length(); i++) {

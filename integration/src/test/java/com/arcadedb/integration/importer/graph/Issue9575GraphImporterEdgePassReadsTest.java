@@ -124,26 +124,71 @@ class Issue9575GraphImporterEdgePassReadsTest {
     assertDegrees("REFERS", refers);
   }
 
+  /**
+   * The hints cover only the vertices the running import created: a second import into the same database, of the same
+   * types, starts edge lists for its own vertices and leaves those of the first import's vertices as they were.
+   */
+  @Test
+  void aSecondImportIntoTheSameDatabaseKeepsTheEdgesOfTheFirst() throws Exception {
+    final int[][] first = new int[2][2 * VERTICES];
+    final int[][] second = new int[2][2 * VERTICES];
+    importWorks(0, 1, first);
+    importWorks(VERTICES, 2, second);
+
+    for (int i = 0; i < 2 * VERTICES; i++) {
+      first[0][i] += second[0][i];
+      first[1][i] += second[1][i];
+    }
+    assertDegrees("CITE", first);
+  }
+
+  private void importWorks(final int firstId, final long seed, final int[][] degrees) throws Exception {
+    try (final GraphImporter importer = GraphImporter.builder(database)
+        .vertex("WORK", works(firstId), v -> {
+          v.id("id");
+          v.longProperty("id", "id");
+        })
+        .edgeSource("CITE", edges(firstId, seed, degrees), e -> {
+          e.from("from", "WORK");
+          e.to("to", "WORK");
+        })
+        .build()) {
+      importer.run();
+      assertThat(importer.getVertexHeadReads()).isZero();
+    }
+  }
+
   private static GraphImporter.RecordSource works() {
+    return works(0);
+  }
+
+  private static GraphImporter.RecordSource works(final int firstId) {
     return visitor -> {
       final Map<String, String> row = new HashMap<>();
       final GraphImporter.RecordReader reader = row::get;
-      for (int i = 0; i < VERTICES; i++) {
+      for (int i = firstId; i < firstId + VERTICES; i++) {
         row.put("id", String.valueOf(i));
         visitor.visit(reader);
       }
     };
   }
 
-  /** Random edges, counted into {@code degrees[0]} (out) and {@code degrees[1]} (in) as they are generated. */
   private static GraphImporter.RecordSource edges(final long seed, final int[][] degrees) {
+    return edges(0, seed, degrees);
+  }
+
+  /**
+   * Random edges between the VERTICES ids from {@code firstId}, counted into {@code degrees[0]} (out) and {@code degrees[1]}
+   * (in) as they are generated.
+   */
+  private static GraphImporter.RecordSource edges(final int firstId, final long seed, final int[][] degrees) {
     return visitor -> {
       final Random rnd = new Random(seed);
       final Map<String, String> row = new HashMap<>();
       final GraphImporter.RecordReader reader = row::get;
       for (int i = 0; i < EDGES; i++) {
-        final int from = rnd.nextInt(VERTICES);
-        final int to = rnd.nextInt(VERTICES);
+        final int from = firstId + rnd.nextInt(VERTICES);
+        final int to = firstId + rnd.nextInt(VERTICES);
         degrees[0][from]++;
         degrees[1][to]++;
         row.put("from", String.valueOf(from));
@@ -164,6 +209,6 @@ class Issue9575GraphImporterEdgePassReadsTest {
         ++checked;
       }
     }
-    assertThat(checked).isEqualTo(VERTICES);
+    assertThat(checked).isEqualTo(degrees[0].length);
   }
 }

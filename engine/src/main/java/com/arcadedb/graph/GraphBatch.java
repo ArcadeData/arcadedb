@@ -820,6 +820,8 @@ public class GraphBatch implements AutoCloseable {
       throw new IllegalArgumentException("Source vertex RID is null");
     if (destVertexRID == null)
       throw new IllegalArgumentException("Destination vertex RID is null");
+    if ((endpointHints & ~(SOURCE_HAS_NO_OUT_EDGES | DESTINATION_HAS_NO_IN_EDGES)) != 0)
+      throw new IllegalArgumentException("Unknown endpoint hints " + endpointHints);
 
     // Cached edge type bucket ID lookup
     final int typeBucketId = edgeTypeFirstBucketCache.computeIfAbsent(edgeTypeName,
@@ -2028,6 +2030,7 @@ public class GraphBatch implements AutoCloseable {
         final int groupSize = j - i;
         ensureTmpArrays(groupSize);
         int totalBytesNeeded = 0;
+        // OR-ed over the group: a caller hints the FIRST edge of a vertex it hands over, and that edge can sort anywhere in it
         boolean hasNoOutEdges = false;
         for (int k = 0; k < groupSize; k++) {
           final int kIdx = sortIndex[i + k];
@@ -2543,6 +2546,7 @@ public class GraphBatch implements AutoCloseable {
         inChunk = (EdgeSegment) database.lookupByRID(deferredChunkRID, true);
         isNew = false;
       } else if (hasNoInEdges || knownNewVertexKeys.contains(vertexKey)) {
+        assert !hasNoInEdges || knownNewVertexKeys.contains(vertexKey) || hintHolds(dstBucket, dstPos, false);
         final int segmentSize = MutableEdgeSegment.CONTENT_START_POSITION + totalBytesNeeded;
         inChunk = new MutableEdgeSegment(database, segmentSize);
         isNew = true;
@@ -2735,6 +2739,19 @@ public class GraphBatch implements AutoCloseable {
   private StripeDirectory lastPromotedDirectory;
 
   /**
+   * Under {@code -ea} only, so the test suites catch a wrong {@link #newEdgeWithHints} caller before it orphans anything:
+   * whether the vertex really has no edge list in that direction. Pays the very read the hint exists to save.
+   */
+  private boolean hintHolds(final int bucketId, final long position, final boolean out) {
+    final VertexInternal vertex = (VertexInternal) database.lookupByRID(new RID(bucketId, position), true);
+    final RID head = out ? vertex.getOutEdgesHeadChunk() : vertex.getInEdgesHeadChunk();
+    if (head != null)
+      throw new AssertionError("Vertex " + vertex.getIdentity() + " was hinted to have no " + (out ? "outgoing" : "incoming")
+          + " edges, but its edge list starts at " + head);
+    return true;
+  }
+
+  /**
    * Gets or creates an OUT segment for a vertex without loading the vertex record.
    * For known-new vertices (from createVertices()), skips the vertex load entirely.
    * Sets lastSegmentIsNew=true if a new segment was created (not yet persisted — caller
@@ -2768,6 +2785,7 @@ public class GraphBatch implements AutoCloseable {
     }
 
     // For known-new vertices with no deferred head yet, skip loading — we know there's no existing segment
+    assert !hasNoOutEdges || knownNewVertexKeys.contains(vertexKey) || hintHolds(bucketId, position, true);
     if (!hasNoOutEdges && !knownNewVertexKeys.contains(vertexKey)) {
       vertexHeadReads.incrementAndGet();
       final VertexInternal vertex = (VertexInternal) database.lookupByRID(new RID(bucketId, position), true);
@@ -2819,6 +2837,7 @@ public class GraphBatch implements AutoCloseable {
       return (EdgeSegment) database.lookupByRID(deferredRID, true);
     }
 
+    assert !hasNoInEdges || knownNewVertexKeys.contains(vertexKey) || hintHolds(bucketId, position, false);
     if (!hasNoInEdges && !knownNewVertexKeys.contains(vertexKey)) {
       vertexHeadReads.incrementAndGet();
       final VertexInternal vertex = (VertexInternal) database.lookupByRID(new RID(bucketId, position), true);
@@ -3453,6 +3472,7 @@ public class GraphBatch implements AutoCloseable {
         outChunk = (EdgeSegment) database.lookupByRID(deferredChunkRID, true);
         isNew = false;
       } else if (hasNoOutEdges || knownNewVertexKeys.contains(vertexKey)) {
+        assert !hasNoOutEdges || knownNewVertexKeys.contains(vertexKey) || hintHolds(srcBucket, srcPos, true);
         final int segmentSize = MutableEdgeSegment.CONTENT_START_POSITION + totalBytesNeeded;
         outChunk = new MutableEdgeSegment(database, segmentSize);
         isNew = true;
