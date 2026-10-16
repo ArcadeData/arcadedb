@@ -52,7 +52,7 @@ class HTTPGraphIT extends BaseGraphServerTest {
         readResponse(connection);
         fail("Authentication was bypassed!");
       } catch (final IOException e) {
-        assertThat(e.toString()).contains("403");
+        assertThat(e.toString()).contains("401"); // issue #10109
       } finally {
         connection.disconnect();
       }

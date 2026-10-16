@@ -139,7 +139,7 @@ class UserManagementIT extends BaseGraphServerTest {
       oldAuthConn.connect();
 
       try {
-        assertThat(oldAuthConn.getResponseCode()).isEqualTo(403);
+        assertThat(oldAuthConn.getResponseCode()).isEqualTo(401); // issue #10109
       } finally {
         oldAuthConn.disconnect();
       }

@@ -263,7 +263,7 @@ class HTTPAuthSessionIT extends BaseGraphServerTest {
       connection.connect();
 
       try {
-        assertThat(connection.getResponseCode()).isEqualTo(403);
+        assertThat(connection.getResponseCode()).isEqualTo(401); // issue #10109
       } finally {
         connection.disconnect();
       }

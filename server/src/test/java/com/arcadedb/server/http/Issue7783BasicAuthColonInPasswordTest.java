@@ -69,7 +69,7 @@ class Issue7783BasicAuthColonInPasswordTest extends BaseGraphServerTest {
   @Test
   void aWrongPasswordWithColonsReachesTheCredentialCheck() throws Exception {
     final Response response = get(USER + ":Pa:ss:WRONG");
-    assertThat(response.status).isEqualTo(403);
+    assertThat(response.status).isEqualTo(401); // issue #10109: a credential failure, not a refusal
     assertThat(response.body).doesNotContain("Basic authentication error");
     assertThat(response.body).contains("User/Password not valid");
   }
@@ -77,7 +77,7 @@ class Issue7783BasicAuthColonInPasswordTest extends BaseGraphServerTest {
   @Test
   void anEmptyPasswordReachesTheCredentialCheck() throws Exception {
     final Response response = get(USER + ":");
-    assertThat(response.status).isEqualTo(403);
+    assertThat(response.status).isEqualTo(401); // issue #10109: a credential failure, not a refusal
     assertThat(response.body).doesNotContain("Basic authentication error");
     assertThat(response.body).contains("User/Password not valid");
   }
@@ -85,7 +85,7 @@ class Issue7783BasicAuthColonInPasswordTest extends BaseGraphServerTest {
   @Test
   void aCredentialWithoutAnyColonIsStillMalformed() throws Exception {
     final Response response = get(USER + PASSWORD.replace(":", ""));
-    assertThat(response.status).isEqualTo(403);
+    assertThat(response.status).isEqualTo(401); // issue #10109: a credential failure, not a refusal
     assertThat(response.body).contains("Basic authentication error");
   }
 
