@@ -213,6 +213,16 @@ public class Issue10161RemoteSaveVetoIT extends BaseGrpcClientServerTest {
     assertThatThrownBy(edge::save).isInstanceOf(RecordNotFoundException.class);
   }
 
+  @ParameterizedTest
+  @EnumSource(Driver.class)
+  void anExistingEdgeStillCannotBeSavedIntoABucket(final Driver driver) {
+    final RemoteDatabase db = db(driver);
+    final RID edgeRid = db.command("sql", "CREATE EDGE " + EDGE + " FROM (CREATE VERTEX " + VERTEX + ") TO (CREATE VERTEX " + VERTEX
+        + ") SET v = 'original'").next().getIdentity().get();
+    final MutableEdge edge = db.lookupByRID(edgeRid).asEdge().modify();
+    assertThatThrownBy(() -> edge.save(EDGE)).isInstanceOf(IllegalStateException.class);
+  }
+
   private RemoteDatabase db(final Driver driver) {
     return driver == Driver.HTTP ? http : grpc;
   }
