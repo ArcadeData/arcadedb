@@ -26,7 +26,8 @@ import io.undertow.server.ServerConnection;
 import io.undertow.server.protocol.http2.Http2ServerConnection;
 import org.xnio.IoUtils;
 
-import java.lang.reflect.Field;
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.VarHandle;
 import java.util.logging.Level;
 
 /**
@@ -37,15 +38,17 @@ import java.util.logging.Level;
  * Undertow resets a stream only with {@code CANCEL} through its public API ({@code Http2ServerConnection.close()}), and
  * a client is entitled to read {@code CANCEL} as a failed request: the JDK client discards the response it has already
  * received and reports "RST_STREAM received". The stream id and the frame channel {@code NO_ERROR} needs are private
- * fields of {@link Http2ServerConnection}, so they are read reflectively, resolved once. Should a later Undertow rename
+ * fields of {@link Http2ServerConnection}, so they are read through {@link VarHandle}s resolved once with
+ * {@link MethodHandles#privateLookupIn}, the JDK's supported way to read another class's private state, which neither
+ * alters any member's accessibility nor costs a reflective call per request. Should a later Undertow rename
  * them, the reset falls back to {@code CANCEL}, which still stops the body - the server-side half of the guarantee -
  * and {@code Issue7772ChunkedBodySizeLimitTest} fails on the client-side half, so the upgrade cannot pass unnoticed.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public final class Http2StreamReset {
-  private static final Field CHANNEL         = field("channel");
-  private static final Field REQUEST_CHANNEL = field("requestChannel");
+  private static final VarHandle CHANNEL         = field("channel", Http2Channel.class);
+  private static final VarHandle REQUEST_CHANNEL = field("requestChannel", Http2StreamSourceChannel.class);
 
   private Http2StreamReset() {
   }
@@ -55,13 +58,14 @@ public final class Http2StreamReset {
     final ServerConnection connection = exchange.getConnection();
     if (connection instanceof Http2ServerConnection && CHANNEL != null && REQUEST_CHANNEL != null)
       try {
-        final Http2Channel channel = (Http2Channel) CHANNEL.get(connection);
-        final Http2StreamSourceChannel stream = (Http2StreamSourceChannel) REQUEST_CHANNEL.get(connection);
+        final Http2Channel channel = (Http2Channel) CHANNEL.get((Http2ServerConnection) connection);
+        final Http2StreamSourceChannel stream = (Http2StreamSourceChannel) REQUEST_CHANNEL.get(
+            (Http2ServerConnection) connection);
         if (channel != null && stream != null) {
           channel.sendRstStream(stream.getStreamId(), Http2Channel.ERROR_NO_ERROR);
           return;
         }
-      } catch (final IllegalAccessException | RuntimeException e) {
+      } catch (final RuntimeException e) {
         LogManager.instance().log(Http2StreamReset.class, Level.FINE, "Cannot reset the HTTP/2 stream with NO_ERROR: %s", e,
             e.getMessage());
       }
@@ -70,11 +74,10 @@ public final class Http2StreamReset {
     IoUtils.safeClose(connection);
   }
 
-  private static Field field(final String name) {
+  private static VarHandle field(final String name, final Class<?> type) {
     try {
-      final Field field = Http2ServerConnection.class.getDeclaredField(name);
-      field.setAccessible(true);
-      return field;
+      return MethodHandles.privateLookupIn(Http2ServerConnection.class, MethodHandles.lookup())
+          .findVarHandle(Http2ServerConnection.class, name, type);
     } catch (final ReflectiveOperationException | RuntimeException e) {
       LogManager.instance().log(Http2StreamReset.class, Level.WARNING,
           "Undertow's Http2ServerConnection has no accessible '%s': a request body refused on HTTP/2 is reset with "
