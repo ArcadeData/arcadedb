@@ -229,20 +229,24 @@ public class ArcadeStateMachine extends BaseStateMachine {
   // neither a restart nor RaftHAServer.restartRatis() reuses this instance (both go through createStateMachine()).
   private final    AtomicLong                replayFloor      = new AtomicLong(Long.MAX_VALUE);
   // The lowest index of an entry this node did not apply (or could not make durable) and holds for the replay, by what
-  // it is held for (issue #10086): a security document ("security:users", ...) whose file could not be written, a database
-  // configuration ("config:<db>"), a retry loop that gave up on an entry no database could be quarantined for. The same
-  // rule as replayFloor - takeSnapshot() checkpoints below the lowest - except that these heal: the entry of the same
-  // document that follows and persists supersedes the held one, so the hold is released then (releaseHeldEntry) instead of
-  // keeping the log from being purged until the process ends. In memory only: after a restart the replay itself is the cure.
+  // it is held for (issue #10086): a security document ("security:<entry type>") whose file could not be written, or a retry
+  // loop that gave up on an entry no database could be quarantined for. The same rule as replayFloor - takeSnapshot()
+  // checkpoints below the lowest - except that a security document heals: the entry of the same document that follows and
+  // persists supersedes the held one, so the hold is released then (releaseHeldEntry) instead of keeping the log from being
+  // purged until the process ends. The two retry keys do NOT heal: nothing supersedes an entry that could not be applied, so
+  // they hold until a restart replays it or a Raft install covers it, and takeSnapshot() says so while they do.
+  // In memory only: after a restart the replay itself is the cure.
   private final    ConcurrentHashMap<String, Long> heldEntryFloors = new ConcurrentHashMap<>();
-  // What an entry is held for, besides one key per security document ("security:<entry type>") and per database configuration
+  // What an entry is held for, besides one key per security document
   private static final String                HELD_RETRY_EXHAUSTED   = "retry-exhausted";
   private static final String                HELD_INTERRUPTED_RETRY = "retry-interrupted";
-  private static final String                HELD_CONFIGURATION     = "config:";
-  // The settings of each database ("config:<db>" in heldEntryFloors) whose replicated value is in force in memory but not
-  // in configuration.json. A configuration entry rewrites only the settings it names, so the held one is superseded only
-  // when every one of them has been written again (issue #10086).
-  private final    ConcurrentHashMap<String, Set<String>> unpersistedConfigurationKeys = new ConcurrentHashMap<>();
+  // The database configurations in force in memory that configuration.json does not carry (issue #10086), by database. A
+  // configuration entry rewrites only the settings it names, so a held one is superseded only when every one of them has
+  // been written again. One structure per database, replaced whole, so the hold and the settings it waits for never disagree.
+  private final    ConcurrentHashMap<String, HeldConfiguration> heldConfigurations = new ConcurrentHashMap<>();
+  private static final long              HELD_REMINDER_INTERVAL_MS = 300_000L;
+  // When takeSnapshot() last reminded that a hold keeps the Raft log from being purged, so a hold that lasts is not forgotten
+  private volatile long                      heldCheckpointReminderMs;
   // Set once isNodeShuttingDown() has seen the JVM running its shutdown hooks (issue #9550); never cleared.
   private volatile boolean                   jvmShutdownSeen;
   // The highest index a leader-driven Raft install covered (issues #8577, #8651): a replayed entry at or below it is
@@ -2273,6 +2277,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * The disposition of a {@link ReplicationException} nothing has dealt with (issue #10086), as an unexpected error gets it:
    * the database it names is quarantined and resynced, and an entry that names none halts the node, because a mutation
    * nobody can apply must never be stepped over quietly (issue #4798). Returns the exception to throw.
+   * <p>
+   * Deliberately not the policy of a retry loop that gave up on an entry with no database, which is held instead: that is a
+   * transient condition (a page-version race) on an entry that is well formed, so replaying it is the cure and halting the
+   * node would turn a conflict into an outage. An exception nobody classified is a failure this code has no model of, so it
+   * takes the halt that was always the answer to those. An apply that IS fail-safe says so itself, by holding its entry
+   * ({@link #holdEntryForReplay}), as the security documents do.
    */
   private RuntimeException dispositionForUnhandled(final long index, final String databaseName, final ReplicationException re) {
     try {
@@ -2301,10 +2311,16 @@ public class ArcadeStateMachine extends BaseStateMachine {
    */
   private EntryLeftForReplayException holdEntryForReplay(final String key, final long index, final String message,
       final Throwable cause) {
-    final long previous = heldEntryFloors.merge(key, index, Math::min);
-    LogManager.instance().log(this, previous == index ? Level.SEVERE : Level.FINE,
+    final long lowest = heldEntryFloors.merge(key, index, Math::min);
+    return heldEntry(key, index, lowest == index, message, cause);
+  }
+
+  /** The exception of an entry held for the replay, with the one SEVERE that says so; the hold itself is already registered. */
+  private EntryLeftForReplayException heldEntry(final String what, final long index, final boolean first, final String message,
+      final Throwable cause) {
+    LogManager.instance().log(this, first ? Level.SEVERE : Level.FINE,
         "Raft entry at index %d was not applied or not made durable (%s): no snapshot checkpoint will cover it until it is "
-            + "superseded, so a restart replays it (issue #10086): %s", index, key, message);
+            + "superseded, so a restart replays it (issue #10086): %s", index, what, message);
     return new EntryLeftForReplayException(message, cause);
   }
 
@@ -2319,18 +2335,46 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * a Raft install covered is dropped on the way: the installed copy carries what the entry did (issue #10086).
    */
   private long lowestHeldEntry() {
-    if (heldEntryFloors.isEmpty())
+    if (heldEntryFloors.isEmpty() && heldConfigurations.isEmpty())
       return Long.MAX_VALUE;
     final long boundary = installedRaftBoundary.get();
     long lowest = Long.MAX_VALUE;
-    for (final var entry : heldEntryFloors.entrySet()) {
+    for (final Map.Entry<String, Long> entry : heldEntryFloors.entrySet()) {
       final long index = entry.getValue();
       if (index <= boundary)
         heldEntryFloors.remove(entry.getKey(), entry.getValue());
       else if (index < lowest)
         lowest = index;
     }
+    for (final Map.Entry<String, HeldConfiguration> entry : heldConfigurations.entrySet()) {
+      final long index = entry.getValue().index();
+      if (index <= boundary)
+        heldConfigurations.remove(entry.getKey(), entry.getValue());
+      else if (index < lowest)
+        lowest = index;
+    }
     return lowest;
+  }
+
+  /**
+   * Says, at most once per {@link #HELD_REMINDER_INTERVAL_MS}, that entries held for the replay keep the Raft log from being
+   * purged (issue #10086): a hold that nothing supersedes - a retry loop that gave up - lasts until a restart replays the
+   * entry or a Raft install covers it, and the log grows meanwhile, which the hold's own SEVERE has long scrolled past.
+   */
+  private void remindThatEntriesAreHeld(final long lowest) {
+    final long now = System.currentTimeMillis();
+    if (now - heldCheckpointReminderMs < HELD_REMINDER_INTERVAL_MS)
+      return;
+    heldCheckpointReminderMs = now;
+    final StringBuilder held = new StringBuilder();
+    for (final Map.Entry<String, Long> entry : heldEntryFloors.entrySet())
+      held.append(held.isEmpty() ? "" : ", ").append(entry.getKey()).append('@').append(entry.getValue());
+    for (final Map.Entry<String, HeldConfiguration> entry : heldConfigurations.entrySet())
+      held.append(held.isEmpty() ? "" : ", ").append("config:").append(entry.getKey()).append('@')
+          .append(entry.getValue().index());
+    LogManager.instance().log(this, Level.WARNING,
+        "The Raft log is not checkpointed past index %d because entries are held for the replay (%s): it grows until a later "
+            + "entry supersedes them, a restart replays them or a Raft install covers them (issue #10086)", lowest - 1, held);
   }
 
   private static String heldSecurityKey(final RaftLogEntryType type) {
@@ -2481,7 +2525,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // The entries held for the replay for another reason (issue #10086) lower it the same way: skipped or not made durable
     // while a later one advanced the index.
     final long appliedIndex = lastAppliedIndex.get();
-    final long floor = Math.min(replayFloor.get(), lowestHeldEntry());
+    final long lowestHeld = lowestHeldEntry();
+    if (lowestHeld != Long.MAX_VALUE)
+      remindThatEntriesAreHeld(lowestHeld);
+    final long floor = Math.min(replayFloor.get(), lowestHeld);
     final long currentIndex = floor == Long.MAX_VALUE ? appliedIndex : Math.min(appliedIndex, floor - 1);
     if (currentIndex < 0)
       return RaftLog.INVALID_LOG_INDEX;
@@ -7335,9 +7382,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
           LocalDatabase.CONFIGURATION_FILE_NAME);
       // In force in memory and not on disk: the entry is held for the replay until the file carries every setting it
       // named (issue #10086), as it is for the security documents
-      unpersistedConfigurationKeys.computeIfAbsent(decoded.databaseName(), name -> ConcurrentHashMap.newKeySet())
-          .addAll(settingsNamedBy(payload));
-      throw holdEntryForReplay(HELD_CONFIGURATION + decoded.databaseName(), index,
+      final HeldConfiguration held = heldConfigurations.merge(decoded.databaseName(),
+          new HeldConfiguration(index, settingsNamedBy(payload)), HeldConfiguration::and);
+      throw heldEntry("config:" + decoded.databaseName(), index, held.index() == index,
           "Failed to persist the replicated configuration of database '" + decoded.databaseName() + "' locally", e);
     }
     releaseWrittenConfigurationKeys(decoded.databaseName(), payload);
@@ -7356,26 +7403,40 @@ public class ArcadeStateMachine extends BaseStateMachine {
   }
 
   /**
+   * A database configuration in force in memory that {@code configuration.json} does not carry (issue #10086): the lowest
+   * index of the entries that could not be written and the settings they named. Immutable and replaced whole, so the hold and
+   * the settings it waits for are one value.
+   */
+  private record HeldConfiguration(long index, Set<String> settings) {
+    /** What is outstanding once {@code other} failed as well: the lowest index and every setting either named. */
+    HeldConfiguration and(final HeldConfiguration other) {
+      final Set<String> both = new HashSet<>(settings);
+      both.addAll(other.settings);
+      return new HeldConfiguration(Math.min(index, other.index), both);
+    }
+
+    /** What is outstanding after an entry wrote {@code written}, or {@code null} when every setting is written again. */
+    HeldConfiguration without(final Set<String> written) {
+      final Set<String> remaining = new HashSet<>(settings);
+      remaining.removeAll(written);
+      return remaining.isEmpty() ? null : new HeldConfiguration(index, remaining);
+    }
+  }
+
+  /**
    * An entry of {@code databaseName} has just written the settings it names: the held entry of the database is superseded
    * once every setting it named has been written again (issue #10086).
    */
   private void releaseWrittenConfigurationKeys(final String databaseName, final String payload) {
-    if (unpersistedConfigurationKeys.isEmpty())
+    if (heldConfigurations.isEmpty())
       return;
     final Set<String> written = settingsNamedBy(payload);
-    unpersistedConfigurationKeys.computeIfPresent(databaseName, (name, unpersisted) -> {
-      unpersisted.removeAll(written);
-      if (!unpersisted.isEmpty())
-        return unpersisted;
-      releaseHeldEntry(HELD_CONFIGURATION + databaseName);
-      return null;
-    });
+    heldConfigurations.computeIfPresent(databaseName, (name, held) -> held.without(written));
   }
 
   /** The copy of {@code databaseName} is the leader's again, configuration.json included, or gone: nothing left to replay for it. */
   private void releaseHeldConfiguration(final String databaseName) {
-    unpersistedConfigurationKeys.remove(databaseName);
-    releaseHeldEntry(HELD_CONFIGURATION + databaseName);
+    heldConfigurations.remove(databaseName);
   }
 
   // @VisibleForTesting
@@ -9500,8 +9561,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
     lastDivergedResyncLogByDb.clear();
     divergedSwallowedErrors.set(0);
     // Every database was reinstalled from the leader, configuration.json included (issue #10086)
-    for (final String databaseName : new ArrayList<>(unpersistedConfigurationKeys.keySet()))
-      releaseHeldConfiguration(databaseName);
+    heldConfigurations.clear();
   }
 
   /**

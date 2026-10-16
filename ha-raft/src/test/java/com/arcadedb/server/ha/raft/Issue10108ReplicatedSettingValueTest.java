@@ -113,6 +113,26 @@ class Issue10108ReplicatedSettingValueTest {
 
     assertThat(submitted).as("nothing of B's reached the log").hasSize(1);
     assertThat(submittedBuckets(0)).isEqualTo(5);
+    assertThat(local.getConfiguration().getValueAsInteger(GlobalConfiguration.TYPE_DEFAULT_BUCKETS))
+        .as("this node holds what the cluster holds once B is undone before A's entry is applied here: A's value, which B replaced")
+        .isEqualTo(5);
+  }
+
+  @Test
+  void aRefusedSubmitUndoneAfterTheFirstEntryWasAppliedHereLeavesThatEntrysValue() throws IOException {
+    final LocalDatabase.SettingChange a = set(5);
+    final LocalDatabase.SettingChange b = set(7);
+
+    database.saveConfiguration(a);
+    // The apply of A's entry on this node: what every node, the originator included, does with a committed entry
+    local.applyConfigurationChanges(submitted.getFirst());
+    assertThat(local.getConfiguration().getValueAsInteger(GlobalConfiguration.TYPE_DEFAULT_BUCKETS)).isEqualTo(5);
+
+    local.undoSettingChange(b);
+
+    assertThat(local.getConfiguration().getValueAsInteger(GlobalConfiguration.TYPE_DEFAULT_BUCKETS))
+        .as("another writer changed the setting since B stored it, so its value stands").isEqualTo(5);
+    assertThat(submitted).hasSize(1);
   }
 
   @Test

@@ -177,6 +177,80 @@ class Issue10086SkippedEntryHoldsTheCheckpointTest {
         .isEqualTo(LATER_INDEX);
   }
 
+  /** An entry whose precondition no longer holds installs nothing, so it carries nothing the failed one did not. */
+  @Test
+  void aStaleLaterEntryOfTheSameDocumentDoesNotReleaseTheHold() {
+    final FakeServerSecurity security = FakeServerSecurity.create();
+    security.on("applyReplicatedUsers", args -> {
+      if (args.length == 1)
+        throw new ReplicatedUsersPersistenceException("could NOT be persisted", new IOException("No space left on device"));
+      return false;
+    });
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create();
+    server.security(security);
+    sm = stateMachine(server);
+
+    assertThat(sm.applyTransaction(securityEntry(Kind.USERS, SKIPPED_INDEX)).isCompletedExceptionally()).isTrue();
+    final CompletableFuture<?> stale = sm.applyTransaction(
+        rawEntry(RaftLogEntryCodec.encodeSecurityUsersEntry(USERS_JSON, "a-fingerprint-nothing-holds"), LATER_INDEX));
+    assertThat(stale.isCompletedExceptionally()).as("a superseded entry is applied, as a no-op").isFalse();
+    assertThat(sm.readAppliedIndexCounter()).isEqualTo(LATER_INDEX);
+
+    assertThat(sm.takeSnapshot()).as("nothing was written, so the failed entry is still the one to replay").isLessThan(SKIPPED_INDEX);
+  }
+
+  /** A hold at or below what a Raft install covered is dropped: the installed copy carries what the entry did. */
+  @Test
+  void aRaftInstallPastTheHeldEntryDropsTheHold() {
+    sm = stateMachine(securityServer(Skipped.SECURITY_USERS_NOT_PERSISTED));
+
+    assertThat(sm.applyTransaction(securityEntry(Kind.USERS, SKIPPED_INDEX)).isCompletedExceptionally()).isTrue();
+    assertThat(sm.applyTransaction(securityEntry(Kind.GROUPS, LATER_INDEX)).isCompletedExceptionally()).isFalse();
+
+    sm.recordInstalledRaftBoundary(SKIPPED_INDEX - 1);
+    assertThat(sm.takeSnapshot()).as("an install short of the entry does not cover it").isLessThan(SKIPPED_INDEX);
+
+    sm.recordInstalledRaftBoundary(SKIPPED_INDEX);
+    assertThat(sm.takeSnapshot()).as("an install that reaches the entry carries its effect").isEqualTo(LATER_INDEX);
+  }
+
+  /** A configuration entry rewrites only the settings it names, so the held one waits for every one of them. */
+  @Test
+  void aHeldConfigurationIsReleasedOnlyOnceEverySettingItNamedIsWrittenAgain() throws Exception {
+    final ContextConfiguration config = new ContextConfiguration();
+    config.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, tempDir.resolve("databases").toString());
+    final ArcadeDBServer server = new ArcadeDBServer(config);
+    final LocalDatabase database = (LocalDatabase) new DatabaseFactory(tempDir.resolve("databases").resolve(DB_NAME).toString())
+        .create();
+    server.registerDatabase(DB_NAME, database);
+    try {
+      final File file = new File(database.getDatabasePath(), LocalDatabase.CONFIGURATION_FILE_NAME);
+      Files.deleteIfExists(file.toPath());
+      assertThat(file.mkdirs()).isTrue();
+      assertThat(new File(file, "x").createNewFile()).isTrue();
+
+      sm = stateMachine(server);
+      assertThat(sm.applyTransaction(rawEntry(RaftLogEntryCodec.encodeDatabaseConfigurationEntry(DB_NAME, CONFIGURATION),
+          SKIPPED_INDEX)).isCompletedExceptionally()).isTrue();
+
+      // The volume is fixed
+      Files.delete(new File(file, "x").toPath());
+      Files.delete(file.toPath());
+
+      assertThat(sm.applyTransaction(rawEntry(RaftLogEntryCodec.encodeDatabaseConfigurationEntry(DB_NAME,
+          "{\"configuration\":{\"txRetries\":7},\"removed\":[]}"), 6L)).isCompletedExceptionally()).isFalse();
+      assertThat(sm.takeSnapshot()).as("another setting does not write the one that is missing").isLessThan(SKIPPED_INDEX);
+
+      assertThat(sm.applyTransaction(rawEntry(RaftLogEntryCodec.encodeDatabaseConfigurationEntry(DB_NAME, CONFIGURATION),
+          LATER_INDEX)).isCompletedExceptionally()).isFalse();
+      assertThat(sm.takeSnapshot()).as("the file carries every setting the held entry named").isEqualTo(LATER_INDEX);
+    } finally {
+      server.stop();
+      if (database.isOpen())
+        database.drop();
+    }
+  }
+
   /** A failure on a database that is already quarantined has its disposition: it is not charged to the swallow budget again. */
   @Test
   void aQuarantinedDatabaseStillPassesThroughUntouched() {
