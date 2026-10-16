@@ -32,6 +32,8 @@ public abstract class IteratorFilterBase<T> extends ResettableIteratorBase<T> {
   protected       RID          next;
   // THE RECORD hasNext() LOOKED UP TO VALIDATE THE VERTEX RID OF next, HANDED OUT BY next() INSTEAD OF A SECOND LOOKUP
   protected       Record       validatedVertex;
+  // THE RECORD hasNext() LOOKED UP TO VALIDATE THE EDGE RID OF next, HANDED OUT BY next() INSTEAD OF A SECOND LOOKUP
+  protected       Record       validatedEdge;
   // NULL WHEN NONE OF THE REQUESTED TYPES IS AN EDGE TYPE. A PRIMITIVE MASK INSTEAD OF A Set<Integer>, SO REJECTING AN
   // ENTRY OF ANOTHER TYPE COSTS NEITHER AN RID DECODE NOR A BOXED LOOKUP (#8417)
   protected final EdgeBucketMask validBuckets;
@@ -95,7 +97,7 @@ public abstract class IteratorFilterBase<T> extends ResettableIteratorBase<T> {
           // VALIDATE RID
           if (nextEdge.getPosition() > -1)
             try {
-              database.lookupByRID(nextEdge, false);
+              validatedEdge = database.lookupByRID(nextEdge, false);
             } catch (final Exception e) {
               handleCorruption(e, nextEdge, nextVertex);
               continue;

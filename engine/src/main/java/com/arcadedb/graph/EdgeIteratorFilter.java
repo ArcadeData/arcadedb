@@ -20,6 +20,7 @@ package com.arcadedb.graph;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.Record;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.RecordNotFoundException;
@@ -77,7 +78,12 @@ public class EdgeIteratorFilter extends IteratorFilterBase<Edge> {
       }
 
       // LAZY LOAD THE CONTENT TO IMPROVE PERFORMANCE WITH TRAVERSAL. NOTE: THE RECORD NOT FOUND WILL NEVER BE TRIGGERED HERE ANYMORE
-      final Edge edge = next.asEdge(false);
+      final Record validated = validatedEdge;
+      validatedEdge = null;
+      // THE LOOKUP hasNext() DID TO VALIDATE THE RID IS THE ONE next.asEdge(false) WOULD DO AGAIN
+      final Edge edge = validated instanceof Edge validatedEdgeRecord && next.equals(validated.getIdentity()) ?
+          validatedEdgeRecord :
+          next.asEdge(false);
       if (endpointsFromList && edge instanceof ImmutableEdge immutable) {
         if (direction == Vertex.DIRECTION.OUT)
           immutable.setEndpointsFromEdgeList(vertex.getIdentity(), nextVertex);
