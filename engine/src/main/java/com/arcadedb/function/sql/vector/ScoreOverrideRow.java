@@ -36,7 +36,8 @@ import java.util.Set;
  * asked for, and a downstream {@code vector.rerank} or {@code vector.mmr} still finds the carried {@code record}.
  * <p>
  * Enumerating the row ({@link #entrySet()}, {@link #size()}, {@code SELECT *}, JSON serialization) or writing to it builds the
- * eager copy once and answers from it afterwards, so a write lands on this row and never on the upstream one.
+ * eager copy once and answers from it afterwards, so a write lands on this row and never on the upstream one. A source that is a
+ * plain map, which its holder could still change, is copied at once.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -57,6 +58,11 @@ final class ScoreOverrideRow extends AbstractMap<String, Object> {
     this.source = source;
     this.scoreKey = scoreKey;
     this.score = score;
+    // A plain map row is copied now, as it always was: whoever holds it can still change it, and the score computed from its
+    // values must not end up next to other values, or another @rid. Only the rows backed by a record (the lazy output of the
+    // vector functions) and the read-only results are read on demand
+    if (source instanceof Map<?, ?> && !(source instanceof ScoredRecordRow) && !(source instanceof ScoreOverrideRow))
+      materialize();
   }
 
   /**

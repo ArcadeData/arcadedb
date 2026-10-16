@@ -197,6 +197,21 @@ class Issue10170VectorRerankersCarriedRecordTest extends TestHelper {
   }
 
   @Test
+  void theScoreOverrideOfAPlainMapIsNotChangedByItsHolder() {
+    final LinkedHashMap<String, Object> upstream = new LinkedHashMap<>();
+    upstream.put("@rid", new RID(1, 1));
+    upstream.put("name", "p1");
+    final ScoreOverrideRow overridden = new ScoreOverrideRow(upstream, "score", 2.0f);
+
+    upstream.put("@rid", new RID(1, 2));
+    upstream.put("name", "changed");
+
+    assertThat(overridden.get("@rid")).isEqualTo(new RID(1, 1));
+    assertThat(overridden.get("name")).isEqualTo("p1");
+    assertThat(overridden.get("score")).isEqualTo(2.0f);
+  }
+
+  @Test
   void theScoreOverrideOfAResultExposesItsIdentity() {
     final List<RID> rids = seed(2);
     final Result result;
