@@ -238,11 +238,13 @@ class GraphBatch:
 
         for row in rows:
             if row:
-                for value in row.values():
-                    if not json_bulk_scalar_ok(value):
+                for key, value in row.items():
+                    if type(key) is not str or not json_bulk_scalar_ok(value):
                         # e.g. datetime/bytes (the matrix path preserves types), or a
                         # value JSON would change: an integer beyond 64 bits, NaN or
-                        # Infinity, a lone surrogate
+                        # Infinity, a lone surrogate; or a property name that is not
+                        # a str, which json.dumps would write as text ({1: "a"} as
+                        # "1") where the matrix path refuses it
                         return None
 
         import json
@@ -315,6 +317,38 @@ class GraphBatch:
         self._check_not_closed()
         from .results import _bridge_class
 
+        # Read once, so the lengths can be compared before anything is
+        # buffered and a fallback to per-edge buffering can start over. zip()
+        # stops at the shortest sequence without a word, so a properties list
+        # one short used to drop the last edge and none of the paths said so.
+        source_rids = list(source_rids)
+        destination_rids = list(destination_rids)
+        if properties is not None:
+            properties = list(properties)
+        lengths = [len(source_rids), len(destination_rids)]
+        if properties is not None:
+            lengths.append(len(properties))
+        if len(set(lengths)) != 1:
+            names = ["source_rids", "destination_rids", "properties"]
+            got = ", ".join(f"{n} {k}" for n, k in zip(names, lengths))
+            raise ArcadeDBError(
+                f"Failed to buffer batch edges '{edge_type}': source_rids, "
+                f"destination_rids and properties must have the same length "
+                f"({got})"
+            )
+
+        # A property name that is not a str is refused on every path, so look
+        # for one before the first edge is buffered: the per-edge fallbacks
+        # below would otherwise buffer the edges before it and leave them
+        # behind for close() to persist after this call raised.
+        for p in properties or ():
+            for key in p or ():
+                if not isinstance(key, str):
+                    raise ArcadeDBError(
+                        f"Failed to buffer batch edges '{edge_type}': property "
+                        f"names must be str, got {key!r}"
+                    )
+
         edge_batcher = _bridge_class("EdgeBatcher")
         if edge_batcher is None:
             # bridge jar unavailable (warned once): per-edge fallback,
@@ -345,10 +379,16 @@ class GraphBatch:
             for src, dst, p in zip(source_rids, destination_rids, properties):
                 row = {"_src": str(src), "_dst": str(dst)}
                 for key, value in (p or {}).items():
-                    if key in ("_src", "_dst") or not json_bulk_scalar_ok(value):
+                    if (
+                        type(key) is not str
+                        or key in ("_src", "_dst")
+                        or not json_bulk_scalar_ok(value)
+                    ):
                         # non-JSON value (datetime/bytes), or one JSON would change
                         # (an integer beyond 64 bits, NaN or Infinity, a lone
-                        # surrogate): per-edge fallback preserves types exactly
+                        # surrogate), or a property name that is not a str (JSON
+                        # would write 1 as "1"): per-edge fallback preserves
+                        # types exactly and refuses the name
                         props_iter = properties
                         for s2, d2, p2 in zip(
                             source_rids, destination_rids, props_iter
