@@ -22,13 +22,17 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.exception.HeapLimitExceededException;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.query.opencypher.procedures.control.DoWhen;
+import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.QueryHeapBudget;
+import com.arcadedb.query.sql.executor.QueryHeapTracker;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -118,6 +122,27 @@ class Issue10160CypherExpressionHeapLimitTest extends TestHelper {
     assertThat(drain("MATCH (o:OuterT) RETURN size(COLLECT { MATCH (m:InnerT) WHERE m.k = o.k RETURN m.pad }) AS s"))
         .isEqualTo(OUTER_ROWS);
     assertThat(drain("MATCH (o:OuterT) RETURN size([(o)-->(l) | l.pad]) AS s")).isEqualTo(OUTER_ROWS);
+  }
+
+  /**
+   * The rows of a procedure outlive its call: a chained CALL holds the stream of every input row of a batch before it reads them.
+   * So apoc.do.when keeps its rows charged to the query until the stream is closed, rather than releasing them as an expression does.
+   */
+  @Test
+  void apocDoWhenKeepsItsRowsChargedUntilItsStreamIsClosed() {
+    createData();
+    setCap(-1L);
+    database.transaction(() -> {
+      final BasicCommandContext context = new BasicCommandContext();
+      context.setDatabase(database);
+      final Stream<Result> rows = new DoWhen().execute(new Object[] { true, "MATCH (m:InnerT) RETURN m.pad AS p", "" }, null,
+          context);
+      final QueryHeapTracker tracker = context.getQueryHeapTracker();
+      assertThat(tracker.getUsedBytes()).as("charged while the stream is open").isGreaterThan(0L);
+
+      rows.close();
+      assertThat(tracker.getUsedBytes()).as("given back when it is closed").isZero();
+    });
   }
 
   @Test
