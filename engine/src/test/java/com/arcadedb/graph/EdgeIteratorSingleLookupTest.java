@@ -20,6 +20,7 @@ package com.arcadedb.graph;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.RecordNotFoundException;
 
 import org.junit.jupiter.api.Test;
 
@@ -126,5 +127,21 @@ class EdgeIteratorSingleLookupTest extends TestHelper {
     assertThat(e.getIdentity()).isEqualTo(out.getIdentity());
     assertThat(e.getOut()).isEqualTo(source);
     assertThat(in.hasNext()).isFalse();
+  }
+
+  @Test
+  void anEdgeDeletedAfterHasNextStillFailsTheCaller() {
+    // THE RECORD hasNext() KEPT MUST NOT HIDE A DELETE: WITH OR WITHOUT THE KEPT RECORD THE CALLER GETS RecordNotFoundException
+    database.begin();
+    try {
+      final Vertex hub = source.asVertex();
+      final Edge first = hub.getEdges(Vertex.DIRECTION.OUT, "Likes", "Hates").iterator().next();
+      final Iterator<Edge> it = hub.getEdges(Vertex.DIRECTION.OUT, "Likes", "Hates").iterator();
+      assertThat(it.hasNext()).isTrue();
+      database.deleteRecord(first);
+      assertThatThrownBy(() -> it.next().getInteger("w")).isInstanceOf(RecordNotFoundException.class);
+    } finally {
+      database.rollback();
+    }
   }
 }
