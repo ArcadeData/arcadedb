@@ -20,6 +20,7 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.HeapLimitExceededException;
 import com.arcadedb.exception.QueryHeapBudgetExceededException;
 import com.arcadedb.utility.FileUtils;
 
@@ -163,8 +164,9 @@ public final class QueryHeapTracker {
   private CommandExecutionException refusal(final long missing, final long reserved, final long limit, final String operation) {
     final String setting = GlobalConfiguration.QUERY_MAX_HEAP_RAM.getKey();
     if (reserved + missing > limit)
-      // NOTHING THE OTHER QUERIES RELEASE CAN MAKE ROOM FOR THIS ONE: RETRYING IT IS POINTLESS
-      return new CommandExecutionException(
+      // NOTHING THE OTHER QUERIES RELEASE CAN MAKE ROOM FOR THIS ONE: RETRYING IT IS POINTLESS. A LIMIT OF THE HEAP THE QUERY MAY
+      // HOLD, AS THE ELEMENT CAP IS, SO NO CALLER READS IT AS AN ORDINARY FAILURE OF WHAT IT RAN (OPTIONAL CALL, #10160)
+      return new HeapLimitExceededException(
           "Query heap budget exceeded: the in-heap " + operation + " needs " + FileUtils.getSizeAsString(missing)
               + " more, and its query would hold more than the whole budget of " + FileUtils.getSizeAsString(limit)
               + " the buffers of all the running queries share. Reduce what the query buffers in heap (a LIMIT, a more "

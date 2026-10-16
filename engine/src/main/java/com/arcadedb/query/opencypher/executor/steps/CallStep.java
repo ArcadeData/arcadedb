@@ -22,7 +22,9 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.exception.HeapLimitExceededException;
 import com.arcadedb.exception.NeedRetryException;
+import com.arcadedb.exception.QueryHeapBudgetExceededException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.function.FunctionDefinition;
 import com.arcadedb.function.StatelessFunction;
@@ -47,7 +49,6 @@ import java.util.NoSuchElementException;
 import java.util.Set;
 import java.util.Spliterator;
 import java.util.Spliterators;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Stream;
 
 /**
@@ -75,65 +76,8 @@ public class CallStep extends AbstractExecutionStep {
   private record KnownRowCount(long rows) {
   }
 
-  /**
-   * The rows of one procedure's stream, which the step closes: the stream holds whatever the procedure registered with
-   * {@link Stream#onClose} (the {@code path.*} walks hold the heap of their frontier) until somebody closes it, and nothing
-   * else in the engine does, because the rows are read through an iterator and the stream object is let go (issue #10150).
-   * <p>
-   * The stream is closed as soon as its rows run out, or reading them fails, so a step that calls a procedure for every input
-   * row keeps only the streams still being read; one the consumer abandons (a {@code LIMIT}, a ResultSet closed early) is
-   * closed by {@link CallStep#close()}.
-   */
-  private final class ProcedureRows implements Iterator<ResultInternal> {
-    private final Stream<ResultInternal>   stream;
-    private final Iterator<ResultInternal> rows;
-
-    private ProcedureRows(final Stream<ResultInternal> stream, final Iterator<ResultInternal> rows) {
-      this.stream = stream;
-      this.rows = rows;
-      openRows.add(this);
-    }
-
-    @Override
-    public boolean hasNext() {
-      final boolean more;
-      try {
-        more = rows.hasNext();
-      } catch (final RuntimeException e) {
-        closeAfterFailure(stream, e);
-        openRows.remove(this);
-        throw e;
-      }
-      if (!more)
-        close();
-      return more;
-    }
-
-    @Override
-    public ResultInternal next() {
-      try {
-        return rows.next();
-      } catch (final RuntimeException e) {
-        closeAfterFailure(stream, e);
-        openRows.remove(this);
-        throw e;
-      }
-    }
-
-    /** Idempotent: the stream is closed by whoever gets here first. */
-    private void close() {
-      if (openRows.remove(this))
-        stream.close();
-    }
-  }
-
   private boolean countOnlyOptimization = false;
   private final CallClause callClause;
-  /**
-   * The procedure streams this step has opened and nobody has read to the end. Concurrent because {@link #close()} may be called
-   * from a thread other than the one reading the rows.
-   */
-  private final Set<ProcedureRows> openRows = ConcurrentHashMap.newKeySet();
   /**
    * Computed on first use and reused: one CALL names one procedure and one YIELD (issue #7976). Volatile, and always
    * an immutable set, because an execution plan can be cached and replayed: a racing reader of a plain field could
@@ -451,15 +395,13 @@ public class CallStep extends AbstractExecutionStep {
   private Object executeProcedure(final CypherProcedure procedure, final Object[] args,
                                    final Result inputRow, final CommandContext context) {
     final boolean autoCommit = procedure.isWriteProcedure() && !context.getDatabase().isTransactionActive();
-    // The stream the procedure answered, for the paths out of here that leave it open: a failure, and a call answered by a count
-    Stream<ResultInternal> resultStream = null;
     try {
       procedure.validateArgs(args);
 
       if (autoCommit)
         context.getDatabase().begin();
 
-      resultStream = procedure.execute(args, inputRow, context, requestedYieldFields(procedure))
+      final Stream<ResultInternal> resultStream = procedure.execute(args, inputRow, context, requestedYieldFields(procedure))
           .map(this::convertProcedureResultToInternal);
 
       // Count-only mode: a stream that knows its exact size answers the count without producing a single row. Only
@@ -468,12 +410,7 @@ public class CallStep extends AbstractExecutionStep {
       if (countOnlyOptimization && !procedure.isWriteProcedure() && callClause.getYieldWhere() == null) {
         final Spliterator<ResultInternal> rows = resultStream.spliterator();
         final long size = rows.getExactSizeIfKnown();
-        if (size > 0) {
-          // The rows are never read: the stream is done with
-          resultStream.close();
-          return new KnownRowCount(size);
-        }
-        return new ProcedureRows(resultStream, Spliterators.iterator(rows));
+        return size > 0 ? new KnownRowCount(size) : Spliterators.iterator(rows);
       }
 
       // .map()/.iterator() are lazy, so without forcing it here commit() would run before the stream is ever
@@ -483,24 +420,19 @@ public class CallStep extends AbstractExecutionStep {
       // procedure returning a lazily-generated Stream would otherwise commit before it ever mutates anything.
       // Everywhere else, keep the iterator for lazy evaluation instead of collecting to list - this prevents
       // memory exhaustion for procedures that yield many results.
-      final Iterator<ResultInternal> result;
-      if (autoCommit) {
-        // Read to the end here, so the stream has nothing more to give
-        result = resultStream.toList().iterator();
-        resultStream.close();
+      final Iterator<ResultInternal> result = autoCommit ? resultStream.toList().iterator() : resultStream.iterator();
+
+      if (autoCommit)
         context.getDatabase().commit();
-      } else
-        result = new ProcedureRows(resultStream, resultStream.iterator());
 
       return result;
-    } catch (final NeedRetryException retryable) {
-      closeAfterFailure(resultStream, retryable);
-      // a conflict is not "no rows" either: it keeps its type, OPTIONAL or not, for Database.transaction(..., retries) (#9487)
+    } catch (final NeedRetryException | HeapLimitExceededException | QueryHeapBudgetExceededException refusal) {
+      // a conflict is not "no rows" either: it keeps its type, OPTIONAL or not, for Database.transaction(..., retries) (#9487).
+      // Nor is a refusal of the heap limits, which says the query asked for too much, not that the call found nothing (#10160)
       if (autoCommit && context.getDatabase().isTransactionActive())
         context.getDatabase().rollback();
-      throw retryable;
+      throw refusal;
     } catch (final CommandParsingException clientError) {
-      closeAfterFailure(resultStream, clientError);
       // OPTIONAL suppresses "no rows", not "your call is malformed": a wrong argument count or a bad argument type is
       // the same mistake inside OPTIONAL CALL as outside it, and answering null there would hide it behind a result
       // that looks legitimately empty. Matches Neo4j, where OPTIONAL CALL is about cardinality (issue #5602).
@@ -508,8 +440,6 @@ public class CallStep extends AbstractExecutionStep {
         context.getDatabase().rollback();
       throw clientError;
     } catch (final Exception e) {
-      if (e instanceof RuntimeException runtime)
-        closeAfterFailure(resultStream, runtime);
       if (autoCommit && context.getDatabase().isTransactionActive())
         context.getDatabase().rollback();
       if (callClause.isOptional())
@@ -545,9 +475,10 @@ public class CallStep extends AbstractExecutionStep {
       // the same mistake inside OPTIONAL CALL as outside it, and answering null there would hide it behind a result
       // that looks legitimately empty. Matches Neo4j, where OPTIONAL CALL is about cardinality (issue #5602).
       throw clientError;
-    } catch (final NeedRetryException retryable) {
-      // a conflict keeps its type, OPTIONAL or not: Database.transaction(..., retries) retries on it (#9487)
-      throw retryable;
+    } catch (final NeedRetryException | HeapLimitExceededException | QueryHeapBudgetExceededException refusal) {
+      // a conflict keeps its type, OPTIONAL or not: Database.transaction(..., retries) retries on it (#9487). So does a refusal of
+      // the heap limits (#10160)
+      throw refusal;
     } catch (final Exception e) {
       if (callClause.isOptional())
         return null;
@@ -592,9 +523,10 @@ public class CallStep extends AbstractExecutionStep {
       }
 
       return result;
-    } catch (final NeedRetryException retryable) {
-      // a conflict keeps its type, OPTIONAL or not: Database.transaction(..., retries) retries on it (#9487)
-      throw retryable;
+    } catch (final NeedRetryException | HeapLimitExceededException | QueryHeapBudgetExceededException refusal) {
+      // a conflict keeps its type, OPTIONAL or not: Database.transaction(..., retries) retries on it (#9487). So does a refusal of
+      // the heap limits (#10160)
+      throw refusal;
     } catch (final Exception e) {
       if (callClause.isOptional())
         return null;
@@ -804,45 +736,6 @@ public class CallStep extends AbstractExecutionStep {
       public void close() {
       }
     };
-  }
-
-  /**
-   * Closes the streams of the procedures this step called whose rows were not read to the end, which gives back what they hold
-   * (issue #10150), then the steps before it.
-   */
-  @Override
-  public void close() {
-    RuntimeException failure = null;
-    for (final ProcedureRows rows : openRows)
-      try {
-        rows.close();
-      } catch (final RuntimeException e) {
-        if (failure == null)
-          failure = e;
-        else
-          failure.addSuppressed(e);
-      }
-    try {
-      super.close();
-    } catch (final RuntimeException e) {
-      if (failure == null)
-        failure = e;
-      else
-        failure.addSuppressed(e);
-    }
-    if (failure != null)
-      throw failure;
-  }
-
-  /** Closes {@code stream} after {@code failure}, which is the error the caller gets: one more from the close is suppressed into it. */
-  private static void closeAfterFailure(final Stream<?> stream, final RuntimeException failure) {
-    if (stream == null)
-      return;
-    try {
-      stream.close();
-    } catch (final RuntimeException e) {
-      failure.addSuppressed(e);
-    }
   }
 
   @Override

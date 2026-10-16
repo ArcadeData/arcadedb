@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.ast;
 
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.OperationHeapLimit;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 
@@ -55,18 +56,13 @@ public class CollectExpression implements Expression {
 
   @Override
   public Object evaluate(final Result result, final CommandContext context) {
-    if (CorrelatedSubqueryRunner.canRun(parsedSubquery)) {
-      try (final ResultSet resultSet = CorrelatedSubqueryRunner.run(parsedSubquery, result, context)) {
-        return collectRows(resultSet);
-      }
-    }
+    if (CorrelatedSubqueryRunner.canRun(parsedSubquery))
+      return collectRows(CorrelatedSubqueryRunner.run(parsedSubquery, result, context), context);
 
     final Map<String, Object> params = CorrelatedSubqueryRewriter.newParams(context);
     final String modifiedSubquery = CorrelatedSubqueryRewriter.correlate(subquery, result, "__collect_", params,
         (patterns, body) -> "MATCH " + patterns + " WITH * " + body);
-    try (final ResultSet resultSet = context.getDatabase().query("opencypher", modifiedSubquery, params)) {
-      return collectRows(resultSet);
-    }
+    return collectRows(context.getDatabase().query("opencypher", modifiedSubquery, params), context);
   }
 
   /**
@@ -77,30 +73,30 @@ public class CollectExpression implements Expression {
    * The grammar gives {@code COLLECT} one alternative, {@code COLLECT LCURLY queryWithLocalDefinitions RCURLY}, so the
    * body always carries a RETURN and the case is not reachable from a parsed query; it is written out because the
    * alternative was to leave the {@code else} branch quietly answering it.
+   * <p>
+   * The list is built under the per-operation element cap and the query heap budget, as the identical SQL subquery is
+   * (issue #10160), and the result set is closed whatever happens.
    */
-  private static List<Object> collectRows(final ResultSet resultSet) {
-    final List<Object> collected = new ArrayList<>();
-    while (resultSet.hasNext()) {
-      final Result row = resultSet.next();
-      final Set<String> propertyNames = row.getPropertyNames();
-      // Filter out internal (space-prefixed) names
-      final List<String> visibleNames = new ArrayList<>(propertyNames.size());
-      for (final String n : propertyNames) {
-        if (!n.startsWith(" "))
-          visibleNames.add(n);
-      }
-      if (visibleNames.isEmpty()) {
-        collected.add(null);
-      } else if (visibleNames.size() == 1) {
-        collected.add(row.getProperty(visibleNames.get(0)));
-      } else {
-        final List<Object> rowValues = new ArrayList<>(visibleNames.size());
-        for (final String n : visibleNames)
-          rowValues.add(row.getProperty(n));
-        collected.add(rowValues);
-      }
+  private static List<Object> collectRows(final ResultSet resultSet, final CommandContext context) {
+    return OperationHeapLimit.materializeForExpression(context, "COLLECT subquery", resultSet, CollectExpression::rowValue);
+  }
+
+  private static Object rowValue(final Result row) {
+    final Set<String> propertyNames = row.getPropertyNames();
+    // Filter out internal (space-prefixed) names
+    final List<String> visibleNames = new ArrayList<>(propertyNames.size());
+    for (final String n : propertyNames) {
+      if (!n.startsWith(" "))
+        visibleNames.add(n);
     }
-    return collected;
+    if (visibleNames.isEmpty())
+      return null;
+    if (visibleNames.size() == 1)
+      return row.getProperty(visibleNames.get(0));
+    final List<Object> rowValues = new ArrayList<>(visibleNames.size());
+    for (final String n : visibleNames)
+      rowValues.add(row.getProperty(n));
+    return rowValues;
   }
 
   @Override

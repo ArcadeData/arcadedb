@@ -177,7 +177,10 @@ class Issue10080ExpressionSubqueryHeapLimitTest extends TestHelper {
     assertThat((List<Object>) database.getSchema().getFunction("lib10080b", "many").execute()).containsExactly(0, 1, 2);
   }
 
-  /** The claim {@code OperationHeapLimit.materialize()} makes is checkable: no other code of the SQL engine drains a sub-plan into a list. */
+  /**
+   * The claim {@code OperationHeapLimit.materialize()} makes is checkable: no other code of the SQL engine, nor of the openCypher
+   * expressions and procedures (issue #10160), drains a sub-plan into a list.
+   */
   @Test
   void onlyOperationHeapLimitDrainsASubPlanIntoAList() throws IOException {
     // The loops below read a result set without holding it - or hold something other than rows - and say why. A new entry is a
@@ -186,14 +189,17 @@ class Issue10080ExpressionSubqueryHeapLimitTest extends TestHelper {
         "InCondition.java", "tests membership row by row and keeps none",//
         "ProfileStatement.java", "runs the profiled statement to completion and keeps no row",//
         "TraverseProjectionItem.java", "reads the elements of a value a record already holds",//
-        "FindReferencesStatement.java", "keeps the RID of each row of an administrative statement, not the row");
+        "FindReferencesStatement.java", "keeps the RID of each row of an administrative statement, not the row",//
+        "CountExpression.java", "counts the rows of a COUNT { ... } subquery and keeps none");
 
     final Pattern loop = Pattern.compile("while\\s*\\(\\s*(\\w+)\\.hasNext\\(\\)\\s*\\)");
     final List<String> offenders = new ArrayList<>();
     // The expressions, conditions and functions: where a sub-plan is evaluated for its value. The steps of query/sql/executor pull
-    // their input in batches of nRecords, and the ones that materialise a sub-plan go through OperationHeapLimit.materialize()
+    // their input in batches of nRecords, and the ones that materialise a sub-plan go through OperationHeapLimit.materialize().
+    // The openCypher expressions, procedures and user functions are the same positions in the other language (issue #10160)
     for (final String dir : List.of("src/main/java/com/arcadedb/query/sql/parser", "src/main/java/com/arcadedb/query/sql/antlr",
-        "src/main/java/com/arcadedb/function/sql")) {
+        "src/main/java/com/arcadedb/function/sql", "src/main/java/com/arcadedb/query/opencypher/ast",
+        "src/main/java/com/arcadedb/query/opencypher/procedures", "src/main/java/com/arcadedb/function/cypher")) {
       final Path root = Path.of(dir);
       if (!Files.isDirectory(root))
         continue;

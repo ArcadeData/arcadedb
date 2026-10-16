@@ -3,3 +3,6 @@
 #
 # Jest / jest-junit test output
 reports/
+
+# Every directory under src/ is source, as in the root .gitignore (#10162). Keep it last
+!src/**/

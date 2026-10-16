@@ -112,3 +112,9 @@ Thumbs.db
 
 # Maven target directory (frontend plugin artifacts)
 target/
+
+# Every directory under src/ is source, as in the root .gitignore (#10162). Keep this block last: a pattern written
+# below it wins. The build output Webpack writes inside src/ is restated after it
+!src/**/
+src/main/resources/static/dist/
+src/main/resources/static/swagger-ui/

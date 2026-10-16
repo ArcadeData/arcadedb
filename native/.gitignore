@@ -2,3 +2,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 target/
+
+# Every directory under src/ is source, as in the root .gitignore (#10162). Keep it last
+!src/**/

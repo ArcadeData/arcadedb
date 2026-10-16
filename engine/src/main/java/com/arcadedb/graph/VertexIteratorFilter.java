@@ -20,7 +20,6 @@ package com.arcadedb.graph;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
-import com.arcadedb.database.Record;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.log.LogManager;
 
@@ -48,9 +47,7 @@ public class VertexIteratorFilter extends IteratorFilterBase<Vertex> {
 
     entryReturned();
     try {
-      final Record validated = validatedVertex;
-      validatedVertex = null;
-      if (validated instanceof Vertex vertex && next.equals(validated.getIdentity()))
+      if (takeValidatedRecord() instanceof Vertex vertex)
         // THE LOOKUP hasNext() DID TO VALIDATE THE RID IS THE ONE THIS CALL WOULD DO AGAIN
         return vertex;
       return (Vertex) database.lookupByRID(next, false);

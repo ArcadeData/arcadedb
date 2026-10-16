@@ -52,3 +52,12 @@ my_test_databases/
 
 # auto-created by scripts/extract_version.py on every run
 scripts/.dev_version_tracker.json
+
+# Every directory under src/ is source, as in the root .gitignore (#10162): log/, dist/, build/, env/ above must not hide a
+# package. Keep this block last: a pattern written below it wins. The output written inside src/ is restated after it
+!src/**/
+src/**/__pycache__/
+src/**/*.egg-info/
+# the JRE and the jars scripts/build-native.sh bundles into the package
+src/arcadedb_embedded/jre/
+src/arcadedb_embedded/jars/

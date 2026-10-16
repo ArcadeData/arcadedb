@@ -24,6 +24,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
 import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.exception.RecordVetoedException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.Vertex;
@@ -53,12 +54,15 @@ public class RemoteMutableEdge extends MutableEdge {
   @Override
   public MutableEdge save() {
     dirty = true;
-    final JSONObject json = toJSON();
-    json.remove(RID_PROPERTY);  // Remove @rid to avoid SQL parsing issues
     if (rid != null)
-      remoteDatabase.command("sql", "update " + rid + " content " + json);
-    else
+      // THE SAME UPDATE THE DOCUMENT AND THE VERTEX SEND, SO A VETOED OR A MISSING EDGE IS REPORTED, AND COUNTED, AS THEIRS ARE
+      // (issue #10161): A BARE "UPDATE" COMMAND ANSWERED BOTH AS A SUCCESS
+      remoteDatabase.saveRecord(this);
+    else {
+      final JSONObject json = toJSON();
+      json.remove(RID_PROPERTY);  // Remove @rid to avoid SQL parsing issues
       remoteDatabase.command("sql", "insert into " + Identifier.quote(getTypeName()) + " content " + json);
+    }
     dirty = false;
     return this;
   }
@@ -77,19 +81,27 @@ public class RemoteMutableEdge extends MutableEdge {
   }
 
   /**
-   * The remote protocol does not carry a listener's veto back to the client, and this edge does not learn the identity a create
-   * assigned, so the write is reported as applied whenever the server did not refuse it with an error.
+   * Both remote drivers learn a listener's veto from the server, of a create and of an update alike, and raise it from
+   * {@link #save()} as a {@link RecordVetoedException}: here it is answered as {@code false} instead (issue #10161).
    */
   @Override
   public boolean saveReportingVeto() {
-    save();
-    return true;
+    try {
+      save();
+      return true;
+    } catch (final RecordVetoedException e) {
+      return false;
+    }
   }
 
   @Override
   public boolean saveReportingVeto(final String bucketName) {
-    save(bucketName);
-    return true;
+    try {
+      save(bucketName);
+      return true;
+    } catch (final RecordVetoedException e) {
+      return false;
+    }
   }
 
   @Override
