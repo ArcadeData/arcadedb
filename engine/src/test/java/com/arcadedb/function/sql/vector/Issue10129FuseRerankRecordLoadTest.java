@@ -22,6 +22,8 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
+import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.index.vector.VectorUtils;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -134,6 +136,33 @@ class Issue10129FuseRerankRecordLoadTest extends TestHelper {
     final List<Object> out = (List<Object>) new SQLFunctionVectorRerank().execute(null, null, null,
         new Object[] { rows, new float[] { 1.0f, 0.0f, 0.1f }, "embedding", 3 }, newContext());
     assertThat(readRecords() - before).isZero();
+    assertThat(out).hasSize(3);
+  }
+
+  @Test
+  void rerankSkipsACandidateWhoseRidIsNotADocument() {
+    final List<RID> rids = seed(3);
+
+    // An edge segment is a record but not a document: a candidate RID pointing at one is skipped, like a deleted record
+    final RID[] segment = new RID[1];
+    database.transaction(() -> {
+      database.getSchema().createVertexType("V10129");
+      database.getSchema().createEdgeType("E10129");
+      final MutableVertex a = database.newVertex("V10129").save();
+      final MutableVertex b = database.newVertex("V10129").save();
+      a.newEdge("E10129", b);
+      segment[0] = ((VertexInternal) a.asVertex(true)).getOutEdgesHeadChunk();
+    });
+    assertThat(segment[0]).isNotNull();
+
+    final List<Object> rows = new ArrayList<>(ridRows(rids, false));
+    final LinkedHashMap<String, Object> notADocument = new LinkedHashMap<>();
+    notADocument.put("@rid", segment[0]);
+    rows.add(notADocument);
+
+    @SuppressWarnings("unchecked")
+    final List<Object> out = (List<Object>) new SQLFunctionVectorRerank().execute(null, null, null,
+        new Object[] { rows, new float[] { 1.0f, 0.0f, 0.1f }, "embedding", 10 }, newContext());
     assertThat(out).hasSize(3);
   }
 
