@@ -1863,8 +1863,10 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
       // that created it was rolled back) and when a before-update listener vetoed the write. The first must fail with
       // RecordNotFoundException to be consistent with the embedded engine and the gRPC remote (issue #4562), the second with
       // RecordVetoedException, as the gRPC remote does (issue #10161): the probe tells them apart, on the refusal path only
-      final ResultSet result = command("sql", "update " + rid + " content " + json);
-      final long updated = result.hasNext() ? result.next().<Number>getProperty("count").longValue() : 0;
+      final long updated;
+      try (final ResultSet result = command("sql", "update " + rid + " content " + json)) {
+        updated = result.hasNext() ? result.next().<Number>getProperty("count").longValue() : 0;
+      }
       if (updated == 0) {
         if (recordExistsUncounted(rid))
           throw RecordVetoedException.ofUpdate(record.getTypeName(), rid);
@@ -1936,9 +1938,11 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
    * {@link NoSuchElementException} out of {@code save()} (issue #10161).
    */
   private static RID insertedRID(final ResultSet result, final MutableDocument record) {
-    if (!result.hasNext())
-      throw RecordVetoedException.ofCreate(record.getTypeName());
-    return result.next().getIdentity().get();
+    try (result) {
+      if (!result.hasNext())
+        throw RecordVetoedException.ofCreate(record.getTypeName());
+      return result.next().getIdentity().get();
+    }
   }
 
   protected Map<String, Object> mapArgs(final Object[] args) {
