@@ -26,6 +26,7 @@ import io.undertow.server.ServerConnection;
 import io.undertow.server.protocol.http2.Http2ServerConnection;
 import org.xnio.IoUtils;
 
+import java.io.IOException;
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.VarHandle;
 import java.util.logging.Level;
@@ -43,6 +44,15 @@ import java.util.logging.Level;
  * alters any member's accessibility nor costs a reflective call per request. Should a later Undertow rename
  * them, the reset falls back to {@code CANCEL}, which still stops the body - the server-side half of the guarantee -
  * and {@code Issue7772ChunkedBodySizeLimitTest} fails on the client-side half, so the upgrade cannot pass unnoticed.
+ * <p>
+ * <b>The connection's flow-control window is credited for the stream as well.</b> Undertow returns connection-level
+ * window to the client only as the application READS a stream ({@code Http2StreamSourceChannel.updateFlowControlWindow}),
+ * so what the refused stream had buffered, and what was still in flight when the reset went out, is discarded without
+ * ever being credited. Every HTTP/2 stream of the connection shares that window, so after one refused body the next
+ * request's body could not be sent at all and the connection hung. What the stream can hold uncredited is bounded by
+ * one initial stream window - a stream is never granted more than that beyond what was read - so that is what is
+ * credited: an upper bound, which at worst lets the client run that much ahead of the window, where a lower one would
+ * leak window on every refusal until the connection stalls.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -63,9 +73,10 @@ public final class Http2StreamReset {
             (Http2ServerConnection) connection);
         if (channel != null && stream != null) {
           channel.sendRstStream(stream.getStreamId(), Http2Channel.ERROR_NO_ERROR);
+          channel.updateReceiveFlowControlWindow(channel.getInitialReceiveWindowSize());
           return;
         }
-      } catch (final RuntimeException e) {
+      } catch (final IOException | RuntimeException e) {
         LogManager.instance().log(Http2StreamReset.class, Level.FINE, "Cannot reset the HTTP/2 stream with NO_ERROR: %s", e,
             e.getMessage());
       }

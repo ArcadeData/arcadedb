@@ -175,17 +175,32 @@ class Issue7772ChunkedBodySizeLimitTest extends BaseGraphServerTest {
   void http2BodyWithoutContentLengthOverLimitIsRefused() throws Exception {
     final HttpClient client = http2Client();
 
-    final HttpResponse<String> response = client.send(HttpRequest.newBuilder(
-            URI.create(getServerHttpUrl("/api/v1/command/" + getDatabaseName())))
+    // Several in a row on ONE connection: a refusal that leaked the connection's flow-control window would stall the
+    // connection after one or two of them, since every stream of it draws on that window
+    for (int i = 0; i < 3; i++) {
+      final HttpResponse<String> response = client.send(HttpRequest.newBuilder(
+              URI.create(getServerHttpUrl("/api/v1/command/" + getDatabaseName())))
+          .timeout(Duration.ofSeconds(30))
+          .header("Authorization", basicAuthorization())
+          .header("Content-Type", "application/json")
+          .POST(HttpRequest.BodyPublishers.ofInputStream(EndlessBody::new))
+          .build(), HttpResponse.BodyHandlers.ofString());
+
+      assertThat(response.version()).as("the POST must have travelled over HTTP/2").isEqualTo(HttpClient.Version.HTTP_2);
+      assertThat(response.statusCode()).isEqualTo(413);
+      assertThat(response.body()).contains(GlobalConfiguration.SERVER_HTTP_BODY_CONTENT_MAX_SIZE.getKey());
+    }
+
+    // The reset is the refused stream's alone: the connection it shares with every other stream keeps serving
+    final HttpResponse<String> next = client.send(HttpRequest.newBuilder(
+            URI.create(getServerHttpUrl("/api/v1/query/" + getDatabaseName())))
         .timeout(Duration.ofSeconds(30))
         .header("Authorization", basicAuthorization())
         .header("Content-Type", "application/json")
-        .POST(HttpRequest.BodyPublishers.ofInputStream(EndlessBody::new))
+        .POST(HttpRequest.BodyPublishers.ofString("{\"language\":\"sql\",\"command\":\"SELECT 1\"}"))
         .build(), HttpResponse.BodyHandlers.ofString());
-
-    assertThat(response.version()).as("the POST must have travelled over HTTP/2").isEqualTo(HttpClient.Version.HTTP_2);
-    assertThat(response.statusCode()).isEqualTo(413);
-    assertThat(response.body()).contains(GlobalConfiguration.SERVER_HTTP_BODY_CONTENT_MAX_SIZE.getKey());
+    assertThat(next.version()).isEqualTo(HttpClient.Version.HTTP_2);
+    assertThat(next.statusCode()).as(next.body()).isEqualTo(200);
   }
 
   /**
