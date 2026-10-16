@@ -27,9 +27,11 @@ import com.arcadedb.utility.DedicatedThreadPool.PoolStats;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.channels.FileChannel;
 import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.util.List;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ThreadLocalRandom;
@@ -362,10 +364,13 @@ final class SecurityCatchUp implements AutoCloseable {
    * configuration directory, because that is the volume whose writes failed.
    */
   void afterSnapshotInstall(final ArcadeDBServer server, final RaftHAServer raft, final boolean undurableSecurityCovered) {
-    if (undurableSecurityCovered) {
-      forceSeed.set(true);
-      writeForcedSeedMarker();
-    }
+    if (undurableSecurityCovered)
+      // Under the same lock as forcedSeedMade, so an attempt finishing on the worker cannot read the flag clear, lose
+      // the race to this install and then delete the marker it re-armed
+      synchronized (forceSeed) {
+        forceSeed.set(true);
+        writeForcedSeedMarker();
+      }
     // It also counts as the once-per-start request: a node that has just been reinstalled from a snapshot has
     // no earlier state left worth asking about separately. Taken here rather than after the answer, for the
     // same reason onFirstLeaderObserved takes it at submit time - it is what stops a second trigger dialling
@@ -400,6 +405,7 @@ final class SecurityCatchUp implements AutoCloseable {
       return;
     try {
       Files.createFile(marker);
+      syncDirectory(marker.getParent());
     } catch (final FileAlreadyExistsException alreadyPending) {
       // Pending already: the marker records THAT a seed is owed, not how many
     } catch (final IOException e) {
@@ -434,16 +440,37 @@ final class SecurityCatchUp implements AutoCloseable {
     return forced && !failedSeeds.isEmpty() ? Outcome.TRANSIENT_FAILURE : Outcome.ASKED;
   }
 
-  /** Spends the forced seed an attempt took and got made: every document committed, so the marker goes too. */
+  /**
+   * Spends the forced seed an attempt took and got made: every document committed, so the marker goes too - unless an
+   * install re-armed the flag meanwhile, which the shared lock makes visible here before the delete.
+   */
   void forcedSeedMade(final boolean taken) {
     final Path marker = forcedSeedMarker;
-    if (!taken || marker == null || forceSeed.get())
+    if (!taken || marker == null)
       return;
-    try {
-      Files.deleteIfExists(marker);
-    } catch (final IOException e) {
-      // A marker left behind costs one redundant seed after the next restart, which is the safe direction
-      LogManager.instance().log(this, Level.FINE, "Could not remove '%s': %s", marker, e.getMessage());
+    synchronized (forceSeed) {
+      if (forceSeed.get())
+        return;
+      try {
+        Files.deleteIfExists(marker);
+      } catch (final IOException e) {
+        // A marker left behind costs one redundant seed after the next restart, which is the safe direction
+        LogManager.instance().log(this, Level.FINE, "Could not remove '%s': %s", marker, e.getMessage());
+      }
+    }
+  }
+
+  /**
+   * Makes a file's creation in {@code directory} durable, so a crash right after the install cannot lose the marker it
+   * wrote. Best effort: not every platform can open a directory for {@code force}, and the in-memory flag still holds.
+   */
+  private static void syncDirectory(final Path directory) {
+    if (directory == null)
+      return;
+    try (final FileChannel channel = FileChannel.open(directory, StandardOpenOption.READ)) {
+      channel.force(true);
+    } catch (final IOException | RuntimeException e) {
+      // Not supported here (Windows, some file systems): the marker is written, only its durability is weaker
     }
   }
 

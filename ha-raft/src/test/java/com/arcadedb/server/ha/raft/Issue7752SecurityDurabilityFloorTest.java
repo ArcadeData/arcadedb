@@ -347,6 +347,27 @@ class Issue7752SecurityDurabilityFloorTest {
     }
   }
 
+  /**
+   * An install that re-arms the forced seed while an earlier forced seed is completing keeps its marker: completing the
+   * old one must not delete the record of the new one, or a restart would forget the seed the new install owes.
+   */
+  @Test
+  void aCompletedForcedSeedDoesNotDeleteTheMarkerOfOneReArmedMeanwhile(@TempDir final Path stateMachineDirectory) {
+    final Path marker = stateMachineDirectory.resolve(SecurityCatchUp.FORCED_SEED_MARKER);
+    try (final SecurityCatchUp catchUp = new SecurityCatchUp()) {
+      catchUp.keepForcedSeedIn(stateMachineDirectory.toFile());
+      catchUp.afterSnapshotInstall(null, null, true);
+
+      final boolean taken = catchUp.takeForcedSeed();
+      // A second install covers another undurable entry while the first seed is in flight
+      catchUp.afterSnapshotInstall(null, null, true);
+      catchUp.forcedSeedMade(taken);
+
+      assertThat(catchUp.isForcedSeedPending()).isTrue();
+      assertThat(marker).as("the re-armed seed is still recorded for a restart").exists();
+    }
+  }
+
   private static TransactionContext securityUsersEntry(final ArcadeStateMachine sm, final long index) {
     return entry(sm, index, RaftLogEntryCodec.encodeSecurityUsersEntry(USERS_JSON));
   }
