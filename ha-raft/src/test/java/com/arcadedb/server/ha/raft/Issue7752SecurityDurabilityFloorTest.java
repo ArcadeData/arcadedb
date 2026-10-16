@@ -45,7 +45,10 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -173,6 +176,76 @@ class Issue7752SecurityDurabilityFloorTest {
     assertThat(floor.floor()).isEqualTo(FAILED_INDEX);
 
     assertThat(floor.dropCoveredByInstall(100L)).isTrue();
+    assertThat(floor.floor()).isEqualTo(Long.MAX_VALUE);
+  }
+
+  /**
+   * The periodic retry, on an injected clock: nothing is written again before the interval, the write is retried once it
+   * has passed, and the pin lifts as soon as the retried write reaches the disk - without any further security entry.
+   */
+  @Test
+  void thePeriodicRetryLiftsThePinOnceTheWriteSucceeds() {
+    final AtomicLong now = new AtomicLong();
+    final AtomicBoolean durable = new AtomicBoolean(false);
+    final AtomicBoolean volumeFixed = new AtomicBoolean(false);
+    final AtomicInteger retries = new AtomicInteger();
+    final FakeServerSecurity security = FakeServerSecurity.create();
+    security.on("isReplicatedDocumentDurable", args -> durable.get());
+    security.on("retryReplicatedSecurityPersistence", args -> {
+      retries.incrementAndGet();
+      durable.set(volumeFixed.get());
+      return durable.get();
+    });
+
+    final SecurityDurabilityFloor floor = new SecurityDurabilityFloor(now::get);
+    floor.afterInstall(ReplicatedSecurityFingerprintRepository.USERS, FAILED_INDEX, security);
+    assertThat(floor.floor()).isEqualTo(FAILED_INDEX);
+
+    final long interval = TimeUnit.MILLISECONDS.toNanos(SecurityDurabilityFloor.RETRY_INTERVAL_MS);
+    now.addAndGet(interval - 1);
+    floor.retryIfDue(security);
+    assertThat(retries).as("not before the interval: the write that failed was the first attempt").hasValue(0);
+
+    now.addAndGet(1);
+    floor.retryIfDue(security);
+    assertThat(retries).hasValue(1);
+    assertThat(floor.floor()).as("the volume is still broken").isEqualTo(FAILED_INDEX);
+
+    floor.retryIfDue(security);
+    assertThat(retries).as("paced: one attempt per interval, however many entries are applied").hasValue(1);
+
+    volumeFixed.set(true);
+    now.addAndGet(interval);
+    floor.retryIfDue(security);
+    assertThat(retries).hasValue(2);
+    assertThat(floor.floor()).as("durable again, so checkpoints may cover the entry").isEqualTo(Long.MAX_VALUE);
+  }
+
+  /** Each document is pinned on its own: the floor is the lowest pin, and a document that recovers releases only its own. */
+  @Test
+  void eachDocumentIsPinnedOnItsOwnAndTheFloorIsTheLowest() {
+    final AtomicBoolean usersDurable = new AtomicBoolean(false);
+    final AtomicBoolean groupsDurable = new AtomicBoolean(false);
+    final FakeServerSecurity security = FakeServerSecurity.create();
+    security.on("isReplicatedDocumentDurable", args -> ReplicatedSecurityFingerprintRepository.USERS.equals(args[0]) ?
+        usersDurable.get() :
+        !ReplicatedSecurityFingerprintRepository.GROUPS.equals(args[0]) || groupsDurable.get());
+
+    final SecurityDurabilityFloor floor = new SecurityDurabilityFloor();
+    floor.afterInstall(ReplicatedSecurityFingerprintRepository.GROUPS, LATER_INDEX, security);
+    floor.afterInstall(ReplicatedSecurityFingerprintRepository.USERS, LATER_INDEX + 1, security);
+    assertThat(floor.floor()).isEqualTo(LATER_INDEX);
+
+    // An API-token entry that is durable pins nothing and changes nothing
+    floor.afterInstall(ReplicatedSecurityFingerprintRepository.API_TOKENS, LATER_INDEX + 2, security);
+    assertThat(floor.floor()).isEqualTo(LATER_INDEX);
+
+    groupsDurable.set(true);
+    floor.refresh(security);
+    assertThat(floor.floor()).as("the users pin still holds").isEqualTo(LATER_INDEX + 1);
+
+    usersDurable.set(true);
+    floor.refresh(security);
     assertThat(floor.floor()).isEqualTo(Long.MAX_VALUE);
   }
 

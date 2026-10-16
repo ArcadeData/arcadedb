@@ -24,6 +24,7 @@ import com.arcadedb.server.security.ServerSecurity;
 
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLongArray;
+import java.util.function.LongSupplier;
 import java.util.logging.Level;
 
 /**
@@ -67,9 +68,17 @@ final class SecurityDurabilityFloor {
   // Per document, in DOCUMENTS order: the index of the first entry whose effects are not durable here, or NONE.
   private final    AtomicLongArray pinned = new AtomicLongArray(DOCUMENTS.length);
   private volatile boolean         anyPinned;
+  private final    LongSupplier    nanoClock;
+  // Plain, not volatile: read and written only by afterInstall and retryIfDue, which both run on the Raft apply thread
   private          long            nextRetryNanos;
 
   SecurityDurabilityFloor() {
+    this(System::nanoTime);
+  }
+
+  /** With the clock {@link #retryIfDue} paces itself on, so a test can advance it rather than wait for it. */
+  SecurityDurabilityFloor(final LongSupplier nanoClock) {
+    this.nanoClock = nanoClock;
     for (int i = 0; i < DOCUMENTS.length; i++)
       pinned.set(i, NONE);
   }
@@ -85,7 +94,7 @@ final class SecurityDurabilityFloor {
       pinned.set(slot, index);
       if (!anyPinned)
         // The write that just failed was the first attempt, so the first retry is one interval away
-        nextRetryNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(RETRY_INTERVAL_MS);
+        nextRetryNanos = nanoClock.getAsLong() + TimeUnit.MILLISECONDS.toNanos(RETRY_INTERVAL_MS);
       anyPinned = true;
       LogManager.instance().log(this, Level.SEVERE,
           "The replicated security entry at index %d (%s) is in force on this node but did not fully reach the disk. "
@@ -126,7 +135,7 @@ final class SecurityDurabilityFloor {
     if (!anyPinned || security == null)
       return;
 
-    final long now = System.nanoTime();
+    final long now = nanoClock.getAsLong();
     if (now - nextRetryNanos < 0)
       return;
     nextRetryNanos = now + TimeUnit.MILLISECONDS.toNanos(RETRY_INTERVAL_MS);

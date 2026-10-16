@@ -23,7 +23,9 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.monitor.HAReplicationMetrics;
 import com.arcadedb.utility.FileUtils;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -151,6 +153,33 @@ class Issue7752ReplicatedSecurityReplayTest {
     nodeB = restart(nodeB, "b");
     assertThat(nodeB.usersFingerprint()).as("the list written by the retry is the one a restart reads").isEqualTo(inForce);
     assertThat(markerOf("b", ReplicatedSecurityFingerprintRepository.USERS)).isEqualTo(inForce);
+  }
+
+  /**
+   * What keeps the Raft log from being compacted is visible to a scrape before it is visible as disk pressure:
+   * {@code arcadedb.ha.security.documents_not_durable} counts the documents in force but not on disk, and returns to 0
+   * on its own when the retry succeeds.
+   */
+  @Test
+  void theDocumentsNotOnDiskArePublishedAsAGauge() {
+    final SimpleMeterRegistry registry = new SimpleMeterRegistry();
+    final FixtureServer server = new FixtureServer(new ContextConfiguration());
+    server.setSecurity(nodeB);
+    try (final HAReplicationMetrics metrics = new HAReplicationMetrics(server)) {
+      metrics.bindTo(registry);
+      assertThat(registry.find("arcadedb.ha.security.documents_not_durable").gauge().value()).isZero();
+
+      makeReadOnly(configOf("b"));
+      assertThatThrownBy(() -> nodeB.applyReplicatedUsers(usersWith(nodeA, "alice")))
+          .isInstanceOf(ReplicatedUsersPersistenceException.class);
+      assertThat(registry.find("arcadedb.ha.security.documents_not_durable").gauge().value()).isEqualTo(1.0);
+
+      configOf("b").toFile().setWritable(true);
+      assertThat(nodeB.retryReplicatedSecurityPersistence()).isTrue();
+      assertThat(registry.find("arcadedb.ha.security.documents_not_durable").gauge().value()).isZero();
+    } finally {
+      registry.close();
+    }
   }
 
   private static void makeReadOnly(final Path directory) {

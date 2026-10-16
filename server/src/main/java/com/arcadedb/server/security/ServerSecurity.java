@@ -1489,6 +1489,23 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
   }
 
   /**
+   * How many of the three replicated documents {@link #isReplicatedDocumentDurable} answers false for: under HA, the
+   * number of document kinds currently keeping a Raft entry out of every snapshot checkpoint (issue #7752). Published as
+   * {@code arcadedb.ha.security.documents_not_durable}, so an operator sees the Raft log being retained before the disk
+   * does.
+   */
+  public int countReplicatedDocumentsNotDurable() {
+    int count = 0;
+    if (!isReplicatedDocumentDurable(ReplicatedSecurityFingerprintRepository.USERS))
+      ++count;
+    if (!isReplicatedDocumentDurable(ReplicatedSecurityFingerprintRepository.GROUPS))
+      ++count;
+    if (!isReplicatedDocumentDurable(ReplicatedSecurityFingerprintRepository.API_TOKENS))
+      ++count;
+    return count;
+  }
+
+  /**
    * Writes again, from what is in force, every replicated document and fingerprint record whose last write failed
    * (issue #7752), so a configuration volume that has become writable again stops pinning the Raft log without
    * waiting for the next security change. Writes nothing when everything is already durable.

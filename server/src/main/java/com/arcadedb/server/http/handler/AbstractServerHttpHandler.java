@@ -1472,23 +1472,23 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     logClassifiedError(classification);
     if (classification.retryAfter() != null && !exchange.isResponseStarted())
       exchange.getResponseHeaders().put(RETRY_AFTER_HEADER, classification.retryAfter());
+    IoCallback afterResponse = null;
     if (classification.reported() instanceof RequestTooBigException) {
-      // A body refused mid-stream is not read any further (issue #8081), see sendErrorResponseAndResetHttp2Stream
-      if (Protocols.HTTP_2_0.equals(exchange.getProtocol())) {
-        sendErrorResponseAndResetHttp2Stream(exchange, classification);
-        return;
-      }
-      // HTTP/1.x: the connection ends with the answer, so ending the exchange closes the request side instead of
-      // draining it (HttpServerConnection.terminateRequestChannel). A client that kept the connection alive used to
-      // have the rest of its body read and discarded for as long as it kept sending
-      exchange.setPersistent(false);
+      // A body refused mid-stream is not read any further (issue #8081)
+      if (Protocols.HTTP_2_0.equals(exchange.getProtocol()))
+        afterResponse = RESET_HTTP2_STREAM_THEN_END_EXCHANGE;
+      else
+        // HTTP/1.x: the connection ends with the answer, so ending the exchange closes the request side instead of
+        // draining it (HttpServerConnection.terminateRequestChannel). A client that kept the connection alive used to
+        // have the rest of its body read and discarded for as long as it kept sending
+        exchange.setPersistent(false);
     }
     sendErrorResponse(exchange, classification.status(), classification.message(), classification.reported(),
-        classification.exceptionArgs());
+        classification.exceptionArgs(), afterResponse);
   }
 
   /**
-   * The 413 of a body refused mid-stream on HTTP/2 (issue #8081), followed by a reset of that stream alone.
+   * Ends the exchange of a 413 for a body refused mid-stream on HTTP/2 (issue #8081) with a reset of that stream alone.
    * <p>
    * Over HTTP/1.1 the refusal ends the request because the connection ends with it. HTTP/2 multiplexes the connection,
    * so ending the exchange makes Undertow DRAIN the rest of the stream instead ({@code UndertowInputStream.close()},
@@ -1502,37 +1502,26 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
    * with its length, so the write completes it; the reset covers this stream only - the other streams of the
    * connection are untouched - and the request is marked read, so ending the exchange has nothing left to drain.
    */
-  private void sendErrorResponseAndResetHttp2Stream(final HttpServerExchange exchange,
-      final ErrorClassification classification) {
-    if (!exchange.isResponseStarted())
-      exchange.setStatusCode(classification.status());
-    final byte[] body = buildErrorBody(!isProductionMode(), classification.message(), classification.reported(),
-        classification.exceptionArgs(), exchange.getResponseHeaders().getFirst(REQUEST_ID_HEADER))
-        .getBytes(StandardCharsets.UTF_8);
-    if (!exchange.isResponseStarted())
-      exchange.setResponseContentLength(body.length);
-
-    exchange.getResponseSender().send(ByteBuffer.wrap(body), new IoCallback() {
-      @Override
-      public void onComplete(final HttpServerExchange completed, final Sender sender) {
-        Http2StreamReset.resetWithNoError(completed);
-        try {
-          // Nothing more will arrive on a reset stream: closing the stream now records that, where the close at the
-          // end of the exchange would wait for the end of the body
-          completed.getInputStream().close();
-        } catch (final IOException e) {
-          // The stream was reset under it, which is the point
-        }
-        Connectors.terminateRequest(completed);
-        IoCallback.END_EXCHANGE.onComplete(completed, sender);
+  private static final IoCallback RESET_HTTP2_STREAM_THEN_END_EXCHANGE = new IoCallback() {
+    @Override
+    public void onComplete(final HttpServerExchange completed, final Sender sender) {
+      Http2StreamReset.resetWithNoError(completed);
+      try {
+        // Nothing more will arrive on a reset stream: closing the stream now records that, where the close at the end
+        // of the exchange would wait for the end of the body
+        completed.getInputStream().close();
+      } catch (final IOException e) {
+        // The stream was reset under it, which is the point
       }
+      Connectors.terminateRequest(completed);
+      IoCallback.END_EXCHANGE.onComplete(completed, sender);
+    }
 
-      @Override
-      public void onException(final HttpServerExchange failed, final Sender sender, final IOException exception) {
-        IoCallback.END_EXCHANGE.onException(failed, sender, exception);
-      }
-    });
-  }
+    @Override
+    public void onException(final HttpServerExchange failed, final Sender sender, final IOException exception) {
+      IoCallback.END_EXCHANGE.onException(failed, sender, exception);
+    }
+  };
 
   /**
    * What {@link #classifyError} decided for a failure: the HTTP status, the client-facing label (the body's
@@ -2613,14 +2602,33 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
 
   private void sendErrorResponse(final HttpServerExchange exchange, final int code, final String errorMessage, final Throwable e,
                                  final String exceptionArgs) {
+    sendErrorResponse(exchange, code, errorMessage, e, exceptionArgs, null);
+  }
+
+  /**
+   * @param afterResponse what runs once the whole response is written, in place of ending the exchange; null to end it
+   */
+  private void sendErrorResponse(final HttpServerExchange exchange, final int code, final String errorMessage, final Throwable e,
+                                 final String exceptionArgs, final IoCallback afterResponse) {
     if (!exchange.isResponseStarted())
       exchange.setStatusCode(code);
 
     // Reuse the correlation id already echoed in the response header so operators can cross-reference a
     // concealed production error with the detailed server log entry.
     final String correlationId = exchange.getResponseHeaders().getFirst(REQUEST_ID_HEADER);
+    final String body = buildErrorBody(!isProductionMode(), errorMessage, e, exceptionArgs, correlationId);
 
-    exchange.getResponseSender().send(buildErrorBody(!isProductionMode(), errorMessage, e, exceptionArgs, correlationId));
+    if (afterResponse == null) {
+      exchange.getResponseSender().send(body);
+      return;
+    }
+
+    // The sender sets the length itself only for its default callback, and the length is what makes the write
+    // complete the response before afterResponse runs
+    final byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+    if (!exchange.isResponseStarted())
+      exchange.setResponseContentLength(bytes.length);
+    exchange.getResponseSender().send(ByteBuffer.wrap(bytes), afterResponse);
   }
 
   /**
