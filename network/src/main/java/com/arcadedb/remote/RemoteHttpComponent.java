@@ -29,11 +29,13 @@ import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.QueryTerminatedException;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.exception.RecordVetoedException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.exception.TransactionCommittedRemotelyException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.exception.TypeAlreadyExistsException;
+import com.arcadedb.exception.ValidationException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.BoundedHttpExchange;
 import com.arcadedb.network.HostUtil;
@@ -1263,6 +1265,11 @@ public class RemoteHttpComponent extends RWLockContext {
         return new AlreadyExistsException(AlreadyExistsException.Kind.fromName(exceptionArgs), detail);
       } else if (exception.equals(SchemaException.class.getName())) {
         return new SchemaException(detail);
+      } else if (exception.equals(RecordVetoedException.class.getName())) {
+        // A LISTENER REFUSED THE WRITE (ISSUES #10085, #10161): ITS OWN TYPE, SO A CALLER CAN TELL A REFUSAL FROM A FAULT
+        return new RecordVetoedException(detail);
+      } else if (exception.equals(ValidationException.class.getName())) {
+        return new ValidationException(detail);
       } else if (exception.equals(NoSuchElementException.class.getName())) {
         return new NoSuchElementException(detail);
       } else if (exception.equals(SecurityException.class.getName())) {

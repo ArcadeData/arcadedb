@@ -24,11 +24,11 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
 import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.exception.RecordVetoedException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Property;
@@ -53,12 +53,9 @@ public class RemoteMutableEdge extends MutableEdge {
   @Override
   public MutableEdge save() {
     dirty = true;
-    final JSONObject json = toJSON();
-    json.remove(RID_PROPERTY);  // Remove @rid to avoid SQL parsing issues
-    if (rid != null)
-      remoteDatabase.command("sql", "update " + rid + " content " + json);
-    else
-      remoteDatabase.command("sql", "insert into " + Identifier.quote(getTypeName()) + " content " + json);
+    // THE SAME WRITE THE DOCUMENT AND THE VERTEX SEND, SO A VETOED OR A MISSING EDGE IS REPORTED, AND COUNTED, AS THEIRS ARE
+    // (issue #10161): A BARE "UPDATE" OR "INSERT" COMMAND ANSWERED BOTH AS A SUCCESS, AND THE INSERT NEVER LEARNT ITS RID
+    rid = remoteDatabase.saveRecord(this);
     dirty = false;
     return this;
   }
@@ -66,30 +63,23 @@ public class RemoteMutableEdge extends MutableEdge {
   @Override
   public MutableEdge save(final String bucketName) {
     dirty = true;
-    if (rid != null)
-      throw new IllegalStateException("Cannot update a record in a custom bucket");
-    final JSONObject json = toJSON();
-    json.remove(RID_PROPERTY);  // Remove @rid to avoid SQL parsing issues
-    remoteDatabase.command("sql",
-        "insert into " + Identifier.quote(getTypeName()) + " bucket " + Identifier.quote(bucketName) + " content " + json);
+    rid = remoteDatabase.saveRecord(this, bucketName);
     dirty = false;
     return this;
   }
 
   /**
-   * The remote protocol does not carry a listener's veto back to the client, and this edge does not learn the identity a create
-   * assigned, so the write is reported as applied whenever the server did not refuse it with an error.
+   * Both remote drivers learn a listener's veto from the server, of a create and of an update alike, and raise it from
+   * {@link #save()} as a {@link RecordVetoedException}: here it is answered as {@code false} instead (issue #10161).
    */
   @Override
   public boolean saveReportingVeto() {
-    save();
-    return true;
+    return RemoteDatabase.savedUnlessVetoed(this::save);
   }
 
   @Override
   public boolean saveReportingVeto(final String bucketName) {
-    save(bucketName);
-    return true;
+    return RemoteDatabase.savedUnlessVetoed(() -> save(bucketName));
   }
 
   @Override

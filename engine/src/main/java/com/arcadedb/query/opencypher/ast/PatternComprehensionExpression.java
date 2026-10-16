@@ -34,6 +34,7 @@ import com.arcadedb.query.opencypher.traversal.GraphTraverser;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.opencypher.traversal.VariableLengthPathTraverser;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.OperationHeapLimit;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
@@ -66,9 +67,24 @@ public class PatternComprehensionExpression implements Expression {
     this.text = text;
   }
 
+  /**
+   * The list the comprehension evaluates to, built under the per-operation element cap and the query heap budget, as the
+   * list of a SQL subquery and of a Cypher {@code COLLECT { ... }} are (issue #10160): a pattern over a supernode or an
+   * uncorrelated start enumerates as many matches as the graph holds.
+   */
+  private record Collected(List<Object> values, OperationHeapLimit limit) {
+    void add(final Object value) {
+      values.add(value);
+      limit.add(values.size(), value);
+    }
+  }
+
   @Override
   public Object evaluate(final Result result, final CommandContext context) {
-    final List<Object> resultList = new ArrayList<>();
+    // AN EXPRESSION'S LIST IS ITS VALUE: THE BYTES ARE HELD WHILE IT IS BUILT AND GIVEN BACK WHEN IT IS RETURNED, AS
+    // OperationHeapLimit.materializeForExpression() DOES FOR A SUBQUERY
+    final OperationHeapLimit limit = OperationHeapLimit.of(context, "pattern comprehension");
+    final Collected resultList = new Collected(new ArrayList<>(), limit);
     final List<Object> pathElements = new ArrayList<>();
     // Relationship uniqueness spans the whole pattern, every hop and every relationship a variable-length hop walks. A
     // single fixed-length hop cannot repeat a relationship, so the common [(a)-->(b) | b] tracks nothing. A pattern with a
@@ -76,8 +92,12 @@ public class PatternComprehensionExpression implements Expression {
     final int hops = pathPattern.getRelationshipCount();
     final EdgeIdentityMultiset usedEdges =
         hops > 1 || (hops == 1 && pathPattern.getRelationship(0).isVariableLength()) ? new EdgeIdentityMultiset() : null;
-    traversePattern(result, context, 0, result, resultList, pathElements, usedEdges, null);
-    return resultList;
+    try {
+      traversePattern(result, context, 0, result, resultList, pathElements, usedEdges, null);
+    } finally {
+      limit.release();
+    }
+    return resultList.values();
   }
 
   /**
@@ -91,7 +111,7 @@ public class PatternComprehensionExpression implements Expression {
    *                         the outer-bound variable instead.
    */
   private void traversePattern(final Result baseResult, final CommandContext context,
-      final int hopIndex, final Result currentResult, final List<Object> resultList,
+      final int hopIndex, final Result currentResult, final Collected resultList,
       final List<Object> pathElements, final EdgeIdentityMultiset usedEdges, final Vertex knownStartVertex) {
     if (hopIndex >= pathPattern.getRelationshipCount()) {
       // All hops matched - apply WHERE filter and map expression
@@ -190,7 +210,7 @@ public class PatternComprehensionExpression implements Expression {
    * node pattern's labels and inline properties.
    */
   private void traverseUncorrelatedStart(final Result baseResult, final CommandContext context,
-      final Result currentResult, final List<Object> resultList, final List<Object> pathElements,
+      final Result currentResult, final Collected resultList, final List<Object> pathElements,
       final EdgeIdentityMultiset usedEdges, final NodePattern startNodePattern) {
     // The scan visits every vertex type the label constraint can be satisfied by, which for a disjunction
     // (y:A|B) means the types of both alternatives. Taking the first label as the iteration root left the
@@ -256,7 +276,7 @@ public class PatternComprehensionExpression implements Expression {
   }
 
   private void traverseVariableLength(final Result baseResult, final CommandContext context,
-      final int hopIndex, final Result currentResult, final List<Object> resultList,
+      final int hopIndex, final Result currentResult, final Collected resultList,
       final List<Object> pathElements, final EdgeIdentityMultiset usedEdges,
       final Vertex currentVertex, final Direction direction,
       final String[] relTypeArray, final NodePattern endNodePattern,
@@ -338,7 +358,7 @@ public class PatternComprehensionExpression implements Expression {
    * {@code WHERE} sees the list rather than one of its relationships.
    */
   private void traverseBoundRelationshipList(final Result baseResult, final CommandContext context, final int hopIndex,
-      final Result currentResult, final List<Object> resultList, final List<Object> pathElements,
+      final Result currentResult, final Collected resultList, final List<Object> pathElements,
       final EdgeIdentityMultiset usedEdges, final Vertex startVertex, final Direction direction, final String[] relTypeArray,
       final NodePattern endNodePattern, final RelationshipPattern relPattern) {
     final VariableLengthPathTraverser traverser = new VariableLengthPathTraverser(direction, relTypeArray,
@@ -490,7 +510,7 @@ public class PatternComprehensionExpression implements Expression {
   }
 
   private void traverseEdges(final Result baseResult, final CommandContext context,
-      final int hopIndex, final Result currentResult, final List<Object> resultList,
+      final int hopIndex, final Result currentResult, final Collected resultList,
       final List<Object> pathElements, final EdgeIdentityMultiset usedEdges,
       final Vertex startVertex, final Direction direction,
       final String[] relTypeArray, final NodePattern endNodePattern,

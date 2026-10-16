@@ -61,3 +61,8 @@ jobs:
             exit 1
           fi
           echo "No tracked file is matched by any .gitignore pattern."
+
+      # The step above only sees files already committed: a new file under an ignored package with no tracked sibling never
+      # reaches the index, so it cannot fail it. This one is computed from the patterns, for every source tree (#10162)
+      - name: Assert no ignore pattern hides a directory under a source tree
+        run: ./.github/scripts/check-gitignore-src-paths.sh

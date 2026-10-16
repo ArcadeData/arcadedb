@@ -19,9 +19,13 @@
 package com.arcadedb.graph;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
+import com.arcadedb.utility.ResettableIterator;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -29,15 +33,17 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.Set;
+import java.util.function.Function;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * A vertex walk looks the neighbour record up once. {@code IteratorFilterBase.hasNext()} resolves the RID of the next
+ * A vertex or edge walk looks each record up once. {@code IteratorFilterBase.hasNext()} resolves the RID of the next
  * neighbour to validate it, and {@code VertexIteratorFilter.next()} used to resolve the same RID again: two read-locked
  * lookups, each with a transaction cache probe and a type lookup, for every vertex a traversal visits. The record the
- * validation resolved is now the one handed out.
+ * validation resolved is now the one handed out. {@code EdgeIteratorFilter.next()} had the same double lookup on the edge
+ * record and was left out of the first fix (#10163), which is why both iterators are measured from one list here.
  */
 class VertexIteratorSingleLookupTest extends TestHelper {
   private static final int NEIGHBORS = 500;
@@ -64,11 +70,24 @@ class VertexIteratorSingleLookupTest extends TestHelper {
     return ((Number) database.getStats().get("readRecord")).longValue();
   }
 
-  @Test
-  void aVertexWalkLooksEachNeighbourUpOnce() {
+  /** The two filtered iterators over one adjacency list: both validate the entry in hasNext() and hand it out in next(). */
+  enum Walk {
+    VERTICES(hub -> hub.getVertices(Vertex.DIRECTION.OUT, "Likes", "Hates").iterator()),
+    EDGES(hub -> hub.getEdges(Vertex.DIRECTION.OUT, "Likes", "Hates").iterator());
+
+    private final Function<Vertex, Iterator<? extends Identifiable>> iterator;
+
+    Walk(final Function<Vertex, Iterator<? extends Identifiable>> iterator) {
+      this.iterator = iterator;
+    }
+  }
+
+  @ParameterizedTest
+  @EnumSource(Walk.class)
+  void aWalkLooksEachEntryUpOnce(final Walk walk) {
     final Vertex hub = source.asVertex();
     final long before = reads();
-    final Iterator<Vertex> it = hub.getVertices(Vertex.DIRECTION.OUT, "Likes", "Hates").iterator();
+    final Iterator<? extends Identifiable> it = walk.iterator.apply(hub);
     int count = 0;
     while (it.hasNext()) {
       it.next();
@@ -77,8 +96,40 @@ class VertexIteratorSingleLookupTest extends TestHelper {
     final long lookups = reads() - before;
 
     assertThat(count).isEqualTo(NEIGHBORS);
-    // ONE LOOKUP PER NEIGHBOUR, PLUS THE EDGE-LIST CHUNKS: NEVER THE TWO PER NEIGHBOUR OF THE VALIDATE-THEN-RELOAD PATTERN
+    // ONE LOOKUP PER ENTRY, PLUS THE EDGE-LIST CHUNKS: NEVER THE TWO PER ENTRY OF THE VALIDATE-THEN-RELOAD PATTERN
     assertThat(lookups).as("lookups").isLessThan(NEIGHBORS + NEIGHBORS / 4);
+  }
+
+  @Test
+  void theHandedOutEdgeIsTheOneBehindTheEntry() {
+    final Set<Integer> seen = new HashSet<>();
+    int hates = 0;
+    for (final Edge e : source.asVertex().getEdges(Vertex.DIRECTION.OUT, "Likes", "Hates")) {
+      assertThat(e.getOut()).isEqualTo(source);
+      final Vertex leaf = e.getInVertex();
+      assertThat(seen.add(leaf.getInteger("n"))).isTrue();
+      if (e.getTypeName().equals("Hates")) {
+        assertThat(leaf.getInteger("n") % 5).isEqualTo(0);
+        hates++;
+      }
+    }
+    assertThat(seen).hasSize(NEIGHBORS);
+    assertThat(hates).isEqualTo(NEIGHBORS / 5);
+  }
+
+  @Test
+  void repeatedHasNextAndPlainNextHandOutEachEdgeOnce() {
+    final Iterator<Edge> it = source.asVertex().getEdges(Vertex.DIRECTION.OUT, "Likes").iterator();
+    final Set<RID> seen = new HashSet<>();
+    seen.add(it.next().getIdentity());
+    int count = 1;
+    while (it.hasNext()) {
+      assertThat(it.hasNext()).isTrue();
+      assertThat(seen.add(it.next().getIdentity())).isTrue();
+      count++;
+    }
+    assertThat(count).isEqualTo(NEIGHBORS - NEIGHBORS / 5);
+    assertThatThrownBy(it::next).isInstanceOf(NoSuchElementException.class);
   }
 
   @Test
@@ -113,6 +164,21 @@ class VertexIteratorSingleLookupTest extends TestHelper {
     }
     assertThat(count).isEqualTo(NEIGHBORS - NEIGHBORS / 5);
     assertThatThrownBy(it::next).isInstanceOf(NoSuchElementException.class);
+  }
+
+  /** A reset forgets the entry hasNext() peeked: the walk restarts from the first entry and hands each one out once. */
+  @ParameterizedTest
+  @EnumSource(Walk.class)
+  void aResetAfterAPeekWalksEveryEntryOnce(final Walk walk) {
+    final Iterator<? extends Identifiable> it = walk.iterator.apply(source.asVertex());
+    it.next();
+    assertThat(it.hasNext()).isTrue();
+    ((ResettableIterator<?>) it).reset();
+
+    final Set<RID> seen = new HashSet<>();
+    while (it.hasNext())
+      assertThat(seen.add(it.next().getIdentity())).isTrue();
+    assertThat(seen).hasSize(NEIGHBORS);
   }
 
   @Test

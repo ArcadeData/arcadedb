@@ -26,6 +26,7 @@ import com.arcadedb.exception.HeapLimitExceededException;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
+import java.util.function.Function;
 
 /**
  * The limits on the heap one operation of a query holds in its buffer: the rows a sort or a join buffers, the keys a
@@ -187,12 +188,20 @@ public final class OperationHeapLimit {
    * new mutable {@link ArrayList} that nothing else references, which a caller may rewrite in place.
    */
   public List<Result> materialize(final ResultSet source) {
-    final List<Result> rows = new ArrayList<>();
+    return materialize(source, Function.identity());
+  }
+
+  /**
+   * {@link #materialize(ResultSet)} keeping what {@code mapper} makes of each row instead of the row: the value a Cypher
+   * {@code COLLECT { ... }} projects out of it, for instance. What is accounted is the element kept.
+   */
+  public <T> List<T> materialize(final ResultSet source, final Function<? super Result, ? extends T> mapper) {
+    final List<T> elements = new ArrayList<>();
     try {
       while (source.hasNext()) {
-        final Result row = source.next();
-        rows.add(row);
-        add(rows.size(), row);
+        final T element = mapper.apply(source.next());
+        elements.add(element);
+        add(elements.size(), element);
       }
     } catch (final RuntimeException e) {
       release();
@@ -200,7 +209,7 @@ public final class OperationHeapLimit {
     } finally {
       source.close();
     }
-    return rows;
+    return elements;
   }
 
   /**
@@ -218,9 +227,19 @@ public final class OperationHeapLimit {
    * @param operation what is materialised, as the error messages name it (e.g. "subquery expression")
    */
   public static List<Result> materializeForExpression(final CommandContext context, final String operation, final ResultSet source) {
+    return materializeForExpression(context, operation, source, Function.identity());
+  }
+
+  /**
+   * {@link #materializeForExpression(CommandContext, String, ResultSet)} keeping what {@code mapper} makes of each row: the
+   * openCypher {@code COLLECT { ... }} subquery, which used to drain its sub-plan into a
+   * list of its own, past both limits the identical SQL subquery is refused by (issue #10160).
+   */
+  public static <T> List<T> materializeForExpression(final CommandContext context, final String operation, final ResultSet source,
+      final Function<? super Result, ? extends T> mapper) {
     final OperationHeapLimit limit = of(context, operation);
     try {
-      return limit.materialize(source);
+      return limit.materialize(source, mapper);
     } finally {
       limit.release();
     }

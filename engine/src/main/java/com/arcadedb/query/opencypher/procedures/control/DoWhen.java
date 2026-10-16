@@ -23,11 +23,11 @@ import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.opencypher.parser.Cypher25AntlrParser;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.OperationHeapLimit;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Stream;
@@ -198,21 +198,22 @@ public class DoWhen implements CypherProcedure {
     final QueryEngine queryEngine = database.getQueryEngine("opencypher");
     final boolean idempotent = queryEngine.analyze(query).isIdempotent();
 
-    final List<Result> rows = new ArrayList<>();
-    try (final ResultSet resultSet = idempotent ?
+    final ResultSet resultSet = idempotent ?
         database.query("opencypher", query, params) :
-        database.command("opencypher", query, params)) {
-      while (resultSet.hasNext()) {
-        final Result row = resultSet.next();
-        final ResultInternal wrapped = new ResultInternal();
-        // The row's columns, as APOC answers them ({n: node} for `RETURN n`): toMap() answers the entity behind a row that
-        // returns one, flattening it into its properties (issue #9964)
-        wrapped.setProperty("value", row.toPropertyMap(false));
-        rows.add(wrapped);
-      }
-    }
-
-    return rows.stream();
+        database.command("opencypher", query, params);
+    // Drained under the per-operation element cap and the query heap budget, as a subquery is (issue #10160), and closed whatever
+    // happens. Unlike an expression's list, these rows outlive the call: CallStep holds the stream of every input row of a batch
+    // before it reads them, so the charge stays until the stream is closed, which CallStep does once its rows are read, when
+    // reading them fails, or when the step itself is closed. A failure while draining has given the charge back already
+    final OperationHeapLimit limit = OperationHeapLimit.of(context, getName() + "()");
+    final List<Result> rows = limit.materialize(resultSet, row -> {
+      final ResultInternal wrapped = new ResultInternal();
+      // The row's columns, as APOC answers them ({n: node} for `RETURN n`): toMap() answers the entity behind a row that
+      // returns one, flattening it into its properties (issue #9964)
+      wrapped.setProperty("value", row.toPropertyMap(false));
+      return wrapped;
+    });
+    return rows.stream().onClose(limit::release);
   }
 
   private boolean extractBoolean(final Object arg) {

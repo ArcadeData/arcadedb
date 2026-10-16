@@ -1236,7 +1236,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
   /** The refusal of a write that has to answer a record, which a listener's veto leaves without one (issue #10085). */
   private static RecordVetoedException vetoed(final String typeName) {
-    return new RecordVetoedException("Cannot write a record of type '" + typeName + "': a listener vetoed it");
+    return RecordVetoedException.ofCreate(typeName);
   }
 
   /** The same for an edge, which names the vertices it would have connected. */

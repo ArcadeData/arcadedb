@@ -22,7 +22,9 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.exception.HeapLimitExceededException;
 import com.arcadedb.exception.NeedRetryException;
+import com.arcadedb.exception.QueryHeapBudgetExceededException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.function.FunctionDefinition;
 import com.arcadedb.function.StatelessFunction;
@@ -493,12 +495,13 @@ public class CallStep extends AbstractExecutionStep {
         result = new ProcedureRows(resultStream, resultStream.iterator());
 
       return result;
-    } catch (final NeedRetryException retryable) {
-      closeAfterFailure(resultStream, retryable);
-      // a conflict is not "no rows" either: it keeps its type, OPTIONAL or not, for Database.transaction(..., retries) (#9487)
+    } catch (final NeedRetryException | HeapLimitExceededException | QueryHeapBudgetExceededException refusal) {
+      closeAfterFailure(resultStream, refusal);
+      // a conflict is not "no rows" either: it keeps its type, OPTIONAL or not, for Database.transaction(..., retries) (#9487).
+      // Nor is a refusal of the heap limits, which says the query asked for too much, not that the call found nothing (#10160)
       if (autoCommit && context.getDatabase().isTransactionActive())
         context.getDatabase().rollback();
-      throw retryable;
+      throw refusal;
     } catch (final CommandParsingException clientError) {
       closeAfterFailure(resultStream, clientError);
       // OPTIONAL suppresses "no rows", not "your call is malformed": a wrong argument count or a bad argument type is
@@ -545,9 +548,10 @@ public class CallStep extends AbstractExecutionStep {
       // the same mistake inside OPTIONAL CALL as outside it, and answering null there would hide it behind a result
       // that looks legitimately empty. Matches Neo4j, where OPTIONAL CALL is about cardinality (issue #5602).
       throw clientError;
-    } catch (final NeedRetryException retryable) {
-      // a conflict keeps its type, OPTIONAL or not: Database.transaction(..., retries) retries on it (#9487)
-      throw retryable;
+    } catch (final NeedRetryException | HeapLimitExceededException | QueryHeapBudgetExceededException refusal) {
+      // a conflict keeps its type, OPTIONAL or not: Database.transaction(..., retries) retries on it (#9487). So does a refusal of
+      // the heap limits (#10160)
+      throw refusal;
     } catch (final Exception e) {
       if (callClause.isOptional())
         return null;
@@ -592,9 +596,10 @@ public class CallStep extends AbstractExecutionStep {
       }
 
       return result;
-    } catch (final NeedRetryException retryable) {
-      // a conflict keeps its type, OPTIONAL or not: Database.transaction(..., retries) retries on it (#9487)
-      throw retryable;
+    } catch (final NeedRetryException | HeapLimitExceededException | QueryHeapBudgetExceededException refusal) {
+      // a conflict keeps its type, OPTIONAL or not: Database.transaction(..., retries) retries on it (#9487). So does a refusal of
+      // the heap limits (#10160)
+      throw refusal;
     } catch (final Exception e) {
       if (callClause.isOptional())
         return null;

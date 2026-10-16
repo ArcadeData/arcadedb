@@ -389,9 +389,9 @@ security.json
 *.rlog
 # Runtime log directories, written wherever a server or test runs (the repository root, any module, a binding's
 # examples). Never a source package: `**/log` alone also matched src/**/com/arcadedb/log, so a new file there was
-# silently skipped by `git add` and hidden from every ignore-aware search tool (#9981).
+# silently skipped by `git add` and hidden from every ignore-aware search tool (#9981). The source trees are re-included
+# by the rule at the end of this file
 **/log/
-!**/src/**/log/
 
 databases
 .history
@@ -403,8 +403,6 @@ databases
 # ... but the copies under package/ are the defaults the distribution ships (#9981)
 !/package/src/main/config/server-users.jsonl
 !/package/src/main/config/server-groups.json
-doc/src/main/asciidoc/*/.asciidoctor/
-doc/src/main/asciidoc/*/var/
 gremlin/file:/
 gremlin-it/file:/
 server/backups/
@@ -561,7 +559,6 @@ dist
 *.egg-info/
 /backups/
 /claude/
-/grpc/src/generated
 
 .venv/
 .vscode/
@@ -594,3 +591,18 @@ config/mcp-config.json
 
 # Backward-compatibility fixtures: databases written by older releases (#9265)
 !engine/src/test/resources/compat/*.zip
+
+# EVERY DIRECTORY UNDER A SOURCE TREE IS SOURCE (#9981, #10162). KEEP THIS BLOCK LAST: a pattern written below it wins.
+# The directory names above - log, logs, out, bin, gen, tmp, target, dist, coverage, databases, replication/ and the
+# rest of the templates - are build or runtime output at a module root, and an ordinary package or resource folder
+# under src/ (com/arcadedb/server/ha/replication/, com/arcadedb/out/). Ignored there, a new file is silently skipped by
+# `git add` and hidden from every ignore-aware search tool, with nothing to say so. One negation for every name instead
+# of one per name, so the next pattern added above cannot do it again. It only re-includes DIRECTORIES: the file
+# patterns (*.log, *.iml, *.jar) still apply inside src/. Checked by .github/scripts/check-gitignore-src-paths.sh
+!**/src/**/
+# ... and the build output that is written INSIDE a source tree, restated after it by full path
+/grpc/src/generated/
+/doc/src/main/asciidoc/*/.asciidoctor/
+/doc/src/main/asciidoc/*/var/
+**/src/**/*.egg-info/
+**/src/**/__pycache__/

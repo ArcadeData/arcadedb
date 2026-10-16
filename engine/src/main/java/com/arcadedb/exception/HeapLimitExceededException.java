@@ -19,9 +19,10 @@
 package com.arcadedb.exception;
 
 /**
- * An in-heap operation held more elements than the configured cap allows. A {@link CommandExecutionException}, so
- * every caller that failed the query on it still does; callers with a cheaper way out (a scan that can stream
- * instead) tell it from the other command failures by this type.
+ * An in-heap operation held more elements than the configured cap allows, or its query alone would hold more than the whole
+ * {@link com.arcadedb.GlobalConfiguration#QUERY_MAX_HEAP_RAM} budget. A {@link CommandExecutionException}, so every caller that
+ * failed the query on it still does; callers with a cheaper way out (a scan that can stream instead) tell it from the other
+ * command failures by this type, and so does an {@code OPTIONAL CALL}, which must not read it as "no rows" (issue #10160).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
