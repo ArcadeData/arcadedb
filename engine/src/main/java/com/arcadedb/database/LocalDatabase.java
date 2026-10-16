@@ -3103,9 +3103,66 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    * was then refused and the caller told nothing had changed.
    */
   public String pendingConfigurationChange(final String key) throws IOException {
+    return pendingConfigurationChanges(fileKeyOf(key));
+  }
+
+  /**
+   * The entry that replicates {@code change} (issue #10108): the one captured when the change stored its value, so it
+   * carries the value THIS change set and not whatever the in-memory configuration holds by the time the caller submits it,
+   * which another statement on the same setting may have replaced. {@code null} when {@code configuration.json} already
+   * holds what the change stored. A change made without {@link #changeSetting(String, Runnable)} captured nothing, and
+   * takes {@link #pendingConfigurationChange(String)}.
+   */
+  public String pendingConfigurationChange(final SettingChange change) throws IOException {
+    final String document = change.document();
+    if (document == null)
+      return pendingConfigurationChange(change.key());
+
+    final JSONObject captured = new JSONObject(document);
+    final JSONObject changed = captured.getJSONObject("configuration", new JSONObject());
+    final JSONArray removed = captured.getJSONArray("removed", new JSONArray());
+    final JSONObject saved = readSavedConfiguration().getJSONObject("configuration", new JSONObject());
+    for (final String key : changed.keySet())
+      if (!saved.has(key) || !String.valueOf(saved.get(key)).equals(String.valueOf(changed.get(key))))
+        return document;
+    for (int i = 0; i < removed.length(); i++)
+      if (saved.has(removed.getString(i)))
+        return document;
+    return null;
+  }
+
+  /**
+   * Saves the configuration after {@code change} stored its value (issue #10108). A database of its own writes the whole
+   * configuration to its file, as {@link #saveConfiguration()} does: there is nothing to replicate. The change matters to
+   * the Raft HA wrapper, which replicates the setting with the value that change set and nothing else.
+   */
+  @Override
+  public void saveConfiguration(final SettingChange change) throws IOException {
+    saveConfiguration();
+  }
+
+  /** The setting as {@code configuration.json} names it, however the caller spelled the key. */
+  private static String fileKeyOf(final String key) {
     // A declared setting under its declared key, the one the configuration stores it under, however the caller spelled it
     final GlobalConfiguration setting = GlobalConfiguration.findByKey(key);
-    return pendingConfigurationChanges(ContextConfiguration.jsonKey(setting != null ? setting.getKey() : key));
+    return ContextConfiguration.jsonKey(setting != null ? setting.getKey() : key);
+  }
+
+  /**
+   * The entry that replicates the setting {@code key} as it stands now, in the shape {@link #pendingConfigurationChanges()}
+   * produces: the setting with its value, or named as removed when the configuration no longer holds it. Read under
+   * {@link #configurationApplyLock}, right after the value was stored, so it cannot hold another statement's value.
+   */
+  private String settingChangeDocument(final String key) {
+    final String fileKey = fileKeyOf(key);
+    final JSONObject current = new JSONObject(configuration.toJSON()).getJSONObject("configuration", new JSONObject());
+    final JSONObject changed = new JSONObject();
+    final JSONArray removed = new JSONArray();
+    if (current.has(fileKey))
+      changed.put(fileKey, current.get(fileKey));
+    else
+      removed.put(fileKey);
+    return new JSONObject().put("configuration", changed).put("removed", removed).toString();
   }
 
   /** The difference between memory and {@code configuration.json}, restricted to {@code onlyFileKey} when not null. */
@@ -3227,12 +3284,15 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    * the previous value back only while nothing else changed the setting since (issue #9919). {@code token} identifies
    * this change, {@code previousToken} the change whose value it replaced ({@code null}: a value no change on this node
    * stored), so an undo can tell whether that value belongs to a change that was itself refused (issue #9951).
+   * {@code document} is the entry that replicates this change, captured when the value was stored (issue #10108): the
+   * setting named with the value this change set, whatever another statement stores before this one reaches its save.
+   * {@code null} for a change made without {@link #changeSetting(String, Runnable)}, which has no such moment.
    */
   public record SettingChange(String key, Object previousValue, Object valueSet, SettingToken previousToken,
-                              SettingToken token) {
+                              SettingToken token, String document) {
     /** A change made without {@link #changeSetting(String, Runnable)}: no token, so nothing to undo it against. */
     public SettingChange(final String key, final Object previousValue, final Object valueSet) {
-      this(key, previousValue, valueSet, null, null);
+      this(key, previousValue, valueSet, null, null, null);
     }
   }
 
@@ -3294,7 +3354,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       }
       final SettingToken token = new SettingToken();
       settingTokens.put(tokenKey, token);
-      return new SettingChange(key, previousValue, settingValue(key), previousToken, token);
+      return new SettingChange(key, previousValue, settingValue(key), previousToken, token, settingChangeDocument(key));
     }
   }
 

@@ -2109,44 +2109,53 @@ public class LocalDocumentType implements DocumentType {
     final List<IndexInternal> list = bucketIndexesByBucket.computeIfAbsent(bucketId, k -> new CopyOnWriteArrayList<>());
     list.add(index);
 
-    if (propIndex == null) {
-      final List<String> propertyList = Arrays.asList(propertyNames);
-      propIndex = indexesByProperties.get(propertyList);
-      // A wrapper found here can be "invalidated" if a prior {@link TypeIndex#drop()} (e.g.
-      // existingTypeIndex.drop() in {@link TypeIndexBuilder#create()}) ran on it but the schema's
-      // own auto-removal hook (LocalSchema#dropIndex, #4179) failed to dislodge it - this is the
-      // observable symptom of the "is not valid" failures during REBUILD INDEX / index recreation.
-      // Treat a stale entry as if it weren't there: mint a fresh wrapper so the new bucket index
-      // can attach.
-      if (propIndex != null && !propIndex.isValid()) {
-        indexesByProperties.remove(propertyList);
-        schema.removeIndexDuringLoad(propIndex.getName());
-        propIndex = null;
-      }
-      if (propIndex == null) {
-        // CREATE THE TYPE-INDEX FOR THE 1ST TIME. Honour any user-supplied name carried on the
-        // bucket-level index metadata (issue #4139): {@code CREATE INDEX <manual_name> ON ...}
-        // sets metadata.typeIndexName via TypeIndexBuilder, the schema reload re-attaches it via
-        // LSMTreeIndex.setMetadata, and we use it here so the TypeIndex (and therefore the
-        // schema-level indexMap entry / Studio's "Indexes" view) is keyed by the manual name.
-        // Falling back to the auto-derived form keeps the public default name unchanged for all
-        // callers that did not supply a manual name.
-        final String customName = index.getMetadata().typeIndexName;
-        final String typeIndexName = customName != null && !customName.isEmpty() ?
-            customName :
-            name + Arrays.toString(propertyNames).replace(" ", "");
-        propIndex = new TypeIndex(typeIndexName, this);
-        // Staged while a schema load is in flight (issue #7213): this wrapper is the name a query resolves, and
-        // publishing it here would hand a reader a TypeIndex over a bucket-level index that has not run its
-        // onAfterSchemaLoad() yet - for a vector index, one with no vectors loaded.
-        schema.publishIndexDuringLoad(propIndex.getName(), propIndex);
-        indexesByProperties.put(propertyList, propIndex);
-      }
-    }
+    if (propIndex == null)
+      propIndex = typeIndexFor(index, propertyNames);
 
     // ADD AS SUB-INDEX
     propIndex.addIndexOnBucket(index);
     this.bucketSelectionStrategy.setType(this);
+  }
+
+  /**
+   * The wrapper of this type for the index on {@code propertyNames}, minted the first time (issue #10093 needs it from
+   * outside {@link #addIndexInternal}: the schema load binds a sub-index to the type that owns its bucket under the wrapper of
+   * the type that declares the index, which may not have minted it yet).
+   */
+  TypeIndex typeIndexFor(final IndexInternal index, final String[] propertyNames) {
+    final List<String> propertyList = Arrays.asList(propertyNames);
+    TypeIndex propIndex = indexesByProperties.get(propertyList);
+    // A wrapper found here can be "invalidated" if a prior {@link TypeIndex#drop()} (e.g.
+    // existingTypeIndex.drop() in {@link TypeIndexBuilder#create()}) ran on it but the schema's
+    // own auto-removal hook (LocalSchema#dropIndex, #4179) failed to dislodge it - this is the
+    // observable symptom of the "is not valid" failures during REBUILD INDEX / index recreation.
+    // Treat a stale entry as if it weren't there: mint a fresh wrapper so the new bucket index
+    // can attach.
+    if (propIndex != null && !propIndex.isValid()) {
+      indexesByProperties.remove(propertyList);
+      schema.removeIndexDuringLoad(propIndex.getName());
+      propIndex = null;
+    }
+    if (propIndex == null) {
+      // CREATE THE TYPE-INDEX FOR THE 1ST TIME. Honour any user-supplied name carried on the
+      // bucket-level index metadata (issue #4139): {@code CREATE INDEX <manual_name> ON ...}
+      // sets metadata.typeIndexName via TypeIndexBuilder, the schema reload re-attaches it via
+      // LSMTreeIndex.setMetadata, and we use it here so the TypeIndex (and therefore the
+      // schema-level indexMap entry / Studio's "Indexes" view) is keyed by the manual name.
+      // Falling back to the auto-derived form keeps the public default name unchanged for all
+      // callers that did not supply a manual name.
+      final String customName = index.getMetadata().typeIndexName;
+      final String typeIndexName = customName != null && !customName.isEmpty() ?
+          customName :
+          name + Arrays.toString(propertyNames).replace(" ", "");
+      propIndex = new TypeIndex(typeIndexName, this);
+      // Staged while a schema load is in flight (issue #7213): this wrapper is the name a query resolves, and
+      // publishing it here would hand a reader a TypeIndex over a bucket-level index that has not run its
+      // onAfterSchemaLoad() yet - for a vector index, one with no vectors loaded.
+      schema.publishIndexDuringLoad(propIndex.getName(), propIndex);
+      indexesByProperties.put(propertyList, propIndex);
+    }
+    return propIndex;
   }
 
   public void removeTypeIndexInternal(final TypeIndex index) {

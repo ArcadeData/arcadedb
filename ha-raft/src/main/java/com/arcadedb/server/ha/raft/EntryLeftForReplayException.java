@@ -19,12 +19,16 @@
 package com.arcadedb.server.ha.raft;
 
 /**
- * A committed entry this node did not apply because its database was closed under the apply thread while the node is
- * shutting down (issue #9550). The entry is left in the Raft log for the replay on restart: the applied index does not
- * move over it, and {@code ArcadeStateMachine.takeSnapshot()} does not checkpoint past it.
+ * A committed entry this node did not apply, or applied in memory without being able to make it durable, and left in the
+ * Raft log for the replay on restart: the applied index does not move over it, and
+ * {@code ArcadeStateMachine.takeSnapshot()} does not checkpoint past it.
+ * <p>
+ * Issue #9550: its database was closed under the apply thread while the node is shutting down. Issue #10086: the local
+ * write of a security document or of a database configuration, already in force in memory, failed; or the retry loop gave
+ * up on an entry that names no database to quarantine, or because the node is going down.
  * <p>
  * A {@link ReplicationException}, so the apply path reports it as a failed apply without reaching the per-database
- * quarantine: nothing diverged, the node is going away.
+ * quarantine: nothing diverged that a resync would repair, and the disposition of the entry is already taken.
  */
 public class EntryLeftForReplayException extends ReplicationException {
   public EntryLeftForReplayException(final String message, final Throwable cause) {

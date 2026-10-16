@@ -1216,8 +1216,12 @@ public class ServerControlPlane {
       change = null;
     }
     try {
-      // This setting only, never another statement's change still on its way to the replication (issue #9959)
-      database.saveConfiguration(storedKey);
+      // This setting only, with the value this change set, never another statement's change still on its way to the
+      // replication (issue #9959) nor the value another statement stored on this very setting meanwhile (issue #10108)
+      if (change != null)
+        database.saveConfiguration(change);
+      else
+        database.saveConfiguration(storedKey);
     } catch (final TransactionCommittedRemotelyException e) {
       // Committed cluster-wide: every node, this one included, installs the change, so there is nothing to undo
       throw e;

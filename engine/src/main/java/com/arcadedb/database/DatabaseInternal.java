@@ -440,6 +440,15 @@ public interface DatabaseInternal extends Database {
     saveConfiguration();
   }
 
+  /**
+   * Saves the configuration after {@code change} stored its value (issue #10108). Under Raft HA the entry replicated is the
+   * one captured when the change stored the value, so it names that setting with the value that change set, never a value
+   * another statement on the same setting stored meanwhile (issue #9959 settled the name, this settles the value). Elsewhere
+   * the same as {@link #saveConfiguration()}. Not defaulted: a database that wraps another has to forward it, and an
+   * inherited default would turn the save back into one that reads the value at submit time.
+   */
+  void saveConfiguration(LocalDatabase.SettingChange change) throws IOException;
+
   Map<String, Object> alignToReplicas();
 
   SecurityManager getSecurity();

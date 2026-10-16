@@ -39,9 +39,9 @@ import static org.awaitility.Awaitility.await;
  * retry - failing closed, never open - and the retry commits. Either way every node ends up finding both records through the index of
  * the super type: no record is left out of an index.
  * <p>
- * Kept apart from {@link Issue10067ImplicitTypeInClientTransactionOnAFollowerIT} because the database comparison at the end of a test
- * reports such a composite type as configured differently between the leader and its followers, whoever created it (issue #10093); it
- * is skipped here, and the check that matters for this issue is made through the indexes themselves, on every node.
+ * Kept apart from {@link Issue10067ImplicitTypeInClientTransactionOnAFollowerIT} because it takes more than one schema entry to
+ * create the type. The database comparison that ends every test of the fixture covers the composite type too (issue #10093), and the
+ * check that matters for this issue is made through the indexes themselves, on every node.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -50,11 +50,6 @@ class Issue10067IndexedSuperTypeOnAFollowerIT extends BaseRaftHATest {
   @Override
   protected int getServerCount() {
     return 3;
-  }
-
-  /** The composite type over an indexed type compares differently between nodes whoever created it (issue #10093). */
-  @Override
-  protected void checkDatabasesAreIdentical() {
   }
 
   @Test
