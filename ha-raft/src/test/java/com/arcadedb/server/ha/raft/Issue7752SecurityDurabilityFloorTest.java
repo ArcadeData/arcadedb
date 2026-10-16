@@ -315,6 +315,38 @@ class Issue7752SecurityDurabilityFloorTest {
     assertThat(SecurityCatchUp.outcomeOfAnswer(false, List.of())).isEqualTo(SecurityCatchUp.Outcome.ASKED);
   }
 
+  /**
+   * The forced re-seed survives a restart: kept in a marker beside the snapshot markers, restored by the next start, and
+   * removed only once a forced seed fully committed. A restart inside the seed's round trip used to forget it, leaving
+   * the stale files with nothing to replay them and a catch-up that compares documents only.
+   */
+  @Test
+  void theForcedSeedSurvivesARestart(@TempDir final Path stateMachineDirectory) {
+    final Path marker = stateMachineDirectory.resolve(SecurityCatchUp.FORCED_SEED_MARKER);
+    try (final SecurityCatchUp catchUp = new SecurityCatchUp()) {
+      catchUp.keepForcedSeedIn(stateMachineDirectory.toFile());
+      catchUp.afterSnapshotInstall(null, null, true);
+      assertThat(marker).exists();
+    }
+
+    try (final SecurityCatchUp restarted = new SecurityCatchUp()) {
+      restarted.keepForcedSeedIn(stateMachineDirectory.toFile());
+      assertThat(restarted.isForcedSeedPending()).as("restored from the marker").isTrue();
+
+      final boolean taken = restarted.takeForcedSeed();
+      restarted.forcedSeedNotMade(taken);
+      assertThat(marker).as("an attempt that did not make it keeps the marker").exists();
+
+      restarted.forcedSeedMade(restarted.takeForcedSeed());
+      assertThat(marker).as("spent once a forced seed fully committed").doesNotExist();
+    }
+
+    try (final SecurityCatchUp again = new SecurityCatchUp()) {
+      again.keepForcedSeedIn(stateMachineDirectory.toFile());
+      assertThat(again.isForcedSeedPending()).isFalse();
+    }
+  }
+
   private static TransactionContext securityUsersEntry(final ArcadeStateMachine sm, final long index) {
     return entry(sm, index, RaftLogEntryCodec.encodeSecurityUsersEntry(USERS_JSON));
   }

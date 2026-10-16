@@ -1105,6 +1105,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // behind. Drop them here so the directory scan starts bounded even on a node that never
     // checkpoints again.
     pruneSnapshotMarkersAtStartup();
+    // Before any catch-up trigger can run: a re-seed a snapshot install forced, and that had not committed when this node
+    // stopped, is made again (issue #7752). Beside the snapshot markers, off the configuration volume that failed.
+    securityCatchUp.keepForcedSeedIn(storage.getSnapshotFile(0L, 0L).getParentFile());
     reinitialize();
     // Eagerly, not on first use: a bootstrap replacement left pending by the previous session must hold readiness and
     // the request gate from the first request on, not from whichever read happens to load the file (issue #8411).
