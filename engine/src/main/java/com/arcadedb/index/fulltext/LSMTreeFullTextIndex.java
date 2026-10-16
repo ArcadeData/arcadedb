@@ -1253,9 +1253,8 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
         tfs.merge(k, 1, Integer::sum);
       }
       final int docLen = documentLength(keywords);
-      final int len = docLen;
       for (final Map.Entry<String, Integer> e : tfs.entrySet())
-        underlyingIndex.put(new String[] { e.getKey() }, withStats(db, rids, e.getValue(), len));
+        underlyingIndex.put(new String[] { e.getKey() }, withStats(db, rids, e.getValue(), docLen));
       if (hasNull)
         // Plain RID (no stats): if NULL_STRATEGY indexes it, the posting carries tf=0/docLength=0 rather than a stale tf.
         underlyingIndex.put(new String[] { null }, rids);
