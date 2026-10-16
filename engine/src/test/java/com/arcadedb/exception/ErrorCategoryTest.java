@@ -201,5 +201,45 @@ class ErrorCategoryTest {
     a.initCause(b);
 
     assertThat(ErrorCategory.of(a)).isEqualTo(ErrorCategory.SERVER);
+    assertThat(ErrorCategory.classifiedCause(a)).isNull();
+  }
+
+  @Test
+  void theClassifiedCauseIsTheFrameThatDecidedTheCategoryNotTheWrapper() {
+    // Issue #10158: a transport names the failure by this frame, so a driver rebuilds the engine's own type
+    final SchemaException schema = new SchemaException("Type 'Missing' was not found");
+    final Throwable wrapped = new CommandExecutionException("outer", new TransactionException("inner", schema));
+
+    assertThat(ErrorCategory.classifiedCause(wrapped)).isSameAs(schema);
+    assertThat(ErrorCategory.classifiedCause(schema)).isSameAs(schema);
+    assertThat(ErrorCategory.classifiedCause(new CommandExecutionException("something broke"))).isNull();
+    assertThat(ErrorCategory.classifiedCause(null)).isNull();
+  }
+
+  @Test
+  void theClassifiedCauseFollowsCategoryPriorityNotDepth() {
+    final LockTimeoutException conflict = new LockTimeoutException("lock timeout");
+    final Throwable retryDeeper = new ArithmeticErrorException("long overflow", conflict);
+
+    assertThat(ErrorCategory.classifiedCause(retryDeeper)).isSameAs(conflict);
+  }
+
+  @Test
+  void theClassifiedCauseAlwaysClassifiesAsTheWholeChain() {
+    final QueryTerminatedException terminated = new QueryTerminatedException("terminated by admin");
+    terminated.initCause(new LockTimeoutException("conflict on rollback"));
+    final Throwable[] chains = {
+        new TransactionException("commit", new DuplicatedKeyException("idx", "[k]", new RID(3, 0))),
+        new CommandExecutionException("outer", terminated),
+        new IllegalArgumentException("bad", new FullTextQueryParseException("unbalanced quote", null)),
+        new CommandExecutionException("outer", new IllegalArgumentException("bad")),
+        new DatabaseOperationException("outer", new TimeSeriesWalkCoarsenedException("coarsened")),
+        new CommandExecutionException("outer", new SecurityException("denied")) };
+
+    for (final Throwable chain : chains) {
+      final Throwable classified = ErrorCategory.classifiedCause(chain);
+      assertThat(classified).as("%s", chain).isNotNull();
+      assertThat(ErrorCategory.of(classified)).as("%s", chain).isEqualTo(ErrorCategory.of(chain));
+    }
   }
 }
