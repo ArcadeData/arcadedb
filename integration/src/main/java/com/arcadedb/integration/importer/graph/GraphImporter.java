@@ -2121,7 +2121,9 @@ public class GraphImporter implements AutoCloseable {
     long[]  rids;
     int     count;
 
-    // Issue #9575: the vertices already handed to an edge batch, one bit each per direction, allocated by the first edge
+    // Issue #9575: the vertices already handed to an edge batch, one bit each per direction, allocated by the first edge.
+    // Read and written only by the importer's thread, which hands every edge over (a batch's parallel flush, if any, runs
+    // after the hints are taken). Sized with an unsigned shift, so a count up to Integer.MAX_VALUE cannot overflow it
     long[]  outEdgesGiven;
     long[]  inEdgesGiven;
 
