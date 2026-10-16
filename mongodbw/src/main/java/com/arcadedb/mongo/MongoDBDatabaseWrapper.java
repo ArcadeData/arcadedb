@@ -268,6 +268,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       case ARITHMETIC, VALIDATION -> new MongoServerError(ErrorCode.BadValue.getValue(), ErrorCode.BadValue.getName(), message, e);
       case DUPLICATED_KEY ->
           new MongoServerError(ErrorCode.DuplicateKey.getValue(), ErrorCode.DuplicateKey.getName(), message, e);
+      // A taken name (issue #10153): what MongoDB answers a createCollection on an existing collection
+      case ALREADY_EXISTS -> new MongoServerError(48, "NamespaceExists", message, e);
       case SCHEMA -> new MongoServerError(26, "NamespaceNotFound", message, e);
       case SECURITY -> new MongoServerError(13, "Unauthorized", message, e);
       case PARSING -> new MongoServerError(ErrorCode.FailedToParse.getValue(), ErrorCode.FailedToParse.getName(), message, e);

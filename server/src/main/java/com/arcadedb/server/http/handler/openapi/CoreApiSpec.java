@@ -746,7 +746,11 @@ public class CoreApiSpec implements OpenApiContributor {
     responses.addApiResponse("400", SpecBuilders.errorResponse("Bad request"));
     responses.addApiResponse("401", SpecBuilders.errorResponse("Unauthorized"));
     responses.addApiResponse("404", SpecBuilders.errorResponse(STALE_SESSION_404_DESCRIPTION));
-    responses.addApiResponse("409", SpecBuilders.errorResponse(QUERY_TERMINATED_409_DESCRIPTION));
+    // A create or rename onto a taken schema object name is the other conflict a command answers (issue #10153)
+    responses.addApiResponse("409", SpecBuilders.errorResponse(QUERY_TERMINATED_409_DESCRIPTION + ". Also a create, or a rename, "
+        + "onto a schema object name already taken - a type, property, index, constraint, bucket, trigger, view or function: "
+        + "'error' names the kind (e.g. 'Type already exists'), 'exception' is com.arcadedb.exception.AlreadyExistsException "
+        + "and 'exceptionArgs' the kind (TYPE, PROPERTY, INDEX, ...). Not retryable: the name is held"));
     responses.addApiResponse("413", SpecBuilders.errorResponse(
         "The result exceeds 'arcadedb.server.httpQueryMaxResultRows': narrow or page the command"));
     responses.addApiResponse("500", SpecBuilders.errorResponse("Internal server error"));

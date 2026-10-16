@@ -20,6 +20,7 @@ package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.exception.AlreadyExistsException;
 import com.arcadedb.function.java.JavaClassFunctionLibraryDefinition;
 import com.arcadedb.function.sql.SQLFunctionDefinition;
 import com.arcadedb.function.sql.SQLFunctionLibraryDefinition;
@@ -84,7 +85,7 @@ class Issue9422RegisterFunctionLibraryPersistedTest extends TestHelper {
     database.getSchema().registerFunctionLibrary(new SQLFunctionLibraryDefinition(database, "lib9422"));
 
     assertThatThrownBy(() -> database.getSchema().registerFunctionLibrary(new SQLFunctionLibraryDefinition(database, "lib9422")))
-        .isInstanceOf(IllegalArgumentException.class);
+        .isInstanceOf(AlreadyExistsException.class);
   }
 
   @Test

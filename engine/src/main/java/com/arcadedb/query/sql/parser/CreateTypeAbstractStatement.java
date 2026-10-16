@@ -22,6 +22,7 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.Bucket;
+import com.arcadedb.exception.AlreadyExistsException;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TypeAlreadyExistsException;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -117,7 +118,7 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
       if (ifNotExists)
         return alreadyThere(context, typeName);
       else
-        throw new CommandExecutionException("Type " + typeName + " already exists");
+        throw new AlreadyExistsException(AlreadyExistsException.Kind.TYPE, "Type " + typeName + " already exists");
     }
     checkSuperTypes(schema, context);
 

@@ -20,6 +20,7 @@ package com.arcadedb.schema;
 
 import com.arcadedb.database.BasicDatabase;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.exception.AlreadyExistsException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.parser.FromClause;
@@ -140,11 +141,12 @@ public class ContinuousAggregateBuilder {
     if (schema.existsContinuousAggregate(name)) {
       if (ifNotExists)
         return schema.getContinuousAggregate(name);
-      throw new SchemaException("Continuous aggregate '" + name + "' already exists");
+      throw new AlreadyExistsException(AlreadyExistsException.Kind.CONTINUOUS_AGGREGATE,
+          "Continuous aggregate '" + name + "' already exists");
     }
 
     if (schema.existsType(name))
-      throw new SchemaException("Cannot create continuous aggregate '" + name +
+      throw new AlreadyExistsException(AlreadyExistsException.Kind.TYPE, "Cannot create continuous aggregate '" + name +
           "': a type with the same name already exists");
 
     // Parse and validate the query

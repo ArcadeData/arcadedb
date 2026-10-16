@@ -54,6 +54,14 @@ public enum ErrorCategory {
   DUPLICATED_KEY,
 
   /**
+   * The caller asked to create, or rename onto, a schema object name that is already taken - a type, a property, an index, a
+   * bucket, a view, a function (issue #10153). The caller's to resolve and never retryable, and the opposite of {@link #SCHEMA}:
+   * there the name is missing, here it is held. Decided before {@link #SCHEMA} because {@link AlreadyExistsException} extends
+   * {@link SchemaException}.
+   */
+  ALREADY_EXISTS,
+
+  /**
    * The record the caller addressed does not exist.
    */
   NOT_FOUND,
@@ -118,6 +126,8 @@ public enum ErrorCategory {
       new Rule(QueryAdmissionException.class, RETRY),
       new Rule(ArithmeticErrorException.class, ARITHMETIC),
       new Rule(DuplicatedKeyException.class, DUPLICATED_KEY),
+      // before SCHEMA, which it extends: the name is held there, not missing (issue #10153)
+      new Rule(AlreadyExistsException.class, ALREADY_EXISTS),
       new Rule(RecordNotFoundException.class, NOT_FOUND),
       new Rule(SchemaException.class, SCHEMA),
       new Rule(SecurityException.class, SECURITY),

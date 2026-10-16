@@ -30,6 +30,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.ProtocolContext;
 import com.arcadedb.database.QueryMetricsRecorder;
 import com.arcadedb.database.TransactionContext;
+import com.arcadedb.exception.AlreadyExistsException;
 import com.arcadedb.exception.ArithmeticErrorException;
 import com.arcadedb.exception.CauseChain;
 import com.arcadedb.exception.CommandExecutionException;
@@ -4171,6 +4172,7 @@ public class PostgresNetworkExecutor extends Thread {
       case RETRY -> "40001";
       case ARITHMETIC -> arithmeticSqlState(error);
       case DUPLICATED_KEY -> "23505"; // unique_violation
+      case ALREADY_EXISTS -> alreadyExistsSqlState(error);
       case NOT_FOUND -> "P0002";      // no_data_found - class 02 is a completion condition, not an error
       case SCHEMA -> "42P01";         // undefined_table - a type is this database's table
       case SECURITY -> "42501";       // insufficient_privilege
@@ -4179,6 +4181,25 @@ public class PostgresNetworkExecutor extends Thread {
       case TIMEOUT -> "57014";        // query_canceled
       case TERMINATED -> "57014";     // query_canceled - what a CancelRequest or pg_cancel_backend ends a statement with
       case SERVER -> "XX000";         // internal_error
+    };
+  }
+
+  /**
+   * The SQLSTATE Postgres answers the same taken name with (issue #10153): {@code 42P07} duplicate_table for what Postgres calls a
+   * relation - a type is this database's table, and an index or a view is a relation there too - {@code 42701} duplicate_column for
+   * a property, and {@code 42710} duplicate_object for everything else, a constraint, a trigger or a function among them. All three
+   * are class 42, so a client that only reads the class still sees its own mistake, not a server fault ({@code XX000}) nor a
+   * missing table ({@code 42P01}), which is what it was told before.
+   */
+  private static String alreadyExistsSqlState(final Throwable error) {
+    final AlreadyExistsException taken = CauseChain.find(error, AlreadyExistsException.class);
+    final AlreadyExistsException.Kind kind = taken != null ? taken.getKind() : null;
+    if (kind == null)
+      return "42710";
+    return switch (kind) {
+      case TYPE, INDEX, MATERIALIZED_VIEW, CONTINUOUS_AGGREGATE -> "42P07"; // duplicate_table
+      case PROPERTY -> "42701";                                             // duplicate_column
+      default -> "42710";                                                   // duplicate_object
     };
   }
 

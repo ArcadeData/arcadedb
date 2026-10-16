@@ -22,11 +22,12 @@ package com.arcadedb.exception;
  * A type was asked to be created and one of that name is already there. A {@link SchemaException} of its own so that a statement
  * that says {@code IF NOT EXISTS} can tell "someone else created it between my check and my create" from every other schema failure
  * (issue #10067): the check and the create are two steps, and the only thing that can make them disagree is a concurrent creation.
+ * An {@link AlreadyExistsException} like every other taken schema name, so the wire protocols answer it as a conflict (issue #10153).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class TypeAlreadyExistsException extends SchemaException {
+public class TypeAlreadyExistsException extends AlreadyExistsException {
   public TypeAlreadyExistsException(final String typeName) {
-    super("Cannot create type '" + typeName + "' because already exists");
+    super(Kind.TYPE, "Cannot create type '" + typeName + "' because already exists");
   }
 }

@@ -19,6 +19,7 @@
 package com.arcadedb.bolt;
 
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.AlreadyExistsException;
 import com.arcadedb.exception.ArithmeticErrorException;
 import com.arcadedb.exception.CommandParameterMissingException;
 import com.arcadedb.exception.CommandParsingException;
@@ -170,6 +171,7 @@ class Issue7624BoltErrorCategoryCoverageTest {
         new ConcurrentModificationException("retry"),
         new ArithmeticErrorException("overflow"),
         new DuplicatedKeyException("idx", "[k]", new RID(1, 0)),
+        new AlreadyExistsException(AlreadyExistsException.Kind.TYPE, "taken"),
         new RecordNotFoundException("gone", new RID(1, 42)),
         new SchemaException("no such type"),
         new SecurityException("not allowed"),

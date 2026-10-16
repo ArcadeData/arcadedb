@@ -22,6 +22,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.engine.timeseries.DownsamplingTier;
 import com.arcadedb.engine.timeseries.codec.TimeSeriesCodec;
+import com.arcadedb.exception.AlreadyExistsException;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
@@ -103,7 +104,7 @@ public class CreateTimeSeriesTypeStatement extends DDLStatement {
         // which is precisely what IF NOT EXISTS exists to prevent (issue #7143).
         return new InternalResultSet(describe(context, false));
       else
-        throw new CommandExecutionException("Type '" + name.getStringValue() + "' already exists");
+        throw new AlreadyExistsException(AlreadyExistsException.Kind.TYPE, "Type '" + name.getStringValue() + "' already exists");
     }
 
     TimeSeriesTypeBuilder builder = schema.buildTimeSeriesType().withName(name.getStringValue());

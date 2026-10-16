@@ -20,6 +20,7 @@ package com.arcadedb.graph.olap;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.exception.AlreadyExistsException;
 
 import java.util.Collections;
 import java.util.HashMap;
@@ -64,7 +65,8 @@ public class GraphAnalyticalViewRegistry {
           REGISTRY.computeIfAbsent(unwrap(database), k -> new HashMap<>());
       final GraphAnalyticalView existing = views.putIfAbsent(name, view);
       if (existing != null)
-        throw new IllegalArgumentException("GraphAnalyticalView '" + name + "' is already registered");
+        throw new AlreadyExistsException(AlreadyExistsException.Kind.GRAPH_ANALYTICAL_VIEW,
+            "GraphAnalyticalView '" + name + "' is already registered");
     }
   }
 
