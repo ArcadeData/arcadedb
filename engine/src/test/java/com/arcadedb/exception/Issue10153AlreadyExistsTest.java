@@ -104,6 +104,19 @@ class Issue10153AlreadyExistsTest extends TestHelper {
   }
 
   @Test
+  void aPropertyNameASuperTypeHoldsIsTheSameConflict() {
+    database.command("sql", "create document type Parent10153");
+    database.command("sql", "create property Parent10153.inherited string");
+    database.command("sql", "create document type Child10153 extends Parent10153");
+    database.command("sql", "create property Child10153.own string");
+
+    assertTaken(() -> database.getSchema().getType("Child10153").createProperty("inherited", Type.STRING),
+        AlreadyExistsException.Kind.PROPERTY);
+    assertTaken(() -> database.getSchema().getType("Child10153").renameProperty("own", "inherited"),
+        AlreadyExistsException.Kind.PROPERTY);
+  }
+
+  @Test
   void theJavaApiRaisesTheSameTypeAsTheStatements() {
     database.getSchema().createDocumentType("Api");
     assertTaken(() -> database.getSchema().createDocumentType("Api"), AlreadyExistsException.Kind.TYPE);
@@ -161,7 +174,7 @@ class Issue10153AlreadyExistsTest extends TestHelper {
    * arguments may span lines.
    */
   private static final Pattern TAKEN_NAME_THROW = Pattern.compile(
-      "throw\\s+new\\s+([A-Za-z0-9_.]+)\\s*\\(([^;]*?(?:already exists|already registered|already defined in library)[^;]*?)\\)\\s*;",
+      "throw\\s+new\\s+([A-Za-z0-9_.]+)\\s*\\(([^;]*?(?:already exists|already registered|already defined)[^;]*?)\\)\\s*;",
       Pattern.DOTALL);
 
   /**
@@ -178,7 +191,9 @@ class Issue10153AlreadyExistsTest extends TestHelper {
       // a bucket index named after the bucket and System.nanoTime(): an internal invariant, not a caller's name
       "schema/LocalSchema.java:DatabaseMetadataException:Cannot create index '",
       // IF NOT EXISTS answered by an index of another definition: a 400 by design (#6921, #7228), not a taken name
-      "query/sql/parser/CreateIndexStatement.java:IllegalArgumentException:Cannot create the index '");
+      "query/sql/parser/CreateIndexStatement.java:IllegalArgumentException:Cannot create the index '",
+      // a Cypher variable bound twice, or with two types, in one statement: a parse error, not a schema object name
+      "query/opencypher/parser/CypherSemanticValidator.java:CommandParsingException:Variable");
 
   @Test
   void noSourceRefusesATakenNameWithAnotherType() throws IOException {

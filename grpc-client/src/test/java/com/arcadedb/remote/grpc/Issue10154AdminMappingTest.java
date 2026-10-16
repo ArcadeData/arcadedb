@@ -125,7 +125,8 @@ class Issue10154AdminMappingTest {
     while (catches.find()) {
       ++checked;
       final String body = catches.group(1);
-      final boolean direct = body.contains("GrpcClientErrorMapper.toException(") || body.contains("toAutoCommitWriteException(");
+      final boolean direct = body.contains("GrpcClientErrorMapper.toException(") || body.contains("toAutoCommitWriteException(")
+          || body.contains("toStreamingWriteException(");
       // a drop creates nothing, so it cannot meet a taken name
       if (direct && !body.contains("\"drop database\""))
         assertThat(body).as("a catch that maps a StatusException directly must check for a taken name first:%n%s", body)

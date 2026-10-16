@@ -622,6 +622,10 @@ public class LocalDocumentType implements DocumentType {
         throw new SchemaException("Error on renaming type '" + oldName + "' in '" + newName
             + "'. The database schema is corrupted, check single file names for buckets " + removedBuckets, e);
 
+      // A late collision - another change took the name after the check at the top - is unwound cleanly, so it is reported as
+      // the conflict it is rather than as a generic schema failure, which no wire answers as one (issue #10153)
+      if (e instanceof AlreadyExistsException taken)
+        throw taken;
       throw new SchemaException("Error on renaming type '" + oldName + "' in '" + newName + "'", e);
     }
   }
@@ -1062,9 +1066,10 @@ public class LocalDocumentType implements DocumentType {
         throw new AlreadyExistsException(AlreadyExistsException.Kind.PROPERTY,
             "Cannot create the property '" + propertyName + "' in type '" + name + "' because it already exists");
 
+      // a name a super type holds is the same conflict as one this type holds (issue #10153)
       if (getPolymorphicPropertyNames().contains(propertyName))
-        throw new SchemaException("Cannot create the property '" + propertyName + "' in type '" + name
-            + "' because it was already defined in a super type");
+        throw new AlreadyExistsException(AlreadyExistsException.Kind.PROPERTY,
+            "Cannot create the property '" + propertyName + "' in type '" + name + "' because it was already defined in a super type");
 
       // The construction stays HERE, after the checks and inside the callback, although the constructor reaches
       // Dictionary.getIdByName(name, true) - which, for a name the dictionary has not seen, opens and commits a
@@ -1292,12 +1297,14 @@ public class LocalDocumentType implements DocumentType {
             + "declared name. Drop the whole type to change the column");
 
       if (properties.containsKey(newPropertyName))
-        throw new AlreadyExistsException(AlreadyExistsException.Kind.PROPERTY, "Cannot rename the property '" + propertyName + "' in type '"
-            + name + "' to '" + newPropertyName + "' because a property with that name already exists");
+        throw new AlreadyExistsException(AlreadyExistsException.Kind.PROPERTY,
+            "Cannot rename the property '" + propertyName + "' in type '" + name + "' to '" + newPropertyName
+                + "' because a property with that name already exists");
 
       if (getPolymorphicPropertyNames().contains(newPropertyName))
-        throw new SchemaException("Cannot rename the property '" + propertyName + "' in type '" + name + "' to '"
-            + newPropertyName + "' because it is already defined in a super type");
+        throw new AlreadyExistsException(AlreadyExistsException.Kind.PROPERTY,
+            "Cannot rename the property '" + propertyName + "' in type '" + name + "' to '" + newPropertyName
+                + "' because it is already defined in a super type");
 
       final TypeIndex indexOnProperty = findIndexOnProperty(propertyName);
       if (indexOnProperty != null)
