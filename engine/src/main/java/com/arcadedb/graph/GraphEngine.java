@@ -476,13 +476,21 @@ public class GraphEngine {
     final List<Pair<Identifiable, Identifiable>> outEdgePairs = new ArrayList<>();
 
     for (final CreateEdgeOperation connection : connections) {
-      final MutableEdge edge;
-
       final Identifiable destinationVertex = connection.destinationVertex;
 
       final EdgeType edgeType = getEdgeType(database, connection.edgeTypeName);
 
-      edge = new MutableEdge(database, edgeType, sourceVertexRID, destinationVertex.getIdentity());
+      // THE STORAGE SHAPE IS A PROPERTY OF THE TYPE, NOT OF THE CALL: A LIGHTWEIGHT EDGE TAKES THE SINGLE-EDGE PATH, WHICH REFUSES
+      // PROPERTIES, CHECKS UNIQUENESS AND CREATE_RECORD AND NOTIFIES THE LIGHT-EDGE LISTENERS, INSTEAD OF STORING A RECORD (issue #10136)
+      if (edgeType.isLightweight()) {
+        final MutableEdge lightEdge = createEdge(sourceVertex, connection.edgeTypeName, destinationVertex, null,
+            connection.edgeProperties);
+        if (lightEdge != null)
+          edges.add(lightEdge);
+        continue;
+      }
+
+      final MutableEdge edge = new MutableEdge(database, edgeType, sourceVertexRID, destinationVertex.getIdentity());
 
       if (connection.edgeProperties != null && connection.edgeProperties.length > 0)
         setProperties(edge, connection.edgeProperties);
