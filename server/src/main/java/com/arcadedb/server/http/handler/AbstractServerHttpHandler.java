@@ -76,6 +76,7 @@ import io.undertow.util.HttpString;
 import io.undertow.util.PathTemplateMatch;
 import io.undertow.util.Protocols;
 import io.undertow.util.StatusCodes;
+import org.xnio.IoUtils;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -111,6 +112,12 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
    * refusal fires, since the check runs once per read rather than once per byte.
    */
   private static final int    REQUEST_BODY_READ_BUFFER_SIZE = 8192;
+  /**
+   * How much more of a body refused over {@code arcadedb.server.httpBodyContentMaxSize} is read and discarded after the
+   * 413, so a client that sends a moderately larger body finishes it and keeps its connection (issue #8081). Past it the
+   * request is cut off. See {@link #DISCARD_REFUSED_BODY_THEN_END_EXCHANGE}.
+   */
+  static final long           REFUSED_BODY_DISCARD_BUDGET   = 4L * 1024L * 1024L;
   /**
    * The most {@link #readRequestBody} pre-allocates for a body on the strength of its {@code Content-Length}
    * header alone. A larger body still arrives intact - the buffer grows - it is only the head start that stops
@@ -1472,48 +1479,49 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     logClassifiedError(classification);
     if (classification.retryAfter() != null && !exchange.isResponseStarted())
       exchange.getResponseHeaders().put(RETRY_AFTER_HEADER, classification.retryAfter());
-    IoCallback afterResponse = null;
-    if (classification.reported() instanceof RequestTooBigException) {
-      // A body refused mid-stream is not read any further (issue #8081)
-      if (Protocols.HTTP_2_0.equals(exchange.getProtocol()))
-        afterResponse = RESET_HTTP2_STREAM_THEN_END_EXCHANGE;
-      else
-        // HTTP/1.x: the connection ends with the answer, so ending the exchange closes the request side instead of
-        // draining it (HttpServerConnection.terminateRequestChannel). A client that kept the connection alive used to
-        // have the rest of its body read and discarded for as long as it kept sending
-        exchange.setPersistent(false);
-    }
+    // A body refused mid-stream is discarded for a bounded budget at most, then cut off (issue #8081)
     sendErrorResponse(exchange, classification.status(), classification.message(), classification.reported(),
-        classification.exceptionArgs(), afterResponse);
+        classification.exceptionArgs(),
+        classification.reported() instanceof RequestTooBigException ? DISCARD_REFUSED_BODY_THEN_END_EXCHANGE : null);
   }
 
   /**
-   * Ends the exchange of a 413 for a body refused mid-stream on HTTP/2 (issue #8081) with a reset of that stream alone.
+   * Ends the exchange of a 413 for a body refused mid-stream (issue #8081): what is left of the body is read and
+   * discarded up to {@link #REFUSED_BODY_DISCARD_BUDGET}, and past that the request is cut off.
    * <p>
-   * Over HTTP/1.1 the refusal ends the request because the connection ends with it. HTTP/2 multiplexes the connection,
-   * so ending the exchange makes Undertow DRAIN the rest of the stream instead ({@code UndertowInputStream.close()},
-   * then {@code HttpServerExchange.endExchange()}), granting the client flow-control window for every byte it reads: a
-   * body that never ends kept a worker thread reading and discarding it for as long as the client kept sending, and
-   * the request never completed on the client side either, since a client finishes sending before it reports the
-   * answer. The cap bounded the heap, not the work.
+   * Undertow ends such an exchange by DRAINING the rest of the body ({@code UndertowInputStream.close()}, then
+   * {@code HttpServerExchange.endExchange()}), however long it is: a body that never ends kept a worker thread reading
+   * and discarding it for as long as the client kept sending, on HTTP/2 and on a kept-alive HTTP/1.1 connection alike,
+   * and the HTTP/2 client never saw its request complete, since a client finishes sending before it reports the answer.
+   * The cap bounded the heap, not the work.
    * <p>
-   * So the stream is reset once the response is whole, with {@code NO_ERROR}, which is what RFC 9113, section 8.1,
-   * provides for a server that answered before the request ended (see {@link Http2StreamReset}). The response is sent
-   * with its length, so the write completes it; the reset covers this stream only - the other streams of the
-   * connection are untouched - and the request is marked read, so ending the exchange has nothing left to drain.
+   * Cutting the body off at once is not the answer either. On HTTP/1.1 it means closing a connection the client is still
+   * writing to, whose reset can discard the 413 before the client reads it. On HTTP/2 the client may have DATA in
+   * flight when the stream is reset, and Undertow answers such late frames with {@code GOAWAY} (see
+   * {@link Http2StreamReset}), ending every other stream the client has on that connection. So the rest of the body is
+   * read on this thread, which was already reading it, for a bounded budget - the same lingering close a front-end proxy
+   * performs. A body that ends within it finishes cleanly and the connection is reused; past it, the HTTP/2 stream is
+   * reset alone with {@code NO_ERROR}, the code RFC 9113, section 8.1, gives a server that answered before the request
+   * ended, and the HTTP/1.1 connection is closed. Either way the request is then marked read, so ending the exchange
+   * has nothing left to drain. The response was sent with its length, so the write completed it before any of this.
    */
-  private static final IoCallback RESET_HTTP2_STREAM_THEN_END_EXCHANGE = new IoCallback() {
+  private static final IoCallback DISCARD_REFUSED_BODY_THEN_END_EXCHANGE = new IoCallback() {
     @Override
     public void onComplete(final HttpServerExchange completed, final Sender sender) {
-      Http2StreamReset.resetWithNoError(completed);
-      try {
-        // Nothing more will arrive on a reset stream: closing the stream now records that, where the close at the end
-        // of the exchange would wait for the end of the body
-        completed.getInputStream().close();
-      } catch (final IOException e) {
-        // The stream was reset under it, which is the point
+      if (!discardRestOfRequestBody(completed)) {
+        if (Protocols.HTTP_2_0.equals(completed.getProtocol()))
+          Http2StreamReset.resetWithNoError(completed);
+        else
+          IoUtils.safeClose(completed.getConnection());
+        try {
+          // Nothing more will be read: closing the stream now records that, where the close at the end of the exchange
+          // would wait for the end of the body
+          completed.getInputStream().close();
+        } catch (final IOException e) {
+          // The stream or the connection was ended under it, which is the point
+        }
+        Connectors.terminateRequest(completed);
       }
-      Connectors.terminateRequest(completed);
       IoCallback.END_EXCHANGE.onComplete(completed, sender);
     }
 
@@ -1522,6 +1530,30 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       IoCallback.END_EXCHANGE.onException(failed, sender, exception);
     }
   };
+
+  /**
+   * Reads and discards the rest of the request body, up to {@link #REFUSED_BODY_DISCARD_BUDGET}.
+   *
+   * @return true when the body ended within the budget
+   */
+  static boolean discardRestOfRequestBody(final HttpServerExchange exchange) {
+    if (!exchange.isBlocking())
+      return false;
+    final byte[] scratch = new byte[REQUEST_BODY_READ_BUFFER_SIZE];
+    long discarded = 0;
+    try {
+      final InputStream in = exchange.getInputStream();
+      int read;
+      while ((read = in.read(scratch)) != -1) {
+        discarded += read;
+        if (discarded > REFUSED_BODY_DISCARD_BUDGET)
+          return false;
+      }
+      return true;
+    } catch (final IOException e) {
+      return false;
+    }
+  }
 
   /**
    * What {@link #classifyError} decided for a failure: the HTTP status, the client-facing label (the body's

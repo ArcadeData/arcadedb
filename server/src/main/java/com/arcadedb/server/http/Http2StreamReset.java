@@ -53,6 +53,14 @@ import java.util.logging.Level;
  * one initial stream window - a stream is never granted more than that beyond what was read - so that is what is
  * credited: an upper bound, which at worst lets the client run that much ahead of the window, where a lower one would
  * leak window on every refusal until the connection stalls.
+ * <p>
+ * <b>The client's connection may end anyway.</b> RFC 9113, section 5.1, has an endpoint ignore the frames that arrive
+ * on a stream it reset, and the client may well have DATA in flight when the reset goes out. Undertow 2.4 does not keep
+ * a client-initiated stream it reset in its reset-stream tracker, so such a frame reads as DATA for an unknown stream,
+ * which it answers with {@code GOAWAY(PROTOCOL_ERROR)}, ending the client's other streams on that connection. That is
+ * why the refusal reads what is left of the body for a bounded budget first and resets only past it
+ * ({@code AbstractServerHttpHandler.DISCARD_REFUSED_BODY_THEN_END_EXCHANGE}): only a client that keeps sending well
+ * past the cap after being refused can lose its connection, and the cost to it is a reconnect.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
