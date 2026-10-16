@@ -224,6 +224,25 @@ class Issue10158GrpcWrappedRefusalStatusTest {
   }
 
   @Test
+  void terminationOutranksEveryRefusalItsChainCarries() {
+    // Admin: a termination is decided before the table, whatever classified refusal rides below it
+    final ArcadeDbGrpcAdminService admin = adminService(false);
+    for (final Exception below : List.of(new DatabaseOperationInProgressException("A backup is already running"),
+        new ServerSecurityException("User 'bob' cannot do that"), new IllegalArgumentException("bad"))) {
+      final StatusException mapped = admin.toStatus("importDatabase",
+          new CommandExecutionException("Import failed", terminated(below)));
+      assertThat(mapped.getStatus().getCode()).as(below.getClass().getSimpleName()).isEqualTo(Status.Code.CANCELLED);
+      assertThat(exceptionClassOf(mapped.getTrailers())).isEqualTo(QueryTerminatedException.class.getName());
+    }
+
+    // Search: the security arm does not mask a search stopped on request
+    final StatusException search = searchService().toSearchStatus("VectorSearch",
+        new DatabaseOperationException("stopped", terminated(new ServerSecurityException("User 'bob' cannot read type 'Secret'"))));
+    assertThat(search.getStatus().getCode()).isEqualTo(Status.Code.CANCELLED);
+    assertThat(exceptionClassOf(search.getTrailers())).isEqualTo(QueryTerminatedException.class.getName());
+  }
+
+  @Test
   void theLeaderRefusalStillRedirectsBareAndWrapped() {
     final ArcadeDbGrpcAdminService service = adminService(false);
     final ServerIsNotTheLeaderException refusal = new ServerIsNotTheLeaderException("This server is not the leader", LEADER);
