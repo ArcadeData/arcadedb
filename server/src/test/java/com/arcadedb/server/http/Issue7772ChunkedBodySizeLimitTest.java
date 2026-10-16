@@ -170,7 +170,10 @@ class Issue7772ChunkedBodySizeLimitTest extends BaseGraphServerTest {
    * <p>
    * The body never ends. Undertow used to drain it after the 413 for as long as the client sent, and the JDK client,
    * which reports the answer only once it has sent the body, never got one. Now the server discards a bounded budget
-   * and then resets the stream with {@code NO_ERROR}, and the client gets the same JSON 413 as over HTTP/1.1.
+   * and then resets the stream with {@code NO_ERROR}: the request ends, with the same JSON 413 as over HTTP/1.1 - or, when
+   * Undertow answers DATA still in flight past the reset with {@code GOAWAY}, with the connection. The 413 itself is
+   * asserted unconditionally by {@link #http2OversizedBodiesThatEndKeepTheConnection}, whose bodies end within the
+   * budget.
    * <p>
    * The client is served afterwards, and that request must not stall: a reset that left the stream's bytes uncredited
    * in the connection's flow-control window stalled every later request with a body on that connection. Undertow may
@@ -182,17 +185,29 @@ class Issue7772ChunkedBodySizeLimitTest extends BaseGraphServerTest {
   void http2BodyWithoutContentLengthOverLimitIsRefused() throws Exception {
     final HttpClient client = http2Client();
 
-    final HttpResponse<String> response = client.send(HttpRequest.newBuilder(
-            URI.create(getServerHttpUrl("/api/v1/command/" + getDatabaseName())))
-        .timeout(Duration.ofSeconds(30))
-        .header("Authorization", basicAuthorization())
-        .header("Content-Type", "application/json")
-        .POST(HttpRequest.BodyPublishers.ofInputStream(EndlessBody::new))
-        .build(), HttpResponse.BodyHandlers.ofString());
+    // Past the discard budget the stream is reset, and DATA the client still had in flight can reach Undertow after it,
+    // which Undertow answers with GOAWAY (see Http2StreamReset). Which of the two the JDK client processes first decides
+    // whether it reports the 413 or that the connection ended: both are the request ENDING, which is the guarantee. A
+    // stall is a timeout, which fails the test.
+    HttpResponse<String> response = null;
+    try {
+      response = client.send(HttpRequest.newBuilder(URI.create(getServerHttpUrl("/api/v1/command/" + getDatabaseName())))
+          .timeout(Duration.ofSeconds(30))
+          .header("Authorization", basicAuthorization())
+          .header("Content-Type", "application/json")
+          .POST(HttpRequest.BodyPublishers.ofInputStream(EndlessBody::new))
+          .build(), HttpResponse.BodyHandlers.ofString());
+    } catch (final HttpTimeoutException stalled) {
+      throw stalled;
+    } catch (final IOException connectionEnded) {
+      // GOAWAY for DATA in flight past the reset: the refusal ended the request with the connection
+    }
 
-    assertThat(response.version()).as("the POST must have travelled over HTTP/2").isEqualTo(HttpClient.Version.HTTP_2);
-    assertThat(response.statusCode()).isEqualTo(413);
-    assertThat(response.body()).contains(GlobalConfiguration.SERVER_HTTP_BODY_CONTENT_MAX_SIZE.getKey());
+    if (response != null) {
+      assertThat(response.version()).as("the POST must have travelled over HTTP/2").isEqualTo(HttpClient.Version.HTTP_2);
+      assertThat(response.statusCode()).isEqualTo(413);
+      assertThat(response.body()).contains(GlobalConfiguration.SERVER_HTTP_BODY_CONTENT_MAX_SIZE.getKey());
+    }
 
     HttpResponse<String> next = null;
     for (int attempt = 0; next == null && attempt < 3; attempt++)
