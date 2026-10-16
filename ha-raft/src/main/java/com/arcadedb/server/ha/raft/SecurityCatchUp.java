@@ -378,6 +378,17 @@ final class SecurityCatchUp implements AutoCloseable {
       forceSeed.set(true);
   }
 
+  /**
+   * How an attempt that reached the leader ends. Answered, whether or not every document committed: a partial failure
+   * is the leader's report, not a transport failure, and retrying it would submit the same documents again - except for
+   * a FORCED seed (issue #7752), where submitting them again is the point. That one is this node's only way back from
+   * security files a snapshot install left stale, and leaving it to the next trigger could leave them stale for good
+   * on a quiet cluster, so it is retried like a transient failure, with the same bounded backoff.
+   */
+  static Outcome outcomeOfAnswer(final boolean forced, final List<String> failedSeeds) {
+    return forced && !failedSeeds.isEmpty() ? Outcome.TRANSIENT_FAILURE : Outcome.ASKED;
+  }
+
   /** Whether a snapshot install left a forced seed to make. Package-private for tests. */
   boolean isForcedSeedPending() {
     return forceSeed.get();
@@ -511,9 +522,7 @@ final class SecurityCatchUp implements AutoCloseable {
                 + "commit: %s. Until they do, this node serves requests against its own copy of them - which can "
                 + "still hold a user dropped, a group narrowed or a token revoked while it was away. Re-POST this "
                 + "node to %s on any member to retry", reason, String.join(", ", failed), "/api/v1/cluster/peer");
-      // Answered, whether or not every document committed: a partial failure is the leader's report, not a
-      // transport failure, and retrying it here would submit the same documents again.
-      return Outcome.ASKED;
+      return outcomeOfAnswer(force, failed);
     } catch (final InterruptedException e) {
       // Interrupted in the jitter or in the catch-up wait, so the dial never happened. Nothing is retried on a
       // thread that is being shut down, but the request must not be recorded as made either (issue #8034).

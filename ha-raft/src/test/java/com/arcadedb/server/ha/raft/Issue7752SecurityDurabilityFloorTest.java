@@ -43,6 +43,7 @@ import java.lang.reflect.Proxy;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
@@ -299,6 +300,19 @@ class Issue7752SecurityDurabilityFloorTest {
     durable.set(false);
     floor.afterInstall(ReplicatedSecurityFingerprintRepository.USERS, LATER_INDEX + 5, security);
     assertThat(floor.floor()).isEqualTo(LATER_INDEX + 5);
+  }
+
+  /**
+   * A forced seed the leader could not fully commit is retried like a transient failure, so the catch-up's bounded
+   * backoff asks again instead of the node waiting, with its stale files, for a trigger a quiet cluster may never send.
+   * An ordinary catch-up with failed seeds stays answered: retrying it would only resubmit what the leader reported.
+   */
+  @Test
+  void aForcedSeedTheLeaderCouldNotCommitIsRetried() {
+    assertThat(SecurityCatchUp.outcomeOfAnswer(true, List.of("users"))).isEqualTo(SecurityCatchUp.Outcome.TRANSIENT_FAILURE);
+    assertThat(SecurityCatchUp.outcomeOfAnswer(true, List.of())).isEqualTo(SecurityCatchUp.Outcome.ASKED);
+    assertThat(SecurityCatchUp.outcomeOfAnswer(false, List.of("users"))).isEqualTo(SecurityCatchUp.Outcome.ASKED);
+    assertThat(SecurityCatchUp.outcomeOfAnswer(false, List.of())).isEqualTo(SecurityCatchUp.Outcome.ASKED);
   }
 
   private static TransactionContext securityUsersEntry(final ArcadeStateMachine sm, final long index) {
