@@ -25,7 +25,6 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -93,28 +92,15 @@ public class SQLFunctionVectorBoost extends SQLFunctionVectorAbstract {
     final ArrayList<Object> out = new ArrayList<>(targetSize);
     for (int i = 0; i < targetSize; i++) {
       final Scored s = scored.get(i);
-      // Overwrite the score field on the existing row map so downstream {@code vector.fuse} or
-      // {@code ORDER BY score} consume the boosted value. Build a new map so we never mutate
-      // upstream storage (Result objects are read-only views; a shared LinkedHashMap could be
-      // referenced by something else upstream).
+      // Override the score field so downstream {@code vector.fuse} or {@code ORDER BY score} consume the boosted value,
+      // without ever mutating upstream storage (Result objects are read-only views; a shared map could be referenced by
+      // something else upstream) and without copying every property of the row: the override reads the upstream row on
+      // demand, so the record a {@code vector.neighbors} row carries stays carried for a downstream reranker (issue #10170).
       // <p>
       // Only Map and Result reach this point: {@link #materialize} drops any row whose score
       // cannot be extracted, and {@link SQLFunctionVectorAbstract#extractScoreFromRow} returns
       // {@code NaN} for any other shape. So no "pass-through for unknown shape" branch is needed.
-      final LinkedHashMap<String, Object> rebuilt = new LinkedHashMap<>();
-      if (s.row() instanceof Map<?, ?> m) {
-        for (final var e : m.entrySet())
-          rebuilt.put(String.valueOf(e.getKey()), e.getValue());
-      } else {
-        // Must be a Result - the materialize-time NaN guard ruled out everything else.
-        final Result r = (Result) s.row();
-        for (final String prop : r.getPropertyNames())
-          rebuilt.put(prop, r.getProperty(prop));
-        if (r.getIdentity().isPresent())
-          rebuilt.put("@rid", r.getIdentity().get());
-      }
-      rebuilt.put("score", s.boostedScore());
-      out.add(rebuilt);
+      out.add(new ScoreOverrideRow(s.row(), "score", s.boostedScore()));
     }
     return out;
   }
