@@ -127,7 +127,7 @@ final class IndexWarmUpScheduler {
   }
 
   /**
-   * Waits until nothing is waiting and nothing is running. For callers that need the indexes warm before they carry on
+   * Waits until nothing is waiting and nothing is running, and, once closed, until the worker has left. For callers that need the indexes warm before they carry on
    * (a test, a restart sequence): the warm-up exists so that nobody has to.
    *
    * @return {@code false} when the timeout elapsed first
@@ -135,7 +135,8 @@ final class IndexWarmUpScheduler {
   boolean awaitIdle(final long timeoutMs) {
     final long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs);
     synchronized (monitor) {
-      while (pending != null || running) {
+      // Once closed, idle also means the worker has left: a close that outlived a load reports it gone only after this
+      while (pending != null || running || (closed && worker != null)) {
         final long remainingMs = TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime());
         if (remainingMs <= 0)
           return false;
