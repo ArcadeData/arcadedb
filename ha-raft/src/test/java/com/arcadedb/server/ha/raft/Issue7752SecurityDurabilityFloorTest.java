@@ -249,6 +249,35 @@ class Issue7752SecurityDurabilityFloorTest {
     assertThat(floor.floor()).isEqualTo(Long.MAX_VALUE);
   }
 
+  /**
+   * The re-seed an install past a pin asks for survives the attempts that do not make it: one taken by an attempt that
+   * then failed - transiently, or with documents the leader could not seed - is put back for the next one, and only an
+   * attempt that made it spends it. Without that the stale files would outlive the install for good.
+   */
+  @Test
+  void theForcedSeedSurvivesAnAttemptThatDidNotMakeIt() {
+    try (final SecurityCatchUp catchUp = new SecurityCatchUp()) {
+      assertThat(catchUp.isForcedSeedPending()).isFalse();
+
+      // No server to ask through: nothing is queued, but the forced seed is recorded for the next trigger
+      catchUp.afterSnapshotInstall(null, null, true);
+      assertThat(catchUp.isForcedSeedPending()).isTrue();
+
+      final boolean taken = catchUp.takeForcedSeed();
+      assertThat(taken).isTrue();
+      assertThat(catchUp.isForcedSeedPending()).as("taken by the attempt asking the leader").isFalse();
+
+      catchUp.forcedSeedNotMade(taken);
+      assertThat(catchUp.isForcedSeedPending()).as("put back after an attempt that did not make it").isTrue();
+
+      assertThat(catchUp.takeForcedSeed()).isTrue();
+      assertThat(catchUp.isForcedSeedPending()).as("spent by the attempt that made it").isFalse();
+
+      catchUp.forcedSeedNotMade(false);
+      assertThat(catchUp.isForcedSeedPending()).as("an attempt that took nothing puts nothing back").isFalse();
+    }
+  }
+
   private static TransactionContext securityUsersEntry(final ArcadeStateMachine sm, final long index) {
     return entry(sm, index, RaftLogEntryCodec.encodeSecurityUsersEntry(USERS_JSON));
   }

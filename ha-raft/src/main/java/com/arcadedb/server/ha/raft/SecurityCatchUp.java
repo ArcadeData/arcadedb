@@ -347,6 +347,11 @@ final class SecurityCatchUp implements AutoCloseable {
    * <p>
    * Kept in a flag the attempt consumes rather than in the attempt itself, so it survives the coalescing of a queued
    * request, a leader that cannot be asked yet, and a transient failure, all of which retry without it otherwise.
+   * <p>
+   * It is held in memory only. A node that restarts after such an install and before the seed commits comes back with
+   * the stale files and no entry to replay; its once-per-start catch-up then compares DOCUMENTS, which repairs a stale
+   * document but not a stale compare-and-set record beside a current one. That residual needs a failed record write, a
+   * snapshot install over it and a restart inside the seed's round trip, and it closes at the next security change.
    */
   void afterSnapshotInstall(final ArcadeDBServer server, final RaftHAServer raft, final boolean undurableSecurityCovered) {
     if (undurableSecurityCovered)
@@ -357,6 +362,25 @@ final class SecurityCatchUp implements AutoCloseable {
     // while this one is in flight - and it is safe to take up front because every arm of the attempt that ends
     // without asking anybody releases it again (issue #8034), this trigger's own leader arm included.
     submit(takeOverRequest(), server, raft, "a snapshot install, which carries no security document", false);
+  }
+
+  /** Takes the pending forced seed, if any (issue #7752): the attempt about to ask the leader is the one that makes it. */
+  boolean takeForcedSeed() {
+    return forceSeed.getAndSet(false);
+  }
+
+  /**
+   * Puts a forced seed this attempt took back, because the attempt did not get it made: a transient failure, or a leader
+   * that reported documents it could not seed. The next attempt or trigger makes it instead.
+   */
+  void forcedSeedNotMade(final boolean taken) {
+    if (taken)
+      forceSeed.set(true);
+  }
+
+  /** Whether a snapshot install left a forced seed to make. Package-private for tests. */
+  boolean isForcedSeedPending() {
+    return forceSeed.get();
   }
 
   private void submit(final long token, final ArcadeDBServer server, final RaftHAServer raft, final String reason,
@@ -462,17 +486,16 @@ final class SecurityCatchUp implements AutoCloseable {
       // Read BEFORE the fingerprints the request carries, so a match proves the documents are the cluster's as of
       // at least this position (issue #8346). See RuntimeJoinDetector.onSecurityDocumentsMatchedLeader.
       final long appliedBeforeRead = raft.getLastAppliedIndex();
-      final boolean force = forceSeed.getAndSet(false);
+      final boolean force = takeForcedSeed();
       final ClusterSecuritySeedQuery.SeedAnswer answer;
       try {
         answer = ClusterSecuritySeedQuery.seedForCatchUpAnswer(server, plugin, reason, force);
       } catch (final Exception e) {
-        if (force)
-          forceSeed.set(true);
+        forcedSeedNotMade(force);
         throw e;
       }
-      if (force && !answer.failedSeeds().isEmpty())
-        forceSeed.set(true);
+      if (!answer.failedSeeds().isEmpty())
+        forcedSeedNotMade(force);
       if (answer.upToDate())
         // The leader compared and submitted nothing. On a runtime joiner that caught up by snapshot install past its
         // seed, this is the only evidence of convergence it will ever get: no seed entry is applied here and no
