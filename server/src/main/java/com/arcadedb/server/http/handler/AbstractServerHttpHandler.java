@@ -119,6 +119,12 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
    */
   static final long           REFUSED_BODY_DISCARD_BUDGET   = 4L * 1024L * 1024L;
   /**
+   * How long the discard of {@link #REFUSED_BODY_DISCARD_BUDGET} may take: a client that drips its body stays under the
+   * byte budget, and it holds the worker reading it. Checked between reads, so the bound is this plus one socket read
+   * timeout ({@code arcadedb.network.socketTimeout}).
+   */
+  static final long           REFUSED_BODY_DISCARD_MAX_NANOS = TimeUnit.SECONDS.toNanos(10);
+  /**
    * The most {@link #readRequestBody} pre-allocates for a body on the strength of its {@code Content-Length}
    * header alone. A larger body still arrives intact - the buffer grows - it is only the head start that stops
    * here.
@@ -1532,7 +1538,8 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   };
 
   /**
-   * Reads and discards the rest of the request body, up to {@link #REFUSED_BODY_DISCARD_BUDGET}.
+   * Reads and discards the rest of the request body, up to {@link #REFUSED_BODY_DISCARD_BUDGET} bytes and
+   * {@link #REFUSED_BODY_DISCARD_MAX_NANOS}, whichever comes first.
    *
    * @return true when the body ended within the budget
    */
@@ -1540,13 +1547,14 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     if (!exchange.isBlocking())
       return false;
     final byte[] scratch = new byte[REQUEST_BODY_READ_BUFFER_SIZE];
+    final long deadline = System.nanoTime() + REFUSED_BODY_DISCARD_MAX_NANOS;
     long discarded = 0;
     try {
       final InputStream in = exchange.getInputStream();
       int read;
       while ((read = in.read(scratch)) != -1) {
         discarded += read;
-        if (discarded > REFUSED_BODY_DISCARD_BUDGET)
+        if (discarded > REFUSED_BODY_DISCARD_BUDGET || System.nanoTime() - deadline > 0)
           return false;
       }
       return true;

@@ -278,6 +278,29 @@ class Issue7752SecurityDurabilityFloorTest {
     }
   }
 
+  /**
+   * A document pinned, released when durable, then pinned again by a later failure is pinned at the LATER entry: the
+   * earlier one is durable and needs no replay, so holding the checkpoint back to it would only grow the log.
+   */
+  @Test
+  void aDocumentThatFailsAgainAfterRecoveringIsPinnedAtTheNewEntry() {
+    final AtomicBoolean durable = new AtomicBoolean(false);
+    final FakeServerSecurity security = FakeServerSecurity.create();
+    security.on("isReplicatedDocumentDurable", args -> durable.get());
+
+    final SecurityDurabilityFloor floor = new SecurityDurabilityFloor();
+    floor.afterInstall(ReplicatedSecurityFingerprintRepository.USERS, FAILED_INDEX, security);
+    assertThat(floor.floor()).isEqualTo(FAILED_INDEX);
+
+    durable.set(true);
+    floor.afterInstall(ReplicatedSecurityFingerprintRepository.USERS, LATER_INDEX, security);
+    assertThat(floor.floor()).as("durable again").isEqualTo(Long.MAX_VALUE);
+
+    durable.set(false);
+    floor.afterInstall(ReplicatedSecurityFingerprintRepository.USERS, LATER_INDEX + 5, security);
+    assertThat(floor.floor()).isEqualTo(LATER_INDEX + 5);
+  }
+
   private static TransactionContext securityUsersEntry(final ArcadeStateMachine sm, final long index) {
     return entry(sm, index, RaftLogEntryCodec.encodeSecurityUsersEntry(USERS_JSON));
   }
