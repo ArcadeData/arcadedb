@@ -899,12 +899,15 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     // nothing, while a stale one self-heals on the first query. The CAS ensures only one thread runs this even though the
     // metadata is shared across the type's bucket indexes.
     if (ftMetadata.claimStaleCheck()) {
-      final String typeName = getTypeName();
+      final String typeName = corpusTypeName();
       if (typeName != null) {
-        // Both sides are TYPE-WIDE: getTotalDocs() is the shared counter accumulated across every bucket index (they share this
-        // metadata instance), and countType() is the type's live record count. The logical TypeIndex search uses this count for
-        // global IDF as well as avgdl; a direct bucket-level lookup uses resolveTotalDocs() instead.
-        final long liveCount = underlyingIndex.getMutableIndex().getDatabase().countType(typeName, false);
+        // Both sides count the same population, the one the rescan below reads (issue #10130): getTotalDocs() is the shared
+        // counter accumulated by every bucket index of the logical index (they share this metadata instance), the sub types'
+        // buckets included, and the live count is the record count of exactly those buckets. The logical TypeIndex search uses
+        // this count for global IDF as well as avgdl; a direct bucket-level lookup uses resolveTotalDocs() instead.
+        long liveCount = 0L;
+        for (final Bucket bucket : corpusBuckets())
+          liveCount += bucket.count();
         final long persisted = ftMetadata.getTotalDocs();
         final boolean rescan = ftMetadata.consumeRescanRequired();
         if (liveCount != persisted || rescan) {
@@ -919,6 +922,40 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
         }
       }
     }
+  }
+
+  /**
+   * The type that declares the logical index this bucket index belongs to. The corpus counters are the LOGICAL index's: the
+   * bucket index of a sub type answers {@link #getTypeName()} with the sub type, whose records are only part of what the counters
+   * hold (issue #10130).
+   */
+  private String corpusTypeName() {
+    final TypeIndex logical = typeIndex;
+    return logical != null ? logical.getTypeName() : getTypeName();
+  }
+
+  /**
+   * The buckets whose documents the corpus counters count: one per bucket index of the logical index, the sub types' buckets
+   * included, and no other. A sub type that did not inherit the index has no bucket index here, so nothing of it is counted,
+   * by the writers or by the rescan. Without a logical index (a bucket index read before its wrapper is bound) the declaring
+   * type's buckets, polymorphically.
+   */
+  private List<Bucket> corpusBuckets() {
+    final DatabaseInternal db = underlyingIndex.getMutableIndex().getDatabase();
+    final TypeIndex logical = typeIndex;
+    final List<Bucket> buckets = new ArrayList<>();
+    if (logical != null) {
+      for (final IndexInternal bucketIndex : logical.getIndexesOnBuckets()) {
+        final Bucket bucket = db.getSchema().getBucketByIdIfExists(bucketIndex.getAssociatedBucketId());
+        if (bucket != null)
+          buckets.add(bucket);
+      }
+    } else {
+      final String typeName = getTypeName();
+      if (typeName != null && db.getSchema().existsType(typeName))
+        buckets.addAll(db.getSchema().getType(typeName).getBuckets(true));
+    }
+    return buckets;
   }
 
   /**
@@ -1004,7 +1041,7 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     if (ftMetadata == null)
       return;
     final DatabaseInternal db = underlyingIndex.getMutableIndex().getDatabase();
-    final String typeName = getTypeName();
+    final String typeName = corpusTypeName();
     if (typeName == null)
       return;
 
@@ -1020,19 +1057,22 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     final long lenAtStart = ftMetadata.getSumDocLength();
     final long mutationsAtStart = ftMetadata.getMutations();
     final boolean commitApplyingAtStart = ftMetadata.isCommitApplying();
-    final Iterator<Record> it = db.iterateType(typeName, true);
-    while (it.hasNext()) {
-      final Record record = it.next();
-      if (!(record instanceof Document doc))
-        continue;
-      int len = 0;
-      for (final String p : props) {
-        final Object v = doc.get(p);
-        if (v != null)
-          len += analyzeText(indexAnalyzer, new Object[] { v }).size();
+    // The buckets the writers count, not the type's: the same population the drift check compares against (issue #10130)
+    for (final Bucket bucket : corpusBuckets()) {
+      final Iterator<Record> it = bucket.iterator();
+      while (it.hasNext()) {
+        final Record record = it.next();
+        if (!(record instanceof Document doc))
+          continue;
+        int len = 0;
+        for (final String p : props) {
+          final Object v = doc.get(p);
+          if (v != null)
+            len += documentLength(analyzeText(indexAnalyzer, new Object[] { v }));
+        }
+        ++docs;
+        sumLen += len;
       }
-      ++docs;
-      sumLen += len;
     }
 
     // The scan reads this transaction's own uncommitted writes, whose effect the commit applies to the counters: leave them out
@@ -1201,7 +1241,6 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     if (getPropertyCount() == 1) {
       final List<String> keywords = analyzeText(indexAnalyzer, keys);
       final Map<String, Integer> tfs = new HashMap<>();
-      int docLen = 0;
       boolean hasNull = false;
       for (final String k : keywords) {
         // A null token (null indexed value) carries no meaningful tf/docLength: keep it out of the stats so it never becomes a
@@ -1212,8 +1251,8 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
           continue;
         }
         tfs.merge(k, 1, Integer::sum);
-        ++docLen;
       }
+      final int docLen = documentLength(keywords);
       final int len = docLen;
       for (final Map.Entry<String, Integer> e : tfs.entrySet())
         underlyingIndex.put(new String[] { e.getKey() }, withStats(db, rids, e.getValue(), len));
@@ -1238,7 +1277,7 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
         if (keys[i] == null)
           continue;
         final List<String> keywords = analyzeText(indexAnalyzer, new Object[] { keys[i] });
-        docLen += keywords.size();
+        docLen += documentLength(keywords);
         final Map<String, Integer> fieldTf = new HashMap<>();
         for (final String k : keywords) {
           fieldTf.merge(k, 1, Integer::sum);
@@ -1259,6 +1298,19 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
 
       countDocuments(rids.length, docLen);
     }
+  }
+
+  /**
+   * The length a document counts for in the corpus counters: its analyzed tokens, without the null token {@link #analyzeText}
+   * emits for a null value. The ONE definition every writer and the rescan use, so the length a remove subtracts is always the
+   * length the put added for the same values (issue #10131).
+   */
+  private static int documentLength(final List<String> tokens) {
+    int length = 0;
+    for (int i = 0; i < tokens.size(); i++)
+      if (tokens.get(i) != null)
+        ++length;
+    return length;
   }
 
   /**
@@ -1358,7 +1410,8 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     if (getPropertyCount() == 1) {
       // Single property - existing behavior
       final List<String> keywords = analyzeText(indexAnalyzer, keys);
-      docLen = keywords.size();
+      // Not keywords.size(): the null token of a null value is not part of the length the put counted (issue #10131)
+      docLen = documentLength(keywords);
       for (final String k : keywords)
         underlyingIndex.remove(new String[] { k }, rid);
     } else {
@@ -1369,7 +1422,7 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
           continue;
         final String fieldName = propertyNames.get(i);
         final List<String> keywords = analyzeText(indexAnalyzer, new Object[] { keys[i] });
-        docLen += keywords.size();
+        docLen += documentLength(keywords);
         for (final String k : keywords) {
           underlyingIndex.remove(new String[] { fieldName + ":" + k }, rid);
           underlyingIndex.remove(new String[] { k }, rid);
@@ -1381,8 +1434,8 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     // one removeDocument() call balances the single addDocument() that put() made for that document - the indexing convention is
     // one rid per document. (put() loops addDocument() over its rid array; were remove() ever called with N documents sharing a
     // key it would need the same N decrements, but no caller does that.) docLen is recomputed from the keys supplied at remove
-    // time: if a field is null now but was set at index time (or the analyzer changed), this under-decrements sumDocLength and
-    // avgDocLength drifts. Since avgDocLength is only a length normalizer this is tolerable; recomputeBM25Counters() repairs it.
+    // time, which are the values the document was indexed with (an update removes the ORIGINAL record's values), and measured by
+    // documentLength() exactly as the put measured it. Only a changed analyzer can make the two disagree.
     if (underlyingIndex.isStoreTermFrequency())
       uncountDocument(docLen);
   }
