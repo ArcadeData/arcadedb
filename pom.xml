@@ -107,7 +107,11 @@
         <!-- PostBatchHandler depends on two behaviours of this version that are not part of any published contract:
              UndertowInputStream.close() reads the request body to the end, and available() reports a finished body
              as -1 rather than 0. Both are covered by Issue5470BatchErrorDeliveryIT, so a bump that changes either
-             shows up as a test failure there rather than as a silently worse diagnosis (issue #5470). -->
+             shows up as a test failure there rather than as a silently worse diagnosis (issue #5470).
+             Also coupled to private Undertow internals: server/.../http/Http2StreamReset reads two private fields of
+             Http2ServerConnection ('channel', 'requestChannel') to reset a refused HTTP/2 stream with NO_ERROR (issue
+             #8081). A bump that renames them degrades the reset to CANCEL and fails
+             Issue7772ChunkedBodySizeLimitTest#http2BodyWithoutContentLengthOverLimitIsRefused. -->
         <undertow-core.version>2.4.4.Final</undertow-core.version>
         <jboss-threads.version>3.10.1</jboss-threads.version>
         <mockito-core.version>5.24.0</mockito-core.version>
