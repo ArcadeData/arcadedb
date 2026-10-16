@@ -44,6 +44,7 @@ import com.arcadedb.server.LeaderForwardContext;
 import com.arcadedb.server.PeerRequest;
 import com.arcadedb.server.http.ClusterAuthSessionResolver;
 import com.arcadedb.server.http.HttpAuthSession;
+import com.arcadedb.server.http.Http2StreamReset;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.HttpSessionException;
 import com.arcadedb.server.http.HttpSessionManager;
@@ -62,6 +63,9 @@ import io.micrometer.core.instrument.Metrics;
 import io.micrometer.core.instrument.Timer;
 import io.micrometer.observation.Observation;
 import io.micrometer.observation.transport.RequestReplyReceiverContext;
+import io.undertow.io.IoCallback;
+import io.undertow.io.Sender;
+import io.undertow.server.Connectors;
 import io.undertow.server.HttpHandler;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.server.RequestTooBigException;
@@ -70,6 +74,7 @@ import io.undertow.util.HeaderValues;
 import io.undertow.util.Headers;
 import io.undertow.util.HttpString;
 import io.undertow.util.PathTemplateMatch;
+import io.undertow.util.Protocols;
 import io.undertow.util.StatusCodes;
 
 import java.io.ByteArrayOutputStream;
@@ -1089,13 +1094,6 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       return new ErrorClassification(403, "Security error", security, null, ErrorLogKind.SECURITY);
     }
 
-    // 413 Content Too Large: the REQUEST body exceeded arcadedb.server.httpBodyContentMaxSize, so this server
-    // stopped reading it - in readRequestBody above, or in PostBatchHandler's CountingInputStream for the route
-    // that streams instead of buffering. Reached only by a body that declared no length; a declared one is
-    // refused earlier and more cheaply by HttpServer.createBodySizeLimitHandler, which never runs the handler at
-    // all. This arm is what makes the cap mean the same thing for a chunked or HTTP/2 body as for a
-    // Content-Length one (issue #7772). A 4xx and not a 5xx: the server is working exactly as configured, and
-    // repeating the request unchanged can only be refused again.
     // 409: the statement was terminated on request (issue #9680). Looked for along the whole cause chain rather than one
     // level down like the arms below: a termination is unambiguous wherever it surfaces, and the engine may wrap it in a
     // planner or commit failure more than once. Not a 5xx - the server did what it was asked - and not the 503 a client's
@@ -1105,6 +1103,14 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       if (t instanceof QueryTerminatedException terminated)
         return new ErrorClassification(409, "Query terminated", terminated, null, ErrorLogKind.USER);
 
+    // 413 Content Too Large: the REQUEST body exceeded arcadedb.server.httpBodyContentMaxSize, so this server
+    // stopped reading it - in readRequestBody above, or in PostBatchHandler's CountingInputStream for the route
+    // that streams instead of buffering. Reached only by a body that declared no length; a declared one is
+    // refused earlier and more cheaply by HttpServer.createBodySizeLimitHandler, which never runs the handler at
+    // all. This arm is what makes the cap mean the same thing for a chunked or HTTP/2 body as for a
+    // Content-Length one (issue #7772). A 4xx and not a 5xx: the server is working exactly as configured, and
+    // repeating the request unchanged can only be refused again.
+    //
     // Named for the bytes ON THE WIRE, to keep it apart from the decoded-size arm below: the two caps are
     // different settings refusing at different points, and both are reachable on the same request.
     final RequestTooBigException wireBodyTooLarge = firstOf(e, cause, RequestTooBigException.class);
@@ -1466,8 +1472,66 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     logClassifiedError(classification);
     if (classification.retryAfter() != null && !exchange.isResponseStarted())
       exchange.getResponseHeaders().put(RETRY_AFTER_HEADER, classification.retryAfter());
+    if (classification.reported() instanceof RequestTooBigException) {
+      // A body refused mid-stream is not read any further (issue #8081), see sendErrorResponseAndResetHttp2Stream
+      if (Protocols.HTTP_2_0.equals(exchange.getProtocol())) {
+        sendErrorResponseAndResetHttp2Stream(exchange, classification);
+        return;
+      }
+      // HTTP/1.x: the connection ends with the answer, so ending the exchange closes the request side instead of
+      // draining it (HttpServerConnection.terminateRequestChannel). A client that kept the connection alive used to
+      // have the rest of its body read and discarded for as long as it kept sending
+      exchange.setPersistent(false);
+    }
     sendErrorResponse(exchange, classification.status(), classification.message(), classification.reported(),
         classification.exceptionArgs());
+  }
+
+  /**
+   * The 413 of a body refused mid-stream on HTTP/2 (issue #8081), followed by a reset of that stream alone.
+   * <p>
+   * Over HTTP/1.1 the refusal ends the request because the connection ends with it. HTTP/2 multiplexes the connection,
+   * so ending the exchange makes Undertow DRAIN the rest of the stream instead ({@code UndertowInputStream.close()},
+   * then {@code HttpServerExchange.endExchange()}), granting the client flow-control window for every byte it reads: a
+   * body that never ends kept a worker thread reading and discarding it for as long as the client kept sending, and
+   * the request never completed on the client side either, since a client finishes sending before it reports the
+   * answer. The cap bounded the heap, not the work.
+   * <p>
+   * So the stream is reset once the response is whole, with {@code NO_ERROR}, which is what RFC 9113, section 8.1,
+   * provides for a server that answered before the request ended (see {@link Http2StreamReset}). The response is sent
+   * with its length, so the write completes it; the reset covers this stream only - the other streams of the
+   * connection are untouched - and the request is marked read, so ending the exchange has nothing left to drain.
+   */
+  private void sendErrorResponseAndResetHttp2Stream(final HttpServerExchange exchange,
+      final ErrorClassification classification) {
+    if (!exchange.isResponseStarted())
+      exchange.setStatusCode(classification.status());
+    final byte[] body = buildErrorBody(!isProductionMode(), classification.message(), classification.reported(),
+        classification.exceptionArgs(), exchange.getResponseHeaders().getFirst(REQUEST_ID_HEADER))
+        .getBytes(StandardCharsets.UTF_8);
+    if (!exchange.isResponseStarted())
+      exchange.setResponseContentLength(body.length);
+
+    exchange.getResponseSender().send(ByteBuffer.wrap(body), new IoCallback() {
+      @Override
+      public void onComplete(final HttpServerExchange completed, final Sender sender) {
+        Http2StreamReset.resetWithNoError(completed);
+        try {
+          // Nothing more will arrive on a reset stream: closing the stream now records that, where the close at the
+          // end of the exchange would wait for the end of the body
+          completed.getInputStream().close();
+        } catch (final IOException e) {
+          // The stream was reset under it, which is the point
+        }
+        Connectors.terminateRequest(completed);
+        IoCallback.END_EXCHANGE.onComplete(completed, sender);
+      }
+
+      @Override
+      public void onException(final HttpServerExchange failed, final Sender sender, final IOException exception) {
+        IoCallback.END_EXCHANGE.onException(failed, sender, exception);
+      }
+    });
   }
 
   /**

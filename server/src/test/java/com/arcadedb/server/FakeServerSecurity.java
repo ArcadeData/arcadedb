@@ -44,7 +44,7 @@ import java.util.function.Supplier;
 public class FakeServerSecurity extends ServerSecurity {
   private static final Set<String> RECORDED = Set.of("authenticate", "revalidate", "getUser", "getUsers",
       "applyReplicatedUsers", "applyReplicatedGroups", "applyReplicatedApiTokens", "seedSecurityStateClusterWide",
-      "unconvergedClusterSecurityDocuments");
+      "unconvergedClusterSecurityDocuments", "isReplicatedDocumentDurable", "retryReplicatedSecurityPersistence");
 
   private volatile CallLog         log     = new CallLog();
   private final    CallLog.Answers answers = new CallLog.Answers(RECORDED);
@@ -192,6 +192,18 @@ public class FakeServerSecurity extends ServerSecurity {
   public List<String> seedSecurityStateClusterWide(final long retryBudgetMs) {
     return (List<String>) call("seedSecurityStateClusterWide", () -> super.seedSecurityStateClusterWide(retryBudgetMs),
         retryBudgetMs);
+  }
+
+  @Override
+  public boolean isReplicatedDocumentDurable(final String documentKey) {
+    return bool("isReplicatedDocumentDurable",
+        call("isReplicatedDocumentDurable", () -> super.isReplicatedDocumentDurable(documentKey), documentKey));
+  }
+
+  @Override
+  public boolean retryReplicatedSecurityPersistence() {
+    return bool("retryReplicatedSecurityPersistence",
+        call("retryReplicatedSecurityPersistence", super::retryReplicatedSecurityPersistence));
   }
 
   @Override

@@ -221,7 +221,17 @@ public final class ClusterSecuritySeedQuery {
    */
   public static SeedAnswer seedForCatchUpAnswer(final ArcadeDBServer server, final RaftHAPlugin plugin,
       final String reason) throws IOException {
-    return seed(server, plugin, reason, localFingerprints(server.getSecurity()), true, null);
+    return seedForCatchUpAnswer(server, plugin, reason, false);
+  }
+
+  /**
+   * {@link #seedForCatchUpAnswer(ArcadeDBServer, RaftHAPlugin, String)}, sending no fingerprints when {@code force}, so
+   * the leader seeds even when this node's documents in memory match its own: the files on this node's disk do not,
+   * and nothing else would rewrite them before a restart reads them back (issue #7752).
+   */
+  public static SeedAnswer seedForCatchUpAnswer(final ArcadeDBServer server, final RaftHAPlugin plugin,
+      final String reason, final boolean force) throws IOException {
+    return seed(server, plugin, reason, force ? null : localFingerprints(server.getSecurity()), true, null);
   }
 
   /** The three digests the leader compares against its own; {@code null} when there is no security store. */

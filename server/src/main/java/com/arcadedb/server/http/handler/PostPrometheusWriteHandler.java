@@ -81,6 +81,17 @@ import java.util.Set;
  * durable and global before the caller commits anything, and the session's own transaction is untouched by the
  * {@code commit()} that closes the nested one. Issue #7410 tracks that divergence from
  * {@code TimeSeriesEngine}'s javadoc.
+ * <p>
+ * <b>A database that does not exist is answered 404 before the body is looked at, and that is the contract</b>
+ * (issues #7751, #7831). Before #7681 this handler resolved the database itself, after its empty-body 400 and
+ * zero-series 204, and a review had defended that order; moving onto {@link DatabaseAbstractHandler} removed it, which
+ * is how the question was decided. 404 is the better answer, not only the inherited one: it is what every other
+ * {@code /api/v1/ts/{database}} route answers, and on a fan-in endpoint it is the answer that reaches the operator. A
+ * shipper pointed at the wrong database name sends empty scrapes too, and a 204 for those told it the batch was
+ * delivered, so the misconfiguration surfaced only with the first real sample - or never, for a quiet target. What must
+ * never happen is a 500. {@code Issue7831TimeSeriesRoutesNonexistentDatabaseIT} pins 404 on every route of the family,
+ * and that the 400 still answers an empty body against a database that exists; do not move a body check ahead of the
+ * database resolution without changing both.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
