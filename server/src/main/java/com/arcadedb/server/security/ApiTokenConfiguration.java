@@ -180,7 +180,7 @@ public class ApiTokenConfiguration {
    *
    * @return the failure, or {@code null} when the document reached the disk
    */
-  public synchronized Exception persistCurrent() {
+  synchronized Exception persistCurrent() {
     return persist(documentOf(tokens.values()));
   }
 

@@ -62,6 +62,8 @@ final class SecurityDurabilityFloor {
 
   /** How often a pinned document is written again while the apply thread is busy with other entries. */
   static final long RETRY_INTERVAL_MS = 30_000L;
+  /** Every how many failed retries the pin is reported again, so it is not one SEVERE line lost in hours of log. */
+  static final int  REPORT_EVERY_RETRIES = 10;
 
   private static final long NONE = Long.MAX_VALUE;
 
@@ -71,6 +73,8 @@ final class SecurityDurabilityFloor {
   private final    LongSupplier    nanoClock;
   // Plain, not volatile: read and written only by afterInstall and retryIfDue, which both run on the Raft apply thread
   private          long            nextRetryNanos;
+  private          long            pinnedSinceNanos;
+  private          int             failedRetries;
 
   SecurityDurabilityFloor() {
     this(System::nanoTime);
@@ -92,9 +96,12 @@ final class SecurityDurabilityFloor {
     final int slot = slotOf(document);
     if (slot >= 0 && !security.isReplicatedDocumentDurable(document) && pinned.get(slot) == NONE) {
       pinned.set(slot, index);
-      if (!anyPinned)
+      if (!anyPinned) {
         // The write that just failed was the first attempt, so the first retry is one interval away
-        nextRetryNanos = nanoClock.getAsLong() + TimeUnit.MILLISECONDS.toNanos(RETRY_INTERVAL_MS);
+        pinnedSinceNanos = nanoClock.getAsLong();
+        nextRetryNanos = pinnedSinceNanos + TimeUnit.MILLISECONDS.toNanos(RETRY_INTERVAL_MS);
+        failedRetries = 0;
+      }
       anyPinned = true;
       LogManager.instance().log(this, Level.SEVERE,
           "The replicated security entry at index %d (%s) is in force on this node but did not fully reach the disk. "
@@ -149,6 +156,12 @@ final class SecurityDurabilityFloor {
     try {
       security.retryReplicatedSecurityPersistence();
       refresh(security);
+      if (anyPinned && ++failedRetries % REPORT_EVERY_RETRIES == 0)
+        LogManager.instance().log(this, Level.WARNING,
+            "Replicated security documents are still not durable on this node after %d retries over %d s: the Raft log "
+                + "has not been compacted past index %d since then, and grows until the configuration volume takes the "
+                + "write again (issue #7752)",
+            failedRetries, TimeUnit.NANOSECONDS.toSeconds(now - pinnedSinceNanos), floor());
     } catch (final RuntimeException e) {
       // Runs inside applyTransaction, whose catch-all halts the node: a retry that cannot run is a retry for later
       LogManager.instance().log(this, Level.WARNING, "Could not write the pinned security documents again: %s", e,
