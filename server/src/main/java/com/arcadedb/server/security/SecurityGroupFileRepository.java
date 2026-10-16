@@ -118,7 +118,7 @@ public class SecurityGroupFileRepository {
    * against the previous group definitions - so a permission the operator has just narrowed, or a group they
    * have just deleted, would keep granting access here for as long as the volume stayed full or read-only.
    * <p>
-   * What is outstanding after a failure is therefore durability only, and it does not recover by itself: see
+   * What is outstanding after a failure is therefore durability only, which the Raft log carries (issue #7752): see
    * {@code ServerSecurity.applyReplicatedGroups} and {@code ArcadeStateMachine.applySecurityGroupsEntry}.
    *
    * @return the persistence failure, or {@code null} when the document reached the disk
@@ -136,6 +136,24 @@ public class SecurityGroupFileRepository {
     } catch (final Exception e) {
       // Exception, not IOException: an unchecked failure out of persist() would otherwise propagate from a
       // method whose whole contract is "the document is in force here, only the write failed".
+      return e;
+    }
+  }
+
+  /**
+   * Writes the document in force again, for a replicated install whose own write failed (issue #7752). Same failure
+   * contract as {@link #applyReplicated}: the failure is returned, never thrown.
+   *
+   * @return the persistence failure, or {@code null} when the document reached the disk (or there is none to write)
+   */
+  synchronized Exception persistCurrent() {
+    final JSONObject current = latestGroupConfiguration;
+    if (current == null)
+      return null;
+    try {
+      persist(current);
+      return null;
+    } catch (final Exception e) {
       return e;
     }
   }

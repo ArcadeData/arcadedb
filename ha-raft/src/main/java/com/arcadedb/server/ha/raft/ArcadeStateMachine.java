@@ -58,6 +58,7 @@ import com.arcadedb.server.monitor.CountingRejectionPolicy;
 import com.arcadedb.server.monitor.PoolMetrics;
 import com.arcadedb.server.security.ApiTokenConfiguration;
 import com.arcadedb.server.security.ReplicatedSecurityConfigPersistenceException;
+import com.arcadedb.server.security.ReplicatedSecurityFingerprintRepository;
 import com.arcadedb.server.security.ReplicatedUsersPersistenceException;
 import com.arcadedb.server.security.SecurityGroupFileRepository;
 import com.arcadedb.server.security.SecurityUserFileRepository;
@@ -443,6 +444,13 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * up by a snapshot install that carried none of them (issue #7833). See {@link SecurityCatchUp}.
    */
   private final SecurityCatchUp securityCatchUp = new SecurityCatchUp();
+
+  /**
+   * The security entries whose effects on this node have not reached the disk, which {@link #takeSnapshot()} keeps
+   * replayable (issue #7752). See {@link SecurityDurabilityFloor}.
+   */
+  private final SecurityDurabilityFloor securityDurabilityFloor = new SecurityDurabilityFloor(System::nanoTime,
+      this::releaseSecurityHoldOf);
 
   /**
    * The catch-up this node's own triggers drive. Package-private so a test in this package can put it in the
@@ -1118,6 +1126,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // behind. Drop them here so the directory scan starts bounded even on a node that never
     // checkpoints again.
     pruneSnapshotMarkersAtStartup();
+    // Before any catch-up trigger can run: a re-seed a snapshot install forced, and that had not committed when this node
+    // stopped, is made again (issue #7752). Beside the snapshot markers, off the configuration volume that failed.
+    securityCatchUp.keepForcedSeedIn(storage.getSnapshotFile(0L, 0L).getParentFile());
     reinitialize();
     // Eagerly, not on first use: a bootstrap replacement left pending by the previous session must hold readiness and
     // the request gate from the first request on, not from whichever read happens to load the file (issue #8411).
@@ -2013,6 +2024,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
           writePersistedAppliedIndex(index, decoded.databaseName());
       }
 
+      // A security document pinned by a failed write is written again from time to time, on this thread, so a volume
+      // that is writable again stops pinning the log without waiting for the next security change (issue #7752)
+      final ArcadeDBServer srv = this.server;
+      if (srv != null)
+        securityDurabilityFloor.retryIfDue(srv.getSecurity());
+
       // Wake up any threads waiting for this index (READ_YOUR_WRITES, waitForLocalApply)
       final RaftHAServer raftHA = this.raftHAServer;
       if (raftHA != null) {
@@ -2382,6 +2399,22 @@ public class ArcadeStateMachine extends BaseStateMachine {
   }
 
   /**
+   * Releases the hold kept for a security document's failed write once {@link SecurityDurabilityFloor} has seen it, and
+   * its compare-and-set record, reach the disk again (issue #7752): the retry rewrote it, so nothing is left for the
+   * replay to repair, and waiting for the next entry of the same document would keep the log pinned on a quiet cluster.
+   */
+  private void releaseSecurityHoldOf(final String document) {
+    switch (document) {
+    case ReplicatedSecurityFingerprintRepository.USERS -> releaseHeldEntry(heldSecurityKey(RaftLogEntryType.SECURITY_USERS_ENTRY));
+    case ReplicatedSecurityFingerprintRepository.GROUPS -> releaseHeldEntry(heldSecurityKey(RaftLogEntryType.SECURITY_GROUPS_ENTRY));
+    case ReplicatedSecurityFingerprintRepository.API_TOKENS ->
+        releaseHeldEntry(heldSecurityKey(RaftLogEntryType.SECURITY_API_TOKENS_ENTRY));
+    default -> {
+    }
+    }
+  }
+
+  /**
    * Terminal handling for an apply error that no retry can fix. Always throws.
    * <p>
    * Per-database quarantine (issue #4797): a single {@link ArcadeStateMachine} multiplexes every
@@ -2528,7 +2561,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
     final long lowestHeld = lowestHeldEntry();
     if (lowestHeld != Long.MAX_VALUE)
       remindThatEntriesAreHeld(lowestHeld);
-    final long floor = Math.min(replayFloor.get(), lowestHeld);
+    // A security entry whose document or compare-and-set record did not reach the disk is kept replayable the same way
+    // (issue #7752). The same ordering argument holds: the apply pins the entry (SecurityDurabilityFloor.afterInstall)
+    // before lastAppliedIndex moves past it, so an applied index read first is never paired with a floor that does not
+    // yet cover it.
+    final long floor = Math.min(Math.min(replayFloor.get(), lowestHeld), securityDurabilityFloor.floor());
     final long currentIndex = floor == Long.MAX_VALUE ? appliedIndex : Math.min(appliedIndex, floor - 1);
     if (currentIndex < 0)
       return RaftLog.INVALID_LOG_INDEX;
@@ -3254,8 +3291,19 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // three documents live under <server-root>/config/, outside the database directory, and no snapshot
       // carries them. Ask the leader whether this node is still in step, AFTER the install is fully recorded so
       // the request cannot be answered against a half-installed node.
+      //
+      // A security entry this node had not made durable is below the install's boundary now, so it is not replayed any
+      // more: the leader is asked to re-send the documents even when this node's copies in memory match (issue #7752).
+      // Safe off the apply thread only because Ratis pauses the apply while it installs: the floor's retry pacing is
+      // apply-thread state (see SecurityDurabilityFloor), so do not move this call anywhere the apply can run.
+      final boolean undurableSecurityCovered = securityDurabilityFloor.dropCoveredByInstall(snapshotIndex);
+      if (undurableSecurityCovered)
+        LogManager.instance().log(this, Level.WARNING,
+            "The snapshot install up to index %d covered a replicated security entry that never reached this node's disk, "
+                + "so it will not be replayed: asking the leader to re-send the security documents. Until they commit, a "
+                + "restart of this node reads its stale security files back (issue #7752)", snapshotIndex);
       if (raftHA != null)
-        securityCatchUp.afterSnapshotInstall(this.server, raftHA);
+        securityCatchUp.afterSnapshotInstall(this.server, raftHA, undurableSecurityCovered);
 
       return installedTermIndex;
 
@@ -7707,8 +7755,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * revoked account or a changed password takes effect on this node immediately - only the durability of that
    * change is outstanding.
    * <p>
-   * <b>The failing entry is held for the replay until a later one supersedes it</b> (issues #7227, #10086). It does
-   * not record itself as applied, but it does not halt the node either - that is the whole point of this arm -
+   * <b>The failing entry is held for the replay until a later one supersedes it</b> (issues #7227, #10086, #7752). It
+   * does not record itself as applied, but it does not halt the node either - that is the whole point of this arm -
    * so the NEXT entry moves {@link #lastAppliedIndex} past it, and {@link #takeSnapshot()} checkpoints from
    * that counter. Left at that, whether the entry is ever replayed depended entirely on the SNAPSHOT MARKER, which
    * is the only thing {@link #reinitialize()} seeds the replay position from (see {@code ha-raft/CLAUDE.md}):
@@ -7718,7 +7766,14 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * stops below it, a restart replays it onto a volume that has been fixed and writes the file, and the hold is released
    * when the next entry of the same document persists, since the list is applied whole and that one carries everything
    * this one did. Reissuing the user change on the leader writes the file as well.
+   * <p>
+   * {@link SecurityDurabilityFloor} covers what the hold cannot see (issue #7752): the compare-and-set record written
+   * after the document, whose failure is swallowed. It pins the entry until {@code
+   * ServerSecurity.isReplicatedDocumentDurable} says both are on disk, rewrites them from memory while the node applies
+   * entries, and releases the hold above too once the document is durable again, so a fixed volume stops pinning the
+   * log without waiting for the next user change.
    * Pinned by {@code Issue10086SkippedEntryHoldsTheCheckpointTest} for the hold and its release, by
+   * {@code Issue7752SecurityDurabilityFloorTest} for the record and the retry, by
    * {@code Issue7227SecurityEntryAppliedPositionMovesPastFailureTest} for the applied counters, which still move, and by
    * {@code Issue7252SecurityEntryReplayAfterRestartTest} for both branches of the restart once a later entry has
    * superseded the failed one.
@@ -7747,14 +7802,17 @@ public class ArcadeStateMachine extends BaseStateMachine {
       else if (!server.getSecurity().applyReplicatedUsers(payload, precondition))
         return false;
       runtimeJoinDetector.onSecurityDocumentInstalled(RuntimeJoinDetector.USERS, index);
+      securityDurabilityFloor.afterInstall(ReplicatedSecurityFingerprintRepository.USERS, index, server.getSecurity());
     } catch (final ReplicatedUsersPersistenceException e) {
       // In force in memory before the write failed, so it is what this node enforces: installed (issue #8317).
       runtimeJoinDetector.onSecurityDocumentInstalled(RuntimeJoinDetector.USERS, index);
+      // And not durable, so the entry stays replayable until it is (issue #7752).
+      securityDurabilityFloor.afterInstall(ReplicatedSecurityFingerprintRepository.USERS, index, server.getSecurity());
       LogManager.instance().log(this, Level.SEVERE,
           "Could not fully apply a replicated user list on this node: %s. The node keeps running and, when the "
-              + "list reached memory, is already enforcing it - but it is not durable: a restart before this is "
-              + "fixed reads the previous '%s'. The usual cause is a local write failure: check that the "
-              + "configuration directory holding that file is writable and has free space",
+              + "list reached memory, is already enforcing it - but it is not durable in '%s' yet, so no snapshot "
+              + "checkpoint covers this entry and a restart replays it (issue #7752). The usual cause is a local write "
+              + "failure: check that the configuration directory holding that file is writable and has free space",
           e, e.getMessage(), SecurityUserFileRepository.FILE_NAME);
       // The message has to match what actually happened, because it is the half most likely to travel - into
       // another node's log, an HA status payload, an incident writeup - without the SEVERE above beside it.
@@ -7784,9 +7842,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * cannot, which must not be skipped quietly (issue #4798), so it is deliberately NOT caught here and reaches the
    * node-wide halt.
    * <p>
-   * The durability left outstanding by the caught case does not come back on its own - see the long note on
-   * {@link #applySecurityUsersEntry}, which applies verbatim: reissue the group change on the leader once the
-   * volume is fixed.
+   * The durability left outstanding by the caught case is carried by the Raft log - see the long note on
+   * {@link #applySecurityUsersEntry}, which applies verbatim (issue #7752).
    */
   private boolean applySecurityGroupsEntry(final RaftLogEntryCodec.DecodedEntry decoded, final long index) {
     final String payload = decoded.usersJson();
@@ -7801,13 +7858,15 @@ public class ArcadeStateMachine extends BaseStateMachine {
       else if (!server.getSecurity().applyReplicatedGroups(payload, precondition))
         return false;
       runtimeJoinDetector.onSecurityDocumentInstalled(RuntimeJoinDetector.GROUPS, index);
+      securityDurabilityFloor.afterInstall(ReplicatedSecurityFingerprintRepository.GROUPS, index, server.getSecurity());
     } catch (final ReplicatedSecurityConfigPersistenceException e) {
       runtimeJoinDetector.onSecurityDocumentInstalled(RuntimeJoinDetector.GROUPS, index);
+      securityDurabilityFloor.afterInstall(ReplicatedSecurityFingerprintRepository.GROUPS, index, server.getSecurity());
       LogManager.instance().log(this, Level.SEVERE,
           "Could not fully apply a replicated group document on this node: %s. The node keeps running and is "
-              + "already authorizing against the new groups - but they are not durable: a restart before this is "
-              + "fixed reads the previous '%s'. The usual cause is a local write failure: check that the "
-              + "configuration directory holding that file is writable and has free space",
+              + "already authorizing against the new groups - but they are not durable in '%s' yet, so no snapshot "
+              + "checkpoint covers this entry and a restart replays it (issue #7752). The usual cause is a local write "
+              + "failure: check that the configuration directory holding that file is writable and has free space",
           e, e.getMessage(), SecurityGroupFileRepository.FILE_NAME);
       throw holdEntryForReplay(heldSecurityKey(RaftLogEntryType.SECURITY_GROUPS_ENTRY), index,
           "Failed to persist the replicated group document locally; the node is already authorizing against the "
@@ -7824,8 +7883,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * <p>
    * Worth being explicit about what the non-halting arm means here, because this entry can carry a REVOCATION: the
    * new token set is in force on this node from the moment the apply returns, so the revoked token stops
-   * authenticating here even when the write failed. What is outstanding is only that a restart would read the
-   * stale file back - which is why the operator instruction is to reissue the revocation, not to wait.
+   * authenticating here even when the write failed. What is outstanding is only durability, and since issue #7752 the
+   * Raft log carries it: no snapshot checkpoint covers the entry until the token set is on disk, so a restart replays
+   * the revocation rather than reading the stale file back.
    */
   private boolean applySecurityApiTokensEntry(final RaftLogEntryCodec.DecodedEntry decoded, final long index) {
     final String payload = decoded.usersJson();
@@ -7840,14 +7900,16 @@ public class ArcadeStateMachine extends BaseStateMachine {
       else if (!server.getSecurity().applyReplicatedApiTokens(payload, precondition))
         return false;
       runtimeJoinDetector.onSecurityDocumentInstalled(RuntimeJoinDetector.API_TOKENS, index);
+      securityDurabilityFloor.afterInstall(ReplicatedSecurityFingerprintRepository.API_TOKENS, index, server.getSecurity());
     } catch (final ReplicatedSecurityConfigPersistenceException e) {
       runtimeJoinDetector.onSecurityDocumentInstalled(RuntimeJoinDetector.API_TOKENS, index);
+      securityDurabilityFloor.afterInstall(ReplicatedSecurityFingerprintRepository.API_TOKENS, index, server.getSecurity());
       LogManager.instance().log(this, Level.SEVERE,
           "Could not fully apply a replicated API-token document on this node: %s. The node keeps running and is "
               + "already enforcing the new token set - a revoked token does NOT authenticate here any more - but it "
-              + "is not durable: a restart before this is fixed reads the previous '%s' and the revocation has to be "
-              + "reissued. The usual cause is a local write failure: check that the configuration directory holding "
-              + "that file is writable and has free space",
+              + "is not durable in '%s' yet, so no snapshot checkpoint covers this entry and a restart replays it (issue "
+              + "#7752). The usual cause is a local write failure: check that the configuration directory holding that "
+              + "file is writable and has free space",
           e, e.getMessage(), ApiTokenConfiguration.FILE_NAME);
       throw holdEntryForReplay(heldSecurityKey(RaftLogEntryType.SECURITY_API_TOKENS_ENTRY), index,
           "Failed to persist the replicated API-token document locally; the node is already enforcing the new token "

@@ -25,11 +25,19 @@ import com.arcadedb.server.PeerRequest;
 import com.arcadedb.server.monitor.PoolMetrics;
 import com.arcadedb.utility.DedicatedThreadPool.PoolStats;
 
+import java.io.File;
+import java.io.IOException;
+import java.nio.channels.FileChannel;
+import java.nio.file.FileAlreadyExistsException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.util.List;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 
@@ -127,6 +135,9 @@ final class SecurityCatchUp implements AutoCloseable {
 
   static final String THREAD_NAME = "arcadedb-raft-security-catchup";
 
+  /** The file a pending forced seed is kept in across restarts (issue #7752), in the state-machine directory. */
+  static final String FORCED_SEED_MARKER = "security-reseed-required";
+
   /**
    * The once-per-start latch, as the token of the request that currently holds it, or {@link #FREE}.
    * <p>
@@ -143,6 +154,13 @@ final class SecurityCatchUp implements AutoCloseable {
    * {@code tasks.coalesced} column of the {@code pool=security_catch_up} executor row (issue #7856).
    */
   private final AtomicLong         coalescedRequests   = new AtomicLong();
+  /**
+   * Set by a snapshot install that covered a security entry this node had not made durable (issue #7752): the next
+   * request asks the leader to seed whatever the fingerprints say. Consumed by the attempt that reaches the leader.
+   */
+  private final AtomicBoolean      forceSeed           = new AtomicBoolean();
+  /** Where {@link #forceSeed} is kept across restarts, or null when there is nowhere to keep it (issue #7752). */
+  private volatile Path            forcedSeedMarker;
   /**
    * The executor's current worker, recorded by its thread factory, so {@link #awaitTermination(long)} can tell by
    * identity that it is running on it (issue #8364). One worker at a time, and one running a task is never replaced.
@@ -329,12 +347,136 @@ final class SecurityCatchUp implements AutoCloseable {
    * security entries, so the request is made every time rather than once.
    */
   void afterSnapshotInstall(final ArcadeDBServer server, final RaftHAServer raft) {
+    afterSnapshotInstall(server, raft, false);
+  }
+
+  /**
+   * {@link #afterSnapshotInstall(ArcadeDBServer, RaftHAServer)}, asking the leader to re-send the documents even when
+   * this node's copies match when {@code undurableSecurityCovered}: the install covered a security entry whose effects
+   * never reached this node's disk (issue #7752). The copies in memory are right, the files a restart would read back
+   * are not, and the entry that would have repaired them on that restart is below the install's boundary. A re-sent
+   * document is a new entry, past the boundary, which the Raft log keeps for as long as its own write fails.
+   * <p>
+   * Kept in a flag the attempt consumes rather than in the attempt itself, so it survives the coalescing of a queued
+   * request, a leader that cannot be asked yet, and a transient failure, all of which retry without it otherwise.
+   * <p>
+   * It also survives a restart, in {@link #FORCED_SEED_MARKER} beside the Raft snapshot markers (see
+   * {@link #keepForcedSeedIn}): a node that restarted after such an install and before the seed committed would come
+   * back with the stale files and no entry to replay, and its once-per-start catch-up compares DOCUMENTS, which repairs a
+   * stale document but not a stale compare-and-set record beside a current one. The marker is not kept in the
+   * configuration directory, because that is the volume whose writes failed.
+   */
+  void afterSnapshotInstall(final ArcadeDBServer server, final RaftHAServer raft, final boolean undurableSecurityCovered) {
+    if (undurableSecurityCovered)
+      // Under the same lock as forcedSeedMade, so an attempt finishing on the worker cannot read the flag clear, lose
+      // the race to this install and then delete the marker it re-armed
+      synchronized (forceSeed) {
+        forceSeed.set(true);
+        writeForcedSeedMarker();
+      }
     // It also counts as the once-per-start request: a node that has just been reinstalled from a snapshot has
     // no earlier state left worth asking about separately. Taken here rather than after the answer, for the
     // same reason onFirstLeaderObserved takes it at submit time - it is what stops a second trigger dialling
     // while this one is in flight - and it is safe to take up front because every arm of the attempt that ends
     // without asking anybody releases it again (issue #8034), this trigger's own leader arm included.
     submit(takeOverRequest(), server, raft, "a snapshot install, which carries no security document", false);
+  }
+
+  /**
+   * Keeps the pending forced seed in {@code directory} from now on, and restores one a previous run of this node left
+   * there: the restart that lost the in-memory flag is the window the marker exists for. Called once, as the state
+   * machine initializes, before any trigger can run.
+   */
+  void keepForcedSeedIn(final File directory) {
+    if (directory == null)
+      return;
+    forcedSeedMarker = directory.toPath().resolve(FORCED_SEED_MARKER);
+    if (Files.exists(forcedSeedMarker)) {
+      forceSeed.set(true);
+      LogManager.instance().log(this, Level.INFO,
+          "A forced re-seed of the security documents was still pending when this node stopped: asking the leader for "
+              + "them at the first opportunity (issue #7752)");
+    }
+  }
+
+  private void writeForcedSeedMarker() {
+    final Path marker = forcedSeedMarker;
+    if (marker == null)
+      return;
+    try {
+      Files.createFile(marker);
+      syncDirectory(marker.getParent());
+    } catch (final FileAlreadyExistsException alreadyPending) {
+      // Pending already: the marker records THAT a seed is owed, not how many
+    } catch (final IOException e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Could not record the pending security re-seed in '%s'; it is still made, but a restart before it commits "
+              + "forgets it: %s", e, marker, e.getMessage());
+    }
+  }
+
+  /** Takes the pending forced seed, if any (issue #7752): the attempt about to ask the leader is the one that makes it. */
+  boolean takeForcedSeed() {
+    return forceSeed.getAndSet(false);
+  }
+
+  /**
+   * Puts a forced seed this attempt took back, because the attempt did not get it made: a transient failure, or a leader
+   * that reported documents it could not seed. The next attempt or trigger makes it instead.
+   */
+  void forcedSeedNotMade(final boolean taken) {
+    if (taken)
+      forceSeed.set(true);
+  }
+
+  /**
+   * How an attempt that reached the leader ends. Answered, whether or not every document committed: a partial failure
+   * is the leader's report, not a transport failure, and retrying it would submit the same documents again - except for
+   * a FORCED seed (issue #7752), where submitting them again is the point. That one is this node's only way back from
+   * security files a snapshot install left stale, and leaving it to the next trigger could leave them stale for good
+   * on a quiet cluster, so it is retried like a transient failure, with the same bounded backoff.
+   */
+  static Outcome outcomeOfAnswer(final boolean forced, final List<String> failedSeeds) {
+    return forced && !failedSeeds.isEmpty() ? Outcome.TRANSIENT_FAILURE : Outcome.ASKED;
+  }
+
+  /**
+   * Spends the forced seed an attempt took and got made: every document committed, so the marker goes too - unless an
+   * install re-armed the flag meanwhile, which the shared lock makes visible here before the delete.
+   */
+  void forcedSeedMade(final boolean taken) {
+    final Path marker = forcedSeedMarker;
+    if (!taken || marker == null)
+      return;
+    synchronized (forceSeed) {
+      if (forceSeed.get())
+        return;
+      try {
+        Files.deleteIfExists(marker);
+      } catch (final IOException e) {
+        // A marker left behind costs one redundant seed after the next restart, which is the safe direction
+        LogManager.instance().log(this, Level.FINE, "Could not remove '%s': %s", marker, e.getMessage());
+      }
+    }
+  }
+
+  /**
+   * Makes a file's creation in {@code directory} durable, so a crash right after the install cannot lose the marker it
+   * wrote. Best effort: not every platform can open a directory for {@code force}, and the in-memory flag still holds.
+   */
+  private static void syncDirectory(final Path directory) {
+    if (directory == null)
+      return;
+    try (final FileChannel channel = FileChannel.open(directory, StandardOpenOption.READ)) {
+      channel.force(true);
+    } catch (final IOException | RuntimeException e) {
+      // Not supported here (Windows, some file systems): the marker is written, only its durability is weaker
+    }
+  }
+
+  /** Whether a snapshot install left a forced seed to make. Package-private for tests. */
+  boolean isForcedSeedPending() {
+    return forceSeed.get();
   }
 
   private void submit(final long token, final ArcadeDBServer server, final RaftHAServer raft, final String reason,
@@ -440,8 +582,18 @@ final class SecurityCatchUp implements AutoCloseable {
       // Read BEFORE the fingerprints the request carries, so a match proves the documents are the cluster's as of
       // at least this position (issue #8346). See RuntimeJoinDetector.onSecurityDocumentsMatchedLeader.
       final long appliedBeforeRead = raft.getLastAppliedIndex();
-      final ClusterSecuritySeedQuery.SeedAnswer answer = ClusterSecuritySeedQuery.seedForCatchUpAnswer(server, plugin,
-          reason);
+      final boolean force = takeForcedSeed();
+      final ClusterSecuritySeedQuery.SeedAnswer answer;
+      try {
+        answer = ClusterSecuritySeedQuery.seedForCatchUpAnswer(server, plugin, reason, force);
+      } catch (final Exception e) {
+        forcedSeedNotMade(force);
+        throw e;
+      }
+      if (answer.failedSeeds().isEmpty())
+        forcedSeedMade(force);
+      else
+        forcedSeedNotMade(force);
       if (answer.upToDate())
         // The leader compared and submitted nothing. On a runtime joiner that caught up by snapshot install past its
         // seed, this is the only evidence of convergence it will ever get: no seed entry is applied here and no
@@ -457,9 +609,7 @@ final class SecurityCatchUp implements AutoCloseable {
                 + "commit: %s. Until they do, this node serves requests against its own copy of them - which can "
                 + "still hold a user dropped, a group narrowed or a token revoked while it was away. Re-POST this "
                 + "node to %s on any member to retry", reason, String.join(", ", failed), "/api/v1/cluster/peer");
-      // Answered, whether or not every document committed: a partial failure is the leader's report, not a
-      // transport failure, and retrying it here would submit the same documents again.
-      return Outcome.ASKED;
+      return outcomeOfAnswer(force, failed);
     } catch (final InterruptedException e) {
       // Interrupted in the jitter or in the catch-up wait, so the dial never happened. Nothing is retried on a
       // thread that is being shut down, but the request must not be recorded as made either (issue #8034).

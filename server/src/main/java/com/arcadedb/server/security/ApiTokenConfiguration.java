@@ -176,6 +176,15 @@ public class ApiTokenConfiguration {
   }
 
   /**
+   * Writes the token set in force again, for a replicated install whose own write failed (issue #7752).
+   *
+   * @return the failure, or {@code null} when the document reached the disk
+   */
+  synchronized Exception persistCurrent() {
+    return persist(documentOf(tokens.values()));
+  }
+
+  /**
    * Writes {@code document} to {@link #FILE_NAME}, returning the failure instead of throwing it so a caller
    * that has already published the change in memory can report the failure after finishing the apply
    * (issue #7373, same shape as {@code ServerSecurity.trySaveUsers}).

@@ -33,6 +33,7 @@ import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
 
@@ -60,35 +61,26 @@ import java.util.logging.Level;
  * file restored from a backup, no longer matches - and the node goes back to installing unconditionally, which is
  * the safe direction: it cannot refuse an entry its peers accept.
  * <p>
- * <b>A write failure is not fatal and never fails an apply, and what it leaves behind is a DIVERGENCE risk, not
- * the pre-#7509 one</b> (CodeRabbit on PR #7748, correcting what this paragraph used to claim). Pre-#7509 a
- * conditional entry did not exist, so every node installed and none of them disagreed. Here, a node that lost this
- * write and then restarted comes up with no recorded fingerprint while its peers still have theirs, so a later
- * entry carrying a precondition the cluster has moved past is REFUSED by the peers and INSTALLED here - which can
- * put a revoked user, grant or token back on this one node. It is narrow: it needs the marker write to fail while
- * the document's own write, into the same directory and moments earlier, succeeded; then a restart; then a
- * genuine compare-and-set race as the first security entry afterwards. It is also self-closing, because the next
- * security change that does persist records every document kind again. But it is real, and closing it properly
- * means making the marker part of the replicated protocol - carried in the entry, or gated behind a resync - which
- * is a change of a different size than this one and is filed separately, as issue #7752.
+ * <b>A write failure never fails an apply, and it does not have to be survived by this file alone</b> (issue
+ * #7752). Failing the apply would make a full or read-only configuration volume stop a node applying committed
+ * security entries, which is the crash-loop issue #7137 exists to prevent, and it would not make the record durable
+ * either. What makes it durable is the Raft log: {@link #isDurable(String)} tells the HA layer that what is in force
+ * here has not reached the disk, and {@code ArcadeStateMachine} then keeps the entry that installed it out of every
+ * snapshot checkpoint until it has (see {@code SecurityDurabilityFloor}). A restart in that state replays the entry
+ * from the log, judged against the record this file still holds - the baseline as it stood right before that entry,
+ * which is exactly the one every peer judged it against - so the node comes back on its peers' baseline by
+ * construction instead of by a best-effort write. The entries are re-persisted from memory as the node goes on
+ * applying, so the log stops being pinned as soon as the volume is writable again.
  * <p>
- * <b>"No recorded fingerprint" is what a failed write leaves behind because {@link #save()} makes it so</b>
- * (issue #7536). Left to itself, a failed write leaves the PREVIOUS record on disk, and that is the worse of the
- * two outcomes by a wide margin: a node whose baseline is one change behind its peers' refuses the very next
- * entry they accept, with no race and no second coincidence, and it goes on refusing, because nothing it refuses
- * moves its baseline forward. A node with no record installs and is back on its peers' baseline as soon as the
- * next entry applies. {@code save()} therefore REMOVES the file when it cannot rewrite it - see
- * {@code discardStaleRecord} - which turns the unconditional split of #7536 into the race-conditional one of
- * #7752. The document that was recorded stays in force in memory, so the running node judges correctly until it
- * restarts; only the restart loses it.
+ * <b>That is why a failed write leaves the PREVIOUS record on disk</b>, reversing issue #7536, which removed it. Before
+ * the replay was guaranteed, a previous record was the worse outcome: the entry that moved the baseline forward
+ * could already have been compacted out of the log, so the restarted node refused the very next entry its peers
+ * accepted, forever. With the entry guaranteed to replay, removing the record is the harmful choice instead: the
+ * file holds all three document kinds, and a replay judged with NO baseline installs the entries its peers refused
+ * - for every kind, not only the one whose write failed. It also needed the file to be removable, which a read-only
+ * volume does not allow, and which left a stale record behind anyway (the sub-case recorded on issue #7752).
  * <p>
- * Failing the apply instead is not the alternative it looks like: it would make a full or read-only configuration
- * volume stop a node applying committed security entries, which is the crash-loop issue #7137 exists to prevent,
- * and it would not make the marker durable either. So the failure is reported at SEVERE with the consequence
- * named, and the instruction is the one #7137 and #7227 already give for the document's own write: fix the volume
- * and reissue the security change, which records every fingerprint again.
- * <p>
- * <b>The first upgrade to a version carrying this file is the same one-entry window, by construction</b>
+ * <b>The first upgrade to a version carrying this file is a one-entry window, by construction</b>
  * (code review on PR #7748). This file is new, so an already-converged cluster comes up with nothing recorded on
  * any node, and the first security entry after the upgrade installs without the compare-and-set of issue #7509 -
  * once per document kind. It is uniform (every node is in the same state, so none refuses what another installs)
@@ -131,7 +123,8 @@ public class ReplicatedSecurityFingerprintRepository {
 
   /**
    * Records that {@code document} in force on this node is now the one the cluster installed, identified by
-   * {@code fingerprint}. Best-effort: a write failure is logged and swallowed, see the class javadoc.
+   * {@code fingerprint}. A write failure is logged and swallowed, and reported by {@link #isDurable(String)} instead,
+   * see the class javadoc.
    * <p>
    * A fingerprint that has not changed writes nothing. That is the case for every re-apply of a document this
    * node already holds - the Ratis replay of the entries between the last snapshot and a restart is the routine
@@ -161,6 +154,32 @@ public class ReplicatedSecurityFingerprintRepository {
       return;
 
     save();
+  }
+
+  /**
+   * Whether the fingerprint in force for {@code document} is the one on disk, so a restart would read it back (issue
+   * #7752). False only after a write that failed and has not been repaired since; a document never recorded is
+   * durable, because there is nothing for a restart to lose.
+   * <p>
+   * Read without {@code saveLock}, from any thread (a metrics scrape, the state machine). A read that overlaps
+   * {@code save()} can see {@code persisted} momentarily cleared and answer false for a document that is durable - the
+   * safe direction, since it can only keep a snapshot checkpoint back for one more round, never let one through early.
+   */
+  public boolean isDurable(final String document) {
+    return Objects.equals(fingerprints.get(document), persisted.get(document));
+  }
+
+  /**
+   * Writes what is in force again when a previous write failed, so a volume that has become writable since stops
+   * pinning the Raft log (issue #7752). Writes nothing when every fingerprint is already on disk.
+   *
+   * @return true when every fingerprint in force is on disk afterwards
+   */
+  public boolean flush() {
+    if (persisted.equals(fingerprints))
+      return true;
+    save();
+    return persisted.equals(fingerprints);
   }
 
   private void load() {
@@ -206,7 +225,14 @@ public class ReplicatedSecurityFingerprintRepository {
         persisted.clear();
         persisted.putAll(snapshot);
       } catch (final IOException | RuntimeException e) {
-        discardStaleRecord(file, e);
+        // The previous record stays on disk, and so does persisted, which describes it (issue #7752): see the class
+        // javadoc for why it is the baseline a replay of the entry needs, and why removing it is the harmful choice.
+        LogManager.instance().log(this, Level.SEVERE,
+            "Could not write '%s'. The replicated security document IS installed on this node and IS in force; what "
+                + "failed is recording that it came from the cluster. The Raft log keeps the entry that installed it "
+                + "until the record reaches the disk, so a restart replays it rather than losing it, and the write is "
+                + "retried as this node applies further entries. Free or fix the configuration volume: %s",
+            e, FILE_NAME, e.getMessage());
       }
     }
   }
@@ -249,72 +275,13 @@ public class ReplicatedSecurityFingerprintRepository {
       }
     } finally {
       // Swallowed rather than propagated, because by here the rename may ALREADY have published the new value:
-      // letting a cleanup failure out would send save() into discardStaleRecord and delete the record that had
-      // just been written correctly, turning a stray temp file into the loss this class exists to avoid.
+      // letting a cleanup failure out would send save() into its failure arm, which reports a record that had just
+      // been written correctly as not durable - and pins the Raft log over a stray temp file (issue #7752).
       try {
         Files.deleteIfExists(tmp);
       } catch (final IOException | RuntimeException e) {
         LogManager.instance().log(this, Level.FINE, "Could not remove the temporary file '%s'", e, tmp);
       }
     }
-  }
-
-  /**
-   * Removes the marker file after a write that failed, so what survives the next restart is NOTHING rather than
-   * the fingerprint of a document the cluster has moved past (issue #7536). Called with {@link #saveLock} held.
-   * <p>
-   * <b>The stale value is the harmful one, not the missing one.</b> {@code ServerSecurity.isSuperseded} takes the
-   * recorded fingerprint as the baseline it compares an entry's precondition against. One change behind its
-   * peers', this node refuses the very next entry they accept, and keeps refusing - nothing it refuses can move
-   * its baseline forward - so a single lost write splits the cluster's security state for good, with no race and
-   * no second coincidence. With no marker the node answers "I cannot judge" and installs, which is what every
-   * node does before the first replicated document of that kind lands, and it is back on its peers' baseline as
-   * soon as that entry applies. The remaining exposure - the first entry after such a restart being itself a
-   * superseded one - needs the race the stale marker did not, and is issue #7752, which closes it by carrying
-   * the baseline in the replicated protocol rather than in a local file.
-   * <p>
-   * Removing the file discards all three document kinds, not only the one being recorded, because they share one
-   * document and a rewrite is precisely what just failed. Unlinking is also the one operation still likely to
-   * succeed on a volume that has no room left. It is conservative in the same direction, and self-closing: the
-   * next security change that persists records every kind again.
-   */
-  private void discardStaleRecord(final File file, final Exception writeFailure) {
-    // Cleared whether or not the unlink succeeds, so the next record() of an UNCHANGED fingerprint still
-    // attempts the write instead of short-circuiting on a value only memory ever had.
-    persisted.clear();
-
-    final boolean removed;
-    try {
-      removed = Files.deleteIfExists(file.toPath());
-    } catch (final IOException | RuntimeException e) {
-      writeFailure.addSuppressed(e);
-      LogManager.instance().log(this, Level.SEVERE,
-          "Could not write '%s', and the record it already held could not be removed either. The replicated "
-              + "security document IS installed on this node and IS in force; what failed is recording that it "
-              + "came from the cluster. A RESTART of this node would therefore read a fingerprint OLDER than the "
-              + "document beside it, and this node would then refuse the replicated security entries its peers "
-              + "accept - and go on refusing them, because nothing it refuses moves that fingerprint forward. Fix "
-              + "the configuration volume, delete '%s' and reissue the security change: %s",
-          writeFailure, FILE_NAME, FILE_NAME, writeFailure.getMessage());
-      return;
-    }
-
-    // Distinguished because the two states read the same to an operator otherwise: a write that failed with a
-    // record already on disk leaves a file that had to be unlinked, while the first failed write on a fresh node
-    // never had one, and reporting the second as a removal describes a file that never existed (code review on
-    // PR #7817).
-    final String markerState = removed ?
-        String.format("'%s' has been REMOVED rather than left naming a document this node has moved past", FILE_NAME) :
-        String.format("'%s' held no record to remove, so nothing on disk names a document this node has moved past",
-            FILE_NAME);
-
-    LogManager.instance().log(this, Level.SEVERE,
-        "Could not write '%s'. The replicated security document IS installed on this node and IS in force; what "
-            + "failed is recording that it came from the cluster, so %s. Until the next security change persists, "
-            + "a RESTART of this node leaves it unable to judge an entry's compare-and-set precondition: it "
-            + "installs the next replicated document of each kind unconditionally, which rejoins its peers' "
-            + "baseline but costs that one entry's lost-update protection (issue #7752). Fix the configuration "
-            + "volume and reissue the security change, which records every document again: %s",
-        writeFailure, FILE_NAME, markerState, writeFailure.getMessage());
   }
 }

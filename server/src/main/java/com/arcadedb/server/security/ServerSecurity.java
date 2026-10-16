@@ -84,6 +84,10 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
   // comparable with a precondition another node computed; written by applyReplicated* on the Raft apply thread,
   // which never takes this monitor (it would deadlock with the submitter blocked on the very entry it applies).
   private final        ReplicatedSecurityFingerprintRepository replicatedFingerprints;
+  // The replicated documents whose last install did not reach the disk, by the same keys (issue #7752). Written on the
+  // Raft apply thread only; read through isReplicatedDocumentDurable by the HA layer, which keeps the entry that
+  // installed such a document replayable until it is durable.
+  private final        Set<String>                     unpersistedReplicatedDocuments = ConcurrentHashMap.newKeySet();
   private final        int                             checkConfigReloadEveryMs;
   private              CredentialsValidator            credentialsValidator = new DefaultCredentialsValidator();
   private static final SecureRandom                    RANDOM               = new SecureRandom();
@@ -1340,12 +1344,12 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     // as long as the volume stays full or read-only. The entry is valid and reached a quorum; the only thing
     // that failed is writing it down, so the revocation takes effect now and what is outstanding is durability.
     //
-    // Durability is NOT recovered by itself, and the caller must not tell an operator otherwise. Because the
-    // node keeps applying later entries, the state machine's applied index moves past this one, a snapshot
-    // taken at shutdown records the advanced index, and Ratis may compact the entry away - so a restart reloads
-    // the stale file with nothing left to replay. Fixing the volume is therefore only half the repair: the user
-    // change has to be reissued.
+    // Durability is recovered by the Raft log since issue #7752: the failure is recorded for
+    // isReplicatedDocumentDurable, and the HA layer keeps this entry out of every snapshot checkpoint until the list
+    // reaches the disk - written again by retryReplicatedSecurityPersistence, or by a later entry - so a restart
+    // replays it rather than reloading the stale file with nothing left to replay.
     final Exception persistFailure = trySaveUsers(list);
+    trackReplicatedPersistence(ReplicatedSecurityFingerprintRepository.USERS, persistFailure);
     if (persistFailure != null)
       // Logged here, at the point of capture, and not only where it is thrown below: the throw is the LAST
       // statement, so anything between - today invalidateAuthSessionsOfRevokedPrincipals - that throws would
@@ -1373,8 +1377,8 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     // On the Raft apply path this fails the entry without halting the node (issue #7137).
     if (persistFailure != null)
       throw new ReplicatedUsersPersistenceException("Replicated users applied in memory but could NOT be persisted to '"
-          + SecurityUserFileRepository.FILE_NAME + "'; this node enforces the new list now, but a restart reverts it "
-          + "to the stale file and the change must then be reissued", persistFailure);
+          + SecurityUserFileRepository.FILE_NAME + "'; this node enforces the new list now, and the entry stays in the "
+          + "Raft log for a restart to replay until the list reaches the disk", persistFailure);
   }
 
   /**
@@ -1469,6 +1473,64 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
             + "change this node has already applied; the node that submitted it retries against the current document",
         document, expected, replicated, current);
     return true;
+  }
+
+  /**
+   * Whether what this node enforces for the replicated {@code documentKey} - one of the
+   * {@link ReplicatedSecurityFingerprintRepository} keys - would survive a restart: the document itself and the
+   * record that the cluster installed it are both on disk (issue #7752).
+   * <p>
+   * The HA layer asks after every security entry it applies, and keeps an entry whose effects are not durable out of
+   * every snapshot checkpoint, so a restart replays it from the Raft log instead of reading back a document, or a
+   * compare-and-set baseline, that the cluster has moved past. Free of this object's monitor and of the filesystem.
+   */
+  public boolean isReplicatedDocumentDurable(final String documentKey) {
+    return !unpersistedReplicatedDocuments.contains(documentKey) && replicatedFingerprints.isDurable(documentKey);
+  }
+
+  /**
+   * How many of the three replicated documents {@link #isReplicatedDocumentDurable} answers false for: under HA, the
+   * number of document kinds currently keeping a Raft entry out of every snapshot checkpoint (issue #7752). Published as
+   * {@code arcadedb.ha.security.documents_not_durable}, so an operator sees the Raft log being retained before the disk
+   * does.
+   */
+  public int countReplicatedDocumentsNotDurable() {
+    int count = 0;
+    if (!isReplicatedDocumentDurable(ReplicatedSecurityFingerprintRepository.USERS))
+      ++count;
+    if (!isReplicatedDocumentDurable(ReplicatedSecurityFingerprintRepository.GROUPS))
+      ++count;
+    if (!isReplicatedDocumentDurable(ReplicatedSecurityFingerprintRepository.API_TOKENS))
+      ++count;
+    return count;
+  }
+
+  /**
+   * Writes again, from what is in force, every replicated document and fingerprint record whose last write failed
+   * (issue #7752), so a configuration volume that has become writable again stops pinning the Raft log without
+   * waiting for the next security change. Writes nothing when everything is already durable.
+   * <p>
+   * Same thread contract as {@link #applyReplicatedUsers(String)}: called on the Raft apply thread only, and never
+   * takes this object's monitor. Writing what is in force is what the entries that installed it would write on a
+   * replay, because each of them carries the whole document.
+   *
+   * @return true when every replicated document and record is durable afterwards
+   */
+  public boolean retryReplicatedSecurityPersistence() {
+    if (unpersistedReplicatedDocuments.contains(ReplicatedSecurityFingerprintRepository.USERS))
+      trackReplicatedPersistence(ReplicatedSecurityFingerprintRepository.USERS, trySaveUsers(usersToJSON()));
+    if (unpersistedReplicatedDocuments.contains(ReplicatedSecurityFingerprintRepository.GROUPS))
+      trackReplicatedPersistence(ReplicatedSecurityFingerprintRepository.GROUPS, groupRepository.persistCurrent());
+    if (unpersistedReplicatedDocuments.contains(ReplicatedSecurityFingerprintRepository.API_TOKENS))
+      trackReplicatedPersistence(ReplicatedSecurityFingerprintRepository.API_TOKENS, apiTokenConfig.persistCurrent());
+    return replicatedFingerprints.flush() && unpersistedReplicatedDocuments.isEmpty();
+  }
+
+  private void trackReplicatedPersistence(final String documentKey, final Exception persistFailure) {
+    if (persistFailure == null)
+      unpersistedReplicatedDocuments.remove(documentKey);
+    else
+      unpersistedReplicatedDocuments.add(documentKey);
   }
 
   /**
@@ -1790,6 +1852,7 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
               + "discard the versionless file and fall back to the DEFAULT group definitions");
 
     final Exception persistFailure = groupRepository.applyReplicated(root);
+    trackReplicatedPersistence(ReplicatedSecurityFingerprintRepository.GROUPS, persistFailure);
 
     // See applyReplicatedUsers: this node's group document is the cluster's from here on (issue #7693).
     replicatedFingerprints.record(ReplicatedSecurityFingerprintRepository.GROUPS, groupsFingerprint());
@@ -1810,8 +1873,8 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
               + "now on; what failed is making them durable", persistFailure, SecurityGroupFileRepository.FILE_NAME);
       throw new ReplicatedSecurityConfigPersistenceException(
           "Replicated groups applied in memory but could NOT be persisted to '" + SecurityGroupFileRepository.FILE_NAME
-              + "'; this node enforces the new document now, but a restart reverts it to the stale file and the "
-              + "change must then be reissued", persistFailure);
+              + "'; this node enforces the new document now, and the entry stays in the Raft log for a restart to "
+              + "replay until the document reaches the disk", persistFailure);
     }
   }
 
@@ -2092,6 +2155,7 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
    */
   public void applyReplicatedApiTokens(final String apiTokensJson) {
     final Exception persistFailure = apiTokenConfig.applyReplicated(apiTokensJson);
+    trackReplicatedPersistence(ReplicatedSecurityFingerprintRepository.API_TOKENS, persistFailure);
 
     // See applyReplicatedUsers: this node's API-token document is the cluster's from here on (issue #7693).
     replicatedFingerprints.record(ReplicatedSecurityFingerprintRepository.API_TOKENS, apiTokensFingerprint());
@@ -2101,8 +2165,8 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
               + "from now on; what failed is making it durable", persistFailure, ApiTokenConfiguration.FILE_NAME);
       throw new ReplicatedSecurityConfigPersistenceException(
           "Replicated API tokens applied in memory but could NOT be persisted to '" + ApiTokenConfiguration.FILE_NAME
-              + "'; this node enforces the new set now, but a restart reverts it to the stale file and the change "
-              + "must then be reissued", persistFailure);
+              + "'; this node enforces the new set now, and the entry stays in the Raft log for a restart to replay "
+              + "until the set reaches the disk", persistFailure);
     }
   }
 

@@ -38,19 +38,20 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * The other half of issue #7536: the three {@code applyReplicated*} methods are the only writers of the
- * replicated-security marker, and the discard that #7536 adds to {@code ReplicatedSecurityFingerprintRepository}
- * is worth nothing if one of them never reaches it, or reaches it with the wrong document kind.
+ * replicated-security marker, and the failure policy of {@code ReplicatedSecurityFingerprintRepository} is worth
+ * nothing if one of them never reaches it, or reaches it with the wrong document kind.
  * <p>
  * {@code Issue7693FirstReplicatedSecurityEntryTest} pins that a restarted node still REFUSES a stale precondition,
  * which proves the marker survives; it does not pin WHICH value reached the disk, so a call site recording the
  * fingerprint of a different document than the one it installed would pass it. These tests read the file back and
  * compare it with the document actually in force, per kind.
  * <p>
- * The last test pins the direction #7536 trades into: a node that comes up with NO marker installs and rejoins
- * its peers' baseline on that entry, where a node with a STALE one refuses and never rejoins. The residual - the
- * first entry after such a restart being itself a superseded one - is issue #7752.
+ * The last test pins what a node with NO marker does - one whose file was removed by hand, or never written: it
+ * installs and rejoins its peers' baseline on that entry. A failed write no longer leaves that state behind; since
+ * issue #7752 it keeps the previous record and the Raft log keeps the entry replayable, see
+ * {@code Issue7752ReplicatedSecurityReplayTest}.
  *
- * @see Issue7536StaleFingerprintMarkerTest for the discard itself
+ * @see Issue7536StaleFingerprintMarkerTest for the failure policy itself
  */
 class Issue7536MarkerReachesDiskPerDocumentTest {
 
@@ -116,10 +117,7 @@ class Issue7536MarkerReachesDiskPerDocumentTest {
   }
 
   /**
-   * Why losing the marker is the direction to fail in. The node comes back with none - the state a failed write
-   * now leaves behind - and installs the entry its peers install, ending up on their baseline. With the stale
-   * marker that used to survive, it would have refused this entry while every peer accepted it, and gone on
-   * refusing: nothing it refuses can move its baseline forward.
+   * A node that comes back with no marker installs the entry its peers install, ending up on their baseline.
    */
   @Test
   void aNodeThatLostItsMarkerRejoinsTheClusterBaselineOnTheNextEntry() throws IOException {
@@ -128,7 +126,7 @@ class Issue7536MarkerReachesDiskPerDocumentTest {
     nodeA.applyReplicatedUsers(firstEntry, firstPrecondition);
     nodeB.applyReplicatedUsers(firstEntry, firstPrecondition);
 
-    // Exactly what a discarded marker leaves on disk, as opposed to the previous value staying there.
+    // A marker removed by hand.
     Files.deleteIfExists(configOf("b").resolve(ReplicatedSecurityFingerprintRepository.FILE_NAME));
     nodeB = restart(nodeB, "b");
 
