@@ -213,6 +213,21 @@ public class Issue10161RemoteSaveVetoIT extends BaseGrpcClientServerTest {
     assertThatThrownBy(edge::save).isInstanceOf(RecordNotFoundException.class);
   }
 
+  /** A save that changes nothing is still an applied update: it must never read as a veto. */
+  @ParameterizedTest
+  @EnumSource(Driver.class)
+  void anUnchangedSaveIsAppliedAndNotReadAsAVeto(final Driver driver) {
+    final RemoteDatabase db = db(driver);
+    final RID rid = db.newDocument(TYPE).set("v", "original").save().getIdentity();
+    final long updates = stat(db, "updateRecord");
+
+    final MutableDocument unchanged = db.lookupByRID(rid).asDocument().modify();
+    unchanged.save();
+    assertThat(unchanged.saveReportingVeto()).isTrue();
+    assertThat(stat(db, "updateRecord")).isEqualTo(updates + 2);
+    assertThat(db.lookupByRID(rid).asDocument().getString("v")).isEqualTo("original");
+  }
+
   /** Inside a remote transaction the veto is told apart in the caller's session, which sees the transaction's own records. */
   @ParameterizedTest
   @EnumSource(Driver.class)
