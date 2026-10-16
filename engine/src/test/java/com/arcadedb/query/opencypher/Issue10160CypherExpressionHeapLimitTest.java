@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.ArithmeticErrorException;
 import com.arcadedb.exception.HeapLimitExceededException;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.opencypher.procedures.control.DoWhen;
@@ -156,7 +157,7 @@ class Issue10160CypherExpressionHeapLimitTest extends TestHelper {
     assertThat(drain(call + "RETURN value LIMIT 1")).isEqualTo(1);
     assertThat(QueryHeapBudget.getReservedBytes()).as("after a LIMIT").isLessThanOrEqualTo(baseline);
 
-    assertThatThrownBy(() -> drain(call + "RETURN 1 / (i - i) AS boom"));
+    assertThatThrownBy(() -> drain(call + "RETURN 1 / (i - i) AS boom")).isInstanceOf(ArithmeticErrorException.class);
     assertThat(QueryHeapBudget.getReservedBytes()).as("after a later step failed").isLessThanOrEqualTo(baseline);
   }
 
