@@ -48,8 +48,9 @@ import java.util.logging.Level;
  * <p>
  * A document's floor clears as soon as it is durable again, whether through a later entry of the same kind or through
  * {@link #retryIfDue}, which re-persists what is in force at most once per {@link #RETRY_INTERVAL_MS} while something is
- * pinned. The log therefore stops growing past the floor once the volume is writable again, rather than at the next
- * security change.
+ * pinned. The retry runs as entries are applied, which is also the only time the log grows: so once the volume is
+ * writable again the pin lifts within one interval of the next entry, rather than at the next security change, and a
+ * cluster that applies nothing keeps a pin that costs nothing.
  * <p>
  * Written on the Raft apply thread only (and by a snapshot install, which runs while the apply thread is paused); read
  * by {@code takeSnapshot()} on any thread, hence the atomic array.
@@ -89,8 +90,8 @@ final class SecurityDurabilityFloor {
 
   /**
    * After the security entry at {@code index} installed {@code document} - whether or not its writes succeeded: pins the
-   * entry when they did not, and clears every document that is durable now. A superseded entry installed nothing and
-   * calls {@link #refresh} instead.
+   * entry when they did not, and clears every document that is durable now. A superseded entry installed nothing, so it
+   * changes no pin and does not call this.
    */
   void afterInstall(final String document, final long index, final ServerSecurity security) {
     final int slot = slotOf(document);
