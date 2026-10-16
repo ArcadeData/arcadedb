@@ -18,12 +18,14 @@
  */
 package com.arcadedb.server.grpc;
 
+import com.arcadedb.exception.AlreadyExistsException;
 import com.arcadedb.exception.CauseChain;
 import com.arcadedb.exception.DatabaseOperationInProgressException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.ErrorCategory;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.QueryTerminatedException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.server.ArcadeDBServer;
@@ -67,6 +69,12 @@ public final class GrpcErrorMapper {
    * scripts, control characters) that ASCII gRPC metadata cannot carry losslessly.
    */
   public static final Metadata.Key<String> DUP_KEYS_KEY         = Metadata.Key.of("arcadedb-dup-keys",
+      Metadata.ASCII_STRING_MARSHALLER);
+  /**
+   * Trailer carrying the {@link AlreadyExistsException.Kind} of the schema object that holds a taken name (issue #10153), so the
+   * client rebuilds the exception with it. A {@link Enum#name()}, plain ASCII.
+   */
+  public static final Metadata.Key<String> ALREADY_EXISTS_KIND_KEY = Metadata.Key.of("arcadedb-already-exists-kind",
       Metadata.ASCII_STRING_MARSHALLER);
 
   /**
@@ -189,9 +197,18 @@ public final class GrpcErrorMapper {
     // on: the one that tells it not to retry (#9689), the one that tells it where to go (#10089), and every other typed
     // failure (#10158) - a SchemaException named by its wrapper is rebuilt from NOT_FOUND alone, as a missing record
     final Throwable classified = refusal != null ? refusal : inProgress != null ? inProgress : ErrorCategory.classifiedCause(cause);
+    // A taken schema object name (#10153) is answered ALREADY_EXISTS and named as a SchemaException, its supertype: a client
+    // that predates #10153 does not know AlreadyExistsException, and for a class it does not know it falls back to the status,
+    // which it reads as a duplicate key. As a SchemaException it rebuilds what the SchemaException-raising refusals came back as
+    // before, and a current client tells it apart by the ALREADY_EXISTS status and the kind trailer
+    final AlreadyExistsException taken = refusal == null && inProgress == null && category == ErrorCategory.ALREADY_EXISTS ?
+        CauseChain.find(cause, AlreadyExistsException.class) :
+        null;
     trailers.put(EXCEPTION_CLASS_KEY, category == ErrorCategory.TERMINATED ?
         QueryTerminatedException.class.getName() :
-        (classified != null ? classified : cause).getClass().getName());
+        taken != null ? SchemaException.class.getName() : (classified != null ? classified : cause).getClass().getName());
+    if (taken != null && taken.getKind() != null)
+      trailers.put(ALREADY_EXISTS_KIND_KEY, taken.getKind().name());
 
     final Status.Code code;
     String redirect = null;
@@ -219,8 +236,9 @@ public final class GrpcErrorMapper {
     if (conceal)
       logConcealed(GrpcErrorMapper.class, contextPrefix, cause);
 
+    // A taken name keeps its label when concealed, as the HTTP body's 'error' field does: it names the kind, never the content
     final String msg = conceal ?
-        CONCEALED_DESCRIPTION :
+        taken != null ? taken.getLabel() : CONCEALED_DESCRIPTION :
         cause.getMessage() != null ? cause.getMessage() : cause.toString();
     final String prefixed = contextPrefix != null && !contextPrefix.isBlank() ? contextPrefix + ": " + msg : msg;
     // THE LEADER-REDIRECT SENTENCE SURVIVES CONCEALMENT: IT IS AN ADDRESS THIS SERVER PUT THERE, NOT INTERNAL
@@ -251,6 +269,9 @@ public final class GrpcErrorMapper {
       // Unreachable from toStatusRuntimeException, which special-cases the duplicated key (it has trailers of its own to
       // add) before reaching here: the arm only keeps the switch exhaustive over ErrorCategory.
       case DUPLICATED_KEY -> Status.Code.ALREADY_EXISTS;
+      // A taken schema object name (issue #10153): gRPC's own word for it. It used to be NOT_FOUND - the opposite of what
+      // happened - for the SchemaException ones and INTERNAL for the CommandExecutionException ones
+      case ALREADY_EXISTS -> Status.Code.ALREADY_EXISTS;
       case NOT_FOUND, SCHEMA -> Status.Code.NOT_FOUND;
       case SECURITY -> Status.Code.PERMISSION_DENIED;
       case VALIDATION, PARSING -> Status.Code.INVALID_ARGUMENT;

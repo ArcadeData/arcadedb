@@ -50,6 +50,7 @@ import java.util.Map;
  */
 public class CypherPlanCache {
   private final DatabaseInternal database;
+  private final MostUsedCache<String, PhysicalPlan> plans;
   private final Map<String, PhysicalPlan> cache;
   /**
    * How many times this cache has been invalidated. A counter rather than a timestamp (#8635): a plan built in the same
@@ -67,7 +68,8 @@ public class CypherPlanCache {
     this.database = database;
     // Use MostUsedCache wrapped in synchronizedMap for thread-safety
     // MostUsedCache is better than LRU for plans since frequently-used queries should stay cached
-    this.cache = Collections.synchronizedMap(new MostUsedCache<>(size));
+    this.plans = new MostUsedCache<>(size);
+    this.cache = Collections.synchronizedMap(plans);
   }
 
   /**
@@ -117,6 +119,22 @@ public class CypherPlanCache {
   public void invalidate() {
     synchronized (this) {
       cache.clear();
+      ++invalidationEpoch;
+    }
+  }
+
+  /**
+   * Invalidates all cached plans, as {@link #invalidate()}, and bounds the cache to {@code size} plans from now on (issue #10155):
+   * a plan is what a setting read at planning time is baked into, and the size itself is a database setting.
+   *
+   * @param size maximum number of plans to cache
+   */
+  public void resize(final int size) {
+    synchronized (this) {
+      // the lock Collections.synchronizedMap takes for every call on the map, so no get() meets the cache half resized
+      synchronized (cache) {
+        plans.resize(size);
+      }
       ++invalidationEpoch;
     }
   }

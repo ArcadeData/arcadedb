@@ -147,6 +147,15 @@ public class CypherStatementCache {
   }
 
   /**
+   * Empties the cache and bounds it to {@code size} statements from now on (issue #10155).
+   *
+   * @param size maximum number of statements to cache
+   */
+  public void resize(final int size) {
+    cache.resize(size);
+  }
+
+  /**
    * Returns the current cache size.
    *
    * @return number of cached statements

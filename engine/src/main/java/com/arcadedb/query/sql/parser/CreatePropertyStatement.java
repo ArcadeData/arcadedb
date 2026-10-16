@@ -24,6 +24,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.ExistingRecordsCheck;
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.exception.AlreadyExistsException;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
@@ -104,7 +105,8 @@ public class CreatePropertyStatement extends DDLStatement {
         return;
       }
     } else if (typez.existsProperty(propertyName.getStringValue()))
-      throw new CommandExecutionException("Property '" + typeName + "." + propertyName.getStringValue() + "' already exists");
+      throw new AlreadyExistsException(AlreadyExistsException.Kind.PROPERTY,
+          "Property '" + typeName + "." + propertyName.getStringValue() + "' already exists");
 
     final Type type = Type.valueOf(propertyType.getStringValue().toUpperCase(Locale.ENGLISH));
 

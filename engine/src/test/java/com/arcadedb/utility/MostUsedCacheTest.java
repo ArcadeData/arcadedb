@@ -56,6 +56,43 @@ class MostUsedCacheTest {
     assertThat(cache.size()).isEqualTo(0);
   }
 
+  /** Issue #10155: a cache of one kept one entry on eviction and then added the new one, so it held two. */
+  @Test
+  void aCacheNeverHoldsMoreThanItsMaximum() {
+    final MostUsedCache<Integer, Integer> unlimited = new MostUsedCache<>(0);
+    for (int i = 0; i < 200; i++)
+      unlimited.put(i, i);
+    assertThat(unlimited.size()).as("0 means unlimited").isEqualTo(200);
+
+    for (final int maxSize : new int[] { 1, 2, 3, 4, 10 }) {
+      final MostUsedCache<Integer, Integer> cache = new MostUsedCache<>(maxSize);
+      for (int i = 0; i < 50; i++) {
+        cache.put(i, i);
+        assertThat(cache.size()).as("cache of %d after %d puts", maxSize, i + 1).isLessThanOrEqualTo(maxSize);
+      }
+      assertThat(cache.get(49)).as("the entry just added survives").isEqualTo(49);
+    }
+  }
+
+  /** Issue #10155: the maximum is a database setting, so it can change on a live cache, which starts empty again. */
+  @Test
+  void resizeEmptiesTheCacheAndAppliesTheNewMaximum() {
+    final MostUsedCache<Integer, Integer> cache = new MostUsedCache<>(100);
+    for (int i = 0; i < 50; i++)
+      cache.put(i, i);
+
+    cache.resize(2);
+    assertThat(cache.size()).isZero();
+    for (int i = 0; i < 10; i++)
+      cache.put(i, i);
+    assertThat(cache.size()).isLessThanOrEqualTo(2);
+
+    cache.resize(0);
+    for (int i = 0; i < 200; i++)
+      cache.put(i, i);
+    assertThat(cache.size()).as("0 means unlimited").isEqualTo(200);
+  }
+
   @Test
   void accessCounting() {
     final MostUsedCache<String, String> cache = new MostUsedCache<>(10);

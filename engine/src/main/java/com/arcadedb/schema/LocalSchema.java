@@ -44,6 +44,7 @@ import com.arcadedb.engine.timeseries.TimeSeriesBucket;
 import com.arcadedb.engine.timeseries.TimeSeriesMaintenanceScheduler;
 import com.arcadedb.engine.timeseries.TimeSeriesTagDictionary;
 import com.arcadedb.event.*;
+import com.arcadedb.exception.AlreadyExistsException;
 import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.exception.DatabaseMetadataException;
 import com.arcadedb.exception.DatabaseOperationException;
@@ -1850,7 +1851,8 @@ public class LocalSchema implements Schema {
     checkValidBucketName(bucketName);
 
     if (lookupBucket(bucketName) != null)
-      throw new SchemaException("Cannot create bucket '" + bucketName + "' because already exists");
+      throw new AlreadyExistsException(AlreadyExistsException.Kind.BUCKET,
+          "Cannot create bucket '" + bucketName + "' because already exists");
 
     // Discoverability warning for the EXTERNAL property naming convention. The engine creates paired buckets
     // as '<primary>_ext' with file-format version EXTERNAL_BUCKET_VERSION, so version == CURRENT_VERSION (0)
@@ -2008,7 +2010,7 @@ public class LocalSchema implements Schema {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
     if (existsType(newTypeName))
-      throw new IllegalArgumentException("Type '" + newTypeName + "' already exists");
+      throw new AlreadyExistsException(AlreadyExistsException.Kind.TYPE, "Type '" + newTypeName + "' already exists");
 
     final DocumentType oldType = getType(typeName);
 
@@ -2320,7 +2322,7 @@ public class LocalSchema implements Schema {
     recordFileChanges(() -> {
       // Validate trigger does not already exist
       if (triggers.containsKey(trigger.getName())) {
-        throw new SchemaException("Trigger '" + trigger.getName() + "' already exists");
+        throw new AlreadyExistsException(AlreadyExistsException.Kind.TRIGGER, "Trigger '" + trigger.getName() + "' already exists");
       }
 
       // Validate type exists
@@ -2726,8 +2728,20 @@ public class LocalSchema implements Schema {
         .withNullStrategy(nullStrategy).create();
   }
 
+  /**
+   * Stops the background warm-up of the indexes a schema reload re-created (issue #10021), dropping what is waiting and waiting,
+   * bounded, for a load in flight. The database close calls it where every index stops its background work, before the page
+   * flush and long before the files are closed or, on a drop, deleted (issue #10156): the warm-up reads index pages, and one read
+   * landing after the close purged this database's pages from the shared read cache would pin the closed instance there. Further
+   * warm-up requests are refused from then on; calling it again returns at once.
+   */
+  public void stopIndexWarmUp() {
+    indexWarmUp.close();
+  }
+
   public void close() {
-    // First, and waiting (bounded) for a load in flight: it reads the index files, which the database closes right after this
+    // The database close has stopped it already, before its flush (issue #10156). Kept, and free when it has, for a schema closed
+    // some other way, e.g. by an open that failed: a load in flight reads the index files, which are closed right after this
     indexWarmUp.close();
     // An open that failed before the replay finished leaves the engines it deferred behind
     timeSeriesEnginesAwaitingReplay = null;
@@ -4856,7 +4870,8 @@ public class LocalSchema implements Schema {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
     if (library.getLanguage() == null) {
       if (functionLibraries.putIfAbsent(library.getName(), library) != null)
-        throw new IllegalArgumentException("Function library '" + library.getName() + "' already registered");
+        throw new AlreadyExistsException(AlreadyExistsException.Kind.FUNCTION_LIBRARY,
+            "Function library '" + library.getName() + "' already registered");
       return this;
     }
 
@@ -4865,7 +4880,8 @@ public class LocalSchema implements Schema {
 
     recordFileChanges(() -> {
       if (functionLibraries.putIfAbsent(library.getName(), library) != null)
-        throw new IllegalArgumentException("Function library '" + library.getName() + "' already registered");
+        throw new AlreadyExistsException(AlreadyExistsException.Kind.FUNCTION_LIBRARY,
+            "Function library '" + library.getName() + "' already registered");
       return null;
     });
     return this;
@@ -4927,7 +4943,8 @@ public class LocalSchema implements Schema {
       final FunctionLibraryDefinition existing = functionLibraries.get(libraryName);
       if (existing != null) {
         if (newLibrary != null)
-          throw new IllegalArgumentException("Function library '" + libraryName + "' already registered");
+          throw new AlreadyExistsException(AlreadyExistsException.Kind.FUNCTION_LIBRARY,
+              "Function library '" + libraryName + "' already registered");
         // A library holds functions of its own language only (issue #8423): checked here, under the schema's lock, so
         // a library dropped and recreated in another language since the caller looked is refused too
         final String functionLanguage = FunctionLibraryFactory.languageOf(function);

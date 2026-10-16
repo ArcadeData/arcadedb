@@ -74,6 +74,8 @@ final class IndexWarmUpScheduler {
   private Thread          worker;
   private boolean         running;
   private boolean         closed;
+  // The index the worker is warming right now, for the log of a close it outlives (issue #10156)
+  private String          inFlight;
   // Bumped by every request and by close(): a batch that finds it moved is no longer the latest and stops
   private long            generation;
 
@@ -125,15 +127,16 @@ final class IndexWarmUpScheduler {
   }
 
   /**
-   * Waits until nothing is waiting and nothing is running. For callers that need the indexes warm before they carry on
-   * (a test, a restart sequence): the warm-up exists so that nobody has to.
+   * Waits until nothing is waiting and nothing is running, and, once closed, until the worker has left. For callers that need
+   * the indexes warm before they carry on (a test, a restart sequence): the warm-up exists so that nobody has to.
    *
    * @return {@code false} when the timeout elapsed first
    */
   boolean awaitIdle(final long timeoutMs) {
     final long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs);
     synchronized (monitor) {
-      while (pending != null || running) {
+      // Once closed, idle also means the worker has left: a close that outlived a load reports it gone only after this
+      while (pending != null || running || (closed && worker != null)) {
         final long remainingMs = TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime());
         if (remainingMs <= 0)
           return false;
@@ -152,20 +155,35 @@ final class IndexWarmUpScheduler {
    * Drops what is waiting, refuses further requests, interrupts the thread so a load in flight ends early, and waits for it to
    * end for at most {@link #CLOSE_JOIN_MS}.
    * <p>
-   * The wait is what lets the caller go on to close the files the warm-up reads. It is bounded because a load is not obliged to
+   * The wait is what lets the caller go on to flush and close the files the warm-up reads: the database close calls this before
+   * any of that, where every index stops its background work (issue #10156). It is bounded because a load is not obliged to
    * honour an interrupt (a graph build inside JVector does not): a thread that outlives the bound is left to finish on its own,
-   * and the index load path it is in is the same one a search thread racing a close is in, which already tolerates it.
+   * and the index load path it is in is the same one a search thread racing a close is in, which already tolerates it. That is
+   * logged, naming the index, since nothing else would tell an operator the database closed with a load still running.
+   * <p>
+   * Only the first call waits: a later one finds the scheduler closed and returns at once, so the backstop call of a schema
+   * close does not charge a second bound for a load that already outlived the first.
    */
   void close() {
-    close(CLOSE_JOIN_MS);
+    final boolean first;
+    synchronized (monitor) {
+      first = !closed;
+    }
+    // Logged by the call that waited, not again by the backstop that finds the same thread still running
+    if (!close(CLOSE_JOIN_MS) && first)
+      LogManager.instance().log(this, Level.WARNING,
+          "The warm-up of index '%s' of database '%s' did not end within %d ms of being interrupted: the database closes with it "
+              + "still running", inFlightName(), databaseName, CLOSE_JOIN_MS);
   }
 
   /**
-   * @return {@code true} when no worker is left running, {@code false} when it outlived {@code joinMs}
+   * @return whether no worker is left running. Only the first call waits up to {@code joinMs} for it
    */
   boolean close(final long joinMs) {
     final Thread toInterrupt;
+    final boolean alreadyClosed;
     synchronized (monitor) {
+      alreadyClosed = closed;
       closed = true;
       generation++;
       pending = null;
@@ -175,6 +193,9 @@ final class IndexWarmUpScheduler {
     }
     if (toInterrupt == null)
       return true;
+    if (alreadyClosed)
+      // The first close interrupted it and waited for it already
+      return !toInterrupt.isAlive();
 
     toInterrupt.interrupt();
     // Never join the thread we are on: a task closing the schema it is warming would wait for itself
@@ -243,6 +264,7 @@ final class IndexWarmUpScheduler {
         // A newer request (or close) means the rest of this batch names instances no schema publishes any more
         if (generation != batchGeneration)
           break;
+        inFlight = task.name();
       }
 
       try {
@@ -263,6 +285,10 @@ final class IndexWarmUpScheduler {
             "Warming up index '%s' of database '%s' after a schema reload failed with %s, the warm-up of the remaining indexes is "
                 + "abandoned and their first search will load them instead", task.name(), databaseName, e.toString());
         throw e;
+      } finally {
+        synchronized (monitor) {
+          inFlight = null;
+        }
       }
     }
 
@@ -270,6 +296,13 @@ final class IndexWarmUpScheduler {
       LogManager.instance().log(this, Level.INFO,
           "Warmed up %d of %d index(es) of database '%s' that a schema reload re-created in %d ms", warmed, batch.size(),
           databaseName, TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos));
+  }
+
+  /** The index the worker is warming, or a placeholder when it is between two (it may be about to leave). */
+  private String inFlightName() {
+    synchronized (monitor) {
+      return inFlight != null ? inFlight : "(none)";
+    }
   }
 
   private boolean isClosed() {

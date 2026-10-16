@@ -105,7 +105,9 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
       // is well formed - it is the identity that is taken. A user or database name already taken is the same conflict
       // (issues #10073, #10074), and not a ServerSecurityException nor a malformed argument. DatabaseAlreadyExistsException
       // extends IllegalArgumentException, so it must stay above that arm; the restore routes raise a plain
-      // IllegalArgumentException for a taken target and keep INVALID_ARGUMENT below (issue #7395)
+      // IllegalArgumentException for a taken target and keep INVALID_ARGUMENT below (issue #7395). Deliberately trailer-less:
+      // that is what the Java client reads as a taken name on every admin RPC (#10075, #10154), and a class-name trailer
+      // would make a client that does not know the class fall back to the duplicate-key reading instead
       RefusalArm.own(ServerControlPlane.AlreadyExistsException.class, Status.Code.ALREADY_EXISTS),
       RefusalArm.own(UserAlreadyExistsException.class, Status.Code.ALREADY_EXISTS),
       RefusalArm.own(DatabaseAlreadyExistsException.class, Status.Code.ALREADY_EXISTS),

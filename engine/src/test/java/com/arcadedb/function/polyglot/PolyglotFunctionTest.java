@@ -19,6 +19,7 @@
 package com.arcadedb.function.polyglot;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.AlreadyExistsException;
 import com.arcadedb.function.FunctionDefinition;
 import com.arcadedb.function.FunctionExecutionException;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -56,7 +57,7 @@ class PolyglotFunctionTest extends TestHelper {
     assertThat(result).isEqualTo(150);
 
     assertThatThrownBy(() -> database.getSchema().getFunctionLibrary("math")
-      .registerFunction(new JavascriptFunctionDefinition("sum", "return a - b;", "a", "b"))).isInstanceOf(IllegalArgumentException.class);
+      .registerFunction(new JavascriptFunctionDefinition("sum", "return a - b;", "a", "b"))).isInstanceOf(AlreadyExistsException.class);
 
     database.getSchema().getFunctionLibrary("math").unregisterFunction("sum");
     database.getSchema().getFunctionLibrary("math")

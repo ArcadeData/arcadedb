@@ -22,6 +22,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.LocalBucket;
+import com.arcadedb.exception.AlreadyExistsException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.StripedEdgeList;
@@ -198,7 +199,7 @@ public class LocalVertexType extends LocalDocumentType implements VertexType {
     for (int slot = 0; slot < pool.length; slot++) {
       final String target = StripedEdgeList.stripeBucketName(newName, slot);
       if (pool[slot] != null && schema.existsBucket(target))
-        throw new SchemaException(
+        throw new AlreadyExistsException(AlreadyExistsException.Kind.BUCKET,
             "Cannot rename the super-node stripe bucket '" + pool[slot].getName() + "': a bucket named '" + target + "' already exists");
     }
   }

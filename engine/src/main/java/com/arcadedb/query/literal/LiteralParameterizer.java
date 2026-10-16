@@ -269,6 +269,17 @@ public abstract class LiteralParameterizer<S> {
     }
   }
 
+  /** Empties the cache, as {@link #clear()}, and bounds it to {@code size} statements from now on (issue #10155). */
+  public void resize(final int size) {
+    synchronized (statements) {
+      statements.resize(size);
+      parameterizedTexts.resize(size);
+    }
+    synchronized (policies) {
+      policies.resize(size);
+    }
+  }
+
   /** The text with the stripped literals replaced by parameter references, filling {@code values}; null if a value fails. */
   private String buildKey(final LiteralScan scan, final byte[] policy, final Map<String, Object> values) {
     final String text = scan.getText();

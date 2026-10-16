@@ -34,6 +34,12 @@ public final class BoltErrorCodes {
   // identical write can never succeed - so it must not fall into the generic DatabaseError a driver
   // would treat as a transient server fault (issue #7123).
   public static final String CONSTRAINT_VIOLATION_ERROR = "Neo.ClientError.Schema.ConstraintValidationFailed";
+  // A schema object created under a name already taken (issue #10153), the three titles Neo4j answers it with: an index or a
+  // constraint holding the name, and anything else, which Neo4j has no object of its own for and words as an equivalent rule.
+  // Client errors, never retried, unlike the DatabaseError a CREATE on a taken name used to come back as
+  public static final String INDEX_ALREADY_EXISTS_ERROR       = "Neo.ClientError.Schema.IndexWithNameAlreadyExists";
+  public static final String CONSTRAINT_ALREADY_EXISTS_ERROR  = "Neo.ClientError.Schema.ConstraintWithNameAlreadyExists";
+  public static final String SCHEMA_RULE_ALREADY_EXISTS_ERROR = "Neo.ClientError.Schema.EquivalentSchemaRuleAlreadyExists";
   // A statement that parses and is semantically valid but references a $parameter the client never bound.
   // Neo4j gives this its own title, and drivers/tools key off it to tell "your query is wrong" apart from
   // "you forgot to send a value", so it must not collapse into SyntaxError.

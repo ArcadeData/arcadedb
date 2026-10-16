@@ -20,6 +20,7 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.exception.AlreadyExistsException;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -127,7 +128,7 @@ public class CreateTriggerStatement extends DDLStatement {
         rs.add(result);
         return rs;
       } else {
-        throw new CommandExecutionException("Trigger '" + name.getStringValue() + "' already exists");
+        throw new AlreadyExistsException(AlreadyExistsException.Kind.TRIGGER, "Trigger '" + name.getStringValue() + "' already exists");
       }
     }
 
