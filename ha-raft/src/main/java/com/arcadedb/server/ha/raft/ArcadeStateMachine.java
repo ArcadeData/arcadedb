@@ -3113,6 +3113,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // Safe off the apply thread only because Ratis pauses the apply while it installs: the floor's retry pacing is
       // apply-thread state (see SecurityDurabilityFloor), so do not move this call anywhere the apply can run.
       final boolean undurableSecurityCovered = securityDurabilityFloor.dropCoveredByInstall(snapshotIndex);
+      if (undurableSecurityCovered)
+        LogManager.instance().log(this, Level.WARNING,
+            "The snapshot install up to index %d covered a replicated security entry that never reached this node's disk, "
+                + "so it will not be replayed: asking the leader to re-send the security documents. Until they commit, a "
+                + "restart of this node reads its stale security files back (issue #7752)", snapshotIndex);
       if (raftHA != null)
         securityCatchUp.afterSnapshotInstall(this.server, raftHA, undurableSecurityCovered);
 

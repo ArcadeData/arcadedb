@@ -267,7 +267,9 @@ public final class HAReplicationMetrics implements MeterBinder, Closeable {
         .description("Replicated security documents (users, groups, API tokens) in force on this node but not on its "
             + "disk, because a write to the configuration directory failed (issue #7752). While it is above 0 the "
             + "Raft log is not compacted past the entry that installed them, so a restart can replay it: alert on it, "
-            + "and free or fix the configuration volume. It returns to 0 on its own once a retried write succeeds.")
+            + "and free or fix the configuration volume. It returns to 0 on its own once a retried write succeeds; the "
+            + "retry runs as Raft entries are applied, so on a cluster that applies none it stays up until the next one "
+            + "- when nothing is applied the log does not grow either.")
         .register(registry);
   }
 
