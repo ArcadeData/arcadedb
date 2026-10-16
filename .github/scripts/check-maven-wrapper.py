@@ -35,19 +35,24 @@ a step written later cannot reintroduce the runner's Maven either.
 Flagged: a command whose program is `mvn`, `mvn.cmd` or the Maven daemon (`mvnd`), by bare name or by
 path. Accepted: `mvnw` / `mvnw.cmd` by any path (`./mvnw`, `../mvnw`). Each `run:` of a workflow
 step or of a composite action step is checked, and so is every shell script of this repository that a
-step runs as a command (`./test-builder-local.sh` under `working-directory: package`), resolved against
-the step's or the job's working directory - package/test-builder-local.sh ran the runner's mvn that way.
+step runs, either as a command (`./test-builder-local.sh`) or through a shell (`bash build.sh`,
+`source env.sh`), resolved against the step's or the job's working directory -
+package/test-builder-local.sh ran the runner's mvn that way. The script given to `bash -c` / `sh -c`
+is checked as a script of its own.
 
-How a script is read: `\\` continuations are folded, every `$(...)` and backtick command substitution
-is checked as a script of its own, and the rest is tokenized like a shell (quotes respected) and split
-into commands on newlines, `;`, `&`, `|`, `(` and `)`. A command's program is its first word after any
-`NAME=value` assignments and command prefixes such as `time`, `sudo`, `then` or `do`. Words that only
-mention Maven (an `echo "mvn ..."`, a comment, a file name such as `mvn-deploy.yml`) are not programs
-and are not flagged.
+How a script is read: `\\` continuations are folded, comments are dropped, every `$(...)` and
+backtick command substitution is checked as a script of its own, and the rest is tokenized like a
+shell (quotes respected) and split into commands on newlines, `;`, `&`, `|`, `(` and `)` - which also
+makes the body of a `case` pattern (`a) mvn verify ;;`) a command. A command's program is its first
+word after any `NAME=value` assignments and shell keywords such as `then`, `do`, `!` or `{`. After a
+prefix that runs another program (`sudo`, `env`, `time`, `timeout`, `xargs`, ...), the program is the
+first Maven executable among its remaining words, else its first word that is not an option or a
+number. Words that only mention Maven (an `echo "mvn ..."`, a comment, a file name such as
+`mvn-deploy.yml`) are not programs and are not flagged.
 
-Limits: Maven reached through `bash -c "..."`, `eval`, a here-doc, or a script the step runs through an
-interpreter (`bash build.sh`) or by a path that holds a variable, is NOT seen. Every Maven call in this repository's workflows is a plain command in a step's `run:`;
-keep it that way, or extend this check alongside.
+Limits: Maven reached through `eval`, a here-doc, a `$'...'` string given to `bash -c`, or a script
+whose path holds a variable is NOT seen. Every Maven call in this repository's workflows is a plain
+command in a step's `run:`; keep it that way, or extend this check alongside.
 
 Usage:
   check-maven-wrapper.py [workflow-or-action.yml ...]
@@ -66,11 +71,19 @@ import yaml
 RUNNER_MAVEN = {"mvn", "mvn.cmd", "mvnd", "mvnd.cmd", "mvnd.sh"}
 WRAPPER = {"mvnw", "mvnw.cmd"}
 
-# Words that run the NEXT word as the command, or that open a compound command whose body follows.
-COMMAND_PREFIXES = {
-    "sudo", "time", "exec", "command", "nohup", "env", "xargs", "builtin",
-    "if", "then", "elif", "else", "while", "until", "do", "!", "{",
+# Shell keywords that open a compound command whose body follows: the next word is the command.
+SHELL_KEYWORDS = {"if", "then", "elif", "else", "while", "until", "do", "!", "{"}
+
+# Programs that run another program given later on their command line, possibly after options of
+# their own (`sudo -E mvn`, `env -i mvn`, `timeout 10m mvn`, `xargs -n1 mvn`).
+COMMAND_RUNNERS = {
+    "sudo", "time", "timeout", "exec", "command", "nohup", "env", "xargs", "builtin", "nice", "stdbuf",
 }
+
+# Shells: `bash -c "..."` runs a script given inline, `bash build.sh` / `source env.sh` a script file.
+SHELLS = {"bash", "sh", "zsh", "dash", "source", "."}
+
+NUMBER = re.compile(r"^[0-9.]+[smhd]?$")
 
 SEPARATOR_CHARS = set(";&|()")
 ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
@@ -109,9 +122,9 @@ def extract_substitutions(script):
 
     The substitution is replaced by a placeholder word in the outer text, so the command it sits in
     stays one command, and its body is returned to be checked as a script of its own. Comments are
-    dropped here, and single-quoted text (`'...'`, `$'...'`) becomes a placeholder word with nothing
-    inside it taken as a substitution, as a shell would: a comment or a quoted fixture that mentions
-    `$(mvn ...)` runs nothing."""
+    dropped here, and nothing inside single-quoted text (`'...'`, `$'...'`) is taken as a
+    substitution, as a shell would: a comment or a quoted fixture that mentions `$(mvn ...)` runs
+    nothing."""
     inner = []
     out = []
     i = 0
@@ -128,9 +141,9 @@ def extract_substitutions(script):
             j = i + (2 if ansi else 1)
             while j < n and script[j] != "'":
                 j += 2 if ansi and script[j] == "\\" else 1
-            # Its text is literal, so it is replaced by a placeholder: that keeps quote forms shlex does
-            # not know (`$'it\'s'`) away from the tokenizer.
-            out.append("QUOTED")
+            # `'...'` is kept for the tokenizer (it may be the script of a `bash -c`); `$'...'` becomes a
+            # placeholder word, as shlex does not know that quote form (`$'it\'s'`).
+            out.append("QUOTED" if ansi else script[i : j + 1])
             i = j + 1
         elif not in_double and c == "#" and (i == 0 or script[i - 1] in " \t\n;&|()"):
             end = script.find("\n", i)
@@ -158,28 +171,52 @@ def extract_substitutions(script):
 
 
 def tokenize(script):
-    """Shell-like tokens with `;&|()` runs as separate tokens and a `;` at every line end."""
-    # The `;` goes AFTER the newline, so a trailing comment, which runs to the end of its line,
-    # cannot swallow the command boundary.
-    text = script.replace("\n", "\n;")
+    """Shell-like tokens of a script whose comments are already dropped, with `;&|()` runs as separate
+    tokens and a `;` at every line end."""
+    text = script.replace("\n", " ;\n")
     try:
         lexer = shlex.shlex(text, posix=True, punctuation_chars=";&|()")
         lexer.whitespace_split = True
-        lexer.commenters = "#"
+        lexer.commenters = ""
         return list(lexer)
     except ValueError:
-        # Unbalanced quotes: fall back to a plain split, which can only over-report.
+        # Unbalanced quotes: fall back to a plain split. It keeps every word, so it can only report
+        # more commands than the shell would run, never fewer.
         tokens = []
         for chunk in re.split(r"([;&|()]+)", text):
             if chunk and set(chunk) <= SEPARATOR_CHARS:
                 tokens.append(chunk)
             else:
-                tokens.extend(w for w in chunk.split() if not w.startswith("#"))
+                tokens.extend(chunk.split())
         return tokens
 
 
+def program_of(words):
+    """The index of the word a command runs as its program, or None for a command that runs nothing."""
+    start = 0
+    while start < len(words) and (ASSIGNMENT.match(words[start]) or words[start] in SHELL_KEYWORDS):
+        start += 1
+    if start >= len(words):
+        return None
+    if Path(words[start]).name not in COMMAND_RUNNERS:
+        return start
+    # A runner's own options may take arguments (`sudo -u builder mvn`), so a Maven executable
+    # anywhere after it is the program; failing that, the first word that is not an option of it.
+    rest = range(start + 1, len(words))
+    for index in rest:
+        if Path(words[index]).name in RUNNER_MAVEN | WRAPPER:
+            return index
+    for index in rest:
+        word = words[index]
+        if not (word.startswith("-") or ASSIGNMENT.match(word) or NUMBER.match(word)):
+            inner = program_of(words[index:])
+            return None if inner is None else index + inner
+    return None
+
+
 def programs(script):
-    """Yields (program, whole command) for every command in a run script, substitutions included."""
+    """Yields (program, its arguments, whole command) for every command in a run script, substitutions
+    included."""
     folded = re.sub(r"\\\r?\n", " ", GHA_EXPRESSION.sub(EXPRESSION_PLACEHOLDER, script))
     outer, inner = extract_substitutions(folded)
     for body in inner:
@@ -190,11 +227,9 @@ def programs(script):
         if token and set(token) <= SEPARATOR_CHARS:
             words = command
             command = []
-            start = 0
-            while start < len(words) and (ASSIGNMENT.match(words[start]) or words[start] in COMMAND_PREFIXES):
-                start += 1
-            if start < len(words):
-                yield words[start], " ".join(words[start:])
+            start = program_of(words)
+            if start is not None:
+                yield words[start], words[start + 1 :], " ".join(words[start:])
         else:
             command.append(token)
 
@@ -240,13 +275,26 @@ def repository_script(root, directory, program):
 
 
 def default_files(root):
+    """The workflows and composite actions of the repository at `root`."""
     github = root / ".github"
     files = sorted((github / "workflows").glob("*.yml")) + sorted((github / "workflows").glob("*.yaml"))
     files += sorted((github / "actions").glob("**/action.yml")) + sorted((github / "actions").glob("**/action.yaml"))
     return files
 
 
+def shell_target(arguments):
+    """For a shell's arguments: ("inline", script) for `-c script`, ("file", path) for a script file,
+    else None."""
+    for index, argument in enumerate(arguments):
+        if argument == "-c" or (argument.startswith("-") and not argument.startswith("--") and argument.endswith("c")):
+            return ("inline", arguments[index + 1]) if index + 1 < len(arguments) else None
+        if not argument.startswith("-"):
+            return "file", argument
+    return None
+
+
 def main(argv):
+    """Checks the given workflow / action files, or the repository's, and returns the exit status."""
     root = Path(__file__).resolve().parents[2]
     files = [Path(a) for a in argv[1:]] or default_files(root)
 
@@ -272,19 +320,30 @@ def main(argv):
             seen = set()
             while pending:
                 location, text, cwd = pending.pop()
-                for program, command in programs(text):
-                    name = Path(program).name
+                for program, arguments, command in programs(text):
+                    # `Path(".").name` is empty, and `.` is how a script is sourced.
+                    name = Path(program).name or program
                     if name in WRAPPER:
                         wrapped += 1
-                    elif name in RUNNER_MAVEN:
+                        continue
+                    if name in RUNNER_MAVEN:
                         problems.append(f"{path}: {location} runs the runner's Maven:\n    {command}")
-                    else:
-                        called = repository_script(root, cwd, program)
-                        if called is not None and called not in seen:
-                            seen.add(called)
-                            # A script's own relative calls resolve against the directory the step
-                            # runs it from, which is the shell's working directory, not the script's.
-                            pending.append((f"{location} -> {program}", called.read_text(errors="replace"), cwd))
+                        continue
+                    script_path = program
+                    if name in SHELLS:
+                        target = shell_target(arguments)
+                        if target is None:
+                            continue
+                        if target[0] == "inline":
+                            pending.append((f"{location} -> {name} -c", target[1], cwd))
+                            continue
+                        script_path = target[1]
+                    called = repository_script(root, cwd, script_path)
+                    if called is not None and called not in seen:
+                        seen.add(called)
+                        # A script's own relative calls resolve against the directory the step
+                        # runs it from, which is the shell's working directory, not the script's.
+                        pending.append((f"{location} -> {script_path}", called.read_text(errors="replace"), cwd))
 
     if problems:
         for problem in problems:

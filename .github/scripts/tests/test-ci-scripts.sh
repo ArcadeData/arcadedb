@@ -1875,6 +1875,39 @@ expect "rejects mvn behind an env assignment and a command prefix" 1 "mvn verify
 maven_workflow "$work/wrapper/if-then.yml" $'if [ -f pom.xml ]; then\n  mvn verify\nfi'
 expect "rejects mvn inside an if block" 1 "mvn verify" \
     "$WRAPPER" "$work/wrapper/if-then.yml"
+# A runner prefix with options of its own still runs Maven (review of #10175): the program is not
+# the option that follows the prefix.
+for prefixed in 'sudo -E mvn verify' 'env -i PATH=/usr/bin mvn verify' 'time -p mvn verify' \
+    'timeout 10m mvn verify' 'xargs -n1 mvn verify' 'sudo -u builder mvn verify' 'nice -n 5 mvn verify'; do
+    maven_workflow "$work/wrapper/runner-prefix.yml" "$prefixed"
+    expect "rejects mvn behind '${prefixed% mvn verify}'" 1 "mvn verify" \
+        "$WRAPPER" "$work/wrapper/runner-prefix.yml"
+done
+maven_workflow "$work/wrapper/runner-wrapped.yml" $'sudo -E ./mvnw verify\nsudo apt-get install -y maven'
+expect "accepts a runner prefix in front of the wrapper or of another program" 0 "Maven wrapper" \
+    "$WRAPPER" "$work/wrapper/runner-wrapped.yml"
+
+# The body of a `case` pattern is a command.
+maven_workflow "$work/wrapper/case.yml" $'case "$MODE" in\n  full) mvn verify ;;\n  *) ./mvnw test ;;\nesac'
+expect "rejects mvn in a case pattern body" 1 "mvn verify" \
+    "$WRAPPER" "$work/wrapper/case.yml"
+
+# A script given inline to a shell is a script too, in either quote form.
+maven_workflow "$work/wrapper/bash-c.yml" 'bash -c "mvn verify"'
+expect "rejects mvn inside bash -c \"...\"" 1 "mvn verify" \
+    "$WRAPPER" "$work/wrapper/bash-c.yml"
+maven_workflow "$work/wrapper/sh-ec.yml" "sh -ec 'cd e2e && mvn verify'"
+expect "rejects mvn inside sh -ec '...'" 1 "mvn verify" \
+    "$WRAPPER" "$work/wrapper/sh-ec.yml"
+maven_workflow "$work/wrapper/bash-c-wrapped.yml" "bash -c './mvnw verify'"
+expect "accepts the wrapper inside bash -c" 0 "Maven wrapper" \
+    "$WRAPPER" "$work/wrapper/bash-c-wrapped.yml"
+
+# Unbalanced quotes fall back to a plain split, which must still find the command.
+maven_workflow "$work/wrapper/unbalanced.yml" $'echo "it is #1; mvn verify'
+expect "rejects mvn in a script with unbalanced quotes" 1 "mvn verify" \
+    "$WRAPPER" "$work/wrapper/unbalanced.yml"
+
 maven_workflow "$work/wrapper/mvnd.yml" 'mvnd verify'
 expect "rejects the Maven daemon, which is no more pinned than mvn" 1 "mvnd verify" \
     "$WRAPPER" "$work/wrapper/mvnd.yml"
@@ -1934,6 +1967,21 @@ expect "rejects mvn inside a script the step runs" 1 "./bare.sh runs the runner'
     "$WRAPPER" "$work/wrapper/runs-bare.yml"
 expect "accepts a script the step runs that uses the wrapper" 0 "Maven wrapper" \
     "$WRAPPER" "$work/wrapper/runs-wrapped.yml"
+# A script handed to a shell, or sourced, is followed just like one run as a command.
+for call in 'bash ./bare.sh' 'sh -e bare.sh' 'source ./bare.sh' '. ./bare.sh'; do
+    cat >"$work/wrapper/runs-via-shell.yml" <<YAML
+name: Build
+on: [ push ]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - working-directory: $work/wrapper/scripts
+        run: $call
+YAML
+    expect "rejects mvn inside a script run as '$call'" 1 "bare.sh runs the runner's Maven" \
+        "$WRAPPER" "$work/wrapper/runs-via-shell.yml"
+done
 cat >"$work/wrapper/runs-bare-job-default.yml" <<YAML
 name: Build
 on: [ push ]
