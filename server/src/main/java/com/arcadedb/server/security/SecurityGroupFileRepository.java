@@ -146,7 +146,7 @@ public class SecurityGroupFileRepository {
    *
    * @return the persistence failure, or {@code null} when the document reached the disk (or there is none to write)
    */
-  public synchronized Exception persistCurrent() {
+  synchronized Exception persistCurrent() {
     final JSONObject current = latestGroupConfiguration;
     if (current == null)
       return null;
