@@ -358,7 +358,9 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
     for (int level = 0; level < maxLevel && !frontier.isEmpty() && reachableNodes.size() < limit; ++level) {
       walk.startLevel(level + 1);
 
-      // The adjacency entries are walked on the RIDs they hold, so no record is read to follow one. THE INCOMING SIDE OF A
+      // The adjacency entries are walked on the RIDs they hold, so no record is read to follow one. The outgoing list and then the
+      // incoming one, the order the single pass over BOTH read them in: each list is walked by an iterator that can name the edge of
+      // its entry, which a pass over both lists cannot, and the walk is the same entry for entry. THE INCOMING SIDE OF A
       // UNIDIRECTIONAL EDGE TYPE IS ON THE OTHER END ONLY (ISSUE #8629): READ FROM THE EDGES THAT END IN THE VERTEX
       final String[] outTypes = relationships.typesFor(level, Vertex.DIRECTION.OUT);
       final String[] inTypes = relationships.typesFor(level, Vertex.DIRECTION.IN);
@@ -375,7 +377,7 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
         if (inTypes == null)
           continue;
         if (incomingSideMissing)
-          walk.followEdges(current, Vertex.DIRECTION.IN, edgesOf(context, current, Vertex.DIRECTION.IN, inTypes).iterator());
+          walk.followEdges(Vertex.DIRECTION.IN, edgesOf(context, current, Vertex.DIRECTION.IN, inTypes).iterator());
         else
           walk.followEntries(current, Vertex.DIRECTION.IN, inTypes);
       }
@@ -505,7 +507,7 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
     /** Follows the entries of the adjacency list of {@code current} in {@code direction} (outgoing or incoming) over {@code types}. */
     private void followEntries(final Vertex current, final Vertex.DIRECTION direction, final String[] types) {
       if (!(current instanceof VertexInternal internal)) {
-        followEdges(current, direction, current.getEdges(direction, types).iterator());
+        followEdges(direction, current.getEdges(direction, types).iterator());
         return;
       }
 
@@ -525,7 +527,7 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
      * Follows edges that were read as records (those of an incoming side stored on the other end only): the far end is read off
      * the edge, which for a record loaded lazily is what finds one whose record is gone.
      */
-    private void followEdges(final Vertex current, final Vertex.DIRECTION direction, final Iterator<Edge> edges) {
+    private void followEdges(final Vertex.DIRECTION direction, final Iterator<Edge> edges) {
       while (edges.hasNext() && reachableNodes.size() < limit) {
         final RID edgeId;
         final RID neighborId;
