@@ -84,8 +84,9 @@ class Issue7252SecurityEntryReplayAfterRestartTest {
 
   /**
    * A snapshot taken after the failure moves the marker past the failed index, and from there on the entry is out
-   * of replay range for good: the restarted node is seeded at 6 and Ratis feeds it nothing. The users file stays
-   * at whatever it held before, which is exactly why the SEVERE tells the operator to reissue the user change.
+   * of replay range for good: the restarted node is seeded at 6 and Ratis feeds it nothing. That is correct here
+   * because the entry at 6 is a durable user list that supersedes the failed one; when nothing supersedes it, the
+   * checkpoint stops below the failed entry instead ({@code Issue7752SecurityDurabilityFloorTest}).
    */
   @Test
   void aSnapshotTakenAfterTheFailurePutsTheEntryOutOfReplayRange(@TempDir final Path raftDirectory,

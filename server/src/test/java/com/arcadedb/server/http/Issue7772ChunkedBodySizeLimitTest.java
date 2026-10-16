@@ -27,7 +27,12 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.Socket;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.concurrent.atomic.AtomicLong;
@@ -154,9 +159,133 @@ class Issue7772ChunkedBodySizeLimitTest extends BaseGraphServerTest {
   }
 
   /**
-   * Offers {@code bodyBytes} as a chunked body and never terminates it, so only a server that enforces the cap on
-   * the bytes it has read can answer at all.
+   * Issue #8081: the other shape of undeclared body the issue names - an HTTP/2 POST with no {@code content-length} -
+   * on cleartext HTTP/2 (h2c), which the server enables with {@code UndertowOptions.ENABLE_HTTP2}.
+   * <p>
+   * The JDK client negotiates h2c by an {@code Upgrade} on a request it can replay, so a bodyless GET opens the HTTP/2
+   * connection and the POST then travels on it as a stream of DATA frames: there is no chunked framing, and the body
+   * publisher has no length, so no {@code content-length} header is sent either. Both versions are asserted, or the
+   * test could pass over HTTP/1.1 having proved nothing about HTTP/2. The body never ends: a server that waited for
+   * END_STREAM would never answer, and the request timeout would fail the test instead.
+   * <p>
+   * What the client receives is the same JSON 413 as over HTTP/1.1. The handler answers on the stream and Undertow
+   * resets the rest of it, which is how HTTP/2 refuses a body without closing the connection the other streams share.
    */
+  @Test
+  void http2BodyWithoutContentLengthOverLimitIsRefused() throws Exception {
+    final HttpClient client = http2Client();
+
+    final HttpResponse<String> response = client.send(HttpRequest.newBuilder(
+            URI.create(getServerHttpUrl("/api/v1/command/" + getDatabaseName())))
+        .timeout(Duration.ofSeconds(30))
+        .header("Authorization", basicAuthorization())
+        .header("Content-Type", "application/json")
+        .POST(HttpRequest.BodyPublishers.ofInputStream(EndlessBody::new))
+        .build(), HttpResponse.BodyHandlers.ofString());
+
+    assertThat(response.version()).as("the POST must have travelled over HTTP/2").isEqualTo(HttpClient.Version.HTTP_2);
+    assertThat(response.statusCode()).isEqualTo(413);
+    assertThat(response.body()).contains(GlobalConfiguration.SERVER_HTTP_BODY_CONTENT_MAX_SIZE.getKey());
+  }
+
+  /**
+   * Issue #8081, the HTTP/1.1 half of the defect the HTTP/2 test found: a refused body is not read any further. Every
+   * other test here sends {@code Connection: close}, which made Undertow close the request side when the exchange ended.
+   * A client that keeps the connection alive used to have the rest of its body DRAINED instead - read and discarded by
+   * a worker thread for as long as the client kept sending, which for a body that never ends is forever.
+   * <p>
+   * Bounded by bytes rather than by time, so a JVM stall cannot fail it: a server that stops reading makes the writes
+   * fail within the socket buffers, while one that drains accepts all of them.
+   */
+  @Test
+  void keepAliveChunkedBodyOverLimitEndsTheConnectionInsteadOfDrainingIt() throws Exception {
+    final String credentials = Base64.getEncoder()
+        .encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes(StandardCharsets.UTF_8));
+    final byte[] filler = new byte[64 * 1024];
+    Arrays.fill(filler, (byte) 'x');
+    final byte[] chunkHeader = (Integer.toHexString(filler.length) + "\r\n").getBytes(StandardCharsets.US_ASCII);
+    final byte[] chunkTrailer = "\r\n".getBytes(StandardCharsets.US_ASCII);
+    final long maxBytes = 256L * 1024L * 1024L;
+
+    try (final Socket socket = new Socket("127.0.0.1", getServerHttpPort())) {
+      socket.setSoTimeout(30_000);
+      final OutputStream out = socket.getOutputStream();
+      out.write(("POST /api/v1/command/" + getDatabaseName() + " HTTP/1.1\r\n"
+          + "Host: 127.0.0.1\r\n"
+          + "Authorization: Basic " + credentials + "\r\n"
+          + "Content-Type: application/json\r\n"
+          + "Transfer-Encoding: chunked\r\n"
+          + "\r\n").getBytes(StandardCharsets.US_ASCII));
+
+      long sent = 0;
+      boolean refused = false;
+      while (sent < maxBytes)
+        try {
+          out.write(chunkHeader);
+          out.write(filler);
+          out.write(chunkTrailer);
+          out.flush();
+          sent += filler.length;
+        } catch (final IOException e) {
+          refused = true;
+          break;
+        }
+
+      assertThat(refused).as("the server must stop reading a refused body, not drain the " + sent + " bytes offered")
+          .isTrue();
+    }
+  }
+
+  /** The HTTP/2 counterpart of {@link #chunkedBodyWithinLimitIsServedNormally}: the cap refuses size, not HTTP/2. */
+  @Test
+  void http2BodyWithoutContentLengthWithinLimitIsServedNormally() throws Exception {
+    final HttpClient client = http2Client();
+    final byte[] body = "{\"language\":\"sql\",\"command\":\"SELECT 1\"}".getBytes(StandardCharsets.UTF_8);
+
+    final HttpResponse<String> response = client.send(HttpRequest.newBuilder(
+            URI.create(getServerHttpUrl("/api/v1/query/" + getDatabaseName())))
+        .timeout(Duration.ofSeconds(30))
+        .header("Authorization", basicAuthorization())
+        .header("Content-Type", "application/json")
+        .POST(HttpRequest.BodyPublishers.fromPublisher(HttpRequest.BodyPublishers.ofByteArray(body)))
+        .build(), HttpResponse.BodyHandlers.ofString());
+
+    assertThat(response.version()).isEqualTo(HttpClient.Version.HTTP_2);
+    assertThat(response.statusCode()).as(response.body()).isEqualTo(200);
+  }
+
+  /** A client that has already upgraded its connection to h2c, so every request it sends next travels on HTTP/2. */
+  private HttpClient http2Client() throws Exception {
+    final HttpClient client = HttpClient.newBuilder()
+        .version(HttpClient.Version.HTTP_2)
+        .connectTimeout(Duration.ofSeconds(30))
+        .build();
+    final HttpResponse<String> upgrade = client.send(HttpRequest.newBuilder(URI.create(getServerHttpUrl("/api/v1/ready")))
+        .timeout(Duration.ofSeconds(30))
+        .GET()
+        .build(), HttpResponse.BodyHandlers.ofString());
+    assertThat(upgrade.version()).as("the server must accept the h2c upgrade").isEqualTo(HttpClient.Version.HTTP_2);
+    return client;
+  }
+
+  private static String basicAuthorization() {
+    return "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes(StandardCharsets.UTF_8));
+  }
+
+  /** A request body that never ends, so only a server that decides on the bytes it has read can answer it. */
+  private static final class EndlessBody extends InputStream {
+    @Override
+    public int read() {
+      return 'x';
+    }
+
+    @Override
+    public int read(final byte[] buffer, final int offset, final int length) {
+      Arrays.fill(buffer, offset, offset + length, (byte) 'x');
+      return length;
+    }
+  }
+
   /**
    * Raising {@code arcadedb.server.httpBodyContentMaxSize} at runtime has to raise the whole enforcement, not
    * just the half of it that is re-read per request.
@@ -194,6 +323,10 @@ class Issue7772ChunkedBodySizeLimitTest extends BaseGraphServerTest {
         .getBytes(StandardCharsets.UTF_8);
   }
 
+  /**
+   * Offers {@code bodyBytes} as a chunked body and never terminates it, so only a server that enforces the cap on
+   * the bytes it has read can answer at all.
+   */
   private Response postChunked(final String path, final String contentType, final long bodyBytes) throws Exception {
     final byte[] filler = new byte[8192];
     Arrays.fill(filler, (byte) 'x');

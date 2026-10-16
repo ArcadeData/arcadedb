@@ -30,6 +30,7 @@ import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 
@@ -143,6 +144,11 @@ final class SecurityCatchUp implements AutoCloseable {
    * {@code tasks.coalesced} column of the {@code pool=security_catch_up} executor row (issue #7856).
    */
   private final AtomicLong         coalescedRequests   = new AtomicLong();
+  /**
+   * Set by a snapshot install that covered a security entry this node had not made durable (issue #7752): the next
+   * request asks the leader to seed whatever the fingerprints say. Consumed by the attempt that reaches the leader.
+   */
+  private final AtomicBoolean      forceSeed           = new AtomicBoolean();
   /**
    * The executor's current worker, recorded by its thread factory, so {@link #awaitTermination(long)} can tell by
    * identity that it is running on it (issue #8364). One worker at a time, and one running a task is never replaced.
@@ -329,6 +335,22 @@ final class SecurityCatchUp implements AutoCloseable {
    * security entries, so the request is made every time rather than once.
    */
   void afterSnapshotInstall(final ArcadeDBServer server, final RaftHAServer raft) {
+    afterSnapshotInstall(server, raft, false);
+  }
+
+  /**
+   * {@link #afterSnapshotInstall(ArcadeDBServer, RaftHAServer)}, asking the leader to re-send the documents even when
+   * this node's copies match when {@code undurableSecurityCovered}: the install covered a security entry whose effects
+   * never reached this node's disk (issue #7752). The copies in memory are right, the files a restart would read back
+   * are not, and the entry that would have repaired them on that restart is below the install's boundary. A re-sent
+   * document is a new entry, past the boundary, which the Raft log keeps for as long as its own write fails.
+   * <p>
+   * Kept in a flag the attempt consumes rather than in the attempt itself, so it survives the coalescing of a queued
+   * request, a leader that cannot be asked yet, and a transient failure, all of which retry without it otherwise.
+   */
+  void afterSnapshotInstall(final ArcadeDBServer server, final RaftHAServer raft, final boolean undurableSecurityCovered) {
+    if (undurableSecurityCovered)
+      forceSeed.set(true);
     // It also counts as the once-per-start request: a node that has just been reinstalled from a snapshot has
     // no earlier state left worth asking about separately. Taken here rather than after the answer, for the
     // same reason onFirstLeaderObserved takes it at submit time - it is what stops a second trigger dialling
@@ -440,8 +462,17 @@ final class SecurityCatchUp implements AutoCloseable {
       // Read BEFORE the fingerprints the request carries, so a match proves the documents are the cluster's as of
       // at least this position (issue #8346). See RuntimeJoinDetector.onSecurityDocumentsMatchedLeader.
       final long appliedBeforeRead = raft.getLastAppliedIndex();
-      final ClusterSecuritySeedQuery.SeedAnswer answer = ClusterSecuritySeedQuery.seedForCatchUpAnswer(server, plugin,
-          reason);
+      final boolean force = forceSeed.getAndSet(false);
+      final ClusterSecuritySeedQuery.SeedAnswer answer;
+      try {
+        answer = ClusterSecuritySeedQuery.seedForCatchUpAnswer(server, plugin, reason, force);
+      } catch (final Exception e) {
+        if (force)
+          forceSeed.set(true);
+        throw e;
+      }
+      if (force && !answer.failedSeeds().isEmpty())
+        forceSeed.set(true);
       if (answer.upToDate())
         // The leader compared and submitted nothing. On a runtime joiner that caught up by snapshot install past its
         // seed, this is the only evidence of convergence it will ever get: no seed entry is applied here and no

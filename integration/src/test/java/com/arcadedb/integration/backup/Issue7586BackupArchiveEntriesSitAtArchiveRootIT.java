@@ -21,6 +21,7 @@ package com.arcadedb.integration.backup;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.integration.TestHelper;
 import com.arcadedb.integration.restore.Restore;
 import com.arcadedb.schema.Property;
@@ -32,7 +33,10 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Enumeration;
 import java.util.List;
@@ -57,60 +61,96 @@ import static org.assertj.core.api.Assertions.assertThat;
  * literal '/', {@code ComponentFile.open()} strips a directory built with either separator, and
  * {@code FullBackupFormat.compressEntry} strips one defensively as well - so a future path built with the wrong
  * separator on some other platform cannot repeat this failure silently.
+ * <p>
+ * Issue #7758: the frozen-files run ({@code [2]}) restored 0 of the 50 records, intermittently, in the CI lane. The
+ * cause was the backup, not the test: a flush suspension that began while a commit's pages were still queued froze the
+ * files without them, so the archive carried the bucket as it stood before the commit (issue #8111, fixed by PR #8128
+ * and pinned in the engine by {@code Issue8111SuspendFlushDrainsPendingPagesTest}). What #7758 asked of the test is
+ * kept here: each parameter has its own paths and chooses the backup path on its own database's configuration, and the
+ * archive is checked for the committed records BEFORE the restore, so a recurrence names the half that lost them.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class Issue7586BackupArchiveEntriesSitAtArchiveRootIT {
-  private static final String DATABASE_PATH = "target/databases/issue7586-backup-root";
-  private static final String RESTORED_PATH = "target/databases/issue7586-backup-root-restored";
-  private static final String BACKUP_FILE   = "target/issue7586-backup-root.zip";
-  private static final String TYPE          = "Issue7586Doc";
+  private static final String TYPE = "Issue7586Doc";
 
   @BeforeEach
   @AfterEach
   void clean() {
-    FileUtils.deleteRecursively(new File(DATABASE_PATH));
-    FileUtils.deleteRecursively(new File(RESTORED_PATH));
-    new File(BACKUP_FILE).delete();
+    for (final boolean snapshot : new boolean[] { true, false }) {
+      FileUtils.deleteRecursively(new File(databasePath(snapshot)));
+      FileUtils.deleteRecursively(new File(restoredPath(snapshot)));
+      new File(backupFile(snapshot)).delete();
+    }
   }
 
   @ParameterizedTest
   @ValueSource(booleans = { true, false })
   void everyArchiveEntrySitsAtTheArchiveRootAndTheArchiveRestoresIntact(final boolean snapshot) throws Exception {
-    GlobalConfiguration.PAGE_SNAPSHOT_ENABLED.setValue(snapshot);
-    try {
-      try (final Database database = new DatabaseFactory(DATABASE_PATH).create()) {
-        createSchema(database);
-        database.transaction(() -> {
-          for (int i = 0; i < 50; i++)
-            database.newDocument(TYPE).set("id", i).set("name", "issue7586-" + i).save();
-        });
+    final String backupFile = backupFile(snapshot);
 
-        new Backup(database, BACKUP_FILE).setVerboseLevel(0).backupDatabase();
-      }
+    // Chosen on THIS database's configuration, which is what FullBackupFormat reads, rather than on the process-wide
+    // setting, which any other test in the JVM can read or change (issue #7758)
+    final DatabaseFactory factory = new DatabaseFactory(databasePath(snapshot));
+    factory.getContextConfiguration().setValue(GlobalConfiguration.PAGE_SNAPSHOT_ENABLED, snapshot);
+    try (final Database database = factory.create()) {
+      assertThat(database.getConfiguration().getValueAsBoolean(GlobalConfiguration.PAGE_SNAPSHOT_ENABLED))
+          .isEqualTo(snapshot);
+      createSchema(database);
+      database.transaction(() -> {
+        for (int i = 0; i < 50; i++)
+          database.newDocument(TYPE).set("id", i).set("name", "issue7586-" + i).save();
+      });
 
-      final List<String> entries = new ArrayList<>();
-      try (final ZipFile zip = new ZipFile(BACKUP_FILE)) {
-        final Enumeration<? extends ZipEntry> it = zip.entries();
-        while (it.hasMoreElements())
-          entries.add(it.nextElement().getName());
-      }
-
-      assertThat(entries).isNotEmpty();
-      for (final String entry : entries)
-        assertThat(entry).as("archive entry '%s' must sit at the archive root", entry).doesNotContain("/", "\\");
-
-      new Restore(BACKUP_FILE, RESTORED_PATH).setVerboseLevel(0).restoreDatabase();
-
-      try (final Database restored = new DatabaseFactory(RESTORED_PATH).open()) {
-        assertThat(restored.countType(TYPE, false)).isEqualTo(50);
-        assertThat(restored.command("sql", "check database").nextIfAvailable().<Long>getProperty("totalErrors"))
-            .isZero();
-      }
-      TestHelper.checkActiveDatabases();
-    } finally {
-      GlobalConfiguration.PAGE_SNAPSHOT_ENABLED.reset();
+      new Backup(database, backupFile).setVerboseLevel(0).backupDatabase();
     }
+
+    final List<String> entries = new ArrayList<>();
+    final ByteArrayOutputStream archivedBuckets = new ByteArrayOutputStream();
+    try (final ZipFile zip = new ZipFile(backupFile)) {
+      final Enumeration<? extends ZipEntry> it = zip.entries();
+      while (it.hasMoreElements()) {
+        final ZipEntry entry = it.nextElement();
+        entries.add(entry.getName());
+        if (entry.getName().startsWith(TYPE) && entry.getName().endsWith("." + LocalBucket.BUCKET_EXT))
+          try (final InputStream in = zip.getInputStream(entry)) {
+            in.transferTo(archivedBuckets);
+          }
+      }
+    }
+
+    assertThat(entries).isNotEmpty();
+    for (final String entry : entries)
+      assertThat(entry).as("archive entry '%s' must sit at the archive root", entry).doesNotContain("/", "\\");
+
+    // Records keep their strings verbatim, so every committed name is in the archived bucket pages - or the backup of
+    // the open database froze the bucket without them, which is the half issue #7758 could not tell from the restore
+    final String archivedBucketBytes = archivedBuckets.toString(StandardCharsets.ISO_8859_1);
+    for (int i = 0; i < 50; i++)
+      assertThat(archivedBucketBytes).as("the archive must carry the committed record 'issue7586-%d'", i)
+          .contains("issue7586-" + i);
+
+    new Restore(backupFile, restoredPath(snapshot)).setVerboseLevel(0).restoreDatabase();
+
+    try (final Database restored = new DatabaseFactory(restoredPath(snapshot)).open()) {
+      assertThat(restored.countType(TYPE, false)).isEqualTo(50);
+      assertThat(restored.command("sql", "check database").nextIfAvailable().<Long>getProperty("totalErrors"))
+          .isZero();
+    }
+    TestHelper.checkActiveDatabases();
+  }
+
+  /** One set of paths per parameter, so the two runs never share a directory or an archive (issue #7758). */
+  private static String databasePath(final boolean snapshot) {
+    return "target/databases/issue7586-backup-root-" + (snapshot ? "snapshot" : "frozen");
+  }
+
+  private static String restoredPath(final boolean snapshot) {
+    return databasePath(snapshot) + "-restored";
+  }
+
+  private static String backupFile(final boolean snapshot) {
+    return "target/issue7586-backup-root-" + (snapshot ? "snapshot" : "frozen") + ".zip";
   }
 
   private static void createSchema(final Database database) {

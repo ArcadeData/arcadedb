@@ -31,25 +31,19 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 
 /**
- * Issue #7536: the fingerprint recording which replicated security document a node installed is written to
- * {@code server-security-cluster.json}, and the document itself to a different file by a different call. When the
- * marker write fails and the document's own write did not, what stayed on disk was the PREVIOUS marker - so a
- * restart read a document from one point in the cluster's history and a marker from an earlier one.
+ * Issue #7536, as issue #7752 reshaped it: what a failed write of {@code server-security-cluster.json} leaves on disk,
+ * and what it reports.
  * <p>
- * <b>Why a stale marker is the worst of the three outcomes.</b> {@code ServerSecurity.isSuperseded} takes the
- * recorded fingerprint as the baseline every node compares the entry's precondition against. With a marker one
- * change behind its peers', this node refuses the very next entry they accept - no race needed, no second
- * coincidence - and it keeps refusing, because nothing it refuses can move its baseline forward. That is a
- * permanent split of the cluster's security state reached from a single lost write.
+ * #7536 found that a failed write left the PREVIOUS record behind, and that a restart then judged its peers' entries
+ * against a baseline one change out of date - refusing, forever, the very entry they accepted, because the entry that
+ * moved the baseline forward could already have been compacted out of the Raft log. It answered by REMOVING the file.
  * <p>
- * With NO marker the node answers "I cannot judge" and installs, which is what every node does before the first
- * replicated document of that kind lands. It rejoins the cluster's baseline on the next entry that applies. It is
- * not free - if the first entry after the restart is itself a superseded one, this node installs what its peers
- * refuse, which is the residual issue #7752 tracks and closes by carrying the baseline in the replicated protocol
- * - but it needs that extra coincidence, where the stale marker needs none.
- * <p>
- * So a marker write that fails must leave NO marker behind rather than the previous one. These tests pin that,
- * for each of the three document kinds, plus the retry that a failed write must not suppress.
+ * Issue #7752 moved the guarantee into the Raft log instead: {@link ReplicatedSecurityFingerprintRepository#isDurable}
+ * reports the failed write, and the HA layer keeps the entry that installed the document out of every snapshot
+ * checkpoint until it is durable, so a restart REPLAYS it. Against a replay the previous record is exactly the right
+ * baseline - the one every peer judged that entry against - while no record at all is the harmful one: the file holds
+ * all three kinds, and a replay judged with no baseline installs the entries its peers refused. So a failed write now
+ * leaves the previous record in place and says so; these tests pin that for each kind, plus the retry.
  *
  * @see ReplicatedSecurityFingerprintRepositoryTest for the load-side fail-open branches
  */
@@ -58,36 +52,27 @@ class Issue7536StaleFingerprintMarkerTest {
   @TempDir
   private Path configDir;
 
-  /**
-   * The defect, on the users document. The first record lands; the second cannot be written. Before the fix the
-   * file still held the FIRST fingerprint, and a restarted node judged its peers' entries against a baseline one
-   * change out of date.
-   */
   @Test
-  void aFailedUsersMarkerWriteLeavesNoMarkerRatherThanTheStaleOne() {
-    assertNoStaleMarkerSurvives(ReplicatedSecurityFingerprintRepository.USERS);
+  void aFailedUsersRecordWriteKeepsThePreviousRecordAndReportsItNotDurable() {
+    assertPreviousRecordSurvives(ReplicatedSecurityFingerprintRepository.USERS);
   }
 
-  /** The same for the group document, which shares the file and the write. */
   @Test
-  void aFailedGroupsMarkerWriteLeavesNoMarkerRatherThanTheStaleOne() {
-    assertNoStaleMarkerSurvives(ReplicatedSecurityFingerprintRepository.GROUPS);
+  void aFailedGroupsRecordWriteKeepsThePreviousRecordAndReportsItNotDurable() {
+    assertPreviousRecordSurvives(ReplicatedSecurityFingerprintRepository.GROUPS);
   }
 
-  /** And for the API-token document. */
   @Test
-  void aFailedApiTokensMarkerWriteLeavesNoMarkerRatherThanTheStaleOne() {
-    assertNoStaleMarkerSurvives(ReplicatedSecurityFingerprintRepository.API_TOKENS);
+  void aFailedApiTokensRecordWriteKeepsThePreviousRecordAndReportsItNotDurable() {
+    assertPreviousRecordSurvives(ReplicatedSecurityFingerprintRepository.API_TOKENS);
   }
 
   /**
-   * The three kinds share one file, so a write that fails cannot discard only the kind it was called for: what is
-   * on disk is a single document and the only operation still available on a volume that cannot be written is
-   * removing it. Every kind therefore goes back to "cannot judge" together, which is the conservative direction
-   * and is self-closing - the next security change that persists records all three again.
+   * The three kinds share one file, so a failed write of one must not cost the others their baseline: a replay judged
+   * without one would install what the peers refused for a kind whose own write never failed.
    */
   @Test
-  void aFailedWriteDiscardsEveryKindBecauseTheyShareOneFile() {
+  void aFailedWriteOfOneKindKeepsTheOtherKindsDurable() {
     final FailableFingerprintRepository repository = new FailableFingerprintRepository(configDir.toString());
     repository.record(ReplicatedSecurityFingerprintRepository.USERS, "fp-users-1");
     repository.record(ReplicatedSecurityFingerprintRepository.GROUPS, "fp-groups-1");
@@ -95,17 +80,21 @@ class Issue7536StaleFingerprintMarkerTest {
     repository.failWrites = true;
     repository.record(ReplicatedSecurityFingerprintRepository.API_TOKENS, "fp-tokens-1");
 
+    assertThat(repository.isDurable(ReplicatedSecurityFingerprintRepository.API_TOKENS)).isFalse();
+    assertThat(repository.isDurable(ReplicatedSecurityFingerprintRepository.USERS)).isTrue();
+    assertThat(repository.isDurable(ReplicatedSecurityFingerprintRepository.GROUPS)).isTrue();
+
     final ReplicatedSecurityFingerprintRepository reopened =
         new ReplicatedSecurityFingerprintRepository(configDir.toString());
-    assertThat(reopened.get(ReplicatedSecurityFingerprintRepository.USERS))
-        .as("a marker that can no longer be kept in step with the others is not a marker to judge from").isNull();
-    assertThat(reopened.get(ReplicatedSecurityFingerprintRepository.GROUPS)).isNull();
-    assertThat(reopened.get(ReplicatedSecurityFingerprintRepository.API_TOKENS)).isNull();
+    assertThat(reopened.get(ReplicatedSecurityFingerprintRepository.USERS)).isEqualTo("fp-users-1");
+    assertThat(reopened.get(ReplicatedSecurityFingerprintRepository.GROUPS)).isEqualTo("fp-groups-1");
+    assertThat(reopened.get(ReplicatedSecurityFingerprintRepository.API_TOKENS))
+        .as("never recorded on disk, so a replay of its entry installs it like every peer did").isNull();
   }
 
   /**
    * The running node is unaffected: it applied the document, so it holds the cluster's baseline in memory and goes
-   * on judging with it. Only the restart loses it, which is what the discard is for.
+   * on judging with it.
    */
   @Test
   void theValueStaysInForceInMemoryAfterAFailedWrite() {
@@ -116,15 +105,13 @@ class Issue7536StaleFingerprintMarkerTest {
     repository.record(ReplicatedSecurityFingerprintRepository.USERS, "fp-users-2");
 
     assertThat(repository.get(ReplicatedSecurityFingerprintRepository.USERS))
-        .as("this node installed the document, so it judges from it until it restarts").isEqualTo("fp-users-2");
+        .as("this node installed the document, so it judges from it").isEqualTo("fp-users-2");
   }
 
   /**
-   * The re-record that used to be skipped. {@code record()} writes nothing when the fingerprint has not moved,
-   * which keeps the Ratis replay of already-applied entries off the fsync path. But after a write that FAILED,
-   * "has not moved" is true of memory and false of the disk, so the skip made the loss permanent: the identical
-   * document could never repair the file, and only a change to a DIFFERENT one would. The skip now tracks what
-   * reached the disk, not what is in memory.
+   * The re-record that used to be skipped. {@code record()} writes nothing when the fingerprint has not moved, which
+   * keeps the Ratis replay of already-applied entries off the fsync path. After a write that FAILED, "has not moved" is
+   * true of memory and false of the disk, so the skip tracks what reached the disk, not what is in memory.
    */
   @Test
   void aRepeatOfTheSameFingerprintIsRetriedAfterAFailedWrite() {
@@ -136,6 +123,7 @@ class Issue7536StaleFingerprintMarkerTest {
     repository.failWrites = false;
     repository.record(ReplicatedSecurityFingerprintRepository.USERS, "fp-users-1");
 
+    assertThat(repository.isDurable(ReplicatedSecurityFingerprintRepository.USERS)).isTrue();
     assertThat(new ReplicatedSecurityFingerprintRepository(configDir.toString())
         .get(ReplicatedSecurityFingerprintRepository.USERS))
         .as("the volume came back and the very next apply of the same document had to re-record it")
@@ -143,14 +131,39 @@ class Issue7536StaleFingerprintMarkerTest {
   }
 
   /**
-   * The residual branch: the write failed AND the stale record could not be removed either. Nothing more can be
-   * done on the filesystem at that point, so all that is required is that the apply the record came from is not
-   * failed by it - {@code record()} runs on the Raft apply thread, and a throw there is the crash loop issue
-   * #7137 exists to prevent.
+   * {@link ReplicatedSecurityFingerprintRepository#flush()} is the retry issue #7752 runs while the Raft log is pinned:
+   * it writes what is in force without waiting for another entry, and is a no-op once everything is on disk.
    */
   @Test
-  void aDiscardThatCannotHappenEitherIsStillNotAllowedToFailTheApply() throws IOException {
-    // A non-empty directory where the marker file belongs: the rename over it fails, and so does deleting it.
+  void flushWritesWhatIsInForceOnceTheVolumeIsWritableAgain() {
+    final FailableFingerprintRepository repository = new FailableFingerprintRepository(configDir.toString());
+    repository.record(ReplicatedSecurityFingerprintRepository.USERS, "fp-users-1");
+
+    repository.failWrites = true;
+    repository.record(ReplicatedSecurityFingerprintRepository.USERS, "fp-users-2");
+    assertThat(repository.flush()).as("the volume is still failing").isFalse();
+    assertThat(repository.isDurable(ReplicatedSecurityFingerprintRepository.USERS)).isFalse();
+
+    repository.failWrites = false;
+    assertThat(repository.flush()).isTrue();
+    assertThat(repository.isDurable(ReplicatedSecurityFingerprintRepository.USERS)).isTrue();
+    assertThat(new ReplicatedSecurityFingerprintRepository(configDir.toString())
+        .get(ReplicatedSecurityFingerprintRepository.USERS)).isEqualTo("fp-users-2");
+
+    repository.writes = 0;
+    assertThat(repository.flush()).isTrue();
+    assertThat(repository.writes).as("nothing left to write, so nothing is written").isZero();
+  }
+
+  /**
+   * A volume on which the record can be neither rewritten nor removed - the read-only sub-case recorded on issue #7752.
+   * Nothing more can be done on the filesystem, so all that is required is that the apply the record came from is not
+   * failed by it ({@code record()} runs on the Raft apply thread, and a throw there is the crash loop of issue #7137),
+   * and that the failure is reported so the HA layer keeps the entry replayable.
+   */
+  @Test
+  void aRecordThatCannotBeWrittenNeverFailsTheApplyAndIsReportedNotDurable() throws IOException {
+    // A non-empty directory where the marker file belongs: the rename over it fails.
     final Path occupied = configDir.resolve(ReplicatedSecurityFingerprintRepository.FILE_NAME);
     Files.createDirectories(occupied);
     Files.writeString(occupied.resolve("keep-me"), "x", StandardCharsets.UTF_8);
@@ -159,45 +172,41 @@ class Issue7536StaleFingerprintMarkerTest {
         new ReplicatedSecurityFingerprintRepository(configDir.toString());
 
     assertThatCode(() -> repository.record(ReplicatedSecurityFingerprintRepository.USERS, "fp-users"))
-        .as("a marker that can neither be written nor removed must still never fail a committed entry")
+        .as("a record that cannot be written must still never fail a committed entry")
         .doesNotThrowAnyException();
     assertThat(repository.get(ReplicatedSecurityFingerprintRepository.USERS)).isEqualTo("fp-users");
+    assertThat(repository.isDurable(ReplicatedSecurityFingerprintRepository.USERS)).isFalse();
 
-    // The branch this test names is the one where BOTH the write and the discard fail, so both have to have
-    // been attempted and both have to have failed: the directory is still a directory, and still holds its file.
-    assertThat(Files.isDirectory(occupied))
-        .as("the rename could not replace it, which is the write failure this test needs").isTrue();
-    assertThat(Files.exists(occupied.resolve("keep-me")))
-        .as("and the discard could not remove it either, which is the second failure").isTrue();
+    assertThat(Files.isDirectory(occupied)).as("the rename could not replace it").isTrue();
+    assertThat(Files.exists(occupied.resolve("keep-me"))).as("and nothing tried to remove it").isTrue();
     try (final Stream<Path> entries = Files.list(configDir)) {
       assertThat(entries.map(entry -> entry.getFileName().toString()).filter(name -> name.endsWith(".tmp")))
           .as("and the temp file it wrote on the way out is not left behind either").isEmpty();
     }
   }
 
-  /** Records one fingerprint successfully, then fails the next write, and asserts nothing stale survives. */
-  private void assertNoStaleMarkerSurvives(final String documentKind) {
+  /** Records one fingerprint successfully, then fails the next write, and asserts the first one is what survives. */
+  private void assertPreviousRecordSurvives(final String documentKind) {
     final FailableFingerprintRepository repository = new FailableFingerprintRepository(configDir.toString());
     repository.record(documentKind, "fp-1");
-
-    assertThat(new ReplicatedSecurityFingerprintRepository(configDir.toString()).get(documentKind))
-        .as("the fixture's own premise: the first record did reach the disk").isEqualTo("fp-1");
+    assertThat(repository.isDurable(documentKind)).isTrue();
 
     repository.failWrites = true;
     repository.record(documentKind, "fp-2");
 
+    assertThat(repository.isDurable(documentKind))
+        .as("what is in force is not what a restart would read back, which is what pins the Raft log").isFalse();
     assertThat(new ReplicatedSecurityFingerprintRepository(configDir.toString()).get(documentKind))
-        .as("'fp-1' here is the divergence of issue #7536: this node would refuse the entry its peers accept")
-        .isNull();
+        .as("the baseline a replay of the 'fp-2' entry must be judged against, as every peer judged it").isEqualTo("fp-1");
   }
 
   /**
-   * The repository with its one atomic write made injectable. A real object rather than a mock: only the write
-   * step is replaced, and everything this test is about - the discard, the retry bookkeeping, the log - is the
-   * production code.
+   * The repository with its one atomic write made injectable. A real object rather than a mock: only the write step
+   * is replaced, and everything this test is about - the failure policy, the retry bookkeeping - is the production code.
    */
   private static final class FailableFingerprintRepository extends ReplicatedSecurityFingerprintRepository {
     private boolean failWrites;
+    private int     writes;
 
     private FailableFingerprintRepository(final String securityConfPath) {
       super(securityConfPath);
@@ -205,6 +214,7 @@ class Issue7536StaleFingerprintMarkerTest {
 
     @Override
     void writeAtomically(final Path target, final byte[] bytes) throws IOException {
+      ++writes;
       if (failWrites)
         throw new IOException("No space left on device");
       super.writeAtomically(target, bytes);
