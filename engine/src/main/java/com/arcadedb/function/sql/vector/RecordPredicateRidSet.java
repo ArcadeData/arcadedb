@@ -60,6 +60,12 @@ import java.util.concurrent.ConcurrentHashMap;
  * may both test it; the answer is the same. The memo holds one entry per candidate the search met, which the search itself
  * bounds (its beam, its fetch budget), and lives as long as the call.
  * <p>
+ * The cost follows the predicate's selectivity. A predicate that keeps a fair share of the records is met within the graph walk,
+ * after testing a few candidates per result. One that keeps few or none leaves the walk short of {@code k}, and the dense index
+ * then completes the answer by testing every indexed vector, each record once: an exact answer, at the cost of the full load a
+ * {@code filter} subquery pays on every call anyway. Capping that walk would answer fewer rows than exist, so it is not capped;
+ * for a small, known set of RIDs the {@code filter} option remains the plan that scans only them.
+ * <p>
  * Records are read with the caller's permissions, as every other read of the search: a candidate the caller may not read is
  * not accepted, so the predicate can neither reveal it nor fail the search over it.
  * <p>
