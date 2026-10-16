@@ -215,20 +215,13 @@ public class SQLFunctionVectorDiscover extends SQLFunctionVectorAbstract {
     final ArrayList<Object> out = new ArrayList<>(Math.min(k, rescored.size()));
     for (int i = 0; i < rescored.size() && out.size() < k; i++) {
       // Override the upstream "distance"/"score" with the discovery score so a downstream
-      // {@code vector.fuse} or `ORDER BY score` sees the right signal. Always rebuild into a
-      // fresh map: mutating the caller-supplied map in place would let one round of discover
-      // poison the next (e.g. inside a LET / subquery the same row dict gets reused with the
-      // previous round's score still attached). Building a copy is cheap and the safer default.
-      final Object row = rescored.get(i).row();
-      if (row instanceof Map<?, ?> mm) {
-        final LinkedHashMap<String, Object> rebuilt = new LinkedHashMap<>();
-        for (final var e : mm.entrySet())
-          rebuilt.put(String.valueOf(e.getKey()), e.getValue());
-        rebuilt.put("score", rescored.get(i).score());
-        out.add(rebuilt);
-      } else {
-        out.add(row);
-      }
+      // {@code vector.fuse} or `ORDER BY score` sees the right signal. Never in place: mutating
+      // the caller-supplied map would let one round of discover poison the next (e.g. inside a
+      // LET / subquery the same row dict gets reused with the previous round's score still
+      // attached). Nor by copying every property of the row: the override reads the upstream
+      // row on demand, and keeps the record it carries for a downstream reranker (issue #10170).
+      // Only map rows reach this point (the loop above skips the rest)
+      out.add(new ScoreOverrideRow(rescored.get(i).row(), "score", rescored.get(i).score()));
     }
     return out;
   }
@@ -252,13 +245,14 @@ public class SQLFunctionVectorDiscover extends SQLFunctionVectorAbstract {
       final String propertyName, final int expectedDim) {
     Object raw = row.get(propertyName);
     if (raw == null) {
-      // Fast path missed (the embedding is not in the projected row); fall back to the record.
-      try {
-        final Document rec = (Document) db.lookupByRID(rid, true);
-        raw = rec.get(propertyName);
-      } catch (final RecordNotFoundException ignored) {
+      // Fast path missed (the embedding is not in the projected row). A row that carries its record already read the
+      // property off it, so only a row carrying just a RID falls back to loading the record (issue #10170).
+      if (carriedRecord(row, rid) != null)
         return null;
-      }
+      final Document rec = candidateRecord(db, row, rid);
+      if (rec == null)
+        return null;
+      raw = rec.get(propertyName);
       if (raw == null)
         return null;
     }

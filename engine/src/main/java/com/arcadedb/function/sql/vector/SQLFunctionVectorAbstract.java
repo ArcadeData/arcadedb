@@ -287,6 +287,46 @@ public abstract class SQLFunctionVectorAbstract extends SQLFunctionAbstract {
   }
 
   /**
+   * The record a candidate row already carries, or null when it carries none for {@code rid}: the record of a
+   * {@link ScoredRecordRow} (the output of {@code vector.neighbors}, {@code vector.fuse}, ...), a bare {@link Document}, the
+   * {@code record} entry of a map row, or the element of a {@link Result}. Reusing it spares the reranker functions a lookup of
+   * every candidate the upstream stage has just loaded (issues #10129, #10170). The identity check keeps a user property that
+   * happens to be called {@code record} from being taken for it.
+   */
+  protected static Document carriedRecord(final Object row, final RID rid) {
+    final Object carried;
+    if (row instanceof ScoreOverrideRow override)
+      // the output of `vector.boost` / `vector.discover` carries what the row it re-scored carried
+      return carriedRecord(override.getSource(), rid);
+    if (row instanceof ScoredRecordRow scored)
+      carried = scored.getRecord();
+    else if (row instanceof Document document)
+      carried = document;
+    else if (row instanceof Map<?, ?> map)
+      carried = map.get("record");
+    else if (row instanceof Result result)
+      carried = result.isElement() ? result.getElement().get() : result.getProperty("record");
+    else
+      carried = null;
+    return carried instanceof Document document && rid.equals(document.getIdentity()) ? document : null;
+  }
+
+  /**
+   * The record of a candidate row: the one it carries ({@link #carriedRecord}), else the one {@code rid} loads. Null when the
+   * record is gone, or is not a document (an internal record such as an edge segment has no properties to read).
+   */
+  protected static Document candidateRecord(final BasicDatabase db, final Object row, final RID rid) {
+    final Document carried = carriedRecord(row, rid);
+    if (carried != null)
+      return carried;
+    try {
+      return db.lookupByRID(rid, true) instanceof Document document ? document : null;
+    } catch (final RecordNotFoundException e) {
+      return null;
+    }
+  }
+
+  /**
    * Reads a candidate row's similarity score, with the same auto-flip rules as
    * {@link SQLFunctionVectorFuse#extractScore}: prefer {@code score} or {@code $score}
    * (similarity-shaped, higher = better), fall back to the negated {@code distance} field that
