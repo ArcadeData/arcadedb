@@ -160,6 +160,10 @@ public class ReplicatedSecurityFingerprintRepository {
    * Whether the fingerprint in force for {@code document} is the one on disk, so a restart would read it back (issue
    * #7752). False only after a write that failed and has not been repaired since; a document never recorded is
    * durable, because there is nothing for a restart to lose.
+   * <p>
+   * Read without {@code saveLock}, from any thread (a metrics scrape, the state machine). A read that overlaps
+   * {@code save()} can see {@code persisted} momentarily cleared and answer false for a document that is durable - the
+   * safe direction, since it can only keep a snapshot checkpoint back for one more round, never let one through early.
    */
   public boolean isDurable(final String document) {
     return Objects.equals(fingerprints.get(document), persisted.get(document));
