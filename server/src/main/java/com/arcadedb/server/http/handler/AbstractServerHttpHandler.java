@@ -1525,6 +1525,8 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
           completed.getInputStream().close();
         } catch (final IOException e) {
           // The stream or the connection was ended under it, which is the point
+          LogManager.instance().log(AbstractServerHttpHandler.class, Level.FINE, "Refused request body closed: %s",
+              e.getMessage());
         }
         Connectors.terminateRequest(completed);
       }
