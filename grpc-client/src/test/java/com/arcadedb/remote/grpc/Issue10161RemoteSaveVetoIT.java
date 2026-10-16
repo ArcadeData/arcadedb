@@ -116,9 +116,16 @@ public class Issue10161RemoteSaveVetoIT extends BaseGrpcClientServerTest {
 
     final MutableDocument doc = db.lookupByRID(rid).asDocument().modify();
     doc.set("v", "refused");
+    final long reads = stat(db, "readRecord");
+    final long exists = stat(db, "existsRecord");
+    final long queries = stat(db, "queries");
     assertThatThrownBy(doc::save).isInstanceOf(RecordVetoedException.class);
 
     assertThat(stat(db, "updateRecord")).as("a refused update is not counted").isEqualTo(updates);
+    // TELLING A VETO FROM A MISSING RECORD IS THE DRIVER'S OWN BUSINESS: NO READ THE CALLER DID NOT MAKE IS COUNTED
+    assertThat(stat(db, "readRecord")).isEqualTo(reads);
+    assertThat(stat(db, "existsRecord")).isEqualTo(exists);
+    assertThat(stat(db, "queries")).isEqualTo(queries);
     assertThat(db.lookupByRID(rid).asDocument().getString("v")).as("the record was not written").isEqualTo("original");
   }
 
@@ -191,6 +198,19 @@ public class Issue10161RemoteSaveVetoIT extends BaseGrpcClientServerTest {
 
     doc.set("v", "changed");
     assertThatThrownBy(doc::save).isInstanceOf(RecordNotFoundException.class);
+  }
+
+  @ParameterizedTest
+  @EnumSource(Driver.class)
+  void anUpdateOfADeletedEdgeIsStillNotFound(final Driver driver) {
+    final RemoteDatabase db = db(driver);
+    final RID edgeRid = db.command("sql", "CREATE EDGE " + EDGE + " FROM (CREATE VERTEX " + VERTEX + ") TO (CREATE VERTEX " + VERTEX
+        + ") SET v = 'original'").next().getIdentity().get();
+    final MutableEdge edge = db.lookupByRID(edgeRid).asEdge().modify();
+    db.command("sql", "DELETE FROM " + edgeRid);
+
+    edge.set("v", "changed");
+    assertThatThrownBy(edge::save).isInstanceOf(RecordNotFoundException.class);
   }
 
   private RemoteDatabase db(final Driver driver) {

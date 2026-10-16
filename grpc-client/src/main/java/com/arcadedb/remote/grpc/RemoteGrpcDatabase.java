@@ -915,7 +915,8 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
       }
 
       // The server answers success=false for an update a before-update listener vetoed: a refusal, raised as the HTTP driver
-      // raises it, and not a write to report as applied (issue #10161). A server older than #10084 always answers true
+      // raises it, and not a write to report as applied (issue #10161). A server older than #10084 always answers true. A missing
+      // record never answers false: the server's lookup of the RID fails first, and arrives here as RecordNotFoundException
       if (!response.getSuccess())
         throw RecordVetoedException.ofUpdate(record.getTypeName(), rid);
 

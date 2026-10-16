@@ -1865,7 +1865,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
       final ResultSet result = command("sql", "update " + rid + " content " + json);
       final long updated = result.hasNext() ? result.next().<Number>getProperty("count").longValue() : 0;
       if (updated == 0) {
-        if (existsRecord(rid))
+        if (recordExistsUncounted(rid))
           throw RecordVetoedException.ofUpdate(record.getTypeName(), rid);
         throw new RecordNotFoundException("Record " + rid + " not found", rid);
       }
@@ -1897,6 +1897,21 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     trackCreatedRecord(record);
     stats.createRecord.incrementAndGet();
     return newRID;
+  }
+
+  /**
+   * Whether {@code rid} names a record, asked on the refusal path of {@link #saveRecord(MutableDocument)} to tell a veto from a
+   * missing record. Not counted in any statistic: the caller made no read, and the statistics count what the caller did (issue
+   * #10095). A record deleted by someone else between the UPDATE and this probe reads as missing, which is what it is by then.
+   */
+  private boolean recordExistsUncounted(final RID rid) {
+    try {
+      final ResultSet result = (ResultSet) databaseCommand("query", "sql", "select @rid from " + rid, null, false,
+          (connection, response) -> createResultSet(response));
+      return result.hasNext();
+    } catch (final RecordNotFoundException e) {
+      return false;
+    }
   }
 
   /**
