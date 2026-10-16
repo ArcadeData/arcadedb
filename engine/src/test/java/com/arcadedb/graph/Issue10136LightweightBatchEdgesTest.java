@@ -43,6 +43,7 @@ class Issue10136LightweightBatchEdgesTest extends TestHelper {
     database.transaction(() -> {
       database.getSchema().buildVertexType().withName("V").create();
       database.getSchema().buildEdgeType().withName("L").withLightweight(true).create();
+      database.getSchema().buildEdgeType().withName("UL").withBidirectional(false).withLightweight(true).create();
       database.getSchema().buildEdgeType().withName("E").create();
       database.getSchema().buildEdgeType().withName("U").withLightweight(true).withUnique(true).create();
     });
@@ -62,6 +63,19 @@ class Issue10136LightweightBatchEdgesTest extends TestHelper {
     assertThat(v[0].asVertex().countEdges(Vertex.DIRECTION.OUT, "L")).isEqualTo(2L);
     assertThat(v[1].asVertex().countEdges(Vertex.DIRECTION.IN, "L")).isEqualTo(1L);
     assertThat(v[2].asVertex().countEdges(Vertex.DIRECTION.IN, "L")).isEqualTo(1L);
+  }
+
+  /** The incoming side follows the type, not the {@code bidirectional} argument of the batch, as on the single-edge path. */
+  @Test
+  void aBatchOfUnidirectionalLightweightEdgesDoesNotWireIncoming() {
+    final RID[] v = newVertices(2);
+
+    final List<Edge> created = newEdges(v[0], new GraphEngine.CreateEdgeOperation("UL", v[1], new Object[0]));
+
+    assertThat(created).hasSize(1);
+    assertThat(created).allMatch(edge -> edge instanceof LightEdge);
+    assertThat(v[0].asVertex().countEdges(Vertex.DIRECTION.OUT, "UL")).isEqualTo(1L);
+    assertThat(v[1].asVertex().countEdges(Vertex.DIRECTION.IN, "UL")).isZero();
   }
 
   @Test
