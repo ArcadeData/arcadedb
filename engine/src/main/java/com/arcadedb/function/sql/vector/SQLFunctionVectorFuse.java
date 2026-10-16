@@ -25,6 +25,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.function.sql.FunctionOptions;
+import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.vector.GroupAdmissionState;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -33,7 +34,6 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -170,14 +170,9 @@ public class SQLFunctionVectorFuse extends SQLFunctionVectorAbstract {
       if (groupBy != null && !groups.admit(readNestedField(record, groupBy)))
         continue;
 
-      final LinkedHashMap<String, Object> entry = new LinkedHashMap<>();
-      entry.put("record", record);
-      for (final String prop : record.getPropertyNames())
-        entry.put(prop, record.get(prop));
-      entry.put("@rid", record.getIdentity());
-      entry.put("@type", record.getTypeName());
-      entry.put("score", rs.score);
-      result.add(entry);
+      // The row carries the loaded record, so a consumer such as `vector.rerank` reuses it instead of loading it again,
+      // and reads the record's properties on demand instead of copying all of them (issue #10129).
+      result.add(new ScoredRecordRow(record, "score", rs.score));
     }
     return result;
   }
@@ -226,6 +221,16 @@ public class SQLFunctionVectorFuse extends SQLFunctionVectorAbstract {
           functionName + " source[" + sourceIdx + "] must be a list of rows, got: " + src.getClass().getSimpleName());
 
     final ArrayList<RidScore> out = new ArrayList<>();
+    if (src instanceof IndexCursor cursor) {
+      // `SEARCH_INDEX(...)` passed directly as a source is an index cursor over bare records: the score of each match
+      // is the cursor's, not the row's (issue #10129). Without it DBSF and LINEAR refused a full-text leg written so.
+      while (cursor.hasNext()) {
+        final Identifiable next = cursor.next();
+        if (next != null)
+          out.add(new RidScore(next.getIdentity(), cursor.getFloatScore()));
+      }
+      return out;
+    }
     for (final Object row : iter) {
       final RID rid = extractRid(row);
       if (rid == null)

@@ -33,7 +33,6 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -219,14 +218,7 @@ public class SQLFunctionVectorMmr extends SQLFunctionVectorAbstract {
 
     final ArrayList<Object> result = new ArrayList<>(selected.size());
     for (final Candidate c : selected) {
-      final LinkedHashMap<String, Object> entry = new LinkedHashMap<>();
-      entry.put("record", c.record());
-      for (final String prop : c.record().getPropertyNames())
-        entry.put(prop, c.record().get(prop));
-      entry.put("@rid", c.record().getIdentity());
-      entry.put("@type", c.record().getTypeName());
-      entry.put("score", c.score());
-      result.add(entry);
+      result.add(new ScoredRecordRow(c.record(), "score", c.score()));
     }
     return result;
   }
