@@ -296,7 +296,9 @@ public class SecurityAdminApiSpec implements OpenApiContributor {
     putOp.addParametersItem(SpecBuilders.queryParam("name", "User name", true));
     putOp.setRequestBody(SpecBuilders.jsonBody(
         "User update request with optional password and databases", "UpdateUserRequest", true));
-    putOp.setResponses(forwardedToLeaderResponses("User updated", "200", "SecurityAdminResult"));
+    final ApiResponses updateUserResponses = forwardedToLeaderResponses("User updated", "200", "SecurityAdminResult");
+    updateUserResponses.addApiResponse("404", SpecBuilders.errorResponse("Not found - No user has this name"));
+    putOp.setResponses(updateUserResponses);
     pathItem.setPut(putOp);
 
     final Operation deleteOp = new Operation();
@@ -306,7 +308,9 @@ public class SecurityAdminApiSpec implements OpenApiContributor {
     deleteOp.setOperationId("deleteUser");
     deleteOp.addTagsItem("Security");
     deleteOp.addParametersItem(SpecBuilders.queryParam("name", "User name to delete", true));
-    deleteOp.setResponses(forwardedToLeaderResponses("User deleted", "200", "SecurityAdminResult"));
+    final ApiResponses deleteUserResponses = forwardedToLeaderResponses("User deleted", "200", "SecurityAdminResult");
+    deleteUserResponses.addApiResponse("404", SpecBuilders.errorResponse("Not found - No user has this name"));
+    deleteOp.setResponses(deleteUserResponses);
     pathItem.setDelete(deleteOp);
 
     return pathItem;
@@ -342,7 +346,10 @@ public class SecurityAdminApiSpec implements OpenApiContributor {
     deleteOp.addTagsItem("Security");
     deleteOp.addParametersItem(SpecBuilders.queryParam("database", "Database name", true));
     deleteOp.addParametersItem(SpecBuilders.queryParam("name", "Group name to delete", true));
-    deleteOp.setResponses(forwardedToLeaderResponses("Group deleted", "200", "SecurityAdminResult"));
+    final ApiResponses deleteGroupResponses = forwardedToLeaderResponses("Group deleted", "200", "SecurityAdminResult");
+    deleteGroupResponses.addApiResponse("404", SpecBuilders.errorResponse(
+        "Not found - No group has this name in the given database"));
+    deleteOp.setResponses(deleteGroupResponses);
     pathItem.setDelete(deleteOp);
 
     return pathItem;
@@ -392,7 +399,11 @@ public class SecurityAdminApiSpec implements OpenApiContributor {
     deleteOp.setOperationId("deleteApiToken");
     deleteOp.addTagsItem("Security");
     deleteOp.addParametersItem(SpecBuilders.queryParam("token", "Token hash (SHA-256 hex)", true));
-    deleteOp.setResponses(forwardedToLeaderResponses("API token deleted", "200", "SecurityAdminResult"));
+    final ApiResponses deleteTokenResponses = forwardedToLeaderResponses("API token deleted", "200", "SecurityAdminResult");
+    // Answered by DeleteApiTokenHandler for a hash that matches no token: a revocation that was already applied, or a
+    // hash mistyped. 400 stays for a plaintext token, which is refused before any lookup (issue #10110)
+    deleteTokenResponses.addApiResponse("404", SpecBuilders.errorResponse("Not found - No API token has this hash"));
+    deleteOp.setResponses(deleteTokenResponses);
     pathItem.setDelete(deleteOp);
 
     return pathItem;
