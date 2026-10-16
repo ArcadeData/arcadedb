@@ -19,6 +19,7 @@
 package com.arcadedb.console;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.exception.TransactionException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Type;
@@ -148,11 +149,11 @@ public class RemoteConsoleIT extends BaseGraphServerTest {
     assertThat(console.parse("create document type Person")).isTrue();
     assertThat(console.parse("insert into Person set name = 'Jay', lastname='Miner'")).isTrue();
     Thread.sleep(5000);
-    // The idle sweep has removed the session by now. A commit carrying an unresolvable session id
-    // degrades to a session-less no-op rather than failing, so that an idempotent retry of a commit
-    // that already succeeded still reports success (#5026). What matters is that nothing was persisted,
-    // which the query below asserts.
-    assertThat(console.parse("commit")).isTrue();
+    // The idle sweep has rolled the session back and removed it by now. The commit must say so rather than report
+    // success: nothing it names is committed (issue #10164). Only a retry of a commit that did succeed answers 204
+    // again (#5026).
+    assertThatThrownBy(() -> console.parse("commit")).isInstanceOf(TransactionException.class)
+        .hasStackTraceContaining("not found or expired");
 
     final StringBuilder buffer = new StringBuilder();
     console.setOutput(buffer::append);
