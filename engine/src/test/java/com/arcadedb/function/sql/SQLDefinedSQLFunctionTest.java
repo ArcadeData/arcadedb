@@ -19,6 +19,7 @@
 package com.arcadedb.function.sql;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.AlreadyExistsException;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.function.FunctionLibraryDefinition;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -79,7 +80,7 @@ class SQLDefinedSQLFunctionTest extends TestHelper {
     Integer result = (Integer) database.getSchema().getFunction("math", "sum").execute(100, 50);
     assertThat(result).isEqualTo(150);
 
-    assertThatThrownBy(() -> database.command("sql", "define function math.sum \"select :a + :b;\" parameters [a,b] language sql")).isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> database.command("sql", "define function math.sum \"select :a + :b;\" parameters [a,b] language sql")).isInstanceOf(AlreadyExistsException.class);
 
     database.getSchema().getFunctionLibrary("math").unregisterFunction("sum");
     database.command("sql", "define function math.sum \"select :a + :b;\" parameters [a,b] language sql");

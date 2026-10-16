@@ -19,6 +19,7 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.schema.IndexWarmUpScheduler.Task;
+import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -180,6 +181,36 @@ class Issue10021IndexWarmUpSchedulerTest {
 
     release.countDown();
     assertThat(scheduler.awaitIdle(AWAIT_MS)).isTrue();
+  }
+
+  /**
+   * Issue #10156: the database close stops the warm-up before its flush, and the schema close calls it again as a backstop. The
+   * second call must not charge a second bound for a load that already outlived the first.
+   */
+  @Test
+  void aSecondCloseDoesNotWaitAgainForALoadThatOutlivedTheFirst() throws Exception {
+    final CountDownLatch started = new CountDownLatch(1);
+    final CountDownLatch release = new CountDownLatch(1);
+    scheduler.request(List.of(new Task("stubborn", () -> {
+      started.countDown();
+      boolean released = false;
+      while (!released)
+        try {
+          released = release.await(AWAIT_MS, TimeUnit.MILLISECONDS);
+        } catch (final InterruptedException e) {
+          // ignored on purpose, as a JVector graph build does
+        }
+    })), 0);
+    assertThat(started.await(AWAIT_MS, TimeUnit.MILLISECONDS)).isTrue();
+    assertThat(scheduler.close(1)).isFalse();
+
+    final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
+    assertThat(scheduler.close(AWAIT_MS)).as("still running, and said so").isFalse();
+    stopwatch.assertGaveUpWithin(AWAIT_MS / 2, "a backstop close that returns at once from one that joins the worker again");
+
+    release.countDown();
+    assertThat(scheduler.awaitIdle(AWAIT_MS)).isTrue();
+    assertThat(scheduler.close(AWAIT_MS)).as("nothing left running").isTrue();
   }
 
   @Test

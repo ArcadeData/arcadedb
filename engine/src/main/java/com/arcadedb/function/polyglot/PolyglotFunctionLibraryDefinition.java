@@ -18,6 +18,7 @@ package com.arcadedb.function.polyglot;/*
  */
 
 import com.arcadedb.database.Database;
+import com.arcadedb.exception.AlreadyExistsException;
 import com.arcadedb.function.FunctionLibraryDefinition;
 import com.arcadedb.query.RunningQuery;
 import com.arcadedb.query.polyglot.GraalPolyglotEngine;
@@ -65,7 +66,8 @@ public abstract class PolyglotFunctionLibraryDefinition<T extends PolyglotFuncti
 
   public PolyglotFunctionLibraryDefinition registerFunction(final T function) {
     if (functions.putIfAbsent(function.getName(), function) != null)
-      throw new IllegalArgumentException("Function '" + function.getName() + "' already defined in library '" + libraryName + "'");
+      throw new AlreadyExistsException(AlreadyExistsException.Kind.FUNCTION,
+          "Function '" + function.getName() + "' already defined in library '" + libraryName + "'");
 
     try {
       reloadEngine();

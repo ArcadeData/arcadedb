@@ -23,6 +23,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.exception.AlreadyExistsException;
 import com.arcadedb.function.FunctionExecutionException;
 import com.arcadedb.function.FunctionLibraryFactory;
 import com.arcadedb.security.SecurityDatabaseUser;
@@ -124,7 +125,7 @@ class Issue8404FunctionDdlRecordsSchemaChangeTest extends TestHelper {
     assertThatThrownBy(() -> schema.defineFunction("lib8404race",
         FunctionLibraryFactory.createLibrary(database, "lib8404race", "sql"),
         FunctionLibraryFactory.createFunction(database, "sql", "second", "select 2 as r", new String[] {})))
-        .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("already registered");
+        .isInstanceOf(AlreadyExistsException.class).hasMessageContaining("already registered");
 
     assertThat(schema.getFunctionLibrary("lib8404race").hasFunction("second")).isFalse();
     assertThat((Integer) schema.getFunction("lib8404race", "first").execute()).isEqualTo(1);

@@ -20,6 +20,7 @@ package com.arcadedb.query.sql;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.exception.AlreadyExistsException;
 import com.arcadedb.exception.CommandExecutionException;
 import org.junit.jupiter.api.Test;
 
@@ -78,7 +79,7 @@ class Issue7141DiagnosticsTest extends TestHelper {
 
     // What the warning used to advise: impossible, the type already exists.
     assertThatThrownBy(() -> database.command("sql", "create vertex type Contended buckets 16"))
-        .isInstanceOf(CommandExecutionException.class)
+        .isInstanceOf(AlreadyExistsException.class)
         .hasMessageContaining("already exists");
 
     // What it advises now.

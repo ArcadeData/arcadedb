@@ -20,6 +20,7 @@ package com.arcadedb.query.sql;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Document;
+import com.arcadedb.exception.AlreadyExistsException;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.function.java.JavaClassFunctionLibraryDefinition;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -116,7 +117,7 @@ class TriggerSQLTest extends TestHelper {
         """
             CREATE TRIGGER test_trigger BEFORE CREATE ON TYPE User
             EXECUTE SQL 'SELECT 1'"""))
-        .isInstanceOf(CommandExecutionException.class);
+        .isInstanceOf(AlreadyExistsException.class);
   }
 
   @Test

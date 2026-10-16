@@ -42,7 +42,7 @@ import java.util.Map;
 public class ExecutionPlanCache {
   private final DatabaseInternal                   db;
   private final Map<String, InternalExecutionPlan> map;
-  private final int                                mapSize;
+  private int                                      mapSize;
   /**
    * How many times this cache has been invalidated. A counter rather than a timestamp (#8635): a plan built in the same
    * millisecond as the invalidation before it - routine right after a schema change - was refused by the
@@ -125,6 +125,15 @@ public class ExecutionPlanCache {
   public synchronized void invalidate() {
     map.clear();
     ++invalidationEpoch;
+  }
+
+  /**
+   * Invalidates the cache, as {@link #invalidate()}, and bounds it to {@code size} plans from now on (issue #10155): a plan is
+   * what a setting read at planning time is baked into, and the size itself is a database setting.
+   */
+  public synchronized void resize(final int size) {
+    mapSize = size;
+    invalidate();
   }
 
   public static ExecutionPlanCache instance(final DatabaseInternal db) {

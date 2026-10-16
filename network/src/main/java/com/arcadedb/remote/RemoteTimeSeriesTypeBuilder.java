@@ -38,13 +38,11 @@ import java.util.List;
  * The rendered DDL is a single statement (issue #7689), so the type the server ends up with is either the whole
  * declaration the builder accumulated or nothing at all.
  * <p>
- * <b>Where the two do NOT agree is the exception type for a name that is already taken.</b> Both refuse it, but the
- * embedded {@code create()} answers with {@code SchemaException("Type 'X' already exists")} before touching storage,
- * while this one has no client-side existence check - the rendered DDL carries no {@code IF NOT EXISTS} and no
- * check would be race-free anyway - so the refusal comes back from the server as a {@link RemoteException} wrapping
- * the {@code CommandExecutionException}, with the same sentence in its message. A caller that catches
- * {@code SchemaException} specifically for "already exists" therefore has to catch both. Measured, and pinned by
- * {@code Issue7399RemoteTimeSeriesTypeBuilderIT.aDuplicateTypeNameIsRefusedOnBothPathsWithDifferentExceptionTypes}.
+ * A name that is already taken is refused by both with the same type, an {@link com.arcadedb.exception.AlreadyExistsException}
+ * (a {@code SchemaException}) carrying the same sentence: the embedded {@code create()} raises it before touching storage, and
+ * this one, which has no client-side existence check - the rendered DDL carries no {@code IF NOT EXISTS} and no check would be
+ * race-free anyway - rebuilds it from the server's 409 (issue #10153). They used to differ, the remote one coming back as a
+ * {@link RemoteException}; {@code Issue7399RemoteTimeSeriesTypeBuilderIT} pins that they no longer do.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

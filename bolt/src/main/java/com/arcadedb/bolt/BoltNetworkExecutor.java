@@ -39,6 +39,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.ProtocolContext;
+import com.arcadedb.exception.AlreadyExistsException;
 import com.arcadedb.exception.ArithmeticErrorException;
 import com.arcadedb.exception.CauseChain;
 import com.arcadedb.exception.CommandParameterMissingException;
@@ -2004,6 +2005,9 @@ public class BoltNetworkExecutor extends Thread {
       case ARITHMETIC -> BoltErrorCodes.ARITHMETIC_ERROR;
       // A unique-index violation. Permanent: the identical write can never succeed on retry.
       case DUPLICATED_KEY -> BoltErrorCodes.CONSTRAINT_VIOLATION_ERROR;
+      // A taken schema object name (issue #10153). It used to be SemanticError, which says the opposite (the schema does not
+      // define it), or the generic DatabaseError for the ones the SQL statements refused themselves
+      case ALREADY_EXISTS -> alreadyExistsCode(CauseChain.find(error, AlreadyExistsException.class));
       case NOT_FOUND -> BoltErrorCodes.ENTITY_NOT_FOUND_ERROR;
       // The caller named a type, bucket or property the schema does not define: a statement that parsed but means
       // nothing against this database, which is what Neo4j's SemanticError says.
@@ -2019,6 +2023,16 @@ public class BoltNetworkExecutor extends Thread {
       case TERMINATED -> BoltErrorCodes.TRANSACTION_TERMINATED_ERROR;
       case SERVER -> defaultCode;
     };
+  }
+
+  /** Neo4j's title for a name held by an index, by a constraint, or by anything else (issue #10153). */
+  private static String alreadyExistsCode(final AlreadyExistsException taken) {
+    final AlreadyExistsException.Kind kind = taken != null ? taken.getKind() : null;
+    if (kind == AlreadyExistsException.Kind.INDEX)
+      return BoltErrorCodes.INDEX_ALREADY_EXISTS_ERROR;
+    if (kind == AlreadyExistsException.Kind.CONSTRAINT)
+      return BoltErrorCodes.CONSTRAINT_ALREADY_EXISTS_ERROR;
+    return BoltErrorCodes.SCHEMA_RULE_ALREADY_EXISTS_ERROR;
   }
 
   /**

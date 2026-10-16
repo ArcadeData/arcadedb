@@ -22,8 +22,8 @@ import com.arcadedb.database.Database;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.engine.timeseries.DownsamplingTier;
 import com.arcadedb.engine.timeseries.codec.TimeSeriesCodec;
+import com.arcadedb.exception.AlreadyExistsException;
 import com.arcadedb.remote.RemoteDatabase;
-import com.arcadedb.remote.RemoteException;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.TimeSeriesType;
 import com.arcadedb.schema.TimeSeriesTypeBuilder;
@@ -184,8 +184,9 @@ class Issue7689RemoteTimeSeriesCompleteCreateIT extends BaseGraphServerTest {
         .withName("AlreadyThere").withTimestamp("ts").withField("v", Type.DOUBLE).withShards(1).create();
 
     try (final RemoteDatabase database = remote()) {
+      // the server's 409 is rebuilt as the conflict it is (issue #10153), as the embedded create() raises it
       assertThatThrownBy(() -> restoreRecipe(database.getSchema(), "AlreadyThere").create())
-          .isInstanceOf(RemoteException.class)
+          .isInstanceOf(AlreadyExistsException.class)
           .hasMessageContaining("already exists");
 
       // The pre-existing type is untouched: the refused statement declared a policy and codecs, and none of it

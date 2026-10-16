@@ -1267,6 +1267,16 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     if (databaseExists != null)
       return new ErrorClassification(409, "Database already exists", databaseExists, null, ErrorLogKind.USER);
 
+    // 409 Conflict: a schema object name is taken - a type, a property, an index, a bucket, a view, a function (issue #10153).
+    // The same conflict as the two arms above, and it was a 500 ("Cannot execute command", or "Internal error" for the
+    // SchemaException ones) logged SEVERE with a stack trace: a retry policy keyed on 5xx re-sent a CREATE TYPE that can only be
+    // refused again. Before the CommandExecutionException arm and the generic 500, which it would otherwise reach. The label
+    // names the kind for production mode, where 'detail' is concealed; exceptionArgs carries it for the client to rebuild.
+    final AlreadyExistsException schemaObjectExists = firstOf(e, cause, AlreadyExistsException.class);
+    if (schemaObjectExists != null)
+      return new ErrorClassification(409, schemaObjectExists.getLabel(), schemaObjectExists,
+          schemaObjectExists.getKind() != null ? schemaObjectExists.getKind().name() : null, ErrorLogKind.USER);
+
     // 409 Conflict (RFC 9110 15.5.10): a unique-constraint violation is a client data conflict, not a transient
     // server-availability problem. 503 told clients/load balancers the request was retry-worthy, amplifying the
     // bad write. See issue #4350.

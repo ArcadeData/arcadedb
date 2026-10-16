@@ -23,6 +23,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.event.AfterRecordCreateListener;
 import com.arcadedb.event.AfterRecordDeleteListener;
 import com.arcadedb.event.AfterRecordUpdateListener;
+import com.arcadedb.exception.AlreadyExistsException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.parser.FromClause;
@@ -249,12 +250,12 @@ public class MaterializedViewBuilder {
     if (schema.existsMaterializedView(name)) {
       if (ifNotExists)
         return schema.getMaterializedView(name);
-      throw new SchemaException("Materialized view '" + name + "' already exists");
+      throw new AlreadyExistsException(AlreadyExistsException.Kind.MATERIALIZED_VIEW, "Materialized view '" + name + "' already exists");
     }
 
     // Check if a type with this name already exists (backing type would conflict)
     if (schema.existsType(name))
-      throw new SchemaException("Cannot create materialized view '" + name +
+      throw new AlreadyExistsException(AlreadyExistsException.Kind.TYPE, "Cannot create materialized view '" + name +
           "': a type with the same name already exists");
 
     // Parse the query to validate syntax and extract source types

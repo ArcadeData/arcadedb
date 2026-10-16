@@ -27,6 +27,7 @@ import com.arcadedb.database.DeferredExistenceChecks;
 import com.arcadedb.database.DocumentValidator;
 import com.arcadedb.database.ExistingRecordsCheck;
 import com.arcadedb.database.Record;
+import com.arcadedb.exception.AlreadyExistsException;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParameterMissingException;
 import com.arcadedb.exception.CommandParsingException;
@@ -883,14 +884,14 @@ public class OpenCypherQueryEngine implements QueryEngine {
     if (CypherConstraintRegistry.findOwner(schema, constraintName) != null) {
       if (ddl.isIfNotExists())
         return;
-      throw new SchemaException("Constraint '" + constraintName + "' already exists");
+      throw new AlreadyExistsException(AlreadyExistsException.Kind.CONSTRAINT, "Constraint '" + constraintName + "' already exists");
     }
     // Indexes and constraints share one namespace, as in Neo4j: since CREATE INDEX <name> names the index (#9705), a
     // constraint taking the same name would make DROP CONSTRAINT <name> drop the index instead
     if (constraintName != null && schema.existsIndex(constraintName)) {
       if (ddl.isIfNotExists())
         return;
-      throw new SchemaException("There already exists an index called '" + constraintName + "'");
+      throw new AlreadyExistsException(AlreadyExistsException.Kind.INDEX, "There already exists an index called '" + constraintName + "'");
     }
 
     // For TYPED constraints, resolve the target type first so properties are created with the correct type
@@ -1439,7 +1440,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
       if (taken || CypherConstraintRegistry.findOwner(schema, indexName) != null) {
         if (ddl.isIfNotExists())
           return;
-        throw new SchemaException(
+        throw new AlreadyExistsException(taken ? AlreadyExistsException.Kind.INDEX : AlreadyExistsException.Kind.CONSTRAINT,
             "There already exists " + (taken ? "an index" : "a constraint") + " called '" + indexName + "'");
       }
     }

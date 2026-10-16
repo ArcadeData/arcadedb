@@ -19,6 +19,7 @@
 package com.arcadedb.function.java;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.AlreadyExistsException;
 import com.arcadedb.function.FunctionExecutionException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -194,7 +195,7 @@ class JavaFunctionTest extends TestHelper {
     // TEST REGISTRATION HERE
     registerClass();
 
-    assertThatThrownBy(() -> registerClass()).isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> registerClass()).isInstanceOf(AlreadyExistsException.class);
 
     database.getSchema().unregisterFunctionLibrary("math");
     registerClass();
@@ -206,7 +207,7 @@ class JavaFunctionTest extends TestHelper {
     // TEST REGISTRATION HERE
     database.getSchema().registerFunctionLibrary(new JavaClassFunctionLibraryDefinition("math", JavaFunctionTest.Sum.class));
 
-    assertThatThrownBy(() -> database.getSchema().registerFunctionLibrary(new JavaClassFunctionLibraryDefinition("math", JavaFunctionTest.Sum.class))).isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> database.getSchema().registerFunctionLibrary(new JavaClassFunctionLibraryDefinition("math", JavaFunctionTest.Sum.class))).isInstanceOf(AlreadyExistsException.class);
 
     database.getSchema().unregisterFunctionLibrary("math");
     database.getSchema().registerFunctionLibrary(new JavaClassFunctionLibraryDefinition("math", JavaFunctionTest.Sum.class));
@@ -220,7 +221,7 @@ class JavaFunctionTest extends TestHelper {
             .registerFunctionLibrary(new JavaMethodFunctionLibraryDefinition("math", JavaFunctionTest.Sum.class.getMethod("sum", Integer.TYPE, Integer.TYPE)));
 
     assertThatThrownBy(() -> database.getSchema()
-      .registerFunctionLibrary(new JavaMethodFunctionLibraryDefinition("math", JavaFunctionTest.Sum.class.getMethod("sum", Integer.TYPE, Integer.TYPE)))).isInstanceOf(IllegalArgumentException.class);
+      .registerFunctionLibrary(new JavaMethodFunctionLibraryDefinition("math", JavaFunctionTest.Sum.class.getMethod("sum", Integer.TYPE, Integer.TYPE)))).isInstanceOf(AlreadyExistsException.class);
 
     database.getSchema().unregisterFunctionLibrary("math");
     database.getSchema()

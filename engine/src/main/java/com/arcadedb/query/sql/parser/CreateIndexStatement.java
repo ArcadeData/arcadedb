@@ -22,6 +22,7 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.exception.AlreadyExistsException;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.index.Index;
@@ -369,7 +370,7 @@ public class CreateIndexStatement extends DDLStatement {
         rs.add(result);
         return rs;
       } else {
-        throw new CommandExecutionException("Index '" + indexName + "' already exists");
+        throw new AlreadyExistsException(AlreadyExistsException.Kind.INDEX, "Index '" + indexName + "' already exists");
       }
     }
 

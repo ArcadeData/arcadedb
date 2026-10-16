@@ -18,6 +18,7 @@ package com.arcadedb.function.sql;/*
  */
 
 import com.arcadedb.database.Database;
+import com.arcadedb.exception.AlreadyExistsException;
 import com.arcadedb.function.FunctionLibraryDefinition;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
@@ -39,7 +40,8 @@ public class SQLFunctionLibraryDefinition implements FunctionLibraryDefinition<S
 
   public SQLFunctionLibraryDefinition registerFunction(final SQLFunctionDefinition function) {
     if (functions.putIfAbsent(function.getName(), function) != null)
-      throw new IllegalArgumentException("Function '" + function.getName() + "' already defined in library '" + libraryName + "'");
+      throw new AlreadyExistsException(AlreadyExistsException.Kind.FUNCTION,
+          "Function '" + function.getName() + "' already defined in library '" + libraryName + "'");
 
     // REGISTER ALL THE FUNCTIONS UNDER THE NEW ENGINE INSTANCE
 

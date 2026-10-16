@@ -19,7 +19,7 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.TestHelper;
-import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.AlreadyExistsException;
 import com.arcadedb.exception.TypeAlreadyExistsException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -87,7 +87,7 @@ class Issue10067CreateTypeIfNotExistsConcurrentTest extends TestHelper {
   void withoutIfNotExistsTheTypeBeingThereIsStillAnError() {
     database.command("sql", "CREATE VERTEX TYPE Plain");
 
-    assertThatThrownBy(() -> database.command("sql", "CREATE VERTEX TYPE Plain")).isInstanceOf(CommandExecutionException.class)
+    assertThatThrownBy(() -> database.command("sql", "CREATE VERTEX TYPE Plain")).isInstanceOf(AlreadyExistsException.class)
         .hasMessageContaining("already exists");
     assertThatThrownBy(() -> database.getSchema().createVertexType("Plain")).isInstanceOf(TypeAlreadyExistsException.class)
         .hasMessageContaining("Cannot create type 'Plain' because already exists");
