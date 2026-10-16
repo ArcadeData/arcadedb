@@ -23,9 +23,11 @@ import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.QueryTerminatedException;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.exception.RecordVetoedException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.exception.TransactionException;
+import com.arcadedb.exception.ValidationException;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.remote.RemoteAlreadyExistsException;
 import com.arcadedb.remote.RemoteException;
@@ -272,6 +274,9 @@ final class GrpcClientErrorMapper {
       // this exact-type reconstruction a schema error was indistinguishable from - and, worse, silently
       // reconstructed AS - a RecordNotFoundException by the legacy status-code fallback below.
       case "com.arcadedb.exception.SchemaException" -> new SchemaException(msg);
+      // A listener refused the write (issues #10085, #10161): a refusal of the request, typed so it is not read as a fault
+      case "com.arcadedb.exception.RecordVetoedException" -> new RecordVetoedException(msg);
+      case "com.arcadedb.exception.ValidationException" -> new ValidationException(msg);
       // Unknown class: let the caller fall back to status-code mapping.
       default -> null;
     };

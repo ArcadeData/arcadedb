@@ -30,8 +30,9 @@ public abstract class IteratorFilterBase<T> extends ResettableIteratorBase<T> {
   protected       RID          nextEdge;
   protected       RID          nextVertex;
   protected       RID          next;
-  // THE RECORD hasNext() LOOKED UP TO VALIDATE THE VERTEX RID OF next, HANDED OUT BY next() INSTEAD OF A SECOND LOOKUP
-  protected       Record       validatedVertex;
+  // THE RECORD hasNext() LOOKED UP TO VALIDATE THE RID OF next (THE VERTEX OR THE EDGE), HANDED OUT BY next() INSTEAD OF A
+  // SECOND LOOKUP (#10013, #10163). NULL FOR A LIGHTWEIGHT EDGE, WHICH HAS NO RECORD TO LOOK UP
+  protected       Record       validatedRecord;
   // NULL WHEN NONE OF THE REQUESTED TYPES IS AN EDGE TYPE. A PRIMITIVE MASK INSTEAD OF A Set<Integer>, SO REJECTING AN
   // ENTRY OF ANOTHER TYPE COSTS NEITHER AN RID DECODE NOR A BOXED LOOKUP (#8417)
   protected final EdgeBucketMask validBuckets;
@@ -93,20 +94,23 @@ public abstract class IteratorFilterBase<T> extends ResettableIteratorBase<T> {
           next = nextEdge;
 
           // VALIDATE RID
-          if (nextEdge.getPosition() > -1)
+          if (nextEdge.getPosition() > -1) {
             try {
-              database.lookupByRID(nextEdge, false);
+              validatedRecord = database.lookupByRID(nextEdge, false);
             } catch (final Exception e) {
               handleCorruption(e, nextEdge, nextVertex);
               continue;
             }
+          } else
+            // LIGHTWEIGHT EDGE: NO RECORD. DO NOT KEEP THE PREVIOUS ENTRY'S RECORD REACHABLE
+            validatedRecord = null;
 
         } else {
           next = nextVertex;
 
           // VALIDATE RID
           try {
-            validatedVertex = database.lookupByRID(nextVertex, false);
+            validatedRecord = database.lookupByRID(nextVertex, false);
           } catch (final Exception e) {
             handleCorruption(e, nextEdge, nextVertex);
             continue;
@@ -157,6 +161,16 @@ public abstract class IteratorFilterBase<T> extends ResettableIteratorBase<T> {
     if (next != null)
       // THE ENTRY hasNext() ALREADY PEEKED FOLLOWS THE REMOVED ONE IN THE SAME SEGMENT
       lastElementPosition -= removed;
+  }
+
+  /**
+   * The record {@code hasNext()} resolved to validate {@link #next}, consumed: a second call returns {@code null}. Also
+   * {@code null} when that record is not the one behind {@code next} any more, so the caller falls back to a fresh lookup.
+   */
+  protected final Record takeValidatedRecord() {
+    final Record validated = validatedRecord;
+    validatedRecord = null;
+    return validated != null && next.equals(validated.getIdentity()) ? validated : null;
   }
 
   public RID getNextVertex() {

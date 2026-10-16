@@ -1811,6 +1811,56 @@ expect "the repository's own deploy workflows scope their credentials" 0 "creden
     "$CREDSCOPE"
 
 echo
+echo "check-gitignore-src-paths.sh"
+
+GITIGNORESRC="$PWD/$SCRIPTS/check-gitignore-src-paths.sh"
+
+# A repository of its own, so the probes see only the fixture's patterns. A module source tree, one tracked file in it
+gitignore_repo() {
+    local repo="$work/gitignore-$1"
+    mkdir -p "$repo/mod/src/main/java" "$repo/py/src/pkg"
+    echo "class A {}" >"$repo/mod/src/main/java/A.java"
+    echo "" >"$repo/py/src/pkg/__init__.py"
+    git -C "$repo" init -q
+    printf '%s\n' "${@:2}" >"$repo/.gitignore"
+    git -C "$repo" add -A
+    echo "$repo"
+}
+
+# The #10162 shape: an unanchored runtime-output name hides a package of every source tree
+repo="$(gitignore_repo unanchored 'out' '**/replication/' '*.log')"
+expect "reports an unanchored directory name that hides a source package" 1 "replication" \
+    bash -c "cd '$repo' && '$GITIGNORESRC'"
+
+# The fix: one negation re-includes every directory of the source trees, the file patterns still apply
+repo="$(gitignore_repo negated 'out' '**/replication/' '*.log' '!**/src/**/')"
+expect "accepts the names once the source trees are re-included" 0 "No ignore pattern hides" \
+    bash -c "cd '$repo' && '$GITIGNORESRC'"
+
+# A pattern written AFTER the negation wins over it, which is how a later edit reopens the hole
+repo="$(gitignore_repo after-negation '!**/src/**/' 'logs')"
+expect "reports a name added below the negation" 1 "logs" \
+    bash -c "cd '$repo' && '$GITIGNORESRC'"
+
+# A module's own .gitignore governs its own source trees, and nested files win over the root negation
+repo="$(gitignore_repo nested '!**/src/**/')"
+printf '%s\n' 'build/' >"$repo/py/.gitignore"
+git -C "$repo" add -A
+expect "reports a module .gitignore hiding its own source package" 1 "py/src/main/probe/build" \
+    bash -c "cd '$repo' && '$GITIGNORESRC'"
+printf '%s\n' 'build/' '!src/**/' >"$repo/py/.gitignore"
+expect "accepts the module .gitignore once it re-includes its source trees" 0 "No ignore pattern hides" \
+    bash -c "cd '$repo' && '$GITIGNORESRC'"
+
+# Anchored patterns, wildcards and the deliberate names are not probed
+repo="$(gitignore_repo not-probed '/out' 'mod/target/' '*.tmp' '__pycache__/')"
+expect "does not probe anchored, wildcard or deliberate patterns" 0 "No ignore pattern hides" \
+    bash -c "cd '$repo' && '$GITIGNORESRC'"
+
+expect "the repository's own ignore files hide no source directory" 0 "No ignore pattern hides" \
+    "$GITIGNORESRC"
+
+echo
 if [[ $failures -gt 0 ]]; then
     echo "$failures of $checks checks failed"
     exit 1

@@ -26,7 +26,7 @@ package com.arcadedb.exception;
  * release what they hold can succeed. That is why it is classified as retryable on every wire (503 on HTTP), and why it
  * is NOT a {@link NeedRetryException}: it is no transaction conflict, and a commit loop that retries those on the spot
  * would only run into the same full budget again. A query that alone needs more than the whole budget fails with a
- * plain {@link CommandExecutionException} instead, since no retry can ever help it.
+ * {@link HeapLimitExceededException} instead, since no retry can ever help it.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

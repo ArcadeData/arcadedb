@@ -34,6 +34,7 @@ import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.exception.RecordVetoedException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.InternalResultSet;
@@ -1857,19 +1858,23 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     final JSONObject json = record.toJSON();
     json.remove(RID_PROPERTY);  // Remove @rid to avoid SQL parsing issues
     if (rid != null) {
-      // SQL UPDATE silently matches zero records when the RID no longer exists (e.g. the record was deleted or the
-      // transaction that created it was rolled back). Saving such a record must fail with RecordNotFoundException to be
-      // consistent with the embedded engine and the gRPC remote (issue #4562).
+      // SQL UPDATE matches zero records both when the RID no longer exists (e.g. the record was deleted or the transaction
+      // that created it was rolled back) and when a before-update listener vetoed the write. The first must fail with
+      // RecordNotFoundException to be consistent with the embedded engine and the gRPC remote (issue #4562), the second with
+      // RecordVetoedException, as the gRPC remote does (issue #10161): the probe tells them apart, on the refusal path only
       final ResultSet result = command("sql", "update " + rid + " content " + json);
       final long updated = result.hasNext() ? result.next().<Number>getProperty("count").longValue() : 0;
-      if (updated == 0)
+      if (updated == 0) {
+        if (existsRecord(rid))
+          throw RecordVetoedException.ofUpdate(record.getTypeName(), rid);
         throw new RecordNotFoundException("Record " + rid + " not found", rid);
+      }
       // each arm counts its own statistic, and only once the server confirmed the write (issue #10095)
       stats.updateRecord.incrementAndGet();
     } else {
       final ResultSet result = command("sql",
           "insert into " + Identifier.quote(record.getTypeName()) + " content " + json);
-      rid = result.next().getIdentity().get();
+      rid = insertedRID(result, record);
       trackCreatedRecord(record);
       stats.createRecord.incrementAndGet();
     }
@@ -1888,10 +1893,20 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     final ResultSet result = command("sql",
         "insert into " + Identifier.quote(record.getTypeName()) + " bucket " + Identifier.quote(bucketName)
             + " content " + json);
-    final RID newRID = result.next().getIdentity().get();
+    final RID newRID = insertedRID(result, record);
     trackCreatedRecord(record);
     stats.createRecord.incrementAndGet();
     return newRID;
+  }
+
+  /**
+   * The RID an INSERT answered. An INSERT a before-create listener vetoed answers no row at all, which used to escape as a bare
+   * {@link java.util.NoSuchElementException} out of {@code save()} (issue #10161).
+   */
+  private static RID insertedRID(final ResultSet result, final MutableDocument record) {
+    if (!result.hasNext())
+      throw RecordVetoedException.ofCreate(record.getTypeName());
+    return result.next().getIdentity().get();
   }
 
   protected Map<String, Object> mapArgs(final Object[] args) {

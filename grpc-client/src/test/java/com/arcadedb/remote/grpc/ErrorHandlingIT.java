@@ -21,10 +21,10 @@ package com.arcadedb.remote.grpc;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.ConcurrentModificationException;
-import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SchemaException;
+import com.arcadedb.exception.ValidationException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.remote.RemoteException;
 import org.junit.jupiter.api.AfterEach;
@@ -241,13 +241,10 @@ class ErrorHandlingIT extends BaseGrpcClientServerTest {
   @Test
   @DisplayName("Schema violation throws validation exception with mandatory field message")
   void schemaViolation_throwsValidationException() {
-    // Try to insert without mandatory 'name' property
-    // The server returns an error that may be wrapped as DatabaseOperationException or RemoteException
+    // Try to insert without mandatory 'name' property: the server's ValidationException keeps its type over the wire (#10161)
     assertThatThrownBy(() ->
         database.command("sql", "INSERT INTO `" + TYPE + "` SET id = 'sv1'"))
-        .satisfiesAnyOf(
-            e -> assertThat(e).isInstanceOf(RemoteException.class),
-            e -> assertThat(e).isInstanceOf(DatabaseOperationException.class))
+        .isInstanceOf(ValidationException.class)
         .hasMessageContaining("name");
   }
 

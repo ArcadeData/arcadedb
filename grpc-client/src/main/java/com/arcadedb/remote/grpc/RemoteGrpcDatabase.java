@@ -45,6 +45,7 @@ import com.arcadedb.database.Record;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.exception.RecordVetoedException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.log.LogManager;
@@ -905,21 +906,22 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
       if (transactionId != null)
         updateBuilder.setTransaction(TransactionContext.newBuilder().setTransactionId(transactionId).setDatabase(getName()).build());
 
+      final UpdateRecordResponse response;
       try {
-
-        @SuppressWarnings("unused")
-        UpdateRecordResponse response =
-            blockingStub().withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS).updateRecord(updateBuilder.build());
-
-        // If your proto has flags, you can check response.getSuccess()/getUpdated()
-        // Otherwise, treat non-exception as success.
-        // each arm counts its own statistic, and only once the server confirmed the write (issue #10095)
-        stats.updateRecord.incrementAndGet();
-        return rid;
+        response = blockingStub().withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS).updateRecord(updateBuilder.build());
       } catch (StatusRuntimeException | StatusException e) {
         handleGrpcWriteException(e, "UpdateRecord", commitsOnItsOwn(updateBuilder.getTransaction()));
         return null;
       }
+
+      // The server answers success=false for an update a before-update listener vetoed: a refusal, raised as the HTTP driver
+      // raises it, and not a write to report as applied (issue #10161). A server older than #10084 always answers true
+      if (!response.getSuccess())
+        throw RecordVetoedException.ofUpdate(record.getTypeName(), rid);
+
+      // each arm counts its own statistic, and only once the server confirmed the write (issue #10095)
+      stats.updateRecord.incrementAndGet();
+      return rid;
     } else {
       // -------- CREATE --------
       GrpcRecord recMsg =
