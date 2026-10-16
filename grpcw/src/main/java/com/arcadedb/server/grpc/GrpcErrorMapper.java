@@ -207,7 +207,9 @@ public final class GrpcErrorMapper {
       code = Status.Code.ABORTED;
     } else if (category == ErrorCategory.DUPLICATED_KEY) {
       code = Status.Code.ALREADY_EXISTS;
-      addDuplicatedKeyTrailers(trailers, (DuplicatedKeyException) classified, conceal);
+      final DuplicatedKeyException dup = CauseChain.find(cause, DuplicatedKeyException.class);
+      if (dup != null)
+        addDuplicatedKeyTrailers(trailers, dup, conceal);
     } else {
       code = statusCodeFor(category);
     }

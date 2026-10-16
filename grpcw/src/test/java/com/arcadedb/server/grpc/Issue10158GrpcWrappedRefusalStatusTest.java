@@ -134,18 +134,39 @@ class Issue10158GrpcWrappedRefusalStatusTest {
   }
 
   @Test
-  void productionModeKeepsTheClassifiedSentenceOfAWrappedRefusal() {
+  void productionModeKeepsTheSentenceOfAWrappedArcadeDbRefusalAndConcealsABuriedJdkOne() {
     final ArcadeDbGrpcAdminService service = adminService(true);
 
     for (final Map.Entry<Exception, Status.Code> refusal : adminRefusals().entrySet()) {
+      final String name = refusal.getKey().getClass().getSimpleName();
+      final StatusException bare = service.toStatus("createUser", refusal.getKey());
       final StatusException wrapped = service.toStatus("createUser",
           new DatabaseOperationException("Error on saving the user", refusal.getKey()));
 
-      assertThat(wrapped.getStatus().getCode()).as(refusal.getKey().getClass().getSimpleName()).isEqualTo(refusal.getValue());
-      assertThat(wrapped.getStatus().getDescription()).as(refusal.getKey().getClass().getSimpleName())
-          .isEqualTo(refusal.getKey().getMessage())
-          .doesNotContain(GrpcErrorMapper.CONCEALED_DESCRIPTION);
+      assertThat(bare.getStatus().getDescription()).as("bare %s is a sentence about the request", name)
+          .isEqualTo(refusal.getKey().getMessage());
+      assertThat(wrapped.getStatus().getCode()).as(name).isEqualTo(refusal.getValue());
+      // The broad JDK/replication types say nothing about who wrote their message once they are buried under a wrapper
+      assertThat(wrapped.getStatus().getDescription()).as(name)
+          .isEqualTo(armFor(refusal.getKey()).broad() ?
+              "createUser: " + GrpcErrorMapper.CONCEALED_DESCRIPTION :
+              refusal.getKey().getMessage());
     }
+  }
+
+  @Test
+  void aBuriedLibraryArgumentErrorKeepsItsStatusButNotItsTextInProduction() {
+    final Exception buried = new CommandExecutionException("Error activating restored database 'shop'",
+        new IllegalArgumentException("Illegal char <:> at index 2: /var/lib/arcadedb/databases/shop:tmp"));
+
+    final StatusException production = adminService(true).toStatus("restoreDatabase", buried);
+    assertThat(production.getStatus().getCode()).isEqualTo(Status.Code.INVALID_ARGUMENT);
+    assertThat(production.getStatus().getDescription()).isEqualTo("restoreDatabase: " + GrpcErrorMapper.CONCEALED_DESCRIPTION)
+        .doesNotContain("/var/lib");
+
+    final StatusException development = adminService(false).toStatus("restoreDatabase", buried);
+    assertThat(development.getStatus().getCode()).isEqualTo(Status.Code.INVALID_ARGUMENT);
+    assertThat(development.getStatus().getDescription()).contains("/var/lib/arcadedb/databases/shop");
   }
 
   @Test
@@ -272,6 +293,10 @@ class Issue10158GrpcWrappedRefusalStatusTest {
     assertThat(ArcadeDbGrpcService.commitErrorCode(duplicate)).isEqualTo("CONFLICT");
     for (final Map.Entry<String, Function<Exception, Exception>> wrapper : WRAPPERS.entrySet())
       assertThat(ArcadeDbGrpcService.commitErrorCode(wrapper.getValue().apply(duplicate))).as(wrapper.getKey()).isEqualTo("CONFLICT");
+    // A duplicate wins over a leader refusal it rides with: the key is taken on the leader too, so a redirect cannot help
+    final ServerIsNotTheLeaderException refusal = new ServerIsNotTheLeaderException("This server is not the leader", LEADER);
+    refusal.initCause(duplicate);
+    assertThat(ArcadeDbGrpcService.commitErrorCode(new DatabaseOperationException("commit", refusal))).isEqualTo("CONFLICT");
     // The contract rejection is the stream's OWN refusal, raised as itself: one buried under a commit failure is not one
     assertThat(ArcadeDbGrpcService.commitErrorCode(new TransactionException("commit", new IllegalArgumentException("bad"))))
         .isEqualTo("COMMIT_FAILED");
@@ -301,6 +326,14 @@ class Issue10158GrpcWrappedRefusalStatusTest {
     while (matcher.find())
       targets.add(matcher.group(1));
     return targets;
+  }
+
+  /** The arm of the table that answers {@code refusal}: the first whose type it is, as {@code toStatus} walks them. */
+  private static ArcadeDbGrpcAdminService.RefusalArm armFor(final Exception refusal) {
+    for (final ArcadeDbGrpcAdminService.RefusalArm arm : ArcadeDbGrpcAdminService.REFUSAL_ARMS)
+      if (arm.type().isInstance(refusal))
+        return arm;
+    throw new AssertionError("No arm answers " + refusal.getClass().getName());
   }
 
   private static QueryTerminatedException terminated(final Throwable cause) {
