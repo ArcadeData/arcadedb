@@ -69,12 +69,12 @@ import java.util.concurrent.ConcurrentHashMap;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 final class RecordPredicateRidSet extends AbstractSet<RID> {
-  private final BasicDatabase                       database;
-  private final CommandContext                      context;
-  private final Map<String, Object>                 equalities;
-  private final WhereClause                         condition;
-  private final Set<RID>                            restrictTo;
-  private final ConcurrentHashMap<RID, Boolean>     decided = new ConcurrentHashMap<>();
+  private final BasicDatabase                   database;
+  private final CommandContext                  context;
+  private final Map<String, Object>             equalities;
+  private final WhereClause                     condition;
+  private final Set<RID>                        restrictTo;
+  private final ConcurrentHashMap<RID, Boolean> decided = new ConcurrentHashMap<>();
 
   private RecordPredicateRidSet(final CommandContext context, final Map<String, Object> equalities, final WhereClause condition,
       final Set<RID> restrictTo) {
