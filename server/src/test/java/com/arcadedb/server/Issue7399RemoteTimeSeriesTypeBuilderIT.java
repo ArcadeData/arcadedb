@@ -21,10 +21,10 @@ package com.arcadedb.server;
 import com.arcadedb.database.Database;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.engine.timeseries.DownsamplingTier;
+import com.arcadedb.exception.AlreadyExistsException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.remote.RemoteDatabase;
-import com.arcadedb.remote.RemoteException;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.TimeSeriesType;
 import com.arcadedb.schema.Type;
@@ -227,23 +227,24 @@ class Issue7399RemoteTimeSeriesTypeBuilderIT extends BaseGraphServerTest {
   }
 
   @Test
-  void aDuplicateTypeNameIsRefusedOnBothPathsWithDifferentExceptionTypes() {
-    // The one documented seam in the parity contract. Both paths refuse the duplicate and both say so in the same
-    // words, but the embedded one answers before touching storage while the remote one learns it from the server,
-    // so the exception TYPE differs. Pinned here so the difference cannot drift into something a caller cannot
-    // catch at all - see RemoteTimeSeriesTypeBuilder's class javadoc.
+  void aDuplicateTypeNameIsRefusedOnBothPathsWithTheSameExceptionType() {
+    // Both paths refuse the duplicate in the same words and, since issue #10153, with the same type: the embedded one
+    // answers before touching storage, the remote one rebuilds it from the server's 409. They used to differ (a
+    // RemoteException remotely), so a caller catching "already exists" had to catch two types.
     embedded().getSchema().buildTimeSeriesType()
         .withName("Duplicate").withTimestamp("ts").withField("value", Type.DOUBLE).withShards(1).create();
 
     assertThatThrownBy(() -> embedded().getSchema().buildTimeSeriesType()
         .withName("Duplicate").withTimestamp("ts").withField("value", Type.DOUBLE).withShards(1).create())
+        .isInstanceOf(AlreadyExistsException.class)
         .isInstanceOf(SchemaException.class)
         .hasMessageContaining("Type 'Duplicate' already exists");
 
     try (final RemoteDatabase database = remote()) {
       assertThatThrownBy(() -> database.getSchema().buildTimeSeriesType()
           .withName("Duplicate").withTimestamp("ts").withField("value", Type.DOUBLE).withShards(1).create())
-          .isInstanceOf(RemoteException.class)
+          .isInstanceOf(AlreadyExistsException.class)
+          .isInstanceOf(SchemaException.class)
           .hasMessageContaining("Type 'Duplicate' already exists");
     }
   }

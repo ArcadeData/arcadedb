@@ -109,4 +109,9 @@ public class StatementCache {
   public void clear() {
     cache.clear();
   }
+
+  /** Empties the cache and bounds it to {@code size} statements from now on (issue #10155). */
+  public void resize(final int size) {
+    cache.resize(size);
+  }
 }

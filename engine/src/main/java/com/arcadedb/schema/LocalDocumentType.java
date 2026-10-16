@@ -35,6 +35,7 @@ import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.FileManager;
 import com.arcadedb.engine.LocalBucket;
+import com.arcadedb.exception.AlreadyExistsException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexException;
@@ -519,7 +520,7 @@ public class LocalDocumentType implements DocumentType {
 
   private void renameInternal(final String newName) {
     if (schema.existsType(newName))
-      throw new IllegalArgumentException("Type with name '" + newName + "' already exists");
+      throw new AlreadyExistsException(AlreadyExistsException.Kind.TYPE, "Type with name '" + newName + "' already exists");
 
     final String oldName = name;
 
@@ -551,7 +552,7 @@ public class LocalDocumentType implements DocumentType {
       // which puts the buckets renamed above back under their old names.
       ((DatabaseInternal) schema.getDatabase()).getWrappedDatabaseInstance().executeInWriteLock(() -> {
         if (schema.typeMap().putIfAbsent(newName, this) != null)
-          throw new SchemaException("Type with name '" + newName + "' already exists");
+          throw new AlreadyExistsException(AlreadyExistsException.Kind.TYPE, "Type with name '" + newName + "' already exists");
 
         name = newName;
         return null;
@@ -1058,7 +1059,7 @@ public class LocalDocumentType implements DocumentType {
       checkTimeSeriesColumnDeclared(propertyName);
 
       if (properties.containsKey(propertyName))
-        throw new SchemaException(
+        throw new AlreadyExistsException(AlreadyExistsException.Kind.PROPERTY,
             "Cannot create the property '" + propertyName + "' in type '" + name + "' because it already exists");
 
       if (getPolymorphicPropertyNames().contains(propertyName))
@@ -1291,8 +1292,8 @@ public class LocalDocumentType implements DocumentType {
             + "declared name. Drop the whole type to change the column");
 
       if (properties.containsKey(newPropertyName))
-        throw new SchemaException("Cannot rename the property '" + propertyName + "' in type '" + name + "' to '"
-            + newPropertyName + "' because a property with that name already exists");
+        throw new AlreadyExistsException(AlreadyExistsException.Kind.PROPERTY, "Cannot rename the property '" + propertyName + "' in type '"
+            + name + "' to '" + newPropertyName + "' because a property with that name already exists");
 
       if (getPolymorphicPropertyNames().contains(newPropertyName))
         throw new SchemaException("Cannot rename the property '" + propertyName + "' in type '" + name + "' to '"

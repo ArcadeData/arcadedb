@@ -490,7 +490,13 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       getTransaction().kill();
 
     // #5418: a real crash takes the index background threads down with the process, so the simulation must too -
-    // otherwise a vector index inactivity timer survives the "crash" and later fires against a dead database.
+    // otherwise a vector index inactivity timer survives the "crash" and later fires against a dead database. The schema's
+    // index warm-up thread is one of them (#10156).
+    try {
+      schema.stopIndexWarmUp();
+    } catch (final Exception e) {
+      // IGNORE IT: THIS IS A CRASH SIMULATION
+    }
     for (final Index idx : schema.getIndexes()) {
       try {
         ((IndexInternal) idx).releaseBackgroundResources();
@@ -3274,8 +3280,13 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     serializer.setDateImplementation(configuration.getValue(GlobalConfiguration.DATE_IMPLEMENTATION));
     serializer.setDateTimeImplementation(configuration.getValue(GlobalConfiguration.DATE_TIME_IMPLEMENTATION));
 
-    statementCache.clear();
-    cypherStatementCache.clear();
+    // ALL FOUR QUERY CACHES, NOT ONLY THE TWO PARSE CACHES (issue #10155): A PLAN IS WHAT A SETTING READ AT PLANNING TIME IS
+    // BAKED INTO (arcadedb.queryIndexMaxSelectivity, FOR ONE), AND THE PLAN CACHE IS ASKED BEFORE ANYTHING IS RE-PARSED. EACH IS
+    // RE-SIZED FROM ITS OWN SETTING TOO, WHICH THE CONSTRUCTOR USED TO BE THE ONLY ONE TO READ
+    statementCache.resize(configuration.getValueAsInteger(GlobalConfiguration.SQL_STATEMENT_CACHE));
+    executionPlanCache.resize(configuration.getValueAsInteger(GlobalConfiguration.SQL_STATEMENT_CACHE));
+    cypherStatementCache.resize(configuration.getValueAsInteger(GlobalConfiguration.OPENCYPHER_STATEMENT_CACHE));
+    cypherPlanCache.resize(configuration.getValueAsInteger(GlobalConfiguration.OPENCYPHER_PLAN_CACHE));
   }
 
   /**
@@ -3702,6 +3713,17 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
                 Error on stopping asynchronous manager during closing operation for database \
                 '%s'""", e, name);
       }
+    }
+
+    // #10156: the warm-up of the indexes a schema reload re-created is index background work too, owned by the schema rather than
+    // by any one index, so the loop below cannot reach it. Stopped first, before the flush it would otherwise race, and before
+    // the write-locked teardown purges this database's pages from the shared read cache: a warm-up read landing after that purge
+    // put a page keyed by this closed instance back into the cache (the retention #6133 removed), and on a drop it read files
+    // about to be deleted (the page-parse errors #5418 names)
+    try {
+      schema.stopIndexWarmUp();
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.WARNING, "Error on stopping the index warm-up of database '%s'", e, name);
     }
 
     for (final Index idx : schema.getIndexes()) {

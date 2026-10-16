@@ -23,6 +23,7 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.Bucket;
+import com.arcadedb.exception.AlreadyExistsException;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
@@ -56,7 +57,7 @@ public class CreateBucketStatement extends DDLStatement {
         // One row, exactly as the creating branch below, with created=false telling the two apart: a retry of
         // an IF NOT EXISTS statement must not answer a shape that reads as failure (issue #7143).
         return new InternalResultSet(describe(context, bucketName, db.getSchema().getBucketByName(bucketName), false));
-      throw new CommandExecutionException("Bucket '" + bucketName + "' already exists");
+      throw new AlreadyExistsException(AlreadyExistsException.Kind.BUCKET, "Bucket '" + bucketName + "' already exists");
     }
     final Bucket bucket = db.getSchema().createBucket(bucketName);
 

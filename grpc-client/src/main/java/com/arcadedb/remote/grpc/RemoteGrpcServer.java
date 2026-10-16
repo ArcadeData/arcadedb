@@ -990,8 +990,9 @@ public class RemoteGrpcServer implements AutoCloseable {
       return last;
     } catch (final StatusException e) {
       // Every one of these creates or replaces a database and runs to its end server-side whatever happens to the call,
-      // so a lost answer is an unknown outcome, never a retryable failure (issue #8822)
-      final RuntimeException mapped = GrpcClientErrorMapper.toAutoCommitWriteException(e, operation);
+      // so a lost answer is an unknown outcome, never a retryable failure (issue #8822). The admin mapping, so a taken name is
+      // one here too: importDatabase creates a database (issue #10154)
+      final RuntimeException mapped = GrpcClientErrorMapper.toAdminException(e, operation, true);
       if (mapped.getMessage() == null || mapped.getMessage().isBlank())
         throw new RemoteException("Failed to " + operation, e);
       throw mapped;
@@ -1069,11 +1070,7 @@ public class RemoteGrpcServer implements AutoCloseable {
       // A taken user, token or database name has its own type; the generic mapping would read the same status as a
       // duplicate key (#10075). Every admin call is checked because the admin service sends a trailer-less
       // ALREADY_EXISTS for a taken name only: a new RPC that sends it for anything else must add a trailer
-      if (GrpcClientErrorMapper.isNameTaken(e))
-        throw GrpcClientErrorMapper.toNameTakenException(e);
-      final RuntimeException mapped = write ?
-          GrpcClientErrorMapper.toAutoCommitWriteException(e, operation) :
-          GrpcClientErrorMapper.toException(e);
+      final RuntimeException mapped = GrpcClientErrorMapper.toAdminException(e, operation, write);
       if (mapped.getMessage() == null || mapped.getMessage().isBlank())
         throw new RemoteException("Failed to " + operation, e);
       throw mapped;

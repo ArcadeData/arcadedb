@@ -21,6 +21,7 @@ package com.arcadedb.schema;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
+import com.arcadedb.exception.AlreadyExistsException;
 import com.arcadedb.graph.MutableVertex;
 import org.junit.jupiter.api.Test;
 
@@ -109,7 +110,7 @@ class Issue9891TypeRenamePublishSignalTest extends TestHelper {
     database.command("sql", "CREATE VERTEX TYPE Taken");
     database.transaction(() -> database.newVertex("Rb").save());
 
-    assertThatThrownBy(() -> database.getSchema().getType("Rb").rename("Taken")).isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> database.getSchema().getType("Rb").rename("Taken")).isInstanceOf(AlreadyExistsException.class);
 
     assertThat(database.getSchema().existsType("Rb")).isTrue();
     assertThat(database.countType("Rb", false)).isEqualTo(1);

@@ -21,6 +21,7 @@ package com.arcadedb.schema;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
+import com.arcadedb.exception.AlreadyExistsException;
 import com.arcadedb.exception.SchemaException;
 import org.junit.jupiter.api.Test;
 
@@ -172,7 +173,7 @@ class Issue7918CreatePropertyValidationUnderWriteLockTest extends TestHelper {
     schema.createDocumentType("Issue7918Occupant").createProperty("occupied", Type.STRING);
 
     assertThatThrownBy(() -> schema.getType("Issue7918RenamedNow").rename("Issue7918Occupant"))
-        .isInstanceOf(IllegalArgumentException.class);
+        .isInstanceOf(AlreadyExistsException.class);
 
     assertThat(schema.existsType("Issue7918Occupant")).isTrue();
     assertThat(schema.getType("Issue7918Occupant").existsProperty("occupied"))
