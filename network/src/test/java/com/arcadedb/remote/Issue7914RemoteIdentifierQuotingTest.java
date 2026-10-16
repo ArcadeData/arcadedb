@@ -18,6 +18,7 @@
  */
 package com.arcadedb.remote;
 
+import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.antlr.SQLAntlrParser;
@@ -301,6 +302,8 @@ class Issue7914RemoteIdentifierQuotingTest {
       final RemoteSchema schema = mock(RemoteSchema.class);
       when(schema.getType(anyString())).thenReturn(edgeType);
       when(db.getSchema()).thenReturn(schema);
+      // THE EDGE WRITES THROUGH THE DATABASE'S OWN INSERT SINCE #10161, WHERE THE QUOTING LIVES: RUN IT AGAINST THE MOCK
+      when(db.saveRecord(any(MutableDocument.class), anyString())).thenCallRealMethod();
 
       final RemoteMutableEdge edge = new RemoteMutableEdge(
           new RemoteImmutableEdge(db, Map.of("@type", hostile, "@cat", "e", "@out", "#1:0", "@in", "#2:0")));
