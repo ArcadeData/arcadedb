@@ -376,3 +376,72 @@ def test_without_the_bridge_classes_the_plain_paths_answer_the_same(
     assert [exact(r) for r in db.query("sql", "SELECT FROM Wide").to_list()] == wide
     assert [exact(r) for r in db.query("sql", "SELECT FROM Wide").iter_dicts()] == wide
     assert [e.get_rid() for e in people[0].get_out_edges("Knows")] == edges
+
+
+def _fat_rows(temp_db, rows, kilobytes):
+    temp_db.command("sql", "CREATE DOCUMENT TYPE Fat")
+    text = "x" * (kilobytes * 1024)
+    with temp_db.transaction():
+        for i in range(rows):
+            temp_db.new_document("Fat").set("i", i).set("s", text).save()
+    return text
+
+
+def test_a_batch_of_wide_rows_ends_at_a_few_megabytes(temp_db):
+    """TypedRows writes a batch as ONE JSON text, so the batch has to end by size and not only by row count.
+
+    1,000 rows of 1 MB each made a 1 GB StringBuilder, a copy of it, and a Python str of it, and
+    to_list() raised OutOfMemoryError on a result the row-by-row path reads (a 1 GB heap, 400
+    rows of 1 MB). A batch that stops short of its row count for size is not drained, so the
+    caller has to ask again until the bridge says drained.
+    """
+    import json
+
+    text = _fat_rows(temp_db, 40, 400)
+    typed_rows = results._bridge_class("TypedRows")
+    rs = temp_db.query("sql", "SELECT FROM Fat ORDER BY i")
+    seen = []
+    batches = 0
+    while True:
+        batch = typed_rows.nextRows(rs._java_result_set, 1000)
+        rows = json.loads(str(batch[0]))
+        batches += 1
+        assert len(str(batch[0])) < 8 * 1024 * 1024
+        seen.extend(r["i"] for r in rows)
+        if batch[2]:
+            break
+        assert 0 < len(rows) < 40  # cut for size, with rows still to come
+    assert seen == list(range(40))
+    assert batches > 1
+    assert all(r["s"] == text for r in rows)
+
+
+def test_to_list_of_wide_rows_is_the_row_by_row_answer(temp_db):
+    text = _fat_rows(temp_db, 40, 400)
+    expected = [
+        row.to_dict() for row in temp_db.query("sql", "SELECT FROM Fat ORDER BY i")
+    ]
+    rows = temp_db.query("sql", "SELECT FROM Fat ORDER BY i").to_list()
+    assert [r["i"] for r in rows] == list(range(40))
+    assert all(r["s"] == text for r in rows)
+    assert [exact(r) for r in rows] == [exact(r) for r in expected]
+    assert [
+        r["i"] for r in temp_db.query("sql", "SELECT FROM Fat ORDER BY i").iter_dicts()
+    ] == list(range(40))
+
+
+def test_the_batch_says_whether_the_result_set_is_drained(temp_db):
+    """A short result is one batch and drained; exactly as many rows as asked for is not yet known to be drained."""
+    temp_db.command("sql", "CREATE DOCUMENT TYPE Few")
+    with temp_db.transaction():
+        for i in range(3):
+            temp_db.command("sql", "INSERT INTO Few SET k = ?", i)
+    typed_rows = results._bridge_class("TypedRows")
+    rs = temp_db.query("sql", "SELECT FROM Few")
+    batch = typed_rows.nextRows(rs._java_result_set, 10)
+    assert bool(batch[2]) is True
+    rs = temp_db.query("sql", "SELECT FROM Few")
+    batch = typed_rows.nextRows(rs._java_result_set, 3)
+    assert bool(batch[2]) is False
+    batch = typed_rows.nextRows(rs._java_result_set, 3)
+    assert bool(batch[2]) is True and str(batch[0]) == "[]"

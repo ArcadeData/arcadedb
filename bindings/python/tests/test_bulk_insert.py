@@ -306,25 +306,28 @@ class TestInsertManyStreams:
         assert _count(temp_db, "Stream") == 3 * chunk
 
     def test_python_memory_does_not_grow_with_the_row_count(self, temp_db):
-        import tracemalloc
+        from arcadedb_embedded import core
 
+        # Rows produced but not yet handed to the engine are what Python holds.
+        # Counting them at every chunk boundary needs no allocator hook: this
+        # test used tracemalloc, and three JVM crashes with no Python frame on
+        # arm64 CI (Python 3.10 and 3.11) happened right after it started.
         self._point_type(temp_db, "StreamMem")
-        n = 60_000
+        chunk = core._INSERT_MANY_CHUNK
+        n = 8 * chunk
+        held = []
 
         def rows():
             for i in range(n):
+                if i and i % chunk == 0:
+                    held.append(i - _count(temp_db, "StreamMem"))
                 yield {"k": i, "host": f"host_{i % 100}", "v": i * 0.5}
 
-        tracemalloc.start()
-        try:
-            temp_db.insert_many("StreamMem", rows(), commit_every=10_000)
-            peak = tracemalloc.get_traced_memory()[1]
-        finally:
-            tracemalloc.stop()
-        # The old code held about 25 MB here (60,000 dicts plus their JSON
-        # text, about 410 bytes a row) and grew linearly with n; streaming
-        # holds one 10,000-row chunk, about 4 MB, whatever n is.
-        assert peak < 12 * 2**20, f"peak Python allocation {peak / 2**20:.1f} MB"
+        assert temp_db.insert_many("StreamMem", rows(), commit_every=chunk) == n
+        # The old code stored nothing until the iterable was exhausted: its
+        # held count grew to 7 chunks here. Streaming holds about one.
+        assert len(held) == 7
+        assert max(held) <= 2 * chunk, held
         assert _count(temp_db, "StreamMem") == n
 
     def test_commit_every_counts_across_chunks(self, temp_db):

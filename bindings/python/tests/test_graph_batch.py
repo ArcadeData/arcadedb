@@ -744,3 +744,109 @@ def test_graph_batch_leaves_the_callers_wal_setting_alone(temp_db_path):
             batch.create_vertices("V", 2)
             assert caller_transaction_uses_the_wal() is True
         assert caller_transaction_uses_the_wal() is True
+
+
+class TestNewEdgesLengths:
+    """new_edges() takes three parallel sequences. zip() stopped at the shortest without a word, so
+    with property dicts a list one short dropped an edge and none of the paths said so, while the
+    same call without properties raised. Any mismatch raises before anything is buffered.
+    """
+
+    @pytest.fixture
+    def graph(self, temp_db):
+        temp_db.command("sql", "CREATE VERTEX TYPE V")
+        temp_db.command("sql", "CREATE EDGE TYPE E")
+        with temp_db.graph_batch() as batch:
+            rids = batch.create_vertices("V", 5)
+        return temp_db, rids
+
+    @staticmethod
+    def edge_count(db):
+        return db.query("sql", "SELECT count(*) AS c FROM E").first().get("c")
+
+    @pytest.mark.parametrize(
+        "sources, destinations, properties",
+        [
+            (3, 2, None),
+            (2, 3, None),
+            (3, 3, [{"w": 1}, {"w": 2}]),
+            (3, 2, [{"w": 1}, {"w": 2}, {"w": 3}]),
+            (3, 3, []),
+            (3, 3, [{"w": 1}, {"w": 2}, {"w": 3}, {"w": 4}]),
+            (3, 3, [{"w": 1}, {"w": datetime(2020, 1, 1)}]),
+        ],
+        ids=[
+            "no properties, destinations short",
+            "no properties, sources short",
+            "properties short",
+            "destinations short, properties full",
+            "properties empty",
+            "properties long",
+            "properties short, one value off the bulk path",
+        ],
+    )
+    def test_a_length_mismatch_raises_and_buffers_nothing(
+        self, graph, sources, destinations, properties
+    ):
+        db, rids = graph
+        with db.graph_batch() as batch:
+            with pytest.raises(ArcadeDBError, match="same length"):
+                batch.new_edges(
+                    rids[:sources], "E", rids[1 : 1 + destinations], properties
+                )
+            assert batch.get_buffered_edge_count() == 0
+        assert self.edge_count(db) == 0
+
+    def test_equal_lengths_still_buffer_every_edge(self, graph):
+        db, rids = graph
+        properties = [{"w": i} for i in range(3)]
+        with db.graph_batch() as batch:
+            batch.new_edges(rids[:3], "E", rids[1:4], properties)
+            batch.new_edges(rids[:1], "E", rids[4:], [{}])
+            batch.new_edges([], "E", [], [])
+            batch.new_edges([], "E", [])
+        assert self.edge_count(db) == 4
+        assert sorted(
+            r.get("w") for r in db.query("sql", "SELECT w FROM E WHERE w IS NOT NULL")
+        ) == [0, 1, 2]
+
+    def test_a_generator_is_read_once_and_every_edge_is_buffered(self, graph):
+        db, rids = graph
+        with db.graph_batch() as batch:
+            batch.new_edges(
+                (r for r in rids[:3]),
+                "E",
+                (r for r in rids[1:4]),
+                ({"w": i, "d": datetime(2020, 1, 1)} for i in range(3)),
+            )
+        assert self.edge_count(db) == 3
+
+    @pytest.mark.parametrize("bad", [{1: "a"}, {"w": 1, 2: "a"}])
+    def test_a_late_bad_property_name_leaves_no_earlier_edge_behind(self, graph, bad):
+        db, rids = graph
+        with db.graph_batch() as batch:
+            with pytest.raises(ArcadeDBError):
+                batch.new_edges(
+                    rids[:3],
+                    "E",
+                    rids[1:4],
+                    [{"w": 0, "d": datetime(2020, 1, 1)}, {"w": 1}, bad],
+                )
+        assert self.edge_count(db) == 0
+
+    @pytest.mark.parametrize("key", [1, True, None, 1.5])
+    def test_a_property_name_that_is_not_a_str_is_refused(self, graph, key):
+        db, rids = graph
+        with db.graph_batch() as batch:
+            with pytest.raises(ArcadeDBError):
+                batch.new_edges(rids[:1], "E", rids[1:2], [{key: "a"}])
+            with pytest.raises(ArcadeDBError):
+                batch.create_vertices("V", [{key: "a"}])
+        assert self.edge_count(db) == 0
+        names = {
+            n
+            for r in db.query("sql", "SELECT FROM V")
+            for n in r.property_names
+            if not n.startswith("@")
+        }
+        assert names == set()

@@ -22,8 +22,9 @@ _BRIDGE_CLASSES: dict = {}
 
 
 # Rows per crossing for ResultSet.to_list(): large enough that the per-batch
-# cost (one crossing, one decoder) disappears, small enough that the JSON text
-# of a wide batch stays a few megabytes.
+# cost (one crossing, one decoder) disappears. TypedRows also ends a batch once
+# its JSON text reaches a few megabytes, so rows of any width cross in pieces
+# that stay that small.
 _TYPED_BATCH_ROWS = 1000
 
 _TYPED_TAG = "\u0001"
@@ -429,9 +430,11 @@ class ResultSet:
             side = java_batch[1]
             rows = json.loads(str(java_batch[0]), object_hook=_typed_hook(side))
             out.extend(rows)
-            if len(rows) < _TYPED_BATCH_ROWS:
-                # a short batch is the last one, and the bridge closed the
-                # result set: no second call just to see an empty batch
+            if java_batch[2]:
+                # the result set is drained, and the bridge closed it: no
+                # second call just to see an empty batch. (A batch also ends
+                # early, short of _TYPED_BATCH_ROWS, once its JSON text is a
+                # few megabytes, so a short batch alone does not say drained.)
                 self._drained()
                 return out
 

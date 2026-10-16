@@ -59,6 +59,8 @@ except ImportError:  # pragma: no cover - numpy is an optional dependency
 # free and used to run per record in wrapper dispatch).
 _JAVA_CLASSES = {}
 
+_JAVA_INT_MAX = 2**31 - 1
+
 # rows per JSON text in insert_many: bounds the memory a load holds (#294)
 _INSERT_MANY_CHUNK = 10_000
 
@@ -966,7 +968,9 @@ class Database:
                         string_array,
                         object_array,
                         n,
-                        int(commit_every),
+                        # the Java side counts in an int: a larger value means
+                        # "never within this call", as it does for insert_many
+                        min(int(commit_every), _JAVA_INT_MAX),
                     )
                 )
             try:
@@ -1049,12 +1053,12 @@ class Database:
             values: List of property values
 
         Returns:
-            Python-wrapped records or None
+            The first matching record, wrapped, or None
 
         Example:
-            >>> records = list(db.lookup_by_key("User", ["email"], ["alice@example.com"]))
-            >>> if records:
-            ...     user = records[0]
+            >>> user = db.lookup_by_key("User", ["email"], ["alice@example.com"])
+            >>> if user is not None:
+            ...     print(user.get("name"))
         """
         self._check_not_closed()
         try:
