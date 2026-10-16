@@ -21,6 +21,7 @@ package com.arcadedb.graph;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.DuplicatedKeyException;
 
 import org.junit.jupiter.api.Test;
 
@@ -43,6 +44,7 @@ class Issue10136LightweightBatchEdgesTest extends TestHelper {
       database.getSchema().buildVertexType().withName("V").create();
       database.getSchema().buildEdgeType().withName("L").withLightweight(true).create();
       database.getSchema().buildEdgeType().withName("E").create();
+      database.getSchema().buildEdgeType().withName("U").withLightweight(true).withUnique(true).create();
     });
   }
 
@@ -103,6 +105,22 @@ class Issue10136LightweightBatchEdgesTest extends TestHelper {
     assertThat(v[0].asVertex().countEdges(Vertex.DIRECTION.OUT, "L")).isEqualTo(1L);
     assertThat(v[1].asVertex().countEdges(Vertex.DIRECTION.IN, "E")).isEqualTo(1L);
     assertThat(v[2].asVertex().countEdges(Vertex.DIRECTION.IN, "L")).isEqualTo(1L);
+  }
+
+  /**
+   * The first light edge of a batch creates the source's edge list on the transaction's copy of the vertex: the uniqueness
+   * check of the next connection has to see it, or a unique type accepts the same pair twice in one batch.
+   */
+  @Test
+  void aUniqueLightweightTypeRefusesTheSamePairTwiceInOneBatch() {
+    final RID[] v = newVertices(2);
+
+    assertThatThrownBy(() -> newEdges(v[0],
+        new GraphEngine.CreateEdgeOperation("U", v[1], new Object[0]),
+        new GraphEngine.CreateEdgeOperation("U", v[1], new Object[0])))
+        .isInstanceOf(DuplicatedKeyException.class);
+
+    assertThat(v[0].asVertex().countEdges(Vertex.DIRECTION.OUT, "U")).isZero();
   }
 
   private RID[] newVertices(final int count) {
