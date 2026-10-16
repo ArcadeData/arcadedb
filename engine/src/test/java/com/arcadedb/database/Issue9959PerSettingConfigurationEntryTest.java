@@ -57,11 +57,11 @@ class Issue9959PerSettingConfigurationEntryTest {
     }
 
     @Override
-    public void saveConfiguration(final String key) throws IOException {
-      savedKey = key;
+    public void saveConfiguration(final SettingChange change) throws IOException {
+      savedKey = change.key();
       // Before the save, as the HA wrapper computes it: the save writes the file, after which nothing is pending
-      submittedEntry = pendingConfigurationChange(key);
-      super.saveConfiguration(key);
+      submittedEntry = pendingConfigurationChange(change);
+      super.saveConfiguration(change);
     }
   }
 

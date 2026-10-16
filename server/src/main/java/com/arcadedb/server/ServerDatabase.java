@@ -804,6 +804,11 @@ public class ServerDatabase implements DatabaseInternal {
     current().saveConfiguration(key);
   }
 
+  @Override
+  public void saveConfiguration(final LocalDatabase.SettingChange change) throws IOException {
+    current().saveConfiguration(change);
+  }
+
   public StatementCache getStatementCache() {
     return current().getStatementCache();
   }
