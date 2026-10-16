@@ -63,6 +63,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.NoSuchElementException;
 import java.util.Objects;
 import java.util.Set;
 import java.util.function.Consumer;
@@ -76,6 +77,23 @@ import java.util.logging.Level;
  * @author Luca Garulli (l.garulli@arcadedata.it)
  */
 public class GraphEngine {
+  private static final EdgeEntryRIDIterator NO_ENTRIES = new EdgeEntryRIDIterator() {
+    @Override
+    public boolean hasNext() {
+      return false;
+    }
+
+    @Override
+    public RID next() {
+      throw new NoSuchElementException();
+    }
+
+    @Override
+    public RID getEdgeRID() {
+      throw new IllegalStateException("No entry: next() has not returned one yet");
+    }
+  };
+
   public static final IterableGraph<Vertex> EMPTY_VERTEX_LIST = new IterableGraph<>() {
     @Override
     public Iterator<Vertex> iterator() {
@@ -2355,6 +2373,23 @@ public class GraphEngine {
         throw new IllegalArgumentException("Invalid direction " + direction);
     }
     return Collections.emptyList();
+  }
+
+  /**
+   * {@link #getConnectedVertexRIDs} for one direction, as an iterator that can also name the edge of the entry it last returned
+   * (issue #10148): the vertex RIDs and the edge RIDs sit inline in the edge list, so no record is read for either, and a caller
+   * that follows the entries without reading their edges can still tell the entry of an edge whose record is gone - a ghost -
+   * from a live one, by asking the bucket about the edge RID of the entries it is about to follow.
+   *
+   * @param direction {@link Vertex.DIRECTION#OUT} or {@link Vertex.DIRECTION#IN}: a walk of both reads one list after the other
+   */
+  public EdgeEntryRIDIterator getConnectedVertexEntries(final VertexInternal vertex, final Vertex.DIRECTION direction,
+                                                        final String... edgeTypes) {
+    if (direction != Vertex.DIRECTION.OUT && direction != Vertex.DIRECTION.IN)
+      throw new IllegalArgumentException("Invalid direction " + direction);
+
+    final EdgeLinkedList edges = getEdgeHeadChunk(getMostUpdatedVertex(vertex), direction);
+    return edges != null ? edges.entryRidIterator(edgeTypes) : NO_ENTRIES;
   }
 
   public RID getFirstEdgeConnectedToVertex(final VertexInternal vertex, final Identifiable toVertex,

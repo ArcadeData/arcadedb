@@ -22,8 +22,10 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
+import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.EdgeEntryRIDIterator;
 import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.graph.Vertex;
@@ -243,9 +245,10 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
    * The rows of a walk that yields paths. The walk is not run to the end here: it goes on as the query asks for rows.
    *
    * <p>
-   * The heap the walk holds is given back when it ends, or when the stream is closed. A consumer that stops reading
-   * without closing leaves it to the query's heap tracker, which gives back whatever a query still holds once it is
-   * unreachable.
+   * The heap the walk holds is given back when it ends, or when the stream is closed, which the {@code CALL} step does when the
+   * rows run out or the query's result set is closed with rows still unread (issue #10150). A consumer that reads the stream
+   * itself and stops without closing leaves it to the query's heap tracker, which gives back whatever a query still holds once
+   * it is unreachable.
    *
    * @param optional APOC's {@code optional}: when the walk answers nothing, one row with a null path
    */
@@ -301,8 +304,13 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
    *   or by a node list is never loaded.</li>
    *   <li><b>Relationships are collected only when the caller yields them.</b> Under a plain {@code YIELD nodes} the walk
    *   uses the neighbour-RID iterator, which reads the adjacency entries without materialising a single edge.</li>
+   *   <li><b>An entry reaches its neighbour only if the edge it names still has its record</b> (issue #10148). The bucket is
+   *   asked about the edge RID the entry holds once per node reached, never per entry and without reading the record, and a
+   *   dangling entry is reported and skipped without spending the node, so the walk, {@code path.expandConfig} and
+   *   {@code path.spanningTree} agree on the component, and a node of {@code path.subgraphAll} is always reached by one of the
+   *   relationships it returns.</li>
    * </ul>
-   * The walk is {@link PathUniqueness#NODE_GLOBAL}: a node is spent the moment it is first met, whatever the filters make of
+   * The walk is {@link PathUniqueness#NODE_GLOBAL}: a node is spent the moment it is first reached, whatever the filters make of
    * it there, as it is in APOC. A node met again where a label sequence would welcome it is not a new node.
    * <p>
    * The relationships are not the ones the walk followed. They are every relationship, of any type, between two of the
@@ -332,15 +340,14 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
     final Database database = startNode.getDatabase();
     final RelationshipFilter relationships = filters.relationships();
 
-    final RidHashSet visitedNodes = new RidHashSet();
-    final RidHashSet ghostNodes = new RidHashSet(16);
+    final ComponentWalk walk = new ComponentWalk(database, filters, minLevel, limit, reachableNodes);
 
     final LabelFilter.Verdict startVerdict = filters.evaluate(database, startNode.getIdentity(), 0);
     if (startVerdict == LabelFilter.Verdict.EXCLUDE_AND_PRUNE)
       // The start node itself is denied (filterStartNode): there is no component to report
       return;
 
-    visitedNodes.add(startNode.getIdentity());
+    walk.visitedNodes.add(startNode.getIdentity());
     if (startVerdict.includes && minLevel == 0)
       reachableNodes.add(startNode);
 
@@ -349,53 +356,31 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
       frontier.add(startNode);
 
     for (int level = 0; level < maxLevel && !frontier.isEmpty() && reachableNodes.size() < limit; ++level) {
-      final List<Vertex> nextFrontier = new ArrayList<>();
-      final int depth = level + 1;
+      walk.startLevel(level + 1);
 
-      // Only the nodes are asked for: walk the adjacency entries without loading a single edge record. Both sides
-      // are read in one pass when the hop follows the same types both ways and none of them is stored one way only.
-      // THE INCOMING SIDE OF A UNIDIRECTIONAL EDGE TYPE IS ON THE OTHER END ONLY (ISSUE #8629): READ FROM THE EDGES THAT
-      // END IN THE VERTEX
+      // The adjacency entries are walked on the RIDs they hold, so no record is read to follow one. THE INCOMING SIDE OF A
+      // UNIDIRECTIONAL EDGE TYPE IS ON THE OTHER END ONLY (ISSUE #8629): READ FROM THE EDGES THAT END IN THE VERTEX
       final String[] outTypes = relationships.typesFor(level, Vertex.DIRECTION.OUT);
       final String[] inTypes = relationships.typesFor(level, Vertex.DIRECTION.IN);
       final boolean incomingSideMissing =
           inTypes != null && IncomingEdgeLookup.isNeeded(context, database, Vertex.DIRECTION.IN, inTypes);
-      final boolean bothInOnePass = relationships.isSymmetric(level) && !incomingSideMissing;
 
       for (final Vertex current : frontier) {
         if (reachableNodes.size() >= limit)
           break;
 
-        if (bothInOnePass) {
-          for (final RID neighborId : current.getConnectedVertexRIDs(Vertex.DIRECTION.BOTH, outTypes))
-            visitNeighbor(database, neighborId, depth, filters, minLevel, limit, visitedNodes, ghostNodes, reachableNodes,
-                nextFrontier);
-          continue;
-        }
-
         if (outTypes != null)
-          for (final RID neighborId : current.getConnectedVertexRIDs(Vertex.DIRECTION.OUT, outTypes))
-            visitNeighbor(database, neighborId, depth, filters, minLevel, limit, visitedNodes, ghostNodes, reachableNodes,
-                nextFrontier);
+          walk.followEntries(current, Vertex.DIRECTION.OUT, outTypes);
 
         if (inTypes == null)
           continue;
-        if (incomingSideMissing) {
-          for (final Edge edge : edgesOf(context, current, Vertex.DIRECTION.IN, inTypes)) {
-            try {
-              visitNeighbor(database, edge.getOut(), depth, filters, minLevel, limit, visitedNodes, ghostNodes, reachableNodes,
-                  nextFrontier);
-            } catch (final RecordNotFoundException e) {
-              GhostEdgeReporter.reportSkipped(e);
-            }
-          }
-        } else
-          for (final RID neighborId : current.getConnectedVertexRIDs(Vertex.DIRECTION.IN, inTypes))
-            visitNeighbor(database, neighborId, depth, filters, minLevel, limit, visitedNodes, ghostNodes, reachableNodes,
-                nextFrontier);
+        if (incomingSideMissing)
+          walk.followEdges(current, Vertex.DIRECTION.IN, edgesOf(context, current, Vertex.DIRECTION.IN, inTypes).iterator());
+        else
+          walk.followEntries(current, Vertex.DIRECTION.IN, inTypes);
       }
 
-      frontier = nextFrontier;
+      frontier = walk.endLevel();
     }
 
     if (reachableEdges != null)
@@ -460,34 +445,126 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
   }
 
   /**
-   * Adds a neighbour to the walk unless it has been met already or the filters turn it away. The vertex record is loaded only
-   * once both tests have passed, which is what keeps the walk's loads proportional to the component rather than to its
-   * adjacency entries.
-   * <p>
-   * A neighbour is spent the moment it is first met, before the filters have their say: one turned away is not a new
-   * node when the walk meets it again, even where a label sequence would welcome it. APOC's node-global uniqueness is
-   * recorded when a branch is created, ahead of the evaluators, and answers the same.
-   * <p>
-   * A RID with no record behind it is spent too, and reported once, by {@link #resolveNeighbor}.
+   * Whether the record of the edge named by an adjacency entry is still there, answered by the bucket without reading the
+   * record. A lightweight edge has no record of its own: its adjacency entry is all there is of it.
    */
-  private void visitNeighbor(final Database database, final RID neighborId, final int depth, final Filters filters,
-      final int minLevel, final int limit, final RidHashSet visitedNodes, final RidHashSet ghostNodes,
-      final List<Vertex> reachableNodes, final List<Vertex> nextFrontier) {
-    // Before any set is touched: RidHashSet reads the bucket and offset off the RID without checking it for null
-    if (neighborId == null || reachableNodes.size() >= limit || !visitedNodes.add(neighborId))
-      return;
+  private static boolean edgeRecordExists(final Database database, final RID edgeId) {
+    if (edgeId == null || edgeId.getPosition() < 0)
+      return true;
+    final Bucket bucket = database.getSchema().getBucketByIdIfExists(edgeId.getBucketId());
+    return bucket != null && bucket.existsRecord(edgeId);
+  }
 
-    final LabelFilter.Verdict verdict = filters.evaluate(database, neighborId, depth);
-    if (verdict == LabelFilter.Verdict.EXCLUDE_AND_PRUNE)
-      return;
+  /**
+   * The state of one {@link #collectReachableComponent} walk, and the following of the adjacency entries of the nodes of a level.
+   * <p>
+   * A neighbour is reached by an adjacency entry only if the edge that entry names still has its record (issue #10148): the walk
+   * decides reachability on the same evidence as the relationships it reports and as the walks that read the edge
+   * ({@code path.expandConfig}, {@code path.spanningTree}), so every procedure of the family agrees on the component. A ghost
+   * entry does not spend the node it names, so another, live, entry reaches it later. The check comes after the test for a node
+   * met already, which turns away the large majority of the entries and costs a set probe, so it is paid once per node reached and
+   * not once per entry, and it asks the bucket about the edge RID the entry holds: no record is read.
+   * <p>
+   * A neighbour is spent the moment it is first reached, before the filters have their say: one turned away is not a new node when
+   * the walk meets it again, even where a label sequence would welcome it. APOC's node-global uniqueness is recorded when a branch
+   * is created, ahead of the evaluators, and answers the same. A RID with no record behind it is spent too, and reported once, by
+   * {@link #resolveNeighbor}. The vertex record is loaded only once all of that has passed, which is what keeps the walk's loads
+   * proportional to the component rather than to its adjacency entries.
+   */
+  private static final class ComponentWalk {
+    private final Database     database;
+    private final Filters      filters;
+    private final int          minLevel;
+    private final int          limit;
+    private final List<Vertex> reachableNodes;
+    private final RidHashSet   visitedNodes = new RidHashSet();
+    private final RidHashSet   ghostNodes    = new RidHashSet(16);
+    private       List<Vertex> nextFrontier;
+    private       int          depth;
 
-    final Vertex neighbor = resolveNeighbor(neighborId, ghostNodes);
-    if (neighbor == null)
-      return;
+    private ComponentWalk(final Database database, final Filters filters, final int minLevel, final int limit,
+        final List<Vertex> reachableNodes) {
+      this.database = database;
+      this.filters = filters;
+      this.minLevel = minLevel;
+      this.limit = limit;
+      this.reachableNodes = reachableNodes;
+    }
 
-    if (verdict.includes && depth >= minLevel)
-      reachableNodes.add(neighbor);
-    if (verdict.continues)
-      nextFrontier.add(neighbor);
+    /** Starts the level {@code depth} hops from the start node: the nodes it reaches are its frontier. */
+    private void startLevel(final int depth) {
+      this.depth = depth;
+      this.nextFrontier = new ArrayList<>();
+    }
+
+    /** Ends the level, answering the nodes it reached that the walk goes on from. */
+    private List<Vertex> endLevel() {
+      return nextFrontier;
+    }
+
+    /** Follows the entries of the adjacency list of {@code current} in {@code direction} (outgoing or incoming) over {@code types}. */
+    private void followEntries(final Vertex current, final Vertex.DIRECTION direction, final String[] types) {
+      if (!(current instanceof VertexInternal internal)) {
+        followEdges(current, direction, current.getEdges(direction, types).iterator());
+        return;
+      }
+
+      final EdgeEntryRIDIterator entries = ((DatabaseInternal) database).getGraphEngine()
+          .getConnectedVertexEntries(internal, direction, types);
+      while (entries.hasNext() && reachableNodes.size() < limit) {
+        final RID neighborId = entries.next();
+        // Before any set is touched: RidHashSet reads the bucket and offset off the RID without checking it for null
+        if (neighborId == null || visitedNodes.contains(neighborId))
+          continue;
+        // The edge pointer of the entry is decoded now, for the nodes not met yet: the walk skips it otherwise
+        reach(entries.getEdgeRID(), neighborId);
+      }
+    }
+
+    /**
+     * Follows edges that were read as records (those of an incoming side stored on the other end only): the far end is read off
+     * the edge, which for a record loaded lazily is what finds one whose record is gone.
+     */
+    private void followEdges(final Vertex current, final Vertex.DIRECTION direction, final Iterator<Edge> edges) {
+      while (edges.hasNext() && reachableNodes.size() < limit) {
+        final RID edgeId;
+        final RID neighborId;
+        try {
+          final Edge edge = edges.next();
+          neighborId = direction == Vertex.DIRECTION.OUT ? edge.getIn() : edge.getOut();
+          edgeId = edge.getIdentity();
+        } catch (final RecordNotFoundException e) {
+          GhostEdgeReporter.reportSkipped(e);
+          continue;
+        }
+        if (neighborId == null || visitedNodes.contains(neighborId))
+          continue;
+        reach(edgeId, neighborId);
+      }
+    }
+
+    /** Reaches {@code neighborId} through the entry naming {@code edgeId}, unless that edge is a ghost or the filters turn it away. */
+    private void reach(final RID edgeId, final RID neighborId) {
+      if (!edgeRecordExists(database, edgeId)) {
+        GhostEdgeReporter.reportSkipped(new RecordNotFoundException("Record " + edgeId + " not found", edgeId));
+        return;
+      }
+
+      if (!visitedNodes.add(neighborId))
+        return;
+
+      final LabelFilter.Verdict verdict = filters.evaluate(database, neighborId, depth);
+      if (verdict == LabelFilter.Verdict.EXCLUDE_AND_PRUNE)
+        return;
+
+      final Vertex neighbor = resolveNeighbor(neighborId, ghostNodes);
+      if (neighbor == null)
+        return;
+
+      if (verdict.includes && depth >= minLevel)
+        reachableNodes.add(neighbor);
+      if (verdict.continues)
+        nextFrontier.add(neighbor);
+    }
   }
 }

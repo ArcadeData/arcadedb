@@ -121,6 +121,15 @@ public class MultiIterator<T> implements ResettableIterator<T>, IterableGraph<T>
     return partialIterator.next();
   }
 
+  /**
+   * The source iterator that produced the element the last {@link #next()} returned, for a caller that knows more about its
+   * sources than this class does. Valid until the following {@link #hasNext()} or {@link #next()}, which may move on to the next
+   * source.
+   */
+  public Iterator<T> getLastSource() {
+    return partialIterator;
+  }
+
   @Override
   public Iterator<T> iterator() {
     reset();

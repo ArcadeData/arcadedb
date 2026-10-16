@@ -49,6 +49,7 @@ STATUSCOMPLETE="$SCRIPTS/check-ci-status-completeness.py"
 GRAALVMPIN="$SCRIPTS/check-native-graalvm-pin.py"
 RELEASEASSETS="$SCRIPTS/check-release-upload-assets.py"
 CREDSCOPE="$SCRIPTS/check-deploy-credential-scope.py"
+WRAPPER="$SCRIPTS/check-maven-wrapper.py"
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
@@ -1809,6 +1810,240 @@ expect "reports a workflow it cannot parse as YAML" 1 "not parseable as YAML" \
 # The repository's own workflows must pass - this is the case that would have caught #10023.
 expect "the repository's own deploy workflows scope their credentials" 0 "credential scope" \
     "$CREDSCOPE"
+
+echo
+echo "check-maven-wrapper.py"
+
+mkdir -p "$work/wrapper"
+
+# Writes a one-step workflow whose `run:` is the given script.
+maven_workflow() {
+    local path="$1" script="$2"
+    {
+        cat <<YAML
+name: Build
+on: [ push ]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Build
+        run: |
+YAML
+        printf '%s\n' "$script" | sed 's/^/          /'
+    } >"$path"
+}
+
+# The regression this check exists for: #10134. mvn-deploy.yml published every snapshot with the
+# runner image's Maven, which is how a runner Maven bump broke it with no change in the repository
+# (#10023), and how the same bump broke the release bundle a week later (#10111).
+maven_workflow "$work/wrapper/bare.yml" 'mvn deploy -Pdeploy --batch-mode -DskipTests'
+expect "rejects the runner's mvn" 1 "mvn deploy -Pdeploy" \
+    "$WRAPPER" "$work/wrapper/bare.yml"
+
+maven_workflow "$work/wrapper/wrapper.yml" './mvnw deploy -Pdeploy --batch-mode -DskipTests'
+expect "accepts ./mvnw" 0 "Maven wrapper" \
+    "$WRAPPER" "$work/wrapper/wrapper.yml"
+
+# The shapes the census in #10134 missed or that a single-line grep would: a command substitution
+# (mvn-test.yml's `Get project version`), a continued command, a later command in a multi-line
+# script (license-compliance.yml), an `&&` chain, a pipe, and an absolute path to the runner's Maven.
+maven_workflow "$work/wrapper/substitution.yml" 'echo "version=$(mvn help:evaluate -Dexpression=project.version -q -DforceStdout)" >> $GITHUB_OUTPUT'
+expect "rejects mvn inside \$(...)" 1 "mvn help:evaluate" \
+    "$WRAPPER" "$work/wrapper/substitution.yml"
+maven_workflow "$work/wrapper/backtick.yml" 'echo "version=`mvn help:evaluate -q -DforceStdout`"'
+expect "rejects mvn inside backticks" 1 "mvn help:evaluate" \
+    "$WRAPPER" "$work/wrapper/backtick.yml"
+maven_workflow "$work/wrapper/continued.yml" $'mvn -B -ntp \\\n  -Pnative package'
+expect "rejects a continued mvn command" 1 "mvn -B -ntp -Pnative package" \
+    "$WRAPPER" "$work/wrapper/continued.yml"
+maven_workflow "$work/wrapper/later-line.yml" $'echo "Generating the report..."\nmvn org.codehaus.mojo:license-maven-plugin:aggregate-add-third-party -DskipTests'
+expect "rejects mvn on a later line of the script" 1 "aggregate-add-third-party" \
+    "$WRAPPER" "$work/wrapper/later-line.yml"
+maven_workflow "$work/wrapper/chained.yml" './mvnw -q install -pl e2e -am && mvn verify -pl e2e'
+expect "rejects mvn after && even when ./mvnw precedes it" 1 "mvn verify -pl e2e" \
+    "$WRAPPER" "$work/wrapper/chained.yml"
+maven_workflow "$work/wrapper/piped.yml" 'mvn dependency:tree | tee deps.txt'
+expect "rejects mvn piped into another command" 1 "mvn dependency:tree" \
+    "$WRAPPER" "$work/wrapper/piped.yml"
+maven_workflow "$work/wrapper/absolute.yml" '/usr/share/apache-maven/bin/mvn verify'
+expect "rejects an absolute path to the runner's mvn" 1 "/usr/share/apache-maven/bin/mvn verify" \
+    "$WRAPPER" "$work/wrapper/absolute.yml"
+maven_workflow "$work/wrapper/prefixed.yml" 'MAVEN_OPTS=-Xmx2g time mvn verify'
+expect "rejects mvn behind an env assignment and a command prefix" 1 "mvn verify" \
+    "$WRAPPER" "$work/wrapper/prefixed.yml"
+maven_workflow "$work/wrapper/if-then.yml" $'if [ -f pom.xml ]; then\n  mvn verify\nfi'
+expect "rejects mvn inside an if block" 1 "mvn verify" \
+    "$WRAPPER" "$work/wrapper/if-then.yml"
+# A runner prefix with options of its own still runs Maven (review of #10175): the program is not
+# the option that follows the prefix.
+for prefixed in 'sudo -E mvn verify' 'env -i PATH=/usr/bin mvn verify' 'time -p mvn verify' \
+    'timeout 10m mvn verify' 'xargs -n1 mvn verify' 'sudo -u builder mvn verify' 'nice -n 5 mvn verify'; do
+    maven_workflow "$work/wrapper/runner-prefix.yml" "$prefixed"
+    expect "rejects mvn behind '${prefixed% mvn verify}'" 1 "mvn verify" \
+        "$WRAPPER" "$work/wrapper/runner-prefix.yml"
+done
+maven_workflow "$work/wrapper/runner-wrapped.yml" $'sudo -E ./mvnw verify\nsudo apt-get install -y maven'
+expect "accepts a runner prefix in front of the wrapper or of another program" 0 "Maven wrapper" \
+    "$WRAPPER" "$work/wrapper/runner-wrapped.yml"
+
+# The body of a `case` pattern is a command.
+maven_workflow "$work/wrapper/case.yml" $'case "$MODE" in\n  full) mvn verify ;;\n  *) ./mvnw test ;;\nesac'
+expect "rejects mvn in a case pattern body" 1 "mvn verify" \
+    "$WRAPPER" "$work/wrapper/case.yml"
+
+# A script given inline to a shell is a script too, in either quote form.
+maven_workflow "$work/wrapper/bash-c.yml" 'bash -c "mvn verify"'
+expect "rejects mvn inside bash -c \"...\"" 1 "mvn verify" \
+    "$WRAPPER" "$work/wrapper/bash-c.yml"
+maven_workflow "$work/wrapper/sh-ec.yml" "sh -ec 'cd e2e && mvn verify'"
+expect "rejects mvn inside sh -ec '...'" 1 "mvn verify" \
+    "$WRAPPER" "$work/wrapper/sh-ec.yml"
+maven_workflow "$work/wrapper/bash-c-wrapped.yml" "bash -c './mvnw verify'"
+expect "accepts the wrapper inside bash -c" 0 "Maven wrapper" \
+    "$WRAPPER" "$work/wrapper/bash-c-wrapped.yml"
+
+# A shell option that takes an argument is not the script file (second review of #10175).
+for inline in "bash -o pipefail -c 'mvn verify'" "bash -O extglob -c 'mvn verify'" \
+    "bash --noprofile -c 'mvn verify'" "bash +o posix -ec 'mvn verify'"; do
+    maven_workflow "$work/wrapper/shell-options.yml" "$inline"
+    expect "rejects mvn in '$inline'" 1 "mvn verify" \
+        "$WRAPPER" "$work/wrapper/shell-options.yml"
+done
+
+# A here-doc body is read as commands: Maven piped into a shell through one is caught, and a
+# here-doc that only writes such a line is reported too, failing closed.
+maven_workflow "$work/wrapper/heredoc-shell.yml" $'bash <<EOF\nmvn verify\nEOF'
+expect "rejects mvn in a here-doc fed to a shell" 1 "mvn verify" \
+    "$WRAPPER" "$work/wrapper/heredoc-shell.yml"
+maven_workflow "$work/wrapper/heredoc-file.yml" $'cat > build.sh <<\'EOF\'\nmvn verify\nEOF'
+expect "reports mvn in a here-doc that writes a file (fails closed)" 1 "mvn verify" \
+    "$WRAPPER" "$work/wrapper/heredoc-file.yml"
+
+# Unbalanced quotes fall back to a plain split, which must still find the command.
+maven_workflow "$work/wrapper/unbalanced.yml" $'echo "it is #1; mvn verify'
+expect "rejects mvn in a script with unbalanced quotes" 1 "mvn verify" \
+    "$WRAPPER" "$work/wrapper/unbalanced.yml"
+
+maven_workflow "$work/wrapper/mvnd.yml" 'mvnd verify'
+expect "rejects the Maven daemon, which is no more pinned than mvn" 1 "mvnd verify" \
+    "$WRAPPER" "$work/wrapper/mvnd.yml"
+
+# What must NOT be flagged: words that merely mention mvn, a comment, the wrapper's Windows script,
+# a wrapper invoked from a subdirectory, and a ./mvnw step on a later line after an echo.
+maven_workflow "$work/wrapper/mentions.yml" $'# mvn is not used here (mvn verify)\necho "mvn verify would use the runner Maven"\nls mvn-deploy.yml\n./mvnw verify'
+expect "ignores comments, strings and file names that mention mvn" 0 "Maven wrapper" \
+    "$WRAPPER" "$work/wrapper/mentions.yml"
+# Nor is a substitution that is not one: inside a comment (check-test-database-paths.sh says
+# "`mvn clean` cannot remove it") or inside single quotes (this file's own fixtures). A substitution
+# inside double quotes IS one, and is still caught (the `$(...)` case above).
+maven_workflow "$work/wrapper/inert.yml" $'# `mvn clean` cannot remove it, nor can $(mvn clean)\nprintf \'%s\\n\' \'version=$(mvn help:evaluate)\'\necho $\'it\\\'s `mvn verify`\'\n./mvnw verify'
+expect "ignores substitutions inside comments and single quotes" 0 "Maven wrapper" \
+    "$WRAPPER" "$work/wrapper/inert.yml"
+maven_workflow "$work/wrapper/subdir.yml" $'cd package\n../mvnw verify\n./mvnw.cmd verify'
+expect "accepts ../mvnw and mvnw.cmd" 0 "Maven wrapper" \
+    "$WRAPPER" "$work/wrapper/subdir.yml"
+
+# A GitHub expression can hold quotes that would otherwise mis-tokenize the command.
+maven_workflow "$work/wrapper/expression.yml" './mvnw versions:set "-DnewVersion=${{ github.event.inputs.releaseversion }}"'
+expect "accepts a wrapper call carrying a GitHub expression" 0 "Maven wrapper" \
+    "$WRAPPER" "$work/wrapper/expression.yml"
+
+# Composite actions run steps too, and are checked the same way.
+mkdir -p "$work/wrapper/action"
+cat >"$work/wrapper/action/action.yml" <<'YAML'
+name: Build
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: mvn verify
+YAML
+expect "rejects mvn in a composite action's step" 1 "mvn verify" \
+    "$WRAPPER" "$work/wrapper/action/action.yml"
+
+# A shell script of the repository that a step runs is checked too, resolved against the step's
+# working directory: package/test-builder-local.sh ran the runner's mvn from mvn-test.yml that way.
+mkdir -p "$work/wrapper/scripts"
+printf '#!/bin/bash\nVERSION=$(mvn -f ../pom.xml help:evaluate -q -DforceStdout)\n' >"$work/wrapper/scripts/bare.sh"
+printf '#!/bin/bash\nVERSION=$(../mvnw -f ../pom.xml help:evaluate -q -DforceStdout)\n' >"$work/wrapper/scripts/wrapped.sh"
+for script in bare wrapped; do
+    cat >"$work/wrapper/runs-$script.yml" <<YAML
+name: Build
+on: [ push ]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run script
+        working-directory: $work/wrapper/scripts
+        run: ./$script.sh
+YAML
+done
+expect "rejects mvn inside a script the step runs" 1 "./bare.sh runs the runner's Maven" \
+    "$WRAPPER" "$work/wrapper/runs-bare.yml"
+expect "accepts a script the step runs that uses the wrapper" 0 "Maven wrapper" \
+    "$WRAPPER" "$work/wrapper/runs-wrapped.yml"
+# A script handed to a shell, or sourced, is followed just like one run as a command.
+for call in 'bash ./bare.sh' 'sh -e bare.sh' 'source ./bare.sh' '. ./bare.sh'; do
+    cat >"$work/wrapper/runs-via-shell.yml" <<YAML
+name: Build
+on: [ push ]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - working-directory: $work/wrapper/scripts
+        run: $call
+YAML
+    expect "rejects mvn inside a script run as '$call'" 1 "bare.sh runs the runner's Maven" \
+        "$WRAPPER" "$work/wrapper/runs-via-shell.yml"
+done
+# A script named through $GITHUB_WORKSPACE is the repository's own; the real repository's
+# test-builder-local.sh is used, as $GITHUB_WORKSPACE always resolves to the repository root.
+for call in 'bash "$GITHUB_WORKSPACE/package/test-builder-local.sh"' '${GITHUB_WORKSPACE}/package/test-builder-local.sh'; do
+    cat >"$work/wrapper/runs-workspace.yml" <<YAML
+name: Build
+on: [ push ]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: $call
+YAML
+    expect "follows a script named through \$GITHUB_WORKSPACE ('$call')" 0 "1 ./mvnw invocation" \
+        "$WRAPPER" "$work/wrapper/runs-workspace.yml"
+done
+cat >"$work/wrapper/runs-bare-job-default.yml" <<YAML
+name: Build
+on: [ push ]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: $work/wrapper/scripts
+    steps:
+      - run: ./bare.sh
+YAML
+expect "resolves a script against the job's default working directory" 1 "./bare.sh runs the runner's Maven" \
+    "$WRAPPER" "$work/wrapper/runs-bare-job-default.yml"
+
+# Fail closed on what it cannot read, as the other workflow checks do.
+cat >"$work/wrapper/broken.yml" <<'YAML'
+name: broken
+on: [workflow_dispatch
+jobs:
+  build:
+YAML
+expect "reports a workflow it cannot parse as YAML" 1 "not parseable as YAML" \
+    "$WRAPPER" "$work/wrapper/broken.yml"
+expect "reports a workflow it cannot find" 1 "not found" \
+    "$WRAPPER" "$work/wrapper/missing.yml"
+
+# The repository's own workflows must pass - this is the case that would have caught #10134.
+expect "the repository's own workflows invoke Maven through the wrapper" 0 "Maven wrapper" \
+    "$WRAPPER"
 
 echo
 if [[ $failures -gt 0 ]]; then

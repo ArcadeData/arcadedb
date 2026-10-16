@@ -453,6 +453,33 @@ public class StripedEdgeList extends EdgeLinkedList {
   }
 
   @Override
+  public EdgeEntryRIDIterator entryRidIterator(final String... edgeTypes) {
+    // The same walk as ridIterator, in the same order, and the edge of an entry is asked of the chain that returned it
+    final MultiIterator<RID> entries = interleaved(chain -> chain.entryRidIterator(edgeTypes));
+    return new EdgeEntryRIDIterator() {
+      @Override
+      public boolean hasNext() {
+        return entries.hasNext();
+      }
+
+      @Override
+      public RID next() {
+        return entries.next();
+      }
+
+      @Override
+      public RID getEdgeRID() {
+        Iterator<RID> source = entries.getLastSource();
+        while (source instanceof InterleavedIterator<RID> interleaved)
+          source = interleaved.getLastSource();
+        if (source instanceof EdgeEntryRIDIterator entry)
+          return entry.getEdgeRID();
+        throw new IllegalStateException("No entry: next() has not returned one yet");
+      }
+    };
+  }
+
+  @Override
   public boolean containsEdge(final RID rid) {
     for (final EdgeLinkedList chain : allChains(false))
       if (chain.containsEdge(rid))
@@ -593,7 +620,7 @@ public class StripedEdgeList extends EdgeLinkedList {
    * {@code d x size}, for the whole walk: every bounded read gets rank fidelity in proportion to what it asked
    * for, without anyone having to tell the edge list what the query's LIMIT was.
    */
-  private <T> Iterator<T> interleaved(final ChainIteratorFactory<T> factory) {
+  private <T> MultiIterator<T> interleaved(final ChainIteratorFactory<T> factory) {
     final MultiIterator<T> iterator = new MultiIterator<>();
     final List<EdgeLinkedList> chains = new ArrayList<>();
     final long rounds = database.getConfiguration().getValueAsInteger(GlobalConfiguration.GRAPH_SUPERNODE_INTERLEAVE_ROUNDS);

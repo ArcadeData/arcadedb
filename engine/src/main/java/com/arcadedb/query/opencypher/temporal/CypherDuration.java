@@ -50,6 +50,9 @@ public class CypherDuration implements CypherTemporalValue {
   private static final Pattern DATE_BASED_PATTERN = Pattern.compile(
       "P(\\d+)-(\\d+)-(\\d+)T(\\d+):(\\d+):(\\d+(?:\\.\\d+)?)");
 
+  private static final long     MILLIS_PER_SECOND = 1_000L;
+  private static final long     MICROS_PER_SECOND = 1_000_000L;
+  private static final long     NANOS_PER_SECOND  = 1_000_000_000L;
   private static final String[] WHOLE_UNIT_KEYS = { "years", "quarters", "months", "weeks", "days", "hours", "minutes", "seconds" };
 
   private final long months;
@@ -86,7 +89,7 @@ public class CypherDuration implements CypherTemporalValue {
       final double hours = Double.parseDouble(dm.group(4));
       final double minutes = Double.parseDouble(dm.group(5));
       final double secs = Double.parseDouble(dm.group(6));
-      return fromComponents(years, months, 0, daysVal, hours, minutes, secs, 0);
+      return fromComponents(years, months, 0, daysVal, hours, minutes, secs, 0, 0);
     }
 
     final Matcher m = ISO_PATTERN.matcher(str);
@@ -115,7 +118,7 @@ public class CypherDuration implements CypherTemporalValue {
       fraction[fractional] = Double.parseDouble((text.charAt(0) == '-' ? "-0" : "0") + text.substring(dot));
       c[fractional] = text.substring(0, dot);
       parsed = parseExact(m, c).add(
-          fromComponents(fraction[0], fraction[1], fraction[2], fraction[3], fraction[4], fraction[5], 0, 0));
+          fromComponents(fraction[0], fraction[1], fraction[2], fraction[3], fraction[4], fraction[5], 0, 0, 0));
     }
 
     return "-".equals(m.group(1)) ? parsed.negate() : parsed;
@@ -218,11 +221,11 @@ public class CypherDuration implements CypherTemporalValue {
           case "years":
             return new CypherDuration(Math.multiplyExact(longOf((Number) value), 12L), 0, 0, 0);
           case "milliseconds":
-            return new CypherDuration(0, 0, longOf((Number) value) / 1000, longOf((Number) value) % 1000 * 1_000_000);
+            return new CypherDuration(0, 0, subSecondSeconds(value, MILLIS_PER_SECOND), subSecondNanos(value, MILLIS_PER_SECOND));
           case "microseconds":
-            return new CypherDuration(0, 0, longOf((Number) value) / 1_000_000, longOf((Number) value) % 1_000_000 * 1_000);
+            return new CypherDuration(0, 0, subSecondSeconds(value, MICROS_PER_SECOND), subSecondNanos(value, MICROS_PER_SECOND));
           case "nanoseconds":
-            return new CypherDuration(0, 0, 0, longOf((Number) value));
+            return new CypherDuration(0, 0, subSecondSeconds(value, NANOS_PER_SECOND), subSecondNanos(value, NANOS_PER_SECOND));
         }
       }
     }
@@ -242,17 +245,18 @@ public class CypherDuration implements CypherTemporalValue {
     final double minutes = map.containsKey("minutes") ? toDouble(map.get("minutes")) : 0;
     final double seconds = map.containsKey("seconds") ? toDouble(map.get("seconds")) : 0;
     // Sub-second fields are summed in exact long arithmetic: a double sum loses nanoseconds past 2^53
-    final long totalNanos;
+    final long subSecondSeconds;
+    final long subSecondNanos;
     try {
-      totalNanos = Math.addExact(Math.addExact(toNanos(map.get("milliseconds"), 1_000_000L),
-          toNanos(map.get("microseconds"), 1_000L)), toNanos(map.get("nanoseconds"), 1L));
+      subSecondSeconds = subSecondSeconds(map);
+      subSecondNanos = subSecondNanos(map);
     } catch (final ArithmeticException e) {
       throw new ArithmeticErrorException("Duration sub-second fields overflow: " + map);
     }
 
     final double totalMonths = years * 12 + quarters * 3 + months;
 
-    return fromComponents(0, totalMonths, weeks, days, hours, minutes, seconds, totalNanos);
+    return fromComponents(0, totalMonths, weeks, days, hours, minutes, seconds, subSecondSeconds, subSecondNanos);
   }
 
   private static boolean allIntegral(final Map<String, Object> map) {
@@ -268,11 +272,9 @@ public class CypherDuration implements CypherTemporalValue {
     final long totalMonths = Math.addExact(Math.addExact(Math.multiplyExact(wholeOf(map, "years"), 12L),
         Math.multiplyExact(wholeOf(map, "quarters"), 3L)), wholeOf(map, "months"));
     final long totalDays = Math.addExact(Math.multiplyExact(wholeOf(map, "weeks"), 7L), wholeOf(map, "days"));
-    final long totalSeconds = Math.addExact(Math.addExact(Math.multiplyExact(wholeOf(map, "hours"), 3600L),
-        Math.multiplyExact(wholeOf(map, "minutes"), 60L)), wholeOf(map, "seconds"));
-    final long totalNanos = Math.addExact(Math.addExact(toNanos(map.get("milliseconds"), 1_000_000L),
-        toNanos(map.get("microseconds"), 1_000L)), toNanos(map.get("nanoseconds"), 1L));
-    return new CypherDuration(totalMonths, totalDays, totalSeconds, totalNanos);
+    final long totalSeconds = Math.addExact(Math.addExact(Math.addExact(Math.multiplyExact(wholeOf(map, "hours"), 3600L),
+        Math.multiplyExact(wholeOf(map, "minutes"), 60L)), wholeOf(map, "seconds")), subSecondSeconds(map));
+    return new CypherDuration(totalMonths, totalDays, totalSeconds, subSecondNanos(map));
   }
 
   /**
@@ -300,8 +302,14 @@ public class CypherDuration implements CypherTemporalValue {
     return (long) total;
   }
 
+  /**
+   * @param extraSeconds the whole seconds already counted exactly (the carry of the sub-second map fields), added to the seconds
+   *                     the floating point components give
+   * @param extraNanos   the nanoseconds already counted exactly, below one second per sub-second field
+   */
   private static CypherDuration fromComponents(final double years, final double months, final double weeks,
-      final double days, final double hours, final double minutes, final double secs, final long extraNanos) {
+      final double days, final double hours, final double minutes, final double secs, final long extraSeconds,
+      final long extraNanos) {
     // Fractional cascading: fractional years → months, fractional months → days, etc.
     double totalMonths = years * 12 + months;
     final long wholeMonths = wholeOrOverflow(totalMonths);
@@ -317,19 +325,50 @@ public class CypherDuration implements CypherTemporalValue {
 
     final long nanos = Math.round(fracSeconds * 1_000_000_000) + extraNanos;
 
-    return new CypherDuration(wholeMonths, wholeDays, wholeSeconds, nanos);
+    return new CypherDuration(wholeMonths, wholeDays, Math.addExact(wholeSeconds, extraSeconds), nanos);
   }
 
   /**
-   * Converts a sub-second map field to nanoseconds. Integral values stay exact in long arithmetic; a fractional value
-   * ({@code milliseconds: 1.5}) is rounded to the nearest nanosecond.
+   * The whole seconds carried by the sub-second map fields {@code milliseconds}, {@code microseconds} and {@code nanoseconds},
+   * which {@link #subSecondNanos(Map)} leaves out. Each field is split into whole seconds and a remainder on its own, so no
+   * product of the whole field is ever formed: a field reaches as far as the {@code long} it is, whatever other fields the map
+   * has. They used to be summed into one nanosecond count first, which a map of two or more fields could not hold past ~292
+   * years while a map of one field could (issue #10139).
    */
-  private static long toNanos(final Object value, final long nanosPerUnit) {
+  private static long subSecondSeconds(final Map<String, Object> map) {
+    return Math.addExact(Math.addExact(subSecondSeconds(map.get("milliseconds"), MILLIS_PER_SECOND),
+        subSecondSeconds(map.get("microseconds"), MICROS_PER_SECOND)), subSecondSeconds(map.get("nanoseconds"), NANOS_PER_SECOND));
+  }
+
+  /** The nanoseconds the sub-second map fields leave below one second each: less than three seconds in all, so the sum cannot overflow. */
+  private static long subSecondNanos(final Map<String, Object> map) {
+    return subSecondNanos(map.get("milliseconds"), MILLIS_PER_SECOND) + subSecondNanos(map.get("microseconds"), MICROS_PER_SECOND)
+        + subSecondNanos(map.get("nanoseconds"), NANOS_PER_SECOND);
+  }
+
+  /** The whole seconds in {@code value} units of {@code unitsPerSecond}; zero for a missing field. */
+  private static long subSecondSeconds(final Object value, final long unitsPerSecond) {
     if (value == null)
       return 0L;
     if (value instanceof Number number && !hasFraction(number))
-      return Math.multiplyExact(longOf(number), nanosPerUnit);
-    return Math.round(toDouble(value) * nanosPerUnit);
+      return longOf(number) / unitsPerSecond;
+    // a number with a fraction is below 2^52, so its whole part is exact in a long
+    return (long) toDouble(value) / unitsPerSecond;
+  }
+
+  /**
+   * The nanoseconds in {@code value} units of {@code unitsPerSecond} left over once the whole seconds are taken out, the sign
+   * of the value: an integral value is exact, a fractional one is rounded to the nearest nanosecond.
+   */
+  private static long subSecondNanos(final Object value, final long unitsPerSecond) {
+    if (value == null)
+      return 0L;
+    final long nanosPerUnit = NANOS_PER_SECOND / unitsPerSecond;
+    if (value instanceof Number number && !hasFraction(number))
+      return longOf(number) % unitsPerSecond * nanosPerUnit;
+    final double d = toDouble(value);
+    final long whole = (long) d;
+    return whole % unitsPerSecond * nanosPerUnit + Math.round((d - whole) * nanosPerUnit);
   }
 
   private static boolean hasFraction(final Number value) {

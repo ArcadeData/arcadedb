@@ -165,7 +165,10 @@ class Issue8387Issue8386Issue8385Issue8384TemporalTest extends TestHelper {
   @Test
   void overflowingDurationRaisesArithmeticError() {
     assertThatThrownBy(() -> new CypherDuration(0, 0, Long.MAX_VALUE, 2_000_000_000L)).isInstanceOf(ArithmeticErrorException.class);
-    assertThatThrownBy(() -> CypherDuration.fromMap(Map.of("days", 1, "nanoseconds", Long.MAX_VALUE, "milliseconds", Long.MAX_VALUE)))
+    // The sub-second fields reach as far as the long each is (issue #10139), so it takes whole seconds that do not fit to overflow
+    assertThatThrownBy(() -> CypherDuration.fromMap(Map.of("days", 1, "seconds", Long.MAX_VALUE, "milliseconds", Long.MAX_VALUE)))
+        .isInstanceOf(ArithmeticErrorException.class);
+    assertThatThrownBy(() -> CypherDuration.fromMap(Map.of("days", 1, "seconds", Long.MAX_VALUE, "nanoseconds", Long.MAX_VALUE)))
         .isInstanceOf(ArithmeticErrorException.class);
   }
 

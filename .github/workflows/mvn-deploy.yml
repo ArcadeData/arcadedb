@@ -59,8 +59,11 @@ jobs:
       # no credentials and got HTTP 401 on every run since the runner image moved from Maven 3.9.16 to
       # 3.10.0 (2026-10-08). The flag restores the id-only matching every earlier deploy relied on, and
       # is ignored by Maven 3.9. .github/scripts/check-deploy-credential-scope.py keeps it here.
+      # ./mvnw, not the runner's mvn (#10134): the runner image's Maven upgrade is what broke this
+      # step in the first place. The wrapper pins Maven 3.10.0 too, so the flag above is still needed.
+      # .github/scripts/check-maven-wrapper.py keeps every workflow on the wrapper.
       - name: Publish to OSS and Docker hub
-        run: mvn deploy -Pdeploy -Pdocker -pl !e2e  --batch-mode  --errors --fail-at-end --show-version  --file pom.xml -DskipTests -Dmaven.repository.credentialScope=id
+        run: ./mvnw deploy -Pdeploy -Pdocker -pl !e2e  --batch-mode  --errors --fail-at-end --show-version  --file pom.xml -DskipTests -Dmaven.repository.credentialScope=id
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           MAVEN_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
@@ -70,6 +73,6 @@ jobs:
 
       - name: E2E Test
         if: success()
-        run: mvn verify -pl e2e
+        run: ./mvnw verify -pl e2e
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
