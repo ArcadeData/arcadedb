@@ -3110,6 +3110,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
       //
       // A security entry this node had not made durable is below the install's boundary now, so it is not replayed any
       // more: the leader is asked to re-send the documents even when this node's copies in memory match (issue #7752).
+      // Safe off the apply thread only because Ratis pauses the apply while it installs: the floor's retry pacing is
+      // apply-thread state (see SecurityDurabilityFloor), so do not move this call anywhere the apply can run.
       final boolean undurableSecurityCovered = securityDurabilityFloor.dropCoveredByInstall(snapshotIndex);
       if (raftHA != null)
         securityCatchUp.afterSnapshotInstall(this.server, raftHA, undurableSecurityCovered);

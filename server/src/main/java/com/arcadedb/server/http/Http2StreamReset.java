@@ -39,7 +39,8 @@ import java.util.logging.Level;
  * Undertow resets a stream only with {@code CANCEL} through its public API ({@code Http2ServerConnection.close()}), and
  * a client is entitled to read {@code CANCEL} as a failed request: the JDK client discards the response it has already
  * received and reports "RST_STREAM received". The stream id and the frame channel {@code NO_ERROR} needs are private
- * fields of {@link Http2ServerConnection}, so they are read through {@link VarHandle}s resolved once with
+ * fields of {@link Http2ServerConnection} (verified against Undertow 2.4.4), so they are read through {@link VarHandle}s
+ * resolved once with
  * {@link MethodHandles#privateLookupIn}, the JDK's supported way to read another class's private state, which neither
  * alters any member's accessibility nor costs a reflective call per request. Should a later Undertow rename
  * them, the reset falls back to {@code CANCEL}, which still stops the body - the server-side half of the guarantee -
