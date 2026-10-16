@@ -74,6 +74,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.NoSuchElementException;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 import java.util.logging.Level;
@@ -1900,6 +1901,19 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
   }
 
   /**
+   * The {@code saveReportingVeto()} of the remote records: runs their {@code save()}, which raises {@link RecordVetoedException}
+   * for a create or an update a server side listener refused, and answers that refusal as {@code false} (issue #10161).
+   */
+  static boolean savedUnlessVetoed(final Runnable save) {
+    try {
+      save.run();
+      return true;
+    } catch (final RecordVetoedException e) {
+      return false;
+    }
+  }
+
+  /**
    * Whether {@code rid} names a record, asked on the refusal path of {@link #saveRecord(MutableDocument)} to tell a veto from a
    * missing record. Not counted in any statistic: the caller made no read, and the statistics count what the caller did (issue
    * #10095). A record deleted by someone else between the UPDATE and this probe reads as missing, which is what it is by then.
@@ -1916,7 +1930,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
 
   /**
    * The RID an INSERT answered. An INSERT a before-create listener vetoed answers no row at all, which used to escape as a bare
-   * {@link java.util.NoSuchElementException} out of {@code save()} (issue #10161).
+   * {@link NoSuchElementException} out of {@code save()} (issue #10161).
    */
   private static RID insertedRID(final ResultSet result, final MutableDocument record) {
     if (!result.hasNext())

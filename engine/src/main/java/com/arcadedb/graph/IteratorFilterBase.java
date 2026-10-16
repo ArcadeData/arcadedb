@@ -78,6 +78,8 @@ public abstract class IteratorFilterBase<T> extends ResettableIteratorBase<T> {
 
         nextEdge = currentContainer.getRID(currentPosition);
         nextVertex = currentContainer.getRID(currentPosition);
+        // THE RECORD OF AN ENTRY SKIPPED BELOW MUST NOT STAY REACHABLE UNTIL THE NEXT ONE IS VALIDATED
+        validatedRecord = null;
 
         // THE NEIGHBOUR CHECK IS SHARED WITH THE VERTEX ITERATOR BELOW (edge == false). NO CALLER ARMS THE FILTER
         // ON A VERTEX ITERATOR TODAY, SO IT IS INERT THERE; IT IS LEFT SHARED BECAUSE THE ENTRY IT FILTERS ON IS
@@ -154,6 +156,14 @@ public abstract class IteratorFilterBase<T> extends ResettableIteratorBase<T> {
   @Override
   public void remove() {
     removeReturnedEntry(listOwner, listDirection);
+  }
+
+  /** Also forgets the entry {@code hasNext()} peeked, which would otherwise be handed out again before the walk restarts. */
+  @Override
+  public void reset() {
+    super.reset();
+    next = null;
+    validatedRecord = null;
   }
 
   @Override

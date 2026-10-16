@@ -80,22 +80,12 @@ public class RemoteMutableVertex extends MutableVertex {
    */
   @Override
   public boolean saveReportingVeto() {
-    try {
-      save();
-      return true;
-    } catch (final RecordVetoedException e) {
-      return false;
-    }
+    return RemoteDatabase.savedUnlessVetoed(this::save);
   }
 
   @Override
   public boolean saveReportingVeto(final String bucketName) {
-    try {
-      save(bucketName);
-      return true;
-    } catch (final RecordVetoedException e) {
-      return false;
-    }
+    return RemoteDatabase.savedUnlessVetoed(() -> save(bucketName));
   }
 
   @Override

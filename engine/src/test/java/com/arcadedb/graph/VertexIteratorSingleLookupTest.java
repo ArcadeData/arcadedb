@@ -21,6 +21,7 @@ package com.arcadedb.graph;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
+import com.arcadedb.utility.ResettableIterator;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -163,6 +164,21 @@ class VertexIteratorSingleLookupTest extends TestHelper {
     }
     assertThat(count).isEqualTo(NEIGHBORS - NEIGHBORS / 5);
     assertThatThrownBy(it::next).isInstanceOf(NoSuchElementException.class);
+  }
+
+  /** A reset forgets the entry hasNext() peeked: the walk restarts from the first entry and hands each one out once. */
+  @ParameterizedTest
+  @EnumSource(Walk.class)
+  void aResetAfterAPeekWalksEveryEntryOnce(final Walk walk) {
+    final Iterator<? extends Identifiable> it = walk.iterator.apply(source.asVertex());
+    it.next();
+    assertThat(it.hasNext()).isTrue();
+    ((ResettableIterator<?>) it).reset();
+
+    final Set<RID> seen = new HashSet<>();
+    while (it.hasNext())
+      assertThat(seen.add(it.next().getIdentity())).isTrue();
+    assertThat(seen).hasSize(NEIGHBORS);
   }
 
   @Test
