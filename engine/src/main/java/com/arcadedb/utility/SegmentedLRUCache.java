@@ -105,7 +105,8 @@ public class SegmentedLRUCache<K, V> {
 
   /**
    * Empties the cache and bounds it to {@code capacity} from now on (issue #10155): the capacity is a database setting that can
-   * change while the database is open.
+   * change while the database is open. Not thread safe, like the rest of this class: call it under the lock the other accesses
+   * take.
    */
   public void resize(final int capacity) {
     clear();
