@@ -1842,6 +1842,16 @@ repo="$(gitignore_repo after-negation '!**/src/**/' 'logs')"
 expect "reports a name added below the negation" 1 "logs" \
     bash -c "cd '$repo' && '$GITIGNORESRC'"
 
+# A path pattern that points into a source tree, written after the negation, hides that package too
+repo="$(gitignore_repo src-path '!**/src/**/' 'mod/src/main/java/newpackage/')"
+expect "reports a path pattern pointing into a source tree" 1 "mod/src/main/java/newpackage" \
+    bash -c "cd '$repo' && '$GITIGNORESRC'"
+
+# ... unless it names output that is deliberately written there
+repo="$(gitignore_repo src-path-deliberate '!**/src/**/' '/grpc/src/generated/' '**/src/**/__pycache__/')"
+expect "accepts the deliberate output paths inside a source tree" 0 "No ignore pattern hides" \
+    bash -c "cd '$repo' && '$GITIGNORESRC'"
+
 # A module's own .gitignore governs its own source trees, and nested files win over the root negation
 repo="$(gitignore_repo nested '!**/src/**/')"
 printf '%s\n' 'build/' >"$repo/py/.gitignore"

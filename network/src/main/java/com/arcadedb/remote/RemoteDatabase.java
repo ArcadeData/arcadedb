@@ -1925,7 +1925,9 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
    * readable and raises nothing reads as vetoed. A listener's veto is the one such reason the server has today.
    */
   private boolean recordExistsUncounted(final RID rid) {
-    try (final ResultSet result = (ResultSet) databaseCommand("query", "sql", "select @rid from " + rid, null, false,
+    // ASKED OF THE LEADER, AS THE UPDATE WAS: A LAGGING REPLICA COULD STILL HOLD A RECORD THE LEADER DELETED, OR NOT YET HOLD ONE
+    // IT JUST CREATED
+    try (final ResultSet result = (ResultSet) databaseCommand("query", "sql", "select @rid from " + rid, null, true,
         (connection, response) -> createResultSet(response))) {
       return result.hasNext();
     } catch (final RecordNotFoundException e) {

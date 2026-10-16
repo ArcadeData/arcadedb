@@ -202,15 +202,18 @@ public class DoWhen implements CypherProcedure {
         database.query("opencypher", query, params) :
         database.command("opencypher", query, params);
     // Drained under the per-operation element cap and the query heap budget, as a subquery is (issue #10160), and closed whatever
-    // happens
-    final List<Result> rows = OperationHeapLimit.materializeForExpression(context, getName() + "()", resultSet, row -> {
+    // happens. Unlike an expression's list, these rows outlive the call: CallStep holds the stream of every input row of a batch
+    // before it reads them, so the charge stays until the stream is closed, which CallStep does once its rows are read, when
+    // reading them fails, or when the step itself is closed. A failure while draining has given the charge back already
+    final OperationHeapLimit limit = OperationHeapLimit.of(context, getName() + "()");
+    final List<Result> rows = limit.materialize(resultSet, row -> {
       final ResultInternal wrapped = new ResultInternal();
       // The row's columns, as APOC answers them ({n: node} for `RETURN n`): toMap() answers the entity behind a row that
       // returns one, flattening it into its properties (issue #9964)
       wrapped.setProperty("value", row.toPropertyMap(false));
       return wrapped;
     });
-    return rows.stream();
+    return rows.stream().onClose(limit::release);
   }
 
   private boolean extractBoolean(final Object arg) {

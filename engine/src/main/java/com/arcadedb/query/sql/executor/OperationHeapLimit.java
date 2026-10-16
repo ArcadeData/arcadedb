@@ -232,8 +232,8 @@ public final class OperationHeapLimit {
 
   /**
    * {@link #materializeForExpression(CommandContext, String, ResultSet)} keeping what {@code mapper} makes of each row: the
-   * openCypher {@code COLLECT { ... }} subquery and the {@code apoc.do.when} procedure, which used to drain their sub-plan into a
-   * list of their own, past both limits the identical SQL subquery is refused by (issue #10160).
+   * openCypher {@code COLLECT { ... }} subquery, which used to drain its sub-plan into a
+   * list of its own, past both limits the identical SQL subquery is refused by (issue #10160).
    */
   public static <T> List<T> materializeForExpression(final CommandContext context, final String operation, final ResultSet source,
       final Function<? super Result, ? extends T> mapper) {
