@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.grpc;
 
+import com.arcadedb.exception.CauseChain;
 import com.arcadedb.exception.DatabaseOperationInProgressException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.ErrorCategory;
@@ -174,13 +175,23 @@ public final class GrpcErrorMapper {
     // a trigger), like every other transport does (issue #10089). A test of the head alone answered ABORTED with no leader
     // address for a refusal one frame down, and the driver retried the same follower until its retries ran out
     final ServerIsNotTheLeaderException refusal = ServerIsNotTheLeaderException.refusalIn(cause);
-    // A termination and a refusal are named as such whatever wraps them, so the driver rebuilds the type it must act on:
-    // the one that tells it not to retry (#9689), the one that tells it where to go (#10089)
-    trailers.put(EXCEPTION_CLASS_KEY, refusal != null ?
-        refusal.getClass().getName() :
-        ErrorCategory.of(cause) == ErrorCategory.TERMINATED ?
-            QueryTerminatedException.class.getName() :
-            cause.getClass().getName());
+    final ErrorCategory category = ErrorCategory.of(cause);
+    // Every classified failure is looked for along the whole chain, never with an instanceof on its head: the engine wraps
+    // what it raises, and a wrapper must not change the answer (issue #10158). The maintenance-slot conflict is not an
+    // ErrorCategory of its own, so it is found here, below the two verdicts that outrank everything else; the duplicated
+    // key where ErrorCategory ranks it. Neither type takes a cause, so for one raised as itself this is the answer it
+    // always had
+    final DatabaseOperationInProgressException inProgress =
+        refusal == null && category != ErrorCategory.TERMINATED ? CauseChain.find(cause, DatabaseOperationInProgressException.class) : null;
+    final DuplicatedKeyException dup =
+        inProgress == null && category == ErrorCategory.DUPLICATED_KEY ? CauseChain.find(cause, DuplicatedKeyException.class) : null;
+    // The failure is named by the frame that classified it, whatever wraps it, so the driver rebuilds the type it must act
+    // on: the one that tells it not to retry (#9689), the one that tells it where to go (#10089), and every other typed
+    // failure (#10158) - a SchemaException named by its wrapper is rebuilt from NOT_FOUND alone, as a missing record
+    final Throwable classified = refusal != null ? refusal : inProgress != null ? inProgress : ErrorCategory.classifiedCause(cause);
+    trailers.put(EXCEPTION_CLASS_KEY, category == ErrorCategory.TERMINATED ?
+        QueryTerminatedException.class.getName() :
+        (classified != null ? classified : cause).getClass().getName());
 
     final Status.Code code;
     String redirect = null;
@@ -191,18 +202,18 @@ public final class GrpcErrorMapper {
       // it answers 400 rather than 503. What makes it actionable is the address, not a retry.
       code = Status.Code.FAILED_PRECONDITION;
       redirect = attachLeaderRedirect(trailers, ha, refusal);
-    } else if (cause instanceof DuplicatedKeyException dup) {
-      code = Status.Code.ALREADY_EXISTS;
-      addDuplicatedKeyTrailers(trailers, dup, conceal);
-    } else if (cause instanceof DatabaseOperationInProgressException) {
+    } else if (inProgress != null) {
       // A backup, restore or import of the same database already holds the per-database maintenance slot, so a
       // SQL 'BACKUP DATABASE' or 'IMPORT DATABASE' sent through ExecuteCommand was refused. ABORTED is what the
       // admin service already answers for the server's own trigger/restore/import RPCs, and HTTP's 409: the
       // request is well formed and authorized, and retrying once the other operation finishes is the fix
       // (issue #7443). Without this arm it would read as INTERNAL - a server fault the caller cannot act on.
       code = Status.Code.ABORTED;
+    } else if (dup != null) {
+      code = Status.Code.ALREADY_EXISTS;
+      addDuplicatedKeyTrailers(trailers, dup, conceal);
     } else {
-      code = statusCodeFor(cause);
+      code = statusCodeFor(category);
     }
 
     if (conceal)
@@ -233,12 +244,12 @@ public final class GrpcErrorMapper {
    * {@code toSearchStatus} did exactly that for three RPCs. Those handlers reach the classification through
    * {@link #toStatusException}, which layers their trailers onto the full answer.
    */
-  private static Status.Code statusCodeFor(final Throwable cause) {
-    return switch (ErrorCategory.of(cause)) {
+  private static Status.Code statusCodeFor(final ErrorCategory category) {
+    return switch (category) {
       case RETRY -> Status.Code.ABORTED;
       case ARITHMETIC -> Status.Code.OUT_OF_RANGE;
-      // Unreachable from toStatusRuntimeException, which special-cases DuplicatedKeyException (it has trailers of its
-      // own to add) before reaching here: the arm only keeps the switch exhaustive over ErrorCategory.
+      // Unreachable from toStatusRuntimeException, which special-cases the duplicated key (it has trailers of its own to
+      // add) before reaching here: the arm only keeps the switch exhaustive over ErrorCategory.
       case DUPLICATED_KEY -> Status.Code.ALREADY_EXISTS;
       case NOT_FOUND, SCHEMA -> Status.Code.NOT_FOUND;
       case SECURITY -> Status.Code.PERMISSION_DENIED;
