@@ -33,21 +33,23 @@ import java.util.logging.Level;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class HttpSessionManager extends RWLockContext {
-  public static final String                   ARCADEDB_SESSION_ID = "arcadedb-session-id";
+  public static final String                                  ARCADEDB_SESSION_ID    = "arcadedb-session-id";
   /**
    * How many committed sessions {@link #recordCommitted} remembers at most: a few hundred KB at worst, whatever the commit
    * rate, while a retry normally arrives within seconds of the answer it replaces (issue #10164).
    */
-  static final        int                      MAX_REMEMBERED_COMMITS = 10_000;
-  private final       Map<String, HttpSession> sessions            = new HashMap<>();
+  static final        int                                     MAX_REMEMBERED_COMMITS = 10_000;
+  private final       Map<String, HttpSession>                sessions               = new HashMap<>();
   /**
-   * The sessions a /commit ended, by id, with their owner's name and when they committed, oldest first. Lets a retried
-   * commit of one of them still answer 204 while a commit naming any other unresolvable session answers 404 (issue
-   * #10164). Kept for {@link #transactionTimeoutInMs}, and never more than {@link #MAX_REMEMBERED_COMMITS} of them.
+   * The sessions a /commit ended, by id, with their owner's name and when they committed, oldest first: session ids are
+   * unique, so every put appends. Lets a retried commit of one of them still answer 204 while a commit naming any other
+   * unresolvable session answers 404 (issue #10164). Kept for {@link #transactionTimeoutInMs}, and never more than
+   * {@link #MAX_REMEMBERED_COMMITS} of them. Per server and in memory: a retry sent to another server, or after a restart,
+   * is not recognised.
    */
-  private final       LinkedHashMap<String, CommittedSession> committedSessions = new LinkedHashMap<>();
-  private final       long                     transactionTimeoutInMs;
-  private final       Timer                    timer;
+  private final       LinkedHashMap<String, CommittedSession> committedSessions      = new LinkedHashMap<>();
+  private final       long                                    transactionTimeoutInMs;
+  private final       Timer                                   timer;
 
   private record CommittedSession(String userName, long committedAt) {
   }
@@ -169,11 +171,13 @@ public class HttpSessionManager extends RWLockContext {
     final long now = System.currentTimeMillis();
     executeInWriteLock(() -> {
       committedSessions.put(id, new CommittedSession(user.getName(), now));
-      // Oldest first, so the overflow is always the head
-      final Iterator<CommittedSession> it = committedSessions.values().iterator();
-      while (committedSessions.size() > MAX_REMEMBERED_COMMITS && it.hasNext()) {
-        it.next();
-        it.remove();
+      if (committedSessions.size() > MAX_REMEMBERED_COMMITS) {
+        // Oldest first, so the overflow is always the head
+        final Iterator<CommittedSession> it = committedSessions.values().iterator();
+        while (committedSessions.size() > MAX_REMEMBERED_COMMITS && it.hasNext()) {
+          it.next();
+          it.remove();
+        }
       }
       return null;
     });
@@ -191,6 +195,11 @@ public class HttpSessionManager extends RWLockContext {
       final CommittedSession committed = committedSessions.get(id);
       return committed != null && committed.committedAt >= oldest && committed.userName.equals(user.getName());
     });
+  }
+
+  /** How many committed sessions are remembered right now. For tests. */
+  int getRememberedCommits() {
+    return executeInReadLock(committedSessions::size);
   }
 
   /** Forgets the commits older than the session timeout at {@code now}. Called by the idle sweep. */

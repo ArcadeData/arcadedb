@@ -23,7 +23,10 @@ import com.arcadedb.server.security.ServerSecurityUser;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.concurrent.TimeUnit;
+
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
 
 /**
  * Issue #10164: the session manager remembers, for a bounded time and number, which sessions a /commit ended, so a
@@ -64,6 +67,15 @@ class Issue10164CommittedSessionMemoryTest {
     sessionManager.pruneCommittedSessions(System.currentTimeMillis() + TIMEOUT_MS + 1);
 
     assertThat(sessionManager.wasCommittedBy(user("alice"), "AS-1")).isFalse();
+  }
+
+  @Test
+  void theIdleSweepPrunesExpiredCommits() {
+    // A short timeout, so the manager's own timer runs the sweep
+    sessionManager = new HttpSessionManager(50L);
+    sessionManager.recordCommitted("AS-1", user("alice"));
+
+    await().atMost(10, TimeUnit.SECONDS).until(() -> sessionManager.getRememberedCommits() == 0);
   }
 
   @Test
