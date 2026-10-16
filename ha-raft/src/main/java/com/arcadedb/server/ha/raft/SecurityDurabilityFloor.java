@@ -24,6 +24,7 @@ import com.arcadedb.server.security.ServerSecurity;
 
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLongArray;
+import java.util.function.Consumer;
 import java.util.function.LongSupplier;
 import java.util.logging.Level;
 
@@ -72,18 +73,33 @@ final class SecurityDurabilityFloor {
   private final    AtomicLongArray pinned = new AtomicLongArray(DOCUMENTS.length);
   private volatile boolean         anyPinned;
   private final    LongSupplier    nanoClock;
+  // Told the document whose pin was just released, so a hold the state machine keeps for the same entry goes with it
+  private final    Consumer<String> onDurableAgain;
   // Plain, not volatile: read and written only by afterInstall and retryIfDue, which both run on the Raft apply thread
   private          long            nextRetryNanos;
   private          long            pinnedSinceNanos;
   private          int             failedRetries;
 
   SecurityDurabilityFloor() {
-    this(System::nanoTime);
+    this(System::nanoTime, document -> {
+    });
   }
 
   /** With the clock {@link #retryIfDue} paces itself on, so a test can advance it rather than wait for it. */
   SecurityDurabilityFloor(final LongSupplier nanoClock) {
+    this(nanoClock, document -> {
+    });
+  }
+
+  /**
+   * @param onDurableAgain called with the document whose pin was just released: the state machine releases the hold it
+   *                       keeps for a document write that failed (issue #10086), which only a later entry of the same
+   *                       document would release otherwise - so a volume fixed under a quiet cluster stopped pinning the
+   *                       log only at the next security change
+   */
+  SecurityDurabilityFloor(final LongSupplier nanoClock, final Consumer<String> onDurableAgain) {
     this.nanoClock = nanoClock;
+    this.onDurableAgain = onDurableAgain;
     for (int i = 0; i < DOCUMENTS.length; i++)
       pinned.set(i, NONE);
   }
@@ -126,6 +142,7 @@ final class SecurityDurabilityFloor {
         continue;
       if (security.isReplicatedDocumentDurable(DOCUMENTS[i])) {
         pinned.set(i, NONE);
+        onDurableAgain.accept(DOCUMENTS[i]);
         LogManager.instance().log(this, Level.INFO,
             "The replicated %s pinned since index %d is durable on this node again; snapshot checkpoints may cover it",
             DOCUMENTS[i], index);

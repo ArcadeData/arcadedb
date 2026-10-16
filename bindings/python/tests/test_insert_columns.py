@@ -155,6 +155,18 @@ class TestTypedValuesLand:
         assert temp_db.insert_columns("Col", _columns(n), commit_every=10_000) == n
         assert _count(temp_db, "Col") == n
 
+    @pytest.mark.parametrize("commit_every", [2**31, 10**10, 2**63 - 1])
+    def test_commit_every_beyond_32_bits_is_one_transaction(
+        self, temp_db, commit_every
+    ):
+        """insert_many takes any int for commit_every; the Java side takes an int, so this was refused."""
+        _make_type(temp_db)
+        n = 1_000
+        assert (
+            temp_db.insert_columns("Col", _columns(n), commit_every=commit_every) == n
+        )
+        assert _count(temp_db, "Col") == n
+
 
 class TestParallelMode:
     """insert_columns(parallel=True): the same columns, handed to the async executor's bucket writers."""

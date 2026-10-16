@@ -48,6 +48,7 @@ import com.arcadedb.schema.FullSchemaLoadReason;
 import com.arcadedb.schema.IncrementalLoadRefusal;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.schema.LocalTimeSeriesType;
+import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerDatabase;
@@ -228,6 +229,25 @@ public class ArcadeStateMachine extends BaseStateMachine {
   // position comes only from the snapshot marker (see ha-raft/CLAUDE.md). Never raised back: the node is going away, and
   // neither a restart nor RaftHAServer.restartRatis() reuses this instance (both go through createStateMachine()).
   private final    AtomicLong                replayFloor      = new AtomicLong(Long.MAX_VALUE);
+  // The lowest index of an entry this node did not apply (or could not make durable) and holds for the replay, by what
+  // it is held for (issue #10086): a security document ("security:<entry type>") whose file could not be written, or a retry
+  // loop that gave up on an entry no database could be quarantined for. The same rule as replayFloor - takeSnapshot()
+  // checkpoints below the lowest - except that a security document heals: the entry of the same document that follows and
+  // persists supersedes the held one, so the hold is released then (releaseHeldEntry) instead of keeping the log from being
+  // purged until the process ends. The two retry keys do NOT heal: nothing supersedes an entry that could not be applied, so
+  // they hold until a restart replays it or a Raft install covers it, and takeSnapshot() says so while they do.
+  // In memory only: after a restart the replay itself is the cure.
+  private final    ConcurrentHashMap<String, Long> heldEntryFloors = new ConcurrentHashMap<>();
+  // What an entry is held for, besides one key per security document
+  private static final String                HELD_RETRY_EXHAUSTED   = "retry-exhausted";
+  private static final String                HELD_INTERRUPTED_RETRY = "retry-interrupted";
+  // The database configurations in force in memory that configuration.json does not carry (issue #10086), by database. A
+  // configuration entry rewrites only the settings it names, so a held one is superseded only when every one of them has
+  // been written again. One structure per database, replaced whole, so the hold and the settings it waits for never disagree.
+  private final    ConcurrentHashMap<String, HeldConfiguration> heldConfigurations = new ConcurrentHashMap<>();
+  private static final long              HELD_REMINDER_INTERVAL_MS = 300_000L;
+  // When takeSnapshot() last reminded that a hold keeps the Raft log from being purged, so a hold that lasts is not forgotten
+  private volatile long                      heldCheckpointReminderMs;
   // Set once isNodeShuttingDown() has seen the JVM running its shutdown hooks (issue #9550); never cleared.
   private volatile boolean                   jvmShutdownSeen;
   // The highest index a leader-driven Raft install covered (issues #8577, #8651): a replayed entry at or below it is
@@ -429,7 +449,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * The security entries whose effects on this node have not reached the disk, which {@link #takeSnapshot()} keeps
    * replayable (issue #7752). See {@link SecurityDurabilityFloor}.
    */
-  private final SecurityDurabilityFloor securityDurabilityFloor = new SecurityDurabilityFloor();
+  private final SecurityDurabilityFloor securityDurabilityFloor = new SecurityDurabilityFloor(System::nanoTime,
+      this::releaseSecurityHoldOf);
 
   /**
    * The catch-up this node's own triggers drive. Package-private so a test in this package can put it in the
@@ -1947,7 +1968,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
         case SECURITY_GROUPS_ENTRY -> securitySuperseded[0] = !applySecurityGroupsEntry(decoded, index);
         case SECURITY_API_TOKENS_ENTRY -> securitySuperseded[0] = !applySecurityApiTokensEntry(decoded, index);
         case BOOTSTRAP_FINGERPRINT_ENTRY -> applyBootstrapFingerprintEntry(decoded, index, originatedLocally);
-        case DATABASE_CONFIGURATION_ENTRY -> applyDatabaseConfigurationEntry(decoded);
+        case DATABASE_CONFIGURATION_ENTRY -> applyDatabaseConfigurationEntry(decoded, index);
         }
       };
       boolean staleNoDatabaseEntry = false;
@@ -2167,6 +2188,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
         : GlobalConfiguration.TX_RETRY_DELAY.getValueAsInteger();
 
     NeedRetryException lastRetry = null;
+    boolean interrupted = false;
     for (int attempt = 0; attempt <= maxRetries; attempt++) {
       try {
         applyAction.run();
@@ -2200,14 +2222,21 @@ public class ArcadeStateMachine extends BaseStateMachine {
             LogManager.instance().log(this, Level.WARNING,
                 "Raft apply retry interrupted at index %d after %d attempt(s); aborting retry loop (likely shutdown)",
                 index, attempt + 1);
+            interrupted = true;
             break;
           }
         }
       } catch (final ReplicationException re) {
-        // Already a resync signal (e.g. the WAL-gap escalation from applyTxEntry); propagate it
-        // unchanged so it reaches applyTransaction's catch (ReplicationException) handler without
-        // being re-wrapped or counted against the bounded-escalation budget below.
-        throw re;
+        // A resync-required signal for a database that is already quarantined (e.g. the WAL-gap escalation from
+        // applyTxEntry, which quarantines before it throws), or an entry held for the replay: propagate it unchanged so it
+        // reaches applyTransaction's catch (ReplicationException) handler without being re-wrapped or counted against the
+        // bounded-escalation budget below. ANY OTHER ReplicationException is a skipped entry that left nothing behind: no
+        // quarantine, no replay floor, no halt - the three things takeSnapshot() consults - so the next committed entry
+        // would carry the applied index over it and the checkpoint would let Ratis purge an entry this node never applied
+        // (issue #10086). Those take the disposition an unexpected error takes, so a throw site added later is covered.
+        if (hasDisposition(databaseName, re))
+          throw re;
+        throw dispositionForUnhandled(index, databaseName, re);
       } catch (final RuntimeException t) {
         // Catch RuntimeException (not Throwable) on purpose: applyAction is a Runnable, so the only
         // things it can throw are RuntimeException or Error. JVM Errors (OutOfMemoryError,
@@ -2239,9 +2268,150 @@ public class ArcadeStateMachine extends BaseStateMachine {
 
     // The retryable condition persisted across all attempts. Escalate to a resync (recoverable) -
     // never fall through to the fatal catch (Throwable) branch that stops the server.
-    throw new ReplicationException(
-        "Retryable error persisted at index " + index + " after " + (maxRetries + 1)
-            + " attempts; escalating to snapshot resync", lastRetry);
+    final String message = "Retryable error persisted at index " + index + " after " + (maxRetries + 1)
+        + " attempts; escalating to snapshot resync";
+    if (!interrupted && databaseName != null && !databaseName.isEmpty()) {
+      // The escalation the message promises: the entry was skipped, so the database is quarantined and resynced from the
+      // leader, which is what holds the checkpoint back (issue #10086). Always throws a ReplicationException with the last
+      // retryable error as its cause, or that error itself once the swallow budget of a stuck database is spent.
+      handleUnexpectedApplyError(index, databaseName, lastRetry);
+    }
+    // An entry no database can be quarantined for - it names none, or the loop ended because the node is going down -
+    // is held for the replay on restart instead (issue #10086)
+    throw holdEntryForReplay(interrupted ? HELD_INTERRUPTED_RETRY : HELD_RETRY_EXHAUSTED, index, message, lastRetry);
+  }
+
+  /**
+   * Whether a {@link ReplicationException} that left {@link #applyWithRetry} already carries the disposition the checkpoint
+   * needs (issue #10086): the entry is held for the replay, or the database it names is quarantined.
+   */
+  private boolean hasDisposition(final String databaseName, final ReplicationException re) {
+    return re instanceof EntryLeftForReplayException
+        || databaseName != null && !databaseName.isEmpty() && isDatabaseDiverged(databaseName);
+  }
+
+  /**
+   * The disposition of a {@link ReplicationException} nothing has dealt with (issue #10086), as an unexpected error gets it:
+   * the database it names is quarantined and resynced, and an entry that names none halts the node, because a mutation
+   * nobody can apply must never be stepped over quietly (issue #4798). Returns the exception to throw.
+   * <p>
+   * Deliberately not the policy of a retry loop that gave up on an entry with no database, which is held instead: that is a
+   * transient condition (a page-version race) on an entry that is well formed, so replaying it is the cure and halting the
+   * node would turn a conflict into an outage. An exception nobody classified is a failure this code has no model of, so it
+   * takes the halt that was always the answer to those. An apply that IS fail-safe says so itself, by holding its entry
+   * ({@link #holdEntryForReplay}), as the security documents do.
+   */
+  private RuntimeException dispositionForUnhandled(final long index, final String databaseName, final ReplicationException re) {
+    try {
+      handleUnexpectedApplyError(index, databaseName, re);
+    } catch (final ReplicationException quarantined) {
+      if (quarantined != re)
+        return quarantined;
+      // The original again: the swallow budget is spent, or the entry names no database. applyTransaction catches a
+      // ReplicationException as a recoverable resync, so the fatal path takes it under a type it does not claim.
+      return new IllegalStateException(re.getMessage(), re);
+    } catch (final RuntimeException fatal) {
+      return fatal;
+    }
+    return re;
+  }
+
+  /**
+   * Holds the checkpoint below the entry at {@code index} so that a restart replays it (issue #10086): the entry did not
+   * advance the applied index, no database could be quarantined for it, and a later entry will. Registered BEFORE the
+   * exception is thrown, so the apply thread has raised it before any later entry moves the index - the order
+   * {@link #takeSnapshot()} relies on. The hold is released by {@link #releaseHeldEntry} when something supersedes the entry.
+   *
+   * @param key     what the entry is held for; the lowest index per key stands
+   * @param message what the entry's failure says
+   * @param cause   the failure, or {@code null}
+   */
+  private EntryLeftForReplayException holdEntryForReplay(final String key, final long index, final String message,
+      final Throwable cause) {
+    final long lowest = heldEntryFloors.merge(key, index, Math::min);
+    return heldEntry(key, index, lowest == index, message, cause);
+  }
+
+  /** The exception of an entry held for the replay, with the one SEVERE that says so; the hold itself is already registered. */
+  private EntryLeftForReplayException heldEntry(final String what, final long index, final boolean first, final String message,
+      final Throwable cause) {
+    LogManager.instance().log(this, first ? Level.SEVERE : Level.FINE,
+        "Raft entry at index %d was not applied or not made durable (%s): no snapshot checkpoint will cover it until it is "
+            + "superseded, so a restart replays it (issue #10086): %s", index, what, message);
+    return new EntryLeftForReplayException(message, cause);
+  }
+
+  /** Releases the hold of {@code key}: a later entry superseded the held one (issue #10086). */
+  private void releaseHeldEntry(final String key) {
+    if (!heldEntryFloors.isEmpty())
+      heldEntryFloors.remove(key);
+  }
+
+  /**
+   * The lowest index of an entry held for the replay, {@link Long#MAX_VALUE} when none is. A hold at or below the boundary
+   * a Raft install covered is dropped on the way: the installed copy carries what the entry did (issue #10086).
+   */
+  private long lowestHeldEntry() {
+    if (heldEntryFloors.isEmpty() && heldConfigurations.isEmpty())
+      return Long.MAX_VALUE;
+    final long boundary = installedRaftBoundary.get();
+    long lowest = Long.MAX_VALUE;
+    for (final Map.Entry<String, Long> entry : heldEntryFloors.entrySet()) {
+      final long index = entry.getValue();
+      if (index <= boundary)
+        heldEntryFloors.remove(entry.getKey(), entry.getValue());
+      else if (index < lowest)
+        lowest = index;
+    }
+    for (final Map.Entry<String, HeldConfiguration> entry : heldConfigurations.entrySet()) {
+      final long index = entry.getValue().index();
+      if (index <= boundary)
+        heldConfigurations.remove(entry.getKey(), entry.getValue());
+      else if (index < lowest)
+        lowest = index;
+    }
+    return lowest;
+  }
+
+  /**
+   * Says, at most once per {@link #HELD_REMINDER_INTERVAL_MS}, that entries held for the replay keep the Raft log from being
+   * purged (issue #10086): a hold that nothing supersedes - a retry loop that gave up - lasts until a restart replays the
+   * entry or a Raft install covers it, and the log grows meanwhile, which the hold's own SEVERE has long scrolled past.
+   */
+  private void remindThatEntriesAreHeld(final long lowest) {
+    final long now = System.currentTimeMillis();
+    if (now - heldCheckpointReminderMs < HELD_REMINDER_INTERVAL_MS)
+      return;
+    heldCheckpointReminderMs = now;
+    final StringBuilder held = new StringBuilder();
+    for (final Map.Entry<String, Long> entry : heldEntryFloors.entrySet())
+      held.append(held.isEmpty() ? "" : ", ").append(entry.getKey()).append('@').append(entry.getValue());
+    for (final Map.Entry<String, HeldConfiguration> entry : heldConfigurations.entrySet())
+      held.append(held.isEmpty() ? "" : ", ").append("config:").append(entry.getKey()).append('@')
+          .append(entry.getValue().index());
+    LogManager.instance().log(this, Level.WARNING,
+        "The Raft log is not checkpointed past index %d because entries are held for the replay (%s): it grows until a later "
+            + "entry supersedes them, a restart replays them or a Raft install covers them (issue #10086)", lowest - 1, held);
+  }
+
+  private static String heldSecurityKey(final RaftLogEntryType type) {
+    return "security:" + type;
+  }
+
+  /**
+   * Releases the hold kept for a security document's failed write once {@link SecurityDurabilityFloor} has seen it, and
+   * its compare-and-set record, reach the disk again (issue #7752): the retry rewrote it, so nothing is left for the
+   * replay to repair, and waiting for the next entry of the same document would keep the log pinned on a quiet cluster.
+   */
+  private void releaseSecurityHoldOf(final String document) {
+    switch (document) {
+    case ReplicatedSecurityFingerprintRepository.USERS -> releaseHeldEntry(heldSecurityKey(RaftLogEntryType.SECURITY_USERS_ENTRY));
+    case ReplicatedSecurityFingerprintRepository.GROUPS -> releaseHeldEntry(heldSecurityKey(RaftLogEntryType.SECURITY_GROUPS_ENTRY));
+    case ReplicatedSecurityFingerprintRepository.API_TOKENS ->
+        releaseHeldEntry(heldSecurityKey(RaftLogEntryType.SECURITY_API_TOKENS_ENTRY));
+    default -> {
+    }
+    }
   }
 
   /**
@@ -2370,6 +2540,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * <b>Clamped below an entry left for replay (issue #9550):</b> an entry whose database was closed under the apply
    * thread while the node is shutting down is not applied and not quarantined either; the checkpoint stops at the index
    * right before it, for the same reason.
+   * <p>
+   * <b>Clamped below an entry held for the replay (issue #10086):</b> an entry that did not advance the applied index must
+   * leave a quarantine, a replay floor or a halt behind, and the ones that cannot be quarantined - a security document or a
+   * database configuration in force in memory whose file could not be written, a retry loop that gave up on an entry that
+   * names no database - hold the checkpoint the same way, until a later entry supersedes them.
    */
   @Override
   public long takeSnapshot() {
@@ -2380,11 +2555,17 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // The applied index is read BEFORE the floor: the apply thread raises the floor before any later entry advances the
     // index, so an index that already covers a later entry is always read together with the floor below it. Read the
     // other way round, a checkpoint racing the apply thread could pair the old floor with the advanced index.
+    // The entries held for the replay for another reason (issue #10086) lower it the same way: skipped or not made durable
+    // while a later one advanced the index.
     final long appliedIndex = lastAppliedIndex.get();
-    // A security entry whose effects did not reach the disk is kept replayable the same way (issue #7752). The same
-    // ordering argument holds: the apply pins the entry (SecurityDurabilityFloor.afterInstall) before lastAppliedIndex
-    // moves past it, so an applied index read first is never paired with a floor that does not yet cover it.
-    final long floor = Math.min(replayFloor.get(), securityDurabilityFloor.floor());
+    final long lowestHeld = lowestHeldEntry();
+    if (lowestHeld != Long.MAX_VALUE)
+      remindThatEntriesAreHeld(lowestHeld);
+    // A security entry whose document or compare-and-set record did not reach the disk is kept replayable the same way
+    // (issue #7752). The same ordering argument holds: the apply pins the entry (SecurityDurabilityFloor.afterInstall)
+    // before lastAppliedIndex moves past it, so an applied index read first is never paired with a floor that does not
+    // yet cover it.
+    final long floor = Math.min(Math.min(replayFloor.get(), lowestHeld), securityDurabilityFloor.floor());
     final long currentIndex = floor == Long.MAX_VALUE ? appliedIndex : Math.min(appliedIndex, floor - 1);
     if (currentIndex < 0)
       return RaftLog.INVALID_LOG_INDEX;
@@ -7229,7 +7410,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * the change.
    */
   // @VisibleForTesting
-  void applyDatabaseConfigurationEntry(final RaftLogEntryCodec.DecodedEntry decoded) {
+  void applyDatabaseConfigurationEntry(final RaftLogEntryCodec.DecodedEntry decoded, final long index) {
     final String payload = decoded.usersJson();
     if (payload == null) {
       LogManager.instance().log(this, Level.WARNING, "DATABASE_CONFIGURATION_ENTRY for '%s' has null payload, skipping",
@@ -7244,13 +7425,66 @@ public class ArcadeStateMachine extends BaseStateMachine {
       LogManager.instance().log(this, Level.SEVERE,
           "Could not write the replicated configuration of database '%s' to disk: it is in force on this node, but a "
               + "restart before this is fixed reads the previous '%s'. Check that the database directory is writable "
-              + "and has free space, then reissue the change", e, decoded.databaseName(),
+              + "and has free space. The Raft log is kept from this entry on, so the restart replays it and writes the "
+              + "file; reissuing the change writes it too", e, decoded.databaseName(),
           LocalDatabase.CONFIGURATION_FILE_NAME);
-      throw new ReplicationException(
+      // In force in memory and not on disk: the entry is held for the replay until the file carries every setting it
+      // named (issue #10086), as it is for the security documents
+      final HeldConfiguration held = heldConfigurations.merge(decoded.databaseName(),
+          new HeldConfiguration(index, settingsNamedBy(payload)), HeldConfiguration::and);
+      throw heldEntry("config:" + decoded.databaseName(), index, held.index() == index,
           "Failed to persist the replicated configuration of database '" + decoded.databaseName() + "' locally", e);
     }
+    releaseWrittenConfigurationKeys(decoded.databaseName(), payload);
     HALog.log(this, HALog.DETAILED, "Applied DATABASE_CONFIGURATION_ENTRY to database '%s' (%d bytes)",
         decoded.databaseName(), payload.length());
+  }
+
+  /** The settings (as the file names them) a configuration document sets or removes. */
+  private static Set<String> settingsNamedBy(final String payload) {
+    final JSONObject changes = new JSONObject(payload);
+    final Set<String> keys = new HashSet<>(changes.getJSONObject("configuration", new JSONObject()).keySet());
+    final JSONArray removed = changes.getJSONArray("removed", new JSONArray());
+    for (int i = 0; i < removed.length(); i++)
+      keys.add(removed.getString(i));
+    return keys;
+  }
+
+  /**
+   * A database configuration in force in memory that {@code configuration.json} does not carry (issue #10086): the lowest
+   * index of the entries that could not be written and the settings they named. Immutable and replaced whole, so the hold and
+   * the settings it waits for are one value.
+   */
+  private record HeldConfiguration(long index, Set<String> settings) {
+    /** What is outstanding once {@code other} failed as well: the lowest index and every setting either named. */
+    HeldConfiguration and(final HeldConfiguration other) {
+      final Set<String> both = new HashSet<>(settings);
+      both.addAll(other.settings);
+      return new HeldConfiguration(Math.min(index, other.index), both);
+    }
+
+    /** What is outstanding after an entry wrote {@code written}, or {@code null} when every setting is written again. */
+    HeldConfiguration without(final Set<String> written) {
+      final Set<String> remaining = new HashSet<>(settings);
+      remaining.removeAll(written);
+      return remaining.isEmpty() ? null : new HeldConfiguration(index, remaining);
+    }
+  }
+
+  /**
+   * An entry of {@code databaseName} has just written the settings it names: the held entry of the database is superseded
+   * once every setting it named has been written again (issue #10086).
+   */
+  private void releaseWrittenConfigurationKeys(final String databaseName, final String payload) {
+    if (heldConfigurations.isEmpty())
+      return;
+    final Set<String> written = settingsNamedBy(payload);
+    heldConfigurations.computeIfPresent(databaseName, (name, held) -> held.without(written));
+  }
+
+  /** The copy of {@code databaseName} is the leader's again, configuration.json included, or gone: nothing left to replay for it. */
+  private void releaseHeldConfiguration(final String databaseName) {
+    heldConfigurations.remove(databaseName);
   }
 
   // @VisibleForTesting
@@ -7262,6 +7496,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
     pageVersions.clear(databaseName);
     lastSchemaChangeIndex.remove(databaseName);
     recentSchemaChanges.remove(databaseName);
+    // Nor a configuration held for the replay (issue #10086): the file it was to be written to is going away
+    releaseHeldConfiguration(databaseName);
     // Nor a compaction hold-off (issue #9558): it described a payload of the database being dropped
     clearCompactionHoldOff(databaseName);
     // The copy the served index described is going away with it (issue #8579): a database recreated under the same
@@ -7519,16 +7755,28 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * revoked account or a changed password takes effect on this node immediately - only the durability of that
    * change is outstanding.
    * <p>
-   * <b>That durability is carried by the Raft log</b> (issue #7752). The failing entry does not record itself as
-   * applied, but it does not halt the node either - that is the whole point of this arm - so the NEXT entry moves
-   * {@link #lastAppliedIndex} past it, and {@link #takeSnapshot()} checkpoints from that counter. Left there, whether
-   * the entry was ever replayed depended on whether a snapshot happened to be taken before the restart (issue #7227),
-   * and the operator was told to reissue the change. {@link SecurityDurabilityFloor} removes the dependency: the entry
-   * is pinned until {@code ServerSecurity.isReplicatedDocumentDurable} says the list is on disk, {@link #takeSnapshot()}
-   * stops below it, and a restart replays it. The write is retried from memory while the node applies entries, so the
-   * pin lifts once the volume is writable again. {@code Issue7752SecurityDurabilityFloorTest} pins the replay;
-   * {@code Issue7252SecurityEntryReplayAfterRestartTest} still pins that a later entry of the SAME document, which
-   * supersedes the failed one, lets the checkpoint move past it.
+   * <b>The failing entry is held for the replay until a later one supersedes it</b> (issues #7227, #10086, #7752). It
+   * does not record itself as applied, but it does not halt the node either - that is the whole point of this arm -
+   * so the NEXT entry moves {@link #lastAppliedIndex} past it, and {@link #takeSnapshot()} checkpoints from
+   * that counter. Left at that, whether the entry is ever replayed depended entirely on the SNAPSHOT MARKER, which
+   * is the only thing {@link #reinitialize()} seeds the replay position from (see {@code ha-raft/CLAUDE.md}):
+   * once any snapshot past this index was taken the entry was gone for good, a graceful {@code stop()} takes
+   * one unconditionally, as does {@code RaftLogCompactionScheduler} on its interval, and a revoked account came
+   * back after the restart with nothing to say so. So the entry is held ({@link #holdEntryForReplay}): the checkpoint
+   * stops below it, a restart replays it onto a volume that has been fixed and writes the file, and the hold is released
+   * when the next entry of the same document persists, since the list is applied whole and that one carries everything
+   * this one did. Reissuing the user change on the leader writes the file as well.
+   * <p>
+   * {@link SecurityDurabilityFloor} covers what the hold cannot see (issue #7752): the compare-and-set record written
+   * after the document, whose failure is swallowed. It pins the entry until {@code
+   * ServerSecurity.isReplicatedDocumentDurable} says both are on disk, rewrites them from memory while the node applies
+   * entries, and releases the hold above too once the document is durable again, so a fixed volume stops pinning the
+   * log without waiting for the next user change.
+   * Pinned by {@code Issue10086SkippedEntryHoldsTheCheckpointTest} for the hold and its release, by
+   * {@code Issue7752SecurityDurabilityFloorTest} for the record and the retry, by
+   * {@code Issue7227SecurityEntryAppliedPositionMovesPastFailureTest} for the applied counters, which still move, and by
+   * {@code Issue7252SecurityEntryReplayAfterRestartTest} for both branches of the restart once a later entry has
+   * superseded the failed one.
    * <p>
    * The classification lives here, at the apply site, rather than in the generic handler: whether a failure
    * can diverge replicated state is a property of the apply, not of the entry's database scoping, so a future
@@ -7570,10 +7818,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // another node's log, an HA status payload, an incident writeup - without the SEVERE above beside it.
       // "Stays up with its previous users" was true before the ordering fix and is now the opposite of the
       // guarantee this fix exists to provide (issue #7137).
-      throw new ReplicationException(
+      throw holdEntryForReplay(heldSecurityKey(RaftLogEntryType.SECURITY_USERS_ENTRY), index,
           "Failed to persist the replicated user list locally; the node is already enforcing the new list in "
               + "memory, only its durability to disk failed", e);
     }
+    // A whole document written: any earlier entry of it that could not be written is superseded (issue #10086)
+    releaseHeldEntry(heldSecurityKey(RaftLogEntryType.SECURITY_USERS_ENTRY));
     // Note what is NOT caught: a payload this node cannot parse, or a user entry it cannot construct, throws
     // from applyReplicatedUsers BEFORE any mutation. That is not "the disk is full", it is "this node cannot
     // read a committed entry its peers applied", and it still reaches the node-wide halt - the case #4798
@@ -7618,10 +7868,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
               + "checkpoint covers this entry and a restart replays it (issue #7752). The usual cause is a local write "
               + "failure: check that the configuration directory holding that file is writable and has free space",
           e, e.getMessage(), SecurityGroupFileRepository.FILE_NAME);
-      throw new ReplicationException(
+      throw holdEntryForReplay(heldSecurityKey(RaftLogEntryType.SECURITY_GROUPS_ENTRY), index,
           "Failed to persist the replicated group document locally; the node is already authorizing against the "
               + "new groups in memory, only their durability to disk failed", e);
     }
+    releaseHeldEntry(heldSecurityKey(RaftLogEntryType.SECURITY_GROUPS_ENTRY));
     HALog.log(this, HALog.DETAILED, "Applied SECURITY_GROUPS_ENTRY (%d bytes)", payload.length());
     return true;
   }
@@ -7660,10 +7911,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
               + "#7752). The usual cause is a local write failure: check that the configuration directory holding that "
               + "file is writable and has free space",
           e, e.getMessage(), ApiTokenConfiguration.FILE_NAME);
-      throw new ReplicationException(
+      throw holdEntryForReplay(heldSecurityKey(RaftLogEntryType.SECURITY_API_TOKENS_ENTRY), index,
           "Failed to persist the replicated API-token document locally; the node is already enforcing the new token "
               + "set in memory, only its durability to disk failed", e);
     }
+    releaseHeldEntry(heldSecurityKey(RaftLogEntryType.SECURITY_API_TOKENS_ENTRY));
     HALog.log(this, HALog.DETAILED, "Applied SECURITY_API_TOKENS_ENTRY (%d bytes)", payload.length());
     return true;
   }
@@ -8974,6 +9226,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
         persistAppliedIndexFile();
     }
     lastDivergedResyncLogByDb.remove(dbName);
+    // The resync brought the leader's copy, configuration.json included (issue #10086)
+    releaseHeldConfiguration(dbName);
     if (divergedDatabases.isEmpty())
       divergedSwallowedErrors.set(0);
   }
@@ -9368,6 +9622,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
     }
     lastDivergedResyncLogByDb.clear();
     divergedSwallowedErrors.set(0);
+    // Every database was reinstalled from the leader, configuration.json included (issue #10086)
+    heldConfigurations.clear();
   }
 
   /**

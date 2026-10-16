@@ -612,8 +612,8 @@ class TestSmallResultsCostOneBridgeCall:
     A JPype call is 3 to 4 microseconds, a fifth of a one-row read. to_list() asked
     TypedRows.nextRows a second time just to see an empty batch (the fix that #144 made for
     to_json_list()), and every drained result set cost one more crossing for close().
-    nextRows and nextJsonBatch return fewer rows than asked for only when the result set is
-    drained, and close it themselves.
+    TypedRows.nextRows reports that the result set is drained, and nextJsonBatch returns fewer
+    rows than asked for only then; both close it themselves.
     """
 
     @pytest.fixture

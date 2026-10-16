@@ -4689,7 +4689,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       proxied.saveConfiguration();
       return;
     }
-    replicateConfiguration(raft, null);
+    replicateConfiguration(raft, null, null);
   }
 
   /**
@@ -4699,6 +4699,10 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * force and not submitted yet, since the in-memory store and the submit are not one step. Carried in this entry, it
    * committed cluster-wide even when that statement's own save was then refused, and its caller was told nothing had
    * changed. The entry names one setting, so it cannot carry another statement's change, whatever the interleaving.
+   * <p>
+   * The value it carries is the one in memory when the entry is built, which is another statement's when that statement
+   * stored the SAME setting in between (issue #10108): {@link #saveConfiguration(LocalDatabase.SettingChange)} is what the
+   * statements call, and ships the value their change set. This one is for a caller that has no such change.
    */
   @Override
   public void saveConfiguration(final String key) throws IOException {
@@ -4707,21 +4711,42 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       proxied.saveConfiguration(key);
       return;
     }
-    replicateConfiguration(raft, key);
+    replicateConfiguration(raft, key, null);
   }
 
   /**
-   * Submits the configuration change: the one to {@code key}, or every pending change when {@code key} is null, and
-   * waits for this node to apply it. See {@link #saveConfiguration()}.
+   * Replicates the setting {@code change} stored, with the value it stored (issue #10108). The entry was captured when the
+   * value went in, under the lock the apply of a replicated change takes, so it is this statement's whatever another
+   * statement stores on the same setting before this one reaches its save. Without that, the entry carried the value memory
+   * held at submit time: statement A's committed entry held statement B's value, and when B's own submit was refused its
+   * caller was told that nothing had been submitted, so that nothing had changed anywhere in the cluster.
    */
-  private void replicateConfiguration(final RaftHAServer raft, final String key) throws IOException {
+  @Override
+  public void saveConfiguration(final LocalDatabase.SettingChange change) throws IOException {
+    final RaftHAServer raft = raftHAServer;
+    if (raft == null) {
+      proxied.saveConfiguration(change);
+      return;
+    }
+    replicateConfiguration(raft, change.key(), change);
+  }
+
+  /**
+   * Submits the configuration change: the one {@code change} made, the one to {@code key} as memory holds it now when there
+   * is no change, or every pending change when {@code key} is null, and waits for this node to apply it. See
+   * {@link #saveConfiguration()}.
+   */
+  private void replicateConfiguration(final RaftHAServer raft, final String key, final LocalDatabase.SettingChange change)
+      throws IOException {
     refuseWhileRemovedFromConfiguration("change the database configuration");
     SecurityEntryCapabilityGate.requireEveryPeerCanDecode(server, raft, RaftLogEntryType.DATABASE_CONFIGURATION_ENTRY,
         "configuration of database '" + getName() + "'");
 
     final long committedLogIndex;
     synchronized (configurationReplicationLock) {
-      final String changes = key != null ? proxied.pendingConfigurationChange(key) : proxied.pendingConfigurationChanges();
+      final String changes = change != null ?
+          proxied.pendingConfigurationChange(change) :
+          key != null ? proxied.pendingConfigurationChange(key) : proxied.pendingConfigurationChanges();
       if (changes == null)
         // Nothing this node holds that its file does not: the value set was already the stored one
         return;

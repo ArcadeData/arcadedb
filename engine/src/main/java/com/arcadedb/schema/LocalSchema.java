@@ -3725,6 +3725,12 @@ public class LocalSchema implements Schema {
       // the genuine cases where the file is truly missing (issue #4063).
       final Map<String, List<String>> deferredMissingIndexWarnings = new LinkedHashMap<>();
       final Map<String, Map<String, JSONObject>> unavailableIndexes = new HashMap<>();
+      // The type that OWNS each bucket (issue #10093): an index is listed under the type that declares it, and its
+      // sub-indexes on the buckets of the types below it are bound to the type that owns the bucket, as they are when created
+      final Map<Integer, LocalDocumentType> ownerOfBucket = new HashMap<>();
+      for (final LocalDocumentType t : graph.values())
+        for (final Bucket b : t.getBuckets(false))
+          ownerOfBucket.put(b.getFileId(), t);
       // The BM25 corpus counters of a full-text index are TYPE-wide, so every bucket sub-index of one logical index has to
       // share ONE FullTextIndexMetadata, as the creation path does. Building one per bucket sub-index here made each copy
       // count only its own bucket's inserts, ran the once-per-session stale check (a full type scan) once per bucket, and
@@ -3832,7 +3838,7 @@ public class LocalSchema implements Schema {
                     .log(this, Level.WARNING, "Cannot find bucket '%s' defined in index '%s'. Ignoring it", null, bucketName,
                         index.getName());
               } else {
-                type.addIndexInternal(index, bucket.getFileId(), properties, null);
+                addLoadedIndex(type, ownerOfBucket, index, bucket.getFileId(), properties);
                 reportUpgradeWarning(index, typeName, properties);
               }
 
@@ -3918,7 +3924,7 @@ public class LocalSchema implements Schema {
                     // user-supplied name on the next reload.
                     if (entry.getValue().has("typeIndexName"))
                       index.getMetadata().typeIndexName = entry.getValue().getString("typeIndexName");
-                    type.addIndexInternal(index, bucket.getFileId(), properties, null);
+                    addLoadedIndex(type, ownerOfBucket, index, bucket.getFileId(), properties);
                     LogManager.instance()
                         .log(this, Level.FINE, "Relinked orphan index '%s' to type '%s'", null, indexName, type.getName());
                     relinkedOrphanNames.add(entry.getKey());
@@ -5524,6 +5530,29 @@ public class LocalSchema implements Schema {
       dropIndexInternal(indexName);
       throw new IndexException("Error on creating index '" + indexName + "'", e);
     }
+  }
+
+  /**
+   * Binds a bucket index read from the schema to its type (issue #10093). The schema lists an index under the type that DECLARES
+   * it, including its sub-indexes on the buckets of the types below it, and the type that declares it is not always the one that
+   * owns the bucket. Creating those sub-indexes binds each one to the type that owns the bucket, under the wrapper of the
+   * declaring type ({@code LocalDocumentType.createSubIndexesFor}); binding it to the declaring type here left the same database
+   * with a different layout after every load: the super type held the sub type's bucket indexes and the sub type none. Under
+   * Raft HA the leader keeps the layout it created and every follower the one it loads, which the comparison of the databases
+   * reported as a type configured differently.
+   */
+  private static void addLoadedIndex(final LocalDocumentType declaringType, final Map<Integer, LocalDocumentType> ownerOfBucket,
+      final IndexInternal index, final int bucketId, final String[] propertyNames) {
+    final LocalDocumentType owner = ownerOfBucket.get(bucketId);
+    if (owner == null || owner == declaringType || !owner.instanceOf(declaringType.getName()))
+      // The bucket is the declaring type's own, or belongs to a type that does not inherit from it: a schema written by hand
+      // keeps the binding it has always had
+      declaringType.addIndexInternal(index, bucketId, propertyNames, null);
+    else
+      // The declaring type's wrapper is minted here when this sub-index is the first of its index to be read (they are read in
+      // name order, so the sub type's can come before the declaring type's own). It is staged by publishIndexDuringLoad like
+      // any wrapper minted during a load, so a reader never sees it before the load publishes the schema
+      owner.addIndexInternal(index, bucketId, propertyNames, declaringType.typeIndexFor(index, propertyNames));
   }
 
   protected boolean isSchemaLoaded() {

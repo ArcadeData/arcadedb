@@ -530,13 +530,16 @@ public final class HealthMonitor {
    * Package-private for tests. Runs one check synchronously.
    */
   void tick() {
-    // Every early return below skips checkStaleFollower()/checkStuckFollower(), so each drops the observation streaks
-    // those checks own (issue #8389): a streak means "seen on every tick since it started", and a tick that did not look
-    // cannot extend it. Left standing, the confirmed stuck flag kept the cluster status reporting a critical incident
-    // whose promised self-heal those same returns made unreachable, and an old streak fired a reformat or a snapshot
-    // re-arm on the first tick back without the fresh second observation it exists to demand.
+    // Every early return below skips some of the checks that follow it, so each drops the observation streaks those
+    // checks own (issues #8389, #10087): a streak means "seen on every tick since it started", and a tick that did not
+    // look cannot extend it. Left standing, the confirmed stuck flag kept the cluster status reporting a critical incident
+    // whose promised self-heal those same returns made unreachable, an old streak fired a reformat or a snapshot re-arm on
+    // the first tick back without the fresh second observation it exists to demand, and a dead-updater or closed-log
+    // sighting before a node closed or reloaded a snapshot was counted with the one after it, restarting a node that was
+    // only recovering as if it were a zombie. A branch that extends a streak of its own takes its count BEFORE the drop
+    // and puts it back after, so the drop stays one unconditional line a counter added later cannot be left out of.
     if (target.isShutdownRequested()) {
-      dropFollowerObservations();
+      dropObservationsOfATickThatDidNotLook();
       return;
     }
     // Reconcile the inbound peer allowlist with current DNS every tick, regardless of Ratis lifecycle
@@ -567,19 +570,19 @@ public final class HealthMonitor {
     if (state == LifeCycle.State.CLOSING) {
       // One tick in CLOSING is an ordinary close in progress; the same state on consecutive ticks is a division whose
       // close never finished - the StateMachineUpdater died and closed it from its own thread (issue #8651).
-      closingStreak++;
-      dropFollowerObservations();
-      if (closingStreak >= CLOSING_TICKS_BEFORE_RECOVERY) {
-        // A fresh streak before the next attempt: a restart needs time to leave CLOSING.
-        closingStreak = 0;
+      final int closing = closingStreak + 1;
+      dropObservationsOfATickThatDidNotLook();
+      if (closing >= CLOSING_TICKS_BEFORE_RECOVERY)
+        // A fresh streak before the next attempt (the drop above left it at zero): a restart needs time to leave CLOSING.
         handleUnhealthyState(state);
-      }
+      else
+        closingStreak = closing;
       return;
     }
     closingStreak = 0;
     if (state == LifeCycle.State.CLOSED || state == LifeCycle.State.EXCEPTION) {
       handleUnhealthyState(state);
-      dropFollowerObservations();
+      dropObservationsOfATickThatDidNotLook();
       return;
     }
     // Above the healthy-lifecycle reset below, deliberately: a poisoned log that keeps killing the updater on a node that
@@ -590,10 +593,11 @@ public final class HealthMonitor {
     // rejoined, leaving a zombie that rejects every append. Read from the thread, not from the lifecycle it corrupts.
     final String deadUpdater = target.getDeadStateMachineUpdater();
     if (deadUpdater != null) {
-      deadUpdaterStreak++;
-      dropFollowerObservations();
-      if (deadUpdaterStreak >= DEAD_UPDATER_TICKS_BEFORE_RECOVERY) {
-        deadUpdaterStreak = 0;
+      final int dead = deadUpdaterStreak + 1;
+      dropObservationsOfATickThatDidNotLook();
+      if (dead < DEAD_UPDATER_TICKS_BEFORE_RECOVERY)
+        deadUpdaterStreak = dead;
+      else {
         // A restart gives a fresh state machine that has seen no thread, so the next tick reads healthy: without this the
         // reset below would zero the crash-loop streak after every recovery and the escalation could never be reached
         lastDeadUpdaterRecoveryMs = clock.getAsLong();
@@ -624,9 +628,8 @@ public final class HealthMonitor {
     } else
       closedLogStreak = 0;
     if (logFailure != null) {
-      closedLogStreak = 0;
       handleFailedLogWriter(logFailure);
-      dropFollowerObservations();
+      dropObservationsOfATickThatDidNotLook();
       return;
     }
     if (closedLogStreak == 0)
@@ -827,12 +830,17 @@ public final class HealthMonitor {
   }
 
   /**
-   * Drops the stale-follower and stuck-divergence observation streaks, and with them the confirmed stuck flag, on a
-   * tick that returns before the follower checks run (issue #8389). Unlike {@link #resetStreaksAfterRestart()} it
+   * Drops every observation streak the tick owns - the stale-follower and stuck-divergence ones, with the confirmed stuck
+   * flag (issue #8389), and the consecutive-tick counters of the CLOSING state, a dead updater and a closed log (issue
+   * #10087) - on a tick that returns before the checks that own them run. A branch that extends one of those counters
+   * itself reads its count first and writes it back after this call. Unlike {@link #resetStreaksAfterRestart()} it
    * leaves the reformat budget alone: nothing was restarted or reformatted, so the divergence episode that budget
    * belongs to is not over.
    */
-  private void dropFollowerObservations() {
+  private void dropObservationsOfATickThatDidNotLook() {
+    closingStreak = 0;
+    deadUpdaterStreak = 0;
+    closedLogStreak = 0;
     lagObservedSinceMs = -1;
     stuckObservedSinceMs = -1;
     stuckConfirmed = false;
