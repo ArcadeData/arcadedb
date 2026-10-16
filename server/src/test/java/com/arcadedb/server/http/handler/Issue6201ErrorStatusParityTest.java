@@ -63,10 +63,12 @@ import io.undertow.util.Methods;
 import org.junit.jupiter.api.DynamicTest;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestFactory;
-import org.mockito.ArgumentCaptor;
+import org.mockito.invocation.Invocation;
 
 import java.io.UncheckedIOException;
 import java.lang.reflect.Field;
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
@@ -74,7 +76,7 @@ import java.util.stream.Stream;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.mockingDetails;
 import static org.mockito.Mockito.when;
 
 /**
@@ -565,9 +567,19 @@ class Issue6201ErrorStatusParityTest {
 
     handler.handleRequest(exchange);
 
-    final ArgumentCaptor<String> body = ArgumentCaptor.forClass(String.class);
-    verify(sender).send(body.capture());
-    return new HandledResponse(statusCode[0], body.getValue(), responseHeaders);
+    // Whichever overload carried the body: the plain String send, or - for a body refused mid-stream, which is answered
+    // with its length and a completion callback (issue #8081) - the ByteBuffer one
+    String body = null;
+    for (final Invocation invocation : mockingDetails(sender).getInvocations())
+      if ("send".equals(invocation.getMethod().getName()) && invocation.getArguments().length > 0) {
+        final Object sent = invocation.getArgument(0);
+        if (sent instanceof String text)
+          body = text;
+        else if (sent instanceof ByteBuffer bytes)
+          body = StandardCharsets.UTF_8.decode(bytes.duplicate()).toString();
+      }
+    assertThat(body).as("the response body must have been sent").isNotNull();
+    return new HandledResponse(statusCode[0], body, responseHeaders);
   }
 
   /** Handler whose execute() throws, standing in for a command that fails while running. */
