@@ -227,11 +227,10 @@ public class SQLFunctionVectorFuse extends SQLFunctionVectorAbstract {
       // is the cursor's, not the row's (issue #10129). Without it DBSF and LINEAR refused a full-text leg written so.
       while (cursor.hasNext()) {
         final Identifiable next = cursor.next();
-        if (next != null) {
-          final RID rid = next.getIdentity();
-          out.add(new RidScore(rid, cursor.getFloatScore()));
-          rememberCarried(next, rid, carried);
-        }
+        // Only the RID is kept: a cursor streams its matches, and holding the record of every one of them until the fusion
+        // has picked the few it returns would keep the whole match set in memory. The winners are loaded after the fusion
+        if (next != null)
+          out.add(new RidScore(next.getIdentity(), cursor.getFloatScore()));
       }
       return out;
     }

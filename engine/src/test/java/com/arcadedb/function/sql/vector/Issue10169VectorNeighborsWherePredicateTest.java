@@ -171,6 +171,17 @@ class Issue10169VectorNeighborsWherePredicateTest extends TestHelper {
   }
 
   @Test
+  void aPositionalParameterInAConditionIsRefused() {
+    seedDense();
+
+    // the `?` of the condition would be read as the query's first positional value, the query vector
+    assertThatThrownBy(() -> query("SELECT expand(`vector.neighbors`('Passage[embedding]', ?, 5, { where: 'space = ?' }))", QUERY,
+        "a")).isInstanceOf(CommandSQLParsingException.class).hasMessageContaining("positional");
+    assertThat(RecordPredicateRidSet.hasPositionalParameter("space = '?' AND `a?b` = \"x?\"")).isFalse();
+    assertThat(RecordPredicateRidSet.hasPositionalParameter("space = 'it\\'s' AND year = ?")).isTrue();
+  }
+
+  @Test
   void sparseNeighborsTakesTheSameWhere() {
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE Sparse BUCKETS 2");

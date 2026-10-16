@@ -43,7 +43,9 @@ import java.util.concurrent.ConcurrentHashMap;
  * candidates the search actually considers are loaded and tested, each once per call.
  * <p>
  * The predicate is either a map of property to value, every entry of which must hold with the SQL {@code =} semantics
- * ({@code where: { embed_space: :space }}), or a SQL condition evaluated on the record ({@code where: "year >= :minYear"}). A
+ * ({@code where: { embed_space: :space }}), or a SQL condition evaluated on the record ({@code where: "year >= :minYear"}),
+ * whose parameters must be named: a positional {@code ?} is refused, since the condition is parsed on its own and could not tell
+ * which of the query's positional values it meant. A
  * {@code filter} given as well restricts the candidates further, and is checked first, so a candidate outside it is never
  * loaded.
  * <p>
@@ -108,6 +110,11 @@ final class RecordPredicateRidSet extends AbstractSet<RID> {
     if (where instanceof String text) {
       if (text.isBlank())
         throw new CommandSQLParsingException(functionName + " 'where' condition is empty");
+      // The condition is parsed on its own, so a `?` in it would be numbered from the first positional parameter of the
+      // QUERY and read the wrong value without any error: only named parameters bind to what the caller meant
+      if (hasPositionalParameter(text))
+        throw new CommandSQLParsingException(functionName + " 'where' condition cannot use positional parameters ('?'): use named "
+            + "parameters such as ':space', or pass a map of property to value");
       final WhereClause condition;
       try {
         condition = new SQLAntlrParser(context.getDatabase()).parseCondition(text);
@@ -120,6 +127,26 @@ final class RecordPredicateRidSet extends AbstractSet<RID> {
     }
     throw new CommandSQLParsingException(
         functionName + " 'where' must be a map of property to value or a SQL condition, got " + where.getClass().getSimpleName());
+  }
+
+  /**
+   * Whether {@code condition} holds a {@code ?} outside a string literal or a quoted identifier.
+   */
+  static boolean hasPositionalParameter(final String condition) {
+    char quote = 0;
+    for (int i = 0; i < condition.length(); i++) {
+      final char c = condition.charAt(i);
+      if (quote != 0) {
+        if (c == '\\')
+          ++i; // an escaped character never closes the literal
+        else if (c == quote)
+          quote = 0;
+      } else if (c == '\'' || c == '"' || c == '`')
+        quote = c;
+      else if (c == '?')
+        return true;
+    }
+    return false;
   }
 
   @Override
