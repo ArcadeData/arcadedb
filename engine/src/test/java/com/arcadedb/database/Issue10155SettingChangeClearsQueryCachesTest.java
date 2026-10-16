@@ -26,6 +26,11 @@ import org.junit.jupiter.api.Test;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -45,10 +50,10 @@ class Issue10155SettingChangeClearsQueryCachesTest extends TestHelper {
   @Override
   protected void beginTest() {
     database.transaction(() -> {
-      database.getSchema().createDocumentType("S").createProperty("v", Type.INTEGER);
+      database.getSchema().createVertexType("S").createProperty("v", Type.INTEGER);
       database.getSchema().getType("S").createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "v");
       for (int i = 0; i < 60; i++)
-        database.newDocument("S").set("v", i % 2).save();
+        database.newVertex("S").set("v", i % 2).save();
     });
   }
 
@@ -108,6 +113,51 @@ class Issue10155SettingChangeClearsQueryCachesTest extends TestHelper {
     assertThat(db.getExecutionPlanCache().contains("select v as c from S")).isTrue();
     assertThat(db.getExecutionPlanCache().contains("select v as a from S")).as("evicted by a cache of one").isFalse();
     assertThat(db.getStatementCache().contains("select v as a from S")).as("evicted by a cache of one").isFalse();
+  }
+
+  /**
+   * The caches are resized under the same monitors their lookups take, so queries running while settings keep changing see a
+   * cache either before or after a resize, never half of one: every query answers, and nothing escapes from inside a cache.
+   */
+  @Test
+  void queriesRacingSettingChangesAlwaysAnswer() throws Exception {
+    final int threads = 4;
+    final AtomicBoolean stop = new AtomicBoolean();
+    final AtomicReference<Throwable> failure = new AtomicReference<>();
+    final ExecutorService pool = Executors.newFixedThreadPool(threads);
+    try {
+      for (int t = 0; t < threads; t++) {
+        final int thread = t;
+        pool.submit(() -> {
+          int i = 0;
+          while (!stop.get() && failure.get() == null)
+            try {
+              // distinct texts, so the lookups insert and evict while the caches are being resized
+              final String label = "c" + thread + "_" + (i++ % 50);
+              try (final ResultSet rs = database.query("sql", "select count(*) as " + label + " from S where v = 1")) {
+                assertThat(rs.next().<Long>getProperty(label)).isEqualTo(30L);
+              }
+              try (final ResultSet rs = database.query("opencypher", "MATCH (n:S) WHERE n.v = 1 RETURN count(n) AS " + label)) {
+                assertThat(rs.next().<Long>getProperty(label)).isEqualTo(30L);
+              }
+            } catch (final Throwable e) {
+              failure.compareAndSet(null, e);
+            }
+        });
+      }
+
+      for (int i = 0; i < 200 && failure.get() == null; i++) {
+        final int size = 1 + i % 4;
+        database.command("sql", "ALTER DATABASE `arcadedb.sqlStatementCache` " + size).close();
+        database.command("sql", "ALTER DATABASE `arcadedb.opencypher.planCache` " + size).close();
+        database.command("sql", "ALTER DATABASE `arcadedb.opencypher.statementCache` " + size).close();
+      }
+    } finally {
+      stop.set(true);
+      pool.shutdown();
+      assertThat(pool.awaitTermination(60, TimeUnit.SECONDS)).as("query threads ended").isTrue();
+    }
+    assertThat(failure.get()).as("a query racing the resizes").isNull();
   }
 
   private String planOf(final String query) {

@@ -141,7 +141,8 @@ public class ContinuousAggregateBuilder {
     if (schema.existsContinuousAggregate(name)) {
       if (ifNotExists)
         return schema.getContinuousAggregate(name);
-      throw new AlreadyExistsException(AlreadyExistsException.Kind.CONTINUOUS_AGGREGATE, "Continuous aggregate '" + name + "' already exists");
+      throw new AlreadyExistsException(AlreadyExistsException.Kind.CONTINUOUS_AGGREGATE,
+          "Continuous aggregate '" + name + "' already exists");
     }
 
     if (schema.existsType(name))

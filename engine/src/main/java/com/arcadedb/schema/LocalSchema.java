@@ -1851,7 +1851,8 @@ public class LocalSchema implements Schema {
     checkValidBucketName(bucketName);
 
     if (lookupBucket(bucketName) != null)
-      throw new AlreadyExistsException(AlreadyExistsException.Kind.BUCKET, "Cannot create bucket '" + bucketName + "' because already exists");
+      throw new AlreadyExistsException(AlreadyExistsException.Kind.BUCKET,
+          "Cannot create bucket '" + bucketName + "' because already exists");
 
     // Discoverability warning for the EXTERNAL property naming convention. The engine creates paired buckets
     // as '<primary>_ext' with file-format version EXTERNAL_BUCKET_VERSION, so version == CURRENT_VERSION (0)
@@ -4869,7 +4870,8 @@ public class LocalSchema implements Schema {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
     if (library.getLanguage() == null) {
       if (functionLibraries.putIfAbsent(library.getName(), library) != null)
-        throw new AlreadyExistsException(AlreadyExistsException.Kind.FUNCTION_LIBRARY, "Function library '" + library.getName() + "' already registered");
+        throw new AlreadyExistsException(AlreadyExistsException.Kind.FUNCTION_LIBRARY,
+            "Function library '" + library.getName() + "' already registered");
       return this;
     }
 
@@ -4878,7 +4880,8 @@ public class LocalSchema implements Schema {
 
     recordFileChanges(() -> {
       if (functionLibraries.putIfAbsent(library.getName(), library) != null)
-        throw new AlreadyExistsException(AlreadyExistsException.Kind.FUNCTION_LIBRARY, "Function library '" + library.getName() + "' already registered");
+        throw new AlreadyExistsException(AlreadyExistsException.Kind.FUNCTION_LIBRARY,
+            "Function library '" + library.getName() + "' already registered");
       return null;
     });
     return this;
@@ -4940,7 +4943,8 @@ public class LocalSchema implements Schema {
       final FunctionLibraryDefinition existing = functionLibraries.get(libraryName);
       if (existing != null) {
         if (newLibrary != null)
-          throw new AlreadyExistsException(AlreadyExistsException.Kind.FUNCTION_LIBRARY, "Function library '" + libraryName + "' already registered");
+          throw new AlreadyExistsException(AlreadyExistsException.Kind.FUNCTION_LIBRARY,
+              "Function library '" + libraryName + "' already registered");
         // A library holds functions of its own language only (issue #8423): checked here, under the schema's lock, so
         // a library dropped and recreated in another language since the caller looked is refused too
         final String functionLanguage = FunctionLibraryFactory.languageOf(function);

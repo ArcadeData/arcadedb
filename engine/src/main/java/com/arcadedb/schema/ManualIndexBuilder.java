@@ -110,7 +110,8 @@ public class ManualIndexBuilder extends IndexBuilder<Index> {
     final IndexInternal existing = schema.lookupIndex(indexName);
     if (existing != null) {
       if (!ignoreIfExists)
-        throw new AlreadyExistsException(AlreadyExistsException.Kind.INDEX, "Cannot create index '" + indexName + "' because already exists");
+        throw new AlreadyExistsException(AlreadyExistsException.Kind.INDEX,
+            "Cannot create index '" + indexName + "' because already exists");
 
       // "Ignore if exists" means the caller can live with what is already there - but only when what is already there
       // provides what was asked for. This branch used to compare the uniqueness alone (behind a dead
