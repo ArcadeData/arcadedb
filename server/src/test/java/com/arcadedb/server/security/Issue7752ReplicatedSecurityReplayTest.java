@@ -182,6 +182,32 @@ class Issue7752ReplicatedSecurityReplayTest {
     }
   }
 
+  /**
+   * The narrower failure, where only the compare-and-set record cannot be written and the document itself is: the
+   * document is in force and on disk, the baseline a restart would judge the next entry against is not. That alone must
+   * keep the entry replayable, and the record is written again by the retry once it can be.
+   */
+  @Test
+  void aRecordThatCannotBeWrittenAloneStillReportsTheDocumentNotDurable() throws IOException {
+    // A non-empty directory where the record file belongs: the record's rename fails, every document write succeeds
+    final Path record = configOf("b").resolve(ReplicatedSecurityFingerprintRepository.FILE_NAME);
+    Files.deleteIfExists(record);
+    Files.createDirectories(record);
+    final Path blocker = record.resolve("blocker");
+    Files.writeString(blocker, "x", StandardCharsets.UTF_8);
+
+    nodeB.applyReplicatedUsers(usersWith(nodeA, "alice"));
+    assertThat(nodeB.isReplicatedDocumentDurable(ReplicatedSecurityFingerprintRepository.USERS))
+        .as("the list reached the disk, its record did not, and the record is what a restart judges from").isFalse();
+    assertThat(nodeB.retryReplicatedSecurityPersistence()).isFalse();
+
+    Files.delete(blocker);
+    Files.delete(record);
+    assertThat(nodeB.retryReplicatedSecurityPersistence()).isTrue();
+    assertThat(nodeB.isReplicatedDocumentDurable(ReplicatedSecurityFingerprintRepository.USERS)).isTrue();
+    assertThat(markerOf("b", ReplicatedSecurityFingerprintRepository.USERS)).isEqualTo(nodeB.usersFingerprint());
+  }
+
   private static void makeReadOnly(final Path directory) {
     // Root ignores directory permissions, so on such a runner there is no read-only volume to simulate
     assumeTrue(directory.toFile().setWritable(false) && !Files.isWritable(directory),
