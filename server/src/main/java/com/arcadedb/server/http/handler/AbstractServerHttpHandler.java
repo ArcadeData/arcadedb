@@ -825,7 +825,8 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
                 // something other than user:password already is. Keeping it out of the catch below is what lets
                 // that one log its cause: everything still reaching it is then an internal fault rather than a
                 // string an anonymous caller chose, so its stack trace cannot be used to flood the log (#7247).
-                sendErrorResponse(exchange, 403, "Basic authentication error", null, null);
+                // 401 and not 403 (issue #10109): the request carries no valid credentials, it is not refused one.
+                sendErrorResponse(exchange, 401, "Basic authentication error", null, null);
                 return;
               }
 
@@ -835,14 +836,27 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
               // check (issue #7783).
               final int colonPos = authPairClear.indexOf(':');
               if (colonPos < 0) {
-                sendErrorResponse(exchange, 403, "Basic authentication error", null, null);
+                sendErrorResponse(exchange, 401, "Basic authentication error", null, null);
                 return;
               }
 
-              user = authenticate(authPairClear.substring(0, colonPos), authPairClear.substring(colonPos + 1));
+              try {
+                user = authenticate(authPairClear.substring(0, colonPos), authPairClear.substring(colonPos + 1));
+              } catch (final ServerSecurityException e) {
+                // A wrong password, an unknown user or a principal locked out after too many failures: the request
+                // lacks valid credentials, which RFC 9110 15.5.2 answers 401, as the bearer and API-token branches
+                // above already do (issue #10109). Left to propagate, the exception reached classifyError's security
+                // arm and came out as the 403 an AUTHENTICATED caller gets for an operation it is not allowed, so a
+                // client could not tell the two apart. The exception class stays in the body because the Java client
+                // rebuilds its SecurityException from it, not from the status. No WWW-Authenticate challenge: a
+                // browser answers one on an XHR with its native login dialog, over Studio's own login form.
+                LogManager.instance().log(this, getUserSevereErrorLogLevel(), "Authentication failed: %s", e.getMessage());
+                sendErrorResponse(exchange, 401, "Authentication failed", e, null);
+                return;
+              }
 
             } else {
-              sendErrorResponse(exchange, 403, "Authentication not supported", null, null);
+              sendErrorResponse(exchange, 401, "Authentication not supported", null, null);
               return;
             }
 
