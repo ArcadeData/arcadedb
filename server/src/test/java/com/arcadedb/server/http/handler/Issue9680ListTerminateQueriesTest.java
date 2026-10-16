@@ -280,7 +280,8 @@ class Issue9680ListTerminateQueriesTest extends BaseGraphServerTest {
 
   private void assertCommitFindsNoSession(final String session) throws Exception {
     final Response commit = call(ROOT, "POST", "/api/v1/commit/graph", new JSONObject(), Map.of("arcadedb-session-id", session));
-    assertThat(commit.status).isEqualTo(204);
+    // A commit of a terminated session commits nothing, and must not answer the 204 of one that did (issue #10164)
+    assertThat(commit.status).isEqualTo(404);
     assertThat(commit.sessionExpired).isEqualTo(session);
   }
 
