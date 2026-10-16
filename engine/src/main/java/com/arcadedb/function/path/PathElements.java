@@ -20,8 +20,6 @@ package com.arcadedb.function.path;
 
 import com.arcadedb.query.sql.executor.CommandContext;
 
-import java.util.Collections;
-
 /**
  * path.elements(path) - Get all elements (nodes and relationships) from a path.
  *
@@ -50,8 +48,9 @@ public class PathElements extends AbstractPathFunction {
 
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
+    // a null argument answers null, like nodes(), relationships(), length() and the other path functions (issue #10138)
     if (args[0] == null)
-      return Collections.emptyList();
+      return null;
 
     // the path a MATCH pattern binds used to answer an empty list (issue #9913)
     return requirePath(args[0]).toAlternatingList();
