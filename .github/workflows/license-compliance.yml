@@ -73,7 +73,7 @@ jobs:
       - name: Generate aggregated third-party license report
         run: |
           echo "Generating aggregated license report for the whole reactor..."
-          mvn org.codehaus.mojo:license-maven-plugin:aggregate-add-third-party -DskipTests
+          ./mvnw org.codehaus.mojo:license-maven-plugin:aggregate-add-third-party -DskipTests
         continue-on-error: false
 
       # #5651: this allow-list check replaces the previous "grep for GPL/AGPL/SSPL" deny-only step.
@@ -94,7 +94,7 @@ jobs:
       - name: Download license files
         run: |
           echo "Downloading license files..."
-          mvn org.codehaus.mojo:license-maven-plugin:aggregate-download-licenses -DskipTests
+          ./mvnw org.codehaus.mojo:license-maven-plugin:aggregate-download-licenses -DskipTests
         continue-on-error: true
 
       - name: Sanitize license filenames for upload-artifact compatibility

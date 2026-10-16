@@ -6,8 +6,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Dynamically get version from pom.xml
-PROJECT_VERSION=$(mvn -f ../pom.xml help:evaluate -Dexpression=project.version -q -DforceStdout)
+# Dynamically get version from pom.xml, with the repository's pinned Maven (#10134)
+PROJECT_VERSION=$("${SCRIPT_DIR}/../mvnw" -f "${SCRIPT_DIR}/../pom.xml" help:evaluate -Dexpression=project.version -q -DforceStdout)
 
 echo "Local Builder Testing"
 echo "===================="
@@ -17,7 +17,7 @@ echo ""
 BASE_DIST="${SCRIPT_DIR}/target/arcadedb-${PROJECT_VERSION}-base.tar.gz"
 if [[ ! -f "$BASE_DIST" ]]; then
     echo "Error: Base distribution not found"
-    echo "Run: mvn clean package -DskipTests"
+    echo "Run: ./mvnw clean package -DskipTests"
     exit 1
 fi
 
