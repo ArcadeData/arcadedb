@@ -103,6 +103,37 @@ public enum ErrorCategory {
   SERVER;
 
   /**
+   * The classification as one ordered table: the FIRST rule whose type is found anywhere along the chain decides, so the
+   * order of the rows IS the precedence documented on {@link #of}. A table rather than a ladder of tests so that
+   * {@link #of} and {@link #classifiedCause} read the same rows.
+   */
+  private static final Rule[] RULES = {
+      // First, before RETRY: whatever else the chain carries - a wrapper some engine puts around every failure, a conflict
+      // the rollback ran into - a statement stopped on request must never be reported as something a client retries
+      new Rule(QueryTerminatedException.class, TERMINATED),
+      new Rule(NeedRetryException.class, RETRY),
+      new Rule(DatabaseIsReopeningException.class, RETRY),
+      new Rule(TimeSeriesWalkCoarsenedException.class, RETRY),
+      new Rule(QueryHeapBudgetExceededException.class, RETRY),
+      new Rule(QueryAdmissionException.class, RETRY),
+      new Rule(ArithmeticErrorException.class, ARITHMETIC),
+      new Rule(DuplicatedKeyException.class, DUPLICATED_KEY),
+      new Rule(RecordNotFoundException.class, NOT_FOUND),
+      new Rule(SchemaException.class, SCHEMA),
+      new Rule(SecurityException.class, SECURITY),
+      new Rule(CommandParsingException.class, PARSING),
+      new Rule(FullTextQueryParseException.class, PARSING),
+      new Rule(ValidationException.class, VALIDATION),
+      new Rule(QueryNotIdempotentException.class, VALIDATION),
+      new Rule(InvalidPropertyTypeException.class, VALIDATION),
+      new Rule(IllegalArgumentException.class, VALIDATION),
+      new Rule(TimeoutException.class, TIMEOUT) };
+
+  /** A type that, found anywhere along a cause chain, decides the chain's category. */
+  private record Rule(Class<? extends Throwable> type, ErrorCategory category) {
+  }
+
+  /**
    * The category of {@code error}, or {@link #SERVER} when nothing in its cause chain is recognised.
    * <p>
    * The order of the tests is behaviour, not style. {@link #TERMINATED} is decided before anything else, see its
@@ -186,35 +217,4 @@ public enum ErrorCategory {
     }
     return null;
   }
-
-  /** A type that, found anywhere along a cause chain, decides the chain's category. */
-  private record Rule(Class<? extends Throwable> type, ErrorCategory category) {
-  }
-
-  /**
-   * The classification as one ordered table: the FIRST rule whose type is found anywhere along the chain decides, so the
-   * order of the rows IS the precedence documented on {@link #of}. A table rather than a ladder of tests so that
-   * {@link #of} and {@link #classifiedCause} read the same rows.
-   */
-  private static final Rule[] RULES = {
-      // First, before RETRY: whatever else the chain carries - a wrapper some engine puts around every failure, a conflict
-      // the rollback ran into - a statement stopped on request must never be reported as something a client retries
-      new Rule(QueryTerminatedException.class, TERMINATED),
-      new Rule(NeedRetryException.class, RETRY),
-      new Rule(DatabaseIsReopeningException.class, RETRY),
-      new Rule(TimeSeriesWalkCoarsenedException.class, RETRY),
-      new Rule(QueryHeapBudgetExceededException.class, RETRY),
-      new Rule(QueryAdmissionException.class, RETRY),
-      new Rule(ArithmeticErrorException.class, ARITHMETIC),
-      new Rule(DuplicatedKeyException.class, DUPLICATED_KEY),
-      new Rule(RecordNotFoundException.class, NOT_FOUND),
-      new Rule(SchemaException.class, SCHEMA),
-      new Rule(SecurityException.class, SECURITY),
-      new Rule(CommandParsingException.class, PARSING),
-      new Rule(FullTextQueryParseException.class, PARSING),
-      new Rule(ValidationException.class, VALIDATION),
-      new Rule(QueryNotIdempotentException.class, VALIDATION),
-      new Rule(InvalidPropertyTypeException.class, VALIDATION),
-      new Rule(IllegalArgumentException.class, VALIDATION),
-      new Rule(TimeoutException.class, TIMEOUT) };
 }
