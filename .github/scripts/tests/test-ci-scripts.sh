@@ -1903,6 +1903,23 @@ maven_workflow "$work/wrapper/bash-c-wrapped.yml" "bash -c './mvnw verify'"
 expect "accepts the wrapper inside bash -c" 0 "Maven wrapper" \
     "$WRAPPER" "$work/wrapper/bash-c-wrapped.yml"
 
+# A shell option that takes an argument is not the script file (second review of #10175).
+for inline in "bash -o pipefail -c 'mvn verify'" "bash -O extglob -c 'mvn verify'" \
+    "bash --noprofile -c 'mvn verify'" "bash +o posix -ec 'mvn verify'"; do
+    maven_workflow "$work/wrapper/shell-options.yml" "$inline"
+    expect "rejects mvn in '$inline'" 1 "mvn verify" \
+        "$WRAPPER" "$work/wrapper/shell-options.yml"
+done
+
+# A here-doc body is read as commands: Maven piped into a shell through one is caught, and a
+# here-doc that only writes such a line is reported too, failing closed.
+maven_workflow "$work/wrapper/heredoc-shell.yml" $'bash <<EOF\nmvn verify\nEOF'
+expect "rejects mvn in a here-doc fed to a shell" 1 "mvn verify" \
+    "$WRAPPER" "$work/wrapper/heredoc-shell.yml"
+maven_workflow "$work/wrapper/heredoc-file.yml" $'cat > build.sh <<\'EOF\'\nmvn verify\nEOF'
+expect "reports mvn in a here-doc that writes a file (fails closed)" 1 "mvn verify" \
+    "$WRAPPER" "$work/wrapper/heredoc-file.yml"
+
 # Unbalanced quotes fall back to a plain split, which must still find the command.
 maven_workflow "$work/wrapper/unbalanced.yml" $'echo "it is #1; mvn verify'
 expect "rejects mvn in a script with unbalanced quotes" 1 "mvn verify" \
@@ -1981,6 +1998,21 @@ jobs:
 YAML
     expect "rejects mvn inside a script run as '$call'" 1 "bare.sh runs the runner's Maven" \
         "$WRAPPER" "$work/wrapper/runs-via-shell.yml"
+done
+# A script named through $GITHUB_WORKSPACE is the repository's own; the real repository's
+# test-builder-local.sh is used, as $GITHUB_WORKSPACE always resolves to the repository root.
+for call in 'bash "$GITHUB_WORKSPACE/package/test-builder-local.sh"' '${GITHUB_WORKSPACE}/package/test-builder-local.sh'; do
+    cat >"$work/wrapper/runs-workspace.yml" <<YAML
+name: Build
+on: [ push ]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: $call
+YAML
+    expect "follows a script named through \$GITHUB_WORKSPACE ('$call')" 0 "1 ./mvnw invocation" \
+        "$WRAPPER" "$work/wrapper/runs-workspace.yml"
 done
 cat >"$work/wrapper/runs-bare-job-default.yml" <<YAML
 name: Build

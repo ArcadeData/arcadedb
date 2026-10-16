@@ -50,8 +50,11 @@ first Maven executable among its remaining words, else its first word that is no
 number. Words that only mention Maven (an `echo "mvn ..."`, a comment, a file name such as
 `mvn-deploy.yml`) are not programs and are not flagged.
 
-Limits: Maven reached through `eval`, a here-doc, a `$'...'` string given to `bash -c`, or a script
-whose path holds a variable is NOT seen. Every Maven call in this repository's workflows is a plain
+A here-doc body is read as commands like any other line, so `bash <<EOF` with `mvn` in its body is
+caught, and so - failing closed - is a here-doc that only writes such a line into a file.
+
+Limits: Maven reached through `eval`, a `$'...'` string given to `bash -c`, or a script whose path
+holds a variable other than a leading `$GITHUB_WORKSPACE` is NOT seen. Every Maven call in this repository's workflows is a plain
 command in a step's `run:`; keep it that way, or extend this check alongside.
 
 Usage:
@@ -82,6 +85,10 @@ COMMAND_RUNNERS = {
 
 # Shells: `bash -c "..."` runs a script given inline, `bash build.sh` / `source env.sh` a script file.
 SHELLS = {"bash", "sh", "zsh", "dash", "source", "."}
+SHELL_OPTIONS_WITH_ARGUMENT = {"-o", "+o", "-O", "+O", "--rcfile", "--init-file"}
+
+# `$GITHUB_WORKSPACE` is the checkout root, so a script named through it is still a repository script.
+WORKSPACE_PREFIX = re.compile(r"^\$(\{GITHUB_WORKSPACE\}|GITHUB_WORKSPACE)/")
 
 NUMBER = re.compile(r"^[0-9.]+[smhd]?$")
 
@@ -268,6 +275,8 @@ def run_scripts(document):
 
 def repository_script(root, directory, program):
     """The shell script file a command runs, when it is one that exists on disk, else None."""
+    program = WORKSPACE_PREFIX.sub(lambda _: f"{root}/", program)
+    directory = WORKSPACE_PREFIX.sub(lambda _: f"{root}/", directory) if directory else directory
     if not program.endswith(".sh") or "$" in program:
         return None
     candidate = root / (directory or ".") / program
@@ -284,12 +293,20 @@ def default_files(root):
 
 def shell_target(arguments):
     """For a shell's arguments: ("inline", script) for `-c script`, ("file", path) for a script file,
-    else None."""
-    for index, argument in enumerate(arguments):
-        if argument == "-c" or (argument.startswith("-") and not argument.startswith("--") and argument.endswith("c")):
+    else None. The shell's own options come first and may take an argument (`-o pipefail`,
+    `-O extglob`), which is neither the script nor its file."""
+    index = 0
+    while index < len(arguments):
+        argument = arguments[index]
+        if argument in SHELL_OPTIONS_WITH_ARGUMENT:
+            index += 2
+            continue
+        if argument[:1] == "-" and argument[1:2] != "-" and "c" in argument[1:]:
             return ("inline", arguments[index + 1]) if index + 1 < len(arguments) else None
-        if not argument.startswith("-"):
-            return "file", argument
+        if argument[:1] in ("-", "+"):
+            index += 1
+            continue
+        return "file", argument
     return None
 
 
