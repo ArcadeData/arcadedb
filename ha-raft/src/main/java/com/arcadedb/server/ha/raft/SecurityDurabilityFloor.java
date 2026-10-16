@@ -170,7 +170,13 @@ final class SecurityDurabilityFloor {
     }
   }
 
-  /** The index {@code takeSnapshot()} must checkpoint below, or {@link Long#MAX_VALUE} when nothing is pinned. */
+  /**
+   * The index {@code takeSnapshot()} must checkpoint below, or {@link Long#MAX_VALUE} when nothing is pinned. The slots
+   * are read without a lock, so a read racing the apply thread can mix one slot's old value with another's new one. That
+   * is safe for the snapshot: a slot is only ever set to an index the applied position has not yet moved past, or
+   * cleared once its document is durable, so a torn read errs only towards a floor that holds the checkpoint back one
+   * more round.
+   */
   long floor() {
     long floor = NONE;
     for (int i = 0; i < DOCUMENTS.length; i++)
