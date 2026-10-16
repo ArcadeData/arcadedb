@@ -7,7 +7,7 @@ It models synthetic building telemetry for multiple sensors across several hours
 Workflow covered:
 - create a TimeSeries type with multiple tags and numeric fields
 - generate deterministic telemetry for several sensors
-- bulk insert samples transactionally
+- bulk insert samples (each append to a TIMESERIES type commits by itself; see "Atomicity" under append_samples in the async executor API page)
 - seal the mutable tail with COMPACT TIMESERIES TYPE before reading (26.10.1)
 - run raw window queries with multiple tag filters
 - aggregate by hour with ts.timeBucket() at sensor and building scopes

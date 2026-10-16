@@ -59,26 +59,43 @@ public final class TypedRows {
   }
 
   /**
-   * Up to {@code max} rows as {@code {String json, Object[] side}}: {@code json} is an array of row objects and
-   * {@code side} holds the engine objects the JSON refers to by index. Fewer than {@code max} rows means the result
-   * set is drained, and it is closed here (see {@link RowBatcher#closeDrained}), so a caller stops after a short batch.
+   * The JSON text of one batch stops growing once it holds this many characters, whatever {@code max} says. A batch is
+   * one StringBuilder, one String copy, and one Python str, so 1,000 rows of 1 MB each would need several gigabytes at
+   * once where the rows read one at a time need one row's worth.
+   */
+  static final int MAX_BATCH_CHARS = 4 * 1024 * 1024;
+
+  /**
+   * Up to {@code max} rows as {@code {String json, Object[] side, Boolean drained}}: {@code json} is an array of row
+   * objects, {@code side} holds the engine objects the JSON refers to by index, and {@code drained} says the result set
+   * has no more rows. A batch ends early, with fewer than {@code max} rows and {@code drained} false, once its JSON text
+   * reaches {@link #MAX_BATCH_CHARS} (the row that crosses the limit is the batch's last), so the caller reads on until
+   * {@code drained}. A drained result set is closed here (see {@link RowBatcher#closeDrained}), so the caller stops and
+   * does not use it again. A batch of {@code max} rows is not drained: the next call finds out.
    */
   public static Object[] nextRows(final ResultSet rs, final int max) {
     final StringBuilder sb = new StringBuilder();
     final List<Object> side = new ArrayList<>();
     sb.append('[');
     int n = 0;
-    while (n < max && rs.hasNext()) {
+    boolean drained = false;
+    while (n < max) {
+      if (!rs.hasNext()) {
+        drained = true;
+        break;
+      }
       final Result row = rs.next();
       if (n > 0)
         sb.append(',');
       appendRow(sb, row, side);
       n++;
+      if (sb.length() >= MAX_BATCH_CHARS)
+        break;
     }
-    if (n < max)
+    if (drained)
       RowBatcher.closeDrained(rs);
     sb.append(']');
-    return new Object[] { sb.toString(), side.toArray() };
+    return new Object[] { sb.toString(), side.toArray(), drained };
   }
 
   private static void appendRow(final StringBuilder sb, final Result row, final List<Object> side) {
