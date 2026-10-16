@@ -145,6 +145,21 @@ class Issue10160CypherExpressionHeapLimitTest extends TestHelper {
     });
   }
 
+  /** A stream CALL abandons - a LIMIT stops reading it, a later step fails - still gives its rows back to the shared budget. */
+  @Test
+  void apocDoWhenGivesItsRowsBackWhenItsStreamIsAbandoned() {
+    createData();
+    setCap(-1L);
+    final long baseline = QueryHeapBudget.getReservedBytes();
+    final String call = "UNWIND range(1, 3) AS i CALL apoc.do.when(true, 'MATCH (m:InnerT) RETURN m.pad AS p', '') YIELD value ";
+
+    assertThat(drain(call + "RETURN value LIMIT 1")).isEqualTo(1);
+    assertThat(QueryHeapBudget.getReservedBytes()).as("after a LIMIT").isLessThanOrEqualTo(baseline);
+
+    assertThatThrownBy(() -> drain(call + "RETURN 1 / (i - i) AS boom"));
+    assertThat(QueryHeapBudget.getReservedBytes()).as("after a later step failed").isLessThanOrEqualTo(baseline);
+  }
+
   @Test
   void theValuesAreTheOnesTheBodyProjects() {
     createData();
